@@ -6,14 +6,14 @@
 **Status:** in progress — M0 complete, M1 underway.
 **Supersedes:** `plan1.md` (kept for reference — this doc is the source of truth).
 
-**Progress:** ▓▓░░░░░░░░░ 2 of 11 phases merged
+**Progress:** ▓▓▓░░░░░░░░ 3 of 11 phases merged
 
 | Phase | Status | Branch | Merge commit |
 |---|---|---|---|
 | 0 · Decisions & threat model | ✅ merged | — | `3d75a1e` |
 | 1 · Repo foundation | ✅ merged | — | `3d75a1e` |
-| 2 · Crypto core | 🔨 in progress | `feat/crypto-core` | |
-| 3 · Auth & organisations | ⬜ | `feat/auth-organizations` | |
+| 2 · Crypto core | ✅ merged | `feat/crypto-core` | |
+| 3 · Auth & organisations | 🔨 in progress | `feat/auth-organizations` | |
 | 4 · Projects, environments, secrets API | ⬜ | `feat/secrets-api` | |
 | 5 · Dashboard UI | ⬜ | `feat/dashboard-ui` | |
 | 6 · Go CLI v1 | ⬜ | | |
@@ -296,22 +296,22 @@ Estimates assume focused work; treat as relative sizing, not commitments.
 - [ ] CLA bot configured *(before the repo goes public)*
 - [ ] Deploy a live Worker *(needs Cloudflare auth)*
 
-#### 🔨 Phase 2 — Crypto core
+#### ✅ Phase 2 — Crypto core
 
 Built **before** the API, because it is the highest-risk component and the hardest to change later.
 
-- [ ] `packages/core/ids` — UUIDv7 generator, monotonic within a millisecond (RFC 9562)
-- [ ] `KeyProvider` interface + `CloudflareSecretsStoreProvider` + `StaticKeyProvider` (tests/self-host)
-- [ ] AES-256-GCM envelope encryption, unique 96-bit IV per operation
-- [ ] AAD binding ciphertext to `(org_id, env_id, secret_id, version)` — blocks ciphertext relocation
-- [ ] Key generation, wrapping, unwrapping, versioning (root → org → env)
-- [ ] `value_hmac` via HKDF-derived key — change detection without decryption
-- [ ] Root-key rotation (re-wrap) + env-key rotation (re-encrypt)
-- [ ] Cryptographic erasure path for deletes
-- [ ] `scripts/keygen.mjs` (generate + Shamir 2-of-3 split), `scripts/rotate-root-key.mjs`
-- [ ] Tests: known-answer vectors, tamper detection, wrong-AAD rejection, IV uniqueness, rotation round-trip, key-version downgrade rejection
+- [x] `packages/core/ids` — UUIDv7 generator, monotonic within a millisecond (RFC 9562)
+- [x] `KeyProvider` interface + Secrets Store / env / in-memory sources
+- [x] AES-256-GCM envelope encryption, unique 96-bit IV per operation
+- [x] AAD binding ciphertext to `(org_id, env_id, secret_id, version)` — blocks ciphertext relocation
+- [x] Key generation, wrapping, unwrapping, versioning (root → org → env)
+- [x] `value_hmac` via HKDF-derived key — change detection without decryption
+- [x] Root-key rotation (re-wrap) + env-key rotation (re-encrypt)
+- [x] Cryptographic erasure path for deletes
+- [x] `scripts/keygen.ts` (generate + Shamir 2-of-3 split + recover + drill), `scripts/rotate-root-key.ts`
+- [x] Tests: known-answer vectors, tamper detection, wrong-AAD rejection, IV uniqueness, rotation round-trip, key-version downgrade rejection
 
-**Exit:** ≥95% coverage on `crypto/`.
+**Exit:** ≥95% coverage on `crypto/`. — **achieved: 99.4% statements, 98.4% branches, 221 tests.**
 
 ---
 

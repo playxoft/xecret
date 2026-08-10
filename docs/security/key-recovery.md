@@ -59,7 +59,7 @@ Performed **once** per environment (production, staging). Repeat only when rotat
 
 1. **Generate.** 256 bits from the OS CSPRNG.
    ```bash
-   node scripts/keygen.mjs --bits 256 --out-shares 3 --threshold 2
+   npx tsx scripts/keygen.ts --shares 3 --threshold 2
    ```
    The script prints the key once and three Shamir shares. It never writes the key to disk.
 
@@ -171,7 +171,7 @@ one during a drill invalidates it.
 1. Retrieve any 2 of the 3 shares. Record which two, and when, in the log.
 2. On an offline, freshly booted machine:
    ```bash
-   node scripts/keygen.mjs --recover --share "<share-1>" --share "<share-2>"
+   npx tsx scripts/keygen.ts --verify --share "<share-1>" --share "<share-2>"
    ```
 3. Compare the printed fingerprint with §7. It must match exactly.
 4. Decrypt the canary ciphertext (checked into `docs/security/canary.json` — a known
@@ -194,7 +194,7 @@ Because secrets are not encrypted directly under the Root KEK, rotation only re-
 keys. No secret ciphertext is touched.
 
 ```bash
-node scripts/rotate-root-key.mjs --new-version N
+phase run -- npx tsx scripts/rotate-root-key.ts --from N-1 --to N
 ```
 
 1. Generate a new Root KEK by the §2 ceremony. It becomes version N.
@@ -247,7 +247,7 @@ honoured even where backups still hold the rows.
 - [ ] Identify and confirm the **third share holder** (§2 step 4). A 2-of-3 scheme with two
       shares held by one person is a 1-of-1 scheme.
 - [ ] Choose and document the off-site location for share 2.
-- [ ] Write `scripts/keygen.mjs` and `scripts/rotate-root-key.mjs` (Phase 2).
+- [ ] Write `scripts/keygen.ts` and `scripts/rotate-root-key.mjs` (Phase 2).
 - [ ] Generate the staging key and run the **first drill against staging** before the
       production ceremony. Never rehearse for the first time on production.
 - [ ] Add the quarterly drill to a shared calendar with a second reminder to the witness.
