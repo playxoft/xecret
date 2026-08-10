@@ -1,26 +1,38 @@
 {
-  "name": "secrets-manager",
+  "name": "xecret",
   "version": "0.1.0",
   "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
+  "license": "AGPL-3.0-only",
+  "description": "Open-source, developer-first secret management. Powered by Playxoft.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20.9.0"
   },
-  "dependencies": {
-    "next": "16.3.0",
-    "react": "19.2.8",
-    "react-dom": "19.2.8"
+  "scripts": {
+    "dev": "npm run dev --workspace @xecret/web",
+    "build": "npm run build --workspace @xecret/web",
+    "preview": "npm run preview --workspace @xecret/web",
+    "deploy": "npm run deploy --workspace @xecret/web",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:generate": "npm run db:generate --workspace @xecret/db",
+    "db:migrate": "npm run db:migrate --workspace @xecret/db",
+    "db:seed": "npm run db:seed --workspace @xecret/db",
+    "db:studio": "npm run db:studio --workspace @xecret/db",
+    "cli:build": "cd cli && go build -o dist/xecret ./cmd/xecret",
+    "cli:test": "cd cli && go test ./...",
+    "cli:lint": "cd cli && go vet ./...",
+    "check:bundle": "node scripts/check-bundle-size.mjs",
+    "verify": "npm run format:check && npm run lint && npm run typecheck && npm run test"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.3.0",
-    "tailwindcss": "^4",
-    "typescript": "^5"
+    "prettier": "^3.4.2",
+    "prettier-plugin-tailwindcss": "^0.8.1"
   }
 }

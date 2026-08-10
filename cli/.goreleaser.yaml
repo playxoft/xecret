@@ -1,0 +1,70 @@
+version: 2
+project_name: xecret
+
+before:
+  hooks:
+    - go mod tidy
+    - go vet ./...
+
+builds:
+  - id: xecret
+    main: ./cmd/xecret
+    binary: xecret
+    env:
+      # A static binary with no libc dependency, so it runs in scratch,
+      # distroless, and alpine CI images alike. This is the whole reason the CLI
+      # is written in Go — see docs/adr/0004-cli-language-go.md.
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/playxoft/xecret/cli/internal/buildinfo.Version={{.Version}}
+      - -X github.com/playxoft/xecret/cli/internal/buildinfo.Commit={{.Commit}}
+      - -X github.com/playxoft/xecret/cli/internal/buildinfo.Date={{.Date}}
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+# Users are being asked to trust this binary with production credentials.
+# Releases are signed so the download can be verified, not merely checksummed.
+signs:
+  - cmd: cosign
+    signature: '${artifact}.sig'
+    certificate: '${artifact}.pem'
+    args:
+      - sign-blob
+      - '--output-signature=${signature}'
+      - '--output-certificate=${certificate}'
+      - '${artifact}'
+      - '--yes'
+    artifacts: checksum
+    output: true
+
+sboms:
+  - artifacts: archive
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+
+release:
+  draft: true
+  prerelease: auto

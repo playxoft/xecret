@@ -1,0 +1,28 @@
+version: 2
+
+# Few dependencies, each reviewed. Updates are grouped so review is a weekly
+# batch rather than a stream of individual PRs that get rubber-stamped —
+# rubber-stamped dependency bumps are how supply-chain attacks land (threat T8).
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+      production-patch:
+        dependency-type: production
+        update-types: [patch]
+
+  - package-ecosystem: gomod
+    directory: /cli
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

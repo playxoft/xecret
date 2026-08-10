@@ -1,0 +1,84 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "xecret",
+  "main": ".open-next/worker.js",
+
+  // nodejs_compat is required by the OpenNext adapter and by postgres.js (ADR 0006).
+  "compatibility_date": "2026-08-05",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS",
+  },
+
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+  },
+
+  // Non-secret configuration only. Anything sensitive lives in Phase.dev and is
+  // pushed to Cloudflare at deploy time — never in this file, which is committed.
+  "vars": {
+    "XECRET_ENV": "development",
+    "XECRET_PUBLIC_URL": "http://localhost:3000",
+  },
+
+  "env": {
+    "production": {
+      "name": "xecret-production",
+      "routes": [{ "pattern": "xecret.playxoft.com", "custom_domain": true }],
+      "vars": {
+        "XECRET_ENV": "production",
+        "XECRET_PUBLIC_URL": "https://xecret.playxoft.com",
+      },
+    },
+    "staging": {
+      "name": "xecret-staging",
+      "vars": {
+        "XECRET_ENV": "staging",
+        "XECRET_PUBLIC_URL": "https://xecret-staging.playxoft.com",
+      },
+    },
+  },
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Bindings below are added as their phases land. They are written out here so
+  // the shape is agreed now; each is uncommented once the resource exists,
+  // because wrangler fails a deploy on a binding pointing at a missing resource.
+  //
+  // PHASE 1 — database (ADR 0006)
+  //   Create:  npx wrangler hyperdrive create xecret-db --connection-string="$DATABASE_URL"
+  // "hyperdrive": [
+  //   { "binding": "HYPERDRIVE", "id": "<hyperdrive-id>" }
+  // ],
+  //
+  // PHASE 2 — root key (ADR 0002)
+  //   The value originates in Phase.dev and is pushed at deploy time.
+  //   It is NEVER read from Phase.dev at runtime — see docs/adr/0002.
+  // "secrets_store_secrets": [
+  //   {
+  //     "binding": "XECRET_ROOT_KEK",
+  //     "store_id": "<store-id>",
+  //     "secret_name": "XECRET_ROOT_KEK"
+  //   }
+  // ],
+  //
+  // PHASE 3 — Firebase JWKS cache (ADR 0003)
+  //   Caches Google's signing keys so token verification makes no network call.
+  //   Create:  npx wrangler kv namespace create JWKS_CACHE
+  // "kv_namespaces": [
+  //   { "binding": "JWKS_CACHE", "id": "<kv-id>" }
+  // ],
+  //
+  // PHASE 3 — rate limiting (GA binding, no Redis — see system-architecture.md §6)
+  // "ratelimits": [
+  //   { "name": "RL_LOGIN",      "namespace_id": "1001", "simple": { "limit": 10,   "period": 60 } },
+  //   { "name": "RL_CLI_TOKEN",  "namespace_id": "1002", "simple": { "limit": 10,   "period": 60 } },
+  //   { "name": "RL_INVITE",     "namespace_id": "1003", "simple": { "limit": 20,   "period": 60 } },
+  //   { "name": "RL_SECRET_READ","namespace_id": "1004", "simple": { "limit": 120,  "period": 60 } },
+  //   { "name": "RL_SERVICE",    "namespace_id": "1005", "simple": { "limit": 600,  "period": 60 } },
+  //   { "name": "RL_MUTATION",   "namespace_id": "1006", "simple": { "limit": 60,   "period": 60 } }
+  // ]
+  // ────────────────────────────────────────────────────────────────────────────
+}
