@@ -10,7 +10,8 @@
     "./authz": "./src/authz/index.ts",
     "./audit": "./src/audit/index.ts",
     "./validation": "./src/validation/index.ts",
-    "./ids": "./src/ids/index.ts"
+    "./ids": "./src/ids/index.ts",
+    "./auth": "./src/auth/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
