@@ -3,8 +3,29 @@
 > Open-source, developer-first secret management.
 > Powered by Playxoft.
 
-**Status:** awaiting approval. No implementation has started.
+**Status:** in progress — M0 complete, M1 underway.
 **Supersedes:** `plan1.md` (kept for reference — this doc is the source of truth).
+
+**Progress:** ▓▓░░░░░░░░░ 2 of 11 phases merged
+
+| Phase | Status | Branch | Merge commit |
+|---|---|---|---|
+| 0 · Decisions & threat model | ✅ merged | — | `3d75a1e` |
+| 1 · Repo foundation | ✅ merged | — | `3d75a1e` |
+| 2 · Crypto core | 🔨 in progress | `feat/crypto-core` | |
+| 3 · Auth & organisations | ⬜ | `feat/auth-organizations` | |
+| 4 · Projects, environments, secrets API | ⬜ | `feat/secrets-api` | |
+| 5 · Dashboard UI | ⬜ | `feat/dashboard-ui` | |
+| 6 · Go CLI v1 | ⬜ | | |
+| 7 · Team, roles, granular access | ⬜ | | |
+| 8 · CI, service tokens, audit logs | ⬜ | | |
+| 9 · Landing page, docs, open source | ⬜ | | |
+| 10 · Security audit, performance, production | ⬜ | | |
+
+> **Configuration:** all secrets come from **Phase.dev** (`phase run -- <cmd>`). No `.env`
+> file exists on any machine. Variable names the code expects are listed in `.env.example`;
+> values are added in the Phase.dev dashboard. Code is written against these names now and
+> verified against real infrastructure later.
 
 ---
 
@@ -253,78 +274,89 @@ Estimates assume focused work; treat as relative sizing, not commitments.
 
 ### 🏁 M0 — Foundations
 
-#### Phase 0 — Decisions & threat model  *(~2 days)*
-Most decisions are locked above; this phase writes them down properly.
+#### ✅ Phase 0 — Decisions & threat model
 
-- ADRs: trust model, master key, Firebase-as-IdP, Go CLI, monorepo, Drizzle+Hyperdrive
-- `docs/security/threat-model.md` — 10 attacker classes × (threat, impact, likelihood, mitigation, residual risk)
-- `docs/security/key-recovery.md` — **gate: no crypto code before this exists**
-- Full DB schema on paper, reviewed end-to-end before a single migration
-- System architecture diagram
+- [x] ADRs 0001–0007: trust model, root key custody, Firebase-as-IdP, Go CLI, monorepo, database access, licensing
+- [x] `docs/security/threat-model.md` — 10 attacker classes × (threat, impact, likelihood, mitigation, residual risk)
+- [x] `docs/security/key-recovery.md` — **gate: no crypto code before this exists**
+- [x] Full DB schema on paper, reviewed end-to-end before a single migration
+- [x] `docs/architecture/system-architecture.md`
 
-**Exit:** you approve the ADRs.
+#### ✅ Phase 1 — Repo foundation
 
-#### Phase 1 — Repo foundation  *(~3 days)*
-- Restructure to the monorepo above (git history preserved via `git mv`)
-- npm workspaces, TypeScript strict, ESLint, Prettier, Vitest + `@cloudflare/vitest-pool-workers`
-- OpenNext + wrangler configured; **deploy a hello-world to Workers on day one** — do not discover deployment problems in month three
-- Neon project + Hyperdrive binding; Drizzle configured; `db:generate` / `db:migrate` / `db:seed`
-- CI pipeline + **bundle-size budget check that fails the build** (10 MB compressed ceiling)
-- **Phase.dev wired up**: project + environments created, service token in CI. `phase run -- npm run dev` becomes the documented dev command and `phase run -- wrangler deploy` the documented deploy command. No `.env` file ever exists on a developer's disk.
-- `LICENSE` (AGPL-3.0), `cli/LICENSE` (MIT), CLA bot, `SECURITY.md`, `.env.example` (documentation only — real values live in Phase)
+- [x] Monorepo restructure, history preserved via `git mv`
+- [x] npm workspaces, TypeScript strict, ESLint, Prettier, Vitest
+- [x] OpenNext + wrangler configured; Worker bundle builds (0.93 MB gzipped / 6 MB budget)
+- [x] Drizzle configured; `db:generate` / `db:migrate`; 15 tables, 3 migrations
+- [x] CI: lint, typecheck, test, prod-dependency audit, gitleaks, bundle-size gate
+- [x] `LICENSE` (AGPL-3.0), `cli/LICENSE` (MIT), `SECURITY.md`, `.env.example`
+- [x] Go CLI skeleton — builds, vets, tests, cross-compiles
+- [ ] Neon project + Hyperdrive binding created *(needs your Cloudflare/Neon account)*
+- [ ] Phase.dev project + values populated *(you're doing this)*
+- [ ] CLA bot configured *(before the repo goes public)*
+- [ ] Deploy a live Worker *(needs Cloudflare auth)*
 
-**Exit:** `git clone && npm install && npm run dev` works; CI green; a real Worker is live.
+#### 🔨 Phase 2 — Crypto core
 
-#### Phase 2 — Crypto core  *(~4 days)*
-Built **before** the API, because it's the highest-risk component and the hardest to change later.
+Built **before** the API, because it is the highest-risk component and the hardest to change later.
 
-- `packages/core/crypto`: `KeyProvider` interface + `CloudflareSecretsStoreProvider` (root key sourced from Phase.dev at deploy time, never fetched at runtime)
-- AES-256-GCM envelope encryption, unique 96-bit IV per operation, AAD binding ciphertext to `(org_id, env_id, secret_id, version)` — this prevents ciphertext relocation attacks
-- Key generation, wrapping, unwrapping, versioning
-- Root-key rotation (re-wrap) + env-key rotation (re-encrypt)
-- Cryptographic erasure path for deletes
-- `scripts/keygen.ts` (generate + Shamir-split for escrow), `scripts/rotate-root-key.ts`
-- Runbook: Phase.dev → Cloudflare Secrets Store sync, and the escrow-only restore drill
+- [ ] `packages/core/ids` — UUIDv7 generator, monotonic within a millisecond (RFC 9562)
+- [ ] `KeyProvider` interface + `CloudflareSecretsStoreProvider` + `StaticKeyProvider` (tests/self-host)
+- [ ] AES-256-GCM envelope encryption, unique 96-bit IV per operation
+- [ ] AAD binding ciphertext to `(org_id, env_id, secret_id, version)` — blocks ciphertext relocation
+- [ ] Key generation, wrapping, unwrapping, versioning (root → org → env)
+- [ ] `value_hmac` via HKDF-derived key — change detection without decryption
+- [ ] Root-key rotation (re-wrap) + env-key rotation (re-encrypt)
+- [ ] Cryptographic erasure path for deletes
+- [ ] `scripts/keygen.mjs` (generate + Shamir 2-of-3 split), `scripts/rotate-root-key.mjs`
+- [ ] Tests: known-answer vectors, tamper detection, wrong-AAD rejection, IV uniqueness, rotation round-trip, key-version downgrade rejection
 
-**Tests:** known-answer vectors, tamper detection (flip one ciphertext bit → must fail), IV-reuse detection, wrong-AAD rejection, rotation round-trips, key-version downgrade rejection.
-
-**Exit:** ≥95% coverage on `crypto/`, and I walk you through the threat model of this module specifically.
+**Exit:** ≥95% coverage on `crypto/`.
 
 ---
 
 ### 🏁 M1 — A solo developer's loop works end to end
 
-#### Phase 3 — Auth & organisations  *(~4 days)*
-- Firebase client SDK: Google one-tap + email/password, verification, password reset
-- Worker-side ID token verification via `firebase-auth-cloudflare-workers` (JWKS cached in KV, `max-age` respected)
-- Our own session table + opaque cookie (hash stored, never the token)
-- `IdentityProvider` interface so Firebase is swappable
-- Auto-create personal organisation on first login; org switcher
-- Protected route middleware, CSRF for cookie-auth mutations
-- Rate limit buckets: login (strict), password reset (strict), session create (strict)
+#### ⬜ Phase 3 — Auth & organisations
 
-#### Phase 4 — Projects, environments, secrets API  *(~6 days)*
-- Org → Project → Environment CRUD with machine-friendly slugs
-- **The authz engine** — one `can(actor, action, resource)` function. Every route calls it. Zero exceptions, zero duplicated checks.
-- Secrets + `secret_versions` (append-only), create/update/delete/rotate
-- **Import engine** (`packages/core/importer`): `.env` (quoting, multiline, `export` prefix), JSON (flat + one-level nested → `A_B`), YAML, shell exports. Conflict resolution: skip / overwrite / rename. Parsing happens **in the browser**, then one bulk-create call — so a pasted blob of production secrets never becomes a request body that could be logged.
-- Export/pull: `env`, `json`, `yaml`, `shell` formats
-- IDOR defence: every query scoped by verified org membership; **no route ever trusts a `projectId` from the client without an ownership join**
-- Secret-name validation (`^[A-Z_][A-Z0-9_]*$`) with a helpful auto-fix suggestion
+- [ ] `IdentityProvider` interface so Firebase is swappable
+- [ ] Worker-side ID token verification via `firebase-auth-cloudflare-workers`, JWKS cached in KV
+- [ ] Firebase client SDK wiring: Google + email/password, verification, password reset
+- [ ] Session store: opaque 256-bit token, SHA-256 hash persisted, `__Host-` cookie
+- [ ] Session lifecycle: create, resolve, touch, revoke one, revoke all
+- [ ] Auto-create personal organisation on first login (owner role, default keys)
+- [ ] Route protection helper + CSRF (double-submit) on cookie-auth mutations
+- [ ] Rate limit buckets: login, session create, password reset — all strict
+- [ ] Tests: token verification failure modes, session expiry/revocation, CSRF rejection
 
-**Tests:** the security matrix — cross-org, cross-project, cross-env, revoked member, expired session, role escalation. These are written *as* the feature is built, not after.
+#### ⬜ Phase 4 — Projects, environments, secrets API
 
-#### Phase 5 — Dashboard UI  *(~7 days)*
-- shadcn/ui + Tailwind v4, light/dark/system
-- Projects list → project overview → environment tabs → secret table
-- Masked by default; reveal is per-secret, audited, and auto-remasks
-- Add / edit / delete / rotate; inline validation; optimistic updates
-- **Import modal** — drag a `.env`, live preview, conflict resolution, "42 secrets will be added"
-- Environment switcher with unmistakable production styling (colour + label + confirm-on-destructive)
-- Search, filter, empty states, loading skeletons, error states
-- Keyboard: `⌘K` palette, `/` to search
+- [ ] **The authz engine** — one `can(actor, action, resource)`. Every route calls it. Zero exceptions.
+- [ ] Grant resolution: env-specific → project-wide → role default; explicit `none` always denies
+- [ ] Org → Project → Environment CRUD with machine-friendly slugs
+- [ ] Secrets + `secret_versions` (append-only): create, update, delete, rotate, restore
+- [ ] Bulk read path for `xecret run` — ≤3 queries, 0 outgoing fetches
+- [ ] **Import engine** (`packages/core/importer`): `.env` (quoting, multiline, `export` prefix), JSON (flat + nested → `A_B`), YAML, shell exports
+- [ ] Import conflict resolution: skip / overwrite / rename, with a dry-run preview
+- [ ] Export formats: `env`, `json`, `yaml`, `shell`
+- [ ] IDOR defence: every query joins through verified membership; cross-tenant returns 404 not 403
+- [ ] Audit events emitted for every mutation and every decryption
+- [ ] Tests: the security matrix — cross-org, cross-project, cross-env, revoked member, expired session, role escalation
 
-**Exit:** you can do the whole solo flow in a browser without touching a terminal.
+#### ⬜ Phase 5 — Dashboard UI
+
+- [ ] shadcn/ui + Tailwind v4; light / dark / system theme
+- [ ] App shell: sidebar, org switcher, user menu
+- [ ] Projects list → project overview → environment tabs → secret table
+- [ ] Masked by default; reveal is per-secret, audited, auto-remasks
+- [ ] Add / edit / delete / rotate with inline validation
+- [ ] **Import modal** — drag a `.env`, live preview, conflict resolution, "42 secrets will be added"
+- [ ] Environment switcher with unmistakable production styling
+- [ ] Confirmation for destructive actions, stronger for production
+- [ ] Search, filter, empty states, loading skeletons, error states
+- [ ] Auth pages: sign in, sign up, forgot password, reset
+
+**Exit:** the whole solo flow works in a browser without touching a terminal.
 
 #### Phase 6 — Go CLI v1  *(~8 days)*
 The phase that decides whether people love this product.
