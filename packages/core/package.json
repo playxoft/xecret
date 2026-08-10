@@ -9,12 +9,14 @@
     "./crypto": "./src/crypto/index.ts",
     "./authz": "./src/authz/index.ts",
     "./audit": "./src/audit/index.ts",
-    "./validation": "./src/validation/index.ts"
+    "./validation": "./src/validation/index.ts",
+    "./ids": "./src/ids/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.10",
