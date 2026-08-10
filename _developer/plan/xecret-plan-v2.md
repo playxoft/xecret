@@ -6,14 +6,14 @@
 **Status:** in progress — M0 complete, M1 underway.
 **Supersedes:** `plan1.md` (kept for reference — this doc is the source of truth).
 
-**Progress:** ▓▓▓░░░░░░░░ 3 of 11 phases merged
+**Progress:** ▓▓▓░░░░░░░░ 2 of 11 phases merged, Phase 3 in progress
 
 | Phase | Status | Branch | Merge commit |
 |---|---|---|---|
 | 0 · Decisions & threat model | ✅ merged | — | `3d75a1e` |
 | 1 · Repo foundation | ✅ merged | — | `3d75a1e` |
 | 2 · Crypto core | ✅ merged | `feat/crypto-core` | |
-| 3 · Auth & organisations | 🔨 in progress | `feat/auth-organizations` | |
+| 3 · Auth & organisations | 🔨 core done, wiring pending | `feat/auth-organizations` | |
 | 4 · Projects, environments, secrets API | ⬜ | `feat/secrets-api` | |
 | 5 · Dashboard UI | ⬜ | `feat/dashboard-ui` | |
 | 6 · Go CLI v1 | ⬜ | | |
@@ -319,13 +319,13 @@ Built **before** the API, because it is the highest-risk component and the harde
 
 #### ⬜ Phase 3 — Auth & organisations
 
-- [ ] `IdentityProvider` interface so Firebase is swappable
+- [x] `IdentityProvider` interface so Firebase is swappable
 - [ ] Worker-side ID token verification via `firebase-auth-cloudflare-workers`, JWKS cached in KV
 - [ ] Firebase client SDK wiring: Google + email/password, verification, password reset
-- [ ] Session store: opaque 256-bit token, SHA-256 hash persisted, `__Host-` cookie
-- [ ] Session lifecycle: create, resolve, touch, revoke one, revoke all
+- [x] Session policy + token/cookie primitives (`packages/core/auth`, 261 tests)
+- [ ] Session lifecycle wired to the database: create, resolve, touch, revoke
 - [ ] Auto-create personal organisation on first login (owner role, default keys)
-- [ ] Route protection helper + CSRF (double-submit) on cookie-auth mutations
+- [x] CSRF double-submit primitives
 - [ ] Rate limit buckets: login, session create, password reset — all strict
 - [ ] Tests: token verification failure modes, session expiry/revocation, CSRF rejection
 
