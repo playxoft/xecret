@@ -398,6 +398,10 @@ export function SecretTable({
         secret={deleting}
         isProduction={isProduction}
         onOpenChange={(next) => (next ? undefined : setDeleting(null))}
+        // Recorded here *and* rethrown. The rethrow keeps `ConfirmDialog` open
+        // with the message beside the button that failed, which is where a
+        // person is looking; the copy kept here is what survives dismissal, and
+        // it is the one carrying the request id a support ticket needs.
         onConfirm={async (name) => {
           setActionError(null);
           try {
