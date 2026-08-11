@@ -10,7 +10,10 @@
     "./authz": "./src/authz/index.ts",
     "./audit": "./src/audit/index.ts",
     "./validation": "./src/validation/index.ts",
-    "./ids": "./src/ids/index.ts"
+    "./ids": "./src/ids/index.ts",
+    "./auth": "./src/auth/index.ts",
+    "./importer": "./src/importer/index.ts",
+    "./format": "./src/format/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -24,6 +27,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
+    "yaml": "^2.8.1",
     "zod": "^4.4.3"
   }
 }

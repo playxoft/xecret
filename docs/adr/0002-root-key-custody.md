@@ -46,7 +46,7 @@ Rejected, for four independent reasons — any one of which is disqualifying:
 
 ```
 Phase.dev  ──── deploy time, once per release ────▶  Cloudflare Secrets Store
-(source of truth, human access, rotation)            (bound as env.XECRET_ROOT_KEK)
+(source of truth, human access, rotation)            (bound as env.XECRET_ROOT_KEYS)
                                                                   │
                                                        runtime, 0 ms, 0 subrequests
                                                                   ▼

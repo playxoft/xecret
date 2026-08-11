@@ -46,6 +46,21 @@ const eslintConfig = defineConfig([
     },
   },
 
+  {
+    name: 'xecret/server-is-not-react',
+    files: ['src/server/**/*.ts', 'src/app/api/**/*.ts'],
+    rules: {
+      // None of this runs in React. The rules-of-hooks lint is name-based, so a
+      // perfectly ordinary callback parameter called `use` — as in
+      // `withEnvironmentKey(scope, services, use)` — is reported as an illegally
+      // placed hook. Renaming server code to appease a React linter would be the
+      // tail wagging the dog; scoping the rule to where React actually runs is
+      // the honest fix.
+      'react-hooks/rules-of-hooks': 'off',
+      'react-hooks/set-state-in-effect': 'off',
+    },
+  },
+
   globalIgnores([
     '.next/**',
     'out/**',

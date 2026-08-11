@@ -1,7 +1,11 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["ES2022"],
+    // WebWorker is here because @xecret/db imports @xecret/core, and tsc then
+    // typechecks core's sources under this config. Core is runtime-agnostic and
+    // uses Web Crypto globals (CryptoKey, KeyUsage), which ES2022 alone does not
+    // declare. It does not mean anything in this package runs in a worker.
+    "lib": ["ES2022", "WebWorker"],
     "types": ["node"]
   },
   "include": ["src/**/*.ts", "drizzle.config.ts"],

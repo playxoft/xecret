@@ -12,6 +12,17 @@ export {
 } from './encoding';
 export { EnvelopeService } from './envelope-service';
 export {
+  decodeShare,
+  encodeShare,
+  EscrowFormatError,
+  EscrowVerificationError,
+  fingerprint,
+  recoverKeyFromShares,
+  SHARE_PREFIX,
+  splitKeyIntoShares,
+} from './escrow';
+export type { DecodedShare } from './escrow';
+export {
   InMemoryKeyProvider,
   InvalidRootKeyMaterialError,
   keyProviderFromEnv,

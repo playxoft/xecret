@@ -36,6 +36,14 @@ export function createDatabase(config: DatabaseConfig) {
     max: config.maxConnections ?? 1,
     // Hyperdrive terminates TLS to the origin itself; prepared statements are
     // disabled because Hyperdrive's pooling may route queries across sessions.
+    //
+    // Transactions are unaffected and are safe to rely on: Hyperdrive pins a
+    // single origin connection for the life of an explicit transaction, so the
+    // statements between BEGIN and COMMIT all reach the same session. That
+    // matters more here than in most applications — organisation bootstrap and
+    // environment creation both write key material and its parent row together,
+    // and a partial commit there produces an account that cannot be repaired
+    // without an operator holding the Root KEK.
     prepare: false,
     // A Worker isolate is short-lived; do not hold sockets waiting on idle.
     idle_timeout: 20,
