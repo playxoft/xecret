@@ -1,26 +1,454 @@
 @import 'tailwindcss';
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   xecret design tokens
+
+   ── How theming works ─────────────────────────────────────────────────────
+   `<html>` always carries `data-theme="light" | "dark"`. The server renders
+   `dark` (see the note on dark being the primary theme below) and the inline
+   script in `layout.tsx` rewrites it before first paint from the stored
+   preference, resolving `system` against `prefers-color-scheme`.
+
+   Because the attribute is always present, the dark palette lives in exactly
+   ONE rule. The usual `@media (prefers-color-scheme: dark)` + attribute
+   arrangement has to repeat every dark token, because a media query cannot
+   join a selector list — and a duplicated palette is a palette that drifts.
+   The cost of this approach is that a browser with JavaScript disabled gets
+   the server default. We serve dark there, which is the theme most of our
+   users want anyway.
+
+   ── Why dark is the primary theme ─────────────────────────────────────────
+   This is a tool people open at 2am during an incident. Dark is the default
+   we design for first; light is a fully supported equal, not an afterthought.
+
+   ── Palette ───────────────────────────────────────────────────────────────
+   Neutrals carry a slight cool cast (blue channel ~8% above red) so surfaces
+   read as instrument panels rather than as warm paper. The accent is a
+   cyan-teal we call "cipher": cold, high-signal, and deliberately not the
+   indigo/violet that every other developer tool has converged on.
+
+   Every colour pair below is annotated with its measured WCAG 2.1 contrast
+   ratio. Body text targets AAA (7:1), secondary text and all interactive
+   states target AA (4.5:1), and non-text UI (borders that carry meaning,
+   focus rings, status fills) targets 3:1 per SC 1.4.11. In a product where a
+   mislabelled environment costs a production outage, "close enough" contrast
+   is a defect, not a preference.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light;
+
+  /* Surfaces */
+  --canvas: #f7f9fb;
+  --canvas-inset: #f1f4f8; /* code blocks, table headers, input wells */
+  --surface: #ffffff;
+  --surface-hover: #f1f4f8;
+  --surface-active: #e9edf3;
+  --overlay: rgb(11 14 19 / 0.45);
+
+  /* Text */
+  --fg: #0b0e13; /* 18.31:1 on --surface, 17.50:1 on --canvas — AAA */
+  --fg-muted: #525b69; /*  6.86:1 on --surface,  6.50:1 on --canvas — AA   */
+  --fg-subtle: #666e7c; /*  5.14:1 on --surface,  4.87:1 on --canvas — AA   */
+  --fg-disabled: #7e8898; /*  3.3:1 — deliberately below AA; SC 1.4.3 exempts
+                              disabled controls, and full contrast would make
+                              "disabled" indistinguishable from "available". */
+
+  /* Lines */
+  --line-subtle: #e9edf3;
+  --line: #dde3ea;
+  --line-strong: #c6ced9;
+
+  /* Focus ring */
+  --ring: #0e8da3; /*  3.92:1 on --surface,  3.71:1 on --canvas — SC 1.4.11 */
+
+  /* Accent — "cipher" cyan */
+  --accent: #0b7d8f; /*  4.58:1 against --canvas as a filled control          */
+  --accent-hover: #075d6a;
+  --accent-fg: #ffffff; /*  4.83:1 on --accent, 6.27:1 on --accent-hover — AA  */
+  --accent-text: #0a6b7b; /*  6.17:1 on --surface, 5.85:1 on --canvas — AA      */
+  --accent-tint: #e3f5f8;
+  --accent-line: #b4e6ef;
+
+  /* Success */
+  --success: #157f3c; /*  4.81:1 against --canvas                             */
+  --success-fg: #ffffff; /*  5.08:1 on --success — AA                            */
+  --success-text: #12703a; /*  5.84:1 on --canvas, 5.57:1 on --success-tint — AA   */
+  --success-tint: #e8f7ee;
+  --success-line: #b8e4c8;
+
+  /* Warning */
+  --warning: #996600; /*  4.68:1 against --canvas                             */
+  --warning-fg: #ffffff; /*  4.94:1 on --warning — AA                            */
+  --warning-text: #8a5d00; /*  5.46:1 on --canvas, 5.12:1 on --warning-tint — AA   */
+  --warning-tint: #fbf1d8;
+  --warning-line: #ecd9a0;
+
+  /* Danger */
+  --danger: #d22d2d;
+  --danger-hover: #b92525;
+  --danger-fg: #ffffff; /*  5.06:1 on --danger, 6.26:1 on --danger-hover — AA  */
+  --danger-text: #b42222; /*  6.23:1 on --canvas, 5.76:1 on --danger-tint — AA   */
+  --danger-tint: #fdecec;
+  --danger-line: #f5c2c2;
+
+  /* Production — see the block below. Nothing but production may use these. */
+  --production: #b84a00; /*  4.95:1 against --canvas                             */
+  --production-fg: #ffffff; /*  5.23:1 on --production — AA                         */
+  --production-text: #b34a00; /*  5.11:1 on --canvas, 4.87:1 on the tint — AA         */
+  --production-tint: #fff1e6;
+  --production-line: #ffcfa8;
+
+  /* Elevation. Light theme can use real shadows; see the dark block. */
+  --shadow-raised: 0 1px 2px rgb(11 14 19 / 0.06), 0 1px 3px rgb(11 14 19 / 0.08);
+  --shadow-overlay: 0 8px 12px -4px rgb(11 14 19 / 0.1), 0 20px 40px -12px rgb(11 14 19 / 0.18);
+
+  /* Shell geometry, read by the sidebar rules at the bottom of this file. */
+  --sidebar-width: 15.5rem;
+  --topbar-height: 3.5rem;
 }
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --canvas: #0b0e13;
+  --canvas-inset: #0f131a;
+  --surface: #12161d;
+  --surface-hover: #181d26;
+  --surface-active: #1d232c;
+  --overlay: rgb(3 5 8 / 0.72);
+
+  --fg: #e9edf3; /* 16.31:1 on --canvas, 15.30:1 on --surface — AAA */
+  --fg-muted: #a7b0be; /*  8.83:1 on --canvas,  8.29:1 on --surface — AA  */
+  --fg-subtle: #7e8898; /*  5.40:1 on --canvas,  5.06:1 on --surface — AA  */
+  --fg-disabled: #666e7c; /*  3.5:1 — see the light-theme note above.        */
+
+  --line-subtle: #181d26;
+  --line: #272e39;
+  --line-strong: #39424f;
+
+  --ring: #38d6ea; /* 11.02:1 on --canvas, 10.34:1 on --surface — SC 1.4.11 */
+
+  /* Dark inverts the accent relationship: a bright fill carrying dark ink.
+     A deep teal button on a near-black canvas is technically legible and
+     visually dead; the bright fill is what makes a primary action read as
+     the primary action at a glance. */
+  --accent: #2ac9e0; /*  9.69:1 against --canvas as a filled control          */
+  --accent-hover: #4fd8ea;
+  --accent-fg: #04222a; /*  8.31:1 on --accent, 9.74:1 on --accent-hover — AA  */
+  --accent-text: #4fd8ea; /* 11.37:1 on --canvas, 10.67:1 on --surface — AA      */
+  --accent-tint: #082129;
+  --accent-line: #12414d;
+
+  --success: #3fcf6e; /*  9.54:1 against --canvas                             */
+  --success-fg: #04240f; /*  8.19:1 on --success — AA                            */
+  --success-text: #5fdd87; /* 11.21:1 on --canvas, 9.49:1 on --success-tint — AA   */
+  --success-tint: #0e2417;
+  --success-line: #1d4a2c;
+
+  --warning: #f5c542; /* 11.92:1 against --canvas                             */
+  --warning-fg: #2a1f02; /* 10.00:1 on --warning — AA                            */
+  --warning-text: #f7ce5e; /* 12.84:1 on --canvas, 10.56:1 on --warning-tint — AA  */
+  --warning-tint: #2a2109;
+  --warning-line: #5a4713;
+
+  /* Danger keeps white-on-red in both themes. Dark ink on red reads as a
+     decorative chip; white on red is the shape people already recognise as
+     "this destroys something". */
+  --danger: #d93a36; /*  4.24:1 against --canvas                             */
+  --danger-hover: #c22f2c;
+  --danger-fg: #ffffff; /*  4.56:1 on --danger, 5.62:1 on --danger-hover — AA  */
+  --danger-text: #ff7b74; /*  7.67:1 on --canvas, 6.97:1 on --danger-tint — AA   */
+  --danger-tint: #2c1113;
+  --danger-line: #5c2225;
+
+  --production: #ff7a2f; /*  7.43:1 against --canvas                             */
+  --production-fg: #2a1102; /*  6.85:1 on --production — AA                         */
+  --production-text: #ff9a5c; /*  9.23:1 on --canvas, 8.02:1 on the tint — AA         */
+  --production-tint: #2a1608;
+  --production-line: #66330f;
+
+  /* Shadows are nearly invisible against a near-black canvas, so elevation in
+     dark is carried by a lifted border plus a very soft ambient shadow. */
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-overlay: 0 12px 24px -8px rgb(0 0 0 / 0.6), 0 32px 64px -24px rgb(0 0 0 / 0.5);
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   The production accent
+
+   `--production-*` is reserved, in the whole application, for marking an
+   environment as production. No button, link, badge, chart, or empty state may
+   borrow it for anything else.
+
+   This is a safety affordance, not decoration. The most expensive mistake a
+   user of a secret manager can make is editing, rotating, or deleting a value
+   in production while believing they are in staging. If the production colour
+   also means "pending", "beta", or "highlighted", it stops meaning production,
+   and the affordance is gone exactly when it matters.
+
+   Colour is never the only signal: production markers also carry an uppercase
+   label and the hazard hatching defined below, so the distinction survives
+   monochrome displays and every form of colour vision deficiency.
+   ─────────────────────────────────────────────────────────────────────────── */
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-canvas: var(--canvas);
+  --color-canvas-inset: var(--canvas-inset);
+  --color-surface: var(--surface);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-active: var(--surface-active);
+  --color-overlay: var(--overlay);
+
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-fg-disabled: var(--fg-disabled);
+
+  --color-line-subtle: var(--line-subtle);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+
+  --color-ring: var(--ring);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-text: var(--accent-text);
+  --color-accent-tint: var(--accent-tint);
+  --color-accent-line: var(--accent-line);
+
+  --color-success: var(--success);
+  --color-success-fg: var(--success-fg);
+  --color-success-text: var(--success-text);
+  --color-success-tint: var(--success-tint);
+  --color-success-line: var(--success-line);
+
+  --color-warning: var(--warning);
+  --color-warning-fg: var(--warning-fg);
+  --color-warning-text: var(--warning-text);
+  --color-warning-tint: var(--warning-tint);
+  --color-warning-line: var(--warning-line);
+
+  --color-danger: var(--danger);
+  --color-danger-hover: var(--danger-hover);
+  --color-danger-fg: var(--danger-fg);
+  --color-danger-text: var(--danger-text);
+  --color-danger-tint: var(--danger-tint);
+  --color-danger-line: var(--danger-line);
+
+  --color-production: var(--production);
+  --color-production-fg: var(--production-fg);
+  --color-production-text: var(--production-text);
+  --color-production-tint: var(--production-tint);
+  --color-production-line: var(--production-line);
+
+  --shadow-raised: var(--shadow-raised);
+  --shadow-overlay: var(--shadow-overlay);
+
+  /* A tighter radius scale than Tailwind's default. Secret managers are
+     dense, tabular tools; softer corners make dense rows read as mush. */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-2xl: 1rem;
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, 'SF Mono', 'Menlo', monospace;
+  --default-font-family: var(--font-sans);
+  --default-mono-font-family: var(--font-mono);
+
+  --animate-enter: enter 140ms cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-exit: exit 110ms cubic-bezier(0.3, 0, 0.8, 0.15);
+  --animate-spin-slow: spin 1.6s linear infinite;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* `dark:` stays available for the rare case a token cannot express something
+   (an illustration that must invert, for example). Prefer tokens. */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+@keyframes enter {
+  from {
+    opacity: 0;
+    transform: translateY(-2px) scale(0.985);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@keyframes exit {
+  to {
+    opacity: 0;
+    transform: translateY(-2px) scale(0.985);
+  }
+}
+
+@keyframes slide-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+}
+
+@keyframes slide-out-left {
+  to {
+    transform: translateX(-100%);
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem);
+  }
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--canvas);
+    color: var(--fg);
+    /* Secret values are compared character by character. Ligatures that fuse
+       `!=` or `->` actively hurt that, so they stay off everywhere. */
+    font-variant-ligatures: none;
+  }
+
+  /* One focus treatment for the whole app. `outline` rather than a box-shadow
+     ring: modern browsers draw it following the element's own border-radius,
+     it is never clipped by a sibling's background, and it does not fight the
+     `shadow-*` utilities. The offset keeps it legible on filled controls,
+     where a flush ring would blend into the fill.
+     Components must not add `outline-none` — Tailwind's utilities layer wins
+     over this base rule, which would silently delete the focus indicator. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /* Pointer users get no ring; keyboard users always do. Removing the default
+     outline without this pair is the single most common accessibility
+     regression in a design system, so it is written once, here. */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  ::selection {
+    background-color: var(--accent-tint);
+    color: var(--fg);
+  }
+
+  ::placeholder {
+    color: var(--fg-subtle);
+  }
+
+  /* Scrollbars follow the theme rather than the OS default, which is jarringly
+     bright against a near-black canvas on Windows. */
+  * {
+    scrollbar-color: var(--line-strong) transparent;
+    scrollbar-width: thin;
+  }
+
+  /* Firefox renders a focus ring on scrollable regions; keep it consistent. */
+  [data-scroll-region] {
+    overscroll-behavior: contain;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   App shell geometry.
+
+   Deliberately **unlayered**. Unlayered CSS outranks every cascade layer,
+   including Tailwind's utilities, which is exactly what these rules need: a
+   collapsed sidebar must hide a label that also carries `inline-flex` from a
+   utility class, and a layered rule would lose that fight silently.
+
+   Sidebar collapse is expressed here rather than in React because the inline
+   bootstrap script sets `<html data-sidebar>` before first paint. Driving the
+   width from state would render the sidebar full-width and then snap it — a
+   layout shift on every page load for anyone who prefers it collapsed.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.x-sidebar {
+  width: var(--sidebar-width);
+  transition: width 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+:root[data-sidebar='collapsed'] .x-sidebar {
+  width: 3.75rem;
+}
+
+/* Collapsed labels are clipped, not removed. `display: none` would take them
+   out of the accessibility tree and leave every nav item without an accessible
+   name — an icon-only sidebar that a screen reader cannot use. */
+:root[data-sidebar='collapsed'] .x-nav-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* …and reappear as a flyout on hover or keyboard focus, so a collapsed sidebar
+   stays discoverable without a tooltip library. Pure CSS, so it costs no React
+   state and cannot desynchronise from the collapsed state. */
+:root[data-sidebar='collapsed'] .x-nav-item:hover .x-nav-label,
+:root[data-sidebar='collapsed'] .x-nav-item:focus-visible .x-nav-label {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 0.5rem);
+  width: max-content;
+  height: auto;
+  margin: 0;
+  padding: 0.25rem 0.5rem;
+  overflow: visible;
+  clip-path: none;
+  transform: translateY(-50%);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background-color: var(--surface);
+  box-shadow: var(--shadow-overlay);
+  color: var(--fg);
+  font-size: 0.8125rem;
+  z-index: 40;
+}
+
+:root[data-sidebar='collapsed'] .x-sidebar-wide {
+  display: none;
+}
+
+/* ── Production hazard hatching ──────────────────────────────────────────
+   A diagonal stripe behind the production badge, so production is still
+   distinguishable when colour is not: printed in greyscale, on a failing
+   monitor, or by a user with achromatopsia. */
+.x-hazard {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 5px,
+    color-mix(in srgb, var(--production) 22%, transparent) 5px 10px
+  );
+}
+
+/* Honour the OS setting. Motion here is decorative — a dialog that appears
+   instantly is a dialog that works. The one exception is marked
+   `data-motion="essential"`: a spinner that stops spinning stops telling the
+   user anything, so it slows down instead of freezing. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  [data-motion='essential'] {
+    animation-duration: 2.4s !important;
+    animation-iteration-count: infinite !important;
+  }
 }

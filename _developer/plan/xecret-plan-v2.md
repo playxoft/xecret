@@ -3,24 +3,30 @@
 > Open-source, developer-first secret management.
 > Powered by Playxoft.
 
-**Status:** in progress — M0 complete, M1 underway.
+**Status:** M0 complete, M1 complete through Phase 5. The CLI (Phase 6) is next.
 **Supersedes:** `plan1.md` (kept for reference — this doc is the source of truth).
 
-**Progress:** ▓▓▓░░░░░░░░ 2 of 11 phases merged, Phase 3 in progress
+**Progress:** ▓▓▓▓▓▓░░░░░ 6 of 11 phases merged
 
-| Phase | Status | Branch | Merge commit |
-|---|---|---|---|
-| 0 · Decisions & threat model | ✅ merged | — | `3d75a1e` |
-| 1 · Repo foundation | ✅ merged | — | `3d75a1e` |
-| 2 · Crypto core | ✅ merged | `feat/crypto-core` | |
-| 3 · Auth & organisations | 🔨 core done, wiring pending | `feat/auth-organizations` | |
-| 4 · Projects, environments, secrets API | ⬜ | `feat/secrets-api` | |
-| 5 · Dashboard UI | ⬜ | `feat/dashboard-ui` | |
-| 6 · Go CLI v1 | ⬜ | | |
-| 7 · Team, roles, granular access | ⬜ | | |
-| 8 · CI, service tokens, audit logs | ⬜ | | |
-| 9 · Landing page, docs, open source | ⬜ | | |
-| 10 · Security audit, performance, production | ⬜ | | |
+| Phase | Status | Branch |
+|---|---|---|
+| 0 · Decisions & threat model | ✅ merged | — |
+| 1 · Repo foundation | ✅ merged | — |
+| 2 · Crypto core | ✅ merged | `feat/crypto-core` |
+| 3 · Auth & organisations | ✅ merged | `feat/auth-organizations` |
+| 4 · Projects, environments, secrets API | ✅ merged | `feat/secrets-api` |
+| 5 · Dashboard UI | ✅ merged | `feat/dashboard-ui` |
+| 6 · Go CLI v1 | ⬜ | |
+| 7 · Team, roles, granular access | ⬜ | |
+| 8 · CI, service tokens, audit logs | ⬜ | |
+| 9 · Landing page, docs, open source | ⬜ | |
+| 10 · Security audit, performance, production | ⬜ | |
+
+> **Nothing here has run against a real database.** Every query is verified by shape
+> (`.toSQL()` assertions) and every pure rule by unit test, but no code path has touched
+> PostgreSQL, Firebase, or Cloudflare. Integration testing is the first task once the Neon
+> project and the Phase.dev values exist. A test suite that has never seen its own database
+> proves the code is *consistent*, not that it *works*.
 
 > **Configuration:** all secrets come from **Phase.dev** (`phase run -- <cmd>`). No `.env`
 > file exists on any machine. Variable names the code expects are listed in `.env.example`;
@@ -317,46 +323,62 @@ Built **before** the API, because it is the highest-risk component and the harde
 
 ### 🏁 M1 — A solo developer's loop works end to end
 
-#### ⬜ Phase 3 — Auth & organisations
+#### ✅ Phase 3 — Auth & organisations
 
 - [x] `IdentityProvider` interface so Firebase is swappable
-- [ ] Worker-side ID token verification via `firebase-auth-cloudflare-workers`, JWKS cached in KV
-- [ ] Firebase client SDK wiring: Google + email/password, verification, password reset
-- [x] Session policy + token/cookie primitives (`packages/core/auth`, 261 tests)
-- [ ] Session lifecycle wired to the database: create, resolve, touch, revoke
-- [ ] Auto-create personal organisation on first login (owner role, default keys)
-- [x] CSRF double-submit primitives
-- [ ] Rate limit buckets: login, session create, password reset — all strict
-- [ ] Tests: token verification failure modes, session expiry/revocation, CSRF rejection
+- [x] Worker-side ID token verification via `firebase-auth-cloudflare-workers`, JWKS cached in KV (in-memory fallback when the binding is absent)
+- [x] Firebase client SDK wiring: Google + email/password, verification, password reset
+- [x] Session policy + token/cookie primitives (`packages/core/auth`)
+- [x] Session lifecycle wired to the database: create, resolve, touch, revoke, revoke-all
+- [x] Auto-create personal organisation on first login (owner role, org + env keys, default project, all in one transaction)
+- [x] CSRF double-submit primitives, enforced on cookie-authenticated mutations only
+- [x] Rate limit buckets wired: `RL_LOGIN` keyed on IP **and** on identity
+- [x] Request spine: `bindings` → `context` → `actor` → `tenancy` → `route`, with a single error boundary
+- [x] Tests: token verification failure modes, session expiry/revocation, CSRF rejection, cookie-shadowing, body-size limits
 
-#### ⬜ Phase 4 — Projects, environments, secrets API
+**Exit:** a credential can be established, resolved, and revoked, and nothing below the route layer can be reached without passing through `authenticate()`.
 
-- [ ] **The authz engine** — one `can(actor, action, resource)`. Every route calls it. Zero exceptions.
-- [ ] Grant resolution: env-specific → project-wide → role default; explicit `none` always denies
-- [ ] Org → Project → Environment CRUD with machine-friendly slugs
-- [ ] Secrets + `secret_versions` (append-only): create, update, delete, rotate, restore
-- [ ] Bulk read path for `xecret run` — ≤3 queries, 0 outgoing fetches
-- [ ] **Import engine** (`packages/core/importer`): `.env` (quoting, multiline, `export` prefix), JSON (flat + nested → `A_B`), YAML, shell exports
-- [ ] Import conflict resolution: skip / overwrite / rename, with a dry-run preview
-- [ ] Export formats: `env`, `json`, `yaml`, `shell`
-- [ ] IDOR defence: every query joins through verified membership; cross-tenant returns 404 not 403
-- [ ] Audit events emitted for every mutation and every decryption
-- [ ] Tests: the security matrix — cross-org, cross-project, cross-env, revoked member, expired session, role escalation
+#### ✅ Phase 4 — Projects, environments, secrets API
 
-#### ⬜ Phase 5 — Dashboard UI
+- [x] **The authz engine** — one `can(actor, action, resource)`. Every route calls it via `authorize()`. Two gates that cannot bypass each other: role capability **and** resolved access level
+- [x] Grant resolution: env-specific → project-wide → role default; explicit `none` always denies, even an owner
+- [x] Org → Project → Environment CRUD; slugs are immutable because they appear in `.xecret.yaml` and CI config
+- [x] Secrets + `secret_versions` (append-only): create, update, delete, restore
+- [x] Bulk read path for `xecret run` — **2 queries** plus a batched audit insert, constant in the number of secrets, 0 outgoing fetches
+- [x] **Import engine** (`packages/core/importer`): `.env` (quoting, multiline PEM, `export` prefix, CRLF, BOM, trailing comments), JSON (flat + nested → `A_B`), YAML, shell exports
+- [x] Import conflict resolution: skip / overwrite / rename, with a dry run that calls the identical planning function as the real import
+- [x] Export formats: `env`, `json`, `yaml`, `shell`, `docker` — round-trip property-tested against the parsers
+- [x] IDOR defence: every resolver joins through verified membership; cross-tenant returns 404, never 403
+- [x] Audit events for every mutation, every decryption, and every denial
+- [x] Tests: the security matrix — cross-org, cross-project, cross-env, service-token pinning, suspended member, production deny-by-default, role escalation, and all four ciphertext-relocation attacks
 
-- [ ] shadcn/ui + Tailwind v4; light / dark / system theme
-- [ ] App shell: sidebar, org switcher, user menu
-- [ ] Projects list → project overview → environment tabs → secret table
-- [ ] Masked by default; reveal is per-secret, audited, auto-remasks
-- [ ] Add / edit / delete / rotate with inline validation
-- [ ] **Import modal** — drag a `.env`, live preview, conflict resolution, "42 secrets will be added"
-- [ ] Environment switcher with unmistakable production styling
-- [ ] Confirmation for destructive actions, stronger for production
-- [ ] Search, filter, empty states, loading skeletons, error states
-- [ ] Auth pages: sign in, sign up, forgot password, reset
+**Two real bugs caught here, both silent and both fatal:**
+- `createSecret` minted the secret id *after* the value was encrypted, while AAD binds `secret_id`. Every secret created through it would have been permanently undecryptable, with no error anywhere.
+- `addSecretVersion` computed `MAX(version)+1` inside the INSERT while the AAD was bound to the version the request expected. A concurrent writer committing first produced a row whose ciphertext was bound to a version it was never assigned — again undecryptable, again silent.
 
-**Exit:** the whole solo flow works in a browser without touching a terminal.
+**One restriction shipped deliberately:** service tokens are read-only, because `secret_versions.created_by` is `NOT NULL REFERENCES users`. Lifting it is a Phase 8 migration — see `docs/architecture/api.md` §2.
+
+#### ✅ Phase 5 — Dashboard UI
+
+- [x] Own design system on Radix + Tailwind v4; light / dark / system, dark primary, no flash of wrong theme
+- [x] Palette documented with **measured** WCAG ratios in both themes — body text AAA, every interactive state AA, non-text UI ≥3:1
+- [x] App shell: collapsible sidebar, org switcher, user menu, breadcrumbs
+- [x] Projects list → project overview → environment cards → secret table
+- [x] Masked by default; reveal is per-secret, goes through the audited endpoint every time, auto-remasks on timeout **and** on tab-hide
+- [x] Copy-to-clipboard never renders the value — and is audited, because a copy is a decryption
+- [x] Add / edit / delete with inline validation mirroring the server's rules
+- [x] **Import modal** — drag a `.env`, live dry-run preview, conflict resolution, per-row status. No value column, and the server never sends values back
+- [x] Export dialog that states plainly that writing secrets to disk is a downgrade
+- [x] Production styling that survives greyscale: a reserved accent **plus** hazard hatching and letterform, never colour alone
+- [x] Destructive actions confirmed; production requires typing the resource name
+- [x] Search, filter, empty states, skeletons, error states surfacing the `requestId`
+- [x] Auth pages: sign in, sign up, forgot password, reset — with the four "wrong credential" Firebase codes collapsed into one message, so the form is not a user-enumeration oracle
+
+**Caught while measuring:** the root layout's barrel imports were pulling `UserMenu → lib/firebase → firebase/auth`, shipping **310 KB of the Firebase SDK to the public landing page**. Fixed structurally — sign-out no longer needs the Firebase SDK at all, since it is one `DELETE /api/auth/session`.
+
+**Removed:** `src/proxy.ts`. Next 16 defaults Proxy to the Node.js runtime and throws if `runtime` is set; `@opennextjs/cloudflare` refuses to build Node middleware. It could never have deployed. The signed-out redirect lives in the API client's 401 handling, which is where Next's own docs say authorization belongs anyway.
+
+**Exit:** the whole solo flow is reachable in a browser. Not yet exercised end to end — that needs the Neon database and the Phase.dev values.
 
 #### Phase 6 — Go CLI v1  *(~8 days)*
 The phase that decides whether people love this product.
@@ -399,6 +421,7 @@ xecret cache clear
 CI is a **first-class use case**, not a v2 afterthought.
 
 - **Service tokens:** scoped to exactly one project + environment, read-only by default, no user attached, shown once at creation, revocable, optional expiry, optional IP allowlist, `last_used_at` tracked
+- **Migration: service-token write attribution.** Phase 4 shipped service tokens as strictly read-only — not by choice but because `secret_versions.created_by` is `NOT NULL REFERENCES users`, and a CI credential has no person behind it. Add a nullable `created_by_service_token_id` with a check constraint requiring exactly one of the two, then lift the 403 in `secrets-service.ts`. Attributing a CI write to whoever minted the token, or making `created_by` nullable, were both rejected — see `docs/architecture/api.md` §2.
 - `XECRET_TOKEN=xct_... xecret run -- npm run build` — zero interactive login
 - `xecret pull --format env > .env` for legacy pipelines, with a stderr warning
 - Distribution: GitHub Action, Docker image `ghcr.io/playxoft/xecret`, `curl | sh` for arbitrary CI
@@ -469,26 +492,28 @@ Next phase           — and what I need from you
 
 ## 7. Status of open questions
 
-| | Question | Status |
+| State | Question | Status |
 |---|---|---|
 | ✅ | Master key custody | Phase.dev → Cloudflare Secrets Store (D10) |
 | ✅ | Repo restructure to `apps/web` + `cli` + `packages` | Approved |
 | ✅ | Go module path | `github.com/playxoft/xecret` |
 | ✅ | Database access | Hyperdrive (D12) |
 | ✅ | Firebase edge library | `firebase-auth-cloudflare-workers` (D6/D11) |
-| ⬜ | **Domain name** | **Blocker.** See below. |
-| ⬜ | Licence: AGPL vs FSL | Recommendation is AGPL-3.0 + MIT CLI + CLA (D13). Confirm. |
+| ✅ | Licence | AGPL-3.0 server + MIT CLI + CLA (D13) — confirmed |
+| 🔶 | **Domain name** | `xecret.playxoft.com` for now. A permanent name is still needed before the CLI ships. See below. |
 
-### The domain blocker
+### The domain question
 
-A real domain is needed before Phase 3, because it is hardcoded in four places:
+`xecret.playxoft.com` is wired in as the interim origin, which unblocks everything through Phase 5. It is **not** yet safe to ship a CLI binary, because the domain is compiled into every distributed copy.
+
+A permanent domain is needed in four places:
 
 1. **Firebase authorised domains** — Google sign-in only works on pre-registered domains.
 2. **Google OAuth redirect URI** — must match exactly, character for character.
 3. **CLI login target** — `xecret login` opens `https://<domain>/cli/authorize`; this becomes the compiled-in default in every distributed binary. Changing it later means every installed CLI breaks.
 4. **Cloudflare Worker route.**
 
-Development can proceed on the free `*.workers.dev` subdomain through Phases 0–2. Lock the real name before Phase 3, and register the **GitHub org and npm `@xecret` scope on the same day** — the name is the product, and squatters are fast.
+Lock the real name before Phase 6 (the CLI), and register the **GitHub org and npm `@xecret` scope on the same day** — the name is the product, and squatters are fast.
 
 To check: `xecret.dev` / `xecret.com` / `xecret.io`, `github.com/xecret`, npm `@xecret`.
 
