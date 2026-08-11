@@ -33,6 +33,10 @@ jobs:
       - name: Format
         run: npm run format:check
 
+      # Runs two configs: the root one over packages/ and scripts/, and
+      # apps/web's own. Before the root config existed this step covered only
+      # apps/web, which meant the envelope-encryption implementation was the
+      # single least-linted part of a security product.
       - name: Lint
         run: npm run lint
 
@@ -41,6 +45,14 @@ jobs:
 
       - name: Test
         run: npm test
+
+      # `npm test` runs vitest without --coverage, so the 95/90/95/95 thresholds
+      # declared in packages/core/vitest.config.ts would never be evaluated in
+      # CI. Without this step they are a comment, not a gate — the same failure
+      # mode as the bundle check that once measured a 2 KB entry shim and
+      # reported "within budget".
+      - name: Enforce coverage thresholds on the security core
+        run: npm run test:coverage --workspace @xecret/core
 
       # Production dependencies are what ship to the Worker and must be clean.
       # Dev-only advisories are reported but do not block: drizzle-kit currently

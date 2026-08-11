@@ -22,6 +22,10 @@
   "vars": {
     "XECRET_ENV": "development",
     "XECRET_PUBLIC_URL": "http://localhost:3000",
+    // The root key version new wrapping operations use. Bumped as step 4 of the
+    // rotation runbook in docs/security/key-recovery.md, only after the new key
+    // is present in XECRET_ROOT_KEYS.
+    "XECRET_ROOT_KEY_VERSION": "1",
   },
 
   "env": {
@@ -56,11 +60,14 @@
   // PHASE 2 — root key (ADR 0002)
   //   The value originates in Phase.dev and is pushed at deploy time.
   //   It is NEVER read from Phase.dev at runtime — see docs/adr/0002.
+  //   The binding name must match the one read in apps/web/src/server/context.ts.
+  //   The value is the JSON version→key map documented in
+  //   packages/core/src/crypto/key-provider.ts, produced by `npm run keygen`.
   // "secrets_store_secrets": [
   //   {
-  //     "binding": "XECRET_ROOT_KEK",
+  //     "binding": "XECRET_ROOT_KEYS",
   //     "store_id": "<store-id>",
-  //     "secret_name": "XECRET_ROOT_KEK"
+  //     "secret_name": "XECRET_ROOT_KEYS"
   //   }
   // ],
   //

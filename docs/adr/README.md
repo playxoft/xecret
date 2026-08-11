@@ -19,6 +19,7 @@ chosen, and what it costs us.
 | [0005](0005-monorepo.md) | Single monorepo for web, CLI and packages | Accepted |
 | [0006](0006-database-access.md) | Neon + Hyperdrive + Drizzle | Accepted |
 | [0007](0007-licensing.md) | AGPL-3.0 server, MIT CLI, CLA required | Accepted |
+| [0008](0008-no-middleware.md) | No middleware; route protection lives in the API layer | Accepted |
 
 ## Template
 

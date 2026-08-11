@@ -5,10 +5,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
-    // Phase 1 is scaffolding: the app has no logic worth testing yet. Remove
-    // this the moment the first route handler lands in Phase 3 — it must not
-    // become a permanent excuse for an untested application layer.
-    passWithNoTests: true,
+    // `passWithNoTests` was set during Phase 1 scaffolding with a note to remove
+    // it once the application layer had logic worth testing. Phase 3 landed that
+    // layer, so it is gone: an empty run now fails, which is the point.
   },
   resolve: {
     alias: {

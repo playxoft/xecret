@@ -15,51 +15,22 @@
  *   backup does not help — ciphertext without the key is noise.
  */
 
+import { KEY_LENGTH, randomBytes, toBase64Url } from '../packages/core/src/crypto/index.ts';
 import {
-  KEY_LENGTH,
-  randomBytes,
-  toBase64Url,
-  fromBase64Url,
-} from '../packages/core/src/crypto/index.ts';
-import { combine, split } from '../packages/core/src/crypto/shamir.ts';
-import type { ShamirShare } from '../packages/core/src/crypto/shamir.ts';
-
-const SHARE_PREFIX = 'xecret-share-v1';
+  decodeShare,
+  recoverKeyFromShares,
+  splitKeyIntoShares,
+} from '../packages/core/src/crypto/escrow.ts';
 
 /**
- * A short public identifier for a key.
+ * The share format, the fingerprint, and the verification that makes a recovery
+ * trustworthy all live in `packages/core/src/crypto/escrow.ts`, where they are
+ * unit-tested. This file is the presentation layer: argument parsing and the
+ * printed ceremony instructions, nothing more.
  *
- * Safe to write down, commit, and paste into a runbook: it is a truncated
- * SHA-256 of the key, which reveals nothing about the key itself but lets a
- * recovered value be checked against the record in key-recovery.md §7. Verifying
- * a fingerprint before writing anything is what stops a wrong key silently
- * producing garbage.
+ * That split is deliberate. Recovery logic buried in a CLI script is recovery
+ * logic nothing imports, and therefore recovery logic nothing tests.
  */
-async function fingerprint(key: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', key);
-  return [...new Uint8Array(digest).slice(0, 8)]
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-function encodeShare(share: ShamirShare, fp: string): string {
-  return `${SHARE_PREFIX}.${share.index}.${toBase64Url(share.data)}.${fp}`;
-}
-
-function decodeShare(encoded: string): { share: ShamirShare; fingerprint: string } {
-  const parts = encoded.trim().split('.');
-
-  if (parts.length !== 4 || parts[0] !== SHARE_PREFIX) {
-    throw new Error(`Not a valid share. Expected "${SHARE_PREFIX}.<index>.<data>.<fingerprint>"`);
-  }
-
-  const index = Number(parts[1]);
-  if (!Number.isInteger(index) || index < 1 || index > 255) {
-    throw new Error(`Share index "${parts[1]}" is out of range`);
-  }
-
-  return { share: { index, data: fromBase64Url(parts[2]!) }, fingerprint: parts[3]! };
-}
 
 function parseArgs(argv: readonly string[]) {
   const shares: string[] = [];
@@ -115,8 +86,11 @@ async function generate(options: {
   }
 
   const key = randomBytes(KEY_LENGTH);
-  const fp = await fingerprint(key);
-  const shares = split(key, options.totalShares, options.threshold);
+  const { fingerprint: fp, shares } = await splitKeyIntoShares(
+    key,
+    options.totalShares,
+    options.threshold,
+  );
 
   process.stdout.write(`
 ════════════════════════════════════════════════════════════════════════════
@@ -156,8 +130,8 @@ async function generate(options: {
 
 `);
 
-  for (const share of shares) {
-    process.stdout.write(`  Share ${share.index}:\n      ${encodeShare(share, fp)}\n\n`);
+  for (const [position, share] of shares.entries()) {
+    process.stdout.write(`  Share ${position + 1}:\n      ${share}\n\n`);
   }
 
   process.stdout.write(`────────────────────────────────────────────────────────────────────────────
@@ -174,37 +148,13 @@ async function generate(options: {
 `);
 
   key.fill(0);
-  for (const share of shares) share.data.fill(0);
 }
 
 async function recover(encodedShares: readonly string[], expected?: string): Promise<void> {
-  if (encodedShares.length < 2) {
-    throw new Error('At least 2 shares are required. Pass each with --share "<value>"');
-  }
-
-  const decoded = encodedShares.map(decodeShare);
-
-  const fingerprints = new Set(decoded.map((d) => d.fingerprint));
-  if (fingerprints.size > 1) {
-    throw new Error('Shares belong to different keys — their fingerprints disagree');
-  }
-
-  const key = combine(decoded.map((d) => d.share));
-  const actual = await fingerprint(key);
-  const claimed = [...fingerprints][0]!;
-  const target = expected ?? claimed;
-
-  if (actual !== target) {
-    key.fill(0);
-    throw new Error(
-      `Fingerprint mismatch.\n  expected ${target}\n  computed ${actual}\n\n` +
-        'STOP. Do not use this key. A wrong key silently produces garbage rather\n' +
-        'than failing loudly. Re-check that the shares are correct and complete.',
-    );
-  }
+  const { key, fingerprint: fp } = await recoverKeyFromShares(encodedShares, expected);
 
   process.stdout.write(`
-  Fingerprint verified: ${actual}
+  Fingerprint verified: ${fp}
 
   XECRET_ROOT_KEYS entry:
       "${toBase64Url(key)}"
@@ -215,21 +165,29 @@ async function recover(encodedShares: readonly string[], expected?: string): Pro
   key.fill(0);
 }
 
+/**
+ * The quarterly drill.
+ *
+ * Prints the fingerprint and nothing else — never the key. The point of the
+ * drill is proving the shares still reconstruct, and printing key material to
+ * prove it would make the drill itself the largest risk in the calendar.
+ */
 async function verify(encodedShares: readonly string[], expected?: string): Promise<void> {
-  const decoded = encodedShares.map(decodeShare);
-  const key = combine(decoded.map((d) => d.share));
-  const actual = await fingerprint(key);
-  key.fill(0);
+  const target = expected ?? decodeShare(encodedShares[0] ?? '').fingerprint;
 
-  const target = expected ?? decoded[0]?.fingerprint;
-  const ok = actual === target;
+  try {
+    const { key, fingerprint: fp } = await recoverKeyFromShares(encodedShares, target);
+    key.fill(0);
 
-  // Prints only the fingerprint, never the key — this is the mode to use for the
-  // quarterly drill, where the goal is proving the shares still work.
-  process.stdout.write(`  computed fingerprint: ${actual}\n  expected fingerprint: ${target}\n`);
-  process.stdout.write(ok ? '\n  ✅ Shares reconstruct the expected key.\n' : '\n  ❌ MISMATCH.\n');
-
-  if (!ok) process.exitCode = 1;
+    process.stdout.write(
+      `  computed fingerprint: ${fp}\n  expected fingerprint: ${target}\n\n  ✅ Shares reconstruct the expected key.\n`,
+    );
+  } catch (error) {
+    process.stdout.write(
+      `  expected fingerprint: ${target}\n\n  ❌ ${error instanceof Error ? error.message : 'MISMATCH.'}\n`,
+    );
+    process.exitCode = 1;
+  }
 }
 
 async function main(): Promise<void> {

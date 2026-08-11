@@ -66,7 +66,7 @@ Performed **once** per environment (production, staging). Repeat only when rotat
 2. **Record the fingerprint.** SHA-256 of the key, first 16 hex characters. This is safe to
    store in plaintext and is how a recovered key is verified as correct later.
 
-3. **Load into Phase.dev.** Paste directly into the Phase web UI as `XECRET_ROOT_KEK` in the
+3. **Load into Phase.dev.** Paste directly into the Phase web UI as `XECRET_ROOT_KEYS` in the
    correct environment. Never via a shell command (shell history), never via a file.
 
 4. **Distribute escrow shares.** Any 2 of 3 reconstruct the key. One share alone reveals
@@ -102,7 +102,7 @@ Phase.dev                    ← system of record. Humans read it only here.
    │
    │  phase run -- wrangler deploy       (deploy time, once per release)
    ▼
-Cloudflare Secrets Store     ← bound to the Worker as env.XECRET_ROOT_KEK
+Cloudflare Secrets Store     ← bound to the Worker as env.XECRET_ROOT_KEYS
    │
    │  binding read at isolate start, imported as a NON-EXTRACTABLE CryptoKey
    ▼
@@ -174,9 +174,11 @@ one during a drill invalidates it.
    npx tsx scripts/keygen.ts --verify --share "<share-1>" --share "<share-2>"
    ```
 3. Compare the printed fingerprint with §7. It must match exactly.
-4. Decrypt the canary ciphertext (checked into `docs/security/canary.json` — a known
-   plaintext encrypted under the production Root KEK, safe to publish because it proves
-   nothing without the key).
+4. Decrypt the canary ciphertext (`docs/security/canary.json` — a known plaintext encrypted
+   under the production Root KEK, safe to commit because it proves nothing without the key).
+   **This file does not exist yet**: it can only be produced during the real ceremony, since
+   creating it requires the production key. Producing it is a ceremony step, not a
+   prerequisite — see §8.
 5. Confirm the plaintext is the expected value.
 6. Wipe the machine. Return both shares to their locations.
 7. Record the drill in §7, signed.
@@ -247,7 +249,17 @@ honoured even where backups still hold the rows.
 - [ ] Identify and confirm the **third share holder** (§2 step 4). A 2-of-3 scheme with two
       shares held by one person is a 1-of-1 scheme.
 - [ ] Choose and document the off-site location for share 2.
-- [ ] Write `scripts/keygen.ts` and `scripts/rotate-root-key.mjs` (Phase 2).
+- [x] Write `scripts/keygen.ts` and `scripts/rotate-root-key.ts` (Phase 2). The share format,
+      the fingerprint, and the verification live in `packages/core/src/crypto/escrow.ts` and
+      are covered by 29 tests — including a single mistyped character in a share, shares from
+      two different ceremonies, and the same share presented twice. They are in the package
+      rather than in the script because recovery logic that nothing imports is recovery logic
+      that nothing tests.
 - [ ] Generate the staging key and run the **first drill against staging** before the
       production ceremony. Never rehearse for the first time on production.
 - [ ] Add the quarterly drill to a shared calendar with a second reminder to the witness.
+- [ ] Produce `docs/security/canary.json` during the ceremony and commit it. Without a canary
+      the drill can only prove that the shares reconstruct *a* key whose fingerprint matches
+      — not that the key still decrypts real data. Both checks are needed: the fingerprint
+      catches a mistyped share, the canary catches a key that is correct but no longer the
+      one production is actually using.
