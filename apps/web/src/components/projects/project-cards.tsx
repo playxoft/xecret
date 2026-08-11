@@ -3,8 +3,7 @@
 import Link from 'next/link';
 
 import { appPath } from '@/app/(dashboard)/_lib/paths';
-import { formatAbsoluteTime, formatRelativeTime, pluralize } from '@/lib/format';
-import { toIsoString } from '@/lib/format';
+import { formatAbsoluteTime, formatRelativeTime, pluralize, toIsoString } from '@/lib/format';
 import { LayersIcon } from '@/components/ui';
 import type { ProjectListItem } from './types';
 

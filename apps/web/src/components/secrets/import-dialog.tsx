@@ -180,8 +180,21 @@ function ImportBody({
   function setSource(next: string, name: string | null) {
     setContent(next);
     setFilename(name);
+    discardPlan(next);
+  }
+
+  /**
+   * Forgets the current preview because its inputs have changed.
+   *
+   * `planning` is set here rather than only in the effect below, so that a
+   * source which has just been emptied leaves no skeleton spinning: the effect
+   * declines to run at all in that case, and it is not allowed to write state
+   * synchronously to correct it.
+   */
+  function discardPlan(nextContent: string) {
     setPlan(null);
     setPlanError(null);
+    setPlanning(nextContent.trim().length > 0);
   }
 
   /** Kept in step with the parent, which blocks dismissal mid-import. */
