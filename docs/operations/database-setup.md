@@ -94,23 +94,31 @@ CREATE ROLE xecret_web LOGIN PASSWORD 'PASTE_A_LONG_RANDOM_PASSWORD';
 GRANT xecret_app TO xecret_web;
 ```
 
-> **If you created the role in the Neon console, it is probably not restricted.** Neon grants
-> console-created roles the `neon_superuser` role, which would hand the application exactly the
-> privileges this migration exists to withhold. Check, and strip it if present:
+> ### A console-created role cannot be repaired. Delete it.
+>
+> Neon grants roles created through its console UI the `neon_superuser` role, which hands the
+> application exactly the privileges this migration exists to withhold.
+>
+> **You cannot strip it.** `neon_superuser` is granted by a Neon-managed role you have no ADMIN
+> OPTION on, so revoking it fails:
+>
+> ```
+> ERROR: permission denied to revoke role "neon_superuser" (SQLSTATE 42501)
+> ```
+>
+> Check first — if this returns anything other than `xecret_app`, the role is unusable as an
+> application login:
 >
 > ```sql
-> -- Should list only xecret_app once you are done.
 > SELECT r.rolname FROM pg_auth_members m
 > JOIN pg_roles r ON r.oid = m.roleid
 > JOIN pg_roles u ON u.oid = m.member
 > WHERE u.rolname = 'your_role_name';
->
-> REVOKE neon_superuser FROM your_role_name;   -- only if it appeared above
-> GRANT xecret_app TO your_role_name;
 > ```
 >
-> Then run the checks in step 5. If `CREATE TABLE` still succeeds, the role is not restricted and
-> something else is granting it — drop it and create a fresh one with SQL.
+> The fix is to **delete the role in the Neon console** — the same screen that created it — and
+> create a replacement with the `CREATE ROLE` statement above. A role created by SQL gets no
+> `neon_superuser`, which is the entire reason to create it this way.
 
 Your **`DATABASE_URL`** is then the same connection string as step 1, with the user and password
 swapped:
