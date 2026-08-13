@@ -37,7 +37,7 @@ declare global {
     XECRET_ROOT_KEYS?: SecretsStoreSecret;
 
     /** Which root key version new wrapping operations use. Defaults to 1. */
-    XECRET_ROOT_KEY_VERSION?: string;
+    XECRET_ROOT_KEY_VERSION?: string | undefined;
 
     /**
      * Caches Google's Firebase signing keys (JWKS).
@@ -53,13 +53,13 @@ declare global {
      * token must carry, and skipping that check would accept a token minted for
      * a different Firebase project.
      */
-    FIREBASE_PROJECT_ID?: string;
+    FIREBASE_PROJECT_ID?: string | undefined;
 
     /**
      * Direct database URL, for local development and self-hosters without
      * Hyperdrive. Ignored whenever `HYPERDRIVE` is present.
      */
-    DATABASE_URL?: string;
+    DATABASE_URL?: string | undefined;
 
     RL_LOGIN?: RateLimit;
     RL_CLI_TOKEN?: RateLimit;
@@ -109,26 +109,62 @@ export function requireBinding<K extends keyof Bindings>(
  * PostgreSQL instance — but only one of the two is ever in play, so there is no
  * ambiguity about which database a request reached.
  */
-export function connectionString(env: Bindings, processUrl?: string | undefined): string {
+export function connectionString(env: Bindings): string {
   if (env.HYPERDRIVE) return env.HYPERDRIVE.connectionString;
   if (env.DATABASE_URL) return env.DATABASE_URL;
 
-  // Third, and only for local development: the process environment.
-  //
-  // Under `next dev` the OpenNext adapter builds `env` from `wrangler.jsonc`
-  // and `.dev.vars` — deliberately, since that is what a deployed Worker sees.
-  // It does not include the shell's environment, so `phase run -- npm run dev`
-  // reaches `process.env` and never reaches `env`. Without this the dev server
-  // answers 503 while the same value works everywhere else, which is a
-  // genuinely baffling half-hour.
-  //
-  // Passed in rather than read here so this function stays pure: reading
-  // ambient state would make its unit tests depend on whoever runs them having
-  // no DATABASE_URL exported. `context.ts` supplies it, next to the identical
-  // fallback for root keys.
-  if (processUrl) return processUrl;
-
   throw new MissingBindingError('HYPERDRIVE or DATABASE_URL');
+}
+
+/**
+ * Configuration that a secrets manager supplies as plain strings.
+ *
+ * Everything else in `Bindings` is a real Cloudflare binding — an object the
+ * runtime hands over — and cannot come from an environment variable at all.
+ */
+const PROCESS_SUPPLIED = [
+  'DATABASE_URL',
+  'FIREBASE_PROJECT_ID',
+  'XECRET_ROOT_KEY_VERSION',
+] as const;
+
+/**
+ * Fills gaps in the Worker's `env` from the process environment.
+ *
+ * `next dev` under the OpenNext adapter builds `env` from `wrangler.jsonc` and
+ * `.dev.vars` — faithfully, since that is exactly what a deployed Worker sees.
+ * It therefore does **not** include the shell, so `phase run -- npm run dev`
+ * supplies values the application cannot see, and every route answers 503 while
+ * the identical configuration works in every script.
+ *
+ * Done once, over a list, rather than at each call site: the first version of
+ * this fixed only `DATABASE_URL`, and the next request failed on
+ * `FIREBASE_PROJECT_ID` with the same message for the same reason. A per-value
+ * fix guarantees a per-value bug.
+ *
+ * **A binding always wins.** In production the values below arrive from
+ * Hyperdrive, the Secrets Store, and `wrangler.jsonc`; this only fills what is
+ * absent, so it cannot override a deployed configuration with a stray variable
+ * on an operator's machine.
+ *
+ * `source` is a parameter rather than a read of `process.env`, so this is pure
+ * and its precedence is testable without depending on the tester's shell.
+ */
+export function withProcessFallbacks(
+  env: Bindings,
+  source: Record<string, string | undefined>,
+): Bindings {
+  const merged: Bindings = { ...env };
+
+  for (const key of PROCESS_SUPPLIED) {
+    const current = merged[key];
+    if (current !== undefined && current !== '') continue;
+
+    const fallback = source[key];
+    if (fallback !== undefined && fallback !== '') merged[key] = fallback;
+  }
+
+  return merged;
 }
 
 export function isProductionDeployment(env: Bindings): boolean {

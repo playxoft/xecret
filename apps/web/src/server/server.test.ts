@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { IdentityVerificationError } from '@xecret/core/auth';
-import { connectionString, MissingBindingError, requireBinding } from './bindings';
+import {
+  connectionString,
+  MissingBindingError,
+  requireBinding,
+  withProcessFallbacks,
+} from './bindings';
 import type { Bindings } from './bindings';
 import { ApiError, errors } from './errors';
 import {
@@ -73,31 +78,71 @@ describe('binding access', () => {
   it('refuses to guess when neither is configured', () => {
     expect(() => connectionString(bindings())).toThrowError(MissingBindingError);
   });
+});
 
-  /**
-   * Regression. `next dev` builds the Worker's `env` from `wrangler.jsonc`,
-   * faithfully excluding the shell — so `phase run -- npm run dev` put
-   * DATABASE_URL in `process.env` where nothing looked for it, and every API
-   * call answered 503 while the identical value worked in every script.
-   *
-   * The root-key path already had this fallback; the database path did not.
-   * The asymmetry is what made it baffling rather than merely broken.
-   */
-  it('falls back to the process environment, which is how `next dev` is fed', () => {
-    expect(connectionString(bindings(), 'postgres://from-process')).toBe('postgres://from-process');
+/**
+ * Regression, twice over.
+ *
+ * `next dev` builds the Worker's `env` from `wrangler.jsonc`, faithfully
+ * excluding the shell — so `phase run -- npm run dev` supplied values the
+ * application could not see, and every route answered 503 while the identical
+ * configuration worked in every script.
+ *
+ * The first fix covered only `DATABASE_URL`, and the very next request failed
+ * on `FIREBASE_PROJECT_ID` with the same message for the same reason. Hence a
+ * list rather than a call site: a per-value fix guarantees a per-value bug.
+ */
+describe('process environment fallbacks', () => {
+  it('fills every value a secrets manager supplies', () => {
+    const merged = withProcessFallbacks(bindings(), {
+      DATABASE_URL: 'postgres://from-process',
+      FIREBASE_PROJECT_ID: 'xecret-dev',
+      XECRET_ROOT_KEY_VERSION: '2',
+    });
+
+    expect(merged.DATABASE_URL).toBe('postgres://from-process');
+    expect(merged.FIREBASE_PROJECT_ID).toBe('xecret-dev');
+    expect(merged.XECRET_ROOT_KEY_VERSION).toBe('2');
   });
 
-  it('lets a real binding win over the process environment', () => {
-    const env = bindings({ HYPERDRIVE: { connectionString: 'postgres://pooled' } as Hyperdrive });
-    expect(connectionString(env, 'postgres://from-process')).toBe('postgres://pooled');
-
-    expect(connectionString(bindings({ DATABASE_URL: 'postgres://bound' }), 'postgres://x')).toBe(
-      'postgres://bound',
+  // The property that makes this safe to ship: a deployed Worker cannot have
+  // its configuration overridden by a stray variable on an operator's machine.
+  it('never overrides a binding that is already present', () => {
+    const merged = withProcessFallbacks(
+      bindings({ DATABASE_URL: 'postgres://bound', FIREBASE_PROJECT_ID: 'xecret-prod' }),
+      { DATABASE_URL: 'postgres://from-process', FIREBASE_PROJECT_ID: 'xecret-dev' },
     );
+
+    expect(merged.DATABASE_URL).toBe('postgres://bound');
+    expect(merged.FIREBASE_PROJECT_ID).toBe('xecret-prod');
   });
 
-  it('treats an empty process value as absent rather than as a URL', () => {
-    expect(() => connectionString(bindings(), '')).toThrowError(MissingBindingError);
+  it('leaves Hyperdrive winning over a process DATABASE_URL', () => {
+    const merged = withProcessFallbacks(
+      bindings({ HYPERDRIVE: { connectionString: 'postgres://pooled' } as Hyperdrive }),
+      { DATABASE_URL: 'postgres://from-process' },
+    );
+
+    expect(connectionString(merged)).toBe('postgres://pooled');
+  });
+
+  it('treats an empty string as absent, in both directions', () => {
+    expect(withProcessFallbacks(bindings(), { DATABASE_URL: '' }).DATABASE_URL).toBeUndefined();
+    expect(
+      withProcessFallbacks(bindings({ DATABASE_URL: '' }), { DATABASE_URL: 'postgres://real' })
+        .DATABASE_URL,
+    ).toBe('postgres://real');
+  });
+
+  it('copies rather than mutating the env it was given', () => {
+    const original = bindings();
+    withProcessFallbacks(original, { DATABASE_URL: 'postgres://from-process' });
+    expect(original.DATABASE_URL).toBeUndefined();
+  });
+
+  it('ignores variables that are not configuration', () => {
+    const merged = withProcessFallbacks(bindings(), { PATH: '/usr/bin', HOME: '/root' });
+    expect(merged).toEqual(bindings());
   });
 });
 

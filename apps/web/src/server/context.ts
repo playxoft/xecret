@@ -7,7 +7,7 @@ import {
   keyProviderFromSecretsStore,
 } from '@xecret/core/crypto';
 import type { KeyProvider } from '@xecret/core/crypto';
-import { connectionString, requireBinding } from './bindings';
+import { connectionString, requireBinding, withProcessFallbacks } from './bindings';
 import type { Bindings, WorkerContext } from './bindings';
 import { clientIp, userAgent } from './http';
 
@@ -41,7 +41,7 @@ const isolate: IsolateCache = {
 };
 
 function database(env: Bindings): Database {
-  const url = connectionString(env, readFromProcess('DATABASE_URL'));
+  const url = connectionString(env);
 
   // Keyed on the URL so a Hyperdrive rebind — or a developer switching
   // databases in `next dev` — cannot be served by a stale client.
@@ -71,7 +71,7 @@ function keyProvider(env: Bindings): Promise<KeyProvider> {
     ? keyProviderFromSecretsStore(requireBinding(env, 'XECRET_ROOT_KEYS'), version)
     : Promise.resolve(
         keyProviderFromEnv({
-          XECRET_ROOT_KEYS: readFromProcess('XECRET_ROOT_KEYS'),
+          XECRET_ROOT_KEYS: process.env['XECRET_ROOT_KEYS'],
           XECRET_ROOT_KEY_VERSION: env.XECRET_ROOT_KEY_VERSION,
         }),
       );
@@ -88,39 +88,20 @@ function keyProvider(env: Bindings): Promise<KeyProvider> {
 }
 
 /**
- * Reads configuration from the process environment.
- *
- * The **only** place in the server layer that touches `process.env`, so "where
- * could a database URL or a root key come from?" has one answer and one place
- * to audit it.
- *
- * This path exists for local development and for self-hosters. In a deployed
- * Worker the bindings win before it is ever consulted — `connectionString`
- * prefers Hyperdrive, and `keyProvider` prefers the Secrets Store.
- *
- * It matters under `next dev` specifically: the OpenNext adapter builds the
- * Worker's `env` from `wrangler.jsonc` and `.dev.vars`, which is faithful to
- * production and therefore does not include the shell's environment. Without
- * this, `phase run -- npm run dev` supplies values that the application cannot
- * see.
- */
-function readFromProcess(name: string): string | undefined {
-  return process.env[name];
-}
-
-/**
  * Returns the current request's bindings and execution context.
  *
  * `async: true` is required: Next.js may run a route handler outside the
  * synchronous request scope, where the synchronous form throws.
  *
- * This is the only call into the OpenNext adapter in the codebase. Everything
- * else takes `Bindings` as a parameter, which is what lets the rest of the
- * server layer be tested under plain Node.
+ * This is the only call into the OpenNext adapter in the codebase, and the only
+ * place in the server layer that reads `process.env` — so "where does runtime
+ * configuration enter the system?" has exactly one answer, and the precedence
+ * between a binding and an environment variable is decided once rather than at
+ * each call site.
  */
 export async function workerContext(): Promise<WorkerContext> {
   const { env, ctx } = await getCloudflareContext({ async: true });
-  return { env, ctx };
+  return { env: withProcessFallbacks(env, process.env), ctx };
 }
 
 /** Request-scoped facts that every audit record and log line carries. */
