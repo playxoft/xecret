@@ -1,0 +1,8 @@
+{
+  "version": "2",
+  "phaseApp": "Xecret",
+  "appId": "2bf0747f-2cf0-4692-8a7a-9f42a05b3847",
+  "defaultEnv": "Development",
+  "envId": "e2818f44-506f-4b94-9f0a-cd1485009088",
+  "monorepoSupport": true
+}
