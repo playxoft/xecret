@@ -73,6 +73,32 @@ describe('binding access', () => {
   it('refuses to guess when neither is configured', () => {
     expect(() => connectionString(bindings())).toThrowError(MissingBindingError);
   });
+
+  /**
+   * Regression. `next dev` builds the Worker's `env` from `wrangler.jsonc`,
+   * faithfully excluding the shell — so `phase run -- npm run dev` put
+   * DATABASE_URL in `process.env` where nothing looked for it, and every API
+   * call answered 503 while the identical value worked in every script.
+   *
+   * The root-key path already had this fallback; the database path did not.
+   * The asymmetry is what made it baffling rather than merely broken.
+   */
+  it('falls back to the process environment, which is how `next dev` is fed', () => {
+    expect(connectionString(bindings(), 'postgres://from-process')).toBe('postgres://from-process');
+  });
+
+  it('lets a real binding win over the process environment', () => {
+    const env = bindings({ HYPERDRIVE: { connectionString: 'postgres://pooled' } as Hyperdrive });
+    expect(connectionString(env, 'postgres://from-process')).toBe('postgres://pooled');
+
+    expect(connectionString(bindings({ DATABASE_URL: 'postgres://bound' }), 'postgres://x')).toBe(
+      'postgres://bound',
+    );
+  });
+
+  it('treats an empty process value as absent rather than as a URL', () => {
+    expect(() => connectionString(bindings(), '')).toThrowError(MissingBindingError);
+  });
 });
 
 describe('error envelope', () => {

@@ -109,9 +109,24 @@ export function requireBinding<K extends keyof Bindings>(
  * PostgreSQL instance — but only one of the two is ever in play, so there is no
  * ambiguity about which database a request reached.
  */
-export function connectionString(env: Bindings): string {
+export function connectionString(env: Bindings, processUrl?: string | undefined): string {
   if (env.HYPERDRIVE) return env.HYPERDRIVE.connectionString;
   if (env.DATABASE_URL) return env.DATABASE_URL;
+
+  // Third, and only for local development: the process environment.
+  //
+  // Under `next dev` the OpenNext adapter builds `env` from `wrangler.jsonc`
+  // and `.dev.vars` — deliberately, since that is what a deployed Worker sees.
+  // It does not include the shell's environment, so `phase run -- npm run dev`
+  // reaches `process.env` and never reaches `env`. Without this the dev server
+  // answers 503 while the same value works everywhere else, which is a
+  // genuinely baffling half-hour.
+  //
+  // Passed in rather than read here so this function stays pure: reading
+  // ambient state would make its unit tests depend on whoever runs them having
+  // no DATABASE_URL exported. `context.ts` supplies it, next to the identical
+  // fallback for root keys.
+  if (processUrl) return processUrl;
 
   throw new MissingBindingError('HYPERDRIVE or DATABASE_URL');
 }

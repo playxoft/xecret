@@ -31,6 +31,12 @@ coverage/
 *.enc
 secrets.json
 
+# Written by `phase init`. Contains no secrets — only the ids of the Phase.dev
+# app and environment this checkout is linked to — but those are one person's
+# account, and a fork pointing at somebody else's app is worse than no file at
+# all. Every contributor runs `phase init` for their own.
+.phase.json
+
 # cloudflare
 .wrangler/
 .vercel

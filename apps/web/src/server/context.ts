@@ -41,7 +41,7 @@ const isolate: IsolateCache = {
 };
 
 function database(env: Bindings): Database {
-  const url = connectionString(env);
+  const url = connectionString(env, readFromProcess('DATABASE_URL'));
 
   // Keyed on the URL so a Hyperdrive rebind — or a developer switching
   // databases in `next dev` — cannot be served by a stale client.
@@ -71,7 +71,7 @@ function keyProvider(env: Bindings): Promise<KeyProvider> {
     ? keyProviderFromSecretsStore(requireBinding(env, 'XECRET_ROOT_KEYS'), version)
     : Promise.resolve(
         keyProviderFromEnv({
-          XECRET_ROOT_KEYS: readRootKeysFromProcess(),
+          XECRET_ROOT_KEYS: readFromProcess('XECRET_ROOT_KEYS'),
           XECRET_ROOT_KEY_VERSION: env.XECRET_ROOT_KEY_VERSION,
         }),
       );
@@ -88,14 +88,24 @@ function keyProvider(env: Bindings): Promise<KeyProvider> {
 }
 
 /**
- * Reads root key material from the process environment.
+ * Reads configuration from the process environment.
  *
- * Only reachable when the Secrets Store binding is absent. Kept in one function
- * so there is a single place to audit for "where could a root key come from",
- * and so the Worker path never touches `process.env` at all.
+ * The **only** place in the server layer that touches `process.env`, so "where
+ * could a database URL or a root key come from?" has one answer and one place
+ * to audit it.
+ *
+ * This path exists for local development and for self-hosters. In a deployed
+ * Worker the bindings win before it is ever consulted — `connectionString`
+ * prefers Hyperdrive, and `keyProvider` prefers the Secrets Store.
+ *
+ * It matters under `next dev` specifically: the OpenNext adapter builds the
+ * Worker's `env` from `wrangler.jsonc` and `.dev.vars`, which is faithful to
+ * production and therefore does not include the shell's environment. Without
+ * this, `phase run -- npm run dev` supplies values that the application cannot
+ * see.
  */
-function readRootKeysFromProcess(): string | undefined {
-  return process.env['XECRET_ROOT_KEYS'];
+function readFromProcess(name: string): string | undefined {
+  return process.env[name];
 }
 
 /**
