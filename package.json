@@ -39,7 +39,11 @@
     "phase:deploy": "phase run -- npm run deploy",
     "phase:migrate": "phase run -- npm run db:migrate",
     "phase:studio": "phase run -- npm run db:studio",
-    "phase:check-db": "phase run -- npm run check:db-role"
+    "phase:check-db": "phase run -- npm run check:db-role",
+    "check:env": "tsx scripts/check-env.ts",
+    "phase:check-env": "phase run -- npm run check:env",
+    "smoke": "tsx scripts/smoke-test.ts",
+    "phase:smoke": "phase run -- npm run smoke"
   },
   "devDependencies": {
     "@eslint/js": "^9",
