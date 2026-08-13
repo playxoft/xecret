@@ -12,6 +12,29 @@
 --
 -- Migrations run as a separate, more privileged role (MIGRATION_DATABASE_URL).
 --
+-- ─────────────────────────────────────────────────────────────────────────────
+-- `xecret_app` IS NOLOGIN. YOU CANNOT PUT IT IN A CONNECTION STRING.
+--
+-- It is a *group* role: it holds privileges and nothing else. The application
+-- connects as a separate LOGIN role that is a member of it:
+--
+--     CREATE ROLE xecret_web LOGIN PASSWORD '<long random>';
+--     GRANT xecret_app TO xecret_web;
+--
+-- and DATABASE_URL uses `xecret_web`. Full walkthrough, including how to verify
+-- the restriction actually holds, is in docs/operations/database-setup.md.
+--
+-- The separation is deliberate. Rotating the application's password is then an
+-- ALTER ROLE that touches no grants, and revoking a privilege is a REVOKE that
+-- touches no credential. Merging them would mean every credential rotation
+-- risks disturbing the grants that make the audit log append-only.
+--
+-- Create the login role with SQL, not your provider's console UI: managed
+-- providers commonly grant console-created roles a superuser-adjacent role
+-- (Neon grants `neon_superuser`), which would hand the application exactly the
+-- privileges this migration exists to withhold.
+-- ─────────────────────────────────────────────────────────────────────────────
+--
 -- NOTE for self-hosters: on some managed providers, role creation requires the
 -- account owner. If this migration fails on CREATE ROLE, create `xecret_app`
 -- through your provider's console and re-run — the GRANT statements are
