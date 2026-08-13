@@ -50,52 +50,127 @@ import { api } from './api';
  */
 
 /**
- * Public Firebase configuration.
+ * Public Firebase configuration, as one JSON blob.
  *
- * These four values are public by design — they identify the project, they do
- * not authorise anything. They are read through direct `process.env.NEXT_PUBLIC_*`
- * member access because that is the form Next.js statically replaces at build
- * time; a computed lookup would come back `undefined` in the browser.
+ * `NEXT_PUBLIC_FIREBASE_CONFIG` holds exactly what the Firebase console gives
+ * you when it shows the web snippet — paste it in, unchanged:
+ *
+ *     {"apiKey":"…","authDomain":"…","projectId":"…","appId":"…"}
+ *
+ * One variable rather than four, because these values are a *set*: they all
+ * come from one project and only make sense together. Four separate variables
+ * invite a half-migration where `projectId` points at staging and `apiKey`
+ * still points at production — a class of mistake that cannot happen when the
+ * unit of configuration is the unit of copy-paste.
+ *
+ * None of it is secret. Every value here is embedded in the client bundle by
+ * design; they identify the project, they do not authorise anything. What
+ * authorises is the ID token Firebase mints, which the server verifies against
+ * Google's public keys.
+ *
+ * Read through direct `process.env.NEXT_PUBLIC_*` member access because that is
+ * the form Next.js statically replaces at build time; a computed lookup comes
+ * back `undefined` in the browser.
  */
-const FIREBASE_CONFIG_ENV = {
-  NEXT_PUBLIC_FIREBASE_API_KEY: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  NEXT_PUBLIC_FIREBASE_PROJECT_ID: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  NEXT_PUBLIC_FIREBASE_APP_ID: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-} as const;
+const RAW_FIREBASE_CONFIG = process.env.NEXT_PUBLIC_FIREBASE_CONFIG;
+
+/** The fields the SDK needs. Firebase's snippet carries more; extras are ignored. */
+const REQUIRED_FIELDS = ['apiKey', 'authDomain', 'projectId', 'appId'] as const;
+
+export interface FirebaseWebConfig {
+  apiKey: string;
+  authDomain: string;
+  projectId: string;
+  appId: string;
+}
 
 /**
  * Raised when the deployment has not been configured.
  *
  * Without this, an unconfigured build fails somewhere inside the Firebase SDK
- * with `auth/invalid-api-key` — which sends the reader looking for a wrong
- * key rather than a missing one. Self-hosters hit this on their first run, so
- * the message names the variables and points at the setup document.
+ * with `auth/invalid-api-key` — which sends the reader looking for a wrong key
+ * rather than a missing one. Self-hosters hit this on their first run, so the
+ * message says precisely what is wrong and where to fix it.
  */
 export class FirebaseNotConfiguredError extends Error {
-  readonly missing: readonly string[];
+  readonly problem: string;
 
-  constructor(missing: readonly string[]) {
+  constructor(problem: string) {
     super(
-      `Firebase is not configured. Missing: ${missing.join(', ')}. ` +
-        'Set these in Phase.dev (or your environment) and restart — see .env.example ' +
-        'and docs/adr/0003-firebase-as-identity-provider.md. Self-hosted deployments ' +
-        'need their own Firebase project.',
+      `Firebase is not configured: ${problem}. Set NEXT_PUBLIC_FIREBASE_CONFIG to the ` +
+        'JSON object from the Firebase console (Project settings → Your apps → SDK setup ' +
+        'and configuration), then restart. See .env.example and ' +
+        'docs/adr/0003-firebase-as-identity-provider.md. Self-hosted deployments need ' +
+        'their own Firebase project.',
     );
     this.name = 'FirebaseNotConfiguredError';
-    this.missing = missing;
+    this.problem = problem;
   }
 }
 
-/** Which required variables are absent. Empty means the app can sign in. */
-export function missingFirebaseConfig(): readonly string[] {
-  return Object.entries(FIREBASE_CONFIG_ENV)
-    .filter(([, value]) => typeof value !== 'string' || value.length === 0)
-    .map(([name]) => name);
+export type FirebaseConfigResult = { config: FirebaseWebConfig } | { problem: string };
+
+/**
+ * Parses the blob, or explains what is wrong with it.
+ *
+ * Takes the raw string rather than reading the environment itself, so every
+ * branch below is reachable from a test. The environment is read exactly once,
+ * at module scope, because that is the only form Next.js inlines at build time.
+ *
+ * Returns a problem string rather than throwing, so "is this deployment
+ * configured?" can be asked without a try/catch — the sign-in page asks it in
+ * order to render a setup notice instead of a form that fails on submit.
+ */
+export function parseFirebaseConfig(raw: string | undefined): FirebaseConfigResult {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return { problem: 'NEXT_PUBLIC_FIREBASE_CONFIG is not set' };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Deliberately does not echo the value. It is not secret, but a parse error
+    // that prints a malformed blob into a browser console trains people to
+    // paste configuration into issue reports.
+    return { problem: 'NEXT_PUBLIC_FIREBASE_CONFIG is not valid JSON' };
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return { problem: 'NEXT_PUBLIC_FIREBASE_CONFIG must be a JSON object' };
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const missing = REQUIRED_FIELDS.filter(
+    (field) => typeof record[field] !== 'string' || (record[field] as string).length === 0,
+  );
+
+  if (missing.length > 0) {
+    return { problem: `NEXT_PUBLIC_FIREBASE_CONFIG is missing ${missing.join(', ')}` };
+  }
+
+  return {
+    config: {
+      apiKey: record['apiKey'] as string,
+      authDomain: record['authDomain'] as string,
+      projectId: record['projectId'] as string,
+      appId: record['appId'] as string,
+    },
+  };
+}
+
+function readFirebaseConfig(): FirebaseConfigResult {
+  return parseFirebaseConfig(RAW_FIREBASE_CONFIG);
+}
+
+/** What is wrong with the configuration, or `null` when the app can sign in. */
+export function firebaseConfigProblem(): string | null {
+  const result = readFirebaseConfig();
+  return 'problem' in result ? result.problem : null;
 }
 
 export function isFirebaseConfigured(): boolean {
-  return missingFirebaseConfig().length === 0;
+  return firebaseConfigProblem() === null;
 }
 
 let cachedAuth: Auth | null = null;
@@ -110,18 +185,11 @@ let cachedAuth: Auth | null = null;
 export function getFirebaseAuth(): Auth {
   if (cachedAuth) return cachedAuth;
 
-  const missing = missingFirebaseConfig();
-  if (missing.length > 0) throw new FirebaseNotConfiguredError(missing);
+  const result = readFirebaseConfig();
+  if ('problem' in result) throw new FirebaseNotConfiguredError(result.problem);
 
   const existing = getApps()[0];
-  const app: FirebaseApp =
-    existing ??
-    initializeApp({
-      apiKey: FIREBASE_CONFIG_ENV.NEXT_PUBLIC_FIREBASE_API_KEY as string,
-      authDomain: FIREBASE_CONFIG_ENV.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN as string,
-      projectId: FIREBASE_CONFIG_ENV.NEXT_PUBLIC_FIREBASE_PROJECT_ID as string,
-      appId: FIREBASE_CONFIG_ENV.NEXT_PUBLIC_FIREBASE_APP_ID as string,
-    });
+  const app: FirebaseApp = existing ?? initializeApp(result.config);
 
   try {
     cachedAuth = initializeAuth(app, {
