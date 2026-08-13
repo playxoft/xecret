@@ -32,7 +32,14 @@
     "verify": "npm run format:check && npm run lint && npm run typecheck && npm run test",
     "keygen": "tsx scripts/keygen.ts",
     "rotate:root-key": "tsx scripts/rotate-root-key.ts",
-    "check:db-role": "tsx scripts/check-db-role.ts"
+    "check:db-role": "tsx scripts/check-db-role.ts",
+    "// phase": "Phase.dev wrappers, grouped so an editor lists them together. The plain scripts above stay vendor-neutral: CI and self-hosters on Doppler or a .env file run those directly.",
+    "phase:dev": "phase run -- npm run dev",
+    "phase:build": "phase run -- npm run build",
+    "phase:deploy": "phase run -- npm run deploy",
+    "phase:migrate": "phase run -- npm run db:migrate",
+    "phase:studio": "phase run -- npm run db:studio",
+    "phase:check-db": "phase run -- npm run check:db-role"
   },
   "devDependencies": {
     "@eslint/js": "^9",

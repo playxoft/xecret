@@ -23,7 +23,7 @@
 import postgres from 'postgres';
 
 /** The group role that carries the restricted grants. See migration 0002. */
-const APP_GROUP_ROLE = 'xecret_app';
+const APP_GROUP_ROLE = 'xecret_app_permissions';
 
 /**
  * Roles that would defeat the restriction if the application role held one.
