@@ -31,9 +31,29 @@ That is your **`MIGRATION_DATABASE_URL`**. Put it in Phase.dev and nowhere else.
 
 ## 2. Run the migrations
 
+All commands run from the **repository root**, never from `apps/web`. The root `db:*` scripts
+delegate to `@xecret/db`, which is where the migrations and the Drizzle config live.
+
+First time only, connect the repo to your Phase.dev app:
+
+```bash
+phase init
+```
+
+Then:
+
 ```bash
 phase run -- npm run db:migrate
 ```
+
+`phase run --` is what supplies the environment; the script itself reads plain environment
+variables and has no idea Phase.dev exists. That is deliberate — a self-hoster using Doppler, a
+`.env` file, or their platform's own secret store runs the identical command without `phase run`,
+and CI does the same. Hardcoding `phase run` into `package.json` would couple an open-source
+project to one vendor for no gain.
+
+The script prefers `MIGRATION_DATABASE_URL` and falls back to `DATABASE_URL`. If neither is set it
+exits with a message naming both.
 
 This creates the 15 tables, partitions `audit_logs` by month, and creates the **`xecret_app`
 role** with its grants.
@@ -57,8 +77,13 @@ This indirection is worth one extra step:
   instance with its own rotatable credential, is another member — not another copy of the grants,
   which would drift.
 
+**`xecret_web` below is just a name.** Call it whatever you like — what matters is that it is a
+LOGIN role and a member of `xecret_app`. If you already created a role in the Neon console, use
+that name and skip the `CREATE ROLE` line (but do read the warning underneath).
+
 Run this **as the owner**, against your database. Use the Neon SQL Editor, or `psql` with
-`MIGRATION_DATABASE_URL`:
+`MIGRATION_DATABASE_URL`. It must run **after** step 2, because step 2 is what creates
+`xecret_app`:
 
 ```sql
 -- Pick a long random password. Generate one, do not invent one:
@@ -69,9 +94,23 @@ CREATE ROLE xecret_web LOGIN PASSWORD 'PASTE_A_LONG_RANDOM_PASSWORD';
 GRANT xecret_app TO xecret_web;
 ```
 
-> **Create it with SQL, not the Neon console.** Roles created through the console UI are granted
-> Neon's `neon_superuser` role, which would hand the application exactly the privileges this whole
-> migration exists to withhold. Verify with the query in step 5 either way.
+> **If you created the role in the Neon console, it is probably not restricted.** Neon grants
+> console-created roles the `neon_superuser` role, which would hand the application exactly the
+> privileges this migration exists to withhold. Check, and strip it if present:
+>
+> ```sql
+> -- Should list only xecret_app once you are done.
+> SELECT r.rolname FROM pg_auth_members m
+> JOIN pg_roles r ON r.oid = m.roleid
+> JOIN pg_roles u ON u.oid = m.member
+> WHERE u.rolname = 'your_role_name';
+>
+> REVOKE neon_superuser FROM your_role_name;   -- only if it appeared above
+> GRANT xecret_app TO your_role_name;
+> ```
+>
+> Then run the checks in step 5. If `CREATE TABLE` still succeeds, the role is not restricted and
+> something else is granting it — drop it and create a fresh one with SQL.
 
 Your **`DATABASE_URL`** is then the same connection string as step 1, with the user and password
 swapped:

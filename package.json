@@ -24,7 +24,6 @@
     "format:check": "prettier --check .",
     "db:generate": "npm run db:generate --workspace @xecret/db",
     "db:migrate": "npm run db:migrate --workspace @xecret/db",
-    "db:seed": "npm run db:seed --workspace @xecret/db",
     "db:studio": "npm run db:studio --workspace @xecret/db",
     "cli:build": "cd cli && go build -o dist/xecret ./cmd/xecret",
     "cli:test": "cd cli && go test ./...",
