@@ -117,6 +117,7 @@ boundary is and always was.
 | `payload_too_large` | 413 | Body over 1 MB, or a secret over 64 KB |
 | `rate_limited` | 429 | Bucket exhausted |
 | `csrf_failed` | 403 | Double-submit pair missing or mismatched |
+| `session_locked` | 403 | Authenticated, but the session has not had its PIN entered recently |
 | `unavailable` | 503 | Misconfigured deployment — a missing binding, an unreachable database |
 | `internal_error` | 500 | Unhandled fault |
 
@@ -138,13 +139,28 @@ rejected input reaches the client; in this product the rejected input may be a s
 |---|---|---|
 | `POST` | `/api/auth/session` | Body `{ idToken }`. Verifies with Firebase, upserts the user, bootstraps a personal organisation on first login, sets the session and CSRF cookies. Rate limited: `RL_LOGIN`. |
 | `DELETE` | `/api/auth/session` | Revokes the current session, clears both cookies. Idempotent. |
-| `GET` | `/api/auth/me` | The signed-in user, their organisations, and their role in each. |
+| `GET` | `/api/auth/me` | The signed-in user, their organisations, their role in each, and the PIN state. Exempt from the lock gate. |
+| `GET` `POST` | `/api/auth/pin` | Read the PIN state; set or change the PIN. Changing one requires the current PIN. Rate limited: `RL_LOGIN`. Exempt from the lock gate. |
+| `POST` | `/api/auth/pin/unlock` | Body `{ pin }`. Unlocks this session for 8 hours. Rate limited: `RL_LOGIN`, plus the per-account lockout. Exempt from the lock gate. |
+| `POST` | `/api/auth/pin/lock` | Locks this session, or every session with `{ everywhere: true }`. Does **not** revoke — the user stays signed in. |
+| `POST` | `/api/auth/pin/reset` | Emails a single-use reset link to the account's own address. Requires a session, so there is no enumeration oracle. Exempt from the lock gate. |
+| `POST` | `/api/auth/pin/reset/confirm` | Body `{ token, pin }`. Requires the emailed token **and** a session belonging to the same account. Exempt from the lock gate. |
 | `GET` | `/api/auth/sessions` | Active sessions for the "signed-in devices" view. Never returns a token hash. |
 | `DELETE` | `/api/auth/sessions` | Sign out everywhere. Optional `?except=current`. |
 
 `POST /api/auth/session` returns **401 with a fixed message** for every verification
 failure — expired, wrong audience, bad signature, unverified email. The specific reason is
 logged, never returned: telling a caller which part of a forged token to fix is a gift.
+
+### Members
+
+| Method | Path |
+| --- | --- |
+| `GET` | `/api/orgs/{orgSlug}/members` |
+
+Requires `member.read`, which every active role holds. Returns names, emails,
+roles, status and join dates — never access grants, which are per-project and
+would cost a query per row.
 
 ### Organisations
 
@@ -179,10 +195,12 @@ environment without a key cannot hold a secret and cannot be repaired without an
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `…/environments/{envSlug}/secrets` | **Masked.** Names, versions, timestamps, updater. No ciphertext leaves the database. |
-| `POST` | `…/secrets` | Create. Body `{ name, value, note? }`. |
+| `POST` | `…/secrets` | Create. Body `{ name, value, note?, valueType? }`. |
 | `GET` | `…/secrets/{name}` | **Reveal.** Decrypts one value. Audited as `secret.revealed` every time. |
-| `PATCH` | `…/secrets/{name}` | Appends a new version. A value identical to the current one is a no-op, detected via `value_hmac` without decrypting. |
+| `PATCH` | `…/secrets/{name}` | Appends a new version. Body `{ value, valueType? }`. A value identical to the current one is a no-op, detected via `value_hmac` without decrypting. |
+| `PUT` | `…/secrets/{name}` | Metadata only — `{ note?, valueType? }`. Appends **no** version and unwraps no key: declaring a type is not a rotation. |
 | `DELETE` | `…/secrets/{name}` | Soft delete. |
+| `GET` | `…/secrets/{name}/versions/{version}` | **Reveal one historical version.** Audited as `secret.revealed`, with the version in `reason`. The listing beside it stays metadata-only. |
 | `GET` | `…/secrets/{name}/versions` | History. Metadata only — no ciphertext, no values. |
 | `POST` | `…/secrets/{name}/restore` | Body `{ version }`. Re-appends an earlier value as a new version; never rewrites history. |
 

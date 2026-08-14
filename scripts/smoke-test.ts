@@ -11,8 +11,13 @@
  *
  * It covers the path a first sign-in actually takes — create the user,
  * bootstrap their organisation and its key hierarchy, store an encrypted
- * secret, read it back — plus the property the whole design rests on: that a
- * ciphertext moved to another row fails to decrypt.
+ * secret, read it back — plus the properties the design rests on and that no
+ * unit test can reach:
+ *
+ *  - a ciphertext moved to another row fails to decrypt (the AAD binding);
+ *  - the `value_type` CHECK refuses a write that bypassed the application;
+ *  - a session is authenticated and **locked** the moment it is created, and
+ *    locking it again clears the unlock without revoking the session.
  *
  * ## Nothing is left behind
  *
@@ -22,16 +27,31 @@
  * eventually is not, and the leftovers are indistinguishable from real rows.
  */
 
+import { sql } from 'drizzle-orm';
 import { createDatabase } from '../packages/db/src/client.ts';
 import {
   bootstrapPersonalOrganization,
   createSecret,
+  createSession,
+  findPinForUser,
   findSecretByName,
+  findSessionByTokenHash,
   loadEnvironmentKeyChain,
+  lockSessions,
+  markSessionUnlocked,
+  updateSecretMetadata,
+  upsertPin,
   upsertUserFromIdentity,
 } from '../packages/db/src/repositories/index.ts';
 import { EnvelopeService, keyProviderFromEnv } from '../packages/core/src/crypto/index.ts';
 import { DecryptionError } from '../packages/core/src/crypto/types.ts';
+import {
+  generateToken,
+  hashPin,
+  hashToken,
+  isSessionUnlocked,
+  verifyPin,
+} from '../packages/core/src/auth/index.ts';
 import { uuidv7 } from '../packages/core/src/ids/index.ts';
 
 /** Thrown to unwind the transaction once the checks have run. */
@@ -180,6 +200,120 @@ async function main(): Promise<void> {
         'ciphertext relocation refused',
         relocationFailed,
         'AAD binding holds against stored rows',
+      );
+
+      // ── 7. The declared value type ──────────────────────────────────────
+      // Proves the column, its default, and its CHECK constraint against real
+      // PostgreSQL — the parts of migration 0004 that no unit test can reach.
+      const typed = await findSecretByName(
+        tx,
+        account.organization.id,
+        development.id,
+        'DATABASE_URL',
+      );
+      step(
+        'value type defaults to string',
+        typed?.valueType === 'string',
+        `stored as "${typed?.valueType ?? 'missing'}"`,
+      );
+
+      await updateSecretMetadata(tx, {
+        orgId: account.organization.id,
+        environmentId: development.id,
+        name: 'DATABASE_URL',
+        valueType: 'url',
+      });
+      const retyped = await findSecretByName(
+        tx,
+        account.organization.id,
+        development.id,
+        'DATABASE_URL',
+      );
+      step(
+        'value type can be declared',
+        retyped?.valueType === 'url',
+        'metadata update wrote no new version',
+      );
+
+      // The CHECK constraint is the half of the rule the application cannot
+      // enforce — a write that bypassed the API must still be refused.
+      //
+      // Inside a nested transaction, which Drizzle issues as a SAVEPOINT. A
+      // statement that errors puts a PostgreSQL transaction into a failed state
+      // where every subsequent statement is refused with "current transaction is
+      // aborted" — so without the savepoint, deliberately breaking a constraint
+      // here takes every check after it down with it, and the report blames
+      // whichever one happened to come next.
+      let constraintHeld = false;
+      try {
+        await tx.transaction(async (probe) => {
+          await probe.execute(
+            sql`update secrets set value_type = 'nonsense' where id = ${secretId}`,
+          );
+        });
+      } catch {
+        constraintHeld = true;
+      }
+      step(
+        'unknown value type refused by the database',
+        constraintHeld,
+        'secrets_value_type_check holds',
+      );
+
+      // ── 8. The unlock PIN ───────────────────────────────────────────────
+      const pin = '481902';
+      await upsertPin(tx, user.id, await hashPin(pin));
+
+      const pinRecord = await findPinForUser(tx, user.id);
+      step(
+        'pin stored as a derived hash',
+        pinRecord !== null && !pinRecord.pinHash.includes(pin),
+        'pbkdf2-sha256, parameters recorded on the row',
+      );
+
+      step(
+        'pin verifies, and only the right one',
+        pinRecord !== null &&
+          (await verifyPin(pin, pinRecord.pinHash)) &&
+          !(await verifyPin('481903', pinRecord.pinHash)),
+        'constant-time comparison against the stored hash',
+      );
+
+      // The property the whole lock rests on: a session is authenticated the
+      // moment it exists and is **not** unlocked, so the cookie alone cannot
+      // reach a secret.
+      const { token: sessionToken } = await generateToken('session');
+      const session = await createSession(tx, {
+        userId: user.id,
+        token: sessionToken,
+        ipAddress: null,
+        userAgent: null,
+      });
+
+      const tokenHash = await hashToken(sessionToken);
+      const fresh = await findSessionByTokenHash(tx, tokenHash);
+      step(
+        'a new session starts locked',
+        fresh !== null && fresh.pinVerifiedAt === null,
+        'authenticated, but pin_verified_at is null',
+      );
+
+      await markSessionUnlocked(tx, session.id, new Date());
+      const unlocked = await findSessionByTokenHash(tx, tokenHash);
+      step(
+        'unlocking is recorded on the session',
+        unlocked?.pinVerifiedAt !== null &&
+          unlocked !== null &&
+          isSessionUnlocked(unlocked.pinVerifiedAt, new Date()),
+        'the same session, now unlocked — not a new one',
+      );
+
+      await lockSessions(tx, { sessionId: session.id });
+      const relocked = await findSessionByTokenHash(tx, tokenHash);
+      step(
+        'locking does not sign the user out',
+        relocked !== null && relocked.pinVerifiedAt === null && relocked.revokedAt === null,
+        'pin_verified_at cleared, session still live',
       );
 
       throw new Rollback();
