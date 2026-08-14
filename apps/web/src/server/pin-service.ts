@@ -212,9 +212,13 @@ async function assertPinMatches(
     await recordPinAttempt(services.db, userId, clearedPinFailures());
   }
 
-  // Raising `PBKDF2_ITERATIONS` upgrades accounts as their owners use them,
-  // rather than through a migration that would have to know every PIN. Deferred:
-  // the user is already through, and re-deriving costs as much as the check did.
+  // Any change to `PBKDF2_ITERATIONS` — up or down — converges accounts as
+  // their owners use them, rather than through a migration that would have to
+  // know every PIN. Down matters as much as up: rows hashed above the Workers
+  // runtime's 100k PBKDF2 cap can only verify under Node, and this rewrite on
+  // a successful local unlock is what makes them usable on the Worker again.
+  // Deferred: the user is already through, and re-deriving costs what the
+  // check did.
   if (pinNeedsRehash(record.pinHash)) {
     services.waitUntil(
       hashPin(pin)
