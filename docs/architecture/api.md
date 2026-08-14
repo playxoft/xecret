@@ -152,6 +152,22 @@ rejected input reaches the client; in this product the rejected input may be a s
 failure — expired, wrong audience, bad signature, unverified email. The specific reason is
 logged, never returned: telling a caller which part of a forged token to fix is a gift.
 
+### CLI authorization — how `xecret login` gets its token
+
+RFC 8252-style loopback flow with PKCE (S256 only), against this server — never Firebase
+directly. The CLI opens `/cli/authorize?challenge&port&device&state` in a browser; an
+already-signed-in person approves the named device; the consent screen redirects the
+one-time code to `http://127.0.0.1:{port}/callback`; the CLI exchanges code + verifier.
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/api/cli/authorize` | Session + CSRF only — a bearer credential may not mint further credentials, and the PIN lock gate applies. Body `{ orgSlug, deviceName, codeChallenge }`. Mints a single-use code (10 min TTL, hashed at rest, supersedes the user's outstanding codes). Requires active membership (`member.read`) — deliberately **not** `token.create`, which gates *service* tokens: a CLI token acts as its user and adds no authority. Rate limited: `RL_CLI_TOKEN`. Audited as `token.authorized`. |
+| `POST` | `/api/cli/token` | Public — the caller holds no credential yet. Body `{ code, codeVerifier }`. The code is consumed atomically **before** the PKCE check, so a failed binding kills it rather than leaving it guessable. Membership is re-checked; the minted `xct_` token is returned exactly once. Every failure is the same fixed 401. Rate limited: `RL_CLI_TOKEN` by IP. Audited as `token.created`. |
+| `DELETE` | `/api/cli/token` | The token revokes itself — `xecret logout`. CLI-token bearers only; idempotent; audited as `token.revoked` by the call that actually did it. |
+
+Listing and revoking CLI tokens from the dashboard ("your devices") lands with the token
+management routes in Phase 8.
+
 ### Members
 
 | Method | Path |

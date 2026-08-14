@@ -26,6 +26,15 @@ export { generateToken, hashToken, isWellFormedToken, TOKEN_PREFIXES, verifyToke
 export type { GeneratedToken, TokenKind } from './tokens';
 
 export {
+  CLI_AUTH_CODE_TTL_MS,
+  cliAuthCodeExpiryFrom,
+  computePkceChallenge,
+  PKCE_CHALLENGE_PATTERN,
+  PKCE_VERIFIER_PATTERN,
+  verifyPkce,
+} from './pkce';
+
+export {
   PBKDF2_ITERATIONS,
   PIN_FREE_ATTEMPTS,
   PIN_LENGTH,

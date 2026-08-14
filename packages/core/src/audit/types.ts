@@ -53,6 +53,15 @@ export type AuditAction =
   | 'member.role_changed'
   | 'access.granted'
   | 'access.revoked'
+  /**
+   * A person approved CLI access for a named device on the consent screen.
+   *
+   * Distinct from `token.created`, which is recorded when the credential is
+   * actually minted at exchange. The two happen from different network
+   * positions — the browser and the CLI — and an incident review needs both:
+   * an approval that was never exchanged is itself a signal.
+   */
+  | 'token.authorized'
   | 'token.created'
   | 'token.revoked'
   | 'token.used'
@@ -75,6 +84,8 @@ export interface AuditMetadata {
   previousRole?: string;
   newRole?: string;
   tokenPrefix?: string;
+  /** The device a CLI credential was approved for, e.g. a hostname. */
+  deviceName?: string;
   keyVersion?: number;
   /** How many sessions one act affected — "lock everywhere", "sign out everywhere". */
   sessionCount?: number;

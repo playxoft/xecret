@@ -40,6 +40,17 @@ export const TOKEN_PREFIXES = {
    * unguessable and the counter becomes a formality.
    */
   pinReset: 'xpr',
+  /**
+   * A CLI authorization code — the one-time value the consent screen hands to
+   * the loopback listener during `xecret login`.
+   *
+   * Not a credential: exchanging it additionally requires the PKCE verifier
+   * that never left the CLI process, and the exchange consumes it. It shares
+   * the 256-bit token shape so the same hashing, storage and well-formedness
+   * machinery applies, and so a code pasted somewhere it should not be is
+   * recognisable to a secret scanner like every other xecret token.
+   */
+  cliAuthCode: 'xac',
 } as const;
 
 export type TokenKind = keyof typeof TOKEN_PREFIXES;

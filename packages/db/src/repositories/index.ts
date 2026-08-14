@@ -182,6 +182,14 @@ export type {
 } from './secrets';
 
 export {
+  consumeCliAuthCode,
+  consumeCliAuthCodeByValue,
+  createCliAuthCode,
+  deleteExpiredCliAuthCodes,
+} from './cli-auth';
+export type { CliAuthCodeGrant, CreateCliAuthCodeParams, IssuedCliAuthCode } from './cli-auth';
+
+export {
   createCliToken,
   createServiceToken,
   findCliTokenByHash,
