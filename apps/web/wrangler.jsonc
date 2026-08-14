@@ -32,10 +32,44 @@
     "production": {
       "name": "xecret-production",
       "routes": [{ "pattern": "xecret.playxoft.com", "custom_domain": true }],
+      // Named environments inherit `main`, `assets` and compatibility settings,
+      // but NOT `vars` and NOT bindings — everything below is therefore stated
+      // in full, even where it repeats the top level.
       "vars": {
         "XECRET_ENV": "production",
         "XECRET_PUBLIC_URL": "https://xecret.playxoft.com",
+        "XECRET_ROOT_KEY_VERSION": "1",
+        // Not a secret — it is the `aud` claim an ID token must carry, and is
+        // embedded in every client bundle anyway (see bindings.ts).
+        "FIREBASE_PROJECT_ID": "xecret-management",
       },
+      // ADR 0006 — pooled path to Neon, created by scripts/deploy-bootstrap.sh
+      // against the DIRECT endpoint (Hyperdrive pools; pgbouncer must not).
+      "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "c9733ac7b6104546ac59ec53df58a948" }],
+      // ADR 0002 — the Root KEK map. Sourced from Phase.dev, pushed to the
+      // account's default Secrets Store by scripts/deploy-bootstrap.sh.
+      "secrets_store_secrets": [
+        {
+          "binding": "XECRET_ROOT_KEYS",
+          "store_id": "73e054dfa82f45ddb60cd4781d8e64e3",
+          "secret_name": "XECRET_ROOT_KEYS",
+        },
+      ],
+      // ADR 0003 — Google's JWKS, cached so verification costs no fetch.
+      "kv_namespaces": [{ "binding": "JWKS_CACHE", "id": "de8e11e521b8491a97e8d4f0d4557c0f" }],
+      // Abuse control, per-colo (see docs/architecture/api.md §6).
+      "ratelimits": [
+        { "name": "RL_LOGIN", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } },
+        { "name": "RL_CLI_TOKEN", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } },
+        { "name": "RL_INVITE", "namespace_id": "1003", "simple": { "limit": 20, "period": 60 } },
+        {
+          "name": "RL_SECRET_READ",
+          "namespace_id": "1004",
+          "simple": { "limit": 120, "period": 60 },
+        },
+        { "name": "RL_SERVICE", "namespace_id": "1005", "simple": { "limit": 600, "period": 60 } },
+        { "name": "RL_MUTATION", "namespace_id": "1006", "simple": { "limit": 60, "period": 60 } },
+      ],
     },
     "staging": {
       "name": "xecret-staging",
