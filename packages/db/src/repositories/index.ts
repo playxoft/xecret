@@ -37,6 +37,8 @@ export {
   deleteExpiredSessions,
   findSessionByTokenHash,
   listUserSessions,
+  lockSessions,
+  markSessionUnlocked,
   revokeAllUserSessions,
   revokeSession,
   sessionLookupQuery,
@@ -49,6 +51,19 @@ export type {
   SessionDevice,
   SessionUser,
 } from './sessions';
+
+export {
+  consumePinReset,
+  createPinReset,
+  deleteExpiredPinResets,
+  deletePin,
+  findPinForUser,
+  hasPin,
+  recordPinAttempt,
+  rehashPin,
+  upsertPin,
+} from './pins';
+export type { CreatePinResetParams, PinRecord, PinResetRecord } from './pins';
 
 export {
   bootstrapPersonalOrganization,
@@ -152,6 +167,7 @@ export {
   loadEnvironmentSecrets,
   restoreSecret,
   softDeleteSecret,
+  updateSecretMetadata,
 } from './secrets';
 export type {
   AddSecretVersionParams,
@@ -162,6 +178,7 @@ export type {
   SecretRecord,
   SecretVersionPage,
   SecretVersionSummary,
+  UpdateSecretMetadataParams,
 } from './secrets';
 
 export {

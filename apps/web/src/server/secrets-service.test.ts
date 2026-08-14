@@ -90,6 +90,7 @@ const repository = vi.hoisted(() => ({
   loadEnvironmentSecrets: vi.fn(),
   createSecret: vi.fn(),
   addSecretVersion: vi.fn(),
+  updateSecretMetadata: vi.fn(),
 }));
 
 vi.mock('@xecret/db/repositories', async (importOriginal) => {
@@ -100,6 +101,7 @@ vi.mock('@xecret/db/repositories', async (importOriginal) => {
     loadEnvironmentSecrets: repository.loadEnvironmentSecrets,
     createSecret: repository.createSecret,
     addSecretVersion: repository.addSecretVersion,
+    updateSecretMetadata: repository.updateSecretMetadata,
   };
 });
 
@@ -214,6 +216,7 @@ function stored(
   return {
     secretId: SECRET_S,
     name: 'DATABASE_URL',
+    valueType: 'string',
     environmentId: ENV_A,
     versionId: '01930000-0000-7000-8000-000000000001',
     version: 1,
@@ -662,5 +665,221 @@ describe('response headers', () => {
   // the reliance is asserted rather than assumed.
   it('marks every JSON response no-store', () => {
     expect(json({ secret: { value: 'x' } }).headers.get('cache-control')).toBe('no-store');
+  });
+});
+
+/**
+ * The declared value type.
+ *
+ * These matter more than they look. The dashboard runs the same check as you
+ * type, and that copy is a courtesy — anyone holding a CLI token reaches these
+ * tables without it. This is where the rule actually lives, which is why the
+ * assertions are about what does and does not reach the cipher, not about what
+ * a form field says.
+ */
+describe('value types', () => {
+  it('refuses a value that does not match its declared type', async () => {
+    const h = await harness();
+
+    const error = await rejection(() =>
+      writeSecretValue(h.scope, h.services, {
+        writer: USER_ID,
+        name: 'PORT',
+        value: 'three thousand',
+        valueType: 'int',
+      }),
+    );
+
+    expect(error.code).toBe('validation_failed');
+    // Refused *before* anything expensive: no key was unwrapped, nothing was
+    // encrypted, and no row was written.
+    expect(repository.createSecret).not.toHaveBeenCalled();
+  });
+
+  it('reports the failure against the value field, in words the user can act on', async () => {
+    const h = await harness();
+
+    const error = await rejection(() =>
+      writeSecretValue(h.scope, h.services, {
+        writer: USER_ID,
+        name: 'CALLBACK_URL',
+        value: 'example.com',
+        valueType: 'url',
+      }),
+    );
+
+    const fields = error.fields ?? [];
+    expect(fields[0]?.field).toBe('value');
+    expect(fields[0]?.message).toContain('absolute URL');
+  });
+
+  it('never echoes the rejected value, which may be a credential', async () => {
+    const h = await harness();
+
+    const error = await rejection(() =>
+      writeSecretValue(h.scope, h.services, {
+        writer: USER_ID,
+        name: 'CONFIG',
+        value: '{"token":"sk_live_51H8xR2abcdef"',
+        valueType: 'json',
+      }),
+    );
+
+    const serialised = JSON.stringify(error.toBody('req-1'));
+    expect(serialised).not.toContain('sk_live');
+  });
+
+  it('stores the declared type alongside a new secret', async () => {
+    const h = await harness();
+
+    await writeSecretValue(h.scope, h.services, {
+      writer: USER_ID,
+      name: 'PORT',
+      value: '5432',
+      valueType: 'int',
+    });
+
+    expect(h.created[0]?.valueType).toBe('int');
+  });
+
+  it('defaults to string, which accepts anything', async () => {
+    const h = await harness();
+
+    await writeSecretValue(h.scope, h.services, {
+      writer: USER_ID,
+      name: 'OPAQUE',
+      value: '<<<not json, not a url, not a number>>>',
+    });
+
+    expect(h.created[0]?.valueType).toBe('string');
+  });
+
+  it('inherits the stored type when a caller sends none', async () => {
+    // The property that keeps a type stuck to a secret. `xecret set` sends no
+    // type; without inheritance every rotation through the CLI would quietly
+    // downgrade PORT back to an unchecked string.
+    const h = await harness();
+
+    const error = await rejection(() =>
+      writeSecretValue(h.scope, h.services, {
+        writer: USER_ID,
+        name: 'PORT',
+        value: 'not-a-number',
+        existing: { secretId: SECRET_S, version: 1, valueHmac: null, valueType: 'int' },
+      }),
+    );
+
+    expect(error.code).toBe('validation_failed');
+    expect(repository.addSecretVersion).not.toHaveBeenCalled();
+  });
+
+  it('lets an explicit type override the stored one', async () => {
+    const h = await harness();
+
+    const result = await writeSecretValue(h.scope, h.services, {
+      writer: USER_ID,
+      name: 'PORT',
+      value: 'https://example.com',
+      valueType: 'url',
+      existing: { secretId: SECRET_S, version: 1, valueHmac: null, valueType: 'int' },
+    });
+
+    expect(result.status).toBe('updated');
+    // The redeclaration lands in the same transaction as the version, so a
+    // committed value can never sit under a rolled-back type.
+    expect(repository.updateSecretMetadata).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ name: 'PORT', valueType: 'url' }),
+    );
+  });
+
+  it('does not touch metadata when the type is unchanged', async () => {
+    // An ordinary rotation must not issue a pointless UPDATE beside its INSERT.
+    const h = await harness();
+
+    await writeSecretValue(h.scope, h.services, {
+      writer: USER_ID,
+      name: 'PORT',
+      value: '5433',
+      existing: { secretId: SECRET_S, version: 1, valueHmac: null, valueType: 'int' },
+    });
+
+    expect(repository.updateSecretMetadata).not.toHaveBeenCalled();
+  });
+
+  it('treats a row with no recorded type as a string', async () => {
+    // Every secret written before the column existed. Comparing the raw
+    // `undefined` instead made every ordinary write look like a retype.
+    const h = await harness();
+
+    await writeSecretValue(h.scope, h.services, {
+      writer: USER_ID,
+      name: 'LEGACY',
+      value: 'anything at all',
+      existing: { secretId: SECRET_S, version: 1, valueHmac: null },
+    });
+
+    expect(repository.updateSecretMetadata).not.toHaveBeenCalled();
+  });
+
+  it('records a redeclaration even when the value itself did not change', async () => {
+    // The HMAC matches so no version is appended — but "declare PORT an integer"
+    // is still a change the user asked for, and it would otherwise vanish: the
+    // write short-circuits and the dropdown springs back on the next reload.
+    const h = await harness();
+
+    const valueHmac = await computeValueHmac({
+      envKeyBytes: h.envKeyBytes,
+      environmentId: ENV_A,
+      plaintext: '5432',
+    });
+
+    const result = await writeSecretValue(h.scope, h.services, {
+      writer: USER_ID,
+      name: 'PORT',
+      value: '5432',
+      valueType: 'int',
+      existing: { secretId: SECRET_S, version: 4, valueHmac, valueType: 'string' },
+    });
+
+    expect(result.status).toBe('unchanged');
+    expect(repository.addSecretVersion).not.toHaveBeenCalled();
+    expect(repository.updateSecretMetadata).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ name: 'PORT', valueType: 'int' }),
+    );
+  });
+
+  it('checks every row of a batch, not just the first', async () => {
+    const h = await harness();
+
+    await rejection(() =>
+      applySecretWrites(h.scope, h.services, {
+        writer: USER_ID,
+        writes: [
+          { name: 'GOOD_PORT', value: '5432', valueType: 'int' },
+          { name: 'BAD_PORT', value: 'eighty', valueType: 'int' },
+        ],
+      }),
+    );
+
+    // The whole batch is refused. A partial import that wrote the valid half
+    // would leave the user to work out which half, from a response that says
+    // one row failed.
+    expect(repository.createSecret).not.toHaveBeenCalled();
+  });
+
+  it('checks a dry run too, so an import preview reports the problem', async () => {
+    const h = await harness();
+
+    const error = await rejection(() =>
+      applySecretWrites(h.scope, h.services, {
+        writer: USER_ID,
+        dryRun: true,
+        writes: [{ name: 'PORT', value: 'eighty', valueType: 'int' }],
+      }),
+    );
+
+    expect(error.code).toBe('validation_failed');
   });
 });

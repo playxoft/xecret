@@ -85,12 +85,10 @@ export function EnvironmentScreen({
               </Select>
             ) : null}
 
-            <Button variant="secondary" onClick={() => setImporting(true)}>
-              Import
-            </Button>
-            <Button variant="secondary" onClick={() => setExporting(true)}>
-              Export
-            </Button>
+            {/* Import and export moved into the table's own toolbar, beside the
+                controls that also act on this environment's secrets. What is
+                left here acts on the *environment*, which is what the page
+                heading is about. */}
             <Button variant="ghost" size="icon" asChild>
               <Link
                 href={appPath.environmentSettings(orgSlug, projectSlug, envSlug)}
@@ -119,6 +117,8 @@ export function EnvironmentScreen({
           onLoadMore={secrets.loadMore}
           loadingMore={secrets.loadingMore}
           onChanged={secrets.reload}
+          onImport={() => setImporting(true)}
+          onExport={() => setExporting(true)}
         />
       )}
 

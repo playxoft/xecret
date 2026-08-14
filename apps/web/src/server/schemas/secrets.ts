@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import { MAX_SECRET_VALUE_BYTES } from '@xecret/core/crypto';
 import {
+  DEFAULT_SECRET_VALUE_TYPE,
   SECRET_NAME_MAX_LENGTH,
   SECRET_NAME_PATTERN,
+  SECRET_VALUE_TYPES,
   secretNameSchema,
 } from '@xecret/core/validation';
 import { MAX_REQUEST_BODY_BYTES } from '@/server/http';
@@ -50,23 +52,59 @@ const secretValueSchema = z
  */
 const noteSchema = z.string().max(1024, 'Note cannot exceed 1024 characters.').nullish();
 
+/**
+ * The declared shape of the value.
+ *
+ * An enum built from `SECRET_VALUE_TYPES`, so this schema, the `Bindings`-style
+ * union in core, and the database's CHECK constraint cannot disagree about what
+ * is acceptable. Defaulted rather than required: every existing client omits it,
+ * and `string` accepts anything.
+ */
+const valueTypeSchema = z.enum(SECRET_VALUE_TYPES);
+
 export const createSecretBody = z.object({
   name: secretNameSchema,
   value: secretValueSchema,
   note: noteSchema,
+  valueType: valueTypeSchema.default(DEFAULT_SECRET_VALUE_TYPE),
 });
 
 /**
- * A new version carries a value and nothing else.
+ * A new version carries a value, and optionally a redeclaration of its shape.
  *
  * `note` is deliberately absent. It lives on `secrets`, not on
- * `secret_versions`, and the repository exposes no update for it — so accepting
- * the field here would mean silently discarding it, which is worse than not
- * offering it. Editing a note is a separate change to a separate row.
+ * `secret_versions`, and editing a note is a separate change to a separate row —
+ * accepting the field here would mean silently discarding it, which is worse
+ * than not offering it.
+ *
+ * `valueType` *is* accepted, even though it also lives on `secrets`, because the
+ * two changes belong together: "this is a port number, and here it is" is one
+ * thought, and forcing it into two requests would make the intermediate state —
+ * a value that does not match its declared type — reachable through the
+ * product's own happy path.
  */
 export const updateSecretBody = z.object({
   value: secretValueSchema,
+  valueType: valueTypeSchema.optional(),
 });
+
+/**
+ * Changing what is *said about* a secret, without changing what it holds.
+ *
+ * Its own body, and its own route method, because it appends no version and
+ * needs no key. At least one field must be present: an empty patch is a request
+ * that means nothing, and answering 200 to it would tell a client its change was
+ * applied.
+ */
+export const patchSecretMetadataBody = z
+  .object({
+    note: noteSchema,
+    valueType: valueTypeSchema.optional(),
+  })
+  .refine(
+    (body) => body.note !== undefined || body.valueType !== undefined,
+    'Supply a note or a value type to change.',
+  );
 
 export const restoreSecretBody = z.object({
   /**
@@ -133,6 +171,7 @@ export const importBody = z.object({
 
 export type CreateSecretBody = z.infer<typeof createSecretBody>;
 export type UpdateSecretBody = z.infer<typeof updateSecretBody>;
+export type PatchSecretMetadataBody = z.infer<typeof patchSecretMetadataBody>;
 export type RestoreSecretBody = z.infer<typeof restoreSecretBody>;
 export type ImportBody = z.infer<typeof importBody>;
 export type ListQuery = z.infer<typeof listQuery>;

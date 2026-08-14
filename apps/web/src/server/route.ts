@@ -1,7 +1,7 @@
 import { BufferedAuditRecorder, createAuditBuilder } from '@xecret/core/audit';
 import type { AuditBuilder, AuditRecord } from '@xecret/core/audit';
 import { AuthorizationError } from '@xecret/core/authz';
-import { actorId, actorLabel, actorType, assertCsrf, authenticate } from './actor';
+import { actorId, actorLabel, actorType, assertCsrf, authenticate, isUnlocked } from './actor';
 import type { CredentialSource, Principal } from './actor';
 import { DatabaseAuditSink } from './audit-sink';
 import { MissingBindingError, publicOrigin } from './bindings';
@@ -91,15 +91,48 @@ export function publicRoute<Params = Record<string, never>>(
   };
 }
 
+export interface AuthenticatedRouteOptions {
+  /**
+   * Lets a route run against a locked session.
+   *
+   * **Deny by default.** The option exists at all only because a locked user
+   * must still be able to reach the handful of endpoints that get them unlocked
+   * — otherwise the lock screen cannot function and the account is bricked until
+   * the session expires. Exactly four routes opt out, and each says why:
+   *
+   *  - `GET /api/auth/me` — the dashboard has to learn *that* it is locked, and
+   *    whether a PIN exists at all, before it can render anything.
+   *  - `POST /api/auth/pin` — setting the first PIN happens from a locked
+   *    session by definition; a new session has never been unlocked.
+   *  - `POST /api/auth/pin/unlock` and the reset pair — the unlock itself.
+   *  - `DELETE /api/auth/session` — signing out must never require unlocking
+   *    first. "I cannot remember my PIN, let me just sign out" has to work.
+   *
+   * Any other route reaching for this is a bug: the gate is what makes the lock
+   * a security control rather than a screen the client chooses to draw.
+   */
+  allowLocked?: boolean;
+}
+
 /**
  * Wraps a handler that requires an authenticated principal.
  *
- * Authentication, the cross-origin check, and CSRF all run before the handler
- * body. Authorization does not: it needs the resource, which only the handler
- * can resolve. The handler calls `can()` — see `docs/architecture/api.md` §2.
+ * Authentication, the cross-origin check, CSRF, and the PIN gate all run before
+ * the handler body. Authorization does not: it needs the resource, which only
+ * the handler can resolve. The handler calls `can()` — see
+ * `docs/architecture/api.md` §2.
+ *
+ * ── Why the lock is enforced here ──
+ * The dashboard draws a lock screen, and that is decoration. This is the control:
+ * a request that arrives with a locked session gets a 403 whatever the client
+ * believes, so a stale tab, a replayed `fetch` from the console, or a script
+ * holding a stolen cookie all get the same answer. Putting the check in each
+ * handler instead would make it something a new route can forget, which is
+ * precisely the class of mistake a wrapper exists to eliminate.
  */
 export function authenticatedRoute<Params = Record<string, never>>(
   handler: Handler<RouteContext<Params>>,
+  options: AuthenticatedRouteOptions = {},
 ): (request: Request, args?: NextRouteArgs<Params>) => Promise<Response> {
   return async (request, args) => {
     const requestId = requestIdFrom(request);
@@ -118,6 +151,10 @@ export function authenticatedRoute<Params = Record<string, never>>(
 
       const { principal, source } = await authenticate(request, services);
       assertCsrf(request, source);
+
+      if (options.allowLocked !== true && !isUnlocked(principal, new Date())) {
+        throw errors.locked('session not unlocked');
+      }
 
       const params = ((await args?.params) ?? {}) as Params;
 

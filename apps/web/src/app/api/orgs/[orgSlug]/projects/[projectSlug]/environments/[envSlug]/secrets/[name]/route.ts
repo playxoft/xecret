@@ -1,8 +1,13 @@
-import { findSecretByName, softDeleteSecret } from '@xecret/db/repositories';
+import { findSecretByName, softDeleteSecret, updateSecretMetadata } from '@xecret/db/repositories';
+import { toSecretValueType } from '@xecret/core/validation';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
-import { secretNameFromPath, updateSecretBody } from '@/server/schemas/secrets';
+import {
+  patchSecretMetadataBody,
+  secretNameFromPath,
+  updateSecretBody,
+} from '@/server/schemas/secrets';
 import {
   auditSource,
   authorizeSecretAction,
@@ -88,6 +93,10 @@ export const GET = authenticatedRoute<Params>(
       secret: {
         name: material.name,
         value,
+        // Returned so the dashboard validates an edit against the same type the
+        // server will check it against, rather than against whatever the listing
+        // happened to say when the page was loaded.
+        valueType: toSecretValueType(material.valueType),
         version: material.version,
         updatedAt: material.createdAt.toISOString(),
         updatedBy: material.createdBy,
@@ -131,10 +140,15 @@ export const PATCH = authenticatedRoute<Params>(
       writer,
       name: current.name,
       value: body.value,
+      // Absent means "keep whatever the row already declares" — see
+      // `resolveValueType`. That inheritance is what stops `xecret set`, which
+      // sends no type, from downgrading a typed secret on every rotation.
+      ...(body.valueType === undefined ? {} : { valueType: body.valueType }),
       existing: {
         secretId: current.secretId,
         version: current.version,
         valueHmac: current.valueHmac,
+        valueType: current.valueType,
       },
     });
 
@@ -156,6 +170,7 @@ export const PATCH = authenticatedRoute<Params>(
           projectSlug: scope.project.slug,
           environmentSlug: scope.environment.slug,
           source: auditSource(principal),
+          ...(body.valueType === undefined ? {} : { valueType: body.valueType }),
           ...(result.status === 'unchanged' ? { reason: 'unchanged' } : {}),
         },
       ),
@@ -163,6 +178,75 @@ export const PATCH = authenticatedRoute<Params>(
 
     return json({
       secret: { name: result.name, version: result.version, status: result.status },
+    });
+  },
+);
+
+/**
+ * Changes what is said *about* a secret, without touching what it holds.
+ *
+ * A separate method from `PATCH` because it is a genuinely different operation:
+ * it appends no version, unwraps no key, and never sees a plaintext. Declaring
+ * `PORT` an integer is not a rotation, and routing it through the write path
+ * would bump the version number — making "when did this credential last actually
+ * change?" unanswerable for the sake of a label.
+ *
+ * `secret.update` is the permission, not something narrower. Being able to
+ * declare a type is being able to decide which future writes are refused, which
+ * is not a lesser authority than writing itself.
+ *
+ * The consequence, stated plainly: a type can be declared that the *current*
+ * value does not satisfy. Refusing that would require decrypting a secret
+ * because somebody used a dropdown, and would make the ordinary repair —
+ * declare the type, then fix the value — impossible in either order. The next
+ * write is where it is enforced, which is the moment the plaintext is
+ * legitimately in hand anyway.
+ */
+export const PUT = authenticatedRoute<Params>(
+  async ({ request, params, principal, services, audit, record }) => {
+    const scope = await resolveEnvironmentPath(principal, params, services);
+    authorizeSecretAction(scope, principal, 'secret.update');
+    await enforceSecretRateLimit(services, principal, 'write');
+
+    const name = secretNameFromPath(params.name);
+    const body = await parseJsonBody(request, patchSecretMetadataBody);
+
+    const updated = await updateSecretMetadata(services.db, {
+      orgId: scope.organization.id,
+      environmentId: scope.environment.id,
+      name,
+      ...(body.note === undefined ? {} : { note: body.note }),
+      ...(body.valueType === undefined ? {} : { valueType: body.valueType }),
+    });
+
+    record(
+      audit(scope.organization.id).success(
+        'secret.updated',
+        {
+          type: 'secret',
+          id: updated.id,
+          projectId: scope.project.id,
+          environmentId: scope.environment.id,
+        },
+        {
+          secretName: updated.name,
+          projectSlug: scope.project.slug,
+          environmentSlug: scope.environment.slug,
+          source: auditSource(principal),
+          valueType: updated.valueType,
+          // Distinguishes this from a rotation in the audit view. Both are
+          // `secret.updated`; only one of them changed the credential.
+          reason: 'metadata',
+        },
+      ),
+    );
+
+    return json({
+      secret: {
+        name: updated.name,
+        note: updated.note,
+        valueType: toSecretValueType(updated.valueType),
+      },
     });
   },
 );

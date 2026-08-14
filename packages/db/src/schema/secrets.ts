@@ -25,6 +25,19 @@ export const secrets = pgTable(
     name: text('name').notNull(),
     /** Non-sensitive description shown in the UI. Never holds a value. */
     note: text('note'),
+    /**
+     * What shape the value is expected to have — see `SECRET_VALUE_TYPES` in
+     * `@xecret/core/validation`.
+     *
+     * A property of the *secret*, not of a version: `PORT` is an integer in
+     * every version it will ever have, and hanging the type off the version row
+     * would let v4 be an integer while v5 is a URL, which is not a rotation but
+     * a different secret wearing the same name.
+     *
+     * `string` is the default and accepts anything, so every row that predates
+     * this column is already correct rather than merely tolerated.
+     */
+    valueType: text('value_type').notNull().default('string'),
     createdBy: uuid('created_by')
       .notNull()
       .references(() => users.id),
@@ -37,6 +50,15 @@ export const secrets = pgTable(
     // purpose: the application gives a good error message, the database
     // guarantees the invariant even if a query bypasses the application layer.
     check('secrets_name_check', sql`${t.name} ~ '^[A-Za-z_][A-Za-z0-9_]*$'`),
+    // Mirrors `SECRET_VALUE_TYPES`. A CHECK rather than a PostgreSQL enum: this
+    // list will grow, and adding a value to an enum is a migration that has to
+    // run before any deployment can write the new value, whereas widening a
+    // CHECK is not. Deliberately kept in sync by hand — `schema.test.ts` fails
+    // if the two lists diverge, so the pairing is enforced rather than hoped for.
+    check(
+      'secrets_value_type_check',
+      sql`${t.valueType} in ('string','boolean','int','decimal','email','url','date','datetime','json','yaml','xml','ulid','uuidv4','uuidv7')`,
+    ),
     uniqueIndex('secrets_env_name_idx')
       .on(t.environmentId, t.name)
       .where(sql`${t.deletedAt} is null`),

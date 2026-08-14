@@ -15,13 +15,26 @@ import type { Session, SessionResolution } from './types';
 export const SESSION_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
- * Idle timeout. An unused session expires after 7 days.
+ * Idle timeout, now equal to the absolute lifetime — so in practice there is no
+ * separate idle rule, and a session lasts the full 30 days.
  *
- * Shorter than the absolute lifetime because the common real-world compromise is
- * an abandoned session on a shared or lost machine, not a 30-day-old cookie from
- * an actively used browser.
+ * ── Why this was 7 days, and why it is not any more ──
+ * The idle rule existed to bound one specific compromise: an abandoned session
+ * on a shared or lost machine. It bought that at a real cost — anyone back from
+ * two weeks' leave signed in again — and it bought it badly, because seven days
+ * is a long time to leave a laptop open on a desk.
+ *
+ * The unlock PIN (see `pin.ts`) addresses the same threat directly and far
+ * better: an idle session re-locks after eight hours, and the cookie on its own
+ * cannot read a secret. Keeping both would mean paying the idle rule's cost for
+ * protection the PIN already provides more tightly.
+ *
+ * The constant stays rather than being deleted, and `evaluateSession` still
+ * applies it. Removing the mechanism would make re-introducing a shorter window
+ * — for a deployment that chooses not to require PINs, say — a code change
+ * rather than a number change.
  */
-export const SESSION_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
+export const SESSION_IDLE_MS = SESSION_LIFETIME_MS;
 
 /**
  * How stale `last_seen_at` may get before it is written again.

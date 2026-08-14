@@ -24,6 +24,17 @@ export type ApiErrorCode =
   | 'payload_too_large'
   | 'rate_limited'
   | 'csrf_failed'
+  /**
+   * The credential is valid but the session has not had its PIN entered
+   * recently — see `pin.ts` in `@xecret/core/auth`.
+   *
+   * Its own code rather than a plain `forbidden`, because it is the one 403 in
+   * the product that the *client* can resolve without anybody changing anything:
+   * the dashboard shows the lock screen, and the request succeeds on retry. A
+   * generic "you do not have permission" would send a user to ask an admin for
+   * access they already have.
+   */
+  | 'session_locked'
   | 'internal_error'
   | 'unavailable';
 
@@ -37,6 +48,7 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   payload_too_large: 413,
   rate_limited: 429,
   csrf_failed: 403,
+  session_locked: 403,
   internal_error: 500,
   unavailable: 503,
 };
@@ -150,6 +162,36 @@ export const errors = {
   rateLimited: (): ApiError =>
     new ApiError('rate_limited', 'Too many requests. Please slow down and try again.'),
 
+  /**
+   * The session is authenticated but locked.
+   *
+   * Carries no detail about *why* beyond the fact — whether the user has a PIN
+   * at all is answered by `GET /api/auth/me`, which is deliberately outside this
+   * gate so the dashboard can tell "set one up" from "enter yours" without
+   * needing a failed request to find out.
+   */
+  locked: (logDetail?: string): ApiError =>
+    new ApiError(
+      'session_locked',
+      'Enter your PIN to continue.',
+      logDetail === undefined ? {} : { logDetail },
+    ),
+
+  /**
+   * Too many wrong PINs.
+   *
+   * The wait is stated because it is the only actionable thing left, and it
+   * discloses nothing: the caller already knows they were refused, and the
+   * schedule is a published constant. Rounded up to whole seconds so the message
+   * never says "wait 0 seconds" for a lockout that has not quite elapsed.
+   */
+  pinLocked: (retryAfterMs: number): ApiError =>
+    new ApiError(
+      'rate_limited',
+      `Too many incorrect PINs. Try again in ${describeWait(retryAfterMs)}.`,
+      { logDetail: 'pin lockout' },
+    ),
+
   csrf: (logDetail: string): ApiError =>
     new ApiError('csrf_failed', 'The request could not be verified. Please refresh and retry.', {
       logDetail,
@@ -166,3 +208,12 @@ export const errors = {
   internal: (logDetail: string): ApiError =>
     new ApiError('internal_error', 'Something went wrong.', { logDetail }),
 } as const;
+
+/** "45 seconds" / "3 minutes" — whichever reads better at that magnitude. */
+function describeWait(ms: number): string {
+  const seconds = Math.max(Math.ceil(ms / 1000), 1);
+  if (seconds < 90) return `${seconds} second${seconds === 1 ? '' : 's'}`;
+
+  const minutes = Math.ceil(seconds / 60);
+  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+}

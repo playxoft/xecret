@@ -11,6 +11,12 @@ import type { Bytes, EncryptedValue, EncryptionContext } from '@xecret/core/cryp
 import { ExportFormatError, formatSecrets } from '@xecret/core/format';
 import type { ExportFormat } from '@xecret/core/format';
 import { uuidv7 } from '@xecret/core/ids';
+import {
+  DEFAULT_SECRET_VALUE_TYPE,
+  checkSecretValue,
+  toSecretValueType,
+} from '@xecret/core/validation';
+import type { SecretValueType } from '@xecret/core/validation';
 import type { AuditMetadata } from '@xecret/core/audit';
 import type { Action } from '@xecret/core/authz';
 import {
@@ -20,6 +26,7 @@ import {
   loadEnvironmentKeyChain,
   loadEnvironmentSecrets,
   toBytes,
+  updateSecretMetadata,
 } from '@xecret/db/repositories';
 import type { SecretMaterial } from '@xecret/db/repositories';
 import { actorId } from './actor';
@@ -107,12 +114,23 @@ export interface ExistingSecret {
   /** The current highest version. The new row will be this plus one. */
   version: number;
   valueHmac: Uint8Array | null;
+  /** The type currently declared on the row, so a write can inherit it. */
+  valueType?: string | undefined;
 }
 
 export interface SecretWrite {
   name: string;
   value: string;
   note?: string | null | undefined;
+  /**
+   * The shape this value is declared to have.
+   *
+   * Omitted means "whatever the secret already says", falling back to `string`
+   * for a new one. That inheritance is what makes the type stick: a rotation
+   * performed through the CLI, which knows nothing about types, must not
+   * silently downgrade `PORT` back to an unchecked string.
+   */
+  valueType?: string | undefined;
   existing?: ExistingSecret | undefined;
 }
 
@@ -269,9 +287,17 @@ export async function applySecretWrites(
     if (batch.dryRun === true) return results;
 
     const pending = prepared.filter(isPendingWrite);
-    if (pending.length === 0) return results;
 
-    await commitWrites(services, scope, key, batch.writer, pending);
+    // A row whose value did not change but whose declared type did. It writes no
+    // version and needs no key — see `updateSecretMetadata` — so it is collected
+    // separately rather than smuggled through the ciphertext path.
+    const retypeOnly = prepared.filter(
+      (write): write is UnchangedWrite => write.kind === 'unchanged' && write.retypes,
+    );
+
+    if (pending.length === 0 && retypeOnly.length === 0) return results;
+
+    await commitWrites(services, scope, key, batch.writer, pending, retypeOnly);
     return results;
   });
 }
@@ -468,6 +494,16 @@ interface UnchangedWrite {
   secretId: string;
   name: string;
   version: number;
+  valueType: SecretValueType;
+  /**
+   * True when the value is unchanged but its *declared type* is not.
+   *
+   * Tracked on this branch as well as on a real write, because "declare PORT an
+   * integer" submitted alongside the value it already holds is a change the user
+   * asked for and would otherwise vanish: the HMAC matches, the write
+   * short-circuits, and the dropdown silently springs back on the next reload.
+   */
+  retypes: boolean;
 }
 
 interface PlannedWrite {
@@ -475,6 +511,10 @@ interface PlannedWrite {
   secretId: string;
   name: string;
   note: string | null;
+  /** Resolved: the request's type, the stored one, or `string`. */
+  valueType: SecretValueType;
+  /** True when this write also changes the type declared on `secrets`. */
+  retypes: boolean;
   version: number;
   /**
    * Absent on a dry run, which answers "what would happen" and has no reason to
@@ -517,6 +557,34 @@ async function prepareWrite(
   dryRun: boolean,
   write: SecretWrite,
 ): Promise<PreparedWrite> {
+  // ── The declared shape, checked before anything else happens ──
+  //
+  // First, so a value of the wrong shape costs a regular expression rather than
+  // an HMAC and an encryption. And here rather than in the route, because *this*
+  // is the choke point every write passes through: the dashboard, the CLI, the
+  // import endpoint and a restore all arrive at this function, and a check in
+  // any one of them would be a check the other three do not perform.
+  //
+  // The dashboard checks the same thing as you type, using the same module. That
+  // copy is for the person; this one is the rule.
+  const valueType = resolveValueType(write);
+  const shape = checkSecretValue(write.value, valueType);
+  if (!shape.valid) {
+    // The message comes from `checkSecretValue`, which builds it from fixed
+    // strings and the type's name and never from the value — see the note at
+    // the top of `value-type.ts`. That is what makes it safe to return here.
+    throw errors.validation([
+      { field: 'value', message: shape.message ?? `That is not a valid ${valueType}.` },
+    ]);
+  }
+
+  // Compared against the *normalised* stored type, not the raw column. An older
+  // row, or a caller that passes no type at all, reads as `string` — which is
+  // what it is. Comparing the raw `undefined` instead made every ordinary write
+  // look like a retype and issued a pointless metadata UPDATE alongside it.
+  const storedType = toSecretValueType(write.existing?.valueType);
+  const retypes = write.existing !== undefined && storedType !== valueType;
+
   const valueHmac = await computeValueHmac({
     envKeyBytes: key.bytes,
     environmentId: scope.environment.id,
@@ -532,6 +600,8 @@ async function prepareWrite(
         secretId: existing.secretId,
         name: write.name,
         version: existing.version,
+        valueType,
+        retypes,
       };
     }
   }
@@ -541,7 +611,16 @@ async function prepareWrite(
   const kind = existing ? ('append' as const) : ('create' as const);
 
   if (dryRun) {
-    return { kind, secretId, name: write.name, note: write.note ?? null, version, valueHmac };
+    return {
+      kind,
+      secretId,
+      name: write.name,
+      note: write.note ?? null,
+      valueType,
+      retypes,
+      version,
+      valueHmac,
+    };
   }
 
   const context: EncryptionContext = {
@@ -557,6 +636,8 @@ async function prepareWrite(
       secretId,
       name: write.name,
       note: write.note ?? null,
+      valueType,
+      retypes,
       version,
       encrypted: await services.envelope.encrypt(key.bytes, context, write.value),
       valueHmac,
@@ -589,6 +670,7 @@ async function commitWrites(
   key: EnvironmentKey,
   writer: string,
   writes: readonly PendingWrite[],
+  retypes: readonly UnchangedWrite[] = [],
 ): Promise<void> {
   try {
     await services.db.transaction(async (tx) => {
@@ -600,6 +682,7 @@ async function commitWrites(
             environmentId: scope.environment.id,
             name: write.name,
             note: write.note,
+            valueType: write.valueType,
             envKeyId: key.envKeyId,
             encrypted: write.encrypted,
             valueHmac: write.valueHmac,
@@ -620,11 +703,53 @@ async function commitWrites(
         if (version.version !== write.version) {
           throw errors.conflict('This secret was changed by another request. Retry the update.');
         }
+
+        // Inside the same transaction as the version it accompanies. "This is a
+        // port number, and here it is" has to land as one change or neither —
+        // a committed value under a rolled-back type is exactly the mismatch
+        // this feature exists to prevent.
+        if (write.retypes) {
+          await updateSecretMetadata(tx, {
+            orgId: scope.organization.id,
+            environmentId: scope.environment.id,
+            name: write.name,
+            valueType: write.valueType,
+          });
+        }
+      }
+
+      for (const write of retypes) {
+        await updateSecretMetadata(tx, {
+          orgId: scope.organization.id,
+          environmentId: scope.environment.id,
+          name: write.name,
+          valueType: write.valueType,
+        });
       }
     });
   } catch (cause) {
     rethrowRepositoryFailure(cause);
   }
+}
+
+/**
+ * Decides which type a write is checked against.
+ *
+ * The precedence — request, then the stored declaration, then `string` — is what
+ * makes a type stick once it is set. A rotation performed by `xecret set`, which
+ * has never heard of value types and sends no `valueType`, inherits the
+ * declaration already on the row; without that, the CLI would silently downgrade
+ * every typed secret it touched back to an unchecked string, and the check would
+ * quietly stop applying to exactly the secrets that get rotated most.
+ *
+ * `toSecretValueType` rather than a cast, so a row written by a newer deployment
+ * naming a type this build does not implement degrades to `string` — accepting
+ * the value — instead of throwing and making the secret unwritable.
+ */
+function resolveValueType(write: SecretWrite): SecretValueType {
+  if (write.valueType !== undefined) return toSecretValueType(write.valueType);
+  if (write.existing?.valueType !== undefined) return toSecretValueType(write.existing.valueType);
+  return DEFAULT_SECRET_VALUE_TYPE;
 }
 
 /**

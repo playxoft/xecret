@@ -43,6 +43,8 @@ export interface SecretListItem {
   environmentId: string;
   name: string;
   note: string | null;
+  /** One of `SECRET_VALUE_TYPES`. Left as the raw column — see `SecretMaterial`. */
+  valueType: string;
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
@@ -85,6 +87,16 @@ export interface SecretVersionPage {
 export interface SecretMaterial {
   secretId: string;
   name: string;
+  /**
+   * The declared shape of the value, as stored.
+   *
+   * A plain `string` rather than the `SecretValueType` union, for the same
+   * reason `algorithm` above is: a row written by a newer deployment may name a
+   * type this build has never heard of, and a read path that refuses to
+   * represent it cannot show the user their own secret. Narrowing is the
+   * caller's job, through `toSecretValueType`, which falls back to `string`.
+   */
+  valueType: string;
   environmentId: string;
   versionId: string;
   version: number;
@@ -100,6 +112,8 @@ export interface CreateSecretParams {
   environmentId: string;
   name: string;
   note?: string | null | undefined;
+  /** Defaults to `string`, which accepts anything, when omitted. */
+  valueType?: string | undefined;
   /**
    * The id to assign, supplied by the caller.
    *
@@ -154,6 +168,7 @@ export async function listSecrets(
       environmentId: secrets.environmentId,
       name: secrets.name,
       note: secrets.note,
+      valueType: secrets.valueType,
       createdBy: secrets.createdBy,
       createdAt: secrets.createdAt,
       updatedAt: secrets.updatedAt,
@@ -213,6 +228,7 @@ export async function loadEnvironmentSecrets(
     .selectDistinctOn([secretVersions.secretId], {
       secretId: secrets.id,
       name: secrets.name,
+      valueType: secrets.valueType,
       environmentId: secrets.environmentId,
       versionId: secretVersions.id,
       version: secretVersions.version,
@@ -259,6 +275,7 @@ export async function findSecretByName(
     .selectDistinctOn([secretVersions.secretId], {
       secretId: secrets.id,
       name: secrets.name,
+      valueType: secrets.valueType,
       environmentId: secrets.environmentId,
       versionId: secretVersions.id,
       version: secretVersions.version,
@@ -339,6 +356,7 @@ export async function createSecret(
         environmentId: params.environmentId,
         name: params.name,
         note: params.note ?? null,
+        valueType: params.valueType ?? 'string',
         createdBy: params.createdBy,
       })
       .onConflictDoNothing()
@@ -527,6 +545,7 @@ export async function getSecretVersion(
     .select({
       secretId: secrets.id,
       name: secrets.name,
+      valueType: secrets.valueType,
       environmentId: secrets.environmentId,
       versionId: secretVersions.id,
       version: secretVersions.version,
@@ -615,6 +634,64 @@ export async function restoreSecret(
   }
 }
 
+export interface UpdateSecretMetadataParams {
+  orgId: string;
+  environmentId: string;
+  name: string;
+  /** Omit to leave unchanged. */
+  note?: string | null | undefined;
+  /** Omit to leave unchanged. One of `SECRET_VALUE_TYPES`. */
+  valueType?: string | undefined;
+}
+
+/**
+ * Changes what is said *about* a secret, without touching what it holds.
+ *
+ * Declaring `PORT` an integer is not a rotation. It appends no version, writes
+ * no ciphertext, and needs no key — so it must not go through the write path,
+ * which would bump the version number and make "when did this credential last
+ * actually change?" unanswerable for the sake of a label.
+ *
+ * The consequence worth stating: a type can be declared that the *current* value
+ * does not satisfy. That is deliberate. The alternative is decrypting a secret
+ * because somebody used a dropdown, and refusing the change until the value is
+ * fixed makes the common repair — declare the type, then correct the value —
+ * impossible to perform in either order. The API validates the value against the
+ * type on the next write, which is the moment the plaintext is legitimately in
+ * hand anyway.
+ */
+export async function updateSecretMetadata(
+  exec: Executor,
+  params: UpdateSecretMetadataParams,
+): Promise<SecretRecord> {
+  const patch: Record<string, unknown> = {};
+  if (params.note !== undefined) patch['note'] = params.note;
+  if (params.valueType !== undefined) patch['valueType'] = params.valueType;
+
+  if (Object.keys(patch).length === 0) {
+    throw new RepositoryError('invalid', 'No secret metadata was supplied to update.');
+  }
+
+  const [row] = await exec
+    .update(secrets)
+    .set({ ...patch, updatedAt: sql`now()` })
+    .where(
+      and(
+        eq(secrets.name, params.name),
+        eq(secrets.environmentId, params.environmentId),
+        isNull(secrets.deletedAt),
+        withinOrganization(params.orgId),
+      ),
+    )
+    .returning();
+
+  if (!row) {
+    throw new RepositoryError('notFound', `No secret named "${params.name}" in this environment`);
+  }
+
+  return row;
+}
+
 /** Counts an environment's live secrets, for quota checks and list headers. */
 export async function countSecrets(
   exec: Executor,
@@ -671,6 +748,7 @@ const versionSummaryColumns = {
 interface CiphertextRow {
   secretId: string;
   name: string;
+  valueType: string;
   environmentId: string;
   versionId: string;
   version: number;
@@ -694,6 +772,7 @@ function toSecretMaterial(row: CiphertextRow): SecretMaterial {
   return {
     secretId: row.secretId,
     name: row.name,
+    valueType: row.valueType,
     environmentId: row.environmentId,
     versionId: row.versionId,
     version: row.version,

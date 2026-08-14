@@ -29,6 +29,13 @@
       "when": 1786924800000,
       "tag": "0003_rename_app_role",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786924900000,
+      "tag": "0004_pin_lock_and_value_types",
+      "breakpoints": true
     }
   ]
 }

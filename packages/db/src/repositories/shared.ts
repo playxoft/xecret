@@ -63,4 +63,17 @@ export class RepositoryError extends Error {
   }
 }
 
-export type RepositoryErrorCode = 'conflict' | 'notFound' | 'lastOwner' | 'seatLimit' | 'immutable';
+export type RepositoryErrorCode =
+  | 'conflict'
+  | 'notFound'
+  | 'lastOwner'
+  | 'seatLimit'
+  | 'immutable'
+  /**
+   * The call itself is malformed — an update with nothing to update, say.
+   *
+   * Distinct from the others in that it describes the *request* rather than the
+   * data: no arrangement of rows would have made it succeed. Route handlers map
+   * it to 400, which is where their `default` branch already sends it.
+   */
+  | 'invalid';

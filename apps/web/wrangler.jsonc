@@ -21,7 +21,7 @@
   // pushed to Cloudflare at deploy time — never in this file, which is committed.
   "vars": {
     "XECRET_ENV": "development",
-    "XECRET_PUBLIC_URL": "http://localhost:3000",
+    "XECRET_PUBLIC_URL": "http://localhost:3030",
     // The root key version new wrapping operations use. Bumped as step 4 of the
     // rotation runbook in docs/security/key-recovery.md, only after the new key
     // is present in XECRET_ROOT_KEYS.

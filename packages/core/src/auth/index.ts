@@ -25,6 +25,28 @@ export type { CookieOptions, SessionRecord } from './session';
 export { generateToken, hashToken, isWellFormedToken, TOKEN_PREFIXES, verifyToken } from './tokens';
 export type { GeneratedToken, TokenKind } from './tokens';
 
+export {
+  PBKDF2_ITERATIONS,
+  PIN_FREE_ATTEMPTS,
+  PIN_LENGTH,
+  PIN_LOCKOUT_BASE_MS,
+  PIN_LOCKOUT_MAX_MS,
+  PIN_PATTERN,
+  PIN_RESET_TTL_MS,
+  PIN_UNLOCK_MS,
+  checkPin,
+  clearedPinFailures,
+  evaluatePinLockout,
+  hashPin,
+  isSessionUnlocked,
+  nextPinFailure,
+  pinNeedsRehash,
+  pinResetExpiryFrom,
+  unlockExpiryFrom,
+  verifyPin,
+} from './pin';
+export type { PinAttemptState, PinCheck, PinLockout, PinProblem } from './pin';
+
 export { IdentityVerificationError } from './types';
 export type {
   IdentityProvider,

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 
 import { cn } from '@/lib/cn';
 import { errorMessage } from '@/lib/api';
@@ -31,6 +32,17 @@ export interface SecretValueProps {
   onReveal: () => Promise<string>;
   /** How long a revealed value stays on screen. */
   revealDurationMs?: number;
+  /**
+   * Extra controls for this value, rendered in the same group as reveal and
+   * copy — an edit button, usually.
+   *
+   * A slot rather than a sibling rendered by the caller, because the caller
+   * cannot align to a group it is outside of: the reveal and copy buttons sit
+   * on the first line of a component that also renders a countdown and errors
+   * beneath them, so anything appended from outside lands under the field
+   * instead of beside it.
+   */
+  trailing?: ReactNode;
   className?: string;
 }
 
@@ -51,6 +63,7 @@ export function SecretValue({
   name,
   onReveal,
   revealDurationMs = 30_000,
+  trailing,
   className,
 }: SecretValueProps) {
   const [state, setState] = useState<RevealState>('masked');
@@ -208,6 +221,8 @@ export function SecretValue({
             <CopyIcon className="size-4" />
           )}
         </Button>
+
+        {trailing}
       </div>
 
       {revealed ? (

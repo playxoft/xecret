@@ -43,7 +43,8 @@
     "check:env": "tsx scripts/check-env.ts",
     "phase:check-env": "phase run -- npm run check:env",
     "smoke": "tsx scripts/smoke-test.ts",
-    "phase:smoke": "phase run -- npm run smoke"
+    "phase:smoke": "phase run -- npm run smoke",
+    "kill:4050": "kill -9 $(lsof -t -i:3000)"
   },
   "devDependencies": {
     "@eslint/js": "^9",

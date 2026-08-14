@@ -61,6 +61,33 @@ declare global {
      */
     DATABASE_URL?: string | undefined;
 
+    /**
+     * ZeptoMail's Send Mail token, from the Mail Agent that will send xecret's
+     * transactional email. A credential — it authorises sending as your domain.
+     */
+    ZEPTOMAIL_TOKEN?: string | undefined;
+
+    /**
+     * The `From` address. Must be on a domain verified in ZeptoMail, because
+     * Zoho refuses a send from an unverified one rather than silently
+     * rewriting it.
+     */
+    ZEPTOMAIL_FROM_ADDRESS?: string | undefined;
+
+    /** The display name beside that address. Defaults to `xecret`. */
+    ZEPTOMAIL_FROM_NAME?: string | undefined;
+
+    /**
+     * The regional API endpoint.
+     *
+     * A ZeptoMail token is only valid in the data centre that issued it, so an
+     * EU or India account must set this — `https://api.zeptomail.eu/v1.1/email`,
+     * `https://api.zeptomail.in/v1.1/email`. Left unset it points at the default
+     * host, which is right for most accounts and produces an unexplained 401 for
+     * the rest.
+     */
+    ZEPTOMAIL_API_URL?: string | undefined;
+
     RL_LOGIN?: RateLimit;
     RL_CLI_TOKEN?: RateLimit;
     RL_INVITE?: RateLimit;
@@ -126,6 +153,10 @@ const PROCESS_SUPPLIED = [
   'DATABASE_URL',
   'FIREBASE_PROJECT_ID',
   'XECRET_ROOT_KEY_VERSION',
+  'ZEPTOMAIL_TOKEN',
+  'ZEPTOMAIL_FROM_ADDRESS',
+  'ZEPTOMAIL_FROM_NAME',
+  'ZEPTOMAIL_API_URL',
 ] as const;
 
 /**

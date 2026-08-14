@@ -19,6 +19,19 @@ export type AuditAction =
   | 'auth.logout'
   | 'auth.login_failed'
   | 'auth.session_revoked'
+  /**
+   * The unlock PIN was created, replaced, or reset through an emailed link.
+   *
+   * Recorded because a PIN change is the one account-level act that alters who
+   * can reach secrets from an already-signed-in device. `auth.pin_reset` in
+   * particular is what an incident review looks for: it means somebody proved
+   * control of the mailbox rather than knowledge of the PIN.
+   */
+  | 'auth.pin_set'
+  | 'auth.pin_changed'
+  | 'auth.pin_reset'
+  /** A session was locked without being revoked — the user is still signed in. */
+  | 'auth.locked'
   | 'org.created'
   | 'org.updated'
   | 'project.created'
@@ -63,6 +76,16 @@ export interface AuditMetadata {
   newRole?: string;
   tokenPrefix?: string;
   keyVersion?: number;
+  /** How many sessions one act affected — "lock everywhere", "sign out everywhere". */
+  sessionCount?: number;
+  /**
+   * The declared shape of a secret's value, e.g. `int` or `url`.
+   *
+   * A type name, never a value. It is recorded because changing it changes what
+   * future writes will be refused, which is a policy change worth being able to
+   * date.
+   */
+  valueType?: string;
   reason?: string;
   source?: 'dashboard' | 'cli' | 'ci' | 'api';
 }

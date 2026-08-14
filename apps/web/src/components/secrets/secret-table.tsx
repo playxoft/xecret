@@ -1,10 +1,10 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { formatAbsoluteTime, formatRelativeTime, pluralize, toIsoString } from '@/lib/format';
+import { pluralize } from '@/lib/format';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import {
   Alert,
@@ -13,17 +13,12 @@ import {
   Checkbox,
   ChevronUpDownIcon,
   ConfirmDialog,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
   EmptyState,
   Input,
   KeyIcon,
+  LayersIcon,
+  PlusIcon,
   SearchIcon,
-  SecretValue,
-  SettingsIcon,
   Skeleton,
   Table,
   TableBody,
@@ -34,10 +29,13 @@ import {
   TableRow,
   useToast,
 } from '@/components/ui';
-import { Actor } from './actor';
-import { SecretDialog } from './secret-dialog';
+import { BulkAddPanel } from './bulk-add-panel';
+import { DraftRow } from './draft-row';
+import { SecretRow } from './secret-row';
+import { useStagedChanges } from './staged-changes';
+import type { SaveOutcome } from './staged-changes';
 import { VersionHistoryDialog } from './version-history-dialog';
-import type { RevealedSecret, SecretSummary } from './types';
+import type { SecretSummary } from './types';
 
 export interface SecretTableProps {
   orgSlug: string;
@@ -49,6 +47,9 @@ export interface SecretTableProps {
   onLoadMore: (() => void) | null;
   loadingMore: boolean;
   onChanged: () => void;
+  /** Opens the import and export dialogs, which the environment screen owns. */
+  onImport?: (() => void) | undefined;
+  onExport?: (() => void) | undefined;
 }
 
 type SortKey = 'name' | 'updatedAt';
@@ -57,22 +58,17 @@ type SortDirection = 'asc' | 'desc';
 /**
  * The environment's secrets. The main screen of the product.
  *
- * ── Three rules this table exists to hold ──
+ * ── An editor, not a viewer with dialogs bolted on ──
+ * Adding six keys to a new environment is one task. Doing it through a modal
+ * per key makes it six, and the modal is in the way of the only thing that
+ * helps — seeing the other five while you type the sixth. So new rows are
+ * composed in the table, existing values are rewritten in the table, and one
+ * save button commits the lot. `staged-changes.ts` holds that work; this
+ * component is the surface it is edited through.
  *
- *  1. **A stored value is never on screen until somebody asks for it.** Every
- *     row renders a fixed-length mask whose length is unrelated to the real one,
- *     because length distinguishes a 16-character API key from a 64-character
- *     token and turns "unknown credential" into "AWS access key, brute-forceable
- *     offline at this cost".
- *  2. **A reveal always goes through the audited endpoint.** `SecretValue` calls
- *     `onReveal` on every reveal and every copy, and the callback below always
- *     issues `GET …/secrets/{name}`, which decrypts and writes a
- *     `secret.revealed` record each time. Caching the plaintext after the first
- *     reveal would make the audit trail claim one read where six happened — and
- *     "who read this, and when" is the question this product exists to answer.
- *  3. **Copy never renders.** The copy button fetches its own plaintext and
- *     writes it straight to the clipboard; the common case is pasting into a
- *     terminal, and showing it on the way there is exposure that buys nothing.
+ * Dialogs survive where the task genuinely is modal and rare: version history,
+ * import and export of whole documents, and deletion — which is the one action
+ * here that cannot be undone by discarding.
  *
  * ── Keyboard and screen reader ──
  * A real `<table>`, so a screen reader announces row and column context as the
@@ -81,7 +77,8 @@ type SortDirection = 'asc' | 'desc';
  * a screen reader reads — the arrow glyph is decorative. Every per-row control
  * names its row ("Reveal the value of DATABASE_URL"), because "Reveal" repeated
  * sixty times is unusable. Filtering announces its result count through a polite
- * live region rather than silently changing the number of rows under the cursor.
+ * live region rather than silently changing the number of rows under the cursor,
+ * and so does the count of unsaved changes.
  */
 export function SecretTable({
   orgSlug,
@@ -92,6 +89,8 @@ export function SecretTable({
   onLoadMore,
   loadingMore,
   onChanged,
+  onImport,
+  onExport,
 }: SecretTableProps) {
   const { toast } = useToast();
 
@@ -100,12 +99,15 @@ export function SecretTable({
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
-  const [creating, setCreating] = useState(false);
-  const [editing, setEditing] = useState<SecretSummary | null>(null);
+  const [bulkAdding, setBulkAdding] = useState(false);
   const [history, setHistory] = useState<SecretSummary | null>(null);
   const [deleting, setDeleting] = useState<SecretSummary | null>(null);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [actionError, setActionError] = useState<unknown>(null);
+
+  const staged = useStagedChanges(orgSlug, projectSlug, envSlug);
+
+  const existingNames = useMemo(() => new Set(secrets.map((secret) => secret.name)), [secrets]);
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -171,6 +173,9 @@ export function SecretTable({
   async function deleteOne(name: string) {
     await api.delete(apiPath.secret(orgSlug, projectSlug, envSlug, name));
     setSelected(new Set());
+    // A staged rewrite of a secret that no longer exists would fail on the next
+    // save with a 404 nobody could explain.
+    staged.closeEdit(name);
     toast({ variant: 'success', title: `Deleted ${name}` });
     onChanged();
   }
@@ -186,6 +191,7 @@ export function SecretTable({
     for (const name of names) {
       try {
         await api.delete(apiPath.secret(orgSlug, projectSlug, envSlug, name));
+        staged.closeEdit(name);
       } catch {
         // The individual failure is not surfaced: it is one of a batch, and the
         // summary below is what the user needs. Nothing about the thrown value
@@ -209,28 +215,64 @@ export function SecretTable({
     });
   }
 
+  async function saveStaged() {
+    if (staged.pendingCount === 0 || staged.saving) return;
+    setActionError(null);
+
+    const outcome = await staged.save(existingNames);
+    // Always, even on a total failure: a partial batch has already changed the
+    // environment, and leaving the table showing the old versions would make
+    // the next save operate on stale version numbers.
+    onChanged();
+    announce(outcome);
+  }
+
+  function announce(outcome: SaveOutcome) {
+    const wrote = outcome.created + outcome.updated;
+    const parts: string[] = [];
+    if (outcome.created > 0) parts.push(`${pluralize(outcome.created, 'secret')} created`);
+    if (outcome.updated > 0) parts.push(`${outcome.updated} updated`);
+    if (outcome.unchanged > 0) parts.push(`${outcome.unchanged} already had that value`);
+
+    if (outcome.failed === 0) {
+      toast({
+        variant: wrote === 0 ? 'info' : 'success',
+        title: wrote === 0 ? 'Nothing to save' : 'Saved',
+        ...(parts.length > 0 ? { description: `${parts.join(', ')}.` } : {}),
+      });
+      return;
+    }
+
+    toast({
+      variant: 'error',
+      title: `${pluralize(outcome.failed, 'row')} could not be saved`,
+      description:
+        parts.length > 0
+          ? `${parts.join(', ')}. The rows that failed are still in the table with the reason.`
+          : 'They are still in the table, each with the reason.',
+    });
+  }
+
   const allVisibleSelected = visible.length > 0 && selectedVisible.length === visible.length;
   const someVisibleSelected = selectedVisible.length > 0 && !allVisibleSelected;
+  const hasRows = visible.length > 0 || staged.drafts.length > 0;
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="min-w-0 flex-1 sm:max-w-xs">
-          <Input
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Filter by name"
-            aria-label="Filter secrets by name"
-            autoComplete="off"
-            startIcon={<SearchIcon className="size-4" />}
-          />
-        </div>
+      <Toolbar
+        query={query}
+        onQueryChange={setQuery}
+        bulkAdding={bulkAdding}
+        onToggleBulkAdd={() => setBulkAdding((current) => !current)}
+        onAddDraft={() => staged.addDraft()}
+        disabled={staged.saving}
+        {...(onImport === undefined ? {} : { onImport })}
+        {...(onExport === undefined ? {} : { onExport })}
+      />
 
-        <Button variant="primary" onClick={() => setCreating(true)}>
-          New secret
-        </Button>
-      </div>
+      {bulkAdding ? (
+        <BulkAddPanel onAdd={staged.addDrafts} onClose={() => setBulkAdding(false)} />
+      ) : null}
 
       {/* The visible count, and the same fact announced politely. Without this a
           screen reader user who types into the filter hears nothing at all. */}
@@ -266,18 +308,25 @@ export function SecretTable({
         </Alert>
       ) : null}
 
-      {secrets.length === 0 ? (
+      {!hasRows && secrets.length === 0 ? (
         <EmptyState
           icon={<KeyIcon />}
           title="No secrets in this environment yet"
-          description="Add one by hand, or import an existing .env file and have every value in it here in a few seconds."
+          description="Add one here, paste a whole block of them, or import an existing .env file and have every value in it here in a few seconds."
           action={
-            <Button variant="primary" onClick={() => setCreating(true)}>
-              New secret
+            <Button variant="primary" onClick={() => staged.addDraft()}>
+              <PlusIcon className="size-4" />
+              Add a secret
+            </Button>
+          }
+          secondaryAction={
+            <Button variant="secondary" onClick={() => setBulkAdding(true)}>
+              <LayersIcon className="size-4" />
+              Paste several
             </Button>
           }
         />
-      ) : visible.length === 0 ? (
+      ) : !hasRows ? (
         <EmptyState
           icon={<SearchIcon />}
           title={`Nothing matches “${query.trim()}”`}
@@ -303,6 +352,7 @@ export function SecretTable({
                       aria-label={
                         allVisibleSelected ? 'Deselect all secrets' : 'Select all secrets shown'
                       }
+                      disabled={visible.length === 0}
                     />
                   </TableHead>
 
@@ -339,12 +389,49 @@ export function SecretTable({
                     envSlug={envSlug}
                     secret={secret}
                     selected={selected.has(secret.name)}
+                    edit={staged.edits.get(secret.name)}
+                    disabled={staged.saving}
                     onSelectedChange={(checked) => toggleOne(secret.name, checked)}
-                    onEdit={() => setEditing(secret)}
+                    onEditOpen={() => staged.openEdit(secret.name)}
+                    onEditChange={(value) => staged.setEdit(secret.name, value)}
+                    onEditClose={() => staged.closeEdit(secret.name)}
                     onHistory={() => setHistory(secret)}
                     onDelete={() => setDeleting(secret)}
+                    onCommit={saveStaged}
                   />
                 ))}
+
+                {/* Drafts sit at the bottom, below whatever the sort and filter
+                    are doing, because a row being typed into must not move when
+                    its name crosses an alphabetical boundary mid-keystroke. */}
+                {staged.drafts.map((draft) => (
+                  <DraftRow
+                    key={draft.id}
+                    draft={draft}
+                    drafts={staged.drafts}
+                    existingNames={existingNames}
+                    disabled={staged.saving}
+                    onPatch={(patch) => staged.patchDraft(draft.id, patch)}
+                    onExpand={(seeds) => staged.expandDraft(draft.id, seeds)}
+                    onRemove={() => staged.removeDraft(draft.id)}
+                    onCommit={saveStaged}
+                  />
+                ))}
+
+                <TableRow className="hover:bg-transparent">
+                  <TableCell colSpan={7} className="py-1.5">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-fg-muted w-full justify-start"
+                      disabled={staged.saving}
+                      onClick={() => staged.addDraft()}
+                    >
+                      <PlusIcon className="size-4" />
+                      Add a secret
+                    </Button>
+                  </TableCell>
+                </TableRow>
               </TableBody>
             </Table>
           </TableContainer>
@@ -359,28 +446,13 @@ export function SecretTable({
         </>
       )}
 
-      <SecretDialog
-        orgSlug={orgSlug}
-        projectSlug={projectSlug}
-        envSlug={envSlug}
+      <SaveBar
+        count={staged.pendingCount}
+        saving={staged.saving}
         isProduction={isProduction}
-        open={creating}
-        onOpenChange={setCreating}
-        onSaved={onChanged}
+        onDiscard={staged.discardAll}
+        onSave={saveStaged}
       />
-
-      {editing !== null ? (
-        <SecretDialog
-          orgSlug={orgSlug}
-          projectSlug={projectSlug}
-          envSlug={envSlug}
-          isProduction={isProduction}
-          secret={editing}
-          open
-          onOpenChange={(next) => (next ? undefined : setEditing(null))}
-          onSaved={onChanged}
-        />
-      ) : null}
 
       {history !== null ? (
         <VersionHistoryDialog
@@ -425,6 +497,133 @@ export function SecretTable({
   );
 }
 
+function Toolbar({
+  query,
+  onQueryChange,
+  bulkAdding,
+  onToggleBulkAdd,
+  onAddDraft,
+  disabled,
+  onImport,
+  onExport,
+}: {
+  query: string;
+  onQueryChange: (value: string) => void;
+  bulkAdding: boolean;
+  onToggleBulkAdd: () => void;
+  onAddDraft: () => void;
+  disabled: boolean;
+  onImport?: () => void;
+  onExport?: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="min-w-0 flex-1 sm:max-w-xs">
+        <Input
+          type="search"
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder="Filter by name"
+          aria-label="Filter secrets by name"
+          autoComplete="off"
+          startIcon={<SearchIcon className="size-4" />}
+        />
+      </div>
+
+      <span className="hidden flex-1 sm:block" />
+
+      {onImport ? (
+        <Button variant="ghost" onClick={onImport}>
+          Import
+        </Button>
+      ) : null}
+      {onExport ? (
+        <Button variant="ghost" onClick={onExport}>
+          Export
+        </Button>
+      ) : null}
+
+      <Button
+        variant="secondary"
+        onClick={onToggleBulkAdd}
+        aria-expanded={bulkAdding}
+        disabled={disabled}
+      >
+        <LayersIcon className="size-4" />
+        Bulk add
+      </Button>
+
+      <Button variant="primary" onClick={onAddDraft} disabled={disabled}>
+        <PlusIcon className="size-4" />
+        Add secret
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * The unsaved-work bar.
+ *
+ * Sticky to the bottom of the viewport rather than pinned under the table: with
+ * sixty rows the save button would otherwise be a scroll away from the row being
+ * edited, and "I pressed save" / "no you didn't" is the failure mode that
+ * follows.
+ *
+ * In production it is marked with the production tone, which is the one thing in
+ * the design system that colour is reserved for. There is no typed confirmation
+ * phrase here, deliberately: a write in production is recoverable — the previous
+ * version stays in the history and can be restored in two clicks — and the same
+ * write through the old dialog was not gated either. Deletion is where the typed
+ * phrase belongs, and that is where it still is.
+ */
+function SaveBar({
+  count,
+  saving,
+  isProduction,
+  onDiscard,
+  onSave,
+}: {
+  count: number;
+  saving: boolean;
+  isProduction: boolean;
+  onDiscard: () => void;
+  onSave: () => void;
+}) {
+  if (count === 0) return null;
+
+  return (
+    <div className="sticky bottom-4 z-20">
+      <div
+        className={cn(
+          'bg-surface shadow-overlay mx-auto flex max-w-3xl flex-wrap items-center gap-3 rounded-xl border px-4 py-3',
+          isProduction ? 'border-production-line' : 'border-line-strong',
+        )}
+      >
+        {isProduction ? <Badge tone="production">Production</Badge> : null}
+
+        <p role="status" aria-live="polite" className="text-fg text-sm font-medium">
+          {pluralize(count, 'unsaved change')}
+        </p>
+
+        <p className="text-fg-subtle hidden text-xs sm:block">
+          {isProduction
+            ? 'Whatever reads these secrets picks the new values up on its next deploy, not immediately.'
+            : 'Each row is written separately and recorded in the audit log.'}
+        </p>
+
+        <span className="flex-1" />
+
+        <Button variant="ghost" onClick={onDiscard} disabled={saving}>
+          Discard
+        </Button>
+        <Button variant="primary" onClick={onSave} loading={saving}>
+          {isProduction ? 'Save to production' : 'Save changes'}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function SortableHead({
   label,
   active,
@@ -452,108 +651,6 @@ function SortableHead({
         />
       </button>
     </TableHead>
-  );
-}
-
-function SecretRow({
-  orgSlug,
-  projectSlug,
-  envSlug,
-  secret,
-  selected,
-  onSelectedChange,
-  onEdit,
-  onHistory,
-  onDelete,
-}: {
-  orgSlug: string;
-  projectSlug: string;
-  envSlug: string;
-  secret: SecretSummary;
-  selected: boolean;
-  onSelectedChange: (checked: boolean) => void;
-  onEdit: () => void;
-  onHistory: () => void;
-  onDelete: () => void;
-}) {
-  /**
-   * Fetches the plaintext, once per reveal and once per copy.
-   *
-   * Deliberately not memoised against a cached value: this is the audited
-   * endpoint, and every call is meant to produce a `secret.revealed` record. The
-   * returned string is handed straight to `SecretValue`, which either renders it
-   * behind an auto-remask timer or writes it to the clipboard without rendering
-   * it at all. It is never stored here, never logged, and never put in a URL.
-   */
-  const reveal = useCallback(async () => {
-    const response = await api.get<RevealedSecret>(
-      apiPath.secret(orgSlug, projectSlug, envSlug, secret.name),
-    );
-    return response.secret.value;
-  }, [orgSlug, projectSlug, envSlug, secret.name]);
-
-  return (
-    <TableRow className={cn(selected && 'bg-accent-tint/40')}>
-      <TableCell className="pr-0 align-top">
-        <Checkbox
-          checked={selected}
-          onCheckedChange={(checked) => onSelectedChange(checked === true)}
-          aria-label={`Select ${secret.name}`}
-        />
-      </TableCell>
-
-      <TableCell className="align-top">
-        <span className="text-fg block font-mono text-[0.8125rem] font-medium break-all">
-          {secret.name}
-        </span>
-        {secret.note ? (
-          <span className="text-fg-subtle mt-0.5 block text-xs leading-5">{secret.note}</span>
-        ) : null}
-      </TableCell>
-
-      <TableCell className="align-top">
-        <SecretValue name={secret.name} onReveal={reveal} />
-      </TableCell>
-
-      <TableCell className="align-top">
-        <Badge tone="neutral">v{secret.version}</Badge>
-      </TableCell>
-
-      <TableCell className="text-fg-muted align-top text-[0.8125rem] whitespace-nowrap">
-        <time dateTime={toIsoString(secret.updatedAt)} title={formatAbsoluteTime(secret.updatedAt)}>
-          {formatRelativeTime(secret.updatedAt)}
-        </time>
-      </TableCell>
-
-      <TableCell className="align-top text-[0.8125rem] whitespace-nowrap">
-        <Actor userId={secret.createdBy} />
-      </TableCell>
-
-      <TableCell className="align-top">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-8"
-              // Every row's menu would otherwise be called "Actions", which is
-              // useless in a list of sixty.
-              aria-label={`Actions for ${secret.name}`}
-            >
-              <SettingsIcon className="size-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent>
-            <DropdownMenuItem onSelect={onEdit}>Set a new value…</DropdownMenuItem>
-            <DropdownMenuItem onSelect={onHistory}>Version history…</DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem destructive onSelect={onDelete}>
-              Delete…
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </TableCell>
-    </TableRow>
   );
 }
 

@@ -63,6 +63,9 @@ const environment = {
 
 const userPrincipal = {
   kind: 'user' as const,
+  // Unlocked. The lock gate lives in `authenticatedRoute`, and these fixtures
+  // exercise what happens *past* it.
+  pinVerifiedAt: new Date(),
   sessionId: uuidv7(),
   user: {
     id: USER_ID,

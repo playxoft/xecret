@@ -5,9 +5,13 @@ import {
   cliTokens,
   invitations,
   secretVersions,
+  secrets,
   serviceTokens,
   sessions,
+  pinResetTokens,
+  userPins,
 } from './index';
+import { SECRET_VALUE_TYPES } from '@xecret/core/validation';
 
 /**
  * These assert security properties of the schema, not implementation detail.
@@ -107,5 +111,70 @@ describe('audit log', () => {
     expect(names).not.toContain('value');
     expect(names).not.toContain('plaintext');
     expect(names).not.toContain('ciphertext');
+  });
+});
+
+describe('the secret value type', () => {
+  it('defaults to string, so every row written before the column is valid', () => {
+    // Not merely tolerated: `string` accepts anything, so a backfilled row is
+    // correct under its own declared type rather than exempt from checking.
+    expect(columnsOf(secrets)['value_type']!.default).toBe('string');
+    expect(columnsOf(secrets)['value_type']!.notNull).toBe(true);
+  });
+
+  it('constrains the column to exactly the types the application knows', () => {
+    // The CHECK and `SECRET_VALUE_TYPES` are two halves of one rule, kept in
+    // sync by hand in two files. This is what makes that pairing enforced: add a
+    // type to the list without widening the constraint and every write of it
+    // fails in production, which is the failure this test exists to prevent.
+    const constraint = getTableConfig(secrets).checks.find(
+      (check) => check.name === 'secrets_value_type_check',
+    );
+    expect(constraint, 'secrets_value_type_check must exist').toBeDefined();
+
+    const sql = constraint!.value.queryChunks
+      .map((chunk) => (typeof chunk === 'object' && 'value' in chunk ? chunk.value : ''))
+      .join('');
+
+    for (const type of SECRET_VALUE_TYPES) {
+      expect(sql, `${type} must be allowed by the CHECK constraint`).toContain(`'${type}'`);
+    }
+    // And nothing beyond them: a stray value in the constraint would let a write
+    // land that the application cannot interpret when it reads the row back.
+    const quoted = sql.match(/'[a-z0-9]+'/g) ?? [];
+    expect(new Set(quoted.map((entry) => entry.slice(1, -1)))).toEqual(new Set(SECRET_VALUE_TYPES));
+  });
+});
+
+describe('the unlock PIN', () => {
+  it('stores a derived hash, never the PIN', () => {
+    const cols = columnsOf(userPins);
+    expect(cols['pin_hash']!.notNull).toBe(true);
+    expect(Object.keys(cols)).not.toContain('pin');
+  });
+
+  it('counts failures on the row, so a lockout survives a restart', () => {
+    // Held in the database rather than in an isolate: a Worker isolate is
+    // recycled constantly, and an attempt counter that lives in one is a
+    // counter an attacker resets by waiting.
+    expect(columnsOf(userPins)['failed_attempts']!.notNull).toBe(true);
+    expect(columnsOf(userPins)['failed_attempts']!.default).toBe(0);
+    expect(columnsOf(userPins)['locked_until']).toBeDefined();
+  });
+
+  it('keeps the unlock separate from the session itself', () => {
+    // Authentication and unlock are different facts: revoking is not locking,
+    // and a 30-day cookie must not imply 30 days of reach into secrets.
+    const cols = columnsOf(sessions);
+    expect(cols['pin_verified_at']).toBeDefined();
+    expect(cols['pin_verified_at']!.notNull).toBe(false);
+  });
+
+  it('stores only a hash of a reset link', () => {
+    const cols = columnsOf(pinResetTokens);
+    expect(cols['token_hash']!.getSQLType()).toBe('bytea');
+    expect(cols['token_hash']!.notNull).toBe(true);
+    expect(cols['expires_at']!.notNull).toBe(true);
+    expect(cols['consumed_at']).toBeDefined();
   });
 });

@@ -5,6 +5,7 @@ import {
   evaluateSession,
   hashToken,
   isSafeMethod,
+  isSessionUnlocked,
   isWellFormedToken,
   shouldTouchSession,
   verifyCsrf,
@@ -40,7 +41,24 @@ import { bearerToken, parseCookies } from './http';
 
 /** A CLI token acts as its user; a service token acts as nobody. */
 export type Principal =
-  | { kind: 'user'; sessionId: string; user: SessionUser }
+  | {
+      kind: 'user';
+      sessionId: string;
+      user: SessionUser;
+      /**
+       * When this session last had its PIN accepted, or `null` for never.
+       *
+       * Carried on the principal rather than re-queried by the gate: the session
+       * lookup already returned it, and a second query per request to read one
+       * timestamp is a cost paid on every call forever.
+       *
+       * Note what this is *not*: it is not part of authentication. A session with
+       * `null` here is fully authenticated — we know exactly who it is — and
+       * merely locked. Conflating the two would send a locked user back to
+       * Firebase, which is the whole thing this design avoids.
+       */
+      pinVerifiedAt: Date | null;
+    }
   | {
       kind: 'cliToken';
       tokenId: string;
@@ -131,7 +149,28 @@ async function principalFromSession(token: string, services: ServiceContext): Pr
     services.waitUntil(touchSession(services.db, session.id, now));
   }
 
-  return { kind: 'user', sessionId: session.id, user: session.user };
+  return {
+    kind: 'user',
+    sessionId: session.id,
+    user: session.user,
+    pinVerifiedAt: session.pinVerifiedAt,
+  };
+}
+
+/**
+ * Whether this principal may reach a gated route right now.
+ *
+ * Only a browser session can be locked. A CLI or service token carries no
+ * ambient credential and belongs to an unattended process — there is nobody
+ * present to type a PIN, and demanding one would break `xecret run` in CI while
+ * protecting nothing: the threat the lock addresses is a person walking up to an
+ * open laptop, which has no analogue in a build agent. Those tokens are bounded
+ * instead by being individually revocable, scoped to one environment, and
+ * recorded on every use.
+ */
+export function isUnlocked(principal: Principal, now: Date): boolean {
+  if (principal.kind !== 'user') return true;
+  return isSessionUnlocked(principal.pinVerifiedAt, now);
 }
 
 async function principalFromBearer(token: string, services: ServiceContext): Promise<Principal> {

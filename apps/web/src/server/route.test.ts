@@ -27,6 +27,7 @@ const context = vi.hoisted(() => ({
 const actor = vi.hoisted(() => ({
   authenticate: vi.fn(),
   assertCsrf: vi.fn(),
+  isUnlocked: vi.fn(() => true),
   actorType: vi.fn(() => 'user' as const),
   actorId: vi.fn(() => 'actor-id'),
   actorLabel: vi.fn(() => 'nitheesh@playxoft.com'),
@@ -55,6 +56,9 @@ const deferred: Promise<unknown>[] = [];
 
 const principal = {
   kind: 'user' as const,
+  // Unlocked. The lock gate lives in `authenticatedRoute`, and these fixtures
+  // exercise what happens *past* it.
+  pinVerifiedAt: new Date(),
   sessionId: uuidv7(),
   user: {
     id: uuidv7(),
@@ -101,6 +105,7 @@ beforeEach(() => {
   );
   actor.authenticate.mockResolvedValue({ principal, source: 'cookie' });
   actor.assertCsrf.mockReturnValue(undefined);
+  actor.isUnlocked.mockReturnValue(true);
 });
 
 /** Runs whatever the handler deferred via `waitUntil`. */
@@ -389,5 +394,92 @@ describe('audit builder binding', () => {
     await sink.write([builder.success('org.updated', { type: 'org', id: ORG_ID })]);
 
     expect(sink.events[0]).toMatchObject({ orgId: ORG_ID, outcome: 'success' });
+  });
+});
+
+/**
+ * The PIN gate.
+ *
+ * These are the tests that make the lock a security control rather than a screen
+ * the dashboard chooses to draw. The client's belief about whether it is
+ * unlocked is irrelevant — a stale tab, a replayed `fetch` from the console, and
+ * a script holding a stolen cookie all arrive here and get the same answer.
+ */
+describe('the lock gate', () => {
+  it('refuses a locked session before the handler body runs', async () => {
+    actor.isUnlocked.mockReturnValue(false);
+    const body = vi.fn();
+
+    const handler = authenticatedRoute(async () => {
+      body();
+      return new Response(null, { status: 204 });
+    });
+
+    const response = await handler(request());
+
+    expect(response.status).toBe(403);
+    // Not merely refused — never reached. A handler that ran and then had its
+    // response discarded would still have read the database.
+    expect(body).not.toHaveBeenCalled();
+  });
+
+  it('answers with its own code, distinguishable from a permission failure', async () => {
+    // The one 403 a client can resolve by itself. A generic `forbidden` would
+    // send a user to ask an admin for access they already have.
+    actor.isUnlocked.mockReturnValue(false);
+    const handler = authenticatedRoute(async () => new Response(null, { status: 204 }));
+
+    const response = await handler(request());
+    const body = (await response.json()) as { error: { code: string; message: string } };
+
+    expect(body.error.code).toBe('session_locked');
+    expect(body.error.message).toBe('Enter your PIN to continue.');
+  });
+
+  it('lets an explicitly exempt route through', async () => {
+    // `/api/auth/me`, the PIN routes, and nothing else. Without this the lock
+    // screen cannot function and the account is bricked until the session
+    // expires.
+    actor.isUnlocked.mockReturnValue(false);
+    const body = vi.fn();
+
+    const handler = authenticatedRoute(
+      async () => {
+        body();
+        return new Response(null, { status: 204 });
+      },
+      { allowLocked: true },
+    );
+
+    const response = await handler(request());
+
+    expect(response.status).toBe(204);
+    expect(body).toHaveBeenCalled();
+  });
+
+  it('checks CSRF before the lock, so a cross-site probe cannot learn the lock state', async () => {
+    // Both fail with 403. Answering `session_locked` to an unverified
+    // cross-origin request would confirm the cookie is live to a page that
+    // cannot read the response body but can read the code.
+    actor.isUnlocked.mockReturnValue(false);
+    actor.assertCsrf.mockImplementation(() => {
+      throw errors.csrf('missing token');
+    });
+
+    const handler = authenticatedRoute(async () => new Response(null, { status: 204 }));
+    const body = (await (await handler(request({ method: 'POST' }))).json()) as {
+      error: { code: string };
+    };
+
+    expect(body.error.code).toBe('csrf_failed');
+  });
+
+  it('does not gate a public route', async () => {
+    // Sign-out has to work for somebody who cannot remember their PIN, and sign-in
+    // establishes the session the gate is about in the first place.
+    actor.isUnlocked.mockReturnValue(false);
+    const handler = publicRoute(async () => new Response(null, { status: 204 }));
+
+    expect((await handler(request())).status).toBe(204);
   });
 });

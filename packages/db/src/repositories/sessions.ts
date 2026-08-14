@@ -32,6 +32,14 @@ export interface SessionUser {
 /** A session row plus its owner, as resolved on the authenticated hot path. */
 export interface AuthenticatedSession extends SessionRecord {
   user: SessionUser;
+  /**
+   * When this session last had its PIN accepted, or `null` for never.
+   *
+   * Carried on the hot-path lookup rather than fetched separately, because every
+   * request that resolves a session also has to decide whether it is unlocked —
+   * a second query for one timestamp would be a round trip per request forever.
+   */
+  pinVerifiedAt: Date | null;
 }
 
 /**
@@ -133,6 +141,51 @@ export async function touchSession(exec: Executor, sessionId: string, now: Date)
 }
 
 /**
+ * Records that this session's PIN was just accepted.
+ *
+ * Written to the session rather than to the user, so unlocking on a desktop does
+ * not silently unlock the phone that is also signed in. Each device proves
+ * presence for itself, which is the only reading under which "somebody is
+ * sitting at this machine" means anything.
+ */
+export async function markSessionUnlocked(
+  exec: Executor,
+  sessionId: string,
+  now: Date,
+): Promise<void> {
+  await exec
+    .update(sessions)
+    .set({ pinVerifiedAt: now, lastSeenAt: now })
+    .where(and(eq(sessions.id, sessionId), isNull(sessions.revokedAt)));
+}
+
+/**
+ * Locks a session without ending it.
+ *
+ * Clearing the timestamp rather than revoking the row is the whole point of the
+ * feature: the user stays signed in for their 30 days and simply has to prove
+ * presence again. Revoking would send them back to Firebase, which is the cost
+ * this design exists to avoid.
+ *
+ * `userId` locks every session the account has — "lock everywhere", for a laptop
+ * left behind rather than lost.
+ */
+export async function lockSessions(
+  exec: Executor,
+  target: { sessionId: string } | { userId: string },
+): Promise<number> {
+  const scope =
+    'sessionId' in target ? eq(sessions.id, target.sessionId) : eq(sessions.userId, target.userId);
+
+  const result = await exec
+    .update(sessions)
+    .set({ pinVerifiedAt: null })
+    .where(and(scope, isNull(sessions.revokedAt)));
+
+  return result.count;
+}
+
+/**
  * Revokes one session. Idempotent.
  *
  * The `revoked_at IS NULL` guard keeps a repeated call from rewriting the
@@ -209,6 +262,7 @@ export function sessionLookupQuery(exec: Executor, tokenHash: Uint8Array, now: D
       expiresAt: sessions.expiresAt,
       lastSeenAt: sessions.lastSeenAt,
       revokedAt: sessions.revokedAt,
+      pinVerifiedAt: sessions.pinVerifiedAt,
       user: {
         id: users.id,
         email: users.email,

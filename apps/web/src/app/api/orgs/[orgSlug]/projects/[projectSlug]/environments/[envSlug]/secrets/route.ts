@@ -1,6 +1,7 @@
 import { listSecrets } from '@xecret/db/repositories';
 import { json, parseJsonBody, parseQuery } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
+import { toSecretValueType } from '@xecret/core/validation';
 import { createSecretBody, listQuery } from '@/server/schemas/secrets';
 import {
   auditSource,
@@ -59,6 +60,7 @@ export const GET = authenticatedRoute<Params>(async ({ request, params, principa
     data: secrets.items.map((secret) => ({
       name: secret.name,
       note: secret.note,
+      valueType: toSecretValueType(secret.valueType),
       version: secret.latestVersion,
       createdAt: secret.createdAt.toISOString(),
       updatedAt: secret.updatedAt.toISOString(),
@@ -96,6 +98,7 @@ export const POST = authenticatedRoute<Params>(
       writer,
       name: body.name,
       value: body.value,
+      valueType: body.valueType,
       ...(body.note === undefined ? {} : { note: body.note }),
     });
 
@@ -121,7 +124,14 @@ export const POST = authenticatedRoute<Params>(
     );
 
     return json(
-      { secret: { name: result.name, version: result.version, note: body.note ?? null } },
+      {
+        secret: {
+          name: result.name,
+          version: result.version,
+          note: body.note ?? null,
+          valueType: body.valueType,
+        },
+      },
       { status: 201 },
     );
   },
