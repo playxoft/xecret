@@ -16,11 +16,17 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
+  SecretValue,
   Skeleton,
   useToast,
 } from '@/components/ui';
 import { Actor } from './actor';
-import type { SecretRestoreResponse, SecretVersion, SecretVersionListResponse } from './types';
+import type {
+  RevealedSecretVersion,
+  SecretRestoreResponse,
+  SecretVersion,
+  SecretVersionListResponse,
+} from './types';
 
 export interface VersionHistoryDialogProps {
   orgSlug: string;
@@ -42,19 +48,23 @@ const PAGE_SIZE = 100;
 /**
  * A secret's history, as a drawer beside the table.
  *
- * ── Metadata only, and that is the feature ──
- * There is no value column here and there is no way to add one, because
- * `GET …/secrets/{name}/versions` selects no ciphertext at all. Rendering this
- * panel is therefore not a decryption opportunity even for someone who holds
- * every permission — which matters because a rotated secret is usually still
- * live: the gap between "rotated in xecret" and "revoked at the provider" is
- * measured in weeks for most teams. A history that returned old values would be
- * handing out working credentials through a screen everybody reasons about as an
- * archive.
+ * ── The listing is metadata only; a reveal is one version at a time ──
+ * `GET …/secrets/{name}/versions` selects no ciphertext at all, and that has not
+ * changed. It matters because a rotated secret is usually still live — the gap
+ * between "rotated in xecret" and "revoked at the provider" is measured in weeks
+ * for most teams — so a *listing* that carried values would hand out a page of
+ * working credentials in one request, through a screen everybody reasons about
+ * as an archive.
  *
- * Recovering an old value therefore goes through Restore, which re-encrypts it
- * as a new current version and writes `secret.rotated` to the audit log. Reading
- * the past is always an act with a record.
+ * The eye beside each row is a different act, and is built as one. It calls
+ * `GET …/versions/{version}`, which decrypts exactly that version and writes a
+ * `secret.revealed` record naming it. Reading the past therefore stays
+ * deliberate, one version at a time, and always recorded — which is the property
+ * the metadata-only listing was protecting, kept while offering the thing it
+ * appeared to forbid.
+ *
+ * Restore is still how an old value is put *back*: it re-encrypts it as a new
+ * current version and writes to the audit log.
  *
  * A drawer rather than a centred modal: the row it describes stays visible
  * behind it, which is what stops somebody restoring a version of the secret
@@ -99,6 +109,21 @@ export function VersionHistoryDialog({
     return () => controller.abort();
   }, [path]);
 
+  /**
+   * Decrypts one historical version.
+   *
+   * Not memoised, and never cached after the first call. `SecretValue` invokes
+   * it on every reveal and every copy, and each invocation must reach the
+   * server — caching would make the audit trail claim one read of an old
+   * production credential where the user performed six.
+   */
+  async function revealVersion(version: number): Promise<string> {
+    const response = await api.get<RevealedSecretVersion>(
+      apiPath.secretVersion(orgSlug, projectSlug, envSlug, secretName, version),
+    );
+    return response.secret.value;
+  }
+
   async function restore(version: SecretVersion) {
     const result = await api.post<SecretRestoreResponse>(
       apiPath.secretRestore(orgSlug, projectSlug, envSlug, secretName),
@@ -136,8 +161,8 @@ export function VersionHistoryDialog({
           <DialogHeader>
             <DialogTitle className="font-mono">{secretName}</DialogTitle>
             <DialogDescription>
-              Every version ever written, newest first. Values are not shown here and are not
-              available from this endpoint.
+              Every version ever written, newest first. Revealing one decrypts that version and is
+              recorded in the audit log — an old value often still works at the provider.
             </DialogDescription>
           </DialogHeader>
 
@@ -164,37 +189,51 @@ export function VersionHistoryDialog({
                 {versions.map((version) => (
                   <li
                     key={version.version}
-                    className="border-line bg-canvas-inset flex items-start gap-3 rounded-lg border p-3"
+                    className="border-line bg-canvas-inset flex flex-col gap-2 rounded-lg border p-3"
                   >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-fg font-mono text-sm font-medium">
-                          v{version.version}
-                        </span>
-                        {version.current ? <Badge tone="accent">Current</Badge> : null}
+                    <div className="flex items-start gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-fg font-mono text-sm font-medium">
+                            v{version.version}
+                          </span>
+                          {version.current ? <Badge tone="accent">Current</Badge> : null}
+                        </div>
+                        <p className="text-fg-muted mt-1 text-[0.8125rem] leading-5">
+                          <time
+                            dateTime={toIsoString(version.createdAt)}
+                            title={formatAbsoluteTime(version.createdAt)}
+                          >
+                            {formatRelativeTime(version.createdAt)}
+                          </time>{' '}
+                          by <Actor userId={version.createdBy} />
+                        </p>
+                        <p className="text-fg-subtle mt-0.5 font-mono text-xs">
+                          {version.algorithm}
+                        </p>
                       </div>
-                      <p className="text-fg-muted mt-1 text-[0.8125rem] leading-5">
-                        <time
-                          dateTime={toIsoString(version.createdAt)}
-                          title={formatAbsoluteTime(version.createdAt)}
+
+                      {version.current ? null : (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => setRestoring(version)}
+                          aria-label={`Restore ${secretName} to the value from version ${version.version}`}
                         >
-                          {formatRelativeTime(version.createdAt)}
-                        </time>{' '}
-                        by <Actor userId={version.createdBy} />
-                      </p>
-                      <p className="text-fg-subtle mt-0.5 font-mono text-xs">{version.algorithm}</p>
+                          Restore
+                        </Button>
+                      )}
                     </div>
 
-                    {version.current ? null : (
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => setRestoring(version)}
-                        aria-label={`Restore ${secretName} to the value from version ${version.version}`}
-                      >
-                        Restore
-                      </Button>
-                    )}
+                    {/* The same masked field the table uses, and therefore the
+                        same auto-hide, the same blur handling, and the same
+                        copy-without-rendering. Its reveal targets *this*
+                        version, so the audit record names the version rather
+                        than saying only that the secret was read. */}
+                    <SecretValue
+                      name={`${secretName} version ${version.version}`}
+                      onReveal={() => revealVersion(version.version)}
+                    />
                   </li>
                 ))}
               </ol>

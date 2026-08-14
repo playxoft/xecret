@@ -1,21 +1,13 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 
 import { api } from '@/lib/api';
 import { PageHeader } from '@/components/layout';
-import {
-  Button,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  SettingsIcon,
-} from '@/components/ui';
+import { Button, SettingsIcon } from '@/components/ui';
 import { EnvironmentBadge } from '@/components/projects/environment-badge';
+import { EnvironmentSwitcher } from '@/components/projects/environment-switcher';
 import type { ProjectResponse } from '@/components/projects/types';
 import { ExportDialog } from '@/components/secrets/export-dialog';
 import { ImportDialog } from '@/components/secrets/import-dialog';
@@ -37,8 +29,6 @@ export function EnvironmentScreen({
   projectSlug: string;
   envSlug: string;
 }) {
-  const router = useRouter();
-
   // One request answers two questions: what this environment is, and what its
   // siblings are for the switcher. Asking `…/environments/{envSlug}` instead
   // would give a secret count this screen can already see, and would still need
@@ -66,23 +56,14 @@ export function EnvironmentScreen({
         actions={
           <>
             {project.data !== null && project.data.environments.length > 1 ? (
-              <Select
-                value={envSlug}
-                onValueChange={(next) =>
-                  router.push(appPath.environment(orgSlug, projectSlug, next))
-                }
-              >
-                <SelectTrigger className="w-44" aria-label="Switch environment">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {project.data.environments.map((entry) => (
-                    <SelectItem key={entry.slug} value={entry.slug}>
-                      {entry.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              // Capsules rather than a dropdown. Comparing a value across
+              // environments is the most repeated act on this screen, and a
+              // dropdown costs two clicks and hides its options until the first.
+              <EnvironmentSwitcher
+                environments={project.data.environments}
+                currentSlug={envSlug}
+                href={(slug) => appPath.environment(orgSlug, projectSlug, slug)}
+              />
             ) : null}
 
             {/* Import and export moved into the table's own toolbar, beside the
@@ -113,6 +94,9 @@ export function EnvironmentScreen({
           projectSlug={projectSlug}
           envSlug={envSlug}
           isProduction={isProduction}
+          // Empty until the project resolves, which disables the fan-out picker
+          // rather than offering a partial list of environments to write to.
+          environments={project.data?.environments ?? []}
           secrets={secrets.data}
           onLoadMore={secrets.loadMore}
           loadingMore={secrets.loadingMore}

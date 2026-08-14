@@ -2,7 +2,13 @@
 
 import { useCallback, useMemo, useRef, useState } from 'react';
 
-import { checkSecretName } from '@xecret/core/validation';
+import {
+  checkSecretName,
+  checkSecretValue,
+  DEFAULT_SECRET_VALUE_TYPE,
+  toSecretValueType,
+} from '@xecret/core/validation';
+import type { SecretValueType } from '@xecret/core/validation';
 import { api, isApiError } from '@/lib/api';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import type { SecretWriteResponse } from './types';
@@ -47,6 +53,8 @@ export interface Draft {
   name: string;
   value: string;
   note: string;
+  /** One of `SECRET_VALUE_TYPES`. New rows start as `string`, which accepts anything. */
+  valueType: SecretValueType;
   /** From the last save attempt; cleared as soon as the row is edited again. */
   error: DraftError | null;
 }
@@ -54,6 +62,16 @@ export interface Draft {
 /** A new value staged against a secret that already exists. */
 export interface PendingEdit {
   value: string;
+  /**
+   * A type change staged alongside the value, or `undefined` to keep the stored
+   * one.
+   *
+   * Carried here rather than written immediately, so "declare it an integer and
+   * give it a new value" saves as one action. Applying the type on the dropdown's
+   * change event would make the intermediate state — a value that does not match
+   * its own declared type — reachable through the product's happy path.
+   */
+  valueType?: SecretValueType | undefined;
   /** From the last save attempt. */
   error: string | null;
 }
@@ -63,6 +81,7 @@ export interface DraftSeed {
   name?: string;
   value?: string;
   note?: string;
+  valueType?: SecretValueType;
 }
 
 export interface SaveOutcome {
@@ -90,6 +109,8 @@ export interface StagedChanges {
 
   openEdit: (name: string) => void;
   setEdit: (name: string, value: string) => void;
+  /** Stages a type change, opening the editor if it is not already open. */
+  setEditType: (name: string, valueType: SecretValueType) => void;
   closeEdit: (name: string) => void;
 
   discardAll: () => void;
@@ -156,6 +177,34 @@ function describeWriteFailure(cause: unknown): DraftError {
   return { field: 'value', message: cause.message };
 }
 
+/**
+ * What is wrong with a draft at save time.
+ *
+ * Extracted from the save loop because it grew a fourth clause and a nested
+ * ternary chain that long stops being readable as a list of rules. The order is
+ * the order a person would check in: is there a name, is there a value, is the
+ * name free, is the name legal, is the value the shape it says it is.
+ */
+function draftProblem(draft: Draft, name: string, claimed: ReadonlySet<string>): DraftError | null {
+  if (name.length === 0) return { field: 'name', message: 'Enter a name.' };
+  if (draft.value.length === 0) return { field: 'value', message: 'Enter a value.' };
+  if (claimed.has(name)) {
+    return { field: 'name', message: 'That name is already taken in this environment.' };
+  }
+
+  const nameCheck = checkSecretName(name);
+  if (!nameCheck.valid) {
+    return { field: 'name', message: nameCheck.message ?? 'That name cannot be used.' };
+  }
+
+  const shape = checkSecretValue(draft.value, toSecretValueType(draft.valueType));
+  if (!shape.valid) {
+    return { field: 'value', message: shape.message ?? 'That value does not match its type.' };
+  }
+
+  return null;
+}
+
 export function useStagedChanges(
   orgSlug: string,
   projectSlug: string,
@@ -184,6 +233,7 @@ export function useStagedChanges(
         name: seed.name ?? '',
         value: seed.value ?? '',
         note: seed.note ?? '',
+        valueType: seed.valueType ?? DEFAULT_SECRET_VALUE_TYPE,
         error: null,
       };
     });
@@ -243,7 +293,24 @@ export function useStagedChanges(
   const setEdit = useCallback((name: string, value: string) => {
     setEdits((current) => {
       const next = new Map(current);
-      next.set(name, { value, error: null });
+      const existing = current.get(name);
+      next.set(name, {
+        value,
+        ...(existing?.valueType === undefined ? {} : { valueType: existing.valueType }),
+        error: null,
+      });
+      return next;
+    });
+  }, []);
+
+  const setEditType = useCallback((name: string, valueType: SecretValueType) => {
+    setEdits((current) => {
+      const next = new Map(current);
+      // Opens the editor when it was closed, so choosing a type from the row's
+      // menu produces a visible pending change rather than a silent one. The
+      // value stays empty, which the save path reads as "type only".
+      const existing = current.get(name);
+      next.set(name, { value: existing?.value ?? '', valueType, error: null });
       return next;
     });
   }, []);
@@ -265,7 +332,12 @@ export function useStagedChanges(
   const pendingCount = useMemo(() => {
     const rows = drafts.filter((draft) => !isBlankDraft(draft)).length;
     let values = 0;
-    for (const edit of edits.values()) if (edit.value.length > 0) values += 1;
+    // A staged type change counts even with no new value: it is a change the
+    // user made and the save bar has to admit to holding it, or Discard would
+    // silently throw away something they cannot see.
+    for (const edit of edits.values()) {
+      if (edit.value.length > 0 || edit.valueType !== undefined) values += 1;
+    }
     return rows + values;
   }, [drafts, edits]);
 
@@ -295,22 +367,7 @@ export function useStagedChanges(
           if (isBlankDraft(draft)) continue;
 
           const name = draft.name.trim();
-          const localProblem: DraftError | null =
-            name.length === 0
-              ? { field: 'name', message: 'Enter a name.' }
-              : draft.value.length === 0
-                ? { field: 'value', message: 'Enter a value.' }
-                : claimed.has(name)
-                  ? { field: 'name', message: 'That name is already taken in this environment.' }
-                  : (() => {
-                      const check = checkSecretName(name);
-                      return check.valid
-                        ? null
-                        : {
-                            field: 'name' as const,
-                            message: check.message ?? 'That name cannot be used.',
-                          };
-                    })();
+          const localProblem = draftProblem(draft, name, claimed);
 
           if (localProblem !== null) {
             survivingDrafts.push({ ...draft, error: localProblem });
@@ -322,6 +379,7 @@ export function useStagedChanges(
             await api.post<SecretWriteResponse>(apiPath.secrets(orgSlug, projectSlug, envSlug), {
               name,
               value: draft.value,
+              valueType: draft.valueType,
               ...(draft.note.trim().length === 0 ? {} : { note: draft.note.trim() }),
             });
             claimed.add(name);
@@ -334,15 +392,51 @@ export function useStagedChanges(
         }
 
         for (const [name, edit] of edits) {
-          // An editor opened and left empty is not a change. Closing it silently
-          // is right: the user opened a row, thought better of it, and does not
-          // need an error for having changed their mind.
-          if (edit.value.length === 0) continue;
+          // An editor opened and left empty, with no type staged either, is not
+          // a change. Closing it silently is right: the user opened a row,
+          // thought better of it, and does not need an error for having changed
+          // their mind.
+          if (edit.value.length === 0 && edit.valueType === undefined) continue;
+
+          // A type change with no new value takes the metadata route, which
+          // appends no version and needs no key. Sending it through the write
+          // path would bump the version number for the sake of a label and
+          // make "when did this credential last actually change?" unanswerable.
+          if (edit.value.length === 0) {
+            try {
+              await api.put(apiPath.secret(orgSlug, projectSlug, envSlug, name), {
+                valueType: edit.valueType,
+              });
+              outcome.updated += 1;
+            } catch (cause) {
+              survivingEdits.set(name, { ...edit, error: describeWriteFailure(cause).message });
+              outcome.failed += 1;
+            }
+            continue;
+          }
+
+          // Checked here as well as on the server, so a value of the wrong shape
+          // is reported against its own row instead of costing a round trip and
+          // coming back as one failure in a batch of thirty.
+          if (edit.valueType !== undefined) {
+            const shape = checkSecretValue(edit.value, edit.valueType);
+            if (!shape.valid) {
+              survivingEdits.set(name, {
+                ...edit,
+                error: shape.message ?? 'That value does not match its type.',
+              });
+              outcome.failed += 1;
+              continue;
+            }
+          }
 
           try {
             const result = await api.patch<SecretWriteResponse>(
               apiPath.secret(orgSlug, projectSlug, envSlug, name),
-              { value: edit.value },
+              {
+                value: edit.value,
+                ...(edit.valueType === undefined ? {} : { valueType: edit.valueType }),
+              },
             );
             if (result.secret.status === 'unchanged') outcome.unchanged += 1;
             else outcome.updated += 1;
@@ -374,6 +468,7 @@ export function useStagedChanges(
     removeDraft,
     openEdit,
     setEdit,
+    setEditType,
     closeEdit,
     discardAll,
     save,

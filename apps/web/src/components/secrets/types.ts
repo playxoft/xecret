@@ -30,6 +30,15 @@ import type { ImportItemStatus, ParseWarning } from '@xecret/core/importer';
 export interface SecretSummary {
   name: string;
   note: string | null;
+  /**
+   * The declared shape of the value — one of `SECRET_VALUE_TYPES`.
+   *
+   * A plain `string` rather than the union, because a row written by a newer
+   * deployment may name a type this build has never heard of, and a listing that
+   * refused to represent it could not show the user their own secret. Narrow it
+   * with `toSecretValueType`, which falls back to `string`.
+   */
+  valueType: string;
   /** The current version. Starts at 1 and increases on every real change. */
   version: number;
   createdAt: string;
@@ -48,9 +57,22 @@ export interface RevealedSecret {
   secret: {
     name: string;
     value: string;
+    valueType: string;
     version: number;
     updatedAt: string;
     updatedBy: string;
+  };
+}
+
+/** The plaintext of one historical version. See `…/versions/{version}`. */
+export interface RevealedSecretVersion {
+  secret: {
+    name: string;
+    value: string;
+    version: number;
+    current: boolean;
+    createdAt: string;
+    createdBy: string;
   };
 }
 

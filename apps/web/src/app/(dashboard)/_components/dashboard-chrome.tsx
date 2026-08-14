@@ -1,27 +1,19 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import type { ReactNode } from 'react';
 
-import { isApiError, SIGN_IN_PATH } from '@/lib/api';
+import { api, isApiError, SIGN_IN_PATH } from '@/lib/api';
 import { AppShell, Wordmark } from '@/components/layout';
-import type { BreadcrumbItem, NavSection, ShellOrganization } from '@/components/layout';
-import {
-  BoxIcon,
-  Button,
-  EmptyState,
-  KeyIcon,
-  LayersIcon,
-  SettingsIcon,
-  Skeleton,
-  UserIcon,
-  UsersIcon,
-} from '@/components/ui';
+import type { BreadcrumbItem, ShellOrganization } from '@/components/layout';
+import { Button, EmptyState, Skeleton, UsersIcon } from '@/components/ui';
 import { apiPath, appPath, parseDashboardPath } from '../_lib/paths';
+import { useDashboardNav } from './dashboard-nav';
 import type { DashboardLocation } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState } from './resource-states';
+import { LockScreen } from './lock-screen';
 import { SessionProvider } from './session';
 import type { MeResponse } from './session';
 
@@ -45,6 +37,20 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   const location = useMemo(() => parseDashboardPath(pathname), [pathname]);
   const session = useApiResource<MeResponse>(apiPath.me());
 
+  // Built before the early returns below, because hooks cannot run
+  // conditionally. It issues no request until `orgSlug` is non-null, so the
+  // loading and locked paths cost nothing extra.
+  const nav = useDashboardNav(location);
+
+  // Locking re-reads the session, which re-renders this component and lands on
+  // the lock screen. One code path for "we are locked", whether that came from
+  // the menu or from an eight-hour timeout.
+  const reloadSession = session.reload;
+  const lock = useCallback(async () => {
+    await api.post('/auth/pin/lock');
+    reloadSession();
+  }, [reloadSession]);
+
   if (session.loading) return <ChromeSkeleton />;
 
   if (session.error !== null || session.data === null) {
@@ -62,7 +68,20 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     );
   }
 
-  const { user, organizations } = session.data;
+  const { user, organizations, pin } = session.data;
+
+  // ── The lock, before anything else the shell would render ──
+  //
+  // Not a security boundary: every gated route refuses a locked session on its
+  // own, so a client that skipped this would simply get a page of 403s. It is
+  // here because a dashboard of empty tables and error toasts is a far worse
+  // way to learn you are locked than being told.
+  //
+  // Checked before the "no organisations" case below, because a locked session
+  // has not yet earned an explanation of its membership.
+  if (!pin.configured || !pin.unlocked) {
+    return <LockScreen status={pin} email={user.email} onUnlocked={session.reload} />;
+  }
 
   if (organizations.length === 0) {
     // A personal organisation is created at first sign-in (`POST /api/auth/session`),
@@ -99,87 +118,27 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   }));
 
   return (
-    <SessionProvider value={{ user, organizations }}>
+    <SessionProvider
+      value={{
+        user,
+        organizations,
+        pin,
+        lock,
+      }}
+    >
       <AppShell
-        nav={buildNav(currentOrg?.slug ?? null, location.projectSlug, location.envSlug)}
+        nav={nav}
         organizations={shellOrganizations}
         currentOrgSlug={currentOrg?.slug ?? ''}
         user={{ name: user.displayName ?? user.email, email: user.email }}
         accountHref={appPath.account()}
+        onLock={lock}
         breadcrumbs={buildBreadcrumbs(location, currentOrg?.name ?? null)}
       >
         {children}
       </AppShell>
     </SessionProvider>
   );
-}
-
-/**
- * The navigation, derived entirely from the URL.
- *
- * No request backs this, which is what lets the sidebar be correct on the first
- * paint of a cold navigation. The consequence is that a project and an
- * environment appear under their slugs rather than their display names — which
- * in this product is not a compromise: the slug is the identifier people type
- * into `.xecret.yaml` and pass to `xecret run --env`, so it is the name they
- * navigate by.
- */
-function buildNav(
-  orgSlug: string | null,
-  projectSlug: string | null,
-  envSlug: string | null,
-): readonly NavSection[] {
-  const sections: NavSection[] = [];
-
-  if (orgSlug !== null) {
-    sections.push({
-      items: [
-        {
-          href: appPath.org(orgSlug),
-          label: 'Projects',
-          icon: <BoxIcon />,
-          // Without this every page beneath `/app/{org}` would highlight
-          // "Projects", because they all share its prefix.
-          exact: true,
-        },
-        {
-          href: appPath.orgSettings(orgSlug),
-          label: 'Organisation',
-          icon: <SettingsIcon />,
-        },
-      ],
-    });
-
-    if (projectSlug !== null) {
-      sections.push({
-        label: projectSlug,
-        items: [
-          {
-            href: appPath.project(orgSlug, projectSlug),
-            label: 'Overview',
-            icon: <LayersIcon />,
-            exact: true,
-          },
-          ...(envSlug === null
-            ? []
-            : [
-                {
-                  href: appPath.environment(orgSlug, projectSlug, envSlug),
-                  label: envSlug,
-                  icon: <KeyIcon />,
-                },
-              ]),
-        ],
-      });
-    }
-  }
-
-  sections.push({
-    label: 'You',
-    items: [{ href: appPath.account(), label: 'Account', icon: <UserIcon /> }],
-  });
-
-  return sections;
 }
 
 /**

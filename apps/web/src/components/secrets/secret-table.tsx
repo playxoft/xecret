@@ -14,6 +14,8 @@ import {
   ChevronUpDownIcon,
   ConfirmDialog,
   EmptyState,
+  EyeIcon,
+  EyeOffIcon,
   Input,
   KeyIcon,
   LayersIcon,
@@ -30,6 +32,9 @@ import {
   useToast,
 } from '@/components/ui';
 import { BulkAddPanel } from './bulk-add-panel';
+import type { EnvironmentTarget } from './multi-environment-write';
+import { useRevealAll } from './use-reveal-all';
+import type { RevealAll } from './use-reveal-all';
 import { DraftRow } from './draft-row';
 import { SecretRow } from './secret-row';
 import { useStagedChanges } from './staged-changes';
@@ -42,6 +47,8 @@ export interface SecretTableProps {
   projectSlug: string;
   envSlug: string;
   isProduction: boolean;
+  /** Every environment in this project, so a paste can fan out across them. */
+  environments: readonly EnvironmentTarget[];
   secrets: readonly SecretSummary[];
   /** Present when the environment holds more than one page. */
   onLoadMore: (() => void) | null;
@@ -85,6 +92,7 @@ export function SecretTable({
   projectSlug,
   envSlug,
   isProduction,
+  environments,
   secrets,
   onLoadMore,
   loadingMore,
@@ -100,6 +108,7 @@ export function SecretTable({
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const [bulkAdding, setBulkAdding] = useState(false);
+  const revealAll = useRevealAll(orgSlug, projectSlug, envSlug);
   const [history, setHistory] = useState<SecretSummary | null>(null);
   const [deleting, setDeleting] = useState<SecretSummary | null>(null);
   const [bulkDeleting, setBulkDeleting] = useState(false);
@@ -266,12 +275,22 @@ export function SecretTable({
         onToggleBulkAdd={() => setBulkAdding((current) => !current)}
         onAddDraft={() => staged.addDraft()}
         disabled={staged.saving}
+        revealAll={revealAll}
+        hasSecrets={secrets.length > 0}
         {...(onImport === undefined ? {} : { onImport })}
         {...(onExport === undefined ? {} : { onExport })}
       />
 
       {bulkAdding ? (
-        <BulkAddPanel onAdd={staged.addDrafts} onClose={() => setBulkAdding(false)} />
+        <BulkAddPanel
+          onAdd={staged.addDrafts}
+          onClose={() => setBulkAdding(false)}
+          currentEnvSlug={envSlug}
+          orgSlug={orgSlug}
+          projectSlug={projectSlug}
+          environments={environments}
+          onWritten={onChanged}
+        />
       ) : null}
 
       {/* The visible count, and the same fact announced politely. Without this a
@@ -363,7 +382,8 @@ export function SecretTable({
                     onSort={() => toggleSort('name')}
                   />
 
-                  <TableHead className="w-[38%]">Value</TableHead>
+                  <TableHead className="w-[34%]">Value</TableHead>
+                  <TableHead className="w-24">Type</TableHead>
                   <TableHead className="w-20">Version</TableHead>
 
                   <SortableHead
@@ -391,10 +411,14 @@ export function SecretTable({
                     selected={selected.has(secret.name)}
                     edit={staged.edits.get(secret.name)}
                     disabled={staged.saving}
+                    {...(revealAll.values?.[secret.name] === undefined
+                      ? {}
+                      : { revealed: revealAll.values[secret.name] })}
                     onSelectedChange={(checked) => toggleOne(secret.name, checked)}
                     onEditOpen={() => staged.openEdit(secret.name)}
                     onEditChange={(value) => staged.setEdit(secret.name, value)}
                     onEditClose={() => staged.closeEdit(secret.name)}
+                    onTypeChange={(type) => staged.setEditType(secret.name, type)}
                     onHistory={() => setHistory(secret)}
                     onDelete={() => setDeleting(secret)}
                     onCommit={saveStaged}
@@ -419,7 +443,7 @@ export function SecretTable({
                 ))}
 
                 <TableRow className="hover:bg-transparent">
-                  <TableCell colSpan={7} className="py-1.5">
+                  <TableCell colSpan={8} className="py-1.5">
                     <Button
                       variant="ghost"
                       size="sm"
@@ -504,6 +528,8 @@ function Toolbar({
   onToggleBulkAdd,
   onAddDraft,
   disabled,
+  revealAll,
+  hasSecrets,
   onImport,
   onExport,
 }: {
@@ -513,6 +539,8 @@ function Toolbar({
   onToggleBulkAdd: () => void;
   onAddDraft: () => void;
   disabled: boolean;
+  revealAll: RevealAll;
+  hasSecrets: boolean;
   onImport?: () => void;
   onExport?: () => void;
 }) {
@@ -531,6 +559,18 @@ function Toolbar({
       </div>
 
       <span className="hidden flex-1 sm:block" />
+
+      {hasSecrets ? (
+        <Button
+          variant={revealAll.revealed ? 'secondary' : 'ghost'}
+          onClick={revealAll.revealed ? revealAll.hide : revealAll.reveal}
+          loading={revealAll.loading}
+          aria-pressed={revealAll.revealed}
+        >
+          {revealAll.revealed ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
+          {revealAll.revealed ? `Hide all · ${revealAll.secondsLeft}s` : 'Reveal all'}
+        </Button>
+      ) : null}
 
       {onImport ? (
         <Button variant="ghost" onClick={onImport}>

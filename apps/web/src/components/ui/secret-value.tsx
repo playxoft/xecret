@@ -33,6 +33,21 @@ export interface SecretValueProps {
   /** How long a revealed value stays on screen. */
   revealDurationMs?: number;
   /**
+   * A plaintext the caller has *already* fetched and had audited.
+   *
+   * Set by "Reveal all", which decrypts a whole environment in one audited
+   * request. Without it that button would have to either re-fetch each row —
+   * turning one deliberate act into sixty audit records — or bypass this
+   * component and render the value itself, which would put an unmasked secret
+   * on screen with none of the auto-hide behaviour below.
+   *
+   * It does not weaken rule 2. The value still came from the audited endpoint;
+   * what changes is only *which* audited call produced it. Clearing it returns
+   * the field to a mask, and the countdown and blur handling apply to it exactly
+   * as they do to a value revealed here.
+   */
+  revealed?: string;
+  /**
    * Extra controls for this value, rendered in the same group as reveal and
    * copy — an edit button, usually.
    *
@@ -63,6 +78,7 @@ export function SecretValue({
   name,
   onReveal,
   revealDurationMs = 30_000,
+  revealed: external,
   trailing,
   className,
 }: SecretValueProps) {
@@ -163,7 +179,12 @@ export function SecretValue({
     [],
   );
 
-  const revealed = state === 'revealed' && value !== null;
+  // A value supplied from outside wins over local state, so clearing "Reveal
+  // all" re-masks every row at once rather than leaving behind whichever ones
+  // had also been revealed individually.
+  const shown = external ?? (state === 'revealed' ? value : null);
+  const revealed = shown !== null;
+  const fromReveal = external === undefined;
 
   return (
     <div className={cn('flex min-w-0 flex-col gap-1', className)}>
@@ -171,7 +192,7 @@ export function SecretValue({
         <div className="border-line bg-canvas-inset min-w-0 flex-1 rounded-md border px-2.5 py-1.5">
           {revealed ? (
             <code className="text-fg block font-mono text-[0.8125rem] leading-5 break-all">
-              {value}
+              {shown}
             </code>
           ) : (
             <>
@@ -193,7 +214,9 @@ export function SecretValue({
           size="icon"
           variant="ghost"
           onClick={revealed ? remask : reveal}
-          disabled={state === 'loading'}
+          // An externally-supplied value is cleared by the control that supplied
+          // it, so this row's own toggle has nothing to do.
+          disabled={state === 'loading' || external !== undefined}
           aria-pressed={revealed}
           aria-label={revealed ? `Hide the value of ${name}` : `Reveal the value of ${name}`}
         >
@@ -225,7 +248,7 @@ export function SecretValue({
         {trailing}
       </div>
 
-      {revealed ? (
+      {revealed && fromReveal ? (
         <p className="text-fg-subtle text-xs">
           Hides in {secondsLeft}s · this read was recorded in the audit log
         </p>

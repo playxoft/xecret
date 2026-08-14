@@ -3,9 +3,16 @@
 import { useState } from 'react';
 import type { ClipboardEvent, KeyboardEvent } from 'react';
 
-import { checkSecretName, SECRET_NAME_MAX_LENGTH } from '@xecret/core/validation';
+import {
+  checkSecretName,
+  checkSecretValue,
+  SECRET_NAME_MAX_LENGTH,
+  toSecretValueType,
+} from '@xecret/core/validation';
+import type { SecretValueType } from '@xecret/core/validation';
 import { cn } from '@/lib/cn';
 import { Button, CloseIcon, Input, TableCell, TableRow, Textarea } from '@/components/ui';
+import { ValueTypeMenu } from './value-type-menu';
 import { looksLikeAssignments, parsePastedSecrets } from './paste-secrets';
 import { draftNameProblem } from './staged-changes';
 import type { Draft, DraftSeed } from './staged-changes';
@@ -59,7 +66,18 @@ export function DraftRow({
 
   const liveNameProblem = draftNameProblem(draft, drafts, existingNames);
   const nameError = draft.error?.field === 'name' ? draft.error.message : liveNameProblem;
-  const valueError = draft.error?.field === 'value' ? draft.error.message : null;
+
+  // The live shape check takes precedence over the last save attempt's message,
+  // which may already describe a value the user has since changed. It runs
+  // against the same module the server checks against on write — this copy is
+  // for the person, that one is the rule.
+  const valueType = toSecretValueType(draft.valueType);
+  const shape = checkSecretValue(draft.value, valueType);
+  const valueError = !shape.valid
+    ? (shape.message ?? null)
+    : draft.error?.field === 'value'
+      ? draft.error.message
+      : null;
 
   // Offered only when the validator can derive a legal name from an illegal
   // one (`my-api-key` → `MY_API_KEY`). Faster and less error-prone than
@@ -163,11 +181,24 @@ export function DraftRow({
           autoCorrect="off"
           autoCapitalize="off"
           spellCheck={false}
-          className="min-h-8 py-1.5 font-mono text-[0.8125rem] leading-5"
+          className={cn(
+            'min-h-8 py-1.5 font-mono text-[0.8125rem] leading-5',
+            valueError !== null && 'border-danger focus:border-danger focus:ring-danger/30',
+          )}
         />
         {valueError !== null ? (
           <p className="text-danger-text mt-1 text-xs leading-5">{valueError}</p>
         ) : null}
+      </TableCell>
+
+      <TableCell className="align-top">
+        <ValueTypeMenu
+          value={draft.valueType}
+          onChange={(next: SecretValueType) => onPatch({ valueType: next })}
+          disabled={disabled}
+          secretName={draft.name.trim() || 'this new secret'}
+          className="mt-1"
+        />
       </TableCell>
 
       <TableCell colSpan={3} className="align-top">

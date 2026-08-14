@@ -36,15 +36,34 @@ export interface SessionOrganization {
   role: OrgRole;
 }
 
+/**
+ * Whether this session may currently reach a secret.
+ *
+ * Two booleans rather than one tri-state, because the two questions have
+ * different answers and different screens: `configured: false` means "choose a
+ * PIN", `unlocked: false` means "enter yours", and a single `locked` flag would
+ * make the shell guess which.
+ */
+export interface PinStatus {
+  configured: boolean;
+  unlocked: boolean;
+  /** ISO 8601. When the current unlock lapses; `null` while locked. */
+  unlockedUntil: string | null;
+}
+
 export interface SessionValue {
   user: SessionUser;
   organizations: readonly SessionOrganization[];
+  pin: PinStatus;
+  /** Locks this session without ending it, then re-reads the session. */
+  lock: () => Promise<void>;
 }
 
 /** The body of `GET /api/auth/me`. `credential` is for the CLI and unused here. */
 export interface MeResponse {
   user: SessionUser;
   organizations: readonly SessionOrganization[];
+  pin: PinStatus;
 }
 
 const SessionContext = createContext<SessionValue | null>(null);

@@ -147,9 +147,72 @@ function checkDatabase(): void {
   }
 }
 
+/**
+ * Email, which is optional — so this reports rather than fails.
+ *
+ * A deployment without a mail provider works: the PIN reset flow says so, and
+ * nothing else in the product sends anything. What is *not* fine is a
+ * half-configuration, where a token is set but the from-address is missing, or
+ * a token from the EU region is pointed at the default host. Both produce a
+ * failure whose message says nothing about the cause, which is exactly what a
+ * preflight check exists to prevent.
+ */
+function checkEmail(): void {
+  const token = process.env['ZEPTOMAIL_TOKEN'];
+  const from = process.env['ZEPTOMAIL_FROM_ADDRESS'];
+  const apiUrl = process.env['ZEPTOMAIL_API_URL'];
+
+  if (!token && !from) {
+    check(
+      'ZEPTOMAIL_TOKEN',
+      true,
+      'not set — email is optional; PIN reset will report it as unavailable',
+    );
+    return;
+  }
+
+  if (!token || !from) {
+    check(
+      token ? 'ZEPTOMAIL_FROM_ADDRESS' : 'ZEPTOMAIL_TOKEN',
+      false,
+      'half-configured: set both the token and the from-address, or neither',
+    );
+    return;
+  }
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(from)) {
+    check('ZEPTOMAIL_FROM_ADDRESS', false, `"${from}" is not an email address`);
+    return;
+  }
+
+  // The token itself is never printed. Its length is enough to distinguish "set
+  // to something plausible" from "set to a placeholder".
+  check('ZEPTOMAIL_TOKEN', token.length > 20, token.length > 20 ? 'set' : 'suspiciously short');
+  check('ZEPTOMAIL_FROM_ADDRESS', true, from);
+
+  if (apiUrl) {
+    let host: string;
+    try {
+      host = new URL(apiUrl).host;
+    } catch {
+      check('ZEPTOMAIL_API_URL', false, 'not a valid URL');
+      return;
+    }
+    check('ZEPTOMAIL_API_URL', host.endsWith('zeptomail.com') || host.includes('zeptomail'), host);
+    return;
+  }
+
+  check(
+    'ZEPTOMAIL_API_URL',
+    true,
+    'not set — using api.zeptomail.com. An EU or India account must set this',
+  );
+}
+
 checkDatabase();
 checkRootKeys();
 checkFirebaseAgreement(checkFirebase());
+checkEmail();
 
 const width = Math.max(...results.map((r) => r.name.length));
 const failed = results.filter((r) => !r.ok).length;

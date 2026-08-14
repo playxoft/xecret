@@ -52,6 +52,8 @@ export type ApiErrorCode =
   | 'payload_too_large'
   | 'rate_limited'
   | 'csrf_failed'
+  /** The session is authenticated but locked. The dashboard shows the PIN screen. */
+  | 'session_locked'
   | 'internal_error'
   | 'unavailable'
   | 'network_error';
@@ -168,6 +170,7 @@ const ERROR_CODES = new Set<string>([
   'payload_too_large',
   'rate_limited',
   'csrf_failed',
+  'session_locked',
   'internal_error',
   'unavailable',
 ]);

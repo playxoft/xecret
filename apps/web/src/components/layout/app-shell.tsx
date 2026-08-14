@@ -23,6 +23,8 @@ export interface AppShellProps {
   createOrgHref?: string;
   user: ShellUser;
   accountHref?: string;
+  /** Locks the session without ending it. Adds "Lock now" to the account menu. */
+  onLock?: () => Promise<void>;
   breadcrumbs?: readonly BreadcrumbItem[];
   /** Top-bar controls to the left of the account menu — search, quick create. */
   topBarActions?: ReactNode;
@@ -43,6 +45,7 @@ export function AppShell({
   createOrgHref,
   user,
   accountHref,
+  onLock,
   breadcrumbs,
   topBarActions,
   children,
@@ -122,7 +125,11 @@ export function AppShell({
 
           <div className="flex shrink-0 items-center gap-2">
             {topBarActions}
-            <UserMenu user={user} {...(accountHref === undefined ? {} : { accountHref })} />
+            <UserMenu
+              user={user}
+              {...(accountHref === undefined ? {} : { accountHref })}
+              {...(onLock === undefined ? {} : { onLock })}
+            />
           </div>
         </header>
 

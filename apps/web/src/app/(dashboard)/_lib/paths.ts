@@ -39,6 +39,7 @@ export const appPath = {
   root: (): string => '/app',
   org: (org: string): string => `/app/${segment(org)}`,
   orgSettings: (org: string): string => `/app/${segment(org)}/settings`,
+  members: (org: string): string => `/app/${segment(org)}/members`,
   project: (org: string, project: string): string => `${appPath.org(org)}/${segment(project)}`,
   environment: (org: string, project: string, env: string): string =>
     `${appPath.project(org, project)}/${segment(env)}`,
@@ -54,6 +55,7 @@ export const apiPath = {
   orgs: (): string => '/api/orgs',
   org: (org: string): string => `/api/orgs/${segment(org)}`,
   projects: (org: string): string => `${apiPath.org(org)}/projects`,
+  members: (org: string): string => `${apiPath.org(org)}/members`,
   project: (org: string, project: string): string => `${apiPath.projects(org)}/${segment(project)}`,
   environments: (org: string, project: string): string =>
     `${apiPath.project(org, project)}/environments`,
@@ -67,10 +69,19 @@ export const apiPath = {
     `${apiPath.secret(org, project, env, name)}/versions`,
   secretRestore: (org: string, project: string, env: string, name: string): string =>
     `${apiPath.secret(org, project, env, name)}/restore`,
+  secretVersion: (
+    org: string,
+    project: string,
+    env: string,
+    name: string,
+    version: number,
+  ): string => `${apiPath.secretVersions(org, project, env, name)}/${version}`,
   import: (org: string, project: string, env: string): string =>
     `${apiPath.environment(org, project, env)}/import`,
   export: (org: string, project: string, env: string): string =>
     `${apiPath.environment(org, project, env)}/export`,
+  pull: (org: string, project: string, env: string): string =>
+    `${apiPath.environment(org, project, env)}/pull`,
 } as const;
 
 /**
@@ -126,10 +137,15 @@ export function parseDashboardPath(pathname: string): DashboardLocation {
   if (root !== 'app' || first === undefined) return empty;
   if (first === 'settings') return { ...empty, isAccountArea: true };
 
+  // Org-level pages that occupy the slot a project slug would. Both names are in
+  // the reserved slug list, so no project can ever shadow one — which is what
+  // makes this a lookup rather than a guess.
+  const orgPage = second === 'settings' || second === 'members';
+
   return {
     orgSlug: decodeURIComponent(first),
-    projectSlug: second === undefined || second === 'settings' ? null : decodeURIComponent(second),
-    envSlug: third === undefined || second === 'settings' ? null : decodeURIComponent(third),
+    projectSlug: second === undefined || orgPage ? null : decodeURIComponent(second),
+    envSlug: third === undefined || orgPage ? null : decodeURIComponent(third),
     isAccountArea: false,
   };
 }

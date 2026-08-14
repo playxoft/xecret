@@ -17,6 +17,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  LockIcon,
   LogOutIcon,
   MonitorIcon,
   MoonIcon,
@@ -34,6 +35,14 @@ export interface UserMenuProps {
   user: ShellUser;
   /** Adds an "Account settings" item when provided. */
   accountHref?: string;
+  /**
+   * Locks the session without ending it. Adds the "Lock now" item when given.
+   *
+   * A prop rather than a call into the session context, so this component stays
+   * usable by anything that renders the shell — including the tests, which have
+   * no session provider.
+   */
+  onLock?: () => Promise<void>;
   className?: string;
 }
 
@@ -45,9 +54,26 @@ const THEME_ICONS: Record<ThemePreference, typeof SunIcon> = {
 
 const THEME_ORDER: readonly ThemePreference[] = ['light', 'dark', 'system'];
 
-export function UserMenu({ user, accountHref, className }: UserMenuProps) {
+export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps) {
   const { preference, setPreference } = useTheme();
   const [signingOut, setSigningOut] = useState(false);
+  const [locking, setLocking] = useState(false);
+
+  /**
+   * Locking is the cheap safe action, and it is placed above signing out for
+   * that reason: it costs one PIN to undo, where signing out costs a full trip
+   * through the identity provider. Making the safe thing the easy thing is what
+   * gets it used when somebody stands up from their desk.
+   */
+  async function handleLock() {
+    if (!onLock) return;
+    setLocking(true);
+    try {
+      await onLock();
+    } finally {
+      setLocking(false);
+    }
+  }
 
   async function handleSignOut() {
     setSigningOut(true);
@@ -121,6 +147,19 @@ export function UserMenu({ user, accountHref, className }: UserMenuProps) {
         </DropdownMenuRadioGroup>
 
         <DropdownMenuSeparator />
+
+        {onLock ? (
+          <DropdownMenuItem
+            disabled={locking}
+            onSelect={(event) => {
+              event.preventDefault();
+              void handleLock();
+            }}
+          >
+            <LockIcon className="size-4" />
+            {locking ? 'Locking…' : 'Lock now'}
+          </DropdownMenuItem>
+        ) : null}
 
         <DropdownMenuItem
           destructive

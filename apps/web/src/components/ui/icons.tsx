@@ -270,6 +270,29 @@ export const ShieldIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const LockIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <rect x="4.5" y="10.5" width="15" height="10" rx="2" />
+    <path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" />
+  </Icon>
+);
+
+export const LockOpenIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <rect x="4.5" y="10.5" width="15" height="10" rx="2" />
+    <path d="M8 10.5V7.5a4 4 0 0 1 7.4-2.1" />
+  </Icon>
+);
+
+/** The overflow affordance: more of a set than fits, not "settings". */
+export const MoreHorizontalIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <circle cx="5" cy="12" r="1.2" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" />
+    <circle cx="19" cy="12" r="1.2" fill="currentColor" stroke="none" />
+  </Icon>
+);
+
 export const ShieldCheckIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M12 3 4.5 6v5.5c0 4.5 3.1 7.9 7.5 9.5 4.4-1.6 7.5-5 7.5-9.5V6L12 3Z" />

@@ -13,7 +13,15 @@ import type { Draft } from './staged-changes';
  */
 
 function draft(patch: Partial<Draft> = {}): Draft {
-  return { id: 'draft-1', name: '', value: '', note: '', error: null, ...patch };
+  return {
+    id: 'draft-1',
+    name: '',
+    value: '',
+    note: '',
+    valueType: 'string',
+    error: null,
+    ...patch,
+  };
 }
 
 const NO_NAMES: ReadonlySet<string> = new Set();

@@ -3,6 +3,8 @@
 import { useCallback, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 
+import { checkSecretValue, toSecretValueType } from '@xecret/core/validation';
+import type { SecretValueType } from '@xecret/core/validation';
 import { api, errorMessage } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { formatAbsoluteTime, formatRelativeTime, toIsoString } from '@/lib/format';
@@ -16,9 +18,9 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  MoreHorizontalIcon,
   PencilIcon,
   SecretValue,
-  SettingsIcon,
   Spinner,
   TableCell,
   TableRow,
@@ -27,6 +29,7 @@ import {
 import { Actor } from './actor';
 import type { PendingEdit } from './staged-changes';
 import type { RevealedSecret, SecretSummary } from './types';
+import { ValueTypeMenu } from './value-type-menu';
 
 export interface SecretRowProps {
   orgSlug: string;
@@ -37,10 +40,13 @@ export interface SecretRowProps {
   /** Present while this row's value is being rewritten. */
   edit: PendingEdit | undefined;
   disabled: boolean;
+  /** Plaintext held by a "Reveal all", which this row displays instead of a mask. */
+  revealed?: string | undefined;
   onSelectedChange: (checked: boolean) => void;
   onEditOpen: () => void;
   onEditChange: (value: string) => void;
   onEditClose: () => void;
+  onTypeChange: (type: SecretValueType) => void;
   onHistory: () => void;
   onDelete: () => void;
   /** Ctrl/Cmd+Enter anywhere in the editor commits the whole batch. */
@@ -67,6 +73,15 @@ export interface SecretRowProps {
  *     writes it straight to the clipboard; the common case is pasting into a
  *     terminal, and showing it on the way there is exposure that buys nothing.
  *
+ * ── Row geometry ──
+ * Every cell is `align-middle` and the row carries a minimum height, so the
+ * checkbox, the name, the value field, the version chip, the timestamp and the
+ * menu all sit on one optical line. They used to be `align-top`, which looked
+ * right only while every cell was one line tall — a secret with a note, or a
+ * two-line value editor, dragged its neighbours to the ceiling and left the row
+ * looking broken. The editor is the one cell allowed to grow, and it grows
+ * downward from a centred baseline.
+ *
  * ── Editing in place ──
  * The editor opens *empty*, and says so. It is not a text box containing the
  * current value with the cursor at the end, because filling it would mean
@@ -86,10 +101,12 @@ export function SecretRow({
   selected,
   edit,
   disabled,
+  revealed,
   onSelectedChange,
   onEditOpen,
   onEditChange,
   onEditClose,
+  onTypeChange,
   onHistory,
   onDelete,
   onCommit,
@@ -103,25 +120,26 @@ export function SecretRow({
 
   const editing = edit !== undefined;
   const staged = editing && edit.value.length > 0;
+  const valueType = toSecretValueType(secret.valueType);
 
   return (
     <TableRow
       className={cn(
+        'h-14',
         staged && 'bg-warning-tint/40 hover:bg-warning-tint/50',
         staged && '[&>td:first-child]:border-l-warning [&>td:first-child]:border-l-2',
         !staged && selected && 'bg-accent-tint/40',
       )}
     >
-      <TableCell className="pr-0 align-top">
+      <TableCell className="pr-0 align-middle">
         <Checkbox
           checked={selected}
           onCheckedChange={(checked) => onSelectedChange(checked === true)}
           aria-label={`Select ${secret.name}`}
-          className="mt-1.5"
         />
       </TableCell>
 
-      <TableCell className="align-top">
+      <TableCell className="align-middle">
         <span className="text-fg block font-mono text-[0.8125rem] font-medium break-all">
           {secret.name}
         </span>
@@ -129,16 +147,17 @@ export function SecretRow({
           <span className="text-fg-subtle mt-0.5 block text-xs leading-5">{secret.note}</span>
         ) : null}
         {staged ? (
-          <Badge tone="warning" className="mt-1.5">
+          <Badge tone="warning" className="mt-1">
             Unsaved
           </Badge>
         ) : null}
       </TableCell>
 
-      <TableCell className="align-top">
+      <TableCell className="align-middle">
         {editing ? (
           <ValueEditor
             secret={secret}
+            valueType={valueType}
             edit={edit}
             disabled={disabled}
             onReveal={reveal}
@@ -150,6 +169,10 @@ export function SecretRow({
           <SecretValue
             name={secret.name}
             onReveal={reveal}
+            // Handed the plaintext a "Reveal all" already fetched and audited.
+            // Without this the button would either re-fetch every row — six
+            // audit records for one click — or show nothing.
+            {...(revealed === undefined ? {} : { revealed })}
             trailing={
               <Button
                 size="icon"
@@ -165,21 +188,30 @@ export function SecretRow({
         )}
       </TableCell>
 
-      <TableCell className="align-top">
+      <TableCell className="align-middle">
+        <ValueTypeMenu
+          value={secret.valueType}
+          onChange={onTypeChange}
+          disabled={disabled}
+          secretName={secret.name}
+        />
+      </TableCell>
+
+      <TableCell className="align-middle">
         <Badge tone="neutral">v{secret.version}</Badge>
       </TableCell>
 
-      <TableCell className="text-fg-muted align-top text-[0.8125rem] whitespace-nowrap">
+      <TableCell className="text-fg-muted align-middle text-[0.8125rem] whitespace-nowrap">
         <time dateTime={toIsoString(secret.updatedAt)} title={formatAbsoluteTime(secret.updatedAt)}>
           {formatRelativeTime(secret.updatedAt)}
         </time>
       </TableCell>
 
-      <TableCell className="align-top text-[0.8125rem] whitespace-nowrap">
+      <TableCell className="align-middle text-[0.8125rem] whitespace-nowrap">
         <Actor userId={secret.createdBy} />
       </TableCell>
 
-      <TableCell className="align-top">
+      <TableCell className="align-middle">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -190,7 +222,7 @@ export function SecretRow({
               // useless in a list of sixty.
               aria-label={`Actions for ${secret.name}`}
             >
-              <SettingsIcon className="size-4" />
+              <MoreHorizontalIcon className="size-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent>
@@ -211,6 +243,7 @@ export function SecretRow({
 
 function ValueEditor({
   secret,
+  valueType,
   edit,
   disabled,
   onReveal,
@@ -219,6 +252,7 @@ function ValueEditor({
   onCommit,
 }: {
   secret: SecretSummary;
+  valueType: SecretValueType;
   edit: PendingEdit;
   disabled: boolean;
   onReveal: () => Promise<string>;
@@ -229,6 +263,12 @@ function ValueEditor({
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+
+  // Checked as you type, against the same module the server checks against on
+  // write. This copy exists so the failure arrives while the value is still on
+  // screen and fixable; the server's copy is the one that is load-bearing.
+  const shape = checkSecretValue(edit.value, valueType);
+  const shapeProblem = shape.valid ? null : (shape.message ?? null);
 
   async function loadCurrent() {
     setLoadError(null);
@@ -259,7 +299,7 @@ function ValueEditor({
   }
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1.5 py-1">
       <Textarea
         value={edit.value}
         onChange={(event) => onChange(event.target.value)}
@@ -268,12 +308,15 @@ function ValueEditor({
         rows={2}
         placeholder={`New value for ${secret.name}`}
         aria-label={`New value for ${secret.name}`}
-        aria-invalid={edit.error !== null ? true : undefined}
+        aria-invalid={edit.error !== null || shapeProblem !== null ? true : undefined}
         autoComplete="off"
         autoCorrect="off"
         autoCapitalize="off"
         spellCheck={false}
-        className="py-1.5 font-mono text-[0.8125rem] leading-5"
+        className={cn(
+          'py-1.5 font-mono text-[0.8125rem] leading-5',
+          shapeProblem !== null && 'border-danger focus:border-danger focus:ring-danger/30',
+        )}
         autoFocus
       />
 
@@ -308,9 +351,14 @@ function ValueEditor({
         </Button>
       </div>
 
-      {edit.error !== null ? (
+      {/* The live shape check first: it describes what is in the box now, while
+          `edit.error` describes the last save attempt and may already be stale. */}
+      {shapeProblem !== null ? (
+        <p className="text-danger-text text-xs leading-5">{shapeProblem}</p>
+      ) : edit.error !== null ? (
         <p className="text-danger-text text-xs leading-5">{edit.error}</p>
       ) : null}
+
       {loadError !== null ? (
         <p role="alert" className="text-danger-text text-xs leading-5">
           {loadError}
