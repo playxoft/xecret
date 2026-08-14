@@ -12,9 +12,10 @@ import {
   TerminalIcon,
   UsersIcon,
 } from '@/components/ui';
+import type { OrgRole } from '@xecret/core/authz';
 import type { NavSection } from '@/components/layout';
 import type { ProjectListResponse, ProjectResponse } from '@/components/projects/types';
-import { isOrgAdmin, useOrganization } from './session';
+import { isOrgAdmin } from './session';
 
 /**
  * The sidebar's contents.
@@ -49,6 +50,13 @@ export interface DashboardNavParams {
   orgSlug: string | null;
   projectSlug: string | null;
   envSlug: string | null;
+  /**
+   * The viewer's role in the current organisation, or `null` while the
+   * session is still resolving. Passed in rather than read from `useSession`,
+   * because this hook runs in the chrome — *above* the `SessionProvider` the
+   * chrome renders — where the session is a resource, not yet a context.
+   */
+  viewerRole: OrgRole | null;
 }
 
 /** Enough projects for the sidebar; the projects page pages properly. */
@@ -58,6 +66,7 @@ export function useDashboardNav({
   orgSlug,
   projectSlug,
   envSlug,
+  viewerRole,
 }: DashboardNavParams): readonly NavSection[] {
   const projects = useApiResource<ProjectListResponse>(
     orgSlug === null ? null : withQuery(apiPath.projects(orgSlug), { limit: PROJECT_LIMIT }),
@@ -72,8 +81,7 @@ export function useDashboardNav({
   // the usual rule: role decides what is drawn, the server decides what is
   // permitted. (The tokens page has a "your devices" half everyone could use,
   // but it lives with account-adjacent things for non-admins in a later pass.)
-  const organization = useOrganization(orgSlug);
-  const showAdminPages = organization !== null && isOrgAdmin(organization.role);
+  const showAdminPages = viewerRole !== null && isOrgAdmin(viewerRole);
 
   return useMemo(() => {
     if (orgSlug === null) {

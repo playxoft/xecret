@@ -39,8 +39,12 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
 
   // Built before the early returns below, because hooks cannot run
   // conditionally. It issues no request until `orgSlug` is non-null, so the
-  // loading and locked paths cost nothing extra.
-  const nav = useDashboardNav(location);
+  // loading and locked paths cost nothing extra. The role is threaded in from
+  // the session resource because this runs above the SessionProvider.
+  const viewerRole =
+    session.data?.organizations.find((organization) => organization.slug === location.orgSlug)
+      ?.role ?? null;
+  const nav = useDashboardNav({ ...location, viewerRole });
 
   // Locking re-reads the session, which re-renders this component and lands on
   // the lock screen. One code path for "we are locked", whether that came from

@@ -3,11 +3,12 @@
 > Open-source, developer-first secret management.
 > Powered by Playxoft.
 
-**Status:** M0 complete, **M1 complete** — Phase 6 (the CLI) is built, which closes the
-milestone. Teams (Phase 7) is next.
+**Status:** M0, M1, M2 and **M3's build half** complete — Phases 7 (teams), 8 (CI +
+audit) and 9 (launch material) are built. Phase 10 (security audit, performance,
+production) is what remains, together with the standing integration caveat below.
 **Supersedes:** `plan1.md` (kept for reference — this doc is the source of truth).
 
-**Progress:** ▓▓▓▓▓▓▓░░░░ 7 of 11 phases done
+**Progress:** ▓▓▓▓▓▓▓▓▓▓░ 10 of 11 phases done
 
 | Phase | Status | Branch |
 |---|---|---|
@@ -18,10 +19,13 @@ milestone. Teams (Phase 7) is next.
 | 4 · Projects, environments, secrets API | ✅ merged | `feat/secrets-api` |
 | 5 · Dashboard UI | ✅ merged | `feat/dashboard-ui` |
 | 6 · Go CLI v1 | ✅ built | `feat/cli-v1` |
-| 7 · Team, roles, granular access | ⬜ | |
-| 8 · CI, service tokens, audit logs | ⬜ | |
-| 9 · Landing page, docs, open source | ⬜ | |
+| 7 · Team, roles, granular access | ✅ built | `feat/teams-roles` |
+| 8 · CI, service tokens, audit logs | ✅ built | `feat/ci-service-tokens` |
+| 9 · Landing page, docs, open source | ✅ built | `feat/launch-ready` |
 | 10 · Security audit, performance, production | ⬜ | |
+
+> Phases 7–9 are stacked branches on `feat/cli-v1` (7 → 8 → 9), so each merges in
+> order once reviewed.
 
 > **Nothing here has run against a real database.** Every query is verified by shape
 > (`.toSQL()` assertions) and every pure rule by unit test, but no code path has touched
@@ -436,38 +440,94 @@ at the top of this document.
 
 ### 🏁 M2 — Teams and CI
 
-#### Phase 7 — Team, roles, granular access  *(~5 days)*
-- Four fixed roles: Owner, Admin, Developer, Viewer. **No custom roles in v1** — the schema supports them, the UI does not.
-- Per-member grants: project → environment → `none | read | write`
-- Invitations: single-use, expiring, hashed-at-rest tokens, revocable
-- Member management UI, seat counting (no billing — just the data model)
-- Effective-permission preview: "what can Alice actually see?" — the feature that prevents misconfiguration
+#### ✅ Phase 7 — Team, roles, granular access
+- [x] Four fixed roles: Owner, Admin, Developer, Viewer. **No custom roles in v1** — the schema supports them, the UI does not.
+- [x] Per-member grants: project → environment → `none | read | write | admin` (the engine's fourth level, kept rather than papered over)
+- [x] Invitations: single-use, expiring, hashed-at-rest tokens, revocable
+- [x] Member management UI, seat counting (no billing — just the data model)
+- [x] Effective-permission preview: "what can Alice actually see?" — computed by the same `resolveAccessLevel` the enforcement path calls
 
-#### Phase 8 — CI, service tokens, audit logs  *(~5 days)*
+**Shipped, with the decisions worth recording:**
+
+- **The role hierarchy is a second predicate, not a capability.** `canAssignRole`
+  (core/authz) refuses any role above the actor's own, applied to *both* sides of
+  every member change — the role being handed out and the role currently held.
+  Without it, `member.invite` plus one forged request lets an admin mint an owner.
+- **Invitations supersede on re-invite.** A new invitation revokes the address's
+  outstanding one inside the same transaction, so "resend" is just "invite" and at
+  most one live link per (org, email) can circulate — which is also what makes
+  re-inviting after expiry survive the partial unique index.
+- **Acceptance is one transaction under the organisation lock:** state, address
+  match (a forwarded email must not let a colleague join as somebody else), seat
+  count, and the membership insert all settle together. Seats count members
+  whatever their status — suspension is a security act, never a discount — plus
+  open unexpired invitations.
+- **The invite link is returned once, like a token.** Mail stays optional for
+  self-hosters; the inviter can hand the link over themselves, and closing the
+  dialog discards it.
+- **Member mutations are session-only** (a bearer credential may not mint further
+  credentials — the CLI-authorize rule, generalised), and self-changes are refused
+  outright: demoting yourself has no self-service undo.
+- Audit grew `member.suspended`, `member.reinstated`, `invitation.revoked`, and
+  previous/new access-level metadata — and a real bug fell out: `sanitizeMetadata`
+  silently dropped `deviceName`, `sessionCount` and `valueType` because the
+  field-by-field rebuild never learned them. Fixed with a test that sweeps every
+  declared field.
+
+#### ✅ Phase 8 — CI, service tokens, audit logs
 CI is a **first-class use case**, not a v2 afterthought.
 
-- **Service tokens:** scoped to exactly one project + environment, read-only by default, no user attached, shown once at creation, revocable, optional expiry, optional IP allowlist, `last_used_at` tracked
-- **Migration: service-token write attribution.** Phase 4 shipped service tokens as strictly read-only — not by choice but because `secret_versions.created_by` is `NOT NULL REFERENCES users`, and a CI credential has no person behind it. Add a nullable `created_by_service_token_id` with a check constraint requiring exactly one of the two, then lift the 403 in `secrets-service.ts`. Attributing a CI write to whoever minted the token, or making `created_by` nullable, were both rejected — see `docs/architecture/api.md` §2.
-- `XECRET_TOKEN=xct_... xecret run -- npm run build` — zero interactive login
-- `xecret pull --format env > .env` for legacy pipelines, with a stderr warning
-- Distribution: GitHub Action, Docker image `ghcr.io/playxoft/xecret`, `curl | sh` for arbitrary CI
-- Recipes in `examples/ci/` for GitHub Actions, GitLab, CircleCI, Docker build args
-- Token table designed for GitHub OIDC federation in v2 (no static token at all) — schema now, feature later
-- **Audit logs:** append-only table, partitioned by month, structured JSON metadata, actor/action/resource/project/env/IP/UA. Every service-token read is logged.
-- Audit UI: search + filter by actor, action, project, environment, date, outcome
-- Redaction is enforced *in the audit event builder itself*, not by convention
+- [x] **Service tokens:** scoped to exactly one project + environment, read-only by default, no user attached, shown once at creation, revocable, optional expiry, optional IP allowlist, `last_used_at` tracked
+- [x] **Migration 0006: service-token write attribution** — exactly as specified, applied to `secrets` *and* `secret_versions` (both carried `NOT NULL created_by`; `secret.create` is in the allowlist, so both needed the pair + CHECK). The 403 in `secrets-service.ts` became `secretWriter`, returning `{userId}` or `{serviceTokenId}`.
+- [x] `XECRET_TOKEN=xst_... xecret run -- npm run build` — zero interactive login *(the plan's `xct_` here was a typo: `xst_` is the service prefix, as api.md and the CLI README already said)*
+- [x] `xecret pull --format env > .env` for legacy pipelines, with a stderr warning
+- [x] Distribution: GitHub Action (`action.yml`, composite, checksum-verified), Docker image `ghcr.io/playxoft/xecret` (distroless static, multi-arch), `curl | sh` wired at `/install.sh`, `release.yml` with keyless cosign — all actions SHA-pinned
+- [x] Recipes in `examples/ci/` for GitHub Actions, GitLab, CircleCI, Docker (BuildKit secret mounts, and what never to do)
+- [x] Token table already shaped for GitHub OIDC federation in v2 — schema now, feature later
+- [x] **Audit logs:** the Phase 1 partitioned table + Phase 4 writes, now readable — keyset-paginated query API over `(created_at, id)` with the clamped 90-day window stated in every response
+- [x] Audit UI: filter by action, outcome, project; load-more pagination *(actor and date filters are in the API; the UI exposes the three that answer real questions first)*
+- [x] Redaction enforced in the audit event builder itself — unchanged from Phase 4, now also covering the new fields
+
+**Shipped, with the decisions worth recording:**
+
+- **`GET /api/tokens/self`** is the piece the spec did not name: a service token
+  is pinned to ids but every API path speaks slugs, so the CLI introspects the
+  credential once and learns exactly its own scope — which is why CI needs zero
+  configuration beyond the token. The answer derives from the token row alone;
+  there is no parameter to lie in.
+- **XECRET_TOKEN never touches the offline cache.** A runner is ephemeral, a
+  shared runner is worse, and a cache that outlived a token's revocation would be
+  a revocation bypass. `--offline` under a service token is an error, not a
+  fallback.
+- **`secret.delete` and `secret.rotate` stay outside the allowlist.** CI rotates
+  a value by writing a new one; destroying history remains a human's decision.
+- **Revocation authority differs by kind on purpose:** your own CLI token always
+  (signing out a laptop must not need an admin), anything else `token.revoke`.
+  The service-token *listing* shares the mint gate — a map of standing
+  credentials is reconnaissance.
+- The dashboard's Actor display now says "CI token" for token-attributed writes;
+  the token's display prefix in audit metadata is redacted by the credential
+  detector, accepted as correct — the row's resource id already names the token.
 
 ---
 
 ### 🏁 M3 — Launch ready
 
-#### Phase 9 — Landing page, docs, open source  *(~5 days)*
-- Landing: hero, the 60-second story, CLI demo (real asciinema, not a fake screenshot), security explainer in plain language, open-source pitch, CTA
-- Original visual identity — inspired by good developer tools, cloned from none
-- Colour system chosen and *documented* (WCAG AA verified in both themes)
-- `docs/`: quickstart, CLI reference, self-hosting, security architecture, threat model, encryption, authz, contributing
-- Framework guides: Next.js, React/Vite, Node, Go
-- Full OSS scaffolding: issue templates, PR template, `SECURITY.md` with a disclosure process and response SLA
+#### ✅ Phase 9 — Landing page, docs, open source
+- [x] Landing: hero, the 60-second story, CLI demo, security explainer in plain language, open-source pitch, CTA
+- [x] Original visual identity — the Phase 5 design system, extended rather than replaced
+- [x] Colour system documented (`docs/design/colour-system.md`) — the measured WCAG ratios were already annotated in `globals.css`; the doc explains the system and makes the annotation the review artifact
+- [x] `docs/`: index, quickstart, CLI reference, self-hosting; security architecture / threat model / encryption / authz already existed from Phases 0–4 and are now linked from one index
+- [x] Framework guides: Next.js, React/Vite, Node, Go (+ pointer READMEs in `examples/`)
+- [x] Full OSS scaffolding: issue forms (security routed to private advisories before anything else), PR template restating the standing rules as its checklist, `SECURITY.md` gained GitHub private vulnerability reporting beside the existing mail route and SLA
+
+**Shipped, with one honest substitution:** the plan asked for "real asciinema,
+not a fake screenshot" — and there is no deployed server to record against yet.
+The landing demo is a typed re-enactment built from the CLI's actual format
+strings (login → init → run), labelled as such on the page, with the child
+process's lines visually attributed to the child. Reduced-motion and no-JS
+visitors get the complete transcript immediately. A true recording replaces it
+the day the integration pass produces a deployment to point a terminal at.
 
 #### Phase 10 — Security audit, performance, production  *(~5 days)*
 - **Adversarial security pass** — I attack the app as an external tester: IDOR/BOLA, authz bypass, privilege escalation, token replay, session fixation, invitation reuse, cross-env leakage, rate-limit bypass, SSRF, XSS, CSRF, injection, timing attacks on token comparison, CLI credential theft
