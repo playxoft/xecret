@@ -101,6 +101,7 @@ beforeEach(() => {
         path: '/api/test',
       },
       waitUntil: (promise: Promise<unknown>) => void deferred.push(promise),
+      dispose: () => {},
     }),
   );
   actor.authenticate.mockResolvedValue({ principal, source: 'cookie' });

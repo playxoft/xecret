@@ -86,7 +86,7 @@ export function publicRoute<Params = Record<string, never>>(
     } catch (cause) {
       return failure(cause, requestId);
     } finally {
-      if (started) flush(started.services, started.recorder);
+      if (started) settle(started.services, started.recorder);
     }
   };
 }
@@ -181,7 +181,7 @@ export function authenticatedRoute<Params = Record<string, never>>(
     } catch (cause) {
       return failure(cause, requestId);
     } finally {
-      if (started) flush(started.services, started.recorder);
+      if (started) settle(started.services, started.recorder);
     }
   };
 }
@@ -200,31 +200,40 @@ async function begin(request: Request, requestId: string): Promise<RequestScope>
 }
 
 /**
- * Flushes buffered audit records after the response has been sent.
+ * Ends the request's deferred work: flushes buffered audit records, then
+ * schedules the database handle's release.
  *
  * Runs in `finally`, so records queued before a failure are still written — the
  * denial that caused the failure is exactly the record worth keeping.
+ *
+ * The order is the point. The audit flush is registered through the tracked
+ * `waitUntil` first, and `dispose` closes the connection only after every
+ * tracked task has settled — so the flush cannot race the close it depends on.
+ * The handle is per-request by hard runtime rule (see `context.ts`): workerd
+ * forbids a socket from serving any request but the one that opened it.
  *
  * A flush failure is logged and not rethrown, because by this point the response
  * has already gone and there is nobody to tell. It is logged at `error` so it is
  * alertable: an audit log that is quietly missing entries is worse than one that
  * is visibly broken.
  */
-function flush(services: ServiceContext, recorder: BufferedAuditRecorder): void {
-  if (recorder.size === 0) return;
+function settle(services: ServiceContext, recorder: BufferedAuditRecorder): void {
+  if (recorder.size > 0) {
+    services.waitUntil(
+      recorder.flush().catch((cause: unknown) => {
+        console.error('audit flush failed', {
+          requestId: services.meta.requestId,
+          path: services.meta.path,
+          pending: recorder.size,
+          // The name only. An audit-write failure is usually a database error,
+          // and those messages carry connection strings.
+          error: cause instanceof Error ? cause.name : 'unknown',
+        });
+      }),
+    );
+  }
 
-  services.waitUntil(
-    recorder.flush().catch((cause: unknown) => {
-      console.error('audit flush failed', {
-        requestId: services.meta.requestId,
-        path: services.meta.path,
-        pending: recorder.size,
-        // The name only. An audit-write failure is usually a database error, and
-        // those messages carry connection strings.
-        error: cause instanceof Error ? cause.name : 'unknown',
-      });
-    }),
-  );
+  services.dispose();
 }
 
 function withRequestId(response: Response, requestId: string): Response {

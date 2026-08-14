@@ -186,6 +186,7 @@ async function harness(): Promise<Harness> {
       path: '/api/test',
     },
     waitUntil: () => {},
+    dispose: () => {},
   };
 
   return {

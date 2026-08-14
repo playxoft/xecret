@@ -1,5 +1,5 @@
 import { getCloudflareContext } from '@opennextjs/cloudflare';
-import { createDatabase } from '@xecret/db';
+import { createDatabaseHandle } from '@xecret/db';
 import type { Database } from '@xecret/db';
 import {
   EnvelopeService,
@@ -12,79 +12,53 @@ import type { Bindings, WorkerContext } from './bindings';
 import { clientIp, userAgent } from './http';
 
 /**
- * Per-request services, and the per-isolate caches behind them.
+ * Per-request services.
  *
- * Two things are cached for the lifetime of an isolate and two are not, and the
- * split is deliberate:
+ * ── What is cached per isolate, and what must never be ──
  *
- * - **Cached:** the database client and the root key provider. Both are
- *   expensive to build, neither can change while an isolate lives, and both are
- *   tenant-independent. Rebuilding them per request would add a connection
- *   handshake and a key import to every single call.
- * - **Not cached:** anything tenant-scoped. An isolate serves requests from
- *   different organisations, so a cache keyed on anything less than the full
- *   tenancy is a cross-tenant leak waiting to happen (threat T2). Unwrapped
- *   environment keys in particular live for exactly one request and are zeroed
- *   after use.
+ * The **root key provider** is cached: it is plain data — imported CryptoKeys
+ * and a version number — and importing it per request would add a Secrets
+ * Store read and a key import to every call for no gain. Only a *settled*
+ * provider is ever cached, never a pending promise: a promise started by one
+ * request and awaited by another is cross-request I/O, which workerd forbids.
+ *
+ * The **database client** is deliberately NOT cached, and this is a hard
+ * runtime rule rather than a preference. A postgres connection is a TCP
+ * socket, and workerd cancels any attempt to use a socket outside the request
+ * that opened it — "Cannot perform I/O on behalf of a different request". A
+ * cached client serves the first request on an isolate and wedges every one
+ * after it; in production that read as the Worker hanging until the runtime
+ * killed it. One handle per request, disposed after the response, is the
+ * supported model — and the per-request handshake is exactly the cost
+ * Hyperdrive exists to absorb (it terminates at the edge proxy, not at Neon).
+ *
+ * Nothing tenant-scoped is cached at all: an isolate serves requests from
+ * different organisations, so a cache keyed on anything less than the full
+ * tenancy is a cross-tenant leak waiting to happen (threat T2). Unwrapped
+ * environment keys in particular live for exactly one request.
  */
 
-interface IsolateCache {
-  database: Database | undefined;
-  databaseUrl: string | undefined;
-  keyProvider: Promise<KeyProvider> | undefined;
-}
+let cachedKeyProvider: KeyProvider | undefined;
 
-const isolate: IsolateCache = {
-  database: undefined,
-  databaseUrl: undefined,
-  keyProvider: undefined,
-};
-
-function database(env: Bindings): Database {
-  const url = connectionString(env);
-
-  // Keyed on the URL so a Hyperdrive rebind — or a developer switching
-  // databases in `next dev` — cannot be served by a stale client.
-  if (isolate.database && isolate.databaseUrl === url) return isolate.database;
-
-  isolate.database = createDatabase({ connectionString: url });
-  isolate.databaseUrl = url;
-  return isolate.database;
-}
-
-/**
- * Resolves the Root KEK provider.
- *
- * The Secrets Store binding is the production path. `XECRET_ROOT_KEYS` as a
- * plain variable is the local and self-hosted path, and reaches the process via
- * `phase run` rather than a committed file.
- *
- * The promise is cached rather than the resolved value so that concurrent
- * requests during a cold start share one Secrets Store read instead of racing.
- */
-function keyProvider(env: Bindings): Promise<KeyProvider> {
-  if (isolate.keyProvider) return isolate.keyProvider;
+async function keyProvider(env: Bindings): Promise<KeyProvider> {
+  if (cachedKeyProvider) return cachedKeyProvider;
 
   const version = Number(env.XECRET_ROOT_KEY_VERSION ?? '1');
 
-  const resolved: Promise<KeyProvider> = env.XECRET_ROOT_KEYS
-    ? keyProviderFromSecretsStore(requireBinding(env, 'XECRET_ROOT_KEYS'), version)
-    : Promise.resolve(
-        keyProviderFromEnv({
-          XECRET_ROOT_KEYS: process.env['XECRET_ROOT_KEYS'],
-          XECRET_ROOT_KEY_VERSION: env.XECRET_ROOT_KEY_VERSION,
-        }),
-      );
+  // Two concurrent cold-start requests may both reach this point and each
+  // perform its own read. That duplication is the deliberate trade: each
+  // request awaits only I/O it started itself, so neither can be poisoned or
+  // cancelled by the other's lifecycle. Last writer wins; the values are
+  // identical.
+  const provider: KeyProvider = env.XECRET_ROOT_KEYS
+    ? await keyProviderFromSecretsStore(requireBinding(env, 'XECRET_ROOT_KEYS'), version)
+    : keyProviderFromEnv({
+        XECRET_ROOT_KEYS: process.env['XECRET_ROOT_KEYS'],
+        XECRET_ROOT_KEY_VERSION: env.XECRET_ROOT_KEY_VERSION,
+      });
 
-  // A failed load must not be memoised: a transient Secrets Store error would
-  // otherwise poison the isolate until it is recycled, turning a blip into an
-  // outage for every request that isolate goes on to serve.
-  isolate.keyProvider = resolved.catch((cause: unknown) => {
-    isolate.keyProvider = undefined;
-    throw cause;
-  });
-
-  return isolate.keyProvider;
+  cachedKeyProvider = provider;
+  return provider;
 }
 
 /**
@@ -120,6 +94,18 @@ export interface ServiceContext {
   meta: RequestMeta;
   /** Defers work until after the response is sent — used for audit flushes. */
   waitUntil: (promise: Promise<unknown>) => void;
+  /**
+   * Schedules the release of the request's database handle.
+   *
+   * Called exactly once, by the route wrapper, in its `finally`. The close is
+   * deferred through the runtime's own `waitUntil` — deliberately not the
+   * tracked one, which would make the close await itself — and runs only
+   * after everything this request queued through `waitUntil` has settled:
+   * audit writes, session touches, token-usage bookkeeping. Those tasks use
+   * this same connection, and closing it underneath them would silently drop
+   * the records that matter most.
+   */
+  dispose: () => void;
 }
 
 /**
@@ -138,9 +124,17 @@ export async function createServiceContext(
 ): Promise<ServiceContext> {
   const url = new URL(request.url);
 
+  const handle = createDatabaseHandle({ connectionString: connectionString(worker.env) });
+
+  // Everything handed to `waitUntil` is also tracked here, so `dispose` can
+  // sequence the connection close *after* the deferred work that needs it.
+  // Rejections are absorbed in the tracking copy only — each task still owns
+  // its own failure handling via the promise given to the runtime.
+  const pending: Promise<unknown>[] = [];
+
   return {
     env: worker.env,
-    db: database(worker.env),
+    db: handle.db,
     envelope: new EnvelopeService(await keyProvider(worker.env)),
     meta: {
       requestId,
@@ -149,7 +143,20 @@ export async function createServiceContext(
       method: request.method,
       path: url.pathname,
     },
-    waitUntil: (promise) => worker.ctx.waitUntil(promise),
+    waitUntil: (promise) => {
+      pending.push(promise.catch(() => undefined));
+      worker.ctx.waitUntil(promise);
+    },
+    dispose: () => {
+      worker.ctx.waitUntil(
+        (async () => {
+          await Promise.allSettled(pending);
+          // A close failure is unreportable by now — the response is gone and
+          // the socket dies with the request context regardless.
+          await handle.end().catch(() => undefined);
+        })(),
+      );
+    },
   };
 }
 
@@ -160,7 +167,5 @@ export async function createServiceContext(
  * fresh configuration is replaced, not repaired.
  */
 export function resetIsolateCacheForTesting(): void {
-  isolate.database = undefined;
-  isolate.databaseUrl = undefined;
-  isolate.keyProvider = undefined;
+  cachedKeyProvider = undefined;
 }
