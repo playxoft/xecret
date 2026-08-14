@@ -21,11 +21,18 @@ const RESERVED_SLUGS = new Set([
   'logout',
   'signup',
   'settings',
-  // Sits in the same URL slot a project slug does — `/app/{org}/members` — so a
-  // project called "members" would shadow the organisation's member list and be
-  // unreachable itself. `parseDashboardPath` relies on this being reserved to
-  // read the segment without ambiguity.
+  // These sit in the same URL slot a project slug does — `/app/{org}/members`,
+  // `/app/{org}/tokens`, `/app/{org}/audit` — so a project with one of these
+  // slugs would shadow the organisation page and be unreachable itself.
+  // `parseDashboardPath` relies on them being reserved to read the segment
+  // without ambiguity.
   'members',
+  'tokens',
+  'audit',
+  // The invitation-acceptance page lives at `/invite/{token}`, beside `/app`.
+  // Reserved so no future top-level route and no organisation slug can collide
+  // with a URL that is mailed to people and must keep working.
+  'invite',
   'dashboard',
   'docs',
   'help',

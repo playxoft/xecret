@@ -578,6 +578,72 @@ describe('BufferedAuditRecorder', () => {
   });
 });
 
+describe('every declared metadata field survives sanitisation', () => {
+  // `sanitizeMetadata` rebuilds the object field by field with no loop, so a
+  // field added to `AuditMetadata` but not to the sanitiser is silently dropped
+  // before the INSERT. That happened to `deviceName`, `sessionCount` and
+  // `valueType` once; this test makes the omission a failure instead.
+  it('copies each field through, sanitised', () => {
+    const record = builderWith().success('member.role_changed', null, {
+      secretName: 'DATABASE_URL',
+      secretCount: 3,
+      environmentSlug: 'production',
+      projectSlug: 'api',
+      targetEmail: 'new@example.com',
+      previousRole: 'viewer',
+      newRole: 'developer',
+      previousAccessLevel: 'read',
+      newAccessLevel: 'write',
+      tokenPrefix: 'xst_live_abc',
+      deviceName: 'work-laptop',
+      keyVersion: 2,
+      sessionCount: 4,
+      valueType: 'url',
+      reason: 'rotation',
+      source: 'dashboard',
+    });
+
+    expect(record.metadata).toEqual({
+      secretName: 'DATABASE_URL',
+      secretCount: 3,
+      environmentSlug: 'production',
+      projectSlug: 'api',
+      targetEmail: 'new@example.com',
+      previousRole: 'viewer',
+      newRole: 'developer',
+      previousAccessLevel: 'read',
+      newAccessLevel: 'write',
+      // A display prefix still matches the credential detector — it is the
+      // first twelve characters of a real token — and the detector deliberately
+      // does not carve out an exception for it. Conservative loses nothing
+      // here: the prefix is recoverable from the token row the record points at.
+      tokenPrefix: REDACTED,
+      deviceName: 'work-laptop',
+      keyVersion: 2,
+      sessionCount: 4,
+      valueType: 'url',
+      reason: 'rotation',
+      source: 'dashboard',
+    });
+  });
+
+  it('sanitises the attacker-influenced additions like every other string', () => {
+    const record = builderWith().success('token.created', null, {
+      deviceName: 'lap\ntop ',
+      previousAccessLevel: 'read only',
+    });
+
+    expect(record.metadata.deviceName).toBe('lap top');
+    expect(record.metadata.previousAccessLevel).toBe('read only');
+  });
+
+  it('drops a non-finite session count rather than storing null', () => {
+    const record = builderWith().success('auth.locked', null, { sessionCount: Number.NaN });
+
+    expect(record.metadata).toEqual({});
+  });
+});
+
 describe('InMemoryAuditSink', () => {
   it('copies each batch, so a caller reusing its array cannot rewrite history', async () => {
     const sink = new InMemoryAuditSink();

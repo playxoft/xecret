@@ -160,6 +160,39 @@ export function toAuthorizationContext(
   };
 }
 
+/**
+ * One member with the person behind them, or `null`.
+ *
+ * The route layer reaches for this whenever a member is the *target* of a
+ * change: the audit record needs their address, and the member page needs
+ * their identity. The soft-deleted-user join matches `membersPageQuery` — a
+ * member whose account is gone is not a row anyone may act on.
+ */
+export async function findMemberWithUser(
+  exec: Executor,
+  orgId: string,
+  memberId: string,
+): Promise<MemberListEntry | null> {
+  const [row] = await exec
+    .select({
+      ...MEMBER_COLUMNS,
+      seatAssigned: orgMembers.seatAssigned,
+      createdAt: orgMembers.createdAt,
+      user: {
+        id: users.id,
+        email: users.email,
+        displayName: users.displayName,
+        avatarUrl: users.avatarUrl,
+      },
+    })
+    .from(orgMembers)
+    .innerJoin(users, and(eq(users.id, orgMembers.userId), isNull(users.deletedAt)))
+    .where(and(eq(orgMembers.id, memberId), eq(orgMembers.orgId, orgId)))
+    .limit(1);
+
+  return row ?? null;
+}
+
 export async function listMembers(
   exec: Executor,
   orgId: string,
@@ -281,6 +314,29 @@ export async function suspendMember(exec: Executor, params: MemberRef): Promise<
       .update(orgMembers)
       .set({ status: 'suspended', updatedAt: new Date() })
       .where(and(eq(orgMembers.id, params.memberId), eq(orgMembers.orgId, params.orgId)))
+      .returning(MEMBER_COLUMNS);
+
+    if (!row) throw new RepositoryError('notFound', 'Member not found in this organisation.');
+    return row;
+  });
+}
+
+/**
+ * Reverses a suspension.
+ *
+ * No last-owner guard: adding an active member back can only strengthen the
+ * ownership invariant, never violate it. The transaction and lock are still
+ * taken so the write serialises with the guards that do count owners — a
+ * reinstatement racing a demotion must not slip between its count and commit.
+ */
+export async function reinstateMember(exec: Executor, params: MemberRef): Promise<MemberRecord> {
+  return exec.transaction(async (tx) => {
+    const member = await lockOrgAndLoadMember(tx, params.orgId, params.memberId);
+
+    const [row] = await tx
+      .update(orgMembers)
+      .set({ status: 'active', updatedAt: new Date() })
+      .where(and(eq(orgMembers.id, member.id), eq(orgMembers.orgId, params.orgId)))
       .returning(MEMBER_COLUMNS);
 
     if (!row) throw new RepositoryError('notFound', 'Member not found in this organisation.');

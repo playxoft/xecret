@@ -89,12 +89,14 @@ export type {
 export {
   addMember,
   findMembership,
+  findMemberWithUser,
   listGrantsForMember,
   listMembers,
   loadAuthorizationContext,
   memberGrantsQuery,
   membersPageQuery,
   membershipQuery,
+  reinstateMember,
   removeAccessGrant,
   removeMember,
   suspendMember,
@@ -141,6 +143,7 @@ export {
   createEnvironment,
   findEnvironmentBySlug,
   listEnvironments,
+  listEnvironmentsForOrganization,
   loadEnvironmentKeyChain,
   softDeleteEnvironment,
   toBytes,
@@ -153,6 +156,7 @@ export type {
   CreateEnvironmentParams,
   EnvironmentKeyChain,
   EnvironmentRecord,
+  OrganizationEnvironment,
   UpdateEnvironmentParams,
 } from './environments';
 
@@ -180,6 +184,29 @@ export type {
   SecretVersionSummary,
   UpdateSecretMetadataParams,
 } from './secrets';
+
+export {
+  acceptInvitation,
+  createInvitation,
+  deleteExpiredInvitations,
+  findInvitationByToken,
+  findInvitationByTokenHash,
+  invitationClaimQuery,
+  listInvitations,
+  pendingInvitationsQuery,
+  revokeInvitation,
+  seatUsage,
+} from './invitations';
+export type {
+  AcceptedInvitation,
+  AcceptInvitationParams,
+  CreateInvitationParams,
+  InvitationClaim,
+  InvitationListEntry,
+  InvitationRecord,
+  IssuedInvitation,
+  SeatUsage,
+} from './invitations';
 
 export {
   consumeCliAuthCode,

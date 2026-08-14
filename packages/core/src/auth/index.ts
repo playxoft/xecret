@@ -25,6 +25,9 @@ export type { CookieOptions, SessionRecord } from './session';
 export { generateToken, hashToken, isWellFormedToken, TOKEN_PREFIXES, verifyToken } from './tokens';
 export type { GeneratedToken, TokenKind } from './tokens';
 
+export { INVITATION_TTL_MS, invitationExpiryFrom, invitationState } from './invitation';
+export type { InvitationLifecycle, InvitationState } from './invitation';
+
 export {
   CLI_AUTH_CODE_TTL_MS,
   cliAuthCodeExpiryFrom,

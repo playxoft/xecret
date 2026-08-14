@@ -168,15 +168,25 @@ one-time code to `http://127.0.0.1:{port}/callback`; the CLI exchanges code + ve
 Listing and revoking CLI tokens from the dashboard ("your devices") lands with the token
 management routes in Phase 8.
 
-### Members
+### Members, invitations, grants
 
-| Method | Path |
-| --- | --- |
-| `GET` | `/api/orgs/{orgSlug}/members` |
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/orgs/{orgSlug}/members` | `member.read`, which every active role holds. Names, emails, roles, status, join dates, and the seat count — never access grants, which are per-project and belong on the member's own page. |
+| `POST` | `/api/orgs/{orgSlug}/members` | Invite by email. Session + CSRF only — an invitation is a minted credential, and a bearer credential may not mint further credentials (same rule as `/api/cli/authorize`). Requires `member.invite` **and** the role hierarchy: nobody hands out a role above their own. Supersedes any open invitation for the address; enforces the seat limit under the organisation lock. Returns the acceptance link **once**; only the token's hash is stored. Rate limited: `RL_INVITE` by org. Audited as `member.invited`. |
+| `PATCH` | `/api/orgs/{orgSlug}/members/{memberId}` | Exactly one of `{ role }` or `{ status: active\|suspended }` per request — they are different acts with different audit records (`member.role_changed`, `member.suspended`, `member.reinstated`). Requires `member.update`, the role hierarchy on *both* sides (the role held and the role assigned), refuses self-changes, and the repository transaction enforces the last-owner invariant under the organisation lock. |
+| `DELETE` | `/api/orgs/{orgSlug}/members/{memberId}` | Requires `member.remove` and the role hierarchy; refuses self-removal; last-owner guarded. Grants die with the membership (`ON DELETE CASCADE`). Audited as `member.removed`. |
+| `PUT` `DELETE` | `/api/orgs/{orgSlug}/members/{memberId}/grants` | Create/replace or remove one grant, addressed by `{ projectSlug, environmentSlug?, accessLevel }` — `environmentSlug` absent or `null` means the whole project. Requires `member.update` + the hierarchy on the member being granted. Audited as `access.granted` / `access.revoked` with the previous and new levels. |
+| `GET` | `/api/orgs/{orgSlug}/members/{memberId}/access` | The effective-permission preview: every project and environment with the member's resolved level and the rule that produced it (`environment-grant` / `project-grant` / `role-default` / `suspended`). Computed by the same `resolveAccessLevel` the enforcement path calls, so it cannot disagree with it. Own row: any member. Someone else's: `member.update`. |
+| `GET` | `/api/orgs/{orgSlug}/invitations` | Open invitations, expired ones included (`state` says which). Gated on `member.invite`: who has been *asked* is recruitment metadata, not membership. |
+| `DELETE` | `/api/orgs/{orgSlug}/invitations/{invitationId}` | Withdraws an open invitation; the emailed link stops working at commit. `member.invite`; audited as `invitation.revoked`. |
 
-Requires `member.read`, which every active role holds. Returns names, emails,
-roles, status and join dates — never access grants, which are per-project and
-would cost a query per row.
+### Accepting an invitation
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/api/invitations/lookup` | Public — the holder may have no account yet. Body `{ token }`. Returns the organisation's display name, the invited address, role, state and expiry; nothing else. The token travels in the body, never the query string. Rate limited: `RL_INVITE` by IP. |
+| `POST` | `/api/invitations/accept` | Session + CSRF. Body `{ token }`. The session's address must match the invited one — a forwarded email must not let a colleague join as somebody else. State, address, seat count and the membership insert are all settled inside one transaction under the organisation lock. Audited as `member.joined`. |
 
 ### Organisations
 
@@ -245,16 +255,14 @@ outgoing fetches**, constant in the number of secrets. Audited once per call as
 The dry run and the real import call the **same** planning function, so the preview cannot
 disagree with the outcome.
 
-### Members, tokens, audit — **specified, not yet implemented**
+### Tokens, audit — **specified, not yet implemented**
 
-These land in Phases 7 and 8. They are written down here because the data layer and the
-authorization engine already support them, and agreeing the shape now is what keeps those
-phases additive. **No handler exists for any of them today** — a request returns 404.
+These land in Phase 8. They are written down here because the data layer and the
+authorization engine already support them, and agreeing the shape now is what keeps that
+phase additive. **No handler exists for any of them today** — a request returns 404.
 
 | Method | Path | Phase |
 |---|---|---|
-| `GET` `POST` | `/api/orgs/{orgSlug}/members` | 7 |
-| `PATCH` `DELETE` | `/api/orgs/{orgSlug}/members/{memberId}` | 7 |
 | `GET` `POST` | `/api/orgs/{orgSlug}/tokens/cli` | 8 |
 | `GET` `POST` | `/api/orgs/{orgSlug}/tokens/service` | 8 |
 | `DELETE` | `/api/orgs/{orgSlug}/tokens/{kind}/{tokenId}` | 8 |
@@ -262,7 +270,8 @@ phases additive. **No handler exists for any of them today** — a request retur
 
 A created token's value will be returned **once**, in the creation response, and is never
 retrievable again. Only its hash is stored — the repository layer already enforces this,
-and no listing function selects `token_hash`.
+and no listing function selects `token_hash`. The same rule already governs the
+invitation link above.
 
 ---
 

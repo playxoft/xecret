@@ -15,6 +15,7 @@ import {
   shouldTouchSession,
 } from './session';
 import type { SessionRecord } from './session';
+import { INVITATION_TTL_MS, invitationExpiryFrom, invitationState } from './invitation';
 import { generateToken, hashToken, isWellFormedToken, verifyToken } from './tokens';
 
 const NOW = new Date('2026-08-11T12:00:00Z');
@@ -277,5 +278,47 @@ describe('CSRF', () => {
     expect(header).toContain('Secure');
     expect(header).toContain('SameSite=Lax');
     expect(header).not.toContain('HttpOnly');
+  });
+});
+
+describe('invitation lifecycle', () => {
+  const open = {
+    expiresAt: new Date(NOW.getTime() + INVITATION_TTL_MS),
+    acceptedAt: null,
+    revokedAt: null,
+  };
+
+  it('stands for seven days', () => {
+    expect(INVITATION_TTL_MS).toBe(7 * 24 * 60 * 60 * 1000);
+    expect(invitationExpiryFrom(NOW).getTime() - NOW.getTime()).toBe(INVITATION_TTL_MS);
+  });
+
+  it('reads an open, unexpired invitation as pending', () => {
+    expect(invitationState(open, NOW)).toBe('pending');
+  });
+
+  it('expires at the boundary instant, not after it', () => {
+    expect(invitationState({ ...open, expiresAt: NOW }, NOW)).toBe('expired');
+  });
+
+  it('lets the explicit endings win over expiry', () => {
+    // A revoked-then-expired invitation reads as revoked: the fact somebody
+    // withdrew it is the informative one, and the one the audit trail records.
+    const past = new Date(NOW.getTime() - 1000);
+
+    expect(invitationState({ expiresAt: past, acceptedAt: past, revokedAt: null }, NOW)).toBe(
+      'accepted',
+    );
+    expect(invitationState({ expiresAt: past, acceptedAt: null, revokedAt: past }, NOW)).toBe(
+      'revoked',
+    );
+  });
+
+  it('ranks accepted above revoked, so a corrupt row still reads deterministically', () => {
+    const past = new Date(NOW.getTime() - 1000);
+
+    expect(invitationState({ expiresAt: past, acceptedAt: past, revokedAt: past }, NOW)).toBe(
+      'accepted',
+    );
   });
 });

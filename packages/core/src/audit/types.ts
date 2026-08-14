@@ -51,6 +51,27 @@ export type AuditAction =
   | 'member.joined'
   | 'member.removed'
   | 'member.role_changed'
+  /**
+   * A membership was switched off without being deleted, or switched back on.
+   *
+   * Distinct from `member.removed` because the histories differ in what they
+   * imply: a suspension is reversible and keeps the member's grants intact,
+   * which is exactly what an incident review needs to know when asking "could
+   * this person still act during the window?" (they could not — a suspended
+   * member resolves to `none` everywhere).
+   */
+  | 'member.suspended'
+  | 'member.reinstated'
+  /**
+   * A pending invitation was withdrawn before anyone accepted it.
+   *
+   * `member.invited` records the offer and `member.joined` records the
+   * acceptance; this records the third ending. An invitation that is neither
+   * accepted nor revoked merely expires, which no event marks — expiry is the
+   * absence of action, and inventing an actor for it would put a name on
+   * something nobody did.
+   */
+  | 'invitation.revoked'
   | 'access.granted'
   | 'access.revoked'
   /**
@@ -83,6 +104,16 @@ export interface AuditMetadata {
   targetEmail?: string;
   previousRole?: string;
   newRole?: string;
+  /**
+   * The access level a grant held before and after a change, e.g. `read`.
+   *
+   * Level names, never values. `access.granted` without them says a grant
+   * changed; with them it says what the change *was*, which is the difference
+   * between an audit line and a useful one when reviewing how someone came to
+   * hold production access.
+   */
+  previousAccessLevel?: string;
+  newAccessLevel?: string;
   tokenPrefix?: string;
   /** The device a CLI credential was approved for, e.g. a hostname. */
   deviceName?: string;

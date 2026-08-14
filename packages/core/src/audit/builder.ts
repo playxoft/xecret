@@ -183,7 +183,10 @@ const LIMITS = {
   slug: 128,
   email: 320,
   role: 64,
+  accessLevel: 32,
   tokenPrefix: 32,
+  deviceName: 128,
+  valueType: 32,
   reason: 256,
   actorLabel: 320,
   userAgent: 512,
@@ -307,8 +310,23 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   if (metadata.newRole !== undefined) {
     clean.newRole = sanitizeMetadataString(metadata.newRole, LIMITS.role);
   }
+  if (metadata.previousAccessLevel !== undefined) {
+    clean.previousAccessLevel = sanitizeMetadataString(
+      metadata.previousAccessLevel,
+      LIMITS.accessLevel,
+    );
+  }
+  if (metadata.newAccessLevel !== undefined) {
+    clean.newAccessLevel = sanitizeMetadataString(metadata.newAccessLevel, LIMITS.accessLevel);
+  }
   if (metadata.tokenPrefix !== undefined) {
     clean.tokenPrefix = sanitizeMetadataString(metadata.tokenPrefix, LIMITS.tokenPrefix);
+  }
+  if (metadata.deviceName !== undefined) {
+    clean.deviceName = sanitizeMetadataString(metadata.deviceName, LIMITS.deviceName);
+  }
+  if (metadata.valueType !== undefined) {
+    clean.valueType = sanitizeMetadataString(metadata.valueType, LIMITS.valueType);
   }
   if (metadata.reason !== undefined) {
     clean.reason = sanitizeMetadataString(metadata.reason, LIMITS.reason);
@@ -322,6 +340,9 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   }
   if (metadata.keyVersion !== undefined && Number.isFinite(metadata.keyVersion)) {
     clean.keyVersion = metadata.keyVersion;
+  }
+  if (metadata.sessionCount !== undefined && Number.isFinite(metadata.sessionCount)) {
+    clean.sessionCount = metadata.sessionCount;
   }
 
   // A closed union of four literals; there is nothing to sanitise.

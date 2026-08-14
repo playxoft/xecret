@@ -40,6 +40,11 @@ export const appPath = {
   org: (org: string): string => `/app/${segment(org)}`,
   orgSettings: (org: string): string => `/app/${segment(org)}/settings`,
   members: (org: string): string => `/app/${segment(org)}/members`,
+  member: (org: string, memberId: string): string => `${appPath.members(org)}/${segment(memberId)}`,
+  tokens: (org: string): string => `/app/${segment(org)}/tokens`,
+  audit: (org: string): string => `/app/${segment(org)}/audit`,
+  /** The invitation-acceptance page. Top-level: the visitor may have no session. */
+  invite: (token: string): string => `/invite/${segment(token)}`,
   project: (org: string, project: string): string => `${appPath.org(org)}/${segment(project)}`,
   environment: (org: string, project: string, env: string): string =>
     `${appPath.project(org, project)}/${segment(env)}`,
@@ -56,6 +61,21 @@ export const apiPath = {
   org: (org: string): string => `/api/orgs/${segment(org)}`,
   projects: (org: string): string => `${apiPath.org(org)}/projects`,
   members: (org: string): string => `${apiPath.org(org)}/members`,
+  member: (org: string, memberId: string): string => `${apiPath.members(org)}/${segment(memberId)}`,
+  memberGrants: (org: string, memberId: string): string =>
+    `${apiPath.member(org, memberId)}/grants`,
+  memberAccess: (org: string, memberId: string): string =>
+    `${apiPath.member(org, memberId)}/access`,
+  invitations: (org: string): string => `${apiPath.org(org)}/invitations`,
+  invitation: (org: string, invitationId: string): string =>
+    `${apiPath.invitations(org)}/${segment(invitationId)}`,
+  invitationLookup: (): string => '/api/invitations/lookup',
+  invitationAccept: (): string => '/api/invitations/accept',
+  serviceTokens: (org: string): string => `${apiPath.org(org)}/tokens/service`,
+  cliTokens: (org: string): string => `${apiPath.org(org)}/tokens/cli`,
+  token: (org: string, kind: 'cli' | 'service', tokenId: string): string =>
+    `${apiPath.org(org)}/tokens/${kind}/${segment(tokenId)}`,
+  audit: (org: string): string => `${apiPath.org(org)}/audit`,
   project: (org: string, project: string): string => `${apiPath.projects(org)}/${segment(project)}`,
   environments: (org: string, project: string): string =>
     `${apiPath.project(org, project)}/environments`,
@@ -137,10 +157,11 @@ export function parseDashboardPath(pathname: string): DashboardLocation {
   if (root !== 'app' || first === undefined) return empty;
   if (first === 'settings') return { ...empty, isAccountArea: true };
 
-  // Org-level pages that occupy the slot a project slug would. Both names are in
-  // the reserved slug list, so no project can ever shadow one — which is what
-  // makes this a lookup rather than a guess.
-  const orgPage = second === 'settings' || second === 'members';
+  // Org-level pages that occupy the slot a project slug would. All four names
+  // are in the reserved slug list, so no project can ever shadow one — which is
+  // what makes this a lookup rather than a guess.
+  const orgPage =
+    second === 'settings' || second === 'members' || second === 'tokens' || second === 'audit';
 
   return {
     orgSlug: decodeURIComponent(first),

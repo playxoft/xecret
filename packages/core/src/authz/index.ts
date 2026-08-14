@@ -12,7 +12,9 @@ export type { GrantContext, MemberStatus, Membership, ResolvedGrant } from './gr
 export {
   accessLevelAtLeast,
   ACTION_REQUIREMENTS,
+  canAssignRole,
   compareAccessLevel,
+  compareOrgRole,
   ROLE_ACCESS_DEFAULTS,
   ROLE_CAPABILITIES,
   roleDefaultAccessLevel,
