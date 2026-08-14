@@ -38,6 +38,26 @@ checksum:
   name_template: 'checksums.txt'
   algorithm: sha256
 
+# Homebrew is how most macOS developers will install this. The formula is
+# pushed to the tap repository on release; `skip_upload: auto` keeps
+# prereleases out of it.
+brews:
+  - repository:
+      owner: playxoft
+      name: homebrew-tap
+    directory: Formula
+    homepage: https://xecret.playxoft.com
+    description: Open-source, developer-first secret management
+    license: MIT
+    commit_author:
+      name: nitheeshkr
+      email: nitheesh@playxoft.com
+    skip_upload: auto
+    install: |
+      bin.install "xecret"
+    test: |
+      system "#{bin}/xecret", "version"
+
 # Users are being asked to trust this binary with production credentials.
 # Releases are signed so the download can be verified, not merely checksummed.
 signs:

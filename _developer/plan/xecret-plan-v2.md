@@ -3,10 +3,11 @@
 > Open-source, developer-first secret management.
 > Powered by Playxoft.
 
-**Status:** M0 complete, M1 complete through Phase 5. The CLI (Phase 6) is next.
+**Status:** M0 complete, **M1 complete** — Phase 6 (the CLI) is built, which closes the
+milestone. Teams (Phase 7) is next.
 **Supersedes:** `plan1.md` (kept for reference — this doc is the source of truth).
 
-**Progress:** ▓▓▓▓▓▓░░░░░ 6 of 11 phases merged
+**Progress:** ▓▓▓▓▓▓▓░░░░ 7 of 11 phases done
 
 | Phase | Status | Branch |
 |---|---|---|
@@ -16,7 +17,7 @@
 | 3 · Auth & organisations | ✅ merged | `feat/auth-organizations` |
 | 4 · Projects, environments, secrets API | ✅ merged | `feat/secrets-api` |
 | 5 · Dashboard UI | ✅ merged | `feat/dashboard-ui` |
-| 6 · Go CLI v1 | ⬜ | |
+| 6 · Go CLI v1 | ✅ built | `feat/cli-v1` |
 | 7 · Team, roles, granular access | ⬜ | |
 | 8 · CI, service tokens, audit logs | ⬜ | |
 | 9 · Landing page, docs, open source | ⬜ | |
@@ -380,7 +381,7 @@ Built **before** the API, because it is the highest-risk component and the harde
 
 **Exit:** the whole solo flow is reachable in a browser. Not yet exercised end to end — that needs the Neon database and the Phase.dev values.
 
-#### Phase 6 — Go CLI v1  *(~8 days)*
+#### ✅ Phase 6 — Go CLI v1
 The phase that decides whether people love this product.
 
 ```bash
@@ -403,6 +404,31 @@ xecret cache clear
 - GoReleaser: darwin/linux/windows × amd64/arm64, Homebrew tap, `curl | sh` installer, checksums + cosign signatures
 
 **Exit:** `xecret run -- npm run dev` works on macOS, Linux, and Windows, online and offline.
+
+**Shipped, with four decisions worth recording:**
+
+- **The server half now exists too.** `POST /api/cli/authorize` (consent, session+CSRF,
+  PIN-gated), `POST /api/cli/token` (PKCE exchange — the code is consumed atomically
+  *before* the verifier check, so a failed binding kills it), `DELETE /api/cli/token`
+  (logout self-revocation), a `cli_auth_codes` table (migration 0005), and a consent
+  screen at `/cli/authorize`. All in `docs/architecture/api.md` §4.
+- **Consent requires membership, not `token.create`.** That capability gates *service*
+  tokens, which grant standing access and outlive their creator. A CLI token acts as its
+  user and adds no authority — requiring an admin to approve every developer's laptop
+  would kill the golden path while protecting nothing `can()` does not already enforce.
+- **`secrets get` is masked by default; `--plain` reveals.** An audited `secret.revealed`
+  row therefore always means a plaintext actually left the server.
+- **The offline cache never answers a 4xx.** Network failure and 5xx fall back, loudly,
+  with the cache age; a revoked or denied credential does not — a cache that outlives
+  revocation would be a revocation bypass. Cache files are AES-256-GCM with the key in
+  the OS keychain and the AAD bound to (host, org, project, env) — the client-side twin
+  of the server's anti-relocation design.
+
+**Still open before binaries are *distributed* (not before merging):** the permanent
+domain (§7) — it is compiled into every copy — plus the `playxoft/homebrew-tap` repo and
+a cosign key for the release workflow. `xecret login` has not yet run against a deployed
+Worker; that joins the same integration pass as everything else in the standing caveat
+at the top of this document.
 
 **🎉 M1 milestone: the golden path works. This is the moment to show it to real developers.**
 
