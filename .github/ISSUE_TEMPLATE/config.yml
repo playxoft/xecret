@@ -1,0 +1,10 @@
+# Security reports must never arrive as public issues — a vulnerability filed
+# publicly is disclosed, not reported. The template chooser routes them away.
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/playxoft/xecret/security/advisories/new
+    about: Privately, via GitHub Security Advisories — or security@playxoft.com. Never a public issue.
+  - name: Question / discussion
+    url: https://github.com/playxoft/xecret/discussions
+    about: How-do-I questions and design discussions live here, so issues stay actionable.

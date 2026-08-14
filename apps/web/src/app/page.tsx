@@ -11,8 +11,8 @@ import {
   ExternalLinkIcon,
   GitHubIcon,
   ShieldCheckIcon,
-  TerminalIcon,
 } from '@/components/ui/icons';
+import { CliDemo } from './cli-demo';
 
 const REPO_URL = 'https://github.com/playxoft/xecret';
 const DOCS_URL = 'https://github.com/playxoft/xecret/tree/main/docs';
@@ -105,22 +105,14 @@ export default function LandingPage() {
               </Button>
             </div>
 
-            <div className="border-line bg-surface shadow-raised mt-10 max-w-xl overflow-hidden rounded-xl border">
-              <div className="border-line-subtle bg-canvas-inset text-fg-subtle flex items-center gap-2 border-b px-3 py-2 text-xs">
-                <TerminalIcon className="size-3.5" />
-                your terminal
-              </div>
-              <div className="flex items-center gap-2 px-4 py-3.5">
-                <code className="text-fg min-w-0 flex-1 font-mono text-sm break-all">
-                  <span className="text-fg-subtle select-none">$ </span>
-                  {RUN_COMMAND}
-                </code>
-                <CopyButton value={RUN_COMMAND} label="the run command" />
-              </div>
-              <p className="text-fg-muted border-line-subtle border-t px-4 py-2.5 text-[0.8125rem] leading-5">
-                Your app starts with every secret already in{' '}
-                <code className="font-mono text-[0.9em]">process.env</code>.
-              </p>
+            <CliDemo />
+
+            <div className="border-line bg-surface mt-3 flex max-w-xl items-center gap-2 rounded-lg border px-3 py-2">
+              <code className="text-fg-muted min-w-0 flex-1 font-mono text-[0.8125rem] break-all">
+                <span className="text-fg-subtle select-none">$ </span>
+                {RUN_COMMAND}
+              </code>
+              <CopyButton value={RUN_COMMAND} label="the run command" />
             </div>
           </div>
         </section>
@@ -192,6 +184,59 @@ export default function LandingPage() {
                 className="text-accent-text inline-flex items-center gap-1.5 rounded-sm font-medium hover:underline"
               >
                 Threat model
+                <ExternalLinkIcon className="size-3.5" />
+              </a>
+            </div>
+          </div>
+        </section>
+
+        <section
+          aria-labelledby="open-source"
+          className="border-line-subtle bg-canvas-inset/50 border-t"
+        >
+          <div className="mx-auto w-full max-w-5xl px-5 py-14 sm:py-16">
+            <h2 id="open-source" className="text-fg text-lg font-semibold tracking-tight">
+              Open source, honestly licensed
+            </h2>
+            <div className="mt-6 grid max-w-3xl gap-6 sm:grid-cols-2 sm:gap-8">
+              <div>
+                <h3 className="text-fg text-sm font-semibold">Read it before you trust it</h3>
+                <p className="text-fg-muted mt-1.5 text-sm leading-6">
+                  The server is AGPL-3.0, the CLI is MIT — so the crypto you are trusting is
+                  reviewable by anyone, and the binary that ships inside your Docker images and CI
+                  pipelines carries a licence your legal team has already approved. The threat
+                  model, the key-recovery ceremony and every architecture decision are documents in
+                  the repository, not blog-post promises.
+                </p>
+              </div>
+              <div>
+                <h3 className="text-fg text-sm font-semibold">Run it yourself</h3>
+                <p className="text-fg-muted mt-1.5 text-sm leading-6">
+                  Self-hosting is a documented first-class path: Cloudflare Workers, a Neon or
+                  vanilla PostgreSQL database, and your own Firebase project for identity. The
+                  self-hosting guide states the real dependency list plainly — including the parts
+                  that are friction — because an open-source secrets manager that hides its
+                  operational costs is not being honest about the one thing it sells.
+                </p>
+              </div>
+            </div>
+            <div className="mt-6 flex flex-wrap gap-x-5 gap-y-2 text-sm">
+              <a
+                href={`${DOCS_URL}/self-hosting.md`}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="text-accent-text inline-flex items-center gap-1.5 rounded-sm font-medium hover:underline"
+              >
+                Self-hosting guide
+                <ExternalLinkIcon className="size-3.5" />
+              </a>
+              <a
+                href={`https://github.com/playxoft/xecret/blob/main/CONTRIBUTING.md`}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="text-accent-text inline-flex items-center gap-1.5 rounded-sm font-medium hover:underline"
+              >
+                Contributing
                 <ExternalLinkIcon className="size-3.5" />
               </a>
             </div>
