@@ -27,6 +27,7 @@ import {
   addSecretVersion,
   countSecrets,
   createSecret,
+  writerColumns,
   findSecretByName,
   getSecretVersion,
   listSecrets,
@@ -197,7 +198,7 @@ describe('cross-tenant isolation (threat T2)', () => {
             iv: new Uint8Array(12),
             algorithm: 'AES-256-GCM',
           },
-          createdBy: USER_ID,
+          writer: { userId: USER_ID },
         }),
     ],
     [
@@ -212,7 +213,7 @@ describe('cross-tenant isolation (threat T2)', () => {
             iv: new Uint8Array(12),
             algorithm: 'AES-256-GCM',
           },
-          createdBy: USER_ID,
+          writer: { userId: USER_ID },
         }),
     ],
   ];
@@ -492,5 +493,24 @@ describe('isIpAllowed', () => {
     // Zone identifiers are rejected rather than stripped.
     expect(isIpAllowed(['fe80::1'], 'fe80::1%eth0')).toBe(false);
     expect(isIpAllowed(['2001:db8:::1'], '2001:db8::1')).toBe(false);
+  });
+});
+
+describe('write attribution', () => {
+  it('stores a person or a token, never both, never neither', () => {
+    expect(writerColumns({ userId: USER_ID })).toEqual({
+      createdBy: USER_ID,
+      createdByServiceTokenId: null,
+    });
+    expect(writerColumns({ serviceTokenId: SECRET_ID })).toEqual({
+      createdBy: null,
+      createdByServiceTokenId: SECRET_ID,
+    });
+
+    // The type forbids these shapes; the runtime check is what stops a cast.
+    expect(() => writerColumns({} as never)).toThrow('exactly one writer');
+    expect(() => writerColumns({ userId: USER_ID, serviceTokenId: SECRET_ID } as never)).toThrow(
+      'exactly one writer',
+    );
   });
 });

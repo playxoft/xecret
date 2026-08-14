@@ -63,7 +63,7 @@ func cmdEnvironments(args []string) error {
 
 	// The environment half of the scope is irrelevant here; "-" placates the
 	// resolver without requiring a .xecret.yaml when --project is given.
-	resolved, err := resolveScope(credentials, *projectFlag, "-")
+	resolved, err := a.resolveScope(credentials, *projectFlag, "-")
 	if err != nil {
 		return err
 	}

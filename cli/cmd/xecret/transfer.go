@@ -60,7 +60,7 @@ func cmdImport(args []string) error {
 	if err != nil {
 		return err
 	}
-	resolved, err := resolveScope(credentials, *projectFlag, *envFlag)
+	resolved, err := a.resolveScope(credentials, *projectFlag, *envFlag)
 	if err != nil {
 		return err
 	}
@@ -131,7 +131,7 @@ func cmdPull(args []string) error {
 	if err != nil {
 		return err
 	}
-	resolved, err := resolveScope(credentials, *projectFlag, *envFlag)
+	resolved, err := a.resolveScope(credentials, *projectFlag, *envFlag)
 	if err != nil {
 		return err
 	}

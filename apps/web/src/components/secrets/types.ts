@@ -43,7 +43,9 @@ export interface SecretSummary {
   version: number;
   createdAt: string;
   updatedAt: string;
-  createdBy: string;
+  /** Exactly one of these two is set — a person, or the CI token that wrote it. */
+  createdBy: string | null;
+  createdByServiceTokenId: string | null;
 }
 
 export interface SecretListResponse {
@@ -60,7 +62,8 @@ export interface RevealedSecret {
     valueType: string;
     version: number;
     updatedAt: string;
-    updatedBy: string;
+    updatedBy: string | null;
+    updatedByServiceTokenId: string | null;
   };
 }
 
@@ -72,7 +75,8 @@ export interface RevealedSecretVersion {
     version: number;
     current: boolean;
     createdAt: string;
-    createdBy: string;
+    createdBy: string | null;
+    createdByServiceTokenId: string | null;
   };
 }
 
@@ -91,7 +95,8 @@ export interface SecretVersion {
   /** Which environment data key wrote it. Opaque, and confers no access. */
   envKeyId: string;
   createdAt: string;
-  createdBy: string;
+  createdBy: string | null;
+  createdByServiceTokenId: string | null;
   current: boolean;
 }
 

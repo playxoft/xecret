@@ -9,8 +9,18 @@ no runtime dependency — see [ADR 0004](../docs/adr/0004-cli-language-go.md).
 
 ## Status
 
-**Phase 6 — v1 command set implemented.** Service tokens for CI
-(`XECRET_TOKEN=xst_…`) land in Phase 8.
+**Phase 8 — v1 command set plus CI support.** In CI, set `XECRET_TOKEN=xst_…`
+and nothing else: the token's own pinned scope answers which organisation,
+project and environment to use, no login flow runs, no keychain is touched,
+and no offline cache is ever written — a runner is ephemeral and a cache that
+outlived a token's revocation would be a revocation bypass. `--project` /
+`--environment` flags and `.xecret.yaml` still win when present; the server
+enforces the pin either way.
+
+```bash
+XECRET_TOKEN=xst_... xecret run -- npm run build
+XECRET_TOKEN=xst_... xecret pull --format env > .env   # legacy pipelines; stderr warns
+```
 
 ```bash
 xecret login                     # browser consent + PKCE; token → OS keychain

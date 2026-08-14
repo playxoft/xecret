@@ -108,6 +108,7 @@ export const GET = authenticatedRoute<Params>(
         current: material.version === secret.version,
         createdAt: material.createdAt.toISOString(),
         createdBy: material.createdBy,
+        createdByServiceTokenId: material.createdByServiceTokenId,
       },
     });
   },

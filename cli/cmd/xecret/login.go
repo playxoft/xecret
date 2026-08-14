@@ -30,6 +30,11 @@ func cmdLogin(args []string) error {
 	}
 
 	a := newApp(false)
+	if a.usingServiceToken() {
+		// Logging in would succeed and then be ignored: client() prefers the
+		// environment credential. Saying so now beats a support ticket later.
+		a.printer.Warnf("XECRET_TOKEN is set; every command will keep using it until it is unset.")
+	}
 	base := apiBase(*apiURL)
 
 	device := *deviceName
@@ -112,6 +117,13 @@ func cmdLogout(args []string) error {
 	}
 
 	a := newApp(false)
+	if a.usingServiceToken() {
+		// `logout` revokes the device credential and wipes the cache. A CI
+		// token is neither: it was minted in the dashboard and is revoked
+		// there. Guessing which of the two credentials the user meant would
+		// get one of them wrong.
+		return errors.New("XECRET_TOKEN is set — unset it first; service tokens are revoked from the dashboard")
+	}
 
 	credentials, err := cred.Load(a.store)
 	if errors.Is(err, cred.ErrNotLoggedIn) {
@@ -161,6 +173,29 @@ func cmdWhoami(args []string) error {
 	client, credentials, err := a.client()
 	if err != nil {
 		return err
+	}
+
+	if a.usingServiceToken() {
+		// A service token is nobody; /api/auth/me would refuse it. Its
+		// introspected pin is the whole of its identity, so that is the answer.
+		pin := a.tokenScope
+		if a.printer.JSON {
+			return a.printer.WriteJSON(map[string]any{
+				"credential":   "serviceToken",
+				"token":        pin.Token.Name,
+				"accessLevel":  pin.Token.AccessLevel,
+				"organization": pin.Organization.Slug,
+				"project":      pin.Project.Slug,
+				"environment":  pin.Environment.Slug,
+				"apiUrl":       credentials.APIURL,
+			})
+		}
+		fmt.Fprintf(a.printer.Out, "Credential     service token %q (%s)\n", pin.Token.Name, pin.Token.AccessLevel)
+		fmt.Fprintf(a.printer.Out, "Organisation   %s\n", pin.Organization.Slug)
+		fmt.Fprintf(a.printer.Out, "Project        %s\n", pin.Project.Slug)
+		fmt.Fprintf(a.printer.Out, "Environment    %s\n", pin.Environment.Slug)
+		fmt.Fprintf(a.printer.Out, "Server         %s\n", credentials.APIURL)
+		return nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

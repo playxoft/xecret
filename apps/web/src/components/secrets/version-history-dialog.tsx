@@ -206,7 +206,11 @@ export function VersionHistoryDialog({
                           >
                             {formatRelativeTime(version.createdAt)}
                           </time>{' '}
-                          by <Actor userId={version.createdBy} />
+                          by{' '}
+                          <Actor
+                            userId={version.createdBy}
+                            serviceTokenId={version.createdByServiceTokenId}
+                          />
                         </p>
                         <p className="text-fg-subtle mt-0.5 font-mono text-xs">
                           {version.algorithm}

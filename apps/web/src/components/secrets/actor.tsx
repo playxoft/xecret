@@ -18,8 +18,30 @@ import { useSession } from '@/app/(dashboard)/_components/session';
  * with the whole value in the title for copying. Inventing a display name here,
  * or showing "Unknown", would be worse than either.
  */
-export function Actor({ userId }: { userId: string }) {
+export function Actor({
+  userId,
+  serviceTokenId = null,
+}: {
+  userId: string | null;
+  /** Set instead of `userId` when the write came from a CI service token. */
+  serviceTokenId?: string | null;
+}) {
   const { user } = useSession();
+
+  if (serviceTokenId !== null) {
+    // A CI write. The token's id is stable and greppable against the audit log
+    // and the token list; its display name lives on the tokens page.
+    return (
+      <span className="text-fg-subtle" title={`Service token ${serviceTokenId}`}>
+        CI token
+      </span>
+    );
+  }
+
+  if (userId === null) {
+    // Unreachable while the writer CHECK holds; rendered honestly if it ever is.
+    return <span className="text-fg-subtle">—</span>;
+  }
 
   if (userId === user.id) {
     return <span className="text-fg-muted">you</span>;

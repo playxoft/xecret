@@ -75,6 +75,7 @@ const ENV_KEY_ID = '01930000-0000-7000-8000-0000000000d1';
 const SECRET_S = '01930000-0000-7000-8000-0000000000e1';
 const SECRET_T = '01930000-0000-7000-8000-0000000000e2';
 const USER_ID = '01930000-0000-7000-8000-0000000000f1';
+const TOKEN_ID = '01930000-0000-7000-8000-0000000000f2';
 
 const PLAINTEXT = 'postgres://user:hunter2@db.internal:5432/app?sslmode=require';
 
@@ -105,7 +106,7 @@ vi.mock('@xecret/db/repositories', async (importOriginal) => {
   };
 });
 
-const { applySecretWrites, decryptEnvironment, decryptOne, writeSecretValue } =
+const { applySecretWrites, decryptEnvironment, decryptOne, secretWriter, writeSecretValue } =
   await import('./secrets-service');
 
 interface Harness {
@@ -224,6 +225,7 @@ function stored(
     encrypted,
     valueHmac: null,
     createdBy: USER_ID,
+    createdByServiceTokenId: null,
     createdAt: new Date('2026-01-01T00:00:00Z'),
     ...overrides,
   };
@@ -243,7 +245,7 @@ async function rejection(run: () => Promise<unknown>): Promise<ApiError> {
 /** Encrypts `PLAINTEXT` through the real write path and returns the ciphertext. */
 async function sealed(h: Harness): Promise<EncryptedValue> {
   await writeSecretValue(h.scope, h.services, {
-    writer: USER_ID,
+    writer: { userId: USER_ID },
     name: 'DATABASE_URL',
     value: PLAINTEXT,
   });
@@ -280,7 +282,7 @@ describe('encrypt and decrypt', () => {
     const write = h.created[0];
     expect(write?.id).toBeTypeOf('string');
     expect(write?.envKeyId).toBe(ENV_KEY_ID);
-    expect(write?.createdBy).toBe(USER_ID);
+    expect(write?.writer).toEqual({ userId: USER_ID });
 
     const value = await decryptOne(
       h.scope,
@@ -409,7 +411,7 @@ describe('the unwrapped environment key', () => {
     for (let index = 0; index < 3; index += 1) {
       h.created.length = 0;
       await writeSecretValue(h.scope, h.services, {
-        writer: USER_ID,
+        writer: { userId: USER_ID },
         name: `SECRET_${index}`,
         value: `value-${index}`,
       });
@@ -485,7 +487,7 @@ describe('the unchanged-value short circuit', () => {
     });
 
     const result = await writeSecretValue(h.scope, h.services, {
-      writer: USER_ID,
+      writer: { userId: USER_ID },
       name: 'DATABASE_URL',
       value: PLAINTEXT,
       existing: { secretId: SECRET_S, version: 4, valueHmac },
@@ -508,7 +510,7 @@ describe('the unchanged-value short circuit', () => {
     });
 
     const result = await writeSecretValue(h.scope, h.services, {
-      writer: USER_ID,
+      writer: { userId: USER_ID },
       name: 'DATABASE_URL',
       value: PLAINTEXT,
       existing: { secretId: SECRET_S, version: 1, valueHmac },
@@ -531,7 +533,7 @@ describe('the unchanged-value short circuit', () => {
     const h = await harness();
 
     const result = await writeSecretValue(h.scope, h.services, {
-      writer: USER_ID,
+      writer: { userId: USER_ID },
       name: 'DATABASE_URL',
       value: PLAINTEXT,
       existing: { secretId: SECRET_S, version: 1, valueHmac: null },
@@ -550,7 +552,7 @@ describe('size limits', () => {
 
     const error = await rejection(() =>
       writeSecretValue(h.scope, h.services, {
-        writer: USER_ID,
+        writer: { userId: USER_ID },
         name: 'HUGE',
         value: 'x'.repeat(MAX_SECRET_VALUE_BYTES + 1),
       }),
@@ -570,7 +572,7 @@ describe('size limits', () => {
     // over the byte count — the case a character-only check would let through.
     const error = await rejection(() =>
       writeSecretValue(h.scope, h.services, {
-        writer: USER_ID,
+        writer: { userId: USER_ID },
         name: 'HUGE',
         value: '€'.repeat(MAX_SECRET_VALUE_BYTES / 2),
       }),
@@ -598,7 +600,7 @@ describe('version assignment', () => {
 
     const error = await rejection(() =>
       writeSecretValue(h.scope, h.services, {
-        writer: USER_ID,
+        writer: { userId: USER_ID },
         name: 'DATABASE_URL',
         value: PLAINTEXT,
         existing: { secretId: SECRET_S, version: 1, valueHmac: null },
@@ -621,7 +623,7 @@ describe('dry run', () => {
     });
 
     const results = await applySecretWrites(h.scope, h.services, {
-      writer: USER_ID,
+      writer: { userId: USER_ID },
       dryRun: true,
       writes: [
         { name: 'NEW_ONE', value: 'a' },
@@ -652,7 +654,7 @@ describe('dry run', () => {
     h.openEnvKey.mockClear();
 
     await expect(
-      applySecretWrites(h.scope, h.services, { writer: USER_ID, writes: [] }),
+      applySecretWrites(h.scope, h.services, { writer: { userId: USER_ID }, writes: [] }),
     ).resolves.toEqual([]);
 
     expect(h.openEnvKey).not.toHaveBeenCalled();
@@ -683,7 +685,7 @@ describe('value types', () => {
 
     const error = await rejection(() =>
       writeSecretValue(h.scope, h.services, {
-        writer: USER_ID,
+        writer: { userId: USER_ID },
         name: 'PORT',
         value: 'three thousand',
         valueType: 'int',
@@ -701,7 +703,7 @@ describe('value types', () => {
 
     const error = await rejection(() =>
       writeSecretValue(h.scope, h.services, {
-        writer: USER_ID,
+        writer: { userId: USER_ID },
         name: 'CALLBACK_URL',
         value: 'example.com',
         valueType: 'url',
@@ -718,7 +720,7 @@ describe('value types', () => {
 
     const error = await rejection(() =>
       writeSecretValue(h.scope, h.services, {
-        writer: USER_ID,
+        writer: { userId: USER_ID },
         name: 'CONFIG',
         value: '{"token":"sk_live_51H8xR2abcdef"',
         valueType: 'json',
@@ -733,7 +735,7 @@ describe('value types', () => {
     const h = await harness();
 
     await writeSecretValue(h.scope, h.services, {
-      writer: USER_ID,
+      writer: { userId: USER_ID },
       name: 'PORT',
       value: '5432',
       valueType: 'int',
@@ -746,7 +748,7 @@ describe('value types', () => {
     const h = await harness();
 
     await writeSecretValue(h.scope, h.services, {
-      writer: USER_ID,
+      writer: { userId: USER_ID },
       name: 'OPAQUE',
       value: '<<<not json, not a url, not a number>>>',
     });
@@ -762,7 +764,7 @@ describe('value types', () => {
 
     const error = await rejection(() =>
       writeSecretValue(h.scope, h.services, {
-        writer: USER_ID,
+        writer: { userId: USER_ID },
         name: 'PORT',
         value: 'not-a-number',
         existing: { secretId: SECRET_S, version: 1, valueHmac: null, valueType: 'int' },
@@ -777,7 +779,7 @@ describe('value types', () => {
     const h = await harness();
 
     const result = await writeSecretValue(h.scope, h.services, {
-      writer: USER_ID,
+      writer: { userId: USER_ID },
       name: 'PORT',
       value: 'https://example.com',
       valueType: 'url',
@@ -798,7 +800,7 @@ describe('value types', () => {
     const h = await harness();
 
     await writeSecretValue(h.scope, h.services, {
-      writer: USER_ID,
+      writer: { userId: USER_ID },
       name: 'PORT',
       value: '5433',
       existing: { secretId: SECRET_S, version: 1, valueHmac: null, valueType: 'int' },
@@ -813,7 +815,7 @@ describe('value types', () => {
     const h = await harness();
 
     await writeSecretValue(h.scope, h.services, {
-      writer: USER_ID,
+      writer: { userId: USER_ID },
       name: 'LEGACY',
       value: 'anything at all',
       existing: { secretId: SECRET_S, version: 1, valueHmac: null },
@@ -835,7 +837,7 @@ describe('value types', () => {
     });
 
     const result = await writeSecretValue(h.scope, h.services, {
-      writer: USER_ID,
+      writer: { userId: USER_ID },
       name: 'PORT',
       value: '5432',
       valueType: 'int',
@@ -855,7 +857,7 @@ describe('value types', () => {
 
     await rejection(() =>
       applySecretWrites(h.scope, h.services, {
-        writer: USER_ID,
+        writer: { userId: USER_ID },
         writes: [
           { name: 'GOOD_PORT', value: '5432', valueType: 'int' },
           { name: 'BAD_PORT', value: 'eighty', valueType: 'int' },
@@ -874,12 +876,41 @@ describe('value types', () => {
 
     const error = await rejection(() =>
       applySecretWrites(h.scope, h.services, {
-        writer: USER_ID,
+        writer: { userId: USER_ID },
         dryRun: true,
         writes: [{ name: 'PORT', value: 'eighty', valueType: 'int' }],
       }),
     );
 
     expect(error.code).toBe('validation_failed');
+  });
+});
+
+describe('service-token write attribution', () => {
+  it('attributes a CI write to the token, never to a person', async () => {
+    const h = await harness();
+
+    await writeSecretValue(h.scope, h.services, {
+      writer: { serviceTokenId: TOKEN_ID },
+      name: 'DATABASE_URL',
+      value: PLAINTEXT,
+    });
+
+    const write = h.created[0];
+    expect(write?.writer).toEqual({ serviceTokenId: TOKEN_ID });
+  });
+
+  it('names the token, not a user, when the principal is a service token', () => {
+    expect(
+      secretWriter({
+        kind: 'serviceToken',
+        tokenId: TOKEN_ID,
+        tokenName: 'deploy',
+        orgId: ORG_ID,
+        projectId: PROJECT_ID,
+        environmentId: ENV_A,
+        accessLevel: 'write',
+      }),
+    ).toEqual({ serviceTokenId: TOKEN_ID });
   });
 });

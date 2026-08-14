@@ -50,6 +50,12 @@ Flags every command that reads secrets accepts:
   --project, --environment   Override .xecret.yaml
   --json                     Machine-readable output (where it applies)
 
+CI:
+  XECRET_TOKEN=xst_...       Authenticate with a service token — no login, no
+                             keychain, no cache. The token's own scope fills in
+                             the project and environment when no flags or
+                             .xecret.yaml say otherwise.
+
 Learn more: ` + buildinfo.DefaultAPIURL + `/docs
 `
 
@@ -126,6 +132,16 @@ func hintFor(err error) string {
 		return ""
 	}
 	if apiErr, ok := api.AsError(err); ok {
+		// Under XECRET_TOKEN the stored-login hints would mislead: there is no
+		// login to run and no device to re-authenticate.
+		if serviceTokenFromEnv() != "" {
+			switch apiErr.Status {
+			case 401:
+				return "XECRET_TOKEN was not accepted. Check the value, its expiry, and any IP allowlist."
+			case 403:
+				return "This service token cannot do that — it may be read-only, or the action may be reserved for people."
+			}
+		}
 		return apiErr.Hint()
 	}
 	return ""

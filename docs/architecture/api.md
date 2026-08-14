@@ -41,25 +41,22 @@ A cookie and a bearer token on the same request is a **rejected** request, not a
 question. Silently picking one is how a CSRF-able cookie ends up authorising a call the
 client believed was bearer-authenticated.
 
-### Service tokens are read-only in v1
+### Service tokens and writes
 
-The authorization engine permits `secret.create` and `secret.update` to a service token
-holding a `write` grant, but the API refuses both with 403. The reason is
-`secret_versions.created_by`: it is `NOT NULL` and references `users`, and a service token
-has no user behind it by construction (threat T5).
+A service token holding a `write` grant may create and update secrets. What it may never
+do is act as a person: writes are attributed by a **pair** of columns — `created_by`
+naming a user, or `created_by_service_token_id` naming the token — with a CHECK constraint
+requiring exactly one (migration 0006). A CI write is recorded as the act of a named
+token, never as the act of whoever minted it.
 
-The two ways out were both worse than the restriction:
+Two repairs were considered in Phase 4 and rejected, and the reasoning still governs the
+design: attributing the write to the token's creator would put a person's name on a write
+they did not make, in the one log a company reaches for during an incident; and making
+`created_by` nullable *without* the paired column would have weakened attribution for
+every write in the product.
 
-- **Attribute the write to whoever created the token.** The "who changed this" column would
-  then name a person for a write they did not make, in the one log a company reaches for
-  during an incident.
-- **Make `created_by` nullable.** That weakens attribution for *every* write in the product
-  to accommodate a case v1 does not have.
-
-The right fix is a nullable `created_by_service_token_id` alongside the user column, with a
-check constraint requiring exactly one. That is a migration, and it belongs with the rest of
-the CI work in Phase 8 rather than bolted onto Phase 4. Until then: CI reads secrets, and a
-human or a CLI token writes them.
+`secret.delete` and `secret.rotate` remain outside the service-token allowlist entirely —
+CI rotates a value by writing a new one; destroying history is a human's decision.
 
 Firebase ID tokens are accepted at exactly one endpoint — `POST /api/auth/session` — and
 never again. See ADR 0003.
@@ -165,8 +162,8 @@ one-time code to `http://127.0.0.1:{port}/callback`; the CLI exchanges code + ve
 | `POST` | `/api/cli/token` | Public — the caller holds no credential yet. Body `{ code, codeVerifier }`. The code is consumed atomically **before** the PKCE check, so a failed binding kills it rather than leaving it guessable. Membership is re-checked; the minted `xct_` token is returned exactly once. Every failure is the same fixed 401. Rate limited: `RL_CLI_TOKEN` by IP. Audited as `token.created`. |
 | `DELETE` | `/api/cli/token` | The token revokes itself — `xecret logout`. CLI-token bearers only; idempotent; audited as `token.revoked` by the call that actually did it. |
 
-Listing and revoking CLI tokens from the dashboard ("your devices") lands with the token
-management routes in Phase 8.
+Listing and revoking CLI tokens from the dashboard ("your devices") is the token
+management routes below.
 
 ### Members, invitations, grants
 
@@ -255,23 +252,24 @@ outgoing fetches**, constant in the number of secrets. Audited once per call as
 The dry run and the real import call the **same** planning function, so the preview cannot
 disagree with the outcome.
 
-### Tokens, audit — **specified, not yet implemented**
+### Tokens
 
-These land in Phase 8. They are written down here because the data layer and the
-authorization engine already support them, and agreeing the shape now is what keeps that
-phase additive. **No handler exists for any of them today** — a request returns 404.
-
-| Method | Path | Phase |
+| Method | Path | Notes |
 |---|---|---|
-| `GET` `POST` | `/api/orgs/{orgSlug}/tokens/cli` | 8 |
-| `GET` `POST` | `/api/orgs/{orgSlug}/tokens/service` | 8 |
-| `DELETE` | `/api/orgs/{orgSlug}/tokens/{kind}/{tokenId}` | 8 |
-| `GET` | `/api/orgs/{orgSlug}/audit` | 8 |
+| `GET` `POST` | `/api/orgs/{orgSlug}/tokens/service` | Both gated on `token.create` — the listing is a map of every standing credential, which is reconnaissance for anyone who should not hold it. Minting is session + CSRF only (a bearer credential may not mint further credentials). Body `{ name, projectSlug, environmentSlug, accessLevel?: read\|write, expiresAt?, ipAllowlist? }` — `read` by default, `admin` unrepresentable. The token is returned **once**; only its hash is stored. Audited as `token.created`. |
+| `GET` | `/api/orgs/{orgSlug}/tokens/cli` | "Your devices" — the caller's **own** CLI tokens only, revoked ones included so a recent revocation is visible. An admin revokes others' tokens without browsing their device names first. |
+| `DELETE` | `/api/orgs/{orgSlug}/tokens/{kind}/{tokenId}` | `kind` is `cli` or `service`. Your own CLI token: always. Someone else's, or any service token: `token.revoke`. Immediate — the hash lookup filters `revoked_at IS NULL` in SQL — and idempotent, with the audit record written only by the call that actually did it. |
+| `GET` | `/api/tokens/self` | Service-token introspection: the pinned organisation, project and environment as names and slugs, plus the token's own name and level. The answer derives from the credential row alone — there is no parameter to lie in. This is how `XECRET_TOKEN=… xecret run` learns its scope without configuration. |
 
-A created token's value will be returned **once**, in the creation response, and is never
-retrievable again. Only its hash is stored — the repository layer already enforces this,
-and no listing function selects `token_hash`. The same rule already governs the
+A created token's value appears in exactly one response — the creation's — and is never
+retrievable again. No listing function selects `token_hash`. The same rule governs the
 invitation link above.
+
+### Audit
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/orgs/{orgSlug}/audit` | `audit.read` (owners and admins). Filters: `actorId`, `action`, `projectSlug` (+`environmentSlug` within it), `outcome`, `from`, `to`. Keyset pagination over `(created_at, id)` behind an opaque cursor — §5's prescription, on the one table where offset pagination would corrupt under its own write load. The response includes the `window` actually scanned, because the range is clamped to 90 days and a UI showing less than it was asked for must say so. |
 
 ---
 

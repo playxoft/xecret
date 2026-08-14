@@ -43,6 +43,13 @@
       "when": 1786925000000,
       "tag": "0005_cli_auth_codes",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786925100000,
+      "tag": "0006_service_token_write_attribution",
+      "breakpoints": true
     }
   ]
 }

@@ -8,7 +8,7 @@ import {
   authorizeSecretAction,
   enforceSecretRateLimit,
   writeSecretValue,
-  writerUserId,
+  secretWriter,
 } from '@/server/secrets-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
 
@@ -68,7 +68,9 @@ export const GET = authenticatedRoute<Params>(async ({ request, params, principa
       // `secret_versions` row, which this query does not read — resolving it
       // would mean a correlated lookup per secret for a column the list view
       // shows as a tooltip. `…/secrets/{name}/versions` answers it exactly.
+      // Exactly one of the pair is set — a person, or the CI token that wrote it.
       createdBy: secret.createdBy,
+      createdByServiceTokenId: secret.createdByServiceTokenId,
     })),
     nextCursor: secrets.hasMore ? String(page + 1) : null,
   });
@@ -88,7 +90,7 @@ export const POST = authenticatedRoute<Params>(
 
     // Resolved before the body is read so a credential that cannot be recorded
     // as the author is refused without the Worker buffering a 1 MB payload.
-    const writer = writerUserId(principal);
+    const writer = secretWriter(principal);
 
     await enforceSecretRateLimit(services, principal, 'write');
 

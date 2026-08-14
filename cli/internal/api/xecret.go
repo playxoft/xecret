@@ -133,6 +133,40 @@ func (c *Client) FetchMe(ctx context.Context) (*Me, error) {
 	return &me, nil
 }
 
+// NamedSlug is a resource as the introspection endpoint names it.
+type NamedSlug struct {
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+// TokenSelf is what GET /api/tokens/self says about a service token: its own
+// name and level, and the organisation, project and environment it is pinned
+// to. The answer derives from the credential row alone — there is no
+// parameter in the request for anything to lie in.
+type TokenSelf struct {
+	Token struct {
+		Name        string `json:"name"`
+		AccessLevel string `json:"accessLevel"`
+	} `json:"token"`
+	Organization NamedSlug `json:"organization"`
+	Project      NamedSlug `json:"project"`
+	Environment  struct {
+		Name         string `json:"name"`
+		Slug         string `json:"slug"`
+		IsProduction bool   `json:"isProduction"`
+	} `json:"environment"`
+}
+
+// TokenSelf is GET /api/tokens/self — service-token introspection. Rejected
+// with 403 for every other credential kind.
+func (c *Client) TokenSelf(ctx context.Context) (*TokenSelf, error) {
+	var self TokenSelf
+	if err := c.Get(ctx, "/api/tokens/self", &self); err != nil {
+		return nil, err
+	}
+	return &self, nil
+}
+
 // pageLimit bounds pagination loops. At the server's page sizes this is
 // thousands of rows — hitting it means something is wrong, not something big.
 const pageLimit = 50

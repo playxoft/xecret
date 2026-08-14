@@ -141,6 +141,7 @@ export type {
 
 export {
   createEnvironment,
+  findEnvironmentById,
   findEnvironmentBySlug,
   listEnvironments,
   listEnvironmentsForOrganization,
@@ -172,6 +173,7 @@ export {
   restoreSecret,
   softDeleteSecret,
   updateSecretMetadata,
+  writerColumns,
 } from './secrets';
 export type {
   AddSecretVersionParams,
@@ -182,6 +184,7 @@ export type {
   SecretRecord,
   SecretVersionPage,
   SecretVersionSummary,
+  SecretWriterRef,
   UpdateSecretMetadataParams,
 } from './secrets';
 
@@ -220,6 +223,7 @@ export {
   createCliToken,
   createServiceToken,
   findCliTokenByHash,
+  findCliTokenById,
   findServiceTokenByHash,
   isIpAllowed,
   listCliTokens,

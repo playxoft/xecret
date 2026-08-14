@@ -200,6 +200,27 @@ export async function listCliTokens(
 }
 
 /**
+ * One CLI token by id, for the revocation route's ownership check.
+ *
+ * "May I revoke this?" depends on whose device it is: anyone may kill their
+ * own, and killing someone else's requires `token.revoke`. Never selects
+ * `token_hash`, like every read in this file.
+ */
+export async function findCliTokenById(
+  exec: Executor,
+  orgId: string,
+  tokenId: string,
+): Promise<CliTokenSummary | undefined> {
+  const [row] = await exec
+    .select(cliTokenColumns)
+    .from(cliTokens)
+    .where(and(eq(cliTokens.orgId, orgId), eq(cliTokens.id, tokenId)))
+    .limit(1);
+
+  return row;
+}
+
+/**
  * Revokes a CLI token.
  *
  * Returns whether this call was the one that revoked it. Revoking an already

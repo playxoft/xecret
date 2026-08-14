@@ -14,7 +14,7 @@ import {
   decryptOne,
   enforceSecretRateLimit,
   writeSecretValue,
-  writerUserId,
+  secretWriter,
 } from '@/server/secrets-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
 
@@ -100,6 +100,7 @@ export const GET = authenticatedRoute<Params>(
         version: material.version,
         updatedAt: material.createdAt.toISOString(),
         updatedBy: material.createdBy,
+        updatedByServiceTokenId: material.createdByServiceTokenId,
       },
     });
   },
@@ -118,7 +119,7 @@ export const PATCH = authenticatedRoute<Params>(
     const scope = await resolveEnvironmentPath(principal, params, services);
     authorizeSecretAction(scope, principal, 'secret.update');
 
-    const writer = writerUserId(principal);
+    const writer = secretWriter(principal);
     await enforceSecretRateLimit(services, principal, 'write');
 
     const name = secretNameFromPath(params.name);

@@ -82,7 +82,7 @@ func secretsList(args []string) error {
 	if err != nil {
 		return err
 	}
-	resolved, err := resolveScope(credentials, *projectFlag, *envFlag)
+	resolved, err := a.resolveScope(credentials, *projectFlag, *envFlag)
 	if err != nil {
 		return err
 	}
@@ -138,7 +138,7 @@ func secretsGet(args []string) error {
 	if err != nil {
 		return err
 	}
-	resolved, err := resolveScope(credentials, *projectFlag, *envFlag)
+	resolved, err := a.resolveScope(credentials, *projectFlag, *envFlag)
 	if err != nil {
 		return err
 	}
@@ -205,7 +205,7 @@ func secretsSet(args []string) error {
 	if err != nil {
 		return err
 	}
-	resolved, err := resolveScope(credentials, *projectFlag, *envFlag)
+	resolved, err := a.resolveScope(credentials, *projectFlag, *envFlag)
 	if err != nil {
 		return err
 	}
@@ -259,7 +259,7 @@ func secretsDelete(args []string) error {
 	if err != nil {
 		return err
 	}
-	resolved, err := resolveScope(credentials, *projectFlag, *envFlag)
+	resolved, err := a.resolveScope(credentials, *projectFlag, *envFlag)
 	if err != nil {
 		return err
 	}

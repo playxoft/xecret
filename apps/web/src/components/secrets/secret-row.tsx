@@ -208,7 +208,7 @@ export function SecretRow({
       </TableCell>
 
       <TableCell className="align-middle text-[0.8125rem] whitespace-nowrap">
-        <Actor userId={secret.createdBy} />
+        <Actor userId={secret.createdBy} serviceTokenId={secret.createdByServiceTokenId} />
       </TableCell>
 
       <TableCell className="align-middle">

@@ -37,11 +37,21 @@ func cmdRun(args []string) error {
 	}
 
 	a := newApp(false)
+	if a.usingServiceToken() {
+		// The offline cache exists so a developer's laptop survives an outage.
+		// A CI credential must never leave one behind: a runner is ephemeral,
+		// a shared runner is worse, and a cache that outlives a token's
+		// revocation would be a revocation bypass in a directory nobody audits.
+		if *offline {
+			return errors.New("--offline needs a cached login session, and XECRET_TOKEN never writes one")
+		}
+		*noCache = true
+	}
 	client, credentials, err := a.client()
 	if err != nil {
 		return err
 	}
-	resolved, err := resolveScope(credentials, *projectFlag, *envFlag)
+	resolved, err := a.resolveScope(credentials, *projectFlag, *envFlag)
 	if err != nil {
 		return err
 	}

@@ -32,6 +32,12 @@ func cmdInit(args []string) error {
 	}
 
 	a := newApp(false)
+	if a.usingServiceToken() {
+		// `init` browses projects, which a pinned CI credential cannot do —
+		// and a CI job has no business writing config files anyway: the
+		// token's own pin already answers what .xecret.yaml would.
+		return errors.New("XECRET_TOKEN is set — 'xecret init' needs a personal login; in CI the token's own scope is used automatically")
+	}
 	client, credentials, err := a.client()
 	if err != nil {
 		return err

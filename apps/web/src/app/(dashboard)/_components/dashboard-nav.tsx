@@ -4,9 +4,17 @@ import { useMemo } from 'react';
 
 import { apiPath, appPath, withQuery } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
-import { BoxIcon, KeyIcon, SettingsIcon, UsersIcon } from '@/components/ui';
+import {
+  BoxIcon,
+  FileTextIcon,
+  KeyIcon,
+  SettingsIcon,
+  TerminalIcon,
+  UsersIcon,
+} from '@/components/ui';
 import type { NavSection } from '@/components/layout';
 import type { ProjectListResponse, ProjectResponse } from '@/components/projects/types';
+import { isOrgAdmin, useOrganization } from './session';
 
 /**
  * The sidebar's contents.
@@ -59,6 +67,13 @@ export function useDashboardNav({
   const openProject = useApiResource<ProjectResponse>(
     orgSlug === null || projectSlug === null ? null : apiPath.project(orgSlug, projectSlug),
   );
+
+  // Tokens and the audit log are rendered only for roles that can open them —
+  // the usual rule: role decides what is drawn, the server decides what is
+  // permitted. (The tokens page has a "your devices" half everyone could use,
+  // but it lives with account-adjacent things for non-admins in a later pass.)
+  const organization = useOrganization(orgSlug);
+  const showAdminPages = organization !== null && isOrgAdmin(organization.role);
 
   return useMemo(() => {
     if (orgSlug === null) {
@@ -119,6 +134,20 @@ export function useDashboardNav({
             label: 'Members',
             icon: <UsersIcon />,
           },
+          ...(showAdminPages
+            ? [
+                {
+                  href: appPath.tokens(orgSlug),
+                  label: 'Tokens',
+                  icon: <TerminalIcon />,
+                },
+                {
+                  href: appPath.audit(orgSlug),
+                  label: 'Audit',
+                  icon: <FileTextIcon />,
+                },
+              ]
+            : []),
           {
             href: appPath.orgSettings(orgSlug),
             label: 'Settings',
@@ -127,5 +156,5 @@ export function useDashboardNav({
         ],
       },
     ];
-  }, [orgSlug, projectSlug, envSlug, projects.data, openProject.data]);
+  }, [orgSlug, projectSlug, envSlug, projects.data, openProject.data, showAdminPages]);
 }
