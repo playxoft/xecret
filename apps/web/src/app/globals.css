@@ -349,9 +349,13 @@
     scrollbar-width: thin;
   }
 
-  /* Firefox renders a focus ring on scrollable regions; keep it consistent. */
+  /* Contained on the x axis only: a trackpad swipe across a wide table must
+     not become the browser's back gesture. The y axis is deliberately left to
+     chain — these regions scroll horizontally at most, and containing both
+     axes made every table a dead zone for the page's own scroll: the wheel
+     stopped working the moment the cursor crossed onto a list. */
   [data-scroll-region] {
-    overscroll-behavior: contain;
+    overscroll-behavior-x: contain;
   }
 }
 

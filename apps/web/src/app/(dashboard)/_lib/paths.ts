@@ -40,7 +40,6 @@ export const appPath = {
   org: (org: string): string => `/app/${segment(org)}`,
   orgSettings: (org: string): string => `/app/${segment(org)}/settings`,
   members: (org: string): string => `/app/${segment(org)}/members`,
-  member: (org: string, memberId: string): string => `${appPath.members(org)}/${segment(memberId)}`,
   tokens: (org: string): string => `/app/${segment(org)}/tokens`,
   audit: (org: string): string => `/app/${segment(org)}/audit`,
   /** The invitation-acceptance page. Top-level: the visitor may have no session. */

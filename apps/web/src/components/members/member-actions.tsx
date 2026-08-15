@@ -1,13 +1,12 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
 import { canAssignRole } from '@xecret/core/authz';
 import type { OrgRole } from '@xecret/core/authz';
 import { api } from '@/lib/api';
 import { errorMessage } from '@/lib/api';
-import { apiPath, appPath } from '@/app/(dashboard)/_lib/paths';
+import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import {
   Button,
   ConfirmDialog,
@@ -23,6 +22,7 @@ import {
   TrashIcon,
   useToast,
 } from '@/components/ui';
+import { MemberAccessDialog } from './member-access-dialog';
 import { ROLE_LABELS, ROLES_DESCENDING } from './types';
 import type { Member } from './types';
 
@@ -47,11 +47,11 @@ export function MemberRowActions({
   viewerRole: OrgRole;
   onChanged: () => void;
 }) {
-  const router = useRouter();
   const { toast } = useToast();
   const [pending, setPending] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [suspending, setSuspending] = useState(false);
+  const [viewingAccess, setViewingAccess] = useState(false);
 
   const mayManage = !member.isYou && canAssignRole(viewerRole, member.role);
 
@@ -85,13 +85,16 @@ export function MemberRowActions({
   if (!mayManage) {
     return (
       <div className="flex items-center justify-end gap-1">
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => router.push(appPath.member(orgSlug, member.id))}
-        >
+        <Button size="sm" variant="ghost" onClick={() => setViewingAccess(true)}>
           View access
         </Button>
+        <MemberAccessDialog
+          orgSlug={orgSlug}
+          member={member}
+          mayEdit={false}
+          open={viewingAccess}
+          onOpenChange={setViewingAccess}
+        />
       </div>
     );
   }
@@ -127,11 +130,19 @@ export function MemberRowActions({
           size="icon"
           variant="ghost"
           aria-label={`View and edit access for ${member.displayName ?? member.email}`}
-          onClick={() => router.push(appPath.member(orgSlug, member.id))}
+          onClick={() => setViewingAccess(true)}
         >
           <KeyIcon className="size-4" />
         </Button>
       </Tooltip>
+
+      <MemberAccessDialog
+        orgSlug={orgSlug}
+        member={member}
+        mayEdit
+        open={viewingAccess}
+        onOpenChange={setViewingAccess}
+      />
 
       <Tooltip content={member.status === 'suspended' ? 'Reinstate' : 'Suspend'}>
         <Button

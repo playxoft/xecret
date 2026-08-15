@@ -42,10 +42,10 @@ import { isOrgAdmin, useOrganization } from './session';
  * member on purpose: they are how people are invited and how they appear in
  * the audit log.
  *
- * **Access grants are not here.** "Who may read production" is a different and
- * far more sensitive question than "who is in this organisation"; it lives on
- * each member's own page (`/members/{id}`), with the effective-permission
- * preview beside the controls that change it.
+ * **Access grants are not a column here.** "Who may read production" is a
+ * different and far more sensitive question than "who is in this organisation";
+ * it opens per member from the row's key icon, as a dialog holding the
+ * effective-permission preview beside the controls that change it.
  *
  * ── Controls follow authority ──
  * The role select and the actions menu render only where the viewer's role
