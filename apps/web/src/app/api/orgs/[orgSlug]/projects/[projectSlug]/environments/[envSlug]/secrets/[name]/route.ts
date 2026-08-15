@@ -13,6 +13,7 @@ import {
   authorizeSecretAction,
   decryptOne,
   enforceSecretRateLimit,
+  rethrowRepositoryFailure,
   writeSecretValue,
   secretWriter,
 } from '@/server/secrets-service';
@@ -211,14 +212,18 @@ export const PUT = authenticatedRoute<Params>(
 
     const name = secretNameFromPath(params.name);
     const body = await parseJsonBody(request, patchSecretMetadataBody);
+    const renamed = body.name !== undefined && body.name !== name;
 
     const updated = await updateSecretMetadata(services.db, {
       orgId: scope.organization.id,
       environmentId: scope.environment.id,
       name,
+      ...(renamed ? { newName: body.name } : {}),
       ...(body.note === undefined ? {} : { note: body.note }),
       ...(body.valueType === undefined ? {} : { valueType: body.valueType }),
-    });
+      // A rename that collides with a live secret comes back from the unique
+      // index as `conflict`, and leaves here as a 409 rather than a 500.
+    }).catch(rethrowRepositoryFailure);
 
     record(
       audit(scope.organization.id).success(
@@ -231,6 +236,10 @@ export const PUT = authenticatedRoute<Params>(
         },
         {
           secretName: updated.name,
+          // The old name, kept only when it changed: "SECRET renamed from X" is
+          // the fact an incident review needs, because everything reading the
+          // old name stopped finding it at this moment.
+          ...(renamed ? { previousSecretName: name } : {}),
           projectSlug: scope.project.slug,
           environmentSlug: scope.environment.slug,
           source: auditSource(principal),

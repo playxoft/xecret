@@ -671,6 +671,13 @@ export interface UpdateSecretMetadataParams {
   orgId: string;
   environmentId: string;
   name: string;
+  /**
+   * Omit to leave unchanged. Renames the secret: the versions hang off the
+   * secret's id, so the history survives, but everything that reads the secret
+   * *by name* — `xecret run`, service tokens, other people's shells — sees the
+   * old name vanish. The caller is expected to have said so to the user.
+   */
+  newName?: string | undefined;
   /** Omit to leave unchanged. */
   note?: string | null | undefined;
   /** Omit to leave unchanged. One of `SECRET_VALUE_TYPES`. */
@@ -692,12 +699,19 @@ export interface UpdateSecretMetadataParams {
  * impossible to perform in either order. The API validates the value against the
  * type on the next write, which is the moment the plaintext is legitimately in
  * hand anyway.
+ *
+ * A rename travels this path too, for the same reason: the name is a label on
+ * the secret's id, and the versions — which reference the id, never the name —
+ * stay attached through it. What a rename *does* break is every reader that
+ * addresses the secret by name, which is why the API records the old name in
+ * the audit event.
  */
 export async function updateSecretMetadata(
   exec: Executor,
   params: UpdateSecretMetadataParams,
 ): Promise<SecretRecord> {
   const patch: Record<string, unknown> = {};
+  if (params.newName !== undefined) patch['name'] = params.newName;
   if (params.note !== undefined) patch['note'] = params.note;
   if (params.valueType !== undefined) patch['valueType'] = params.valueType;
 
@@ -705,24 +719,36 @@ export async function updateSecretMetadata(
     throw new RepositoryError('invalid', 'No secret metadata was supplied to update.');
   }
 
-  const [row] = await exec
-    .update(secrets)
-    .set({ ...patch, updatedAt: sql`now()` })
-    .where(
-      and(
-        eq(secrets.name, params.name),
-        eq(secrets.environmentId, params.environmentId),
-        isNull(secrets.deletedAt),
-        withinOrganization(params.orgId),
-      ),
-    )
-    .returning();
+  try {
+    const [row] = await exec
+      .update(secrets)
+      .set({ ...patch, updatedAt: sql`now()` })
+      .where(
+        and(
+          eq(secrets.name, params.name),
+          eq(secrets.environmentId, params.environmentId),
+          isNull(secrets.deletedAt),
+          withinOrganization(params.orgId),
+        ),
+      )
+      .returning();
 
-  if (!row) {
-    throw new RepositoryError('notFound', `No secret named "${params.name}" in this environment`);
+    if (!row) {
+      throw new RepositoryError('notFound', `No secret named "${params.name}" in this environment`);
+    }
+
+    return row;
+  } catch (error) {
+    // A rename racing another live secret with the target name. The index —
+    // not a pre-flight `SELECT` — is what notices, same as `restoreSecret`.
+    if (isUniqueViolation(error, 'secrets_env_name_idx')) {
+      throw new RepositoryError(
+        'conflict',
+        `The name "${params.newName ?? params.name}" is in use by another secret in this environment`,
+      );
+    }
+    throw error;
   }
-
-  return row;
 }
 
 /** Counts an environment's live secrets, for quota checks and list headers. */

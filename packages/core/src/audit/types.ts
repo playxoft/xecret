@@ -106,6 +106,8 @@ export type AuditAction =
  */
 export interface AuditMetadata {
   secretName?: string;
+  /** The name a secret held before a rename; `secretName` carries the new one. */
+  previousSecretName?: string;
   secretCount?: number;
   environmentSlug?: string;
   projectSlug?: string;

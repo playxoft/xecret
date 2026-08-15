@@ -295,6 +295,12 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   if (metadata.secretName !== undefined) {
     clean.secretName = sanitizeMetadataString(metadata.secretName, LIMITS.secretName);
   }
+  if (metadata.previousSecretName !== undefined) {
+    clean.previousSecretName = sanitizeMetadataString(
+      metadata.previousSecretName,
+      LIMITS.secretName,
+    );
+  }
   if (metadata.environmentSlug !== undefined) {
     clean.environmentSlug = sanitizeMetadataString(metadata.environmentSlug, LIMITS.slug);
   }

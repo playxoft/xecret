@@ -886,7 +886,7 @@ function rethrowCryptoFailure(cause: unknown, services: ServiceContext): never {
  * environment or secret vanished between resolution and write; it is the same
  * response a caller with no right to it would have received.
  */
-function rethrowRepositoryFailure(cause: unknown): never {
+export function rethrowRepositoryFailure(cause: unknown): never {
   if (cause instanceof RepositoryError) {
     switch (cause.code) {
       case 'conflict':

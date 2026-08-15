@@ -586,6 +586,7 @@ describe('every declared metadata field survives sanitisation', () => {
   it('copies each field through, sanitised', () => {
     const record = builderWith().success('member.role_changed', null, {
       secretName: 'DATABASE_URL',
+      previousSecretName: 'DB_URL',
       secretCount: 3,
       environmentSlug: 'production',
       projectSlug: 'api',
@@ -605,6 +606,7 @@ describe('every declared metadata field survives sanitisation', () => {
 
     expect(record.metadata).toEqual({
       secretName: 'DATABASE_URL',
+      previousSecretName: 'DB_URL',
       secretCount: 3,
       environmentSlug: 'production',
       projectSlug: 'api',
