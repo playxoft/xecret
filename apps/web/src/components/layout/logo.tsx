@@ -51,15 +51,29 @@ export function Wordmark({ className }: { className?: string }) {
 /**
  * The attribution mark. Deliberately quiet: it belongs in a footer or the base
  * of a sign-in card, not competing with the product name.
+ *
+ * A link to the company site, in a new tab — the reader is mid-task in xecret
+ * (often mid-sign-in), and attribution must not navigate them out of it.
+ * `rel="noopener noreferrer"` because every `target="_blank"` gets it: the
+ * opened page must not hold a handle back to a window with a session in it.
  */
 export function PlayxoftMark({ className }: { className?: string }) {
   return (
-    <span className={cn('text-fg-subtle inline-flex items-center gap-1.5 text-xs', className)}>
+    <a
+      href="https://playxoft.com"
+      target="_blank"
+      rel="noopener noreferrer"
+      className={cn(
+        'text-fg-subtle inline-flex items-center gap-1.5 rounded-sm text-xs transition-colors',
+        'hover:text-fg-muted',
+        className,
+      )}
+    >
       <span
         aria-hidden="true"
         className="bg-fg-subtle/40 inline-block h-3 w-px shrink-0 rotate-12 rounded-full"
       />
       Powered by <span className="text-fg-muted font-medium">Playxoft</span>
-    </span>
+    </a>
   );
 }
