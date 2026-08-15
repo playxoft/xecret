@@ -4,14 +4,7 @@ import { useMemo } from 'react';
 
 import { apiPath, appPath, withQuery } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
-import {
-  BoxIcon,
-  FileTextIcon,
-  SettingsIcon,
-  TerminalIcon,
-  UserIcon,
-  UsersIcon,
-} from '@/components/ui';
+import { BoxIcon, FileTextIcon, SettingsIcon, TerminalIcon, UsersIcon } from '@/components/ui';
 import type { OrgRole } from '@xecret/core/authz';
 import type { NavSection } from '@/components/layout';
 import type { ProjectListResponse } from '@/components/projects/types';
@@ -140,19 +133,13 @@ export function useDashboardNav({
             : []),
           {
             href: appPath.orgSettings(orgSlug),
-            label: 'Settings',
+            // Named in full, because another "Settings" exists: the account
+            // area behind the avatar menu. Two entries that differ only by
+            // where they sit is how someone changes the wrong one.
+            label: 'Organisation settings',
             icon: <SettingsIcon />,
           },
         ],
-      },
-      // The account area, distinct from anything org-scoped. Listed here too —
-      // not only when already inside `/app/settings` — because "where do I
-      // change my PIN?" must have an answer visible from wherever the person
-      // happens to be standing, and the organisation's own "Settings" entry
-      // above is precisely the wrong-but-plausible place to look.
-      {
-        label: 'You',
-        items: [{ href: appPath.account(), label: 'Account settings', icon: <UserIcon /> }],
       },
     ];
   }, [orgSlug, projectSlug, projects.data, showAdminPages]);

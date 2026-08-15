@@ -118,9 +118,12 @@ export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps
         {accountHref ? (
           <>
             <DropdownMenuItem asChild>
+              {/* Emphasised: this is the only route to the account area from
+                  an organisation, and the sidebar's "Organisation settings"
+                  is the plausible-but-wrong place people look first. */}
               <Link href={accountHref}>
-                <SettingsIcon className="size-4" />
-                Account settings
+                <SettingsIcon className="text-accent-text size-4" />
+                <span className="font-medium">Account settings</span>
               </Link>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
