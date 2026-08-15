@@ -4,6 +4,7 @@ import { publicOrigin } from '@/server/bindings';
 import { mailerFrom } from '@/server/mail';
 import { pinResetMail } from '@/server/pin-reset-mail';
 import { json } from '@/server/http';
+import { errorName } from '@/server/logging';
 import { primaryOrgId, requireUserPrincipal } from '@/server/pin-service';
 import { attemptKey, enforce } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
@@ -73,13 +74,17 @@ export const POST = authenticatedRoute(
           }),
         )
         .catch((cause: unknown) => {
-          // Logged, never rethrown: the response has already gone. The name only
-          // — a delivery error embeds the recipient address, and this line ends
-          // up wherever logs end up.
-          console.error('pin reset mail failed', {
-            requestId: services.meta.requestId,
-            error: cause instanceof Error ? cause.name : 'unknown',
-          });
+          // Logged, never rethrown: the response has already gone. The name
+          // only — `errorName` rather than `describeError`, because a delivery
+          // error embeds the recipient address in its message and this line
+          // ends up wherever logs end up.
+          services.log
+            .at('POST')
+            .error(
+              'Could not deliver the PIN reset email — the user has been told a link was sent ' +
+                'and will never receive one',
+              { error: errorName(cause) },
+            );
         }),
     );
 

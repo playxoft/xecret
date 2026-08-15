@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthorizationError } from '@xecret/core/authz';
 import { InMemoryAuditSink, createAuditBuilder } from '@xecret/core/audit';
 import { uuidv7 } from '@xecret/core/ids';
+import { createLogger } from './logging';
+import type { LogEntry, LogSink } from './logging';
 
 /**
  * Tests for the route wrapper — the single error boundary between handler code
@@ -49,10 +51,21 @@ const { errors } = await import('./errors');
 
 const ORG_ID = uuidv7();
 
-/** The wrapper prefers a Cloudflare ray id, so requests carry one. */
+/**
+ * Requests carry a ray id, but it is no longer the request id.
+ *
+ * The wrapper mints its own UUIDv7 precisely because `cf-ray` is a header — a
+ * request that reaches the Worker without passing the edge can claim an id
+ * already in use. The ray id survives as its own log field.
+ */
 const RAY_ID = 'ray-abc123';
 
+const UUIDV7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 const deferred: Promise<unknown>[] = [];
+
+/** Lines the wrapper emitted during a test, so assertions can read them. */
+let logged: LogEntry[] = [];
 
 const principal = {
   kind: 'user' as const,
@@ -82,6 +95,7 @@ function request(init: { method?: string; origin?: string } = {}): Request {
 beforeEach(() => {
   vi.clearAllMocks();
   deferred.length = 0;
+  logged = [];
   auditSink.write.mockResolvedValue(undefined);
 
   context.workerContext.mockResolvedValue({ env: {}, ctx: { waitUntil: () => {} } });
@@ -95,11 +109,14 @@ beforeEach(() => {
       envelope: {},
       meta: {
         requestId,
+        rayId: null,
         ipAddress: '203.0.113.5',
         userAgent: 'vitest',
         method: 'GET',
         path: '/api/test',
+        startedAt: 0,
       },
+      ...capturingLog(),
       waitUntil: (promise: Promise<unknown>) => void deferred.push(promise),
       dispose: () => {},
     }),
@@ -114,13 +131,29 @@ async function settleDeferred(): Promise<void> {
   await Promise.allSettled(deferred);
 }
 
+/**
+ * A real logger writing into `logged`, rather than a silent one.
+ *
+ * The wrapper's own diagnostics — the audit-flush failure in particular — are
+ * behaviour worth asserting on, and a fixture that swallowed them would let
+ * that behaviour regress silently.
+ */
+function capturingLog() {
+  const sink: LogSink = {
+    write: (entry) => void logged.push(entry),
+    flush: () => Promise.resolve(),
+  };
+  const { logger, bind } = createLogger({ sink, minimum: 'debug' });
+  return { log: logger, bindLog: bind };
+}
+
 describe('successful responses', () => {
   it('returns the handler’s response and stamps the request id', async () => {
     const handler = publicRoute(async () => new Response('ok', { status: 200 }));
     const response = await handler(request());
 
     expect(response.status).toBe(200);
-    expect(response.headers.get('x-xecret-request-id')).toBe(RAY_ID);
+    expect(response.headers.get('x-xecret-request-id')).toMatch(UUIDV7);
   });
 
   it('passes awaited route params to the handler', async () => {
@@ -226,7 +259,13 @@ describe('error conversion', () => {
     expect(text).not.toContain('ECONNREFUSED');
     expect(text).not.toContain('postgres://');
     expect(JSON.parse(text)).toEqual({
-      error: { code: 'internal_error', message: 'Something went wrong.', requestId: RAY_ID },
+      error: {
+        code: 'internal_error',
+        message: 'Something went wrong.',
+        // The same id as the header, which is the only property it has to hold:
+        // a user quoting one must let an operator find the other.
+        requestId: response.headers.get('x-xecret-request-id'),
+      },
     });
   });
 
@@ -300,7 +339,7 @@ describe('error conversion', () => {
       throw new Error('boom');
     });
 
-    expect((await handler(request())).headers.get('x-xecret-request-id')).toBe(RAY_ID);
+    expect((await handler(request())).headers.get('x-xecret-request-id')).toMatch(UUIDV7);
   });
 });
 
@@ -356,7 +395,6 @@ describe('audit flushing', () => {
   // change nothing for the caller and lose the record. It is logged instead, at
   // `error`, so it is alertable.
   it('does not fail a successful response when the audit write fails', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     auditSink.write.mockRejectedValue(new Error('audit table unreachable'));
 
     const handler = authenticatedRoute(async ({ audit, record }) => {
@@ -368,14 +406,13 @@ describe('audit flushing', () => {
     await settleDeferred();
 
     expect(response.status).toBe(204);
-    expect(consoleError).toHaveBeenCalledWith('audit flush failed', expect.any(Object));
 
-    // The failure message itself must not be logged verbatim: an audit write
-    // failure is usually a database error, and those carry connection strings.
-    const logged = JSON.stringify(consoleError.mock.calls[0]?.[1]);
-    expect(logged).not.toContain('audit table unreachable');
-
-    consoleError.mockRestore();
+    const failure = logged.find((entry) => entry.fn === 'settle');
+    expect(failure).toMatchObject({ level: 'error', pending: 1 });
+    // A sentence saying what was lost, not a label saying a step named "audit
+    // flush" returned non-zero.
+    expect(failure?.message).toContain('1 buffered audit record');
+    expect(failure?.message).toContain('missing from the audit log');
   });
 });
 

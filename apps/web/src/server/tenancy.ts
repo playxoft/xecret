@@ -77,6 +77,8 @@ export async function resolveOrg(
     // nothing anyway — the token has no member row by construction.
     if (principal.orgId !== organization.id) throw errors.notFound('service token org mismatch');
 
+    bindScope(services, { orgId: organization.id, orgSlug: organization.slug });
+
     return {
       organization,
       actor: {
@@ -98,6 +100,8 @@ export async function resolveOrg(
   });
   if (!membership) throw errors.notFound('no membership in organisation');
 
+  bindScope(services, { orgId: organization.id, orgSlug: organization.slug });
+
   return {
     organization,
     actor:
@@ -106,6 +110,24 @@ export async function resolveOrg(
         : { kind: 'cliToken', tokenId: principal.tokenId, userId, orgId: organization.id },
     membership,
   };
+}
+
+/**
+ * Stamps the tenancy onto every subsequent log line of this request.
+ *
+ * Done here rather than at each call site because this is the choke point: a
+ * route cannot reach a project, an environment or a secret without coming
+ * through these resolvers first, so binding here makes "which workspace was
+ * this?" answerable for every tenant-scoped line in the system without any
+ * route remembering to say so.
+ *
+ * Deliberately *after* the not-found throws above. A failed resolution has not
+ * established that the caller may know the organisation exists, and stamping an
+ * org id onto the lines of a request that was refused would put a tenant
+ * identifier on another tenant's failed probe.
+ */
+function bindScope(services: ServiceContext, fields: Record<string, string>): void {
+  services.bindLog(fields);
 }
 
 /** Resolves a project within an already-resolved organisation. */
@@ -124,6 +146,8 @@ export async function resolveProject(
   if (scope.actor.kind === 'serviceToken' && scope.actor.projectId !== project.id) {
     throw errors.notFound('service token project mismatch');
   }
+
+  bindScope(services, { projectId: project.id, projectSlug: project.slug });
 
   return { ...scope, project };
 }
@@ -147,6 +171,15 @@ export async function resolveEnvironment(
   if (scope.actor.kind === 'serviceToken' && scope.actor.environmentId !== environment.id) {
     throw errors.notFound('service token environment mismatch');
   }
+
+  bindScope(services, {
+    environmentId: environment.id,
+    envSlug: environment.slug,
+    // The one tenancy fact that changes how a line should be read: a decryption
+    // failure in `dev` and the same failure in `production` are not the same
+    // incident, and a dashboard that cannot filter on it says so too late.
+    isProduction: String(environment.isProduction),
+  });
 
   return { ...scope, environment };
 }

@@ -5,10 +5,22 @@ import { actorId, actorLabel, actorType, assertCsrf, authenticate, isUnlocked } 
 import type { CredentialSource, Principal } from './actor';
 import { DatabaseAuditSink } from './audit-sink';
 import { MissingBindingError, publicOrigin } from './bindings';
+import type { Bindings } from './bindings';
 import { createServiceContext, workerContext } from './context';
 import type { ServiceContext } from './context';
 import { errors } from './errors';
-import { REQUEST_ID_HEADER, isSameOrigin, json, requestIdFrom, toApiError } from './http';
+import {
+  REQUEST_ID_HEADER,
+  clientIp,
+  isSameOrigin,
+  json,
+  rayIdFrom,
+  requestIdFrom,
+  toApiError,
+  userAgent,
+} from './http';
+import { createRequestLog, describeError, describeOutcome, describeRequest } from './logging';
+import type { LogFields, Logger, RequestAction, RequestLog } from './logging';
 
 /**
  * The route wrapper.
@@ -23,10 +35,21 @@ import { REQUEST_ID_HEADER, isSameOrigin, json, requestIdFrom, toApiError } from
  *    message that might carry a connection string
  *  - audit records buffered during the request are flushed afterwards, and a
  *    failure to flush is logged loudly rather than swallowed
+ *  - **every request produces exactly one completion line**, carrying the
+ *    request id, the route, the outcome, the duration, and — for anything
+ *    authenticated — the caller and their organisation
  *
- * A handler that opted out of the wrapper would silently lose all four. There is
+ * A handler that opted out of the wrapper would silently lose all five. There is
  * no reason to, and a reviewer can check compliance by grepping for `export
  * const GET =`.
+ *
+ * ── One line per request, not one per stage ──
+ * The start of a request is logged at `debug`, so it is off in production. What
+ * production gets is the completion line, because a start line that is never
+ * followed by a finish is indistinguishable from a start line whose finish was
+ * dropped — and paying for both on every request buys a duplicate of the field
+ * set for the few requests that hang. The duration on the finish line answers
+ * the question the start line was there for.
  */
 
 export interface PublicRouteContext<Params> {
@@ -70,24 +93,38 @@ export function publicRoute<Params = Record<string, never>>(
   return async (request, args) => {
     // `begin` itself can fail — a missing Hyperdrive binding, an unparseable
     // root key. Those must produce the same clean envelope as any other
-    // failure, so the request id is established first and everything else,
-    // including context construction, happens inside the boundary.
-    const requestId = requestIdFrom(request);
+    // failure, so the request id and the logger are established first and
+    // everything else, including context construction, happens inside the
+    // boundary. A 503 from a missing binding is precisely the failure that most
+    // needs a log line, and it happens before there is a `ServiceContext` to
+    // hang one off.
+    const requestId = requestIdFrom();
+    const doing = describeRequest(request.method, new URL(request.url).pathname);
+    const log = openLog(request, requestId, doing);
+    const startedAt = Date.now();
 
     let started: RequestScope | undefined;
+    let response: Response;
+
     try {
-      started = await begin(request, requestId);
+      started = await begin(request, requestId, log, doing);
       const params = ((await args?.params) ?? {}) as Params;
 
-      return withRequestId(
+      response = withRequestId(
         await handler({ request, params, services: started.services }),
         requestId,
       );
     } catch (cause) {
-      return failure(cause, requestId);
+      response = failure(cause, requestId, log.logger, doing);
     } finally {
       if (started) settle(started.services, started.recorder);
     }
+
+    finished(log.logger, doing, response.status, startedAt);
+    // Deliberately after the finish line is written, so the batch that leaves
+    // contains it. `flush` is the last thing the request does.
+    shipLogs(started, log);
+    return response;
   };
 }
 
@@ -135,11 +172,16 @@ export function authenticatedRoute<Params = Record<string, never>>(
   options: AuthenticatedRouteOptions = {},
 ): (request: Request, args?: NextRouteArgs<Params>) => Promise<Response> {
   return async (request, args) => {
-    const requestId = requestIdFrom(request);
+    const requestId = requestIdFrom();
+    const doing = describeRequest(request.method, new URL(request.url).pathname);
+    const log = openLog(request, requestId, doing);
+    const startedAt = Date.now();
 
     let started: RequestScope | undefined;
+    let response: Response;
+
     try {
-      started = await begin(request, requestId);
+      started = await begin(request, requestId, log, doing);
       const { services, recorder } = started;
 
       // Checked before authentication so a cross-site request is rejected
@@ -150,6 +192,14 @@ export function authenticatedRoute<Params = Record<string, never>>(
       }
 
       const { principal, source } = await authenticate(request, services);
+
+      // The moment the caller stops being anonymous, every line for the rest of
+      // the request says who they are — including lines already emitted by
+      // loggers a service is holding, because the context is shared by
+      // reference. This is the single most useful field in the whole scheme:
+      // "everything this user did on Tuesday" is one query.
+      services.bindLog({ ...principalFields(principal), credential: source });
+
       assertCsrf(request, source);
 
       if (options.allowLocked !== true && !isUnlocked(principal, new Date())) {
@@ -158,31 +208,36 @@ export function authenticatedRoute<Params = Record<string, never>>(
 
       const params = ((await args?.params) ?? {}) as Params;
 
-      const response = await handler({
-        request,
-        params,
-        services,
-        principal,
-        source,
-        audit: (orgId) =>
-          createAuditBuilder({
-            orgId,
-            actorType: actorType(principal),
-            actorId: actorId(principal),
-            actorLabel: actorLabel(principal),
-            ipAddress: services.meta.ipAddress,
-            userAgent: services.meta.userAgent,
-            requestId: services.meta.requestId,
-          }),
-        record: (...events) => recorder.record(...events),
-      });
-
-      return withRequestId(response, requestId);
+      response = withRequestId(
+        await handler({
+          request,
+          params,
+          services,
+          principal,
+          source,
+          audit: (orgId) =>
+            createAuditBuilder({
+              orgId,
+              actorType: actorType(principal),
+              actorId: actorId(principal),
+              actorLabel: actorLabel(principal),
+              ipAddress: services.meta.ipAddress,
+              userAgent: services.meta.userAgent,
+              requestId: services.meta.requestId,
+            }),
+          record: (...events) => recorder.record(...events),
+        }),
+        requestId,
+      );
     } catch (cause) {
-      return failure(cause, requestId);
+      response = failure(cause, requestId, log.logger, doing);
     } finally {
       if (started) settle(started.services, started.recorder);
     }
+
+    finished(log.logger, doing, response.status, startedAt);
+    shipLogs(started, log);
+    return response;
   };
 }
 
@@ -191,12 +246,120 @@ interface RequestScope {
   recorder: BufferedAuditRecorder;
 }
 
-async function begin(request: Request, requestId: string): Promise<RequestScope> {
-  const services = await createServiceContext(request, await workerContext(), requestId);
+async function begin(
+  request: Request,
+  requestId: string,
+  log: RequestLog,
+  doing: RequestAction,
+): Promise<RequestScope> {
+  const services = await createServiceContext(request, await workerContext(), requestId, log);
+
+  log.logger.at('begin').debug(`Received a request to ${doing.base} ${doing.object}`);
+
   return {
     services,
     recorder: new BufferedAuditRecorder(new DatabaseAuditSink(services.db)),
   };
+}
+
+/**
+ * Builds the request's logger before anything else exists.
+ *
+ * The bindings are not available here — `workerContext()` is an async call into
+ * the OpenNext adapter and belongs inside the try boundary — so the sink and
+ * threshold are resolved from `process.env` alone. In a deployed Worker those
+ * are the same values `withProcessFallbacks` would supply, because
+ * `BETTERSTACK_*` and `XECRET_LOG_LEVEL` are plain strings rather than real
+ * bindings; the cost of building it this early is that a *misconfigured*
+ * deployment still logs its own misconfiguration, which is the case that
+ * matters most.
+ */
+function openLog(request: Request, requestId: string, doing: RequestAction): RequestLog {
+  const url = new URL(request.url);
+
+  return createRequestLog(process.env as unknown as Bindings, {
+    requestId,
+    rayId: rayIdFrom(request),
+    method: request.method,
+    path: url.pathname,
+    ip: clientIp(request),
+    userAgent: userAgent(request),
+    event: doing.event,
+  });
+}
+
+/**
+ * The one line every request produces.
+ *
+ * The message is a sentence describing what the request actually did —
+ * "Revealed the secret DATABASE_URL in acme/api/production" — rather than a
+ * label like "request completed", which restates two fields and makes every
+ * line in the stream look identical. See `describe-request.ts` for why the
+ * stable `event` key is carried separately: prose is for reading, `event` is
+ * for grouping, and a dashboard must never depend on the wording.
+ *
+ * `outcome` is derived rather than left to the reader: a panel grouping on a
+ * string beats one that has to express `status >= 500`. The level follows the
+ * same split, so "alert on error" needs no status arithmetic either — a 404 is
+ * not a page at 3am, and a 500 is.
+ */
+function finished(logger: Logger, doing: RequestAction, status: number, startedAt: number): void {
+  const outcome = status >= 500 ? 'server_error' : status >= 400 ? 'client_error' : 'success';
+  const line = logger.at('request');
+  const fields = { status, outcome, durationMs: Date.now() - startedAt };
+  const message = describeOutcome(doing, status);
+
+  if (status >= 500) {
+    line.error(message, fields);
+    return;
+  }
+  line.info(message, fields);
+}
+
+/**
+ * Hands the batch to the runtime, after the response.
+ *
+ * Through the request's tracked `waitUntil` when there is one, so the database
+ * handle is not closed underneath a flush that shares its lifecycle — and
+ * through a bare promise when `begin` failed before a context existed, where
+ * there is nothing to sequence against. Either way the shipping is never in
+ * front of the user.
+ */
+function shipLogs(scope: RequestScope | undefined, log: RequestLog): void {
+  // A shipping failure is already degraded to the console inside the sink, so
+  // this catch only exists for the impossible case. It must not reject: an
+  // unhandled rejection in `waitUntil` is a Worker-level error report for a
+  // request that succeeded.
+  const flushing = log.flush().catch(() => undefined);
+  if (scope) {
+    scope.services.waitUntil(flushing);
+    return;
+  }
+  void flushing;
+}
+
+/** The caller, flattened into fields a log query can group on. */
+function principalFields(principal: Principal): LogFields {
+  switch (principal.kind) {
+    case 'user':
+      return { actorType: 'user', userId: principal.user.id, sessionId: principal.sessionId };
+    case 'cliToken':
+      return {
+        actorType: 'cli_token',
+        userId: principal.userId,
+        tokenId: principal.tokenId,
+        orgId: principal.orgId,
+      };
+    case 'serviceToken':
+      return {
+        actorType: 'service_token',
+        tokenId: principal.tokenId,
+        orgId: principal.orgId,
+        projectId: principal.projectId,
+        environmentId: principal.environmentId,
+        accessLevel: principal.accessLevel,
+      };
+  }
 }
 
 /**
@@ -221,14 +384,13 @@ function settle(services: ServiceContext, recorder: BufferedAuditRecorder): void
   if (recorder.size > 0) {
     services.waitUntil(
       recorder.flush().catch((cause: unknown) => {
-        console.error('audit flush failed', {
-          requestId: services.meta.requestId,
-          path: services.meta.path,
-          pending: recorder.size,
-          // The name only. An audit-write failure is usually a database error,
-          // and those messages carry connection strings.
-          error: cause instanceof Error ? cause.name : 'unknown',
-        });
+        services.log
+          .at('settle')
+          .error(
+            `Failed to write ${recorder.size} buffered audit record(s) after the response — ` +
+              'those events are now missing from the audit log and cannot be recovered',
+            { pending: recorder.size, error: describeError(cause) },
+          );
       }),
     );
   }
@@ -247,7 +409,14 @@ function withRequestId(response: Response, requestId: string): Response {
  * Three conversions happen here and nowhere else, so there is one place to audit
  * for "can an internal detail reach a client?".
  */
-function failure(cause: unknown, requestId: string): Response {
+function failure(
+  cause: unknown,
+  requestId: string,
+  logger: Logger,
+  doing: RequestAction,
+): Response {
+  const log = logger.at('failure');
+
   // An authorization denial is a value, not an exception — but `assertCan`
   // throws so handlers can stay linear. Its decision already distinguishes
   // notFound from forbidden, which is the distinction that must not be lost.
@@ -256,6 +425,19 @@ function failure(cause: unknown, requestId: string): Response {
       cause.decision.reason === 'notFound'
         ? errors.notFound('authorization denied')
         : errors.forbidden(cause.decision.message);
+
+    // At `warn`, not `error`: a denial is the authorization layer working. It
+    // is logged at all because a burst of them from one principal is the shape
+    // of an account being probed, and that pattern is invisible if each denial
+    // is silent.
+    log.warn(
+      cause.decision.reason === 'notFound'
+        ? `Refused to ${doing.base} ${doing.object}, and answered "not found" rather than ` +
+            '"forbidden" so the caller cannot learn whether the resource exists'
+        : `Refused to ${doing.base} ${doing.object} — the caller's role does not carry the ` +
+            'capability this action requires',
+      { reason: cause.decision.reason, status: error.status },
+    );
 
     return json(error.toBody(requestId), {
       status: error.status,
@@ -268,7 +450,11 @@ function failure(cause: unknown, requestId: string): Response {
   // broken", which are very different pages to be woken up for.
   if (cause instanceof MissingBindingError) {
     const error = errors.unavailable(`missing binding ${cause.binding}`);
-    console.error('missing binding', { requestId, binding: cause.binding });
+    log.error(
+      `This deployment is missing the ${cause.binding} binding, so it cannot serve requests — ` +
+        'every call will answer 503 until the binding is configured and the Worker redeployed',
+      { binding: cause.binding },
+    );
 
     return json(error.toBody(requestId), {
       status: error.status,
@@ -279,10 +465,27 @@ function failure(cause: unknown, requestId: string): Response {
   const error = toApiError(cause);
 
   if (error.status >= 500) {
-    console.error('unhandled route failure', {
-      requestId,
+    // The one place a full stack is recorded. `logDetail` is the curated
+    // summary the error type chose to expose; `error` is what actually landed,
+    // scrubbed of connection strings and bearer tokens on the way in. A 500
+    // without a stack is a 500 nobody can fix.
+    log.error(
+      `An unhandled error escaped the handler while trying to ${doing.base} ${doing.object} — ` +
+        'the caller received a 500 with no detail, and the cause is in the error field below',
+      {
+        code: error.code,
+        status: error.status,
+        detail: error.logDetail,
+        error: describeError(cause),
+      },
+    );
+  } else {
+    // Client errors at `debug`: a 400 is normal traffic, and one line per
+    // rejected request in production is noise that hides the 500s. The finish
+    // line still records the status, so the rate is queryable without this.
+    log.debug(`Rejected a request to ${doing.base} ${doing.object} as ${error.code}`, {
       code: error.code,
-      detail: error.logDetail,
+      status: error.status,
     });
   }
 

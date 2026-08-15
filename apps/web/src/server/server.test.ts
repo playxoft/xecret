@@ -17,6 +17,7 @@ import {
   parseCookies,
   parseWith,
   readJsonBody,
+  rayIdFrom,
   requestIdFrom,
   toApiError,
   userAgent,
@@ -310,15 +311,20 @@ describe('bearer token extraction', () => {
 });
 
 describe('request metadata', () => {
-  it('prefers the Cloudflare ray id so support can cross into platform logs', () => {
-    const request = new Request('https://xecret.playxoft.com/', { headers: { 'cf-ray': 'ray-1' } });
-    expect(requestIdFrom(request)).toBe('ray-1');
+  // The id is ours, never the client's: `cf-ray` is a header, and a request
+  // that reaches the Worker without passing the edge can set it to an id
+  // already in use.
+  it('mints a UUIDv7 rather than trusting a supplied ray id', () => {
+    const uuidv7Pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+    expect(requestIdFrom()).toMatch(uuidv7Pattern);
+    expect(requestIdFrom()).not.toBe(requestIdFrom());
   });
 
-  it('generates an id when the edge did not supply one', () => {
-    expect(requestIdFrom(new Request('https://xecret.playxoft.com/'))).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-    );
+  it('keeps the ray id as its own correlation field', () => {
+    const request = new Request('https://xecret.playxoft.com/', { headers: { 'cf-ray': 'ray-1' } });
+    expect(rayIdFrom(request)).toBe('ray-1');
+    expect(rayIdFrom(new Request('https://xecret.playxoft.com/'))).toBeNull();
   });
 
   // X-Forwarded-For is client-appendable; CF-Connecting-IP is set by the edge.

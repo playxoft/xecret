@@ -9,7 +9,8 @@ import {
 import type { KeyProvider } from '@xecret/core/crypto';
 import { connectionString, requireBinding, withProcessFallbacks } from './bindings';
 import type { Bindings, WorkerContext } from './bindings';
-import { clientIp, userAgent } from './http';
+import { clientIp, rayIdFrom, userAgent } from './http';
+import type { LogFields, Logger, RequestLog } from './logging';
 
 /**
  * Per-request services.
@@ -81,10 +82,14 @@ export async function workerContext(): Promise<WorkerContext> {
 /** Request-scoped facts that every audit record and log line carries. */
 export interface RequestMeta {
   requestId: string;
+  /** Cloudflare's ray id, for correlating with the platform's own logs. */
+  rayId: string | null;
   ipAddress: string | null;
   userAgent: string | null;
   method: string;
   path: string;
+  /** `Date.now()` at the start of the request, for the duration on the finish line. */
+  startedAt: number;
 }
 
 export interface ServiceContext {
@@ -92,6 +97,24 @@ export interface ServiceContext {
   db: Database;
   envelope: EnvelopeService;
   meta: RequestMeta;
+  /**
+   * This request's logger.
+   *
+   * Already carrying the request id, the route, the caller's address and — once
+   * authentication and path resolution have run — the user and the
+   * organisation. Every function that takes a `ServiceContext` can therefore
+   * log a fully-attributed line with `services.log.at('myFunction').warn(…)`
+   * and nothing threaded through its signature.
+   */
+  log: Logger;
+  /**
+   * Adds facts to every subsequent line of this request.
+   *
+   * Called by the route wrapper once the principal is known, and by the tenancy
+   * resolvers once the organisation is. Not for general use: a service that
+   * rebinds `userId` is rewriting the attribution of lines it does not own.
+   */
+  bindLog: (fields: LogFields) => void;
   /** Defers work until after the response is sent — used for audit flushes. */
   waitUntil: (promise: Promise<unknown>) => void;
   /**
@@ -111,16 +134,18 @@ export interface ServiceContext {
 /**
  * Builds the per-request services.
  *
- * `requestId` is supplied by the caller rather than derived here, because the
- * route wrapper needs it before this function runs — it must be able to answer
- * a failure that happens *while building this context*. Deriving it in both
- * places would let the id in the response header differ from the id in the audit
- * records for the same request, which defeats the only purpose the id has.
+ * `requestId` and the logger are supplied by the caller rather than derived
+ * here, because the route wrapper needs both before this function runs — it must
+ * be able to answer, and log, a failure that happens *while building this
+ * context*. Deriving them in both places would let the id in the response header
+ * differ from the id in the audit records for the same request, which defeats
+ * the only purpose the id has.
  */
 export async function createServiceContext(
   request: Request,
   worker: WorkerContext,
   requestId: string,
+  log: RequestLog,
 ): Promise<ServiceContext> {
   const url = new URL(request.url);
 
@@ -138,11 +163,15 @@ export async function createServiceContext(
     envelope: new EnvelopeService(await keyProvider(worker.env)),
     meta: {
       requestId,
+      rayId: rayIdFrom(request),
       ipAddress: clientIp(request),
       userAgent: userAgent(request),
       method: request.method,
       path: url.pathname,
+      startedAt: Date.now(),
     },
+    log: log.logger,
+    bindLog: log.bind,
     waitUntil: (promise) => {
       pending.push(promise.catch(() => undefined));
       worker.ctx.waitUntil(promise);

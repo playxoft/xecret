@@ -13,6 +13,7 @@ import {
 import { DatabaseAuditSink } from '@/server/audit-sink';
 import { errors } from '@/server/errors';
 import { json, noContent, parseJsonBody } from '@/server/http';
+import { describeError } from '@/server/logging';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute, publicRoute } from '@/server/route';
 import type { ServiceContext } from '@/server/context';
@@ -155,10 +156,12 @@ async function writeEvents(services: ServiceContext, events: AuditRecord[]): Pro
   try {
     await new DatabaseAuditSink(services.db).write(events);
   } catch (cause) {
-    console.error('audit write failed', {
-      requestId: services.meta.requestId,
-      action: events[0]?.action,
-      error: cause instanceof Error ? cause.name : 'unknown',
-    });
+    services.log
+      .at('writeEvents')
+      .error(
+        `Failed to write the audit record for ${events[0]?.action ?? 'an event'} — the CLI token ` +
+          'exchange itself succeeded, but this event is now missing from the audit log',
+        { action: events[0]?.action, error: describeError(cause) },
+      );
   }
 }

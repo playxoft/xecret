@@ -31,6 +31,7 @@ import { DatabaseAuditSink } from '@/server/audit-sink';
 import { firebaseIdentityProvider } from '@/server/firebase';
 import { errors } from '@/server/errors';
 import { json, noContent, parseCookies, parseJsonBody } from '@/server/http';
+import { describeError } from '@/server/logging';
 import { attemptKey, enforce } from '@/server/rate-limit';
 import { publicRoute } from '@/server/route';
 import type { ServiceContext } from '@/server/context';
@@ -212,10 +213,14 @@ async function verifyIdentity(
       // The category is logged; the client is told only that it failed.
       // Distinguishing "expired" from "wrong signature" from "wrong audience"
       // tells an attacker which part of a forged token to fix next.
-      console.warn('identity verification failed', {
-        requestId: services.meta.requestId,
-        reason: cause.reason,
-      });
+      services.log
+        .at('verifyIdentity')
+        .warn(
+          `Rejected the Firebase ID token presented at sign-in because it was ${cause.reason}. ` +
+            'The caller was told only that authentication failed — naming the reason would tell ' +
+            'an attacker which part of a forged token to fix next.',
+          { reason: cause.reason },
+        );
       throw errors.unauthenticated(`identity ${cause.reason}`);
     }
     throw cause;
@@ -264,11 +269,13 @@ async function writeEvents(services: ServiceContext, events: AuditRecord[]): Pro
   try {
     await new DatabaseAuditSink(services.db).write(events);
   } catch (cause) {
-    console.error('audit write failed', {
-      requestId: services.meta.requestId,
-      action: events[0]?.action,
-      error: cause instanceof Error ? cause.name : 'unknown',
-    });
+    services.log
+      .at('writeEvents')
+      .error(
+        `Failed to write the audit record for ${events[0]?.action ?? 'an event'} — the sign-in ` +
+          'itself succeeded, but this event is now missing from the audit log',
+        { action: events[0]?.action, error: describeError(cause) },
+      );
   }
 }
 
