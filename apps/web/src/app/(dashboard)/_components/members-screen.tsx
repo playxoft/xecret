@@ -1,7 +1,8 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 
+import { canAssignRole } from '@xecret/core/authz';
 import { cn } from '@/lib/cn';
 import { initials } from '@/lib/format';
 import { formatAbsoluteTime, formatRelativeTime, toIsoString } from '@/lib/format';
@@ -10,6 +11,7 @@ import { PageHeader } from '@/components/layout';
 import {
   Badge,
   Button,
+  ChevronRightIcon,
   ChevronUpDownIcon,
   EmptyState,
   Input,
@@ -32,6 +34,7 @@ import {
 } from '@/components/ui';
 import { InvitationsSection } from '@/components/members/invitations-section';
 import { InviteDialog } from '@/components/members/invite-dialog';
+import { MemberAccessPanel } from '@/components/members/member-access-panel';
 import { MemberRowActions } from '@/components/members/member-actions';
 import { ROLE_LABELS, ROLE_TONE, ROLES_DESCENDING } from '@/components/members/types';
 import type { InvitationListResponse, MemberListResponse } from '@/components/members/types';
@@ -89,6 +92,19 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [inviting, setInviting] = useState(false);
+  // Which members' access accordions are open. A set, not a single id: two
+  // members' access side by side is exactly how "why can she and not he" gets
+  // answered, so opening one never folds another.
+  const [expandedMembers, setExpandedMembers] = useState<ReadonlySet<string>>(new Set());
+
+  function toggleMember(memberId: string) {
+    setExpandedMembers((current) => {
+      const next = new Set(current);
+      if (next.has(memberId)) next.delete(memberId);
+      else next.add(memberId);
+      return next;
+    });
+  }
 
   const visible = useMemo(() => {
     const rows = members.data?.data ?? [];
@@ -282,65 +298,126 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {visible.map((member) => (
-                    <TableRow key={member.id}>
-                      <TableCell>
-                        <div className="flex min-w-0 items-center gap-3">
-                          <span
-                            aria-hidden="true"
-                            className="bg-surface-active text-fg-muted grid size-7 shrink-0 place-items-center rounded-full text-[0.6875rem] font-semibold"
-                          >
-                            {initials(member.displayName ?? member.email)}
-                          </span>
-                          <div className="min-w-0">
-                            <p className="text-fg truncate text-[0.8125rem] font-medium">
-                              {member.displayName ?? member.email}
-                              {member.isYou ? (
-                                <span className="text-fg-subtle font-normal"> · you</span>
-                              ) : null}
-                            </p>
-                            {member.displayName !== null ? (
-                              <p className="text-fg-subtle truncate text-xs">{member.email}</p>
-                            ) : null}
-                          </div>
-                        </div>
-                      </TableCell>
+                  {visible.map((member) => {
+                    // Only rows whose access the server would show this viewer
+                    // are expandable: admins see anyone, everyone sees their
+                    // own. An unexpandable row is a plain row, not a broken
+                    // accordion.
+                    const expandable = canManage || member.isYou;
+                    const isExpanded = expandable && expandedMembers.has(member.id);
 
-                      <TableCell>
-                        <Badge tone={ROLE_TONE[member.role] ?? 'neutral'}>
-                          {ROLE_LABELS[member.role]}
-                        </Badge>
-                      </TableCell>
-
-                      <TableCell>
-                        {member.status === 'active' ? (
-                          <span className="text-fg-muted text-[0.8125rem]">Active</span>
-                        ) : (
-                          <Badge tone="warning">Suspended</Badge>
-                        )}
-                      </TableCell>
-
-                      <TableCell className="text-fg-muted text-[0.8125rem] whitespace-nowrap">
-                        <time
-                          dateTime={toIsoString(member.joinedAt)}
-                          title={formatAbsoluteTime(member.joinedAt)}
+                    return (
+                      <Fragment key={member.id}>
+                        <TableRow
+                          className={cn(expandable && 'cursor-pointer')}
+                          {...(expandable ? { onClick: () => toggleMember(member.id) } : {})}
                         >
-                          {formatRelativeTime(member.joinedAt)}
-                        </time>
-                      </TableCell>
+                          <TableCell>
+                            {/* A real button around the identity, so the
+                                accordion opens from the keyboard too — the row
+                                onClick is the pointer convenience, this is the
+                                accessible control. */}
+                            <button
+                              type="button"
+                              disabled={!expandable}
+                              aria-expanded={expandable ? isExpanded : undefined}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                toggleMember(member.id);
+                              }}
+                              className="flex min-w-0 items-center gap-2 text-left"
+                            >
+                              {expandable ? (
+                                <ChevronRightIcon
+                                  aria-hidden="true"
+                                  className={cn(
+                                    'text-fg-subtle size-4 shrink-0 transition-transform',
+                                    isExpanded && 'rotate-90',
+                                  )}
+                                />
+                              ) : (
+                                <span aria-hidden="true" className="size-4 shrink-0" />
+                              )}
+                              <span
+                                aria-hidden="true"
+                                className="bg-surface-active text-fg-muted grid size-7 shrink-0 place-items-center rounded-full text-[0.6875rem] font-semibold"
+                              >
+                                {initials(member.displayName ?? member.email)}
+                              </span>
+                              <span className="min-w-0">
+                                <span className="text-fg block truncate text-[0.8125rem] font-medium">
+                                  {member.displayName ?? member.email}
+                                  {member.isYou ? (
+                                    <span className="text-fg-subtle font-normal"> · you</span>
+                                  ) : null}
+                                </span>
+                                {member.displayName !== null ? (
+                                  <span className="text-fg-subtle block truncate text-xs">
+                                    {member.email}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </button>
+                          </TableCell>
 
-                      <TableCell>
-                        {viewerRole !== null && canManage ? (
-                          <MemberRowActions
-                            orgSlug={orgSlug}
-                            member={member}
-                            viewerRole={viewerRole}
-                            onChanged={reloadAll}
-                          />
+                          <TableCell>
+                            <Badge tone={ROLE_TONE[member.role] ?? 'neutral'}>
+                              {ROLE_LABELS[member.role]}
+                            </Badge>
+                          </TableCell>
+
+                          <TableCell>
+                            {member.status === 'active' ? (
+                              <span className="text-fg-muted text-[0.8125rem]">Active</span>
+                            ) : (
+                              <Badge tone="warning">Suspended</Badge>
+                            )}
+                          </TableCell>
+
+                          <TableCell className="text-fg-muted text-[0.8125rem] whitespace-nowrap">
+                            <time
+                              dateTime={toIsoString(member.joinedAt)}
+                              title={formatAbsoluteTime(member.joinedAt)}
+                            >
+                              {formatRelativeTime(member.joinedAt)}
+                            </time>
+                          </TableCell>
+
+                          {/* Clicks on the row's controls are theirs alone —
+                              changing a role must not also fold the accordion. */}
+                          <TableCell onClick={(event) => event.stopPropagation()}>
+                            {viewerRole !== null && canManage ? (
+                              <MemberRowActions
+                                orgSlug={orgSlug}
+                                member={member}
+                                viewerRole={viewerRole}
+                                onChanged={reloadAll}
+                              />
+                            ) : null}
+                          </TableCell>
+                        </TableRow>
+
+                        {isExpanded ? (
+                          <TableRow className="hover:bg-transparent">
+                            <TableCell colSpan={5} className="bg-canvas-inset/40 p-0">
+                              <MemberAccessPanel
+                                orgSlug={orgSlug}
+                                member={member}
+                                mayEdit={
+                                  viewerRole !== null &&
+                                  canManage &&
+                                  !member.isYou &&
+                                  canAssignRole(viewerRole, member.role)
+                                }
+                                onCollapse={() => toggleMember(member.id)}
+                                onChanged={members.reload}
+                              />
+                            </TableCell>
+                          </TableRow>
                         ) : null}
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                      </Fragment>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </TableContainer>

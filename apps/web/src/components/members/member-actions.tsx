@@ -17,7 +17,6 @@ import {
   SelectValue,
   useToast,
 } from '@/components/ui';
-import { MemberAccessDialog } from './member-access-dialog';
 import { ROLE_LABELS, ROLES_DESCENDING } from './types';
 import type { Member } from './types';
 
@@ -46,7 +45,6 @@ export function MemberRowActions({
   const [pending, setPending] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [suspending, setSuspending] = useState(false);
-  const [viewingAccess, setViewingAccess] = useState(false);
 
   const mayManage = !member.isYou && canAssignRole(viewerRole, member.role);
 
@@ -77,22 +75,10 @@ export function MemberRowActions({
     }
   }
 
-  if (!mayManage) {
-    return (
-      <div className="flex items-center justify-end gap-1">
-        <Button size="sm" variant="ghost" onClick={() => setViewingAccess(true)}>
-          View access
-        </Button>
-        <MemberAccessDialog
-          orgSlug={orgSlug}
-          member={member}
-          mayEdit={false}
-          open={viewingAccess}
-          onOpenChange={setViewingAccess}
-        />
-      </div>
-    );
-  }
+  // Viewing access is the row itself now — expanding a member opens their
+  // access accordion — so a row the viewer cannot otherwise manage has no
+  // buttons at all.
+  if (!mayManage) return null;
 
   return (
     <div className="flex items-center justify-end gap-1.5">
@@ -119,24 +105,8 @@ export function MemberRowActions({
       {/* Inline text buttons rather than icons or a menu: the words are their
           own labels, nothing important hides behind a hover, and the one that
           matters in a hurry — suspend — should not hide behind a click. Each
-          still carries a full aria-label naming its row. */}
-      <Button
-        size="sm"
-        variant="ghost"
-        aria-label={`View and edit access for ${member.displayName ?? member.email}`}
-        onClick={() => setViewingAccess(true)}
-      >
-        Edit access
-      </Button>
-
-      <MemberAccessDialog
-        orgSlug={orgSlug}
-        member={member}
-        mayEdit
-        open={viewingAccess}
-        onOpenChange={setViewingAccess}
-      />
-
+          still carries a full aria-label naming its row. Access is not among
+          them: expanding the row is the access editor. */}
       <Button
         size="sm"
         variant="ghost"
