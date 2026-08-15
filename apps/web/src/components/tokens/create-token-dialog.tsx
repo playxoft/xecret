@@ -9,6 +9,7 @@ import {
   Alert,
   Badge,
   Button,
+  Checkbox,
   CopyButton,
   Dialog,
   DialogBody,
@@ -36,14 +37,18 @@ export interface CreateTokenDialogProps {
 }
 
 /**
- * Mints a service token, then shows it exactly once.
+ * Mints service tokens, then shows them exactly once.
  *
- * The scope pickers are the security control wearing a form: a token is pinned
- * to one project and one environment at mint time, and nothing later can
- * widen it. Read-only is the default and the widening to `write` is a choice
- * made here, visibly, not a field somebody forgets.
+ * The scope pickers are the security control wearing a form: every token is
+ * pinned to one project and **one** environment at mint time, and nothing
+ * later can widen it. Selecting several environments therefore mints several
+ * tokens — one per environment, each individually revocable — rather than one
+ * broad credential, which is the difference between rotating a leaked staging
+ * token and rotating away production's too. Read-only is the default and the
+ * widening to `write` is a choice made here, visibly, not a field somebody
+ * forgets.
  *
- * The reveal step is deliberately terminal — closing it discards the value
+ * The reveal step is deliberately terminal — closing it discards the values
  * forever, and the dialog says so before it happens, not after.
  */
 export function CreateTokenDialog({
@@ -68,6 +73,12 @@ export function CreateTokenDialog({
   );
 }
 
+interface MintOutcome {
+  minted: CreateServiceTokenResponse[];
+  /** Environment slugs whose mint failed, in selection order. */
+  failed: string[];
+}
+
 function CreateTokenFlow({
   orgSlug,
   onOpenChange,
@@ -83,13 +94,13 @@ function CreateTokenFlow({
 
   const [name, setName] = useState('');
   const [projectSlug, setProjectSlug] = useState('');
-  const [environmentSlug, setEnvironmentSlug] = useState('');
+  const [environmentSlugs, setEnvironmentSlugs] = useState<ReadonlySet<string>>(new Set());
   const [accessLevel, setAccessLevel] = useState<'read' | 'write'>('read');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
-  const [issued, setIssued] = useState<CreateServiceTokenResponse | null>(null);
+  const [outcome, setOutcome] = useState<MintOutcome | null>(null);
 
-  // The environment menu follows the chosen project.
+  // The environment list follows the chosen project.
   const project = useApiResource<ProjectResponse>(
     projectSlug === '' ? null : apiPath.project(orgSlug, projectSlug),
   );
@@ -99,59 +110,103 @@ function CreateTokenFlow({
     onSubmittingChange(busy);
   }
 
+  function toggleEnvironment(slug: string, checked: boolean) {
+    setEnvironmentSlugs((current) => {
+      const next = new Set(current);
+      if (checked) next.add(slug);
+      else next.delete(slug);
+      return next;
+    });
+  }
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (submitting) return;
 
-    if (name.trim() === '' || projectSlug === '' || environmentSlug === '') {
-      setFormError('Name the token and choose a project and environment.');
+    if (name.trim() === '' || projectSlug === '' || environmentSlugs.size === 0) {
+      setFormError('Name the token and choose a project and at least one environment.');
       return;
     }
 
     setBusy(true);
     setFormError(null);
 
-    try {
-      const response = await api.post<CreateServiceTokenResponse>(apiPath.serviceTokens(orgSlug), {
-        name: name.trim(),
-        projectSlug,
-        environmentSlug,
-        accessLevel,
-      });
-      onCreated();
-      setIssued(response);
-    } catch (cause) {
-      setFormError(errorMessage(cause));
-    } finally {
-      setBusy(false);
+    // One token per environment, sequentially — each mint is a separate
+    // audited act against the mutation rate limit. A mid-batch failure still
+    // reveals what was minted: those tokens exist and will never be shown
+    // again, so hiding them behind the error would destroy them.
+    const minted: CreateServiceTokenResponse[] = [];
+    const failed: string[] = [];
+    let firstFailure: string | null = null;
+    for (const environmentSlug of environmentSlugs) {
+      try {
+        minted.push(
+          await api.post<CreateServiceTokenResponse>(apiPath.serviceTokens(orgSlug), {
+            name: name.trim(),
+            projectSlug,
+            environmentSlug,
+            accessLevel,
+          }),
+        );
+      } catch (cause) {
+        failed.push(environmentSlug);
+        // The first failure's story; later ones are usually the same.
+        firstFailure ??= errorMessage(cause);
+      }
     }
+
+    setBusy(false);
+
+    if (minted.length === 0) {
+      setFormError(firstFailure ?? 'No tokens could be created.');
+      return;
+    }
+
+    onCreated();
+    setOutcome({ minted, failed });
   }
 
-  if (issued !== null) {
+  if (outcome !== null) {
     return (
       <>
         <DialogHeader>
-          <DialogTitle>Copy the token now</DialogTitle>
+          <DialogTitle>
+            {outcome.minted.length === 1 ? 'Copy the token now' : 'Copy the tokens now'}
+          </DialogTitle>
           <DialogDescription>
-            This is the only time it will be shown. Only a hash is stored — closing this dialog
-            discards the value forever; losing it means minting a new token.
+            This is the only time they will be shown. Only a hash is stored — closing this dialog
+            discards the values forever; losing one means minting a new token.
           </DialogDescription>
         </DialogHeader>
 
         <DialogBody className="flex flex-col gap-3">
-          <div className="border-line bg-canvas-inset flex items-center gap-2 rounded-lg border px-3 py-2">
-            <code className="text-fg min-w-0 flex-1 truncate font-mono text-[0.8125rem]">
-              {issued.token}
-            </code>
-            <CopyButton value={issued.token} label="Copy service token" />
-          </div>
+          {outcome.failed.length > 0 ? (
+            <Alert tone="danger" title="Some environments failed">
+              No token was created for: {outcome.failed.join(', ')}. The ones below were.
+            </Alert>
+          ) : null}
+
+          {outcome.minted.map((issued) => (
+            <div key={issued.serviceToken.id} className="flex flex-col gap-1">
+              <p className="text-fg-muted text-xs font-medium">
+                {issued.serviceToken.projectSlug}/{issued.serviceToken.environmentSlug}
+              </p>
+              <div className="border-line bg-canvas-inset flex items-center gap-2 rounded-lg border px-3 py-2">
+                <code className="text-fg min-w-0 flex-1 truncate font-mono text-[0.8125rem]">
+                  {issued.token}
+                </code>
+                <CopyButton
+                  value={issued.token}
+                  label={`Copy the token for ${issued.serviceToken.environmentSlug}`}
+                />
+              </div>
+            </div>
+          ))}
+
           <p className="text-fg-subtle text-xs">
-            Put it in your CI provider&apos;s secret store as{' '}
-            <code className="font-mono">XECRET_TOKEN</code>. It reaches{' '}
-            <span className="font-medium">
-              {issued.serviceToken.projectSlug}/{issued.serviceToken.environmentSlug}
-            </span>{' '}
-            and nothing else.
+            Put each one in its pipeline&apos;s secret store as{' '}
+            <code className="font-mono">XECRET_TOKEN</code>. Each token reaches its one environment
+            and nothing else, and each is revoked on its own.
           </p>
         </DialogBody>
 
@@ -169,8 +224,9 @@ function CreateTokenFlow({
       <DialogHeader>
         <DialogTitle>New service token</DialogTitle>
         <DialogDescription>
-          A CI credential, pinned to exactly one project and environment. It acts as itself — never
-          as a person — and every read it makes is audited.
+          A CI credential, pinned to exactly one project and environment. Selecting several
+          environments mints one token per environment. It acts as itself — never as a person — and
+          every read it makes is audited.
         </DialogDescription>
       </DialogHeader>
 
@@ -191,7 +247,7 @@ function CreateTokenFlow({
             value={projectSlug}
             onValueChange={(next) => {
               setProjectSlug(next);
-              setEnvironmentSlug('');
+              setEnvironmentSlugs(new Set());
             }}
           >
             <SelectTrigger>
@@ -207,30 +263,34 @@ function CreateTokenFlow({
           </Select>
         </Field>
 
-        <Field label="Environment">
-          <Select
-            value={environmentSlug}
-            onValueChange={setEnvironmentSlug}
-            disabled={projectSlug === ''}
-          >
-            <SelectTrigger>
-              <SelectValue
-                placeholder={
-                  projectSlug === '' ? 'Choose a project first' : 'Choose an environment'
-                }
-              />
-            </SelectTrigger>
-            <SelectContent>
+        <Field
+          label="Environments"
+          hint="One token per ticked environment, each pinned to that environment alone."
+        >
+          {projectSlug === '' ? (
+            <p className="text-fg-subtle text-[0.8125rem]">Choose a project first.</p>
+          ) : (
+            <div className="border-line flex flex-col gap-0 rounded-lg border">
               {(project.data?.environments ?? []).map((environment) => (
-                <SelectItem key={environment.slug} value={environment.slug}>
-                  <span className="flex items-center gap-2">
+                <label
+                  key={environment.slug}
+                  className="border-line-subtle flex cursor-pointer items-center gap-2.5 px-3 py-2 [&:not(:first-child)]:border-t"
+                >
+                  <Checkbox
+                    checked={environmentSlugs.has(environment.slug)}
+                    onCheckedChange={(checked) =>
+                      toggleEnvironment(environment.slug, checked === true)
+                    }
+                    aria-label={`Mint a token for ${environment.name}`}
+                  />
+                  <span className="flex items-center gap-2 text-[0.8125rem]">
                     {environment.name}
                     {environment.isProduction ? <Badge tone="production">Production</Badge> : null}
                   </span>
-                </SelectItem>
+                </label>
               ))}
-            </SelectContent>
-          </Select>
+            </div>
+          )}
         </Field>
 
         <Field
@@ -263,7 +323,7 @@ function CreateTokenFlow({
           Cancel
         </Button>
         <Button type="submit" variant="primary" loading={submitting}>
-          Create token
+          {environmentSlugs.size > 1 ? `Create ${environmentSlugs.size} tokens` : 'Create token'}
         </Button>
       </DialogFooter>
     </form>
