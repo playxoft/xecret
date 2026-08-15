@@ -173,7 +173,7 @@ function PasswordCard() {
 }
 
 function PinCard() {
-  const { user, pin } = useSession();
+  const { user, pin, refresh } = useSession();
   const { toast } = useToast();
 
   const [currentPin, setCurrentPin] = useState('');
@@ -209,6 +209,13 @@ function PinCard() {
         title: needsCurrent ? 'PIN changed' : 'PIN set',
         description: 'It takes effect the next time any of your sessions locks.',
       });
+      // Everything this card renders reads from the shell's copy of
+      // `/api/auth/me`, which nothing re-reads on its own. Without this, the
+      // account that just set its first PIN keeps being told it has none: no
+      // "Current PIN" field, no reset section — the one below being exactly
+      // what that person needs next — until a full navigation. `LockCard` does
+      // the same after changing the auto-lock interval.
+      refresh();
     } catch (cause) {
       setProblem(errorMessage(cause));
     } finally {
@@ -312,17 +319,23 @@ function PinResetSection({ email }: { email: string }) {
     }
   }
 
-  if (state === 'sent') {
-    return (
-      <Alert tone="success" title="Check your email">
-        We sent a link to {email}. It works once and expires in 15 minutes — opening it in this
-        browser lets you choose a new PIN straight away.
-      </Alert>
-    );
-  }
-
   return (
     <div className="border-line-subtle flex flex-col gap-3 border-t pt-4">
+      {/* The success alert joins this section rather than replacing it, and the
+          button stays. Delivery is handed to `waitUntil` after the response, so
+          a bounce or a provider outage is logged on the server and never
+          reaches this screen — the person it happens to sees "check your email"
+          and then nothing arrives. Replacing the section left them no way to
+          ask again short of navigating away and back. It also matches the rest
+          of this page, where the control stays put and the outcome is announced
+          beside it. */}
+      {state === 'sent' ? (
+        <Alert tone="success" title="Check your email">
+          We sent a link to {email}. It works once and expires in 15 minutes — opening it in this
+          browser lets you choose a new PIN straight away.
+        </Alert>
+      ) : null}
+
       {problem !== null ? (
         <Alert tone="danger" title="Could not send the reset link">
           {problem}
@@ -331,19 +344,22 @@ function PinResetSection({ email }: { email: string }) {
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <Button
-          // `type="button"`: this sits inside the change-PIN form, and a bare
-          // button in a form submits it. Without this, "Forgot your PIN?" would
-          // try to change the PIN using whatever half-filled fields are above.
+          // Explicit, though `Button` already defaults to `type="button"` for
+          // this very reason: the platform default inside a form is `submit`,
+          // and this one sits inside the change-PIN form above. Saying it here
+          // is documentation at the site where it matters, not a fix.
           type="button"
           variant="secondary"
           loading={state === 'sending'}
           onClick={() => void send()}
         >
-          Forgot your PIN? Email me a reset link
+          {state === 'sent' ? 'Send another link' : 'Forgot your PIN? Email me a reset link'}
         </Button>
-        <span className="text-fg-subtle text-sm">
-          Sent to {email} — the only address it can go to.
-        </span>
+        {state === 'sent' ? null : (
+          <span className="text-fg-subtle text-sm">
+            Sent to {email} — the only address it can go to.
+          </span>
+        )}
       </div>
 
       <p className="text-fg-subtle text-xs leading-5">
