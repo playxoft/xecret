@@ -48,7 +48,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9",
-    "eslint": "^9",
+    "eslint": "^10",
     "prettier": "^3.4.2",
     "prettier-plugin-tailwindcss": "^0.8.1",
     "tsx": "^4.23.12",
