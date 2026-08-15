@@ -46,13 +46,19 @@ export const POST = authenticatedRoute(
       // optional in a self-hosted install (see `mail.ts`), and a user staring at
       // an empty inbox is worse served by a reassuring lie than by being told to
       // ask their operator.
-      return json(
-        {
-          sent: false,
-          reason: 'Email is not configured for this deployment.',
-        },
-        { status: 503 },
-      );
+      //
+      // 200 with `sent: false`, not 503. This body is not the error envelope,
+      // and `lib/api.ts` discards a non-2xx body that is not one — deliberately,
+      // since an unexpected body may be a proxy page or a stack trace. So the
+      // reason below reached nobody: the client showed "Something went wrong"
+      // and the one thing this branch exists to say was lost. The request was
+      // handled correctly; `sent` is the outcome, and callers read it.
+      return json({
+        sent: false,
+        reason:
+          'Email is not configured for this deployment, so a reset link cannot be sent. Ask ' +
+          'whoever operates this xecret instance to set one up, or to reset your PIN directly.',
+      });
     }
 
     const { token } = await generateToken('pinReset');
