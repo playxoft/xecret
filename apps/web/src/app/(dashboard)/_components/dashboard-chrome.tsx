@@ -42,10 +42,18 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   // conditionally. It issues no request until `orgSlug` is non-null, so the
   // loading and locked paths cost nothing extra. The role is threaded in from
   // the session resource because this runs above the SessionProvider.
+  //
+  // The account area — `/app/settings/*` — has no organisation in its path, and
+  // neither does the organisation picker. Both fall back to the viewer's first
+  // membership so the sidebar keeps describing the organisation they were in
+  // rather than emptying itself out; see the note in `dashboard-nav.tsx`. The
+  // role is resolved against whichever organisation that turns out to be, so
+  // the admin-only items do not vanish on the way through account settings.
+  const navOrgSlug = location.orgSlug ?? session.data?.organizations[0]?.slug ?? null;
   const viewerRole =
-    session.data?.organizations.find((organization) => organization.slug === location.orgSlug)
-      ?.role ?? null;
-  const nav = useDashboardNav({ ...location, viewerRole });
+    session.data?.organizations.find((organization) => organization.slug === navOrgSlug)?.role ??
+    null;
+  const nav = useDashboardNav({ ...location, orgSlug: navOrgSlug, viewerRole });
 
   // Locking re-reads the session, which re-renders this component and lands on
   // the lock screen. One code path for "we are locked", whether that came from

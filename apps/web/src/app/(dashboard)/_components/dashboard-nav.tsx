@@ -28,6 +28,19 @@ import { isOrgAdmin } from './session';
  *    nav before the request resolves, so navigating never leaves the sidebar
  *    momentarily empty; the list fills in around what is already there.
  *
+ * ── The account area is not in here ──
+ * `/app/settings/*` has no organisation in its path, and the nav used to react
+ * to that by replacing itself with a single "Account" item. That is the sidebar
+ * rearranging itself underneath somebody who only opened their own settings:
+ * the organisation they were working in disappears, and getting back to it
+ * costs a click through a menu that is no longer on screen.
+ *
+ * So the account area is reached from the user menu — where "Account settings"
+ * already lives, and where account-shaped things belong — and the sidebar keeps
+ * showing the organisation throughout. `orgSlug` falls back to the viewer's
+ * current organisation for exactly this case; nothing highlights, because
+ * "Projects" is an exact match and the account routes are not beneath it.
+ *
  * ── Where environments went ──
  * The tree stops at projects. Environments were a third level that only ever
  * populated for the project you already had open, so the sidebar spent a request
@@ -39,6 +52,14 @@ import { isOrgAdmin } from './session';
  */
 
 export interface DashboardNavParams {
+  /**
+   * The organisation the sidebar describes.
+   *
+   * Taken from the URL where there is one, and from the viewer's current
+   * membership where there is not — the account area and the organisation
+   * picker. See the note above about why the sidebar does not empty itself out
+   * on those routes.
+   */
   orgSlug: string | null;
   projectSlug: string | null;
   /**
@@ -69,18 +90,11 @@ export function useDashboardNav({
   const showAdminPages = viewerRole !== null && isOrgAdmin(viewerRole);
 
   return useMemo(() => {
-    if (orgSlug === null) {
-      return [
-        {
-          label: 'You',
-          items: [
-            { href: appPath.account(), label: 'General' },
-            { href: appPath.settingsSecurity(), label: 'Security' },
-            { href: appPath.settingsDanger(), label: 'Danger zone' },
-          ],
-        },
-      ];
-    }
+    // Reachable only for an account with no memberships at all — which the
+    // shell answers with its own empty state rather than a sidebar. An empty
+    // nav rather than a placeholder section: there is genuinely nowhere to go,
+    // and the account area is reached from the user menu regardless.
+    if (orgSlug === null) return [];
 
     const known = projects.data?.projects ?? [];
 
