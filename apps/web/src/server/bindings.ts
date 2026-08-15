@@ -88,6 +88,36 @@ declare global {
      */
     ZEPTOMAIL_API_URL?: string | undefined;
 
+    /**
+     * Better Stack source token, from the source's settings page.
+     *
+     * A credential: it authorises writing into your log stream, and anybody
+     * holding it can flood or poison it. Absent means "console only" — see the
+     * note in `server/logging/index.ts` about why observability is optional.
+     */
+    BETTERSTACK_SOURCE_TOKEN?: string | undefined;
+
+    /**
+     * The ingest endpoint.
+     *
+     * Sources created after mid-2024 get a dedicated
+     * `https://<id>.betterstackdata.com` host and must use it; posting to the
+     * shared default with such a token answers 401 with nothing explaining why.
+     * Left unset it points at the shared host, which is right for older sources
+     * and wrong in a way that is hard to diagnose for the rest — so `check:env`
+     * says so out loud.
+     */
+    BETTERSTACK_INGEST_URL?: string | undefined;
+
+    /**
+     * Overrides the log threshold: `debug`, `info`, `warn` or `error`.
+     *
+     * Exists so debug can be turned on in production for the duration of an
+     * incident by setting a variable, rather than by shipping a deploy while
+     * the thing you are trying to observe is happening.
+     */
+    XECRET_LOG_LEVEL?: string | undefined;
+
     RL_LOGIN?: RateLimit;
     RL_CLI_TOKEN?: RateLimit;
     RL_INVITE?: RateLimit;
@@ -157,6 +187,9 @@ const PROCESS_SUPPLIED = [
   'ZEPTOMAIL_FROM_ADDRESS',
   'ZEPTOMAIL_FROM_NAME',
   'ZEPTOMAIL_API_URL',
+  'BETTERSTACK_SOURCE_TOKEN',
+  'BETTERSTACK_INGEST_URL',
+  'XECRET_LOG_LEVEL',
 ] as const;
 
 /**

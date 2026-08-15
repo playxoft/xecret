@@ -208,12 +208,20 @@ async function assertPinMatches(
     // suggestion.
     await recordPinAttempt(services.db, userId, nextPinFailure(record, now));
 
-    services.log.at('assertPinMatches').warn('pin attempt failed', {
-      // The count, never the PIN and never the user's email. The user id is on
-      // the line already — the route wrapper bound it — which is what makes
-      // "this account is being brute-forced" a query rather than a hunch.
-      failedAttempts: record.failedAttempts + 1,
-    });
+    services.log
+      .at('assertPinMatches')
+      .warn(
+        `Rejected an incorrect unlock PIN — this account has now failed ` +
+          `${record.failedAttempts + 1} time(s) in a row and will be locked out if it keeps ` +
+          'failing',
+        {
+          // The count, never the PIN and never the user's email. The user id is
+          // on the line already — the route wrapper bound it — which is what
+          // makes "this account is being brute-forced" a query rather than a
+          // hunch.
+          failedAttempts: record.failedAttempts + 1,
+        },
+      );
 
     throw errors.unauthenticated('incorrect pin');
   }

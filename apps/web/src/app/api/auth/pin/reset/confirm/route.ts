@@ -64,9 +64,12 @@ export const POST = authenticatedRoute(
       // The link was real but belongs to somebody else. Consuming it above was
       // still correct — a link presented by the wrong account is one that should
       // not survive to be presented again.
-      console.warn('pin reset token redeemed by a different account', {
-        requestId: services.meta.requestId,
-      });
+      services.log
+        .at('POST')
+        .warn(
+          'A PIN reset link was presented by a different account than the one it was issued to. ' +
+            'The link has been consumed anyway, so it cannot be presented again.',
+        );
       throw errors.badRequest('That reset link belongs to a different account.');
     }
 

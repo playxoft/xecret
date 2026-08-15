@@ -9,7 +9,8 @@ import {
 import type { KeyProvider } from '@xecret/core/crypto';
 import { connectionString, requireBinding, withProcessFallbacks } from './bindings';
 import type { Bindings, WorkerContext } from './bindings';
-import { clientIp, userAgent } from './http';
+import { clientIp, rayIdFrom, userAgent } from './http';
+import type { LogFields, Logger, RequestLog } from './logging';
 
 /**
  * Per-request services.
@@ -81,10 +82,23 @@ export async function workerContext(): Promise<WorkerContext> {
 /** Request-scoped facts that every audit record and log line carries. */
 export interface RequestMeta {
   requestId: string;
+  /** Cloudflare's ray id, for correlating with the platform's own logs. */
+  rayId: string | null;
   ipAddress: string | null;
   userAgent: string | null;
   method: string;
   path: string;
+  /**
+   * `Date.now()` when the route wrapper took the request.
+   *
+   * Supplied by the wrapper rather than read here, because the wrapper stamps
+   * its own clock the instant it is entered and measures `durationMs` from it.
+   * Deriving a second one at this point would mean the request had two start
+   * times differing by however long `workerContext()` and the database handle
+   * took — the two slowest things in a cold start, and precisely the interval
+   * anyone comparing the two numbers would be trying to account for.
+   */
+  startedAt: number;
 }
 
 export interface ServiceContext {
@@ -92,8 +106,41 @@ export interface ServiceContext {
   db: Database;
   envelope: EnvelopeService;
   meta: RequestMeta;
+  /**
+   * This request's logger.
+   *
+   * Already carrying the request id, the route, the caller's address and — once
+   * authentication and path resolution have run — the user and the
+   * organisation. Every function that takes a `ServiceContext` can therefore
+   * log a fully-attributed line with `services.log.at('myFunction').warn(…)`
+   * and nothing threaded through its signature.
+   */
+  log: Logger;
+  /**
+   * Adds facts to every subsequent line of this request.
+   *
+   * Called by the route wrapper once the principal is known, and by the tenancy
+   * resolvers once the organisation is. Not for general use: a service that
+   * rebinds `userId` is rewriting the attribution of lines it does not own.
+   */
+  bindLog: (fields: LogFields) => void;
   /** Defers work until after the response is sent — used for audit flushes. */
   waitUntil: (promise: Promise<unknown>) => void;
+  /**
+   * Resolves once everything handed to `waitUntil` **so far** has settled.
+   *
+   * The snapshot is taken when this is called, not when the context was built,
+   * which is the only way it can be useful: the tasks worth waiting for are
+   * queued during the request, and a promise created up front would be closed
+   * over an empty list.
+   *
+   * It exists for one caller — the route wrapper, sequencing the log flush
+   * behind the deferred work, because that work writes log lines of its own and
+   * a batch that left earlier would not contain them. Nothing else should reach
+   * for it: a service awaiting the request's own deferred work is a service
+   * waiting on itself.
+   */
+  settled: () => Promise<unknown>;
   /**
    * Schedules the release of the request's database handle.
    *
@@ -111,25 +158,36 @@ export interface ServiceContext {
 /**
  * Builds the per-request services.
  *
- * `requestId` is supplied by the caller rather than derived here, because the
- * route wrapper needs it before this function runs — it must be able to answer
- * a failure that happens *while building this context*. Deriving it in both
- * places would let the id in the response header differ from the id in the audit
- * records for the same request, which defeats the only purpose the id has.
+ * `requestId`, the logger and `startedAt` are supplied by the caller rather than
+ * derived here, because the route wrapper needs all three before this function
+ * runs — it must be able to answer, and log, a failure that happens *while
+ * building this context*. Deriving them in both places would let the id in the
+ * response header differ from the id in the audit records for the same request,
+ * which defeats the only purpose the id has, and would give the request two
+ * start times that disagree by the cost of building this context.
  */
 export async function createServiceContext(
   request: Request,
   worker: WorkerContext,
   requestId: string,
+  log: RequestLog,
+  startedAt: number,
 ): Promise<ServiceContext> {
   const url = new URL(request.url);
 
   const handle = createDatabaseHandle({ connectionString: connectionString(worker.env) });
 
-  // Everything handed to `waitUntil` is also tracked here, so `dispose` can
-  // sequence the connection close *after* the deferred work that needs it.
+  // Everything handed to `waitUntil` is also tracked here, so `dispose` and
+  // `settled` can sequence work *after* the deferred tasks it depends on.
   // Rejections are absorbed in the tracking copy only — each task still owns
   // its own failure handling via the promise given to the runtime.
+  //
+  // Both consumers snapshot: `Promise.allSettled` walks the array once, at the
+  // moment it is called, so a task queued afterwards is not in that wait. That
+  // is why both are called at the very end of the request, past every point a
+  // handler could still defer something — and it is worth knowing, because
+  // assuming otherwise is what previously let the log flush run before the
+  // lines it was supposed to carry had been written.
   const pending: Promise<unknown>[] = [];
 
   return {
@@ -138,15 +196,20 @@ export async function createServiceContext(
     envelope: new EnvelopeService(await keyProvider(worker.env)),
     meta: {
       requestId,
+      rayId: rayIdFrom(request),
       ipAddress: clientIp(request),
       userAgent: userAgent(request),
       method: request.method,
       path: url.pathname,
+      startedAt,
     },
+    log: log.logger,
+    bindLog: log.bind,
     waitUntil: (promise) => {
       pending.push(promise.catch(() => undefined));
       worker.ctx.waitUntil(promise);
     },
+    settled: () => Promise.allSettled(pending),
     dispose: () => {
       worker.ctx.waitUntil(
         (async () => {

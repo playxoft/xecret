@@ -21,6 +21,8 @@ import type {
 import type { Database } from '@xecret/db';
 import { ApiError } from './errors';
 import { json } from './http';
+import { createLogger } from './logging';
+import type { LogEntry } from './logging';
 import type { Bindings } from './bindings';
 import type { ServiceContext } from './context';
 import type { EnvironmentScope } from './tenancy';
@@ -180,12 +182,23 @@ async function harness(): Promise<Harness> {
     envelope,
     meta: {
       requestId: 'req-test',
+      rayId: null,
       ipAddress: null,
       userAgent: null,
       method: 'POST',
       path: '/api/test',
+      startedAt: 0,
     },
+    // A real logger over a capturing sink: what these tests assert about a
+    // decryption failure is the *shape* of the line it writes.
+    log: createLogger({
+      sink: { write: (entry) => void logged.push(entry), flush: () => Promise.resolve() },
+      minimum: 'debug',
+      base: { requestId: 'req-test' },
+    }).logger,
+    bindLog: () => {},
     waitUntil: () => {},
+    settled: () => Promise.resolve(),
     dispose: () => {},
   };
 
@@ -258,15 +271,15 @@ async function sealed(h: Harness): Promise<EncryptedValue> {
 
 /**
  * Several tests below deliberately provoke a decryption failure, and the service
- * logs one line when that happens. It is captured rather than printed so the
+ * logs one line when that happens. It is captured rather than shipped, so the
  * suite's output stays readable — and so the one test that cares can assert on
- * exactly what was written.
+ * exactly what was written, field by field, which a console spy could not.
  */
-const consoleError = vi.fn();
+let logged: LogEntry[] = [];
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.spyOn(console, 'error').mockImplementation(consoleError);
+  logged = [];
 });
 
 afterEach(() => {
@@ -390,12 +403,20 @@ describe('decryption failure handling', () => {
     // The category is kept server-side so an operator can alert on it.
     expect(error.logDetail).toBe('decryptionFailed');
 
-    // The log line names a category and a request, and carries no value, no key
-    // and no ciphertext.
-    expect(consoleError).toHaveBeenCalledTimes(1);
-    const line = JSON.stringify(consoleError.mock.calls[0]);
-    expect(line).toContain('decryptionFailed');
-    expect(line).not.toContain('hunter2');
+    // The log line names a category and the function that raised it, and
+    // carries no value, no key and no ciphertext.
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({
+      level: 'error',
+      fn: 'rethrowCryptoFailure',
+      reason: 'decryptionFailed',
+      requestId: 'req-test',
+    });
+    // The message explains the condition and what it implies, rather than
+    // naming the function that failed.
+    expect(String(logged[0]?.message)).toContain('Could not decrypt a stored secret value');
+    expect(String(logged[0]?.message)).toContain('tampering');
+    expect(JSON.stringify(logged[0])).not.toContain('hunter2');
   });
 });
 

@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthorizationError } from '@xecret/core/authz';
 import { InMemoryAuditSink, createAuditBuilder } from '@xecret/core/audit';
 import { uuidv7 } from '@xecret/core/ids';
+import { createLogger } from './logging';
+import type { LogEntry, LogSink, RequestLog } from './logging';
 
 /**
  * Tests for the route wrapper — the single error boundary between handler code
@@ -35,6 +37,8 @@ const actor = vi.hoisted(() => ({
 
 const auditSink = vi.hoisted(() => ({ write: vi.fn() }));
 
+const logging = vi.hoisted(() => ({ createRequestLog: vi.fn() }));
+
 vi.mock('./context', () => context);
 vi.mock('./actor', () => actor);
 vi.mock('./audit-sink', () => ({
@@ -43,16 +47,55 @@ vi.mock('./audit-sink', () => ({
   },
 }));
 
+/**
+ * Only the sink is replaced; the logger, the redactor and the level threshold
+ * are the real ones.
+ *
+ * Substituting the whole module would make every assertion below a statement
+ * about the fixture. What has to be swapped is the destination, because the real
+ * one is `process.env` and a console, and the properties under test here are
+ * *which* lines are written and *when* the batch that carries them is drained.
+ */
+vi.mock('./logging', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./logging')>()),
+  createRequestLog: logging.createRequestLog,
+}));
+
 const { authenticatedRoute, publicRoute } = await import('./route');
 const { MissingBindingError } = await import('./bindings');
 const { errors } = await import('./errors');
 
 const ORG_ID = uuidv7();
 
-/** The wrapper prefers a Cloudflare ray id, so requests carry one. */
+/**
+ * Requests carry a ray id, but it is no longer the request id.
+ *
+ * The wrapper mints its own UUIDv7 precisely because `cf-ray` is a header — a
+ * request that reaches the Worker without passing the edge can claim an id
+ * already in use. The ray id survives as its own log field.
+ */
 const RAY_ID = 'ray-abc123';
 
+const UUIDV7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/** Whatever the request handed to the tracked `waitUntil` — audit flushes. */
 const deferred: Promise<unknown>[] = [];
+
+/**
+ * Whatever went straight to the runtime's `waitUntil`.
+ *
+ * Kept apart from `deferred` because the distinction is load-bearing: the log
+ * flush lives here precisely so that it runs *after* everything in `deferred`,
+ * and a fixture that merged the two could not tell a correct ordering from a
+ * broken one.
+ */
+const runtimeDeferred: Promise<unknown>[] = [];
+
+/** Lines the wrapper emitted during a test, so assertions can read them. */
+let logged: LogEntry[] = [];
+
+/** Lines that were in the buffer when a flush ran — the batch that would ship. */
+let shipped: LogEntry[] = [];
 
 const principal = {
   kind: 'user' as const,
@@ -82,25 +125,53 @@ function request(init: { method?: string; origin?: string } = {}): Request {
 beforeEach(() => {
   vi.clearAllMocks();
   deferred.length = 0;
+  runtimeDeferred.length = 0;
+  logged = [];
+  shipped = [];
   auditSink.write.mockResolvedValue(undefined);
 
-  context.workerContext.mockResolvedValue({ env: {}, ctx: { waitUntil: () => {} } });
+  // One logger per request, shared by the wrapper and the services — as in
+  // production, where `openLog` builds it and hands it to the context.
+  logging.createRequestLog.mockImplementation((_env: unknown, base: Record<string, unknown>) =>
+    capturingLog(base),
+  );
+
+  context.workerContext.mockResolvedValue({
+    env: {},
+    ctx: { waitUntil: (promise: Promise<unknown>) => void runtimeDeferred.push(promise) },
+  });
   // Echoes the request id the wrapper threaded in, which is the property under
   // test: the id on the response header and the id in the audit records must be
   // the same value, or correlating a user's report with a log line fails.
+  //
+  // `startedAt` is echoed for the same reason: the wrapper owns the request's
+  // clock, and a context that minted its own would put a second start time on
+  // the same request.
   context.createServiceContext.mockImplementation(
-    async (_request: Request, _worker: unknown, requestId: string) => ({
+    async (
+      _request: Request,
+      _worker: unknown,
+      requestId: string,
+      log: RequestLog,
+      startedAt: number,
+    ) => ({
       env: { XECRET_PUBLIC_URL: 'https://xecret.playxoft.com', XECRET_ENV: 'production' },
       db: {},
       envelope: {},
       meta: {
         requestId,
+        rayId: null,
         ipAddress: '203.0.113.5',
         userAgent: 'vitest',
         method: 'GET',
         path: '/api/test',
+        startedAt,
       },
+      log: log.logger,
+      bindLog: log.bind,
       waitUntil: (promise: Promise<unknown>) => void deferred.push(promise),
+      // Snapshots at call time, exactly as the real one does.
+      settled: () => Promise.allSettled(deferred),
       dispose: () => {},
     }),
   );
@@ -109,9 +180,39 @@ beforeEach(() => {
   actor.isUnlocked.mockReturnValue(true);
 });
 
-/** Runs whatever the handler deferred via `waitUntil`. */
+/** Runs whatever the request deferred, tracked work before the runtime's. */
 async function settleDeferred(): Promise<void> {
   await Promise.allSettled(deferred);
+  await Promise.allSettled(runtimeDeferred);
+}
+
+/**
+ * A real logger writing into `logged`, rather than a silent one.
+ *
+ * The wrapper's own diagnostics — the audit-flush failure in particular — are
+ * behaviour worth asserting on, and a fixture that swallowed them would let
+ * that behaviour regress silently.
+ *
+ * The sink buffers and drains on flush, like `BetterStackSink`. That detail is
+ * the whole point of `shipped`: what a batch carries is decided by what is in
+ * the buffer at the instant `flush` is called, so a flush that runs too early
+ * shows up here as a line that was written but never shipped — which is exactly
+ * how the deferred `error` lines were being lost.
+ */
+function capturingLog(base: Record<string, unknown> = {}): RequestLog {
+  const buffered: LogEntry[] = [];
+  const sink: LogSink = {
+    write: (entry) => {
+      logged.push(entry);
+      buffered.push(entry);
+    },
+    flush: () => {
+      shipped.push(...buffered.splice(0, buffered.length));
+      return Promise.resolve();
+    },
+  };
+
+  return createLogger({ sink, minimum: 'debug', base });
 }
 
 describe('successful responses', () => {
@@ -120,7 +221,7 @@ describe('successful responses', () => {
     const response = await handler(request());
 
     expect(response.status).toBe(200);
-    expect(response.headers.get('x-xecret-request-id')).toBe(RAY_ID);
+    expect(response.headers.get('x-xecret-request-id')).toMatch(UUIDV7);
   });
 
   it('passes awaited route params to the handler', async () => {
@@ -188,6 +289,21 @@ describe('authentication and CSRF', () => {
     expect(actor.authenticate).not.toHaveBeenCalled();
   });
 
+  // Regression: this was bound as `credential`, and `credential` is a word on
+  // the redactor's deny list — so the field an operator was told to read as
+  // `cookie | bearer` was `[redacted]` on every authenticated line the product
+  // ever emitted. The `kind` suffix puts it past the identifier pass without
+  // weakening the deny list for the names that should be hidden.
+  it('names how the caller authenticated, in a field the redactor does not blank', async () => {
+    const handler = authenticatedRoute(async () => new Response(null, { status: 204 }));
+    await handler(request());
+
+    const finish = logged.find((entry) => entry.fn === 'request');
+
+    expect(finish).toMatchObject({ actorType: 'user', credentialKind: 'cookie' });
+    expect(finish?.['credentialKind']).not.toBe('[redacted]');
+  });
+
   it('enforces CSRF on every authenticated request', async () => {
     const handler = authenticatedRoute(async () => new Response(null, { status: 204 }));
     await handler(request({ method: 'POST', origin: 'https://xecret.playxoft.com' }));
@@ -226,7 +342,13 @@ describe('error conversion', () => {
     expect(text).not.toContain('ECONNREFUSED');
     expect(text).not.toContain('postgres://');
     expect(JSON.parse(text)).toEqual({
-      error: { code: 'internal_error', message: 'Something went wrong.', requestId: RAY_ID },
+      error: {
+        code: 'internal_error',
+        message: 'Something went wrong.',
+        // The same id as the header, which is the only property it has to hold:
+        // a user quoting one must let an operator find the other.
+        requestId: response.headers.get('x-xecret-request-id'),
+      },
     });
   });
 
@@ -300,7 +422,7 @@ describe('error conversion', () => {
       throw new Error('boom');
     });
 
-    expect((await handler(request())).headers.get('x-xecret-request-id')).toBe(RAY_ID);
+    expect((await handler(request())).headers.get('x-xecret-request-id')).toMatch(UUIDV7);
   });
 });
 
@@ -356,7 +478,6 @@ describe('audit flushing', () => {
   // change nothing for the caller and lose the record. It is logged instead, at
   // `error`, so it is alertable.
   it('does not fail a successful response when the audit write fails', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     auditSink.write.mockRejectedValue(new Error('audit table unreachable'));
 
     const handler = authenticatedRoute(async ({ audit, record }) => {
@@ -368,14 +489,75 @@ describe('audit flushing', () => {
     await settleDeferred();
 
     expect(response.status).toBe(204);
-    expect(consoleError).toHaveBeenCalledWith('audit flush failed', expect.any(Object));
 
-    // The failure message itself must not be logged verbatim: an audit write
-    // failure is usually a database error, and those carry connection strings.
-    const logged = JSON.stringify(consoleError.mock.calls[0]?.[1]);
-    expect(logged).not.toContain('audit table unreachable');
+    const failure = logged.find((entry) => entry.fn === 'settle');
+    expect(failure).toMatchObject({ level: 'error', pending: 1 });
+    // A sentence saying what was lost, not a label saying a step named "audit
+    // flush" returned non-zero.
+    expect(failure?.message).toContain('1 buffered audit record');
+    expect(failure?.message).toContain('missing from the audit log');
+  });
+});
 
-    consoleError.mockRestore();
+/**
+ * Shipping the batch.
+ *
+ * A flush drains its buffer the instant it is called, so *when* it is called
+ * decides what the batch contains. These tests exist because it was called too
+ * early: at the moment the response was returned, which is before any of the
+ * deferred work has run and therefore before the lines that work writes exist.
+ */
+describe('log shipping', () => {
+  it('ships the completion line', async () => {
+    const handler = publicRoute(async () => new Response(null, { status: 204 }));
+
+    await handler(request());
+    await settleDeferred();
+
+    expect(shipped.find((entry) => entry.fn === 'request')).toMatchObject({ status: 204 });
+  });
+
+  // The line this protects is one `docs/operations/logging.md` names as
+  // alertable — `level:error AND fn:settle`, "the audit log is missing
+  // entries". It is written from inside `waitUntil`, after the response. A
+  // batch that left when the response did could never contain it, so the alert
+  // could never fire, and nothing about that failure was visible.
+  it('waits for the deferred work, so a line written after the response still ships', async () => {
+    auditSink.write.mockRejectedValue(new Error('audit table unreachable'));
+
+    const handler = authenticatedRoute(async ({ audit, record }) => {
+      record(audit(ORG_ID).success('project.created', { type: 'project', id: uuidv7() }));
+      return new Response(null, { status: 204 });
+    });
+
+    await handler(request());
+    await settleDeferred();
+
+    expect(shipped.find((entry) => entry.fn === 'settle')).toMatchObject({ level: 'error' });
+  });
+
+  // Not through the tracked `waitUntil`: that set exists so `dispose` can hold
+  // the database connection open for work that needs it, and this flush needs
+  // the network instead.
+  it('defers the flush through the runtime rather than joining the tracked set', async () => {
+    const handler = publicRoute(async () => new Response(null, { status: 204 }));
+
+    await handler(request());
+
+    expect(deferred).toHaveLength(0);
+    expect(runtimeDeferred).toHaveLength(1);
+  });
+
+  // `begin` failed before a context existed, so there is nothing to wait for —
+  // and the 503 it produced is the line that most needs to leave.
+  it('still flushes when the request never got a context', async () => {
+    context.createServiceContext.mockRejectedValue(new MissingBindingError('HYPERDRIVE'));
+    const handler = publicRoute(async () => new Response(null, { status: 204 }));
+
+    await handler(request());
+    await settleDeferred();
+
+    expect(shipped.find((entry) => entry.fn === 'failure')).toMatchObject({ level: 'error' });
   });
 });
 

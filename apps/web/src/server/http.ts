@@ -26,13 +26,47 @@ export const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
  */
 export const REQUEST_ID_HEADER = 'x-xecret-request-id';
 
-export function requestIdFrom(request: Request): string {
-  // Cloudflare's ray id is already attached to the platform's own logs, so
-  // reusing it lets a support conversation cross that boundary. It is
-  // attacker-controllable in theory, so it is only ever used as a correlation
-  // label — never for a security decision.
+/**
+ * Mints this request's id.
+ *
+ * ── Always ours, always UUIDv7 ──
+ * This used to return Cloudflare's `cf-ray` when present, to make a support
+ * conversation cross into the platform's own logs. That is a real benefit and
+ * it is kept — as `rayIdFrom` below, logged as its own field — but it is the
+ * wrong thing to *be* the request id, for three reasons that only became
+ * obvious once every log line started carrying one:
+ *
+ *  - **It is client-supplied.** `cf-ray` is a header, and a request that
+ *    reaches the Worker without passing the edge — `next dev`, a self-hosted
+ *    deployment behind a different proxy, a crafted request — can set it to
+ *    anything, including an id already in use. Two unrelated requests sharing
+ *    an id is the one failure a correlation key cannot survive.
+ *  - **It is not sortable.** A UUIDv7's leading 48 bits are a millisecond
+ *    timestamp, so ids sort in creation order. `ORDER BY requestId` in a log
+ *    query is chronological, and the id alone dates an incident without a
+ *    clock field.
+ *  - **It was inconsistent.** A ray id in production and a UUID in development
+ *    meant a format that log tooling could not parse or validate.
+ *
+ * The generator is the same one that mints every row's primary key, so ids in
+ * the audit log and ids in the log stream have one shape and one meaning.
+ */
+export function requestIdFrom(): string {
+  return uuidv7();
+}
+
+/**
+ * Cloudflare's ray id, when the request arrived through the edge.
+ *
+ * A correlation label only, on the log line beside our own id — never used for
+ * a security decision, and never trusted to be unique, because it is a header.
+ * `null` under `next dev` and behind any proxy that is not Cloudflare.
+ */
+export function rayIdFrom(request: Request): string | null {
   const ray = request.headers.get('cf-ray');
-  return ray ?? uuidv7();
+  if (ray === null) return null;
+  // Bounded like every other attacker-controlled header that lands in a log.
+  return ray.slice(0, 64);
 }
 
 /**

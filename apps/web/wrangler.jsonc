@@ -12,6 +12,9 @@
     "binding": "ASSETS",
   },
 
+  // Cloudflare's own log tail. Kept on even though lines are also shipped to
+  // Better Stack: this is what `wrangler tail` reads, and it is the only thing
+  // that still works when the shipping pipeline is itself the outage.
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,
@@ -79,6 +82,18 @@
       },
     },
   },
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // NOT IN THIS FILE — log shipping (docs/operations/logging.md)
+  //
+  //   BETTERSTACK_SOURCE_TOKEN  a credential; set with `wrangler secret put`
+  //   BETTERSTACK_INGEST_URL    the source's own https://<id>.betterstackdata.com
+  //   XECRET_LOG_LEVEL          debug | info | warn | error, for an incident
+  //
+  // All three are plain strings the Worker reads from `process.env`, so they can
+  // be set per environment without a code change. The token is deliberately not
+  // a `var` here: this file is committed.
+  // ────────────────────────────────────────────────────────────────────────────
 
   // ────────────────────────────────────────────────────────────────────────────
   // Bindings below are added as their phases land. They are written out here so
