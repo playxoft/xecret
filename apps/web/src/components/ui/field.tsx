@@ -81,7 +81,7 @@ export function Field({ label, children, hint, error, optional, className }: Fie
       <div className={cn('flex flex-col gap-1.5', className)}>
         <div className="flex items-baseline justify-between gap-3">
           <Label htmlFor={controlId}>{label}</Label>
-          {optional ? <span className="text-fg-subtle text-xs">Optional</span> : null}
+          {optional ? <span className="text-fg-subtle text-sm">Optional</span> : null}
         </div>
 
         {children}
@@ -91,13 +91,13 @@ export function Field({ label, children, hint, error, optional, className }: Fie
           // when focus is moved to the offending control anyway, and the
           // `aria-describedby` association reads them at that moment.
           // Interrupting for every field in a failed form is unusable.
-          <p id={errorId} className="text-danger-text text-[0.8125rem] leading-5">
+          <p id={errorId} className="text-danger-text text-sm leading-5">
             {error}
           </p>
         ) : null}
 
         {hint ? (
-          <p id={hintId} className="text-fg-subtle text-[0.8125rem] leading-5">
+          <p id={hintId} className="text-fg-subtle text-sm leading-5">
             {hint}
           </p>
         ) : null}

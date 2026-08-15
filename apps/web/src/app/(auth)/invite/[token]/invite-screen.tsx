@@ -96,7 +96,7 @@ export function InviteScreen({ token }: { token: string }) {
       <Card>
         <CardContent className="flex items-center justify-center gap-3 py-10">
           <Spinner />
-          <span className="text-fg-muted text-[0.8125rem]">Checking the invitation…</span>
+          <span className="text-fg-muted text-sm">Checking the invitation…</span>
         </CardContent>
       </Card>
     );
@@ -107,7 +107,7 @@ export function InviteScreen({ token }: { token: string }) {
       <Card>
         <CardContent className="flex flex-col gap-3 py-8">
           <h1 className="text-fg text-lg font-semibold">This invitation link is not valid</h1>
-          <p className="text-fg-muted text-[0.8125rem]">
+          <p className="text-fg-muted text-sm">
             It may have been revoked, already used, or mistyped. Ask whoever invited you to send a
             new one — invitations can be re-issued in a click.
           </p>
@@ -132,7 +132,7 @@ export function InviteScreen({ token }: { token: string }) {
       <Card>
         <CardContent className="flex flex-col gap-3 py-8">
           <h1 className="text-fg text-lg font-semibold">{sentence}</h1>
-          <p className="text-fg-muted text-[0.8125rem]">
+          <p className="text-fg-muted text-sm">
             {invitation.state === 'accepted'
               ? 'If that was you, sign in and the organisation is already in your switcher.'
               : `Ask ${inviterLabel(inviter) ?? 'whoever invited you'} to send a new one.`}
@@ -151,7 +151,7 @@ export function InviteScreen({ token }: { token: string }) {
           <h1 className="text-fg text-lg font-semibold">
             Join {lookup.organization.name} on xecret
           </h1>
-          <p className="text-fg-muted text-[0.8125rem]">
+          <p className="text-fg-muted text-sm">
             {inviterLabel(inviter) ?? 'A member'} invited{' '}
             <span className="text-fg font-medium">{invitation.email}</span> to join as{' '}
             {ROLE_LABELS[invitation.role].toLowerCase()}.
@@ -169,7 +169,7 @@ export function InviteScreen({ token }: { token: string }) {
             <Button variant="primary" asChild>
               <a href={`/sign-in?next=${encodeURIComponent(nextPath)}`}>Sign in to accept</a>
             </Button>
-            <p className="text-fg-subtle text-xs">
+            <p className="text-fg-subtle text-sm">
               No account yet?{' '}
               <a className="text-accent-text underline-offset-2 hover:underline" href="/sign-up">
                 Create one with {invitation.email}

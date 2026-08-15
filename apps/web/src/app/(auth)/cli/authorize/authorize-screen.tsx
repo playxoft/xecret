@@ -123,7 +123,7 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
     >
       <div className="flex flex-col gap-5">
         <div className="border-line rounded-lg border px-4 py-3">
-          <p className="text-fg-subtle text-xs uppercase tracking-wide">Device requesting access</p>
+          <p className="text-fg-subtle text-sm uppercase tracking-wide">Device requesting access</p>
           <p className="text-fg mt-1 truncate text-sm font-medium" title={request.device}>
             {request.device}
           </p>

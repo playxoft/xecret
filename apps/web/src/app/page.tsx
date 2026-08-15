@@ -50,7 +50,7 @@ export default function LandingPage() {
       <header className="border-line-subtle border-b">
         <div className="mx-auto flex h-16 w-full max-w-5xl items-center gap-4 px-5">
           <Wordmark />
-          <span className="border-line text-fg-subtle ml-1 hidden rounded-full border px-2 py-0.5 text-[0.6875rem] sm:inline">
+          <span className="border-line text-fg-subtle ml-1 hidden rounded-full border px-2 py-0.5 text-sm sm:inline">
             Pre-alpha
           </span>
           <nav aria-label="Primary" className="ml-auto flex items-center gap-1">
@@ -86,7 +86,7 @@ export default function LandingPage() {
             <p className="text-fg-muted mt-5 max-w-xl text-base leading-7">
               xecret stores your environment variables once, encrypted per environment, and injects
               them into whatever you are running — locally, in CI, in production. No{' '}
-              <code className="text-fg-muted font-mono text-[0.85em]">.env</code> file on disk, no
+              <code className="text-fg-muted font-mono text-sm">.env</code> file on disk, no
               credentials in Slack, no &ldquo;works on my machine&rdquo;.
             </p>
 
@@ -108,7 +108,7 @@ export default function LandingPage() {
             <CliDemo />
 
             <div className="border-line bg-surface mt-3 flex max-w-xl items-center gap-2 rounded-lg border px-3 py-2">
-              <code className="text-fg-muted min-w-0 flex-1 font-mono text-[0.8125rem] break-all">
+              <code className="text-fg-muted min-w-0 flex-1 font-mono text-sm break-all">
                 <span className="text-fg-subtle select-none">$ </span>
                 {RUN_COMMAND}
               </code>
@@ -130,7 +130,7 @@ export default function LandingPage() {
                 <li key={step.title}>
                   <span
                     aria-hidden="true"
-                    className="border-accent-line bg-accent-tint text-accent-text mb-3 grid size-7 place-items-center rounded-md border text-xs font-semibold"
+                    className="border-accent-line bg-accent-tint text-accent-text mb-3 grid size-7 place-items-center rounded-md border text-sm font-semibold"
                   >
                     {index + 1}
                   </span>
@@ -273,7 +273,7 @@ export default function LandingPage() {
             <Link href="/sign-in" className="hover:text-fg rounded-sm">
               Sign in
             </Link>
-            <span className="text-fg-subtle text-xs">AGPL-3.0</span>
+            <span className="text-fg-subtle text-sm">AGPL-3.0</span>
           </nav>
         </div>
       </footer>

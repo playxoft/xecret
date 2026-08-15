@@ -268,12 +268,10 @@ function InviteFlow({
 
         <DialogBody className="flex flex-col gap-3">
           <div className="border-line bg-canvas-inset flex items-center gap-2 rounded-lg border px-3 py-2">
-            <code className="text-fg min-w-0 flex-1 truncate text-[0.8125rem]">
-              {issued.inviteUrl}
-            </code>
+            <code className="text-fg min-w-0 flex-1 truncate text-sm">{issued.inviteUrl}</code>
             <CopyButton value={issued.inviteUrl} label="Copy invitation link" />
           </div>
-          <p className="text-fg-subtle text-xs">
+          <p className="text-fg-subtle text-sm">
             The link works once, expires in 7 days, and only signs in the invited address. Closing
             this dialog discards it — it cannot be shown again, only re-issued.
           </p>
@@ -330,7 +328,7 @@ function InviteFlow({
 
         <fieldset className="flex flex-col gap-2">
           <legend className="text-fg text-sm font-medium">Access</legend>
-          <p className="text-fg-subtle text-xs">
+          <p className="text-fg-subtle text-sm">
             Nothing is selected by default, and the invitation grants exactly what you tick — every
             unticked project stays completely inaccessible to them, including projects created later
             inside a partially-granted one. Ticked items get the role&apos;s normal level; you can
@@ -345,7 +343,7 @@ function InviteFlow({
               <Skeleton className="h-8 w-full" />
             </div>
           ) : projects.length === 0 ? (
-            <p className="text-fg-subtle text-[0.8125rem]">
+            <p className="text-fg-subtle text-sm">
               This organisation has no projects yet — the member will join with access to nothing,
               which is also what they get by default.
             </p>
@@ -366,8 +364,8 @@ function InviteFlow({
                         }
                         aria-label={`Entire project ${project.name}`}
                       />
-                      <span className="text-fg text-[0.8125rem] font-medium">{project.name}</span>
-                      <span className="text-fg-subtle text-xs">entire project</span>
+                      <span className="text-fg text-sm font-medium">{project.name}</span>
+                      <span className="text-fg-subtle text-sm">entire project</span>
                     </label>
 
                     <div className="mt-1.5 flex flex-col gap-1 pl-7">
@@ -391,9 +389,7 @@ function InviteFlow({
                               }
                               aria-label={`${project.name} ${environment.name}`}
                             />
-                            <span className="text-fg-muted text-[0.8125rem]">
-                              {environment.name}
-                            </span>
+                            <span className="text-fg-muted text-sm">{environment.name}</span>
                             {environment.isProduction ? (
                               <Badge tone="production">Production</Badge>
                             ) : null}

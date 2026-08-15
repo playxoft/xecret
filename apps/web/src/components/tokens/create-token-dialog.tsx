@@ -188,11 +188,11 @@ function CreateTokenFlow({
 
           {outcome.minted.map((issued) => (
             <div key={issued.serviceToken.id} className="flex flex-col gap-1">
-              <p className="text-fg-muted text-xs font-medium">
+              <p className="text-fg-muted text-sm font-medium">
                 {issued.serviceToken.projectSlug}/{issued.serviceToken.environmentSlug}
               </p>
               <div className="border-line bg-canvas-inset flex items-center gap-2 rounded-lg border px-3 py-2">
-                <code className="text-fg min-w-0 flex-1 truncate font-mono text-[0.8125rem]">
+                <code className="text-fg min-w-0 flex-1 truncate font-mono text-sm">
                   {issued.token}
                 </code>
                 <CopyButton
@@ -203,7 +203,7 @@ function CreateTokenFlow({
             </div>
           ))}
 
-          <p className="text-fg-subtle text-xs">
+          <p className="text-fg-subtle text-sm">
             Put each one in its pipeline&apos;s secret store as{' '}
             <code className="font-mono">XECRET_TOKEN</code>. Each token reaches its one environment
             and nothing else, and each is revoked on its own.
@@ -268,7 +268,7 @@ function CreateTokenFlow({
           hint="One token per ticked environment, each pinned to that environment alone."
         >
           {projectSlug === '' ? (
-            <p className="text-fg-subtle text-[0.8125rem]">Choose a project first.</p>
+            <p className="text-fg-subtle text-sm">Choose a project first.</p>
           ) : (
             <div className="border-line flex flex-col gap-0 rounded-lg border">
               {(project.data?.environments ?? []).map((environment) => (
@@ -283,7 +283,7 @@ function CreateTokenFlow({
                     }
                     aria-label={`Mint a token for ${environment.name}`}
                   />
-                  <span className="flex items-center gap-2 text-[0.8125rem]">
+                  <span className="flex items-center gap-2 text-sm">
                     {environment.name}
                     {environment.isProduction ? <Badge tone="production">Production</Badge> : null}
                   </span>

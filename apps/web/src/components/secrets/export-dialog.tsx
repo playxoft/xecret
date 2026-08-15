@@ -120,7 +120,7 @@ function ExportBody({
             <code className="text-fg font-mono">xecret run</code> injects these values into a
             process as environment variables and never writes them anywhere:
           </p>
-          <pre className="text-fg bg-canvas-inset border-line mt-2 overflow-x-auto rounded-md border px-3 py-2 font-mono text-xs">
+          <pre className="text-fg bg-canvas-inset border-line mt-2 overflow-x-auto rounded-md border px-3 py-2 font-mono text-sm">
             <code>{`xecret run --env ${envSlug} -- npm start`}</code>
           </pre>
           <p className="mt-2 flex items-center gap-1.5">
@@ -144,7 +144,7 @@ function ExportBody({
           </Select>
         </Field>
 
-        <label className="text-fg-muted flex items-start gap-2.5 text-[0.8125rem] leading-5">
+        <label className="text-fg-muted flex items-start gap-2.5 text-sm leading-5">
           {/* A native checkbox rather than the Radix primitive: this one gates
                 a link, and a link cannot be disabled — only removed. Keeping the
                 control and its label in one `<label>` keeps them associated

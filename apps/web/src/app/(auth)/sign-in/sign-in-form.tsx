@@ -160,7 +160,7 @@ export function SignInForm({ next }: SignInFormProps) {
             <div className="-mt-1 flex justify-end">
               <Link
                 href="/forgot-password"
-                className="text-fg-muted hover:text-fg rounded-sm text-[0.8125rem]"
+                className="text-fg-muted hover:text-fg rounded-sm text-sm"
               >
                 Forgot your password?
               </Link>

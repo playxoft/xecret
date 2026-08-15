@@ -132,7 +132,7 @@ export function SelectItem({
 export function SelectLabel({ className, ...props }: ComponentProps<typeof SelectPrimitive.Label>) {
   return (
     <SelectPrimitive.Label
-      className={cn('text-fg-subtle px-2 py-1.5 text-xs font-medium', className)}
+      className={cn('text-fg-subtle px-2 py-1.5 text-sm font-medium', className)}
       {...props}
     />
   );

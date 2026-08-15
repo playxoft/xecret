@@ -131,18 +131,18 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
                   {serviceTokens.data.data.map((token) => (
                     <TableRow key={token.id}>
                       <TableCell>
-                        <p className="text-fg text-[0.8125rem] font-medium">{token.name}</p>
-                        <p className="text-fg-subtle font-mono text-xs">{token.tokenPrefix}…</p>
+                        <p className="text-fg text-sm font-medium">{token.name}</p>
+                        <p className="text-fg-subtle font-mono text-sm">{token.tokenPrefix}…</p>
                       </TableCell>
-                      <TableCell className="text-fg-muted text-[0.8125rem]">
+                      <TableCell className="text-fg-muted text-sm">
                         {token.projectSlug}/{token.environmentSlug}
                       </TableCell>
                       <TableCell>
-                        <span className="text-fg-muted text-[0.8125rem]">
+                        <span className="text-fg-muted text-sm">
                           {token.accessLevel === 'read' ? 'Read-only' : 'Read & write'}
                         </span>
                       </TableCell>
-                      <TableCell className="text-fg-muted text-[0.8125rem] whitespace-nowrap">
+                      <TableCell className="text-fg-muted text-sm whitespace-nowrap">
                         {token.lastUsedAt === null ? (
                           'never'
                         ) : (
@@ -196,7 +196,7 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
             ) : cliTokens.data === null ? (
               <Skeleton className="h-20 w-full rounded-lg" />
             ) : cliTokens.data.data.length === 0 ? (
-              <p className="text-fg-muted text-[0.8125rem]">
+              <p className="text-fg-muted text-sm">
                 No devices yet. Run <code className="font-mono">xecret login</code> on a machine and
                 it will appear here.
               </p>
@@ -208,13 +208,13 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
                     className="border-line-subtle flex flex-wrap items-center gap-x-4 gap-y-1 py-2.5 [&:not(:last-child)]:border-b"
                   >
                     <div className="min-w-0 flex-1">
-                      <p className="text-fg truncate text-[0.8125rem] font-medium">
+                      <p className="text-fg truncate text-sm font-medium">
                         {token.name}
                         {token.isCurrent ? (
                           <span className="text-fg-subtle font-normal"> · this device</span>
                         ) : null}
                       </p>
-                      <p className="text-fg-subtle text-xs">
+                      <p className="text-fg-subtle text-sm">
                         {token.lastUsedAt === null
                           ? 'never used'
                           : `last used ${formatRelativeTime(token.lastUsedAt)}`}
@@ -309,12 +309,12 @@ function TokenStatus({
   }
   if (expiresAt !== null) {
     return (
-      <span className="text-fg-muted text-xs whitespace-nowrap">
+      <span className="text-fg-muted text-sm whitespace-nowrap">
         expires {formatRelativeTime(expiresAt)}
       </span>
     );
   }
-  return <span className="text-fg-muted text-[0.8125rem]">Active</span>;
+  return <span className="text-fg-muted text-sm">Active</span>;
 }
 
 /** "Now" defaults inside the helper — the same convention as `formatRelativeTime`. */

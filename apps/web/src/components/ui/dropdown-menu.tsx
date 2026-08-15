@@ -90,7 +90,7 @@ export function DropdownMenuLabel({
 }: ComponentProps<typeof DropdownMenuPrimitive.Label>) {
   return (
     <DropdownMenuPrimitive.Label
-      className={cn('text-fg-subtle px-2 py-1.5 text-xs font-medium', className)}
+      className={cn('text-fg-subtle px-2 py-1.5 text-sm font-medium', className)}
       {...props}
     />
   );

@@ -64,7 +64,7 @@ export function PlayxoftMark({ className }: { className?: string }) {
       target="_blank"
       rel="noopener noreferrer"
       className={cn(
-        'text-fg-subtle inline-flex items-center gap-1.5 rounded-sm text-xs transition-colors',
+        'text-fg-subtle inline-flex items-center gap-1.5 rounded-sm text-sm transition-colors',
         'hover:text-fg-muted',
         className,
       )}

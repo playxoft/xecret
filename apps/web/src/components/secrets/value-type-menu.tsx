@@ -60,7 +60,7 @@ export function ValueTypeMenu({
         disabled={disabled}
         aria-label={`Value type for ${secretName}: ${descriptor.label}`}
         className={cn(
-          'text-fg-subtle hover:text-fg hover:bg-surface-hover data-[state=open]:bg-surface-hover -mx-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs transition-colors',
+          'text-fg-subtle hover:text-fg hover:bg-surface-hover data-[state=open]:bg-surface-hover -mx-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-sm transition-colors',
           'disabled:pointer-events-none disabled:opacity-60',
           // The default is quieter than a chosen one: a row somebody has
           // deliberately typed should be findable by eye down the column.
@@ -84,7 +84,7 @@ export function ValueTypeMenu({
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
-        <p className="text-fg-subtle border-line-subtle mt-1 border-t px-2 pt-2 pb-1 text-xs leading-5">
+        <p className="text-fg-subtle border-line-subtle mt-1 border-t px-2 pt-2 pb-1 text-sm leading-5">
           {descriptor.hint}
         </p>
       </DropdownMenuContent>

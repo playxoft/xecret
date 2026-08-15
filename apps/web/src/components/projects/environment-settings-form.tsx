@@ -121,7 +121,7 @@ export function EnvironmentSettingsForm({
         <Alert tone="danger" title="That change was not saved">
           <p>{errorMessage(error)}</p>
           {isApiError(error) && error.requestId ? (
-            <p className="mt-1.5 text-xs">
+            <p className="mt-1.5 text-sm">
               Request id: <code className="font-mono select-all">{error.requestId}</code>
             </p>
           ) : null}

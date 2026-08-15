@@ -73,7 +73,7 @@ export function EnvironmentCards({
                   <span className="text-fg block truncate text-[0.9375rem] font-semibold tracking-tight">
                     {environment.name}
                   </span>
-                  <span className="text-fg-subtle mt-0.5 block truncate font-mono text-xs">
+                  <span className="text-fg-subtle mt-0.5 block truncate font-mono text-sm">
                     {environment.slug}
                   </span>
                 </div>
@@ -93,7 +93,7 @@ export function EnvironmentCards({
                 <ArrowRightIcon className="text-fg-subtle size-4 shrink-0 transition-transform group-hover:translate-x-0.5" />
               </div>
 
-              <span className="text-fg-subtle mt-2 text-xs">
+              <span className="text-fg-subtle mt-2 text-sm">
                 <time
                   dateTime={toIsoString(environment.updatedAt)}
                   title={formatAbsoluteTime(environment.updatedAt)}

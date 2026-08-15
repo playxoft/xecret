@@ -218,7 +218,7 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
           </div>
 
           {/* The count and the seat state, announced politely. */}
-          <p role="status" aria-live="polite" className="text-fg-subtle text-[0.8125rem]">
+          <p role="status" aria-live="polite" className="text-fg-subtle text-sm">
             {query.trim().length === 0 && projectFilter === ALL_PROJECTS
               ? pluralize(members.data.data.length, 'member')
               : `${visible.length} of ${pluralize(members.data.data.length, 'member')} shown`}
@@ -340,19 +340,19 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
                               )}
                               <span
                                 aria-hidden="true"
-                                className="bg-surface-active text-fg-muted grid size-7 shrink-0 place-items-center rounded-full text-[0.6875rem] font-semibold"
+                                className="bg-surface-active text-fg-muted grid size-7 shrink-0 place-items-center rounded-full text-sm font-semibold"
                               >
                                 {initials(member.displayName ?? member.email)}
                               </span>
                               <span className="min-w-0">
-                                <span className="text-fg block truncate text-[0.8125rem] font-medium">
+                                <span className="text-fg block truncate text-sm font-medium">
                                   {member.displayName ?? member.email}
                                   {member.isYou ? (
                                     <span className="text-fg-subtle font-normal"> · you</span>
                                   ) : null}
                                 </span>
                                 {member.displayName !== null ? (
-                                  <span className="text-fg-subtle block truncate text-xs">
+                                  <span className="text-fg-subtle block truncate text-sm">
                                     {member.email}
                                   </span>
                                 ) : null}
@@ -368,13 +368,13 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
 
                           <TableCell>
                             {member.status === 'active' ? (
-                              <span className="text-fg-muted text-[0.8125rem]">Active</span>
+                              <span className="text-fg-muted text-sm">Active</span>
                             ) : (
                               <Badge tone="warning">Suspended</Badge>
                             )}
                           </TableCell>
 
-                          <TableCell className="text-fg-muted text-[0.8125rem] whitespace-nowrap">
+                          <TableCell className="text-fg-muted text-sm whitespace-nowrap">
                             <time
                               dateTime={toIsoString(member.joinedAt)}
                               title={formatAbsoluteTime(member.joinedAt)}

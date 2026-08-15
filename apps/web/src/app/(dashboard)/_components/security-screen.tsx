@@ -362,7 +362,7 @@ function DevicesCard() {
                     </span>
                     {session.current ? <Badge tone="accent">This device</Badge> : null}
                     <span className="w-full" />
-                    <span className="text-fg-subtle text-xs">
+                    <span className="text-fg-subtle text-sm">
                       {session.ipAddress ?? 'IP not recorded'} · last seen{' '}
                       <time
                         dateTime={toIsoString(session.lastSeenAt)}
@@ -382,9 +382,7 @@ function DevicesCard() {
                   </Button>
                 </div>
               ) : (
-                <p className="text-fg-subtle text-[0.8125rem]">
-                  This is the only device signed in.
-                </p>
+                <p className="text-fg-subtle text-sm">This is the only device signed in.</p>
               )}
             </>
           ) : null}

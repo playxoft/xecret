@@ -41,12 +41,13 @@ import type { EffectiveProject, Member, MemberAccessResponse } from './types';
  * project" quietly including production is exactly the accident the
  * per-environment model exists to prevent.
  *
- * ── Levels are cumulative, and the toggles say so ──
- * Each environment offers three pills — Read, Read & write, Admin. A level
- * lights everything it contains and locks those pills: under Admin, Read and
- * Read & write are lit and cannot be turned off, so the pills can never show
- * a state the engine cannot mean. Clicking the highest lit pill steps down
- * one: Admin to Read & write, Read & write to Read, Read to nothing.
+ * ── One control per environment, not three ──
+ * The levels are a single segmented toggle — Read · Read & write · Admin —
+ * because they are one choice, not three switches. A level lights everything
+ * it contains (Admin lights all three), clicking a different segment moves the
+ * choice there, and clicking the segment that *is* the current level turns the
+ * whole thing off in one act: un-choosing Admin does not leave a stub of
+ * Read & write behind, it leaves no access.
  *
  * ── Nothing is written until Save ──
  * Toggles are staged locally. Save applies the whole batch — one audited
@@ -72,14 +73,6 @@ const LEVEL_RANK: Readonly<Record<AccessLevel, number>> = {
   read: 1,
   write: 2,
   admin: 3,
-};
-
-/** What turning a level off leaves behind: the next level down. */
-const LEVEL_BELOW: Readonly<Record<AccessLevel, AccessLevel>> = {
-  none: 'none',
-  read: 'none',
-  write: 'read',
-  admin: 'write',
 };
 
 export function MemberAccessPanel({
@@ -248,7 +241,7 @@ export function MemberAccessPanel({
       ) : (
         <>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-fg-subtle text-[0.8125rem]">
+            <p className="text-fg-subtle text-sm">
               {visible.length === 0
                 ? 'No project access.'
                 : `Access to ${pluralize(visible.length, 'project')} — granted per environment, never per project.`}
@@ -279,7 +272,7 @@ export function MemberAccessPanel({
           </div>
 
           {visible.length === 0 && projects.length === 0 ? (
-            <p className="text-fg-muted text-[0.8125rem]">
+            <p className="text-fg-muted text-sm">
               This organisation has no projects yet, so there is nothing to grant.
             </p>
           ) : (
@@ -317,7 +310,7 @@ export function MemberAccessPanel({
                         )}
                       />
                       <span className="text-fg truncate text-sm font-semibold">{project.name}</span>
-                      <span className="text-fg-subtle text-xs whitespace-nowrap">
+                      <span className="text-fg-subtle text-sm whitespace-nowrap">
                         {granted} of {pluralize(project.environments.length, 'environment')}
                       </span>
                     </button>
@@ -343,40 +336,20 @@ export function MemberAccessPanel({
                             key={environment.slug}
                             className="border-line-subtle flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 border-t px-3 py-2"
                           >
-                            <span className="flex items-center gap-2 text-[0.8125rem]">
+                            <span className="flex items-center gap-2 text-sm">
                               {environment.name}
                               {environment.isProduction ? (
                                 <Badge tone="production">Production</Badge>
                               ) : null}
                             </span>
-                            <span className="flex items-center gap-1.5">
-                              {GRANTABLE_LEVELS.map((pill) => {
-                                // A pill is lit when the level reaches it, and
-                                // locked while a higher level contains it —
-                                // Read cannot go out while Read & write holds.
-                                const lit = LEVEL_RANK[level] >= LEVEL_RANK[pill];
-                                const locked = LEVEL_RANK[level] > LEVEL_RANK[pill];
-
-                                return (
-                                  <LevelPill
-                                    key={pill}
-                                    label={ACCESS_LEVEL_LABELS[pill]}
-                                    lit={lit}
-                                    locked={locked}
-                                    disabled={!mayEdit || saving}
-                                    ariaLabel={`${ACCESS_LEVEL_LABELS[pill]} access to ${project.name} ${environment.name}`}
-                                    onToggle={() =>
-                                      stageLevel(
-                                        project.slug,
-                                        environment.slug,
-                                        environment.level,
-                                        lit ? LEVEL_BELOW[pill] : pill,
-                                      )
-                                    }
-                                  />
-                                );
-                              })}
-                            </span>
+                            <LevelToggle
+                              level={level}
+                              disabled={!mayEdit || saving}
+                              scopeLabel={`${project.name} ${environment.name}`}
+                              onSelect={(next) =>
+                                stageLevel(project.slug, environment.slug, environment.level, next)
+                              }
+                            />
                           </div>
                         );
                       })
@@ -387,7 +360,7 @@ export function MemberAccessPanel({
           )}
 
           <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
-            <p className="text-fg-subtle mr-auto text-xs">
+            <p className="text-fg-subtle mr-auto text-sm">
               Owners and admins hold admin access everywhere by their role; turning a level off
               writes an explicit “no access” that overrides even a role default.
             </p>
@@ -430,47 +403,64 @@ export function MemberAccessPanel({
 }
 
 /**
- * One access level as a toggle pill.
+ * One environment's access level, as a single segmented toggle.
  *
- * `aria-pressed` carries the toggle semantics for assistive tech; a locked
- * pill stays lit but refuses the click, because its level is contained in a
- * higher one and turning it off alone would be a state the engine cannot hold.
+ * Three segments in one bubble, because the levels are one choice rather than
+ * three switches. Every segment the level contains is lit — Admin lights all
+ * three — and every segment stays clickable:
+ *
+ *  - clicking a different segment moves the level there (up or down), and
+ *  - clicking the segment that *is* the level turns everything off at once.
+ *    Un-choosing Admin never strands a leftover Read & write.
+ *
+ * `aria-pressed` on each segment says what is lit; the group carries the
+ * scope's name so sixty rows of "Read" stay tellable apart.
  */
-function LevelPill({
-  label,
-  lit,
-  locked,
+function LevelToggle({
+  level,
   disabled,
-  ariaLabel,
-  onToggle,
+  scopeLabel,
+  onSelect,
 }: {
-  label: string;
-  lit: boolean;
-  locked: boolean;
+  level: AccessLevel;
   disabled: boolean;
-  ariaLabel: string;
-  onToggle: () => void;
+  scopeLabel: string;
+  onSelect: (next: AccessLevel) => void;
 }) {
   return (
-    <button
-      type="button"
-      aria-pressed={lit}
-      aria-label={ariaLabel}
-      disabled={disabled || locked}
-      onClick={onToggle}
+    <span
+      role="group"
+      aria-label={`Access to ${scopeLabel}`}
       className={cn(
-        'rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
-        lit
-          ? 'border-accent-line bg-accent-tint text-accent-text'
-          : 'border-line bg-canvas-inset text-fg-muted',
-        !disabled && !locked && 'cursor-pointer',
-        !disabled && !locked && !lit && 'hover:border-line-strong hover:text-fg',
-        // Locked pills keep their lit colours — they are on, just not yours to
-        // turn off — while a fully disabled row reads muted.
-        disabled && !lit && 'opacity-60',
+        'border-line inline-flex overflow-hidden rounded-full border',
+        disabled && 'opacity-70',
       )}
     >
-      {label}
-    </button>
+      {GRANTABLE_LEVELS.map((segment) => {
+        const lit = LEVEL_RANK[level] >= LEVEL_RANK[segment];
+
+        return (
+          <button
+            key={segment}
+            type="button"
+            aria-pressed={lit}
+            aria-label={`${ACCESS_LEVEL_LABELS[segment]} access to ${scopeLabel}`}
+            disabled={disabled}
+            // The one rule of the control: clicking the current level clears
+            // everything; clicking anything else *is* the new level.
+            onClick={() => onSelect(segment === level ? 'none' : segment)}
+            className={cn(
+              'border-line px-3.5 py-1.5 text-sm font-medium transition-colors [&:not(:first-child)]:border-l',
+              lit ? 'bg-accent-tint text-accent-text' : 'bg-canvas-inset text-fg-muted',
+              !disabled && 'cursor-pointer',
+              !disabled &&
+                (lit ? 'hover:bg-accent-tint/70' : 'hover:bg-surface-hover hover:text-fg'),
+            )}
+          >
+            {ACCESS_LEVEL_LABELS[segment]}
+          </button>
+        );
+      })}
+    </span>
   );
 }

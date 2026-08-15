@@ -215,7 +215,7 @@ function SetupPanel({ email, onDone }: { email: string; onDone: () => void }) {
         className="flex flex-col gap-5"
       >
         <div className="flex flex-col gap-2">
-          <p className="text-fg-muted text-center text-xs font-medium">Choose a PIN</p>
+          <p className="text-fg-muted text-center text-sm font-medium">Choose a PIN</p>
           <PinInput
             label="New PIN"
             value={pin}
@@ -229,7 +229,7 @@ function SetupPanel({ email, onDone }: { email: string; onDone: () => void }) {
         </div>
 
         <div className="flex flex-col gap-2">
-          <p className="text-fg-muted text-center text-xs font-medium">Enter it again</p>
+          <p className="text-fg-muted text-center text-sm font-medium">Enter it again</p>
           <PinInput
             label="Confirm PIN"
             value={confirm}
@@ -355,7 +355,7 @@ function Footer({ children }: { children?: React.ReactNode }) {
   }
 
   return (
-    <div className="text-fg-subtle mt-5 space-y-2 text-center text-xs leading-5">
+    <div className="text-fg-subtle mt-5 space-y-2 text-center text-sm leading-5">
       {children ? <p>{children}</p> : null}
       <p>
         <button

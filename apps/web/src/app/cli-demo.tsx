@@ -109,7 +109,7 @@ export function CliDemo() {
 
   return (
     <div className="border-line bg-surface shadow-raised mt-10 max-w-xl overflow-hidden rounded-xl border">
-      <div className="border-line-subtle bg-canvas-inset text-fg-subtle flex items-center gap-2 border-b px-3 py-2 text-xs">
+      <div className="border-line-subtle bg-canvas-inset text-fg-subtle flex items-center gap-2 border-b px-3 py-2 text-sm">
         <TerminalIcon className="size-3.5" />
         the golden path
         <span className="text-fg-disabled ml-auto">typed from the CLI&apos;s real output</span>
@@ -117,7 +117,7 @@ export function CliDemo() {
 
       <div
         aria-label="Terminal transcript: xecret login, xecret init, then xecret run"
-        className="flex min-h-[16.5rem] flex-col gap-0.5 px-4 py-3.5 font-mono text-[0.8125rem] leading-6"
+        className="flex min-h-[16.5rem] flex-col gap-0.5 px-4 py-3.5 font-mono text-sm leading-6"
       >
         {SCRIPT.slice(0, visibleCount).map((line, index) => (
           <TranscriptLine key={index} line={line} partial={null} />

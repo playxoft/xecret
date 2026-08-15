@@ -71,8 +71,8 @@ export function InvitationsSection({
               className="border-line-subtle flex flex-wrap items-center gap-x-4 gap-y-1 py-2.5 [&:not(:last-child)]:border-b"
             >
               <div className="min-w-0 flex-1">
-                <p className="text-fg truncate text-[0.8125rem] font-medium">{invitation.email}</p>
-                <p className="text-fg-subtle text-xs">
+                <p className="text-fg truncate text-sm font-medium">{invitation.email}</p>
+                <p className="text-fg-subtle text-sm">
                   {ROLE_LABELS[invitation.role]}
                   {invitation.invitedBy !== null ? (
                     <>
@@ -86,7 +86,7 @@ export function InvitationsSection({
               {invitation.state === 'expired' ? (
                 <Badge tone="warning">Expired</Badge>
               ) : (
-                <span className="text-fg-muted text-xs whitespace-nowrap">
+                <span className="text-fg-muted text-sm whitespace-nowrap">
                   expires{' '}
                   <time
                     dateTime={toIsoString(invitation.expiresAt)}

@@ -227,7 +227,7 @@ export function AuditScreen({ orgSlug }: { orgSlug: string }) {
           </div>
 
           {window !== null ? (
-            <p role="status" className="text-fg-subtle text-[0.8125rem]">
+            <p role="status" className="text-fg-subtle text-sm">
               Showing {formatAbsoluteTime(window.from)} — {formatAbsoluteTime(window.to)}. Queries
               cover at most 90 days at a time.
             </p>
@@ -267,7 +267,7 @@ export function AuditScreen({ orgSlug }: { orgSlug: string }) {
                   <TableBody>
                     {events.map((event) => (
                       <TableRow key={event.id}>
-                        <TableCell className="text-fg-muted text-[0.8125rem] whitespace-nowrap">
+                        <TableCell className="text-fg-muted text-sm whitespace-nowrap">
                           <time
                             dateTime={toIsoString(event.createdAt)}
                             title={formatAbsoluteTime(event.createdAt)}
@@ -276,26 +276,24 @@ export function AuditScreen({ orgSlug }: { orgSlug: string }) {
                           </time>
                         </TableCell>
                         <TableCell>
-                          <p className="text-fg truncate text-[0.8125rem]">
-                            {event.actorLabel ?? '—'}
-                          </p>
+                          <p className="text-fg truncate text-sm">{event.actorLabel ?? '—'}</p>
                           {event.ipAddress !== null ? (
-                            <p className="text-fg-subtle font-mono text-xs">{event.ipAddress}</p>
+                            <p className="text-fg-subtle font-mono text-sm">{event.ipAddress}</p>
                           ) : null}
                         </TableCell>
                         <TableCell>
-                          <code className="text-fg-muted font-mono text-xs">{event.action}</code>
+                          <code className="text-fg-muted font-mono text-sm">{event.action}</code>
                         </TableCell>
                         <TableCell>
                           {event.outcome === 'success' ? (
-                            <span className="text-fg-muted text-[0.8125rem]">ok</span>
+                            <span className="text-fg-muted text-sm">ok</span>
                           ) : (
                             <Badge tone={OUTCOME_TONE[event.outcome] ?? 'neutral'}>
                               {event.outcome}
                             </Badge>
                           )}
                         </TableCell>
-                        <TableCell className="text-fg-muted max-w-64 truncate text-[0.8125rem]">
+                        <TableCell className="text-fg-muted max-w-64 truncate text-sm">
                           {describeEvent(event)}
                         </TableCell>
                       </TableRow>

@@ -57,7 +57,7 @@ export function OrganizationsScreen() {
             >
               <span
                 aria-hidden="true"
-                className="bg-accent-tint text-accent-text grid size-9 shrink-0 place-items-center rounded-lg text-xs font-semibold"
+                className="bg-accent-tint text-accent-text grid size-9 shrink-0 place-items-center rounded-lg text-sm font-semibold"
               >
                 {initials(organization.name)}
               </span>
@@ -65,7 +65,7 @@ export function OrganizationsScreen() {
                 <span className="text-fg block truncate text-sm font-medium">
                   {organization.name}
                 </span>
-                <span className="text-fg-subtle block truncate text-xs">
+                <span className="text-fg-subtle block truncate text-sm">
                   <span className="font-mono">{organization.slug}</span> · {organization.role}
                 </span>
               </span>

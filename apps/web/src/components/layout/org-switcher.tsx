@@ -59,17 +59,13 @@ export function OrgSwitcher({
       >
         <span
           aria-hidden="true"
-          className="bg-accent-tint text-accent-text grid size-6 shrink-0 place-items-center rounded-md text-[0.6875rem] font-semibold"
+          className="bg-accent-tint text-accent-text grid size-6 shrink-0 place-items-center rounded-md text-sm font-semibold"
         >
           {initials(current.name)}
         </span>
         <span className="x-sidebar-wide min-w-0 flex-1">
-          <span className="text-fg block truncate text-[0.8125rem] font-medium">
-            {current.name}
-          </span>
-          <span className="text-fg-subtle block truncate text-[0.6875rem] capitalize">
-            {current.role}
-          </span>
+          <span className="text-fg block truncate text-sm font-medium">{current.name}</span>
+          <span className="text-fg-subtle block truncate text-sm capitalize">{current.role}</span>
         </span>
         <ChevronUpDownIcon className="x-sidebar-wide text-fg-subtle size-3.5 shrink-0" />
       </DropdownMenuTrigger>
@@ -83,7 +79,7 @@ export function OrgSwitcher({
               {org.slug === current.slug ? (
                 <CheckIcon className="text-accent-text size-4 shrink-0" />
               ) : (
-                <span className="text-fg-subtle shrink-0 text-xs capitalize">{org.role}</span>
+                <span className="text-fg-subtle shrink-0 text-sm capitalize">{org.role}</span>
               )}
             </Link>
           </DropdownMenuItem>

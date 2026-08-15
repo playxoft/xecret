@@ -116,7 +116,7 @@ function DeleteProjectCard() {
             <Alert tone="danger" title="The project was not deleted">
               <p>{errorMessage(problem)}</p>
               {isApiError(problem) && problem.requestId ? (
-                <p className="mt-1.5 text-xs">
+                <p className="mt-1.5 text-sm">
                   Request id: <code className="font-mono select-all">{problem.requestId}</code>
                 </p>
               ) : null}
@@ -242,7 +242,7 @@ function DeleteAccountCard() {
             <Alert tone="danger" title="The account was not deleted">
               <p>{errorMessage(problem)}</p>
               {isApiError(problem) && problem.code === 'conflict' ? (
-                <p className="mt-1.5 text-xs">
+                <p className="mt-1.5 text-sm">
                   Ownership moves on the Members screen of that organisation.
                 </p>
               ) : null}
