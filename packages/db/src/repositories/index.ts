@@ -94,6 +94,7 @@ export {
   findMembership,
   findMemberWithUser,
   listGrantsForMember,
+  listGrantsForOrganization,
   listMembers,
   loadAuthorizationContext,
   memberGrantsQuery,

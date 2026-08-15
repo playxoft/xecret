@@ -18,6 +18,13 @@ export interface Member {
   status: 'active' | 'suspended';
   joinedAt: string;
   isYou: boolean;
+  /**
+   * Slugs of the projects this member can reach (any environment above
+   * no-access). Present only when the viewer holds `member.update` — grant
+   * topology across members is an access map of the organisation, and the
+   * list endpoint tells it only to the people who can change it.
+   */
+  projects?: readonly string[];
 }
 
 export interface Seats {

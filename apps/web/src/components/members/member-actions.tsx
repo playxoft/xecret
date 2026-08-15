@@ -10,16 +10,11 @@ import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import {
   Button,
   ConfirmDialog,
-  KeyIcon,
-  LockIcon,
-  LockOpenIcon,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-  Tooltip,
-  TrashIcon,
   useToast,
 } from '@/components/ui';
 import { MemberAccessDialog } from './member-access-dialog';
@@ -27,7 +22,7 @@ import { ROLE_LABELS, ROLES_DESCENDING } from './types';
 import type { Member } from './types';
 
 /**
- * The controls on one member row: the role select and the actions menu.
+ * The controls on one member row: the role select and the action buttons.
  *
  * Rendered only when the viewer can plausibly complete the action — their role
  * is at least `admin`, the row is not their own, and the member's role is not
@@ -121,20 +116,18 @@ export function MemberRowActions({
         </SelectContent>
       </Select>
 
-      {/* Inline icon buttons rather than a menu: three actions fit a row, and
-          the one that matters in a hurry — suspend — should not hide behind a
-          click. Each carries a tooltip and a full aria-label; the icon alone
-          is never the accessible name. */}
-      <Tooltip content="View & edit access">
-        <Button
-          size="icon"
-          variant="ghost"
-          aria-label={`View and edit access for ${member.displayName ?? member.email}`}
-          onClick={() => setViewingAccess(true)}
-        >
-          <KeyIcon className="size-4" />
-        </Button>
-      </Tooltip>
+      {/* Inline text buttons rather than icons or a menu: the words are their
+          own labels, nothing important hides behind a hover, and the one that
+          matters in a hurry — suspend — should not hide behind a click. Each
+          still carries a full aria-label naming its row. */}
+      <Button
+        size="sm"
+        variant="ghost"
+        aria-label={`View and edit access for ${member.displayName ?? member.email}`}
+        onClick={() => setViewingAccess(true)}
+      >
+        Edit access
+      </Button>
 
       <MemberAccessDialog
         orgSlug={orgSlug}
@@ -144,36 +137,28 @@ export function MemberRowActions({
         onOpenChange={setViewingAccess}
       />
 
-      <Tooltip content={member.status === 'suspended' ? 'Reinstate' : 'Suspend'}>
-        <Button
-          size="icon"
-          variant="ghost"
-          aria-label={
-            member.status === 'suspended'
-              ? `Reinstate ${member.displayName ?? member.email}`
-              : `Suspend ${member.displayName ?? member.email}`
-          }
-          onClick={() => setSuspending(true)}
-        >
-          {member.status === 'suspended' ? (
-            <LockOpenIcon className="size-4" />
-          ) : (
-            <LockIcon className="size-4" />
-          )}
-        </Button>
-      </Tooltip>
+      <Button
+        size="sm"
+        variant="ghost"
+        aria-label={
+          member.status === 'suspended'
+            ? `Reinstate ${member.displayName ?? member.email}`
+            : `Suspend ${member.displayName ?? member.email}`
+        }
+        onClick={() => setSuspending(true)}
+      >
+        {member.status === 'suspended' ? 'Reinstate' : 'Suspend'}
+      </Button>
 
-      <Tooltip content="Remove from organisation">
-        <Button
-          size="icon"
-          variant="ghost"
-          className="text-danger-text hover:text-danger-text"
-          aria-label={`Remove ${member.displayName ?? member.email} from the organisation`}
-          onClick={() => setRemoving(true)}
-        >
-          <TrashIcon className="size-4" />
-        </Button>
-      </Tooltip>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="text-danger-text hover:text-danger-text"
+        aria-label={`Remove ${member.displayName ?? member.email} from the organisation`}
+        onClick={() => setRemoving(true)}
+      >
+        Remove
+      </Button>
 
       <ConfirmDialog
         open={suspending}

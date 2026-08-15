@@ -455,6 +455,32 @@ export async function listGrantsForMember(
   return memberGrantsQuery(exec, { orgId, memberId });
 }
 
+/**
+ * Every grant in the organisation, each row naming its member.
+ *
+ * One query instead of one per member, for the callers that answer a question
+ * across the whole roster — "which projects can each member reach" on the
+ * member list. The `projects` join carries the same tenancy assertion as
+ * `memberGrantsQuery`: a grant row pointing at another tenant's project, or at
+ * a soft-deleted one, does not come back.
+ */
+export async function listGrantsForOrganization(
+  exec: Executor,
+  orgId: string,
+): Promise<(MemberGrant & { memberId: string })[]> {
+  return exec
+    .select({ ...GRANT_COLUMNS, memberId: accessGrants.orgMemberId })
+    .from(accessGrants)
+    .innerJoin(
+      projects,
+      and(
+        eq(projects.id, accessGrants.projectId),
+        eq(projects.orgId, orgId),
+        isNull(projects.deletedAt),
+      ),
+    );
+}
+
 export interface OwnershipChange {
   /** Active owners in the organisation, counted with the member being changed. */
   activeOwnerCount: number;

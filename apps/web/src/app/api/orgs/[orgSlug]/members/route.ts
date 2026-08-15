@@ -1,11 +1,18 @@
 import { AuthorizationError } from '@xecret/core/authz';
-import { createInvitation, listMembers, seatUsage } from '@xecret/db/repositories';
+import {
+  createInvitation,
+  listEnvironmentsForOrganization,
+  listGrantsForOrganization,
+  listMembers,
+  seatUsage,
+} from '@xecret/db/repositories';
 import { publicOrigin } from '@/server/bindings';
 import { json, parseJsonBody, parseQuery } from '@/server/http';
 import { invitationMail } from '@/server/invitation-mail';
 import { mailerFrom } from '@/server/mail';
 import {
   assertRoleAuthority,
+  effectiveAccess,
   mapMembershipError,
   requireMembership,
   requireSessionPrincipal,
@@ -31,7 +38,11 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  * to everyone in the organisation on purpose: they are how members are invited
  * and identified in the audit log. Access *grants* are not here — "who may read
  * production" is a more sensitive question than "who is here", it is
- * per-project, and it belongs on the member's own page (`[memberId]/access`).
+ * per-project, and it belongs on the member's access view (`[memberId]/access`).
+ * The one concession: for a viewer holding `member.update`, each member carries
+ * the slugs of the projects they can reach, so the list can be filtered by
+ * project — the level detail stays on the access endpoint, behind the same
+ * capability.
  *
  * ── Inviting (POST) ──
  * An invitation is a minted credential, so the rules that govern credential
@@ -61,8 +72,39 @@ export const GET = authenticatedRoute<Params>(async ({ request, params, principa
 
   const viewerUserId = scope.actor.kind === 'serviceToken' ? null : scope.actor.userId;
 
+  // Which projects each member can reach — but only for a viewer who could
+  // change it. The same rule as the per-member access endpoint: grant topology
+  // across members is an access map of the organisation, and `member.read`
+  // alone has no business downloading one.
+  let reachableProjects: ReadonlyMap<string, readonly string[]> | null = null;
+  try {
+    authorize(scope, 'member.update');
+    const [orgGrants, environments] = await Promise.all([
+      listGrantsForOrganization(services.db, scope.organization.id),
+      listEnvironmentsForOrganization(services.db, scope.organization.id),
+    ]);
+    reachableProjects = new Map(
+      members.members.map((member) => [
+        member.id,
+        effectiveAccess(
+          member,
+          orgGrants.filter((grant) => grant.memberId === member.id),
+          environments,
+        )
+          .filter((project) => project.environments.some((env) => env.level !== 'none'))
+          .map((project) => project.slug),
+      ]),
+    );
+  } catch (cause) {
+    // Not an error: the listing simply omits the field for non-admins.
+    if (!(cause instanceof AuthorizationError)) throw cause;
+  }
+
   return json({
-    data: members.members.map((member) => toMember(member, viewerUserId)),
+    data: members.members.map((member) => ({
+      ...toMember(member, viewerUserId),
+      ...(reachableProjects === null ? {} : { projects: reachableProjects.get(member.id) ?? [] }),
+    })),
     seats: toSeats(seats),
     // Offset pagination behind an opaque cursor, exactly as the secret listing
     // does — see the note in `schemas/secrets.ts`. A client that does arithmetic

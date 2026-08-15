@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 
+import { cn } from '@/lib/cn';
 import { initials } from '@/lib/format';
 import { formatAbsoluteTime, formatRelativeTime, toIsoString } from '@/lib/format';
 import { pluralize } from '@/lib/format';
@@ -9,10 +10,16 @@ import { PageHeader } from '@/components/layout';
 import {
   Badge,
   Button,
+  ChevronUpDownIcon,
   EmptyState,
   Input,
   PlusIcon,
   SearchIcon,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   Skeleton,
   Table,
   TableBody,
@@ -26,8 +33,9 @@ import {
 import { InvitationsSection } from '@/components/members/invitations-section';
 import { InviteDialog } from '@/components/members/invite-dialog';
 import { MemberRowActions } from '@/components/members/member-actions';
-import { ROLE_LABELS, ROLE_TONE } from '@/components/members/types';
+import { ROLE_LABELS, ROLE_TONE, ROLES_DESCENDING } from '@/components/members/types';
 import type { InvitationListResponse, MemberListResponse } from '@/components/members/types';
+import type { ProjectListResponse } from '@/components/projects/types';
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState } from './resource-states';
@@ -54,6 +62,11 @@ import { isOrgAdmin, useOrganization } from './session';
  * including the last-owner invariant that only the database can answer.
  */
 
+type SortKey = 'name' | 'role' | 'joined';
+type SortDirection = 'asc' | 'desc';
+
+const ALL_PROJECTS = 'all';
+
 export function MembersScreen({ orgSlug }: { orgSlug: string }) {
   const organization = useOrganization(orgSlug);
   const viewerRole = organization?.role ?? null;
@@ -61,25 +74,66 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
 
   const members = useApiResource<MemberListResponse>(apiPath.members(orgSlug));
   // Invitations are fetched only for people who could see them; asking and
-  // rendering the 403 would turn a permission into an error state.
+  // rendering the 403 would turn a permission into an error state. The project
+  // list feeds the project filter, which exists only for the same people —
+  // the listing carries per-member project reach only for admins.
   const invitations = useApiResource<InvitationListResponse>(
     canManage ? apiPath.invitations(orgSlug) : null,
   );
+  const projects = useApiResource<ProjectListResponse>(
+    canManage ? apiPath.projects(orgSlug) : null,
+  );
 
   const [query, setQuery] = useState('');
+  const [projectFilter, setProjectFilter] = useState(ALL_PROJECTS);
+  const [sortKey, setSortKey] = useState<SortKey>('name');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [inviting, setInviting] = useState(false);
 
   const visible = useMemo(() => {
     const rows = members.data?.data ?? [];
     const needle = query.trim().toLowerCase();
-    if (needle.length === 0) return rows;
 
-    return rows.filter(
-      (member) =>
-        member.email.toLowerCase().includes(needle) ||
-        (member.displayName ?? '').toLowerCase().includes(needle),
-    );
-  }, [members.data, query]);
+    const filtered = rows.filter((member) => {
+      if (
+        needle.length > 0 &&
+        !member.email.toLowerCase().includes(needle) &&
+        !(member.displayName ?? '').toLowerCase().includes(needle)
+      ) {
+        return false;
+      }
+      // `projects` is present only for admin viewers — exactly the people the
+      // filter control is drawn for, so a missing field never hides a row.
+      if (projectFilter !== ALL_PROJECTS && member.projects !== undefined) {
+        return member.projects.includes(projectFilter);
+      }
+      return true;
+    });
+
+    filtered.sort((a, b) => {
+      const order =
+        sortKey === 'name'
+          ? (a.displayName ?? a.email)
+              .toLowerCase()
+              .localeCompare((b.displayName ?? b.email).toLowerCase())
+          : sortKey === 'role'
+            ? ROLES_DESCENDING.indexOf(a.role) - ROLES_DESCENDING.indexOf(b.role)
+            : a.joinedAt.localeCompare(b.joinedAt);
+      return sortDirection === 'asc' ? order : -order;
+    });
+
+    return filtered;
+  }, [members.data, query, projectFilter, sortKey, sortDirection]);
+
+  function toggleSort(key: SortKey) {
+    if (key === sortKey) {
+      setSortDirection((current) => (current === 'asc' ? 'desc' : 'asc'));
+      return;
+    }
+    setSortKey(key);
+    // Names read best A→Z, roles highest-first, join dates newest-first.
+    setSortDirection(key === 'joined' ? 'desc' : 'asc');
+  }
 
   const seats = members.data?.seats;
 
@@ -129,13 +183,29 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
                 startIcon={<SearchIcon className="size-4" />}
               />
             </div>
+
+            {canManage && (projects.data?.projects.length ?? 0) > 0 ? (
+              <Select value={projectFilter} onValueChange={setProjectFilter}>
+                <SelectTrigger className="w-48" aria-label="Filter members by project access">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_PROJECTS}>All projects</SelectItem>
+                  {(projects.data?.projects ?? []).map((project) => (
+                    <SelectItem key={project.slug} value={project.slug}>
+                      {project.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
           </div>
 
           {/* The count and the seat state, announced politely. */}
           <p role="status" aria-live="polite" className="text-fg-subtle text-[0.8125rem]">
-            {query.trim().length === 0
+            {query.trim().length === 0 && projectFilter === ALL_PROJECTS
               ? pluralize(members.data.data.length, 'member')
-              : `${visible.length} of ${pluralize(members.data.data.length, 'member')} match “${query.trim()}”`}
+              : `${visible.length} of ${pluralize(members.data.data.length, 'member')} shown`}
             {seats !== undefined ? (
               <>
                 {' · '}
@@ -150,10 +220,20 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
           {visible.length === 0 && members.data.data.length > 0 ? (
             <EmptyState
               icon={<SearchIcon />}
-              title={`Nothing matches “${query.trim()}”`}
+              title={
+                query.trim().length > 0
+                  ? `Nothing matches “${query.trim()}”`
+                  : 'Nobody can reach this project'
+              }
               action={
-                <Button variant="secondary" onClick={() => setQuery('')}>
-                  Clear the filter
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setQuery('');
+                    setProjectFilter(ALL_PROJECTS);
+                  }}
+                >
+                  Clear the filters
                 </Button>
               }
             />
@@ -175,11 +255,28 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Member</TableHead>
-                    <TableHead className="w-32">Role</TableHead>
+                    <SortableHead
+                      label="Member"
+                      active={sortKey === 'name'}
+                      direction={sortDirection}
+                      onSort={() => toggleSort('name')}
+                    />
+                    <SortableHead
+                      label="Role"
+                      className="w-32"
+                      active={sortKey === 'role'}
+                      direction={sortDirection}
+                      onSort={() => toggleSort('role')}
+                    />
                     <TableHead className="w-28">Status</TableHead>
-                    <TableHead className="w-32">Joined</TableHead>
-                    <TableHead className="w-52">
+                    <SortableHead
+                      label="Joined"
+                      className="w-32"
+                      active={sortKey === 'joined'}
+                      direction={sortDirection}
+                      onSort={() => toggleSort('joined')}
+                    />
+                    <TableHead className="w-96">
                       <span className="sr-only">Actions</span>
                     </TableHead>
                   </TableRow>
@@ -261,6 +358,41 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
         />
       ) : null}
     </div>
+  );
+}
+
+function SortableHead({
+  label,
+  active,
+  direction,
+  onSort,
+  className,
+}: {
+  label: string;
+  active: boolean;
+  direction: SortDirection;
+  onSort: () => void;
+  className?: string;
+}) {
+  return (
+    // `aria-sort` belongs on the header cell, not on the button inside it, and
+    // exactly one column may carry a value other than "none".
+    <TableHead
+      aria-sort={active ? (direction === 'asc' ? 'ascending' : 'descending') : 'none'}
+      {...(className === undefined ? {} : { className })}
+    >
+      <button
+        type="button"
+        onClick={onSort}
+        className="hover:text-fg -mx-1 inline-flex items-center gap-1 rounded px-1 py-0.5 transition-colors"
+      >
+        {label}
+        <ChevronUpDownIcon
+          aria-hidden="true"
+          className={cn('size-3.5', active ? 'text-accent-text' : 'text-fg-subtle')}
+        />
+      </button>
+    </TableHead>
   );
 }
 
