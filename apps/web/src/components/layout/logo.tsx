@@ -19,8 +19,19 @@ import { cn } from '@/lib/cn';
  * strip whose colour the application does not control. The gradient runs from
  * the accent's own cyan into a deep blue, so it still belongs to the palette
  * without being subject to it.
+ *
+ * @param gradientId The `id` of this instance's `<linearGradient>`. Only worth
+ *   passing when a page renders the mark more than once — see below.
  */
-export function LogoMark({ className }: { className?: string }) {
+export function LogoMark({
+  className,
+  gradientId = 'xecret-mark-gradient',
+}: {
+  className?: string;
+  // Explicitly `| undefined` because `exactOptionalPropertyTypes` is on and
+  // `Wordmark` forwards the prop whether or not its own caller supplied one.
+  gradientId?: string | undefined;
+}) {
   return (
     <svg
       viewBox="0 0 32 32"
@@ -30,14 +41,18 @@ export function LogoMark({ className }: { className?: string }) {
       focusable="false"
     >
       <defs>
-        {/* A fixed id rather than `useId`: this file is imported by Server
-            Components — the marketing page and the auth layout — where hooks
-            cannot run, and making it a client component to generate a string
-            would pull the mark into every consumer's bundle. Two instances on
-            one page therefore share an id; both definitions are identical, so
-            `url(#…)` resolving to the first renders correctly either way. */}
+        {/* The id comes from a prop rather than `useId`: this file is imported
+            by Server Components — the marketing page and the auth layout —
+            where hooks cannot run, and making it a client component to
+            generate a string would pull the mark into every consumer's bundle.
+            So the caller names it, and the one page that renders the mark
+            twice gives its second instance a different name. Sharing the
+            default across both would still paint correctly while the two
+            definitions match; it costs a duplicate `id` in the document, and
+            a `url(#…)` that would quietly resolve to whichever gradient came
+            first the moment they stop matching. */}
         <linearGradient
-          id="xecret-mark-gradient"
+          id={gradientId}
           x1="0"
           y1="0"
           x2="32"
@@ -49,7 +64,7 @@ export function LogoMark({ className }: { className?: string }) {
           <stop offset="1" stopColor="#2a3fd0" />
         </linearGradient>
       </defs>
-      <rect width="32" height="32" rx="8" fill="url(#xecret-mark-gradient)" />
+      <rect width="32" height="32" rx="8" fill={`url(#${gradientId})`} />
       <path
         d="M8.5 8.5L23.5 23.5M23.5 8.5L8.5 23.5"
         stroke="#ffffff"
@@ -60,10 +75,10 @@ export function LogoMark({ className }: { className?: string }) {
   );
 }
 
-export function Wordmark({ className }: { className?: string }) {
+export function Wordmark({ className, gradientId }: { className?: string; gradientId?: string }) {
   return (
     <span className={cn('inline-flex items-center gap-2', className)}>
-      <LogoMark className="size-6 shrink-0" />
+      <LogoMark className="size-6 shrink-0" gradientId={gradientId} />
       <span className="text-fg text-[0.9375rem] font-semibold tracking-tight">xecret</span>
     </span>
   );
