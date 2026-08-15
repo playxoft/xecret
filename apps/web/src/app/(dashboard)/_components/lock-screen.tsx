@@ -7,7 +7,7 @@ import { api, endSession, errorMessage, isApiError, SIGN_IN_PATH } from '@/lib/a
 import { PinInput } from '@/components/auth/pin-input';
 import { Wordmark } from '@/components/layout';
 import { Alert, Button, LockIcon, ShieldCheckIcon } from '@/components/ui';
-import type { PinStatus } from './session';
+import type { PinResetResult, PinStatus } from './session';
 
 /**
  * The screen between a signed-in session and the secrets it can reach.
@@ -283,7 +283,15 @@ function ResetPanel({ email, onCancel }: { email: string; onCancel: () => void }
     setState('sending');
     setError(null);
     try {
-      await api.post('/auth/pin/reset');
+      const result = await api.post<PinResetResult>('/auth/pin/reset');
+      // `sent: false` is a successful request with an unhappy answer — mail is
+      // not configured on this deployment. Reporting "check your email" would
+      // leave somebody watching an inbox nothing will ever arrive in.
+      if (!result.sent) {
+        setError(result.reason ?? 'A reset link could not be sent.');
+        setState('idle');
+        return;
+      }
       setState('sent');
     } catch (cause) {
       setError(errorMessage(cause));

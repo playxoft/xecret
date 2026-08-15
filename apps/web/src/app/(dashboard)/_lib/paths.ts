@@ -61,6 +61,8 @@ export const apiPath = {
   account: (): string => '/api/auth/account',
   pin: (): string => '/api/auth/pin',
   pinLock: (): string => '/api/auth/pin/lock',
+  /** Requests a reset link to the account's own address. See `PinResetResult`. */
+  pinReset: (): string => '/api/auth/pin/reset',
   orgs: (): string => '/api/orgs',
   org: (org: string): string => `/api/orgs/${segment(org)}`,
   projects: (org: string): string => `${apiPath.org(org)}/projects`,

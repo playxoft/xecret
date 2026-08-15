@@ -13,7 +13,7 @@ being honest about the one thing it sells.
 | **PostgreSQL** (Neon recommended) | All data. Hyperdrive in front of it on Cloudflare; the Neon serverless HTTP driver is the fallback without Hyperdrive. | Yes |
 | **Cloudflare Secrets Store** | Holds the runtime copy of the Root KEK, bound to the Worker. | Yes |
 | **A Firebase project** | Identity only — Google + email/password sign-in. xecret issues its own sessions; `firebase-admin` never runs anywhere ([ADR 0003](adr/0003-firebase-as-identity-provider.md)). | Yes — and this is real friction. The `IdentityProvider` interface exists so a Postgres-native provider can be contributed. |
-| **A mail provider** (ZeptoMail wired; the `Mailer` interface is ~30 lines to swap) | PIN-reset links and invitation emails. | No — without it, invitations return a shareable link instead of sending mail, and PIN reset reports itself unavailable. |
+| **A mail provider** (ZeptoMail wired; the `Mailer` interface is ~30 lines to swap) | PIN-reset links and invitation emails. | No — without it, invitations return a shareable link instead of sending mail, and PIN reset answers 200 with `sent: false` and a reason. |
 | **Phase.dev** (or any secret source for deploy time) | Where *your* copy of the Root KEK lives between deploys. The Worker never calls it at runtime. | Your choice — any process that can populate deploy-time env vars works. |
 
 ## Before anything else: the root key

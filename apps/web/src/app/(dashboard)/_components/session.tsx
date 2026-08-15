@@ -53,6 +53,21 @@ export interface PinStatus {
   autoLockMinutes: number;
 }
 
+/**
+ * The answer to "email me a PIN reset link".
+ *
+ * `sent: false` is a **successful** request with an unhappy answer: mail is
+ * optional in a self-hosted install, and a deployment without it cannot send
+ * anything. It is not an error status, so callers must read this flag rather
+ * than treating a resolved promise as "check your inbox" — the failure mode
+ * that flag prevents is somebody watching a mailbox nothing will arrive in.
+ */
+export interface PinResetResult {
+  sent: boolean;
+  /** Why nothing was sent, and what to do instead. Present when `sent` is false. */
+  reason?: string;
+}
+
 export interface SessionValue {
   user: SessionUser;
   organizations: readonly SessionOrganization[];

@@ -80,6 +80,12 @@ export function rateLimitKey(parts: readonly (string | null)[]): string {
  * one attacker cannot lock every user out by hammering a shared address, and one
  * account cannot be brute-forced from many addresses without also tripping the
  * per-account limit.
+ *
+ * Only for *guessing* surfaces. Where the thing being spent belongs to the
+ * subject rather than to us — mail to somebody's address is the case here — the
+ * IP has no business in the key: it hands an attacker a fresh allowance per
+ * proxy, and the per-subject counter it is combined with would have bounded the
+ * same traffic on its own. Those use `rateLimitKey([prefix, subject])`.
  */
 export function attemptKey(ip: string | null, subject: string | null): string {
   return rateLimitKey([ip, subject === null ? null : subject.toLowerCase()]);

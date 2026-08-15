@@ -30,6 +30,7 @@ import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState } from './resource-states';
 import { useSession } from './session';
+import type { PinResetResult } from './session';
 
 /**
  * The Security tab: the password, the PIN, the lock, and every session that
@@ -172,7 +173,7 @@ function PasswordCard() {
 }
 
 function PinCard() {
-  const { pin } = useSession();
+  const { user, pin, refresh } = useSession();
   const { toast } = useToast();
 
   const [currentPin, setCurrentPin] = useState('');
@@ -208,6 +209,13 @@ function PinCard() {
         title: needsCurrent ? 'PIN changed' : 'PIN set',
         description: 'It takes effect the next time any of your sessions locks.',
       });
+      // Everything this card renders reads from the shell's copy of
+      // `/api/auth/me`, which nothing re-reads on its own. Without this, the
+      // account that just set its first PIN keeps being told it has none: no
+      // "Current PIN" field, no reset section — the one below being exactly
+      // what that person needs next — until a full navigation. `LockCard` does
+      // the same after changing the auto-lock interval.
+      refresh();
     } catch (cause) {
       setProblem(errorMessage(cause));
     } finally {
@@ -222,7 +230,7 @@ function PinCard() {
           <CardTitle>Unlock PIN</CardTitle>
           <CardDescription>
             Six digits between a signed-in device and your secrets. Changing it requires the current
-            one — forgetting it is what the reset link on the lock screen is for.
+            one; if you cannot remember it, reset it by email below.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -258,9 +266,107 @@ function PinCard() {
               {needsCurrent ? 'Change PIN' : 'Set PIN'}
             </Button>
           </div>
+
+          {/* Only once a PIN exists: there is nothing to reset otherwise, and
+              the form above is already the way to set the first one. */}
+          {needsCurrent ? <PinResetSection email={user.email} /> : null}
         </CardContent>
       </form>
     </Card>
+  );
+}
+
+/**
+ * "I have forgotten my PIN", from a signed-in session.
+ *
+ * ── Why this belongs here and not only on the lock screen ──
+ * The lock screen is where somebody discovers they have forgotten it, and it
+ * has carried this flow all along. But it is reachable only while locked, and
+ * the person who *remembers* they will forget — before a trip, after setting a
+ * PIN they are unsure of — comes to their security settings and finds the change
+ * form demanding the very thing they cannot supply. A dead end on the one page
+ * named "Security" is worse than a redundant button.
+ *
+ * ── The two factors ──
+ * No address is accepted or offered: the link goes to the address on the
+ * account. Combined with the session cookie the requester already holds, that
+ * is control of the mailbox plus control of the session — two independent
+ * factors to replace a PIN, and no account-enumeration oracle, because a
+ * stranger cannot reach this endpoint at all.
+ */
+function PinResetSection({ email }: { email: string }) {
+  const [state, setState] = useState<'idle' | 'sending' | 'sent'>('idle');
+  const [problem, setProblem] = useState<string | null>(null);
+
+  async function send() {
+    if (state === 'sending') return;
+    setState('sending');
+    setProblem(null);
+
+    try {
+      const result = await api.post<PinResetResult>(apiPath.pinReset());
+      // A resolved promise is not the same as a sent email — mail is optional
+      // in a self-hosted install. See `PinResetResult`.
+      if (!result.sent) {
+        setProblem(result.reason ?? 'A reset link could not be sent.');
+        setState('idle');
+        return;
+      }
+      setState('sent');
+    } catch (cause) {
+      setProblem(errorMessage(cause));
+      setState('idle');
+    }
+  }
+
+  return (
+    <div className="border-line-subtle flex flex-col gap-3 border-t pt-4">
+      {/* The success alert joins this section rather than replacing it, and the
+          button stays. Delivery is handed to `waitUntil` after the response, so
+          a bounce or a provider outage is logged on the server and never
+          reaches this screen — the person it happens to sees "check your email"
+          and then nothing arrives. Replacing the section left them no way to
+          ask again short of navigating away and back. It also matches the rest
+          of this page, where the control stays put and the outcome is announced
+          beside it. */}
+      {state === 'sent' ? (
+        <Alert tone="success" title="Check your email">
+          We sent a link to {email}. It works once and expires in 15 minutes — opening it in this
+          browser lets you choose a new PIN straight away.
+        </Alert>
+      ) : null}
+
+      {problem !== null ? (
+        <Alert tone="danger" title="Could not send the reset link">
+          {problem}
+        </Alert>
+      ) : null}
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <Button
+          // Explicit, though `Button` already defaults to `type="button"` for
+          // this very reason: the platform default inside a form is `submit`,
+          // and this one sits inside the change-PIN form above. Saying it here
+          // is documentation at the site where it matters, not a fix.
+          type="button"
+          variant="secondary"
+          loading={state === 'sending'}
+          onClick={() => void send()}
+        >
+          {state === 'sent' ? 'Send another link' : 'Forgot your PIN? Email me a reset link'}
+        </Button>
+        {state === 'sent' ? null : (
+          <span className="text-fg-subtle text-sm">
+            Sent to {email} — the only address it can go to.
+          </span>
+        )}
+      </div>
+
+      <p className="text-fg-subtle text-xs leading-5">
+        Nobody at xecret can read your PIN back to you: only a derived hash is stored. Access to
+        that mailbox is the one way to replace it.
+      </p>
+    </div>
   );
 }
 
