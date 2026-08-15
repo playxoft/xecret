@@ -47,7 +47,7 @@
     "kill:4050": "kill -9 $(lsof -t -i:3000)"
   },
   "devDependencies": {
-    "@eslint/js": "^9",
+    "@eslint/js": "^10",
     "eslint": "^9",
     "prettier": "^3.4.2",
     "prettier-plugin-tailwindcss": "^0.8.1",
