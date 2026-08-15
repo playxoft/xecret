@@ -768,6 +768,11 @@ export interface AccountMembership {
  * organisation whose only other members are suspended is still somebody
  * else's — suspension is reversible, so their presence keeps it alive, and
  * the leaver's departure must not erase it under them.
+ *
+ * Ordered with the same tiebreaker as `organizationsForUserQuery`, for the same
+ * reason: `organizations.name` carries no unique constraint, and a deletion
+ * preview that lists the same organisations in a different order each time it is
+ * opened is a confirmation screen nobody can check.
  */
 export async function accountMembershipSummary(
   exec: Executor,
@@ -796,5 +801,5 @@ export async function accountMembershipSummary(
       and(eq(orgMembers.orgId, organizations.id), isNull(organizations.deletedAt)),
     )
     .where(eq(orgMembers.userId, userId))
-    .orderBy(asc(organizations.name));
+    .orderBy(asc(organizations.name), asc(organizations.id));
 }

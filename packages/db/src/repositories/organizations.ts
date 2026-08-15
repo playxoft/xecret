@@ -91,6 +91,14 @@ export async function findOrganizationById(
  * The role comes back with the organisation because the switcher needs it to
  * decide what to show, and fetching it per organisation afterwards is the
  * N+1 this join exists to avoid.
+ *
+ * Ordered by name for the switcher, then by id — `organizations.name` carries
+ * no unique constraint, and two personal organisations both left at their
+ * default name would otherwise come back in whatever order the plan happened to
+ * produce. The dashboard reloads this list on every lock, unlock and account
+ * refresh, and treats the first row as the organisation to fall back to when a
+ * route names none, so an unstable head is a shell that re-points itself
+ * mid-session.
  */
 export async function listOrganizationsForUser(
   exec: Executor,
@@ -422,5 +430,5 @@ export function organizationsForUserQuery(exec: Executor, userId: string) {
         isNull(organizations.deletedAt),
       ),
     )
-    .orderBy(asc(organizations.name));
+    .orderBy(asc(organizations.name), asc(organizations.id));
 }
