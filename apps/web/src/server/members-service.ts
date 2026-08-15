@@ -1,6 +1,7 @@
 import type { AccessLevel, OrgRole } from '@xecret/core/authz';
 import { canAssignRole, resolveAccessLevel } from '@xecret/core/authz';
-import { RepositoryError } from '@xecret/db/repositories';
+import type { Database, InvitationGrantSeed } from '@xecret/db';
+import { findEnvironmentBySlug, findProjectBySlug, RepositoryError } from '@xecret/db/repositories';
 import type {
   AuthorizationContext as StoredAuthorizationContext,
   MemberGrant,
@@ -182,4 +183,64 @@ function accessSource(
     return 'project-grant';
   }
   return 'role-default';
+}
+
+/**
+ * Resolves an invitation's access selections from slugs to ids.
+ *
+ * Done at *invitation* time rather than acceptance: the inviter is the one who
+ * can act on "no such project", and ids are what survive a rename between the
+ * invitation and its acceptance (slugs are immutable today, but a snapshot
+ * should not depend on that staying true). Anything deleted before acceptance
+ * is skipped there — the deny-by-default rows cover whatever replaced it.
+ *
+ * Failures are field errors carrying the *position* of the bad selection,
+ * never the slug itself: this API does not echo request input, and the dialog
+ * that sent the selection can point at the row from the index alone.
+ */
+export async function resolveInvitationGrants(
+  db: Database,
+  orgId: string,
+  selections: readonly { projectSlug: string; environmentSlug: string | null }[],
+): Promise<InvitationGrantSeed[]> {
+  const projectIds = new Map<string, string>();
+  const seeds: InvitationGrantSeed[] = [];
+  const seen = new Set<string>();
+
+  for (const [index, selection] of selections.entries()) {
+    let projectId = projectIds.get(selection.projectSlug);
+    if (projectId === undefined) {
+      const project = await findProjectBySlug(db, orgId, selection.projectSlug);
+      if (!project) {
+        throw errors.validation([
+          { field: `grants[${index}].projectSlug`, message: 'No such project.' },
+        ]);
+      }
+      projectId = project.id;
+      projectIds.set(selection.projectSlug, projectId);
+    }
+
+    let environmentId: string | null = null;
+    if (selection.environmentSlug !== null) {
+      const environment = await findEnvironmentBySlug(
+        db,
+        orgId,
+        projectId,
+        selection.environmentSlug,
+      );
+      if (!environment) {
+        throw errors.validation([
+          { field: `grants[${index}].environmentSlug`, message: 'No such environment.' },
+        ]);
+      }
+      environmentId = environment.id;
+    }
+
+    const key = `${projectId}/${environmentId ?? '*'}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    seeds.push({ projectId, environmentId });
+  }
+
+  return seeds;
 }

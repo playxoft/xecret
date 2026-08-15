@@ -9,6 +9,7 @@ import {
   mapMembershipError,
   requireMembership,
   requireSessionPrincipal,
+  resolveInvitationGrants,
 } from '@/server/members-service';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
@@ -96,11 +97,20 @@ export const POST = authenticatedRoute<Params>(
     const body = await parseJsonBody(request, memberInviteSchema);
     assertRoleAuthority(membership.role, body.role);
 
+    // Resolved to ids now, while the inviter is present to fix a bad slug.
+    // Present-but-empty is meaningful: it makes the membership deny-by-default
+    // at acceptance — see the invitations schema.
+    const initialGrants =
+      body.grants === undefined
+        ? undefined
+        : await resolveInvitationGrants(services.db, orgId, body.grants);
+
     const issued = await createInvitation(services.db, {
       orgId,
       email: body.email,
       role: body.role,
       invitedBy: inviter.user.id,
+      ...(initialGrants === undefined ? {} : { initialGrants }),
     }).catch(mapMembershipError);
 
     const inviteUrl = `${publicOrigin(services.env)}/invite/${encodeURIComponent(issued.token)}`;

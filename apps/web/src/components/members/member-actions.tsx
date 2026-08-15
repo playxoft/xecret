@@ -11,17 +11,16 @@ import { apiPath, appPath } from '@/app/(dashboard)/_lib/paths';
 import {
   Button,
   ConfirmDialog,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-  MoreHorizontalIcon,
+  KeyIcon,
+  LockIcon,
+  LockOpenIcon,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Tooltip,
+  TrashIcon,
   useToast,
 } from '@/components/ui';
 import { ROLE_LABELS, ROLES_DESCENDING } from './types';
@@ -119,29 +118,51 @@ export function MemberRowActions({
         </SelectContent>
       </Select>
 
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            size="icon"
-            variant="ghost"
-            aria-label={`Actions for ${member.displayName ?? member.email}`}
-          >
-            <MoreHorizontalIcon className="size-4" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem onSelect={() => router.push(appPath.member(orgSlug, member.id))}>
-            View & edit access…
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => setSuspending(true)}>
-            {member.status === 'suspended' ? 'Reinstate…' : 'Suspend…'}
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem destructive onSelect={() => setRemoving(true)}>
-            Remove from organisation…
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      {/* Inline icon buttons rather than a menu: three actions fit a row, and
+          the one that matters in a hurry — suspend — should not hide behind a
+          click. Each carries a tooltip and a full aria-label; the icon alone
+          is never the accessible name. */}
+      <Tooltip content="View & edit access">
+        <Button
+          size="icon"
+          variant="ghost"
+          aria-label={`View and edit access for ${member.displayName ?? member.email}`}
+          onClick={() => router.push(appPath.member(orgSlug, member.id))}
+        >
+          <KeyIcon className="size-4" />
+        </Button>
+      </Tooltip>
+
+      <Tooltip content={member.status === 'suspended' ? 'Reinstate' : 'Suspend'}>
+        <Button
+          size="icon"
+          variant="ghost"
+          aria-label={
+            member.status === 'suspended'
+              ? `Reinstate ${member.displayName ?? member.email}`
+              : `Suspend ${member.displayName ?? member.email}`
+          }
+          onClick={() => setSuspending(true)}
+        >
+          {member.status === 'suspended' ? (
+            <LockOpenIcon className="size-4" />
+          ) : (
+            <LockIcon className="size-4" />
+          )}
+        </Button>
+      </Tooltip>
+
+      <Tooltip content="Remove from organisation">
+        <Button
+          size="icon"
+          variant="ghost"
+          className="text-danger-text hover:text-danger-text"
+          aria-label={`Remove ${member.displayName ?? member.email} from the organisation`}
+          onClick={() => setRemoving(true)}
+        >
+          <TrashIcon className="size-4" />
+        </Button>
+      </Tooltip>
 
       <ConfirmDialog
         open={suspending}

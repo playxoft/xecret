@@ -64,18 +64,40 @@ export function SelectContent({
         position={position}
         sideOffset={4}
         className={cn(
-          'border-line bg-surface shadow-overlay z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-lg border p-1',
+          'border-line bg-surface shadow-overlay z-50 min-w-[var(--radix-select-trigger-width)] rounded-lg border p-1',
           'data-[state=open]:animate-enter data-[state=closed]:animate-exit',
           // Never taller than the viewport, and scrollable inside — a long
-          // environment list must not push its own selected item off-screen.
-          'max-h-[min(24rem,var(--radix-select-content-available-height))]',
+          // list (the audit log's action filter is thirty entries) must not
+          // clip its tail behind an `overflow-hidden` nobody can get past.
+          // The content itself scrolls, so the scrollbar is visible; Radix's
+          // own Viewport hides its scrollbar by design, which without the
+          // arrow buttons left long menus with no way to reach the rest.
+          'max-h-[min(24rem,var(--radix-select-content-available-height))] overflow-x-hidden overflow-y-auto',
           className,
         )}
         {...props}
       >
+        <SelectScrollButton direction="up" />
         <SelectPrimitive.Viewport className="p-0">{children}</SelectPrimitive.Viewport>
+        <SelectScrollButton direction="down" />
       </SelectPrimitive.Content>
     </SelectPrimitive.Portal>
+  );
+}
+
+/**
+ * The keyboard-free way through a long list: Radix renders these only while
+ * more items exist in that direction, so they double as the "there is more"
+ * affordance a clipped menu was silently missing.
+ */
+function SelectScrollButton({ direction }: { direction: 'up' | 'down' }) {
+  const Component =
+    direction === 'up' ? SelectPrimitive.ScrollUpButton : SelectPrimitive.ScrollDownButton;
+
+  return (
+    <Component className="text-fg-subtle bg-surface sticky z-10 flex h-6 cursor-default items-center justify-center">
+      <ChevronDownIcon className={cn('size-4', direction === 'up' && 'rotate-180')} />
+    </Component>
   );
 }
 

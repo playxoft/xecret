@@ -50,6 +50,13 @@
       "when": 1786925100000,
       "tag": "0006_service_token_write_attribution",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786925200000,
+      "tag": "0007_invitation_initial_grants",
+      "breakpoints": true
     }
   ]
 }

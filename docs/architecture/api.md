@@ -58,6 +58,21 @@ every write in the product.
 `secret.delete` and `secret.rotate` remain outside the service-token allowlist entirely —
 CI rotates a value by writing a new one; destroying history is a human's decision.
 
+### Invitation-time access — deny-by-default
+
+`POST /api/orgs/{orgSlug}/members` accepts a `grants` array of
+`{ projectSlug, environmentSlug | null }` selections. When present (an empty array
+included), acceptance becomes **deny-by-default**: every project the organisation has at
+acceptance time receives an explicit project-wide `none` grant unless selected, selected
+whole-projects and environments receive grants at the invited role's non-production level,
+and the existing resolution rules (environment → project → role default, `none` always
+denies) do the rest. A ticked production environment is the conscious act that grants it.
+Selections are resolved to ids at invitation time — a bad slug fails in front of the person
+who can fix it — and anything deleted before acceptance is skipped, safely covered by the
+`none` rows. Invitations without the field (from before it existed) keep the old
+role-default behaviour. Projects created *after* acceptance fall back to the role default;
+narrowing that is the member page's job.
+
 Firebase ID tokens are accepted at exactly one endpoint — `POST /api/auth/session` — and
 never again. See ADR 0003.
 
@@ -222,7 +237,7 @@ environment without a key cannot hold a secret and cannot be repaired without an
 | `POST` | `…/secrets` | Create. Body `{ name, value, note?, valueType? }`. |
 | `GET` | `…/secrets/{name}` | **Reveal.** Decrypts one value. Audited as `secret.revealed` every time. |
 | `PATCH` | `…/secrets/{name}` | Appends a new version. Body `{ value, valueType? }`. A value identical to the current one is a no-op, detected via `value_hmac` without decrypting. |
-| `PUT` | `…/secrets/{name}` | Metadata only — `{ note?, valueType? }`. Appends **no** version and unwraps no key: declaring a type is not a rotation. |
+| `PUT` | `…/secrets/{name}` | Metadata only — `{ name?, note?, valueType? }`. Appends **no** version and unwraps no key: declaring a type is not a rotation, and neither is a rename — the history follows the secret's id, the audit event records `previousSecretName`, and every reader addressing the old name stops finding it. |
 | `DELETE` | `…/secrets/{name}` | Soft delete. |
 | `GET` | `…/secrets/{name}/versions/{version}` | **Reveal one historical version.** Audited as `secret.revealed`, with the version in `reason`. The listing beside it stays metadata-only. |
 | `GET` | `…/secrets/{name}/versions` | History. Metadata only — no ciphertext, no values. |

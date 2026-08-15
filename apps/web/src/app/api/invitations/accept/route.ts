@@ -42,7 +42,18 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
     audit(accepted.organization.id).success(
       'member.joined',
       { type: 'member', id: accepted.member.id },
-      { targetEmail: actor.user.email, newRole: accepted.member.role },
+      {
+        targetEmail: actor.user.email,
+        newRole: accepted.member.role,
+        // What the invitation's access selection produced, so "what could they
+        // reach from the moment they joined?" is answerable from this one row.
+        // Legacy invitations carried no selection and say so.
+        ...(accepted.grants === null
+          ? { reason: 'role-default access (no selection on invitation)' }
+          : {
+              reason: `${accepted.grants.granted} access grant(s); ${accepted.grants.denied} project(s) denied by default`,
+            }),
+      },
     ),
   );
 

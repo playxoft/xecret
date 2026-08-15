@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { canAssignRole } from '@xecret/core/authz';
 import type { OrgRole } from '@xecret/core/authz';
@@ -8,7 +8,9 @@ import { api, isApiError } from '@/lib/api';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import {
   Alert,
+  Badge,
   Button,
+  Checkbox,
   CopyButton,
   Dialog,
   DialogBody,
@@ -24,10 +26,18 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Skeleton,
   useToast,
 } from '@/components/ui';
 import { ROLE_DESCRIPTIONS, ROLE_LABELS, ROLES_DESCENDING } from './types';
 import type { InviteResponse } from './types';
+
+/** What the access tree needs to draw one project and its environments. */
+interface ProjectAccessOption {
+  name: string;
+  slug: string;
+  environments: { name: string; slug: string; isProduction: boolean }[];
+}
 
 export interface InviteDialogProps {
   orgSlug: string;
@@ -100,6 +110,74 @@ function InviteFlow({
   /** Set after a successful invite; flips the dialog to the link step. */
   const [issued, setIssued] = useState<InviteResponse | null>(null);
 
+  /**
+   * The access tree, and the selection — **empty by default, deliberately**.
+   * An invitation grants exactly what is ticked here and nothing else: the
+   * server writes an explicit `none` for every unticked project at
+   * acceptance, so an unticked invitee can open the dashboard and see no
+   * projects at all until somebody grants them one.
+   */
+  const [projects, setProjects] = useState<ProjectAccessOption[] | null>(null);
+  const [projectsError, setProjectsError] = useState(false);
+  const [wholeProjects, setWholeProjects] = useState<ReadonlySet<string>>(new Set());
+  const [environments, setEnvironments] = useState<ReadonlySet<string>>(new Set());
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const list = await api.get<{ projects: { name: string; slug: string }[] }>(
+          apiPath.projects(orgSlug),
+        );
+        const options = await Promise.all(
+          list.projects.map(async (project) => {
+            const detail = await api.get<{
+              environments: { name: string; slug: string; isProduction: boolean }[];
+            }>(apiPath.environments(orgSlug, project.slug));
+            return { ...project, environments: detail.environments };
+          }),
+        );
+        if (!cancelled) setProjects(options);
+      } catch {
+        // The tree failing to load must not block inviting — but it must not
+        // silently degrade to "invite with access to everything" either. The
+        // submit path below refuses until the tree has loaded.
+        if (!cancelled) setProjectsError(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [orgSlug]);
+
+  const envKey = (projectSlug: string, environmentSlug: string) =>
+    `${projectSlug}/${environmentSlug}`;
+
+  function toggleWholeProject(projectSlug: string, checked: boolean) {
+    setWholeProjects((current) => {
+      const next = new Set(current);
+      if (checked) next.add(projectSlug);
+      else next.delete(projectSlug);
+      return next;
+    });
+  }
+
+  function toggleEnvironment(projectSlug: string, environmentSlug: string, checked: boolean) {
+    setEnvironments((current) => {
+      const next = new Set(current);
+      const key = envKey(projectSlug, environmentSlug);
+      if (checked) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }
+
+  const selectionCount =
+    wholeProjects.size +
+    [...environments].filter((key) => !wholeProjects.has(key.slice(0, key.indexOf('/')))).length;
+
   const offeredRoles = ROLES_DESCENDING.filter((candidate) => canAssignRole(viewerRole, candidate));
 
   function setBusy(busy: boolean) {
@@ -117,6 +195,34 @@ function InviteFlow({
       return;
     }
 
+    // The selection *is* the access. Submitting before the tree has loaded
+    // would silently send an empty selection the inviter never confirmed.
+    if (projects === null) {
+      setFormError(
+        projectsError
+          ? 'The project list could not be loaded, so access cannot be selected. Reload and try again.'
+          : 'The project list is still loading — one moment.',
+      );
+      return;
+    }
+
+    // Whole-project ticks, plus environment ticks not already covered by one.
+    const grants = [
+      ...[...wholeProjects].map((projectSlug) => ({
+        projectSlug,
+        environmentSlug: null as string | null,
+      })),
+      ...[...environments]
+        .map((key) => {
+          const separator = key.indexOf('/');
+          return {
+            projectSlug: key.slice(0, separator),
+            environmentSlug: key.slice(separator + 1),
+          };
+        })
+        .filter((entry) => !wholeProjects.has(entry.projectSlug)),
+    ];
+
     setBusy(true);
     setFormError(null);
 
@@ -124,6 +230,7 @@ function InviteFlow({
       const response = await api.post<InviteResponse>(apiPath.members(orgSlug), {
         email: trimmed,
         role,
+        grants,
       });
 
       onInvited();
@@ -186,8 +293,8 @@ function InviteFlow({
       <DialogHeader>
         <DialogTitle>Invite a member</DialogTitle>
         <DialogDescription>
-          They join with the role you choose. Project and environment access can be narrowed or
-          widened per member afterwards.
+          They join with the role you choose and access to exactly the projects and environments you
+          tick below — nothing else. Both can be changed per member afterwards.
         </DialogDescription>
       </DialogHeader>
 
@@ -220,6 +327,93 @@ function InviteFlow({
             </SelectContent>
           </Select>
         </Field>
+
+        <fieldset className="flex flex-col gap-2">
+          <legend className="text-fg text-sm font-medium">Access</legend>
+          <p className="text-fg-subtle text-xs">
+            Nothing is selected by default, and the invitation grants exactly what you tick — every
+            unticked project stays completely inaccessible to them, including projects created later
+            inside a partially-granted one. Ticked items get the role&apos;s normal level; you can
+            adjust per-item levels on their member page after they join.
+          </p>
+
+          {projectsError ? (
+            <Alert tone="danger">The project list could not be loaded. Close and retry.</Alert>
+          ) : projects === null ? (
+            <div aria-busy="true" aria-label="Loading projects" className="flex flex-col gap-2">
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+            </div>
+          ) : projects.length === 0 ? (
+            <p className="text-fg-subtle text-[0.8125rem]">
+              This organisation has no projects yet — the member will join with access to nothing,
+              which is also what they get by default.
+            </p>
+          ) : (
+            <div className="border-line max-h-64 overflow-y-auto rounded-lg border">
+              {projects.map((project) => {
+                const whole = wholeProjects.has(project.slug);
+                return (
+                  <div
+                    key={project.slug}
+                    className="border-line-subtle px-3 py-2 [&:not(:last-child)]:border-b"
+                  >
+                    <label className="flex cursor-pointer items-center gap-2.5">
+                      <Checkbox
+                        checked={whole}
+                        onCheckedChange={(checked) =>
+                          toggleWholeProject(project.slug, checked === true)
+                        }
+                        aria-label={`Entire project ${project.name}`}
+                      />
+                      <span className="text-fg text-[0.8125rem] font-medium">{project.name}</span>
+                      <span className="text-fg-subtle text-xs">entire project</span>
+                    </label>
+
+                    <div className="mt-1.5 flex flex-col gap-1 pl-7">
+                      {project.environments.map((environment) => {
+                        const checked =
+                          whole || environments.has(envKey(project.slug, environment.slug));
+                        return (
+                          <label
+                            key={environment.slug}
+                            className={
+                              whole
+                                ? 'flex items-center gap-2.5 opacity-60'
+                                : 'flex cursor-pointer items-center gap-2.5'
+                            }
+                          >
+                            <Checkbox
+                              checked={checked}
+                              disabled={whole}
+                              onCheckedChange={(next) =>
+                                toggleEnvironment(project.slug, environment.slug, next === true)
+                              }
+                              aria-label={`${project.name} ${environment.name}`}
+                            />
+                            <span className="text-fg-muted text-[0.8125rem]">
+                              {environment.name}
+                            </span>
+                            {environment.isProduction ? (
+                              <Badge tone="production">Production</Badge>
+                            ) : null}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {projects !== null && projects.length > 0 && selectionCount === 0 ? (
+            <Alert tone="warning">
+              Nothing is ticked — they will join with <strong>no access to any project</strong>{' '}
+              until someone grants them access on their member page.
+            </Alert>
+          ) : null}
+        </fieldset>
 
         {formError ? <Alert tone="danger">{formError}</Alert> : null}
       </DialogBody>

@@ -215,6 +215,7 @@ describe('member request schemas', () => {
       email: 'a@example.com',
       role: 'viewer' as const,
       invitedBy: uuidv7(),
+      initialGrants: null,
       acceptedAt: null,
       acceptedBy: null,
       revokedAt: null,

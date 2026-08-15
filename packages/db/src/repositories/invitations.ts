@@ -1,10 +1,14 @@
-import { and, count, eq, gt, isNull, lt } from 'drizzle-orm';
+import { and, count, eq, gt, inArray, isNull, lt } from 'drizzle-orm';
 import { generateToken, hashToken, invitationExpiryFrom, invitationState } from '@xecret/core/auth';
+import { roleDefaultAccessLevel } from '@xecret/core/authz';
 import type { OrgRole } from '@xecret/core/authz';
 import type { Bytes } from '@xecret/core/crypto';
 import { uuidv7 } from '@xecret/core/ids';
+import { accessGrants } from '../schema/access';
 import { users } from '../schema/identity';
+import { environments, projects } from '../schema/resources';
 import { invitations, orgMembers, organizations } from '../schema/tenancy';
+import type { InvitationGrantSeed } from '../schema/tenancy';
 import { addMember } from './membership';
 import type { MemberRecord } from './membership';
 import { MAX_PAGE_SIZE, RepositoryError } from './shared';
@@ -33,6 +37,8 @@ export interface InvitationRecord {
   email: string;
   role: OrgRole;
   invitedBy: string;
+  /** The access selection to apply at acceptance; `null` on legacy rows. */
+  initialGrants: InvitationGrantSeed[] | null;
   expiresAt: Date;
   acceptedAt: Date | null;
   acceptedBy: string | null;
@@ -52,6 +58,12 @@ export interface CreateInvitationParams {
   email: string;
   role: OrgRole;
   invitedBy: string;
+  /**
+   * The access selection to apply at acceptance. `undefined` preserves the
+   * legacy behaviour (role defaults everywhere); an array — empty included —
+   * makes acceptance deny-by-default. See the column's comment in the schema.
+   */
+  initialGrants?: InvitationGrantSeed[] | undefined;
   environment?: 'live' | 'test' | undefined;
 }
 
@@ -82,6 +94,13 @@ export interface AcceptedInvitation {
   member: MemberRecord;
   invitation: InvitationRecord;
   organization: { id: string; name: string; slug: string };
+  /**
+   * What the invitation's access selection produced, or `null` for a legacy
+   * invitation that carried none. `granted` counts explicit access rows,
+   * `denied` the project-wide `none` rows that make everything else
+   * unreachable.
+   */
+  grants: { granted: number; denied: number } | null;
 }
 
 /** How full the organisation is, for the members page and the invite check. */
@@ -99,6 +118,7 @@ const INVITATION_COLUMNS = {
   email: invitations.email,
   role: invitations.role,
   invitedBy: invitations.invitedBy,
+  initialGrants: invitations.initialGrants,
   expiresAt: invitations.expiresAt,
   acceptedAt: invitations.acceptedAt,
   acceptedBy: invitations.acceptedBy,
@@ -160,6 +180,7 @@ export async function createInvitation(
         role: params.role,
         tokenHash: generated.hash,
         invitedBy: params.invitedBy,
+        initialGrants: params.initialGrants ?? null,
         expiresAt: invitationExpiryFrom(now),
         createdAt: now,
       })
@@ -293,6 +314,17 @@ export async function acceptInvitation(
       invitedBy: invitation.invitedBy,
     });
 
+    const grants =
+      invitation.initialGrants === null
+        ? null
+        : await applyInitialGrants(tx, {
+            orgId: invitation.orgId,
+            memberId: member.id,
+            role: invitation.role,
+            grantedBy: invitation.invitedBy,
+            seeds: invitation.initialGrants,
+          });
+
     const [accepted] = await tx
       .update(invitations)
       .set({ acceptedAt: now, acceptedBy: params.userId })
@@ -308,8 +340,122 @@ export async function acceptInvitation(
         name: organization.name,
         slug: organization.slug,
       },
+      grants,
     };
   });
+}
+
+/**
+ * Turns an invitation's access selection into `access_grants` rows — the
+ * moment a request-in-transit becomes authority.
+ *
+ * The rule, uniformly applied: **every project the organisation has right
+ * now** gets a row. Selected whole-projects get the invited role's
+ * non-production level; every other project gets an explicit `none`, which the
+ * grants engine treats as a denial that outranks the role default — so a
+ * member invited to two projects cannot see the third, nor a fourth created
+ * between the invitation and its acceptance. Selected environments get their
+ * own rows at the same level, which override the project-wide `none` beside
+ * them; environments *not* selected in a partially-granted project therefore
+ * stay denied, as does any environment added later. Production is only
+ * reachable by having been explicitly ticked — the conscious act the schema
+ * comment demands.
+ *
+ * Anything in the selection that no longer exists — a deleted project, a
+ * deleted environment, an environment whose project is gone — is skipped, not
+ * an error: the invitation was honest when written, and the strict default
+ * (`none`) already covers whatever replaced it.
+ */
+async function applyInitialGrants(
+  tx: Executor,
+  params: {
+    orgId: string;
+    memberId: string;
+    role: OrgRole;
+    grantedBy: string;
+    seeds: readonly InvitationGrantSeed[];
+  },
+): Promise<{ granted: number; denied: number }> {
+  const liveProjects = await tx
+    .select({ id: projects.id })
+    .from(projects)
+    .where(and(eq(projects.orgId, params.orgId), isNull(projects.deletedAt)));
+
+  const wholeProjects = new Set(
+    params.seeds.filter((seed) => seed.environmentId === null).map((seed) => seed.projectId),
+  );
+  const environmentIds = [
+    ...new Set(
+      params.seeds.map((seed) => seed.environmentId).filter((id): id is string => id !== null),
+    ),
+  ];
+
+  // Selected environments, verified live and — through the join — belonging to
+  // a live project of *this* organisation. A seed cannot smuggle in an
+  // environment id from another tenant (threat T2).
+  const liveEnvironments =
+    environmentIds.length === 0
+      ? []
+      : await tx
+          .select({ id: environments.id, projectId: environments.projectId })
+          .from(environments)
+          .innerJoin(
+            projects,
+            and(
+              eq(projects.id, environments.projectId),
+              eq(projects.orgId, params.orgId),
+              isNull(projects.deletedAt),
+            ),
+          )
+          .where(and(inArray(environments.id, environmentIds), isNull(environments.deletedAt)));
+
+  // The invited role's ordinary (non-production) level. A ticked production
+  // environment receives the same level explicitly — the tick is the consent.
+  const level = roleDefaultAccessLevel(params.role, false);
+  const now = new Date();
+
+  const rows: (typeof accessGrants.$inferInsert)[] = [];
+  let granted = 0;
+  let denied = 0;
+
+  for (const project of liveProjects) {
+    const selected = wholeProjects.has(project.id);
+    if (selected) granted += 1;
+    else denied += 1;
+
+    rows.push({
+      id: uuidv7(),
+      orgMemberId: params.memberId,
+      projectId: project.id,
+      environmentId: null,
+      accessLevel: selected ? level : 'none',
+      grantedBy: params.grantedBy,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  for (const environment of liveEnvironments) {
+    // A whole-project selection already covers its environments at `level`;
+    // an extra row would restate it and complicate later editing.
+    if (wholeProjects.has(environment.projectId)) continue;
+
+    granted += 1;
+    rows.push({
+      id: uuidv7(),
+      orgMemberId: params.memberId,
+      projectId: environment.projectId,
+      environmentId: environment.id,
+      accessLevel: level,
+      grantedBy: params.grantedBy,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  if (rows.length > 0) await tx.insert(accessGrants).values(rows);
+
+  return { granted, denied };
 }
 
 /**

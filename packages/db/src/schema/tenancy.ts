@@ -4,6 +4,7 @@ import {
   check,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -71,6 +72,15 @@ export const orgMembers = pgTable(
   ],
 );
 
+/**
+ * One selection in an invitation's `initial_grants` snapshot.
+ * `environmentId: null` selects the whole project.
+ */
+export interface InvitationGrantSeed {
+  projectId: string;
+  environmentId: string | null;
+}
+
 export const invitations = pgTable(
   'invitations',
   {
@@ -84,6 +94,24 @@ export const invitations = pgTable(
     invitedBy: uuid('invited_by')
       .notNull()
       .references(() => users.id),
+    /**
+     * The access the inviter selected, applied when the invitation is accepted.
+     *
+     * `NULL` means the invitation predates selection and acceptance behaves as
+     * it always did: role defaults everywhere. Non-null — an empty array
+     * included — switches acceptance to **deny-by-default**: every project the
+     * organisation has at acceptance time receives an explicit `none` grant
+     * unless it appears here, and each listed environment receives a grant at
+     * the invited role's non-production level.
+     *
+     * A snapshot in jsonb rather than a relational table on purpose: these
+     * rows are a *request in transit*, not live authority. Authority only
+     * exists once acceptance copies them into `access_grants`, which is where
+     * the relational modelling, the uniqueness rules and the audit live.
+     * Entries are ids, not slugs — a rename must not re-address a grant — and
+     * anything that no longer exists at acceptance is simply skipped.
+     */
+    initialGrants: jsonb('initial_grants').$type<InvitationGrantSeed[] | null>(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     acceptedAt: timestamp('accepted_at', { withTimezone: true }),
     acceptedBy: uuid('accepted_by').references(() => users.id),

@@ -36,10 +36,31 @@ export const accessLevelSchema = z.enum(['none', 'read', 'write', 'admin']);
  */
 const emailSchema = z.email('Enter a valid email address.').max(320);
 
+/**
+ * One access selection on an invitation: an environment of a project, or —
+ * with `environmentSlug: null` — the project as a whole.
+ */
+export const invitationGrantSelectionSchema = z.strictObject(
+  {
+    projectSlug: slugSchema,
+    environmentSlug: environmentSlugSchema.nullable(),
+  },
+  UNEXPECTED_FIELD,
+);
+
 export const memberInviteSchema = z.strictObject(
   {
     email: emailSchema,
     role: orgRoleSchema,
+    /**
+     * Absent preserves the legacy behaviour (role defaults everywhere).
+     * Present — an empty array included — makes the membership deny-by-default:
+     * acceptance writes an explicit `none` for every project not selected
+     * here. The dashboard always sends it; the bound is far above any real
+     * organisation and stops a hostile body making acceptance write without
+     * limit.
+     */
+    grants: z.array(invitationGrantSelectionSchema).max(500).optional(),
   },
   UNEXPECTED_FIELD,
 );
