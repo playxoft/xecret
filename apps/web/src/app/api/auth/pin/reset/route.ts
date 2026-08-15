@@ -6,7 +6,7 @@ import { pinResetMail } from '@/server/pin-reset-mail';
 import { json } from '@/server/http';
 import { errorName } from '@/server/logging';
 import { primaryOrgId, requireUserPrincipal } from '@/server/pin-service';
-import { attemptKey, enforce } from '@/server/rate-limit';
+import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 
 /**
@@ -34,11 +34,23 @@ export const POST = authenticatedRoute(
   async ({ principal, services, audit, record }) => {
     const user = requireUserPrincipal(principal);
 
-    // Keyed on the user, not the IP alone: this endpoint sends mail, and an
-    // unlimited one is a way to have our domain used to flood somebody's inbox
-    // — which costs us a sending reputation rather than costing an attacker
-    // anything.
-    await enforce(services.env, 'RL_LOGIN', attemptKey(services.meta.ipAddress, user.user.id));
+    // ── Keyed on the user alone, in a counter of its own ──
+    // The address is deliberately absent from the key. `attemptKey(ip, user)`,
+    // which the rest of the login-adjacent routes use, gives every source
+    // address its own counter — so somebody holding a stolen session cookie and
+    // a pool of proxies could send an unbounded amount of mail to the account's
+    // address from our verified sending domain. What a mailbox needs bounded is
+    // mail arriving at *it*, which is the user, whoever is asking and from
+    // wherever. Since any traffic that would trip an ip+user counter also trips
+    // this one, keeping both would add no cover — only the cross-talk below.
+    //
+    // The `pin_reset` prefix is a distinct counter on the same binding, and it
+    // is what makes a forgotten PIN recoverable. Sharing the login counter meant
+    // six or seven failed unlock attempts could spend the allowance this
+    // endpoint and `/pin/reset/confirm` still need, and the 429 that followed
+    // read as though the emailed link itself had failed — during the fifteen
+    // minutes the link is alive, with nothing on screen suggesting waiting.
+    await enforce(services.env, 'RL_LOGIN', rateLimitKey(['pin_reset', user.user.id]));
 
     const mailer = mailerFrom(services.env);
     if (mailer === null) {
@@ -53,6 +65,23 @@ export const POST = authenticatedRoute(
       // reason below reached nobody: the client showed "Something went wrong"
       // and the one thing this branch exists to say was lost. The request was
       // handled correctly; `sent` is the outcome, and callers read it.
+      //
+      // Logged at error level *because* the status is 200. The completion line
+      // the route wrapper writes takes its level and its tense from the status,
+      // so this request ends with `level: info`, `outcome: success` and a
+      // sentence reading "Sent a PIN reset link to the account's address" — a
+      // delivery that did not happen, affirmed in the log stream. This line is
+      // the correction, and the one an alert on `level:error` can fire on now
+      // that the old 503 no longer raises `outcome:server_error`.
+      services.log
+        .at('POST')
+        .error(
+          'Mail is not configured on this deployment, so no PIN reset link was sent — every ' +
+            'reset request here fails the same way, and an account that has forgotten its PIN ' +
+            'cannot get back in without an operator',
+          { reason: 'mail_not_configured' },
+        );
+
       return json({
         sent: false,
         reason:

@@ -145,12 +145,23 @@ One completion line per request, not a start/finish pair. A start line that is n
 finish is indistinguishable from a finish that was dropped, and `durationMs` answers what the start
 line was there for.
 
+**An `error` line does not imply a 5xx.** The completion line takes its level and its `outcome` from
+the status, but a request can be answered correctly and still report a broken guarantee — and the
+sentence on the completion line, being past tense below 400, will describe the happy path. `POST
+/api/auth/pin/reset` on a deployment with no mail configured is the worked example: **200** with
+`sent: false`, `outcome: success`, and an `error` line beside it saying nothing was sent, because
+every reset request on that deployment fails the same way and the account cannot get back in.
+Alerting on `outcome:server_error` alone would never see it.
+
 ### Suggested alerts
 
 Query on `event` and `level`, never on `message` — the prose is meant to be improved.
 
-- `level:error` — any. These are broken guarantees, not traffic.
+- `level:error` — any. These are broken guarantees, not traffic. The superset: some of these ride on
+  a 2xx, so this is the alert, and the next one is a refinement of it.
 - `outcome:server_error` rate over 5 minutes.
+- `reason:mail_not_configured` — the deployment cannot send PIN reset links, and every person who
+  asks for one is told to find an operator.
 - `event:secret.pull` — one request, every plaintext in an environment. The most sensitive read in the product.
 - `event:secret.pull AND isProduction:true` grouped by `userId` — who bulk-read production, and how often.
 - `level:error AND fn:settle` — the audit log is missing entries.

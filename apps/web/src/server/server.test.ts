@@ -24,7 +24,7 @@ import {
 } from './http';
 import { FirebaseIdentityProvider, InMemoryKeyStore } from './firebase';
 import type { FirebaseClaims, IdTokenVerifier } from './firebase';
-import { attemptKey, consume, enforce } from './rate-limit';
+import { attemptKey, consume, enforce, rateLimitKey } from './rate-limit';
 
 /**
  * Tests for the request-handling spine.
@@ -530,5 +530,18 @@ describe('rate limiting', () => {
 
   it('represents an unknown IP distinctly rather than as an empty string', () => {
     expect(attemptKey(null, 'a@b.test')).toBe('-:a%40b.test');
+  });
+
+  // The shape `/api/auth/pin/reset` and its `confirm` use. Both properties are
+  // load-bearing: no address in the key, or every proxy is a fresh allowance to
+  // send mail to somebody else's inbox; and a prefix of its own, or failed
+  // unlock attempts spend the budget the reset needs and the 429 lands on the
+  // emailed link.
+  it('gives a per-subject limit a counter that neither follows the address nor shares another', () => {
+    const key = rateLimitKey(['pin_reset', 'user-1']);
+    expect(key).toBe('pin_reset:user-1');
+    expect(key).not.toBe(attemptKey('1.2.3.4', 'user-1'));
+    expect(key).not.toBe(attemptKey(null, 'user-1'));
+    expect(key).not.toBe(rateLimitKey(['pin_reset', 'user-2']));
   });
 });

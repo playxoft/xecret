@@ -4,7 +4,7 @@ import { consumePinReset, markSessionUnlocked, upsertPin } from '@xecret/db/repo
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { pinStatus, primaryOrgId, requireUserPrincipal } from '@/server/pin-service';
-import { attemptKey, enforce } from '@/server/rate-limit';
+import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 
 /**
@@ -31,7 +31,18 @@ export const POST = authenticatedRoute(
   async ({ request, principal, services, audit, record }) => {
     const user = requireUserPrincipal(principal);
 
-    await enforce(services.env, 'RL_LOGIN', attemptKey(services.meta.ipAddress, user.user.id));
+    // The reset flow's own counter, shared with `/pin/reset` and keyed on the
+    // user — the two halves are one flow and one budget describes it. It used
+    // to take from the login counter alongside `/pin/unlock`, which meant the
+    // failed unlock attempts that sent somebody here in the first place could
+    // leave nothing for the last step: a 429 on redeeming a link that is valid,
+    // phrased as though the link were the problem.
+    //
+    // Still limited rather than exempted. The single-use token is not a rate
+    // limit: every call reaches a token digest and a database lookup before
+    // anything decides the token is unknown, and `enforce` running first is
+    // also what keeps a rejected request from burning a good link.
+    await enforce(services.env, 'RL_LOGIN', rateLimitKey(['pin_reset', user.user.id]));
 
     const body = await parseJsonBody(request, confirmRequest);
 
