@@ -20,6 +20,7 @@ import {
   KeyIcon,
   LayersIcon,
   PlusIcon,
+  PointerIcon,
   SearchIcon,
   Skeleton,
   Table,
@@ -109,6 +110,8 @@ export function SecretTable({
 
   const [bulkAdding, setBulkAdding] = useState(false);
   const revealAll = useRevealAll(orgSlug, projectSlug, envSlug);
+  const [hoverReveal, setHoverReveal] = useState(false);
+  const [hovered, setHovered] = useState<string | null>(null);
   const [history, setHistory] = useState<SecretSummary | null>(null);
   const [deleting, setDeleting] = useState<SecretSummary | null>(null);
   const [bulkDeleting, setBulkDeleting] = useState(false);
@@ -168,6 +171,42 @@ export function SecretTable({
 
   function toggleAll(checked: boolean) {
     setSelected(checked ? new Set(visible.map((secret) => secret.name)) : new Set());
+  }
+
+  /**
+   * Whether hover mode can actually show anything.
+   *
+   * Derived rather than stored, so the window ending, a failed decryption and a
+   * change of environment all put the toggle out on their own — a button that
+   * stays lit while doing nothing is the worse of the two failures. Re-arming it
+   * is one click and is the user's decision to make: renewing the decryption
+   * every three minutes on its own would hold an environment in memory for as
+   * long as the tab stayed open, which is the thing the window exists to stop.
+   */
+  const hoverArmed = hoverReveal && revealAll.values !== null;
+
+  /**
+   * Hover mode runs on the same single decryption "Reveal all" uses, which is
+   * why turning it on loads without showing anything: the alternative — each row
+   * fetching itself as the pointer crosses it — would decrypt an environment one
+   * credential at a time and write an audit record per mouse movement.
+   */
+  function toggleHoverReveal() {
+    setHovered(null);
+    if (hoverArmed) {
+      setHoverReveal(false);
+      return;
+    }
+    setHoverReveal(true);
+    revealAll.load();
+  }
+
+  /** The plaintext this row should show, if it should be showing one at all. */
+  function shownValue(name: string): string | undefined {
+    const plaintext = revealAll.values?.[name];
+    if (plaintext === undefined) return undefined;
+    if (revealAll.revealed) return plaintext;
+    return hoverArmed && hovered === name ? plaintext : undefined;
   }
 
   function toggleOne(name: string, checked: boolean) {
@@ -276,6 +315,9 @@ export function SecretTable({
         onAddDraft={() => staged.addDraft()}
         disabled={staged.saving}
         revealAll={revealAll}
+        hoverReveal={hoverArmed}
+        hoverLoading={hoverReveal && revealAll.loading}
+        onToggleHoverReveal={toggleHoverReveal}
         hasSecrets={secrets.length > 0}
         {...(onImport === undefined ? {} : { onImport })}
         {...(onExport === undefined ? {} : { onExport })}
@@ -295,7 +337,7 @@ export function SecretTable({
 
       {/* The visible count, and the same fact announced politely. Without this a
           screen reader user who types into the filter hears nothing at all. */}
-      <p role="status" aria-live="polite" className="text-fg-subtle text-[0.8125rem]">
+      <p role="status" aria-live="polite" className="text-fg-subtle text-sm">
         {query.trim().length === 0
           ? `${pluralize(secrets.length, 'secret')}${onLoadMore === null ? '' : ' loaded so far'}`
           : `${visible.length} of ${pluralize(secrets.length, 'secret')} match “${query.trim()}”`}
@@ -316,11 +358,21 @@ export function SecretTable({
         </div>
       ) : null}
 
+      {revealAll.error !== null ? (
+        // Both reveal controls run on the one decryption, so both fail through
+        // here. Without this a failed "Reveal all" was a button that spun and
+        // then did nothing, with no way to tell a permission error in production
+        // apart from a dropped connection.
+        <Alert tone="danger" title="Could not reveal these values">
+          <p>{revealAll.error}</p>
+        </Alert>
+      ) : null}
+
       {actionError !== null ? (
         <Alert tone="danger" title="That action failed">
           <p>{errorMessage(actionError)}</p>
           {isApiError(actionError) && actionError.requestId ? (
-            <p className="mt-1.5 text-xs">
+            <p className="mt-1.5 text-sm">
               Request id: <code className="font-mono select-all">{actionError.requestId}</code>
             </p>
           ) : null}
@@ -401,29 +453,40 @@ export function SecretTable({
               </TableHeader>
 
               <TableBody>
-                {visible.map((secret) => (
-                  <SecretRow
-                    key={secret.name}
-                    orgSlug={orgSlug}
-                    projectSlug={projectSlug}
-                    envSlug={envSlug}
-                    secret={secret}
-                    selected={selected.has(secret.name)}
-                    edit={staged.edits.get(secret.name)}
-                    disabled={staged.saving}
-                    {...(revealAll.values?.[secret.name] === undefined
-                      ? {}
-                      : { revealed: revealAll.values[secret.name] })}
-                    onSelectedChange={(checked) => toggleOne(secret.name, checked)}
-                    onEditOpen={() => staged.openEdit(secret.name)}
-                    onEditChange={(value) => staged.setEdit(secret.name, value)}
-                    onEditClose={() => staged.closeEdit(secret.name)}
-                    onTypeChange={(type) => staged.setEditType(secret.name, type)}
-                    onHistory={() => setHistory(secret)}
-                    onDelete={() => setDeleting(secret)}
-                    onCommit={saveStaged}
-                  />
-                ))}
+                {visible.map((secret) => {
+                  const plaintext = shownValue(secret.name);
+                  return (
+                    <SecretRow
+                      key={secret.name}
+                      orgSlug={orgSlug}
+                      projectSlug={projectSlug}
+                      envSlug={envSlug}
+                      secret={secret}
+                      selected={selected.has(secret.name)}
+                      edit={staged.edits.get(secret.name)}
+                      existingNames={existingNames}
+                      disabled={staged.saving}
+                      {...(plaintext === undefined ? {} : { revealed: plaintext })}
+                      {...(hoverArmed
+                        ? {
+                            onHoverChange: (hovering: boolean) =>
+                              setHovered((current) =>
+                                hovering ? secret.name : current === secret.name ? null : current,
+                              ),
+                          }
+                        : {})}
+                      onSelectedChange={(checked) => toggleOne(secret.name, checked)}
+                      onEditOpen={() => staged.openEdit(secret.name)}
+                      onEditChange={(value) => staged.setEdit(secret.name, value)}
+                      onMetaChange={(patch) => staged.setEditMeta(secret.name, patch)}
+                      onEditClose={() => staged.closeEdit(secret.name)}
+                      onTypeChange={(type) => staged.setEditType(secret.name, type)}
+                      onHistory={() => setHistory(secret)}
+                      onDelete={() => setDeleting(secret)}
+                      onCommit={saveStaged}
+                    />
+                  );
+                })}
 
                 {/* Drafts sit at the bottom, below whatever the sort and filter
                     are doing, because a row being typed into must not move when
@@ -529,6 +592,9 @@ function Toolbar({
   onAddDraft,
   disabled,
   revealAll,
+  hoverReveal,
+  hoverLoading,
+  onToggleHoverReveal,
   hasSecrets,
   onImport,
   onExport,
@@ -540,6 +606,9 @@ function Toolbar({
   onAddDraft: () => void;
   disabled: boolean;
   revealAll: RevealAll;
+  hoverReveal: boolean;
+  hoverLoading: boolean;
+  onToggleHoverReveal: () => void;
   hasSecrets: boolean;
   onImport?: () => void;
   onExport?: () => void;
@@ -561,15 +630,37 @@ function Toolbar({
       <span className="hidden flex-1 sm:block" />
 
       {hasSecrets ? (
-        <Button
-          variant={revealAll.revealed ? 'secondary' : 'ghost'}
-          onClick={revealAll.revealed ? revealAll.hide : revealAll.reveal}
-          loading={revealAll.loading}
-          aria-pressed={revealAll.revealed}
-        >
-          {revealAll.revealed ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
-          {revealAll.revealed ? `Hide all · ${revealAll.secondsLeft}s` : 'Reveal all'}
-        </Button>
+        <>
+          <Button
+            variant={revealAll.revealed ? 'secondary' : 'ghost'}
+            onClick={revealAll.revealed ? revealAll.hide : revealAll.reveal}
+            loading={revealAll.loading && !hoverLoading}
+            aria-pressed={revealAll.revealed}
+          >
+            {revealAll.revealed ? (
+              <EyeOffIcon className="size-4" />
+            ) : (
+              <EyeIcon className="size-4" />
+            )}
+            {revealAll.revealed ? 'Hide all' : 'Reveal all'}
+          </Button>
+
+          {/* Between the two extremes this screen otherwise offers: one value at
+              a time behind a click, or the whole environment on screen at once.
+              Comparing eight rows against a `.env` file wants neither — it wants
+              the value under the pointer and nothing else, which is also the
+              smallest thing a screenshot can catch. */}
+          <Button
+            variant={hoverReveal ? 'secondary' : 'ghost'}
+            onClick={onToggleHoverReveal}
+            loading={hoverLoading}
+            aria-pressed={hoverReveal}
+            title="Show each value while the pointer is over its row"
+          >
+            <PointerIcon className="size-4" />
+            Reveal on hover
+          </Button>
+        </>
       ) : null}
 
       {onImport ? (
@@ -645,7 +736,7 @@ function SaveBar({
           {pluralize(count, 'unsaved change')}
         </p>
 
-        <p className="text-fg-subtle hidden text-xs sm:block">
+        <p className="text-fg-subtle hidden text-sm sm:block">
           {isProduction
             ? 'Whatever reads these secrets picks the new values up on its next deploy, not immediately.'
             : 'Each row is written separately and recorded in the audit log.'}
@@ -772,7 +863,7 @@ function BulkDeleteConfirm({
 
   const list = (
     <div className="border-line bg-canvas-inset max-h-40 overflow-y-auto rounded-lg border p-3">
-      <ul className="text-fg-muted space-y-0.5 font-mono text-xs">
+      <ul className="text-fg-muted space-y-0.5 font-mono text-sm">
         {names.map((name) => (
           <li key={name} className="break-all">
             {name}
