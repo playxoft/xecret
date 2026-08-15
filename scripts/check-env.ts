@@ -166,7 +166,7 @@ function checkEmail(): void {
     check(
       'ZEPTOMAIL_TOKEN',
       true,
-      'not set — email is optional; PIN reset will report it as unavailable',
+      'not set — email is optional; PIN reset answers 200 with `sent: false` and a reason',
     );
     return;
   }
