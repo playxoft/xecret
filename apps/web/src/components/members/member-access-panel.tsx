@@ -51,9 +51,10 @@ import type { EffectiveProject, Member, MemberAccessResponse } from './types';
  *
  * ── Nothing is written until Save ──
  * Toggles are staged locally. Save applies the whole batch — one audited
- * grant write per changed environment — and folds the panel; Cancel discards
- * and folds. The button knows whether anything actually changed: a toggle
- * flipped and flipped back never enables it.
+ * grant write per changed environment — and the panel stays open, re-read
+ * from the server, so what is on screen after saving is what is now enforced;
+ * Cancel discards and folds. The button knows whether anything actually
+ * changed: a toggle flipped and flipped back never enables it.
  *
  * "Add project" only reveals a project so its environments can be granted; it
  * writes nothing by itself. "Remove" is the one immediate act — confirmed,
@@ -86,7 +87,7 @@ export function MemberAccessPanel({
   member: Member;
   /** Whether the viewer may change grants; the server re-checks every change. */
   mayEdit: boolean;
-  /** Folds this panel — Save on success and Cancel both end here. */
+  /** Folds this panel — Cancel ends here; a save leaves the panel open. */
   onCollapse: () => void;
   /** Grants changed on the server; the member list's project reach is stale. */
   onChanged: () => void;
@@ -153,8 +154,11 @@ export function MemberAccessPanel({
         variant: 'success',
         title: `Updated access for ${member.displayName ?? member.email}`,
       });
+      // The panel stays open: the staging empties, the matrix re-reads, and
+      // what is shown is the server's answer rather than a memory of the form.
+      setStaged(new Map());
       onChanged();
-      onCollapse();
+      access.reload();
     } catch (cause) {
       // The whole batch stays staged: re-saving re-sends everything, and the
       // writes that already landed answer as no-ops.
