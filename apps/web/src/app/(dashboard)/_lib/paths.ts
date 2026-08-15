@@ -51,12 +51,17 @@ export const appPath = {
   environmentSettings: (org: string, project: string, env: string): string =>
     `${appPath.environment(org, project, env)}/settings`,
   account: (): string => '/app/settings/account',
+  settingsSecurity: (): string => '/app/settings/security',
+  settingsDanger: (): string => '/app/settings/danger',
 } as const;
 
 /** API routes, as documented in `docs/architecture/api.md` §4. */
 export const apiPath = {
   me: (): string => '/api/auth/me',
   sessions: (): string => '/api/auth/sessions',
+  account: (): string => '/api/auth/account',
+  pin: (): string => '/api/auth/pin',
+  pinLock: (): string => '/api/auth/pin/lock',
   orgs: (): string => '/api/orgs',
   org: (org: string): string => `/api/orgs/${segment(org)}`,
   projects: (org: string): string => `${apiPath.org(org)}/projects`,

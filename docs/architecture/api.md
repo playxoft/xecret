@@ -144,6 +144,7 @@ rejected input reaches the client; in this product the rejected input may be a s
 | `POST` | `/api/auth/pin/reset/confirm` | Body `{ token, pin }`. Requires the emailed token **and** a session belonging to the same account. Exempt from the lock gate. |
 | `GET` | `/api/auth/sessions` | Active sessions for the "signed-in devices" view. Never returns a token hash. |
 | `DELETE` | `/api/auth/sessions` | Sign out everywhere. Optional `?except=current`. |
+| `DELETE` | `/api/auth/account` | The account deletes itself. Body `{ confirm: <account email> }`. Browser sessions only (never a bearer token), PIN-gated, rate limited `RL_MUTATION`. One transaction: solo organisations are soft-deleted with the account, other memberships removed, every session and CLI token revoked, the user row soft-deleted — terminal, since the identity upsert refuses to revive a deleted row. **409** while the caller is the only active owner of an organisation other people are in: ownership must move first. Audited as `auth.account_deleted`; the response clears both cookies. |
 
 `POST /api/auth/session` returns **401 with a fixed message** for every verification
 failure — expired, wrong audience, bad signature, unverified email. The specific reason is

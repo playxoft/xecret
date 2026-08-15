@@ -15,6 +15,7 @@ import {
   signInWithEmailAndPassword,
   signInWithPopup,
   signOut as firebaseSignOut,
+  updatePassword,
   updateProfile,
   verifyPasswordResetCode,
 } from 'firebase/auth';
@@ -327,6 +328,36 @@ export async function checkPasswordResetCode(oobCode: string): Promise<string> {
 
 export async function completePasswordReset(oobCode: string, newPassword: string): Promise<void> {
   await confirmPasswordReset(getFirebaseAuth(), oobCode, newPassword);
+}
+
+/**
+ * Changes the password of an email/password account, from the settings screen.
+ *
+ * The dashboard holds no Firebase session — `exchangeForSession` drops it the
+ * moment the xecret session exists — so this re-authenticates from scratch
+ * with the current password, applies the change, and signs the transient
+ * Firebase session out again. The xecret session is untouched: it was issued
+ * by us and owes nothing to the credential that just changed. Whether other
+ * *devices* should die with the old password is the user's call, made with
+ * the "sign out other devices" control beside this one.
+ *
+ * A Google-only account has no password to change; Firebase answers the
+ * re-authentication with a credential error, which the caller shows through
+ * `describeAuthError` like any other wrong-credential outcome.
+ */
+export async function changePassword(
+  email: string,
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  const auth = getFirebaseAuth();
+  const credential = await signInWithEmailAndPassword(auth, email, currentPassword);
+  try {
+    await updatePassword(credential.user, newPassword);
+  } finally {
+    // The transient Firebase session has done its one job, success or not.
+    await firebaseSignOut(auth);
+  }
 }
 
 /**

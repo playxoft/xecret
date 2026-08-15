@@ -242,6 +242,23 @@ export async function revokeCliToken(
 }
 
 /**
+ * Revokes every live CLI token a user holds, across all organisations.
+ *
+ * The account-deletion path: a deleted account must not leave a laptop
+ * somewhere that can still read secrets. Returns how many this call revoked,
+ * for the audit record.
+ */
+export async function revokeAllCliTokensForUser(exec: Executor, userId: string): Promise<number> {
+  const rows = await exec
+    .update(cliTokens)
+    .set({ revokedAt: sql`now()` })
+    .where(and(eq(cliTokens.userId, userId), isNull(cliTokens.revokedAt)))
+    .returning({ id: cliTokens.id });
+
+  return rows.length;
+}
+
+/**
  * Records that a CLI token was used.
  *
  * **Must not be awaited on the critical path.** This is telemetry for the "your

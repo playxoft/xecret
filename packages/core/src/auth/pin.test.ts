@@ -127,7 +127,11 @@ describe('hashing a PIN', () => {
       ['deriveBits'],
     );
     const bits = new Uint8Array(
-      await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, key, 256),
+      await crypto.subtle.deriveBits(
+        { name: 'PBKDF2', hash: 'SHA-256', salt, iterations },
+        key,
+        256,
+      ),
     );
     const toB64url = (bytes: Uint8Array) =>
       btoa(String.fromCharCode(...bytes))

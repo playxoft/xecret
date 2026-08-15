@@ -27,6 +27,7 @@ export {
   findUserByFirebaseUid,
   findUserById,
   isUniqueViolation,
+  softDeleteUser,
   touchLastLogin,
   upsertUserFromIdentity,
 } from './users';
@@ -74,6 +75,7 @@ export {
   orgSlugCandidate,
   organizationsForUserQuery,
   personalOrgSlugSeed,
+  softDeleteOrganization,
   updateOrganization,
 } from './organizations';
 export type {
@@ -87,6 +89,7 @@ export type {
 } from './organizations';
 
 export {
+  accountMembershipSummary,
   addMember,
   findMembership,
   findMemberWithUser,
@@ -107,6 +110,7 @@ export {
 } from './membership';
 export type {
   AccessGrantParams,
+  AccountMembership,
   AddMemberParams,
   AuthorizationContext,
   AuthorizationContextParams,
@@ -228,6 +232,7 @@ export {
   isIpAllowed,
   listCliTokens,
   listServiceTokens,
+  revokeAllCliTokensForUser,
   revokeCliToken,
   revokeServiceToken,
   touchCliTokenUsage,

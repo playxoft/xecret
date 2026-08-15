@@ -32,6 +32,14 @@ export type AuditAction =
   | 'auth.pin_reset'
   /** A session was locked without being revoked — the user is still signed in. */
   | 'auth.locked'
+  /**
+   * The account deleted itself: memberships removed, solo organisations
+   * soft-deleted, every session and CLI token revoked, the user row
+   * soft-deleted. Terminal — the same identity can never sign in to it again.
+   * Recorded against the account's primary organisation, whose soft-deleted
+   * row keeps the record reachable.
+   */
+  | 'auth.account_deleted'
   | 'org.created'
   | 'org.updated'
   | 'project.created'

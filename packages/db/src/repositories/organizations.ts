@@ -316,6 +316,28 @@ export async function updateOrganization(
 }
 
 /**
+ * Soft-deletes an organisation.
+ *
+ * One column, and everything inside stops resolving at once: every read joins
+ * through `organizations` with a `deleted_at is null` filter, so projects,
+ * environments and secrets become unreachable without touching their rows —
+ * they remain what the audit log points at. The wrapped keys remain too, and
+ * remain wrapped; nothing here needs, or touches, key material.
+ *
+ * Idempotent, and deliberately without a last-owner style guard: the caller
+ * decides whether an organisation may die (account deletion deletes the ones
+ * the leaver was alone in), and a repository second-guessing that would need
+ * the caller's context to do it correctly.
+ */
+export async function softDeleteOrganization(exec: Executor, orgId: string): Promise<void> {
+  const now = new Date();
+  await exec
+    .update(organizations)
+    .set({ deletedAt: now, updatedAt: now })
+    .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)));
+}
+
+/**
  * The slug seed for a personal organisation, taken from an email address.
  *
  * The local part is the closest thing to a name available at first login. A

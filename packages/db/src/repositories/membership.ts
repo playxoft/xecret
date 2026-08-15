@@ -1,4 +1,4 @@
-import { and, asc, count, eq, isNull } from 'drizzle-orm';
+import { and, asc, count, eq, isNull, sql } from 'drizzle-orm';
 import type { AccessLevel, OrgRole } from '@xecret/core/authz';
 import { uuidv7 } from '@xecret/core/ids';
 import { accessGrants } from '../schema/access';
@@ -714,4 +714,61 @@ async function requireProjectScope(
 function clampPageNumber(requested: number | undefined): number {
   if (requested === undefined || !Number.isFinite(requested)) return 1;
   return Math.max(Math.trunc(requested), 1);
+}
+
+/** One organisation as account deletion sees it. */
+export interface AccountMembership {
+  orgId: string;
+  orgName: string;
+  /** The `org_members.id` of the leaver's row — what `removeMember` takes. */
+  memberId: string;
+  role: OrgRole;
+  status: MemberStatus;
+  /** Every membership row in the organisation, the leaver and any status included. */
+  totalMembers: number;
+  /** Active owners including the leaver, when they are one. */
+  activeOwners: number;
+}
+
+/**
+ * Every live organisation a user belongs to, with the counts that decide what
+ * their departure means: alone → the organisation goes with them; the only
+ * active owner among others → they cannot leave until ownership moves;
+ * otherwise → plain removal.
+ *
+ * One statement, counts included, so the deletion transaction classifies from
+ * a single consistent read rather than from N follow-up queries that can each
+ * see a different moment. `totalMembers` counts every status on purpose: an
+ * organisation whose only other members are suspended is still somebody
+ * else's — suspension is reversible, so their presence keeps it alive, and
+ * the leaver's departure must not erase it under them.
+ */
+export async function accountMembershipSummary(
+  exec: Executor,
+  userId: string,
+): Promise<AccountMembership[]> {
+  return exec
+    .select({
+      orgId: organizations.id,
+      orgName: organizations.name,
+      memberId: orgMembers.id,
+      role: orgMembers.role,
+      status: orgMembers.status,
+      totalMembers: sql<number>`(
+        select count(*)::int from org_members counted
+        where counted.org_id = ${organizations.id}
+      )`,
+      activeOwners: sql<number>`(
+        select count(*)::int from org_members counted
+        where counted.org_id = ${organizations.id}
+          and counted.status = 'active' and counted.role = 'owner'
+      )`,
+    })
+    .from(orgMembers)
+    .innerJoin(
+      organizations,
+      and(eq(orgMembers.orgId, organizations.id), isNull(organizations.deletedAt)),
+    )
+    .where(eq(orgMembers.userId, userId))
+    .orderBy(asc(organizations.name));
 }

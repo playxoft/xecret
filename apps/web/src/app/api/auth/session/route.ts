@@ -22,6 +22,7 @@ import {
   createSession,
   findSessionByTokenHash,
   listOrganizationsForUser,
+  RepositoryError,
   revokeSession,
   upsertUserFromIdentity,
 } from '@xecret/db/repositories';
@@ -78,7 +79,17 @@ export const POST = publicRoute(async ({ request, services }) => {
     throw errors.forbidden('Verify your email address before signing in.');
   }
 
-  const user = await upsertUserFromIdentity(services.db, identity);
+  // A soft-deleted account is terminal: the repository refuses to revive the
+  // row (`setWhere` in `upsertUserFromIdentity`), and that refusal surfaces
+  // here as a plain statement rather than a 500. 403, not 404: this caller has
+  // just proven control of the identity, so "this account was deleted" reveals
+  // nothing they are not entitled to know.
+  const user = await upsertUserFromIdentity(services.db, identity).catch((cause: unknown) => {
+    if (cause instanceof RepositoryError && cause.code === 'notFound') {
+      throw errors.forbidden('This account was deleted and cannot be signed in to again.');
+    }
+    throw cause;
+  });
 
   // First login has no organisation yet. Bootstrapping one here — rather than
   // asking the user to create it — is what makes the product usable within a
