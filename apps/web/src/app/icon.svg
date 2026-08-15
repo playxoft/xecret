@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="xecret">
+  <defs>
+    <linearGradient id="xecret-mark" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#3ad4ec"/><stop offset="0.55" stop-color="#2380e2"/><stop offset="1" stop-color="#2a3fd0"/></linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="8" fill="url(#xecret-mark)"/>
+  <path d="M8.5 8.5L23.5 23.5M23.5 8.5L8.5 23.5" stroke="#ffffff" stroke-width="3.2" stroke-linecap="round"/>
+</svg>

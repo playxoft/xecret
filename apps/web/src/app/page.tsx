@@ -247,7 +247,11 @@ export default function LandingPage() {
       <footer className="border-line-subtle border-t">
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-5 py-8 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
-            <Wordmark />
+            {/* The header up the page already rendered the mark under its
+                default gradient id, and this is the only page that shows it
+                twice. Naming this one keeps both `<linearGradient>` ids
+                unique. */}
+            <Wordmark gradientId="xecret-mark-gradient-footer" />
             <PlayxoftMark />
           </div>
           <nav
