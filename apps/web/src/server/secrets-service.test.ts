@@ -198,6 +198,7 @@ async function harness(): Promise<Harness> {
     }).logger,
     bindLog: () => {},
     waitUntil: () => {},
+    settled: () => Promise.resolve(),
     dispose: () => {},
   };
 

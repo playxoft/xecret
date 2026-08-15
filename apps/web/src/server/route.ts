@@ -5,7 +5,7 @@ import { actorId, actorLabel, actorType, assertCsrf, authenticate, isUnlocked } 
 import type { CredentialSource, Principal } from './actor';
 import { DatabaseAuditSink } from './audit-sink';
 import { MissingBindingError, publicOrigin } from './bindings';
-import type { Bindings } from './bindings';
+import type { Bindings, WorkerContext } from './bindings';
 import { createServiceContext, workerContext } from './context';
 import type { ServiceContext } from './context';
 import { errors } from './errors';
@@ -107,7 +107,7 @@ export function publicRoute<Params = Record<string, never>>(
     let response: Response;
 
     try {
-      started = await begin(request, requestId, log, doing);
+      started = await begin(request, requestId, log, doing, startedAt);
       const params = ((await args?.params) ?? {}) as Params;
 
       response = withRequestId(
@@ -121,8 +121,8 @@ export function publicRoute<Params = Record<string, never>>(
     }
 
     finished(log.logger, doing, response.status, startedAt);
-    // Deliberately after the finish line is written, so the batch that leaves
-    // contains it. `flush` is the last thing the request does.
+    // Last, so nothing this request can still queue is left out of the batch —
+    // neither the finish line above nor the lines the deferred work writes.
     shipLogs(started, log);
     return response;
   };
@@ -181,7 +181,7 @@ export function authenticatedRoute<Params = Record<string, never>>(
     let response: Response;
 
     try {
-      started = await begin(request, requestId, log, doing);
+      started = await begin(request, requestId, log, doing, startedAt);
       const { services, recorder } = started;
 
       // Checked before authentication so a cross-site request is rejected
@@ -198,7 +198,14 @@ export function authenticatedRoute<Params = Record<string, never>>(
       // loggers a service is holding, because the context is shared by
       // reference. This is the single most useful field in the whole scheme:
       // "everything this user did on Tuesday" is one query.
-      services.bindLog({ ...principalFields(principal), credential: source });
+      //
+      // `credentialKind`, not `credential`: the redactor's deny list contains
+      // the word "credential", so a field by that name is `[redacted]` on every
+      // authenticated line whatever it holds — and this one holds `cookie` or
+      // `bearer`, which is a shape and not a secret. The `kind` suffix is what
+      // the identifier pass already recognises, so the field survives without
+      // punching a hole in the deny list for the names that should be hidden.
+      services.bindLog({ ...principalFields(principal), credentialKind: source });
 
       assertCsrf(request, source);
 
@@ -244,6 +251,16 @@ export function authenticatedRoute<Params = Record<string, never>>(
 interface RequestScope {
   services: ServiceContext;
   recorder: BufferedAuditRecorder;
+  /**
+   * The runtime's own `waitUntil`, kept aside from the tracked one on
+   * `ServiceContext`.
+   *
+   * Only `shipLogs` uses it, and only because the log flush is the one deferred
+   * task that must *follow* the tracked set rather than join it. Everything else
+   * defers through `services.waitUntil`, so the database handle is not closed
+   * underneath it.
+   */
+  ctx: WorkerContext['ctx'];
 }
 
 async function begin(
@@ -251,14 +268,17 @@ async function begin(
   requestId: string,
   log: RequestLog,
   doing: RequestAction,
+  startedAt: number,
 ): Promise<RequestScope> {
-  const services = await createServiceContext(request, await workerContext(), requestId, log);
+  const worker = await workerContext();
+  const services = await createServiceContext(request, worker, requestId, log, startedAt);
 
   log.logger.at('begin').debug(`Received a request to ${doing.base} ${doing.object}`);
 
   return {
     services,
     recorder: new BufferedAuditRecorder(new DatabaseAuditSink(services.db)),
+    ctx: worker.ctx,
   };
 }
 
@@ -317,25 +337,46 @@ function finished(logger: Logger, doing: RequestAction, status: number, startedA
 }
 
 /**
- * Hands the batch to the runtime, after the response.
+ * Hands the batch to the runtime, after the response and after the deferred
+ * work.
  *
- * Through the request's tracked `waitUntil` when there is one, so the database
- * handle is not closed underneath a flush that shares its lifecycle — and
- * through a bare promise when `begin` failed before a context existed, where
- * there is nothing to sequence against. Either way the shipping is never in
- * front of the user.
+ * ── Why the flush waits, rather than being merely deferred ──
+ * `flush` drains the buffer the instant it is called; the network round trip
+ * that follows is irrelevant to what the batch contains. So calling it here and
+ * handing the *resulting* promise to `waitUntil` ships only the lines written
+ * before the response — and the lines that matter most are written after it. The
+ * audit-flush failure in `settle`, the sign-in and CLI-exchange records in
+ * `writeEvents`, an invitation or PIN-reset email that never left: every one of
+ * those is an `error` emitted from inside `waitUntil`, into a buffer that has
+ * already been drained and will never be drained again.
+ * `docs/operations/logging.md` advertises those as the alertable lines, so
+ * losing them disarms the alerts silently — which is the worst way for an
+ * observability system to fail.
+ *
+ * Chaining behind `settled()` fixes that: the flush runs once every task the
+ * request queued has finished, by which point those lines are in the buffer.
+ *
+ * ── Why the runtime's `waitUntil` and not the tracked one ──
+ * The tracked one exists so `dispose` can hold the database connection open for
+ * work that needs it. This flush needs the network, not the database, so it has
+ * no business extending the connection's life — and adding it to the set it is
+ * already waiting on is a knot with no reason to be tied. The two run
+ * concurrently and neither touches what the other holds.
  */
 function shipLogs(scope: RequestScope | undefined, log: RequestLog): void {
-  // A shipping failure is already degraded to the console inside the sink, so
-  // this catch only exists for the impossible case. It must not reject: an
-  // unhandled rejection in `waitUntil` is a Worker-level error report for a
-  // request that succeeded.
-  const flushing = log.flush().catch(() => undefined);
-  if (scope) {
-    scope.services.waitUntil(flushing);
-    return;
-  }
-  void flushing;
+  // Without a scope, `begin` failed before a context existed: nothing was
+  // deferred, so there is nothing to wait for — and no runtime handle to keep
+  // the isolate alive either. The batch races the end of the invocation, which
+  // is the best available answer for a request that could not be started.
+  const flushing = (scope ? scope.services.settled() : Promise.resolve())
+    .then(() => log.flush())
+    // A shipping failure is already degraded to the console inside the sink, so
+    // this catch only exists for the impossible case. It must not reject: an
+    // unhandled rejection in `waitUntil` is a Worker-level error report for a
+    // request that succeeded.
+    .catch(() => undefined);
+
+  scope?.ctx.waitUntil(flushing);
 }
 
 /** The caller, flattened into fields a log query can group on. */

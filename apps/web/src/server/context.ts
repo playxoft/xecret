@@ -88,7 +88,16 @@ export interface RequestMeta {
   userAgent: string | null;
   method: string;
   path: string;
-  /** `Date.now()` at the start of the request, for the duration on the finish line. */
+  /**
+   * `Date.now()` when the route wrapper took the request.
+   *
+   * Supplied by the wrapper rather than read here, because the wrapper stamps
+   * its own clock the instant it is entered and measures `durationMs` from it.
+   * Deriving a second one at this point would mean the request had two start
+   * times differing by however long `workerContext()` and the database handle
+   * took — the two slowest things in a cold start, and precisely the interval
+   * anyone comparing the two numbers would be trying to account for.
+   */
   startedAt: number;
 }
 
@@ -118,6 +127,21 @@ export interface ServiceContext {
   /** Defers work until after the response is sent — used for audit flushes. */
   waitUntil: (promise: Promise<unknown>) => void;
   /**
+   * Resolves once everything handed to `waitUntil` **so far** has settled.
+   *
+   * The snapshot is taken when this is called, not when the context was built,
+   * which is the only way it can be useful: the tasks worth waiting for are
+   * queued during the request, and a promise created up front would be closed
+   * over an empty list.
+   *
+   * It exists for one caller — the route wrapper, sequencing the log flush
+   * behind the deferred work, because that work writes log lines of its own and
+   * a batch that left earlier would not contain them. Nothing else should reach
+   * for it: a service awaiting the request's own deferred work is a service
+   * waiting on itself.
+   */
+  settled: () => Promise<unknown>;
+  /**
    * Schedules the release of the request's database handle.
    *
    * Called exactly once, by the route wrapper, in its `finally`. The close is
@@ -134,27 +158,36 @@ export interface ServiceContext {
 /**
  * Builds the per-request services.
  *
- * `requestId` and the logger are supplied by the caller rather than derived
- * here, because the route wrapper needs both before this function runs — it must
- * be able to answer, and log, a failure that happens *while building this
- * context*. Deriving them in both places would let the id in the response header
- * differ from the id in the audit records for the same request, which defeats
- * the only purpose the id has.
+ * `requestId`, the logger and `startedAt` are supplied by the caller rather than
+ * derived here, because the route wrapper needs all three before this function
+ * runs — it must be able to answer, and log, a failure that happens *while
+ * building this context*. Deriving them in both places would let the id in the
+ * response header differ from the id in the audit records for the same request,
+ * which defeats the only purpose the id has, and would give the request two
+ * start times that disagree by the cost of building this context.
  */
 export async function createServiceContext(
   request: Request,
   worker: WorkerContext,
   requestId: string,
   log: RequestLog,
+  startedAt: number,
 ): Promise<ServiceContext> {
   const url = new URL(request.url);
 
   const handle = createDatabaseHandle({ connectionString: connectionString(worker.env) });
 
-  // Everything handed to `waitUntil` is also tracked here, so `dispose` can
-  // sequence the connection close *after* the deferred work that needs it.
+  // Everything handed to `waitUntil` is also tracked here, so `dispose` and
+  // `settled` can sequence work *after* the deferred tasks it depends on.
   // Rejections are absorbed in the tracking copy only — each task still owns
   // its own failure handling via the promise given to the runtime.
+  //
+  // Both consumers snapshot: `Promise.allSettled` walks the array once, at the
+  // moment it is called, so a task queued afterwards is not in that wait. That
+  // is why both are called at the very end of the request, past every point a
+  // handler could still defer something — and it is worth knowing, because
+  // assuming otherwise is what previously let the log flush run before the
+  // lines it was supposed to carry had been written.
   const pending: Promise<unknown>[] = [];
 
   return {
@@ -168,7 +201,7 @@ export async function createServiceContext(
       userAgent: userAgent(request),
       method: request.method,
       path: url.pathname,
-      startedAt: Date.now(),
+      startedAt,
     },
     log: log.logger,
     bindLog: log.bind,
@@ -176,6 +209,7 @@ export async function createServiceContext(
       pending.push(promise.catch(() => undefined));
       worker.ctx.waitUntil(promise);
     },
+    settled: () => Promise.allSettled(pending),
     dispose: () => {
       worker.ctx.waitUntil(
         (async () => {

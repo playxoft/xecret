@@ -71,7 +71,7 @@ from loggers that already existed.
 | `actorType` | `user` \| `cli_token` \| `service_token` |
 | `userId` | Absent for a service token, which acts as nobody. |
 | `sessionId`, `tokenId` | Whichever credential was presented. |
-| `credential` | `cookie` \| `bearer` |
+| `credentialKind` | `cookie` \| `bearer`. Named with the `kind` suffix on purpose — `credential` is a word the redactor hides, so a field by that name would be `[redacted]` on every line. |
 | `accessLevel` | Service tokens only. |
 
 ### Once the path is resolved
@@ -216,10 +216,17 @@ Lines accumulate in memory for the life of the request and leave in **one** POST
 - A Worker invocation may open six outgoing connections (ADR 0006) and the database already holds
   one. A POST per line would exhaust that on any request logging more than five times.
 - Nothing about shipping is in front of the user.
+- The flush waits for the request's deferred work first. An audit-flush failure, a sign-in event
+  that could not be recorded, an invitation email that never left — all of those log from inside
+  `waitUntil`, **after** the response. Draining the batch the moment the response was returned
+  would leave every one of those lines in a buffer nothing flushes again, which would silently
+  disarm the `level:error` alerts below.
 - A batch is capped at 256 lines per request; drops are counted and reported *in* the batch, so a
   truncated request is visible as truncated.
-- A failed flush — network, 401, timeout — replays the whole batch to the console and logs why.
-  **A line that cannot be shipped is never silently dropped.**
+- A failed flush — network, 401, timeout — logs one line saying so. It does not replay the batch:
+  the console sink is unconditional, so every line is already on the Cloudflare tail and a replay
+  would only print each one twice. **What a shipping failure costs is the retention and the search,
+  never the record.**
 - `write` cannot throw. An observability pipeline that can fail a request is worse than none.
 
 ---

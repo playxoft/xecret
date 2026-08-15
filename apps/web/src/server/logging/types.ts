@@ -30,8 +30,18 @@ export const LOG_LEVEL_ORDER: Readonly<Record<LogLevel, number>> = {
   error: 40,
 };
 
+/**
+ * `Object.hasOwn`, not `in` — and the difference is not pedantry.
+ *
+ * `in` walks the prototype chain, so `XECRET_LOG_LEVEL=toString` (or
+ * `constructor`, or `valueOf`) would be accepted as a level. The threshold
+ * comparison then reads `LOG_LEVEL_ORDER['toString']` as a function, every
+ * `<` against it is `NaN`-false, and nothing is ever discarded — a typo in an
+ * operator's env var quietly turns `debug` on in production, which is a bill and
+ * a disclosure rather than a config error somebody notices.
+ */
 export function isLogLevel(value: unknown): value is LogLevel {
-  return typeof value === 'string' && value in LOG_LEVEL_ORDER;
+  return typeof value === 'string' && Object.hasOwn(LOG_LEVEL_ORDER, value);
 }
 
 /**

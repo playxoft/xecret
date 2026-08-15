@@ -1,3 +1,4 @@
+import { scrubText } from './redact';
 import type { LogEntry, LogSink } from './types';
 
 /**
@@ -10,6 +11,10 @@ import type { LogEntry, LogSink } from './types';
  * development, and in the minutes when the log pipeline itself is the thing
  * that is broken. Better Stack is what you have a week later when somebody asks
  * why a secret was read on Tuesday.
+ *
+ * It is also what makes a shipping failure survivable without any recovery
+ * machinery: the console has already written every line by the time the batch
+ * leaves, so a failed POST costs the retention, not the record.
  *
  * ── Why Better Stack is batched and deferred ──
  * A Worker invocation may open six outgoing connections (ADR 0006) and the
@@ -98,13 +103,15 @@ export class BetterStackSink implements LogSink {
   private dropped = 0;
 
   /**
-   * @param fallback Where the batch goes if the POST fails. Always the console:
-   *   a line that cannot be shipped is still a line somebody may need, and
-   *   losing it silently is how an incident becomes unreconstructable.
+   * @param diagnostics Where the *failure* is reported when a POST does not
+   *   land. Always the console sink, which `createSink` also puts in the fan-out
+   *   — so the lines themselves are already on the Cloudflare tail and there is
+   *   nothing here to recover. This sink only has to say that the retention copy
+   *   is missing, and why.
    */
   constructor(
     private readonly config: BetterStackConfig,
-    private readonly fallback: LogSink,
+    private readonly diagnostics: LogSink,
   ) {
     this.maxBatch = config.maxBatch ?? DEFAULT_MAX_BATCH;
   }
@@ -160,20 +167,34 @@ export class BetterStackSink implements LogSink {
     }
   }
 
-  /** Replays a batch to the console and says why it is there. */
+  /**
+   * Reports that a batch did not reach Better Stack.
+   *
+   * One line, not a replay. The console sink sits alongside this one in the
+   * fan-out and has already written every entry in the batch, so echoing them
+   * back through it would print each line twice — doubling Cloudflare's log
+   * volume during exactly the outage when the operator is reading that tail, and
+   * for no gain. What is actually missing is the *searchable* copy, and that is
+   * what this line says.
+   *
+   * `reason` is scrubbed because up to 200 bytes of it is an arbitrary remote
+   * response body. This is the one path that writes to a sink directly rather
+   * than through the logger, so nothing else would redact it.
+   */
   private degrade(batch: readonly LogEntry[], reason: string): void {
-    this.fallback.write({
+    const scrubbed = scrubText(reason);
+
+    this.diagnostics.write({
       dt: new Date().toISOString(),
       level: 'error',
       message:
-        `Could not ship ${batch.length} log line(s) to Better Stack (${reason}) — they follow ` +
-        'below on the Cloudflare log tail instead, so nothing was lost',
+        `Could not ship ${batch.length} log line(s) to Better Stack (${scrubbed}) — they are on ` +
+        'the Cloudflare log tail, which is where this request has to be reconstructed from until ' +
+        'shipping recovers',
       fn: 'BetterStackSink.flush',
       lines: batch.length,
-      reason,
+      reason: scrubbed,
     });
-
-    for (const entry of batch) this.fallback.write(entry);
   }
 }
 

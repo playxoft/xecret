@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { describeOutcome, describeRequest } from './describe-request';
+import { defaultLogLevel } from './index';
 import { createLogger, silentLogger } from './logger';
 import { describeError, errorName, isSensitiveKey, redactFields, scrubText } from './redact';
 import { BETTERSTACK_DEFAULT_URL, BetterStackSink, fanOut } from './sinks';
+import { isLogLevel } from './types';
 import type { LogEntry, LogSink } from './types';
+import type { Bindings } from '../bindings';
 
 /** A sink that keeps everything, so a test can assert on the finished line. */
 function collectingSink(): LogSink & { entries: LogEntry[]; flushes: number } {
@@ -138,6 +141,32 @@ describe('request descriptions', () => {
   });
 });
 
+describe('the level threshold', () => {
+  it('accepts the four levels and nothing inherited from Object.prototype', () => {
+    for (const level of ['debug', 'info', 'warn', 'error']) {
+      expect(isLogLevel(level)).toBe(true);
+    }
+
+    // Regression: the check was `value in LOG_LEVEL_ORDER`, which walks the
+    // prototype chain. `XECRET_LOG_LEVEL=toString` was therefore a valid level,
+    // the threshold compared against a function, every `<` came out false
+    // through `NaN`, and production emitted *every* line including `debug`. A
+    // typo in an operator's environment turned the log bill and the debug
+    // detail on with nothing to indicate it had.
+    for (const inherited of ['toString', 'constructor', 'valueOf', 'hasOwnProperty']) {
+      expect(isLogLevel(inherited)).toBe(false);
+    }
+  });
+
+  it('falls back to the environment default rather than trusting a bad value', () => {
+    const env = (level: string): Bindings =>
+      ({ XECRET_LOG_LEVEL: level, XECRET_ENV: 'production' }) as unknown as Bindings;
+
+    expect(defaultLogLevel(env('warn'))).toBe('warn');
+    expect(defaultLogLevel(env('toString'))).toBe('info');
+  });
+});
+
 describe('redaction', () => {
   it('hides credential-shaped field names', () => {
     for (const key of [
@@ -170,6 +199,16 @@ describe('redaction', () => {
     ]) {
       expect(isSensitiveKey(key)).toBe(false);
     }
+  });
+
+  // The field the route wrapper binds on every authenticated line. It shipped as
+  // `[redacted]` for the whole life of the feature, because it was called
+  // `credential` — a word on the deny list — while the operations doc advertised
+  // it as `cookie | bearer`. Nothing failed; the column was simply always blank.
+  it('keeps the credential *kind*, which is a shape rather than a secret', () => {
+    expect(isSensitiveKey('credential')).toBe(true);
+    expect(isSensitiveKey('credentialKind')).toBe(false);
+    expect(redactFields({ credentialKind: 'cookie' })).toEqual({ credentialKind: 'cookie' });
   });
 
   it('replaces a sensitive value rather than dropping the field', () => {
@@ -384,8 +423,13 @@ describe('Better Stack sink', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  // Losing a line silently is how an incident becomes unreconstructable.
-  it('replays the batch to the console when shipping fails', async () => {
+  // One line, not a replay. `createSink` puts the console sink in the fan-out
+  // *and* hands the same instance here, so every entry in the batch is already
+  // on the Cloudflare tail; writing them back through it printed each one twice
+  // and doubled the log volume during precisely the outage when an operator is
+  // reading that tail. What is missing during a shipping failure is the
+  // searchable copy, and that is all this line has to say.
+  it('reports a shipping failure without replaying lines the console already has', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
@@ -393,29 +437,52 @@ describe('Better Stack sink', () => {
       }),
     );
 
-    const fallback = collectingSink();
-    const sink = new BetterStackSink({ token: 't', url: 'https://x' }, fallback);
+    const diagnostics = collectingSink();
+    const sink = new BetterStackSink({ token: 't', url: 'https://x' }, diagnostics);
     sink.write(entry('one'));
+    sink.write(entry('two'));
     await sink.flush();
 
-    expect(String(fallback.entries[0]?.message)).toContain('Could not ship 1 log line');
-    expect(String(fallback.entries[0]?.message)).toContain('nothing was lost');
-    expect(fallback.entries[1]?.message).toBe('one');
+    expect(diagnostics.entries).toHaveLength(1);
+    expect(diagnostics.entries[0]).toMatchObject({ level: 'error', lines: 2 });
+    expect(String(diagnostics.entries[0]?.message)).toContain('Could not ship 2 log line');
+    expect(String(diagnostics.entries[0]?.message)).toContain('Cloudflare log tail');
   });
 
   it('degrades on a non-2xx as well as on a throw', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response('bad token', { status: 401 })),
+      vi.fn(async () => new Response('unrecognised source', { status: 401 })),
     );
 
-    const fallback = collectingSink();
-    const sink = new BetterStackSink({ token: 't', url: 'https://x' }, fallback);
+    const diagnostics = collectingSink();
+    const sink = new BetterStackSink({ token: 't', url: 'https://x' }, diagnostics);
     sink.write(entry('one'));
     await sink.flush();
 
-    expect(String(fallback.entries[0]?.message)).toContain('Could not ship 1 log line');
-    expect(String(fallback.entries[0]?.['reason'])).toContain('401');
+    expect(String(diagnostics.entries[0]?.message)).toContain('Could not ship 1 log line');
+    expect(String(diagnostics.entries[0]?.['reason'])).toContain('401');
+  });
+
+  // The reason quotes up to 200 bytes of an arbitrary remote response body, and
+  // this is the one path that writes to a sink directly instead of through the
+  // logger — so nothing else would scrub it. A 401 body echoing back the source
+  // token it rejected is the obvious way that goes wrong.
+  it('scrubs the remote response before quoting it as the reason', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () => new Response('Bearer src_tok_abcdefghijkl is not a source', { status: 401 }),
+      ),
+    );
+
+    const diagnostics = collectingSink();
+    const sink = new BetterStackSink({ token: 't', url: 'https://x' }, diagnostics);
+    sink.write(entry('one'));
+    await sink.flush();
+
+    expect(String(diagnostics.entries[0]?.['reason'])).not.toContain('src_tok_abcdefghijkl');
+    expect(String(diagnostics.entries[0]?.message)).not.toContain('src_tok_abcdefghijkl');
   });
 
   it('bounds the batch and reports what it dropped', async () => {

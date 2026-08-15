@@ -40,7 +40,16 @@ export function defaultLogLevel(env: Bindings): LogLevel {
   return env.XECRET_ENV === 'development' ? 'debug' : 'info';
 }
 
-/** Builds the sink stack for this deployment. Console always; Better Stack when configured. */
+/**
+ * Builds the sink stack for this deployment. Console always; Better Stack when
+ * configured.
+ *
+ * The console sink is handed to `BetterStackSink` as well as placed in the
+ * fan-out, and it is deliberately the *same* instance: because it is already in
+ * the fan-out, every line has been written to the Cloudflare tail before the
+ * batch is even assembled, so a shipping failure has nothing to recover and only
+ * has to be announced. See `BetterStackSink.degrade`.
+ */
 export function createSink(env: Bindings): LogSink {
   const console = new ConsoleSink();
   const token = env.BETTERSTACK_SOURCE_TOKEN;
