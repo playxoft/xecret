@@ -12,9 +12,24 @@ import { Spinner } from './spinner';
 /**
  * A masked secret with an explicit reveal.
  *
- * Every behaviour below is a security decision, not a styling one. Changing
- * any of them changes what an over-the-shoulder observer, a screen recording,
- * or the audit log can see.
+ * ── Masking and forgetting are two different things ──
+ * A reveal decrypts once and the plaintext is then held, in React state only,
+ * for `revealDurationMs`. Inside that window the value can be masked and shown
+ * again for free: hiding it is a *display* decision, and nothing about the eye
+ * button or a backgrounded tab warrants a second decryption of the same secret.
+ * When the window ends the plaintext is dropped outright, and the next reveal is
+ * a fresh audited request.
+ *
+ * The consequence is deliberate and worth stating plainly: within the window,
+ * re-revealing writes no new `secret.revealed` record. The audit log answers
+ * "who decrypted this, and when", not "how many times did they look at their own
+ * screen" — the second question was never answerable anyway, since a revealed
+ * value can be read for as long as it is on screen.
+ *
+ * ── What still forces a round trip ──
+ * The first reveal after mount, and every reveal after the window ends. Copy
+ * fetches its own plaintext when the cache is empty, and never fills it: the
+ * clipboard path is not a reveal, and should not quietly license one.
  */
 export interface SecretValueProps {
   /** The secret's name. Used to build accessible labels for the controls. */
@@ -22,29 +37,24 @@ export interface SecretValueProps {
   /**
    * Resolves the plaintext.
    *
-   * Called on **every** reveal and on **every** copy — never memoised here.
-   * Each call is expected to hit `GET …/secrets/{name}`, which is the one
-   * handler that decrypts and which writes a `secret.revealed` audit record
-   * each time. Caching the value locally would make the audit trail claim one
-   * decryption where the user performed six, and "who read this, and when" is
-   * the question this product exists to answer.
+   * Expected to hit `GET …/secrets/{name}`, which is the one handler that
+   * decrypts and which writes a `secret.revealed` audit record each time. It is
+   * called on the first reveal and on any reveal after the cache window has
+   * ended — see the header for what that window does and does not promise.
    */
   onReveal: () => Promise<string>;
-  /** How long a revealed value stays on screen. */
+  /** How long a decrypted value is held before it is dropped from state. */
   revealDurationMs?: number;
   /**
    * A plaintext the caller has *already* fetched and had audited.
    *
-   * Set by "Reveal all", which decrypts a whole environment in one audited
-   * request. Without it that button would have to either re-fetch each row —
-   * turning one deliberate act into sixty audit records — or bypass this
-   * component and render the value itself, which would put an unmasked secret
-   * on screen with none of the auto-hide behaviour below.
+   * Set by "Reveal all" and by "Reveal on hover", both of which decrypt a whole
+   * environment in one audited request. Without it those controls would have to
+   * either re-fetch each row — turning one deliberate act into sixty audit
+   * records — or bypass this component and render the value themselves, which
+   * would put an unmasked secret on screen with none of the handling below.
    *
-   * It does not weaken rule 2. The value still came from the audited endpoint;
-   * what changes is only *which* audited call produced it. Clearing it returns
-   * the field to a mask, and the countdown and blur handling apply to it exactly
-   * as they do to a value revealed here.
+   * Clearing it returns the field to a mask.
    */
   revealed?: string;
   /**
@@ -53,9 +63,8 @@ export interface SecretValueProps {
    *
    * A slot rather than a sibling rendered by the caller, because the caller
    * cannot align to a group it is outside of: the reveal and copy buttons sit
-   * on the first line of a component that also renders a countdown and errors
-   * beneath them, so anything appended from outside lands under the field
-   * instead of beside it.
+   * on the first line of a component that also renders errors beneath them, so
+   * anything appended from outside lands under the field instead of beside it.
    */
   trailing?: ReactNode;
   className?: string;
@@ -72,56 +81,66 @@ export interface SecretValueProps {
  */
 const MASK = '•'.repeat(18);
 
-type RevealState = 'masked' | 'loading' | 'revealed';
-
 export function SecretValue({
   name,
   onReveal,
-  revealDurationMs = 30_000,
+  revealDurationMs = 180_000,
   revealed: external,
   trailing,
   className,
 }: SecretValueProps) {
-  const [state, setState] = useState<RevealState>('masked');
   const [value, setValue] = useState<string | null>(null);
-  const [secondsLeft, setSecondsLeft] = useState(0);
+  const [shown, setShown] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [copyState, setCopyState] = useState<'idle' | 'copying' | 'copied'>('idle');
   const [error, setError] = useState<string | null>(null);
 
   const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const remask = useCallback(() => {
-    setState('masked');
-    // Dropping the plaintext from state is the point: it must not survive in
-    // a React fibre for the rest of the page's life, where the next error
-    // boundary or dev-tools inspection would surface it.
+  /** Hide it, keep it. Cheap, and reversible without another decryption. */
+  const mask = useCallback(() => setShown(false), []);
+
+  /**
+   * Hide it and drop it. The plaintext must not survive in a React fibre for
+   * the rest of the page's life, where the next error boundary or dev-tools
+   * inspection would surface it.
+   */
+  const forget = useCallback(() => {
+    setShown(false);
     setValue(null);
-    setSecondsLeft(0);
   }, []);
 
   const reveal = useCallback(async () => {
     setError(null);
-    setState('loading');
+
+    // Still inside the window: show what is already here rather than decrypting
+    // the same secret a second time.
+    if (value !== null) {
+      setShown(true);
+      return;
+    }
+
+    setLoading(true);
     try {
       const plaintext = await onReveal();
       setValue(plaintext);
-      setState('revealed');
-      setSecondsLeft(Math.ceil(revealDurationMs / 1000));
+      setShown(true);
     } catch (cause) {
-      setState('masked');
       setError(errorMessage(cause));
+    } finally {
+      setLoading(false);
     }
-  }, [onReveal, revealDurationMs]);
+  }, [onReveal, value]);
 
   const copy = useCallback(async () => {
     setError(null);
     setCopyState('copying');
     try {
-      // Copy fetches its own plaintext and writes it straight to the
-      // clipboard. It never sets `value`, so copying a secret never puts it on
-      // screen — the common case is pasting into a terminal, and displaying it
+      // Copy writes straight to the clipboard and never sets `value`, so
+      // copying a secret never puts it on screen and never starts a cache
+      // window — the common case is pasting into a terminal, and displaying it
       // on the way there is pure additional exposure.
-      const plaintext = await onReveal();
+      const plaintext = value ?? (await onReveal());
       await navigator.clipboard.writeText(plaintext);
       setCopyState('copied');
       copyResetTimer.current = setTimeout(() => setCopyState('idle'), 2000);
@@ -133,44 +152,33 @@ export function SecretValue({
           : errorMessage(cause),
       );
     }
-  }, [onReveal]);
+  }, [onReveal, value]);
 
-  // Auto-remask. A revealed secret left on screen is a secret in every
-  // subsequent screenshot, screen share, and shoulder-surf.
+  // The end of the window, counted from the decryption rather than from the
+  // last time the value happened to be on screen: masking and unmasking must
+  // not be able to extend how long a plaintext lives in memory.
   useEffect(() => {
-    if (state !== 'revealed') return;
+    if (value === null) return;
 
-    // The remask is its own timeout rather than a side effect inside the
-    // counter's updater: state updaters must stay pure, and hanging the
-    // security-relevant behaviour off a once-per-second tick would let a
-    // throttled background tab hold the value on screen indefinitely.
-    const hideAt = setTimeout(remask, revealDurationMs);
-    const tick = setInterval(() => setSecondsLeft((current) => Math.max(current - 1, 0)), 1000);
+    const forgetAt = setTimeout(forget, revealDurationMs);
+    return () => clearTimeout(forgetAt);
+  }, [value, forget, revealDurationMs]);
 
-    return () => {
-      clearTimeout(hideAt);
-      clearInterval(tick);
-    };
-  }, [state, remask, revealDurationMs]);
-
-  // Remask the moment the tab is hidden or the window loses focus: switching
-  // to a call, or starting a screen share, must not leave the value visible in
-  // a background tab that gets restored later.
+  // Mask the moment the tab is hidden: starting a screen share or switching to
+  // a call must not leave the value visible in a background tab that gets
+  // restored later. Only `visibilitychange` — a `blur` listener also fires for
+  // clicking into devtools, a second monitor, or another window, which is
+  // ordinary work rather than a moment of exposure.
   useEffect(() => {
-    if (state !== 'revealed') return;
+    if (!shown) return;
 
-    const hide = () => remask();
     const onVisibility = () => {
-      if (document.visibilityState === 'hidden') hide();
+      if (document.visibilityState === 'hidden') mask();
     };
 
     document.addEventListener('visibilitychange', onVisibility);
-    window.addEventListener('blur', hide);
-    return () => {
-      document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('blur', hide);
-    };
-  }, [state, remask]);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, [shown, mask]);
 
   useEffect(
     () => () => {
@@ -182,23 +190,20 @@ export function SecretValue({
   // A value supplied from outside wins over local state, so clearing "Reveal
   // all" re-masks every row at once rather than leaving behind whichever ones
   // had also been revealed individually.
-  const shown = external ?? (state === 'revealed' ? value : null);
-  const revealed = shown !== null;
-  const fromReveal = external === undefined;
+  const displayed = external ?? (shown ? value : null);
+  const isRevealed = displayed !== null;
 
   return (
     <div className={cn('flex min-w-0 flex-col gap-1', className)}>
       <div className="flex min-w-0 items-center gap-1.5">
         <div className="border-line bg-canvas-inset min-w-0 flex-1 rounded-md border px-2.5 py-1.5">
-          {revealed ? (
-            <code className="text-fg block font-mono text-[0.8125rem] leading-5 break-all">
-              {shown}
-            </code>
+          {isRevealed ? (
+            <code className="text-fg block font-mono text-sm leading-5 break-all">{displayed}</code>
           ) : (
             <>
               <span
                 aria-hidden="true"
-                className="text-fg-subtle block font-mono text-[0.8125rem] leading-5 tracking-[0.14em] select-none"
+                className="text-fg-subtle block font-mono text-sm leading-5 tracking-[0.14em] select-none"
               >
                 {MASK}
               </span>
@@ -213,16 +218,16 @@ export function SecretValue({
         <Button
           size="icon"
           variant="ghost"
-          onClick={revealed ? remask : reveal}
+          onClick={isRevealed ? mask : reveal}
           // An externally-supplied value is cleared by the control that supplied
           // it, so this row's own toggle has nothing to do.
-          disabled={state === 'loading' || external !== undefined}
-          aria-pressed={revealed}
-          aria-label={revealed ? `Hide the value of ${name}` : `Reveal the value of ${name}`}
+          disabled={loading || external !== undefined}
+          aria-pressed={isRevealed}
+          aria-label={isRevealed ? `Hide the value of ${name}` : `Reveal the value of ${name}`}
         >
-          {state === 'loading' ? (
+          {loading ? (
             <Spinner className="size-4" label={null} />
-          ) : revealed ? (
+          ) : isRevealed ? (
             <EyeOffIcon className="size-4" />
           ) : (
             <EyeIcon className="size-4" />
@@ -248,22 +253,16 @@ export function SecretValue({
         {trailing}
       </div>
 
-      {revealed && fromReveal ? (
-        <p className="text-fg-subtle text-xs">
-          Hides in {secondsLeft}s · this read was recorded in the audit log
-        </p>
-      ) : null}
-
       {copyState === 'copied' ? (
         // Announced politely so the user knows the clipboard write succeeded
         // without the value itself ever being spoken.
-        <p role="status" className="text-success-text text-xs">
+        <p role="status" className="text-success-text text-sm">
           Copied to the clipboard
         </p>
       ) : null}
 
       {error ? (
-        <p role="alert" className="text-danger-text text-xs">
+        <p role="alert" className="text-danger-text text-sm">
           {error}
         </p>
       ) : null}
