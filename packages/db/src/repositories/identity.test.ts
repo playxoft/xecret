@@ -156,6 +156,15 @@ describe('every org-scoped read filters on the organisation (threat T2)', () => 
     expect(sql).toContain('"organizations"."deleted_at" is null');
   });
 
+  it('breaks a tie on organisation name, which is not unique', () => {
+    // The dashboard falls back to the first of these rows for routes that name
+    // no organisation, so an unspecified order between two organisations
+    // sharing a name is a sidebar that re-points itself between reloads.
+    const { sql } = organizationsForUserQuery(db, USER_ID).toSQL();
+
+    expect(sql).toContain('order by "organizations"."name" asc, "organizations"."id" asc');
+  });
+
   it('excludes soft-deleted users from the member list', () => {
     expect(membersPageQuery(db, ORG_ID, 1, 25).toSQL().sql).toContain(
       '"users"."deleted_at" is null',

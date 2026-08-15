@@ -13,6 +13,7 @@ import { useDashboardNav } from './dashboard-nav';
 import type { DashboardLocation } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { useAutoLock } from '../_lib/use-auto-lock';
+import { useLastVisitedOrg } from '../_lib/use-last-visited-org';
 import { ErrorState } from './resource-states';
 import { LockScreen } from './lock-screen';
 import { SessionProvider } from './session';
@@ -38,14 +39,46 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   const location = useMemo(() => parseDashboardPath(pathname), [pathname]);
   const session = useApiResource<MeResponse>(apiPath.me());
 
+  // ── Which organisation the shell describes when the URL names none ──
+  //
+  // The account area — `/app/settings/*` — has no organisation in its path, and
+  // neither does the organisation picker. The sidebar used to empty itself out
+  // on those routes, which rearranged the shell underneath somebody who only
+  // opened their own settings; it now keeps describing an organisation. Which
+  // one matters more than it looks: every sidebar href, the switcher's label
+  // and the admin gate are computed from this one slug, so naming the wrong
+  // organisation sends "Projects" into a different tenant. See the note in
+  // `use-last-visited-org.ts` for why the first membership is not that answer.
+  //
+  // The remembered slug is only honoured if it is still a membership, so an
+  // organisation the viewer has been removed from cannot outlive their access
+  // to it. A cold load with nothing remembered falls back to the first
+  // membership — the shell has to name something, and there is nothing better
+  // to know at that point.
+  const lastVisitedOrgSlug = useLastVisitedOrg(location.orgSlug);
+  const memberships = session.data?.organizations;
+  const navOrgSlug =
+    location.orgSlug ??
+    memberships?.find((organization) => organization.slug === lastVisitedOrgSlug)?.slug ??
+    memberships?.[0]?.slug ??
+    null;
+
   // Built before the early returns below, because hooks cannot run
-  // conditionally. It issues no request until `orgSlug` is non-null, so the
-  // loading and locked paths cost nothing extra. The role is threaded in from
-  // the session resource because this runs above the SessionProvider.
+  // conditionally. It issues no request until there is an organisation in the
+  // *URL* — `projectsOrgSlug`, not the resolved slug — so the loading and
+  // locked paths, and the account area, cost nothing extra. The role is
+  // threaded in from the session resource because this runs above the
+  // SessionProvider, and is read for the same organisation the hrefs are built
+  // from, so the admin-only items can never describe one organisation's role
+  // over another's links.
   const viewerRole =
-    session.data?.organizations.find((organization) => organization.slug === location.orgSlug)
-      ?.role ?? null;
-  const nav = useDashboardNav({ ...location, viewerRole });
+    memberships?.find((organization) => organization.slug === navOrgSlug)?.role ?? null;
+  const nav = useDashboardNav({
+    ...location,
+    orgSlug: navOrgSlug,
+    projectsOrgSlug: location.orgSlug,
+    viewerRole,
+  });
 
   // Locking re-reads the session, which re-renders this component and lands on
   // the lock screen. One code path for "we are locked", whether that came from
@@ -117,12 +150,19 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     );
   }
 
-  // Screens outside an organisation — the picker and account settings — still
-  // need the switcher to show something. The first membership is the sensible
-  // default: `listOrganizationsForUser` returns the personal organisation first.
+  // Resolved through `navOrgSlug` rather than repeating its fallback, so the
+  // switcher and the sidebar always name the same organisation. The two
+  // disagreeing would be worse than either of them being wrong on its own —
+  // a sidebar full of Zebra's links under a switcher reading "Acme" is a shell
+  // that cannot be trusted about where you are.
+  //
+  // The `?? organizations[0]` below is reached only when the URL names an
+  // organisation the viewer is not a member of — a typed or stale link, where
+  // the switcher has nothing truthful to show and `resolveOrg` answers the page
+  // behind it with a 404 regardless. It is not the account-area fallback; that
+  // one has already been applied above.
   const currentOrg =
-    organizations.find((organization) => organization.slug === location.orgSlug) ??
-    organizations[0];
+    organizations.find((organization) => organization.slug === navOrgSlug) ?? organizations[0];
 
   const shellOrganizations: readonly ShellOrganization[] = organizations.map((organization) => ({
     slug: organization.slug,
