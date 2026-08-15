@@ -25,10 +25,10 @@ export interface NavItem {
    * Nested items, revealed by a disclosure triangle beside the label.
    *
    * One level deep, and deliberately not more. The tenancy chain is
-   * organisation → project → environment, and the organisation is already the
-   * switcher at the top of this panel — so a project and its environments is
-   * the whole of what remains. A generic tree would invite a third level that
-   * has nothing to put in it.
+   * organisation → project → environment; the organisation is already the
+   * switcher at the top of this panel, and environments belong to the screens
+   * that compare them rather than to a third row of truncated labels in a
+   * 240px column. So "Projects" and the projects under it is the whole of it.
    */
   children?: readonly NavItem[];
 }
@@ -85,7 +85,7 @@ export function Sidebar({ nav, header, collapsible = false, onNavigate, classNam
             className={cn(sectionIndex > 0 && 'mt-5')}
           >
             {section.label ? (
-              <p className="x-sidebar-wide text-fg-subtle px-2 pb-1.5 text-[0.6875rem] font-medium tracking-wide uppercase">
+              <p className="x-sidebar-wide text-fg-subtle px-2 pb-1.5 text-sm font-medium tracking-wide uppercase">
                 {section.label}
               </p>
             ) : null}
@@ -131,17 +131,17 @@ export function Sidebar({ nav, header, collapsible = false, onNavigate, classNam
  * One row, and its children when it has any.
  *
  * ── Why the disclosure and the link are separate controls ──
- * A project row does two things: it navigates to the project, and it expands to
- * show that project's environments. Merging them means one of the two is
- * unreachable — either clicking the name cannot open the project, or it cannot
- * expand without leaving the page you are on. So the triangle is its own button,
- * with its own accessible name, and the label beside it stays an ordinary link.
+ * A parent row does two things: it navigates to itself, and it expands to show
+ * what is under it. Merging them means one of the two is unreachable — either
+ * clicking the name cannot open the page, or it cannot expand without leaving
+ * the page you are on. So the triangle is its own button, with its own
+ * accessible name, and the label beside it stays an ordinary link.
  *
  * ── Folding ──
- * A project opens when it is the one you are looking at, which is the whole of
- * "fold the others": navigating into a project expands it, and navigating away
- * lets it close again. That default is *overridable* — `open` is only consulted
- * once the user has touched the triangle — because a sidebar that keeps
+ * A parent opens when the current page is inside it, which is the whole of
+ * "fold the others": navigating in expands it, and navigating away lets it
+ * close again. That default is *overridable* — `open` is only consulted once
+ * the user has touched the triangle — because a sidebar that keeps
  * re-collapsing something you deliberately opened is worse than one that never
  * folded at all.
  */
@@ -195,7 +195,7 @@ function NavEntry({
           // The colour alone tells a screen reader user nothing.
           aria-current={active ? 'page' : undefined}
           className={cn(
-            'x-nav-item relative flex min-w-0 flex-1 items-center gap-2.5 rounded-md py-1.5 pr-2 text-[0.8125rem] transition-colors',
+            'x-nav-item relative flex min-w-0 flex-1 items-center gap-2.5 rounded-md py-1.5 pr-2 text-sm transition-colors',
             hasChildren ? 'pl-6' : 'pl-2',
             active
               ? 'bg-surface-active text-fg font-medium'
