@@ -38,6 +38,9 @@ export {
 } from './pkce';
 
 export {
+  AUTO_LOCK_MINUTES_OPTIONS,
+  DEFAULT_AUTO_LOCK_MINUTES,
+  isAutoLockMinutes,
   PBKDF2_ITERATIONS,
   PIN_FREE_ATTEMPTS,
   PIN_LENGTH,
@@ -57,7 +60,7 @@ export {
   unlockExpiryFrom,
   verifyPin,
 } from './pin';
-export type { PinAttemptState, PinCheck, PinLockout, PinProblem } from './pin';
+export type { AutoLockMinutes, PinAttemptState, PinCheck, PinLockout, PinProblem } from './pin';
 
 export { IdentityVerificationError } from './types';
 export type {

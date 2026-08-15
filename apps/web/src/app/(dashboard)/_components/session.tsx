@@ -49,6 +49,8 @@ export interface PinStatus {
   unlocked: boolean;
   /** ISO 8601. When the current unlock lapses; `null` while locked. */
   unlockedUntil: string | null;
+  /** Minutes of idleness before the dashboard locks itself; `0` never. */
+  autoLockMinutes: number;
 }
 
 export interface SessionValue {
@@ -57,6 +59,12 @@ export interface SessionValue {
   pin: PinStatus;
   /** Locks this session without ending it, then re-reads the session. */
   lock: () => Promise<void>;
+  /**
+   * Re-reads `GET /api/auth/me`. For screens that change what it reports —
+   * the auto-lock interval, the display name — so the shell's copy does not
+   * go stale until the next full navigation.
+   */
+  refresh: () => void;
 }
 
 /** The body of `GET /api/auth/me`. `credential` is for the CLI and unused here. */

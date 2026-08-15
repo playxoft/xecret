@@ -12,6 +12,7 @@ import { apiPath, appPath, parseDashboardPath } from '../_lib/paths';
 import { useDashboardNav } from './dashboard-nav';
 import type { DashboardLocation } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
+import { useAutoLock } from '../_lib/use-auto-lock';
 import { ErrorState } from './resource-states';
 import { LockScreen } from './lock-screen';
 import { SessionProvider } from './session';
@@ -54,6 +55,15 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     await api.post('/auth/pin/lock');
     reloadSession();
   }, [reloadSession]);
+
+  // The idle lock. Armed only while there is an unlock to lose; the interval
+  // comes from the account's setting on the security page, `0` disarms it.
+  const pinState = session.data?.pin;
+  useAutoLock(
+    pinState?.autoLockMinutes ?? 0,
+    pinState?.configured === true && pinState.unlocked,
+    lock,
+  );
 
   if (session.loading) return <ChromeSkeleton />;
 
@@ -128,6 +138,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
         organizations,
         pin,
         lock,
+        refresh: reloadSession,
       }}
     >
       <AppShell

@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 
+import { AUTO_LOCK_MINUTES_OPTIONS } from '@xecret/core/auth';
 import { api, errorMessage } from '@/lib/api';
 import { formatAbsoluteTime, formatRelativeTime, pluralize, toIsoString } from '@/lib/format';
 import { PinInput } from '@/components/auth/pin-input';
@@ -17,6 +18,11 @@ import {
   ConfirmDialog,
   Field,
   Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   Skeleton,
   useToast,
 } from '@/components/ui';
@@ -259,9 +265,36 @@ function PinCard() {
 }
 
 function LockCard() {
-  const { pin, lock } = useSession();
+  const { pin, lock, refresh } = useSession();
   const { toast } = useToast();
   const [lockingEverywhere, setLockingEverywhere] = useState(false);
+  const [savingAutoLock, setSavingAutoLock] = useState(false);
+
+  async function changeAutoLock(minutes: number) {
+    if (minutes === pin.autoLockMinutes || savingAutoLock) return;
+    setSavingAutoLock(true);
+    try {
+      await api.patch(apiPath.pin(), { autoLockMinutes: minutes });
+      toast({
+        variant: 'success',
+        title:
+          minutes === 0
+            ? 'Auto-lock turned off'
+            : `Auto-lock set to ${pluralize(minutes, 'minute')}`,
+      });
+      // The idle timer runs in the shell off the session's copy of this value;
+      // re-reading is what makes the new interval take effect immediately.
+      refresh();
+    } catch (cause) {
+      toast({
+        variant: 'error',
+        title: 'Could not change auto-lock',
+        description: errorMessage(cause),
+      });
+    } finally {
+      setSavingAutoLock(false);
+    }
+  }
 
   async function lockEverywhere() {
     setLockingEverywhere(true);
@@ -292,7 +325,7 @@ function LockCard() {
           away from a machine, or for a device you cannot reach right now.
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex flex-col gap-4">
         <div className="flex flex-wrap gap-3">
           <Button variant="secondary" onClick={() => void lock()}>
             Lock this device
@@ -301,6 +334,32 @@ function LockCard() {
             Lock every device
           </Button>
         </div>
+
+        <Field
+          label="Auto-lock"
+          hint="Locks the dashboard after this long without activity, on every device you use. The PIN opens it again."
+        >
+          <Select
+            value={String(pin.autoLockMinutes)}
+            onValueChange={(next) => void changeAutoLock(Number(next))}
+            disabled={savingAutoLock}
+          >
+            <SelectTrigger className="w-56" aria-label="Auto-lock after">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {/* Intervals first, "Never" last — the menu reads as an
+                  escalation ending at the option that opts out. */}
+              {[...AUTO_LOCK_MINUTES_OPTIONS.filter((minutes) => minutes !== 0), 0].map(
+                (minutes) => (
+                  <SelectItem key={minutes} value={String(minutes)}>
+                    {minutes === 0 ? 'Never' : `After ${pluralize(minutes, 'minute')} idle`}
+                  </SelectItem>
+                ),
+              )}
+            </SelectContent>
+          </Select>
+        </Field>
       </CardContent>
     </Card>
   );

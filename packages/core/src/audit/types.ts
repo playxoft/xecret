@@ -32,6 +32,8 @@ export type AuditAction =
   | 'auth.pin_reset'
   /** A session was locked without being revoked — the user is still signed in. */
   | 'auth.locked'
+  /** The idle auto-lock interval was changed. `reason` carries the new value. */
+  | 'auth.autolock_changed'
   /**
    * The account deleted itself: memberships removed, solo organisations
    * soft-deleted, every session and CLI token revoked, the user row

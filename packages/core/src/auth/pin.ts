@@ -49,6 +49,23 @@ export const PIN_LENGTH = 6;
 
 export const PIN_PATTERN = /^\d{6}$/;
 
+/**
+ * How long a session may sit idle before the dashboard locks itself, in
+ * minutes. `0` means never. A fixed menu rather than a free number: the choice
+ * is a security posture, and "43 minutes" is not a posture anyone holds — it
+ * is a typo waiting to be enforced. One list feeds the settings menu, the
+ * request schema, and the database CHECK, so they cannot drift.
+ */
+export const AUTO_LOCK_MINUTES_OPTIONS = [0, 5, 10, 20, 30, 45, 60] as const;
+
+export type AutoLockMinutes = (typeof AUTO_LOCK_MINUTES_OPTIONS)[number];
+
+export const DEFAULT_AUTO_LOCK_MINUTES: AutoLockMinutes = 10;
+
+export function isAutoLockMinutes(value: number): value is AutoLockMinutes {
+  return (AUTO_LOCK_MINUTES_OPTIONS as readonly number[]).includes(value);
+}
+
 /** Free guesses before the escalating delay starts. */
 export const PIN_FREE_ATTEMPTS = 5;
 

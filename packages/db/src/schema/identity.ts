@@ -1,5 +1,14 @@
 import { sql } from 'drizzle-orm';
-import { boolean, index, integer, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import {
+  boolean,
+  check,
+  index,
+  integer,
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+} from 'drizzle-orm/pg-core';
 import { bytea, citext, inet } from './columns';
 
 /**
@@ -86,24 +95,40 @@ export const sessions = pgTable(
  *    is the complete reset, with no chance of leaving a stale attempt counter
  *    behind.
  */
-export const userPins = pgTable('user_pins', {
-  userId: uuid('user_id')
-    .primaryKey()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  /**
-   * `pbkdf2-sha256$<iterations>$<salt>$<hash>`, all base64url.
-   *
-   * Self-describing so the iteration count can be raised without a migration:
-   * an old row keeps verifying against the cost it was written with, and is
-   * re-hashed the next time its owner successfully unlocks.
-   */
-  pinHash: text('pin_hash').notNull(),
-  /** Consecutive failures since the last success. Drives the escalating delay. */
-  failedAttempts: integer('failed_attempts').notNull().default(0),
-  lockedUntil: timestamp('locked_until', { withTimezone: true }),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const userPins = pgTable(
+  'user_pins',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /**
+     * `pbkdf2-sha256$<iterations>$<salt>$<hash>`, all base64url.
+     *
+     * Self-describing so the iteration count can be raised without a migration:
+     * an old row keeps verifying against the cost it was written with, and is
+     * re-hashed the next time its owner successfully unlocks.
+     */
+    pinHash: text('pin_hash').notNull(),
+    /** Consecutive failures since the last success. Drives the escalating delay. */
+    failedAttempts: integer('failed_attempts').notNull().default(0),
+    lockedUntil: timestamp('locked_until', { withTimezone: true }),
+    /**
+     * Minutes of dashboard idleness before the client locks itself; `0` never.
+     *
+     * Lives here rather than on `users` because it is a property of the PIN
+     * protection — meaningless without a PIN to ask for — and this table is
+     * read exactly where the lock state is computed. The menu of legal values
+     * is `AUTO_LOCK_MINUTES_OPTIONS` in `@xecret/core/auth`; the CHECK below
+     * restates it so a row cannot hold an interval no client offers.
+     */
+    autoLockMinutes: integer('auto_lock_minutes').notNull().default(10),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('user_pins_auto_lock_check', sql`${t.autoLockMinutes} in (0, 5, 10, 20, 30, 45, 60)`),
+  ],
+);
 
 /**
  * Outstanding "I forgot my PIN" links.

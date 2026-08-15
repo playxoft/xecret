@@ -1,9 +1,10 @@
 import { z } from 'zod';
-import { PIN_LENGTH } from '@xecret/core/auth';
+import { isAutoLockMinutes, PIN_LENGTH } from '@xecret/core/auth';
+import { setAutoLockMinutes } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { pinStatus, primaryOrgId, requireUserPrincipal, setPin } from '@/server/pin-service';
-import { attemptKey, enforce } from '@/server/rate-limit';
+import { attemptKey, enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 
 /**
@@ -71,6 +72,56 @@ export const POST = authenticatedRoute(
   },
   { allowLocked: true },
 );
+
+const autoLockRequest = z.object({
+  /** One of `AUTO_LOCK_MINUTES_OPTIONS`; `0` disables the idle lock. */
+  autoLockMinutes: z
+    .number()
+    .int()
+    .refine(isAutoLockMinutes, 'Choose one of the offered auto-lock intervals.'),
+});
+
+/**
+ * Changes how long the dashboard may sit idle before locking itself.
+ *
+ * *Not* exempt from the lock gate, unlike GET and POST: this route only tunes
+ * a protection, and a locked session has no business loosening one. It changes
+ * no PIN and unlocks nothing, so it takes the ordinary mutation allowance
+ * rather than the login bucket — it is not a guessing surface.
+ *
+ * Audited: setting the interval to "never" is the act an incident review
+ * wants to see dated, because it is how an unlocked laptop stays unlocked.
+ */
+export const PATCH = authenticatedRoute(async ({ request, principal, services, audit, record }) => {
+  const user = requireUserPrincipal(principal);
+  await enforce(services.env, 'RL_MUTATION', rateLimitKey([user.user.id]));
+
+  const body = await parseJsonBody(request, autoLockRequest);
+
+  const updated = await setAutoLockMinutes(services.db, user.user.id, body.autoLockMinutes);
+  // No PIN row: there is nothing an idle lock could ask for. The setup
+  // screen is the answer, not a silently created preference.
+  if (updated === null) {
+    throw errors.badRequest('Set a PIN first; auto-lock asks for it.');
+  }
+
+  const orgId = await primaryOrgId(services, user.user.id);
+  if (orgId !== null) {
+    record(
+      audit(orgId).success(
+        'auth.autolock_changed',
+        { type: 'user', id: user.user.id },
+        {
+          source: 'dashboard',
+          reason:
+            body.autoLockMinutes === 0 ? 'never' : `after ${body.autoLockMinutes} minutes idle`,
+        },
+      ),
+    );
+  }
+
+  return json({ pin: await pinStatus(services, principal) });
+});
 
 /**
  * Removing a PIN is deliberately not offered.

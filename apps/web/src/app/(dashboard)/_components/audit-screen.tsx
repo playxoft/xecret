@@ -70,6 +70,7 @@ const ACTIONS = [
   'auth.login',
   'auth.login_failed',
   'auth.logout',
+  'auth.autolock_changed',
 ] as const;
 
 interface Filters {

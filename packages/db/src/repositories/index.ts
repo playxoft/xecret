@@ -62,6 +62,7 @@ export {
   hasPin,
   recordPinAttempt,
   rehashPin,
+  setAutoLockMinutes,
   upsertPin,
 } from './pins';
 export type { CreatePinResetParams, PinRecord, PinResetRecord } from './pins';
