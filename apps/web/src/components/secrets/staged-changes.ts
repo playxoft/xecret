@@ -72,6 +72,14 @@ export interface PendingEdit {
    * its own declared type — reachable through the product's happy path.
    */
   valueType?: SecretValueType | undefined;
+  /**
+   * A staged rename, or `undefined` to keep the stored name. The row stages it
+   * only when the input differs from the stored name, so its presence *is* the
+   * change. Saved through the metadata route: a rename appends no version.
+   */
+  name?: string | undefined;
+  /** A staged note, on the same terms. An empty string clears the stored note. */
+  note?: string | undefined;
   /** From the last save attempt. */
   error: string | null;
 }
@@ -111,6 +119,12 @@ export interface StagedChanges {
   setEdit: (name: string, value: string) => void;
   /** Stages a type change, opening the editor if it is not already open. */
   setEditType: (name: string, valueType: SecretValueType) => void;
+  /**
+   * Stages a rename or a note change. `null` un-stages that field — the row
+   * passes it when the input is back to the stored value, so typing a name and
+   * then restoring it leaves nothing pending.
+   */
+  setEditMeta: (name: string, patch: { name?: string | null; note?: string | null }) => void;
   closeEdit: (name: string) => void;
 
   discardAll: () => void;
@@ -297,6 +311,8 @@ export function useStagedChanges(
       next.set(name, {
         value,
         ...(existing?.valueType === undefined ? {} : { valueType: existing.valueType }),
+        ...(existing?.name === undefined ? {} : { name: existing.name }),
+        ...(existing?.note === undefined ? {} : { note: existing.note }),
         error: null,
       });
       return next;
@@ -310,10 +326,39 @@ export function useStagedChanges(
       // menu produces a visible pending change rather than a silent one. The
       // value stays empty, which the save path reads as "type only".
       const existing = current.get(name);
-      next.set(name, { value: existing?.value ?? '', valueType, error: null });
+      next.set(name, {
+        value: existing?.value ?? '',
+        valueType,
+        ...(existing?.name === undefined ? {} : { name: existing.name }),
+        ...(existing?.note === undefined ? {} : { note: existing.note }),
+        error: null,
+      });
       return next;
     });
   }, []);
+
+  const setEditMeta = useCallback(
+    (name: string, patch: { name?: string | null; note?: string | null }) => {
+      setEdits((current) => {
+        const next = new Map(current);
+        const existing = current.get(name);
+        // `undefined` in the patch means "not mentioned"; `null` means "back to
+        // the stored value, drop it". Both collapse to omission below, which is
+        // what keeps `pendingCount` honest about a field typed and then undone.
+        const stagedName = patch.name === undefined ? (existing?.name ?? null) : patch.name;
+        const stagedNote = patch.note === undefined ? (existing?.note ?? null) : patch.note;
+        next.set(name, {
+          value: existing?.value ?? '',
+          ...(existing?.valueType === undefined ? {} : { valueType: existing.valueType }),
+          ...(stagedName === null ? {} : { name: stagedName }),
+          ...(stagedNote === null ? {} : { note: stagedNote }),
+          error: null,
+        });
+        return next;
+      });
+    },
+    [],
+  );
 
   const closeEdit = useCallback((name: string) => {
     setEdits((current) => {
@@ -332,11 +377,18 @@ export function useStagedChanges(
   const pendingCount = useMemo(() => {
     const rows = drafts.filter((draft) => !isBlankDraft(draft)).length;
     let values = 0;
-    // A staged type change counts even with no new value: it is a change the
-    // user made and the save bar has to admit to holding it, or Discard would
-    // silently throw away something they cannot see.
+    // A staged type, name or note change counts even with no new value: it is a
+    // change the user made and the save bar has to admit to holding it, or
+    // Discard would silently throw away something they cannot see.
     for (const edit of edits.values()) {
-      if (edit.value.length > 0 || edit.valueType !== undefined) values += 1;
+      if (
+        edit.value.length > 0 ||
+        edit.valueType !== undefined ||
+        edit.name !== undefined ||
+        edit.note !== undefined
+      ) {
+        values += 1;
+      }
     }
     return rows + values;
   }, [drafts, edits]);
@@ -392,33 +444,34 @@ export function useStagedChanges(
         }
 
         for (const [name, edit] of edits) {
-          // An editor opened and left empty, with no type staged either, is not
-          // a change. Closing it silently is right: the user opened a row,
-          // thought better of it, and does not need an error for having changed
-          // their mind.
-          if (edit.value.length === 0 && edit.valueType === undefined) continue;
+          const rename = edit.name?.trim();
+          const wantsRename = rename !== undefined && rename !== name;
+          const hasValue = edit.value.length > 0;
+          const hasMeta = wantsRename || edit.note !== undefined;
 
-          // A type change with no new value takes the metadata route, which
-          // appends no version and needs no key. Sending it through the write
-          // path would bump the version number for the sake of a label and
-          // make "when did this credential last actually change?" unanswerable.
-          if (edit.value.length === 0) {
-            try {
-              await api.put(apiPath.secret(orgSlug, projectSlug, envSlug, name), {
-                valueType: edit.valueType,
-              });
-              outcome.updated += 1;
-            } catch (cause) {
-              survivingEdits.set(name, { ...edit, error: describeWriteFailure(cause).message });
+          // An editor opened and left untouched is not a change. Closing it
+          // silently is right: the user opened a row, thought better of it, and
+          // does not need an error for having changed their mind.
+          if (!hasValue && edit.valueType === undefined && !hasMeta) continue;
+
+          // Checked here as well as on the server, so a bad new name or a value
+          // of the wrong shape is reported against its own row instead of
+          // costing a round trip and coming back as one failure in a batch of
+          // thirty.
+          if (wantsRename) {
+            const check = checkSecretName(rename);
+            const problem = !check.valid
+              ? (check.message ?? 'That name cannot be used.')
+              : claimed.has(rename)
+                ? 'That name is already taken in this environment.'
+                : null;
+            if (problem !== null) {
+              survivingEdits.set(name, { ...edit, error: problem });
               outcome.failed += 1;
+              continue;
             }
-            continue;
           }
-
-          // Checked here as well as on the server, so a value of the wrong shape
-          // is reported against its own row instead of costing a round trip and
-          // coming back as one failure in a batch of thirty.
-          if (edit.valueType !== undefined) {
+          if (hasValue && edit.valueType !== undefined) {
             const shape = checkSecretValue(edit.value, edit.valueType);
             if (!shape.valid) {
               survivingEdits.set(name, {
@@ -430,17 +483,46 @@ export function useStagedChanges(
             }
           }
 
+          // The new value first, addressed by the *current* name, then the
+          // metadata — so a rename never strands the value write against a name
+          // that no longer exists. A type change with no new value rides with
+          // the metadata: both take the route that appends no version, because
+          // neither is a rotation and the version number must not claim one.
+          let changed = false;
           try {
-            const result = await api.patch<SecretWriteResponse>(
-              apiPath.secret(orgSlug, projectSlug, envSlug, name),
-              {
-                value: edit.value,
-                ...(edit.valueType === undefined ? {} : { valueType: edit.valueType }),
-              },
-            );
-            if (result.secret.status === 'unchanged') outcome.unchanged += 1;
-            else outcome.updated += 1;
+            if (hasValue) {
+              const result = await api.patch<SecretWriteResponse>(
+                apiPath.secret(orgSlug, projectSlug, envSlug, name),
+                {
+                  value: edit.value,
+                  ...(edit.valueType === undefined ? {} : { valueType: edit.valueType }),
+                },
+              );
+              changed = changed || result.secret.status !== 'unchanged';
+            }
+
+            const typeOnly = !hasValue && edit.valueType !== undefined;
+            if (hasMeta || typeOnly) {
+              const note = edit.note?.trim();
+              await api.put(apiPath.secret(orgSlug, projectSlug, envSlug, name), {
+                ...(wantsRename ? { name: rename } : {}),
+                ...(note === undefined ? {} : { note: note.length === 0 ? null : note }),
+                ...(typeOnly ? { valueType: edit.valueType } : {}),
+              });
+              changed = true;
+            }
+
+            if (changed) outcome.updated += 1;
+            else outcome.unchanged += 1;
+
+            if (wantsRename) {
+              claimed.delete(name);
+              claimed.add(rename);
+            }
           } catch (cause) {
+            // The whole edit survives, including a value the PATCH may already
+            // have applied — retrying it is answered `unchanged`, which is
+            // cheaper than a row silently losing half of what it staged.
             survivingEdits.set(name, { ...edit, error: describeWriteFailure(cause).message });
             outcome.failed += 1;
           }
@@ -469,6 +551,7 @@ export function useStagedChanges(
     openEdit,
     setEdit,
     setEditType,
+    setEditMeta,
     closeEdit,
     discardAll,
     save,
