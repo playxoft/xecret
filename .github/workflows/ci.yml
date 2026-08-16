@@ -132,7 +132,31 @@ jobs:
 
       # Leaking a credential in a secret manager's own repository would be
       # existential. This gate is not optional.
-      - name: gitleaks
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+      #
+      # We install the gitleaks binary rather than using gitleaks/gitleaks-action.
+      # The action is commercially licensed and refuses to run for a GitHub
+      # organisation without a paid GITLEAKS_LICENSE: it exits 1 in about six
+      # seconds, before it has downloaded gitleaks or read a single commit. This
+      # job was red for that reason alone and had never scanned anything. The
+      # scanner itself is MIT and carries no such gate.
+      - name: Install gitleaks
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          set -euo pipefail
+          workdir="$(mktemp -d)"
+          cd "$workdir"
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -O "${base}/${archive}"
+          curl -sSfL -O "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep " ${archive}\$" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" | sha256sum -c -
+          tar -xzf "${archive}" gitleaks
+          install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      # --redact so a finding names the rule, file and line without reprinting
+      # the credential into a build log that is far easier to read than the
+      # commit it came from.
+      - name: gitleaks
+        run: gitleaks git . --redact --verbose --exit-code 1
