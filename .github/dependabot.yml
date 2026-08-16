@@ -3,16 +3,52 @@ version: 2
 # Few dependencies, each reviewed. Updates are grouped so review is a weekly
 # batch rather than a stream of individual PRs that get rubber-stamped —
 # rubber-stamped dependency bumps are how supply-chain attacks land (threat T8).
+#
+# Majors are grouped too. Excluding them produced precisely the stream this
+# comment warns about: eslint and @eslint/js are one upgrade that arrived as two
+# PRs, and merging either alone leaves the tree on mismatched majors. Grouping
+# by toolchain rather than by semver bracket keeps a coupled upgrade in one
+# reviewable diff, which is also the only way to see that it does not resolve.
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    # Raised from 5: four stalled majors were enough to leave a single slot for
+    # a production security patch.
+    open-pull-requests-limit: 10
     groups:
+      # Dependabot assigns a dependency to the first group it matches, so the
+      # pattern groups must precede the dependency-type ones below.
+
+      # The lint stack moves as one unit: @eslint/js must match eslint's major,
+      # while typescript-eslint, eslint-config-next and the plugins it pulls all
+      # carry peer ranges on eslint. A partial bump is never mergeable.
+      linting:
+        patterns:
+          - eslint
+          - "@eslint/*"
+          - "@eslint-community/*"
+          - typescript-eslint
+          - "@typescript-eslint/*"
+          - eslint-config-next
+          - eslint-plugin-*
+          - eslint-import-resolver-*
+        update-types: [major, minor, patch]
+
+      # typescript-eslint declares a maximum TypeScript version, so TypeScript
+      # cannot move without it. @types/node belongs here rather than drifting
+      # ahead of the runtime it is supposed to describe.
+      typescript:
+        patterns:
+          - typescript
+          - "@types/node"
+        update-types: [major, minor, patch]
+
       dev-dependencies:
         dependency-type: development
         update-types: [minor, patch]
+
       production-patch:
         dependency-type: production
         update-types: [patch]
