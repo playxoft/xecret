@@ -13,6 +13,7 @@ import { OrgSwitcher } from './org-switcher';
 import type { ShellOrganization } from './org-switcher';
 import { Sidebar } from './sidebar';
 import type { NavSection } from './sidebar';
+import { useNavShortcuts } from './use-nav-shortcuts';
 import { UserMenu } from './user-menu';
 import type { ShellUser } from './user-menu';
 
@@ -59,6 +60,12 @@ export function AppShell({
 }: AppShellProps) {
   const pathname = usePathname();
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // Disabled while the mobile drawer is open. The drawer is a Radix dialog, so
+  // `useNavShortcuts` would stand down on its own — but it is also the one
+  // surface where the key caps are on screen and the keyboard is not, and
+  // being explicit here is cheaper than relying on that coincidence.
+  useNavShortcuts(nav, !drawerOpen);
 
   // A link inside the drawer navigates without unmounting the shell, so the
   // drawer has to be told to close. Comparing against the previous pathname
