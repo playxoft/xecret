@@ -171,7 +171,10 @@ export function InviteScreen({ token }: { token: string }) {
             </Button>
             <p className="text-fg-subtle text-sm">
               No account yet?{' '}
-              <a className="text-accent-text underline-offset-2 hover:underline" href="/sign-up">
+              <a
+                className="text-fg decoration-line-strong hover:decoration-fg underline underline-offset-4 transition-colors"
+                href="/sign-up"
+              >
                 Create one with {invitation.email}
               </a>
               , then open this link again.
