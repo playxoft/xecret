@@ -33,6 +33,27 @@ export const metadata: Metadata = {
   // own `metadata`, and every dashboard route sits behind a session so a
   // crawler collects nothing but redirects.
   robots: { index: true, follow: true },
+  // ── Keep "force dark mode" extensions off this page ──
+  //
+  // Dark Reader and its imitators repaint a site by inverting or rotating its
+  // computed colours. That is a kindness to a page with only a light theme; it
+  // is a regression here. Every token in `globals.css` is hand-tuned and
+  // annotated with a measured contrast ratio, and an extension recomputing them
+  // hits the two things this product cannot afford to have shuffled: the
+  // production orange and the danger red, whose whole job is to be instantly
+  // and unambiguously distinguishable from everything else on screen. A user
+  // who mistakes production for staging because an extension mapped them to
+  // neighbouring browns has been failed by us, not by the extension.
+  //
+  // Dark Reader's documented opt-out is the presence of this tag — it tests for
+  // `meta[name="darkreader-lock"]` and stands down, leaving our own dark theme
+  // (which the toggle in the account menu already offers) to do the job.
+  //
+  // The value is `'true'` and not `''` on purpose: Next drops any `other` entry
+  // whose content is an empty string, so a lock written the way the tag is
+  // usually shown — bare, with no content — would silently never render.
+  // Nothing reads the value; only the tag's presence is checked.
+  other: { 'darkreader-lock': 'true' },
   openGraph: {
     type: 'website',
     siteName: 'xecret',
@@ -45,8 +66,8 @@ export const viewport: Viewport = {
   // Matches --canvas in each theme, so the browser chrome on mobile does not
   // sit as a bright band above a dark page.
   themeColor: [
-    { media: '(prefers-color-scheme: dark)', color: '#0b0e13' },
-    { media: '(prefers-color-scheme: light)', color: '#f7f9fb' },
+    { media: '(prefers-color-scheme: dark)', color: '#0a0a0a' },
+    { media: '(prefers-color-scheme: light)', color: '#ffffff' },
   ],
 };
 
