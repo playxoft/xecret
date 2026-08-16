@@ -1,10 +1,10 @@
 import { generateToken } from '@xecret/core/auth';
 import { createPinReset } from '@xecret/db/repositories';
 import { publicOrigin } from '@/server/bindings';
-import { mailerFrom } from '@/server/mail';
+import { describeMailFailure, mailerFrom } from '@/server/mail';
 import { pinResetMail } from '@/server/pin-reset-mail';
 import { json } from '@/server/http';
-import { errorName } from '@/server/logging';
+
 import { primaryOrgId, requireUserPrincipal } from '@/server/pin-service';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
@@ -99,29 +99,56 @@ export const POST = authenticatedRoute(
 
     const url = `${publicOrigin(services.env)}/reset-pin?token=${encodeURIComponent(token)}`;
 
-    services.waitUntil(
-      mailer
-        .send(
-          pinResetMail({
-            to: user.user.email,
-            toName: user.user.displayName,
-            url,
-          }),
-        )
-        .catch((cause: unknown) => {
-          // Logged, never rethrown: the response has already gone. The name
-          // only — `errorName` rather than `describeError`, because a delivery
-          // error embeds the recipient address in its message and this line
-          // ends up wherever logs end up.
-          services.log
-            .at('POST')
-            .error(
-              'Could not deliver the PIN reset email — the user has been told a link was sent ' +
-                'and will never receive one',
-              { error: errorName(cause) },
-            );
+    // ── Awaited, not deferred ──
+    //
+    // This used to go through `waitUntil`, on the reasoning that a Worker has
+    // six outgoing connections and nobody should watch a spinner while Zoho is
+    // slow, "since the answer is the same either way". The answer is not the
+    // same either way, and a real incident proved it: the provider's account
+    // had run out of sending credit, every send came back 429, and every user
+    // was told "check your email" for a message that was never going to arrive.
+    // The failure was in the log a second after the response had already lied.
+    //
+    // This is the *recovery* path. Somebody using it cannot get into their
+    // account, and a false "check your email" sends them to wait on an inbox
+    // instead of asking for help — the one flow where an optimistic answer
+    // costs the most. A second of latency is the correct price for telling the
+    // truth here, and the rate limit above bounds how often it can be paid.
+    //
+    // The invitation mail still defers, and should: its response carries the
+    // link itself, so a failed send loses nothing the inviter cannot recover.
+    try {
+      await mailer.send(
+        pinResetMail({
+          to: user.user.email,
+          toName: user.user.displayName,
+          url,
         }),
-    );
+      );
+    } catch (cause) {
+      // The provider's own status and explanation, address stripped — without
+      // them this reads "MailDeliveryError" and an operator cannot tell an
+      // exhausted quota from a wrong region from an unverified domain.
+      services.log
+        .at('POST')
+        .error(
+          'The mail provider rejected the PIN reset email, so no link was sent. An account that ' +
+            'has forgotten its PIN cannot get back in until this is fixed — see status and ' +
+            'detail for which of quota, credentials or sending domain is at fault.',
+          describeMailFailure(cause),
+        );
+
+      // The token stays in the database. It is single-use and short-lived, and
+      // an unused row is harmless — whereas rolling it back would mean a second
+      // failure path to get wrong on the way out.
+      return json({
+        sent: false,
+        reason:
+          'The email could not be sent right now — the mail provider refused it. This is a ' +
+          'problem with this deployment rather than with your account. Try again shortly, and ' +
+          'if it keeps failing ask whoever operates this xecret instance to check its mail setup.',
+      });
+    }
 
     const orgId = await primaryOrgId(services, user.user.id);
     if (orgId !== null) {

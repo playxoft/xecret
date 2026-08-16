@@ -9,8 +9,7 @@ import {
 import { publicOrigin } from '@/server/bindings';
 import { json, parseJsonBody, parseQuery } from '@/server/http';
 import { invitationMail } from '@/server/invitation-mail';
-import { errorName } from '@/server/logging';
-import { mailerFrom } from '@/server/mail';
+import { describeMailFailure, mailerFrom } from '@/server/mail';
 import {
   assertRoleAuthority,
   effectiveAccess,
@@ -178,8 +177,9 @@ export const POST = authenticatedRoute<Params>(
               .at('POST')
               .error(
                 'Could not deliver the invitation email — the invitation itself was created, so ' +
-                  'the inviter can still hand over the link shown in the response',
-                { error: errorName(cause) },
+                  'the inviter can still hand over the link shown in the response. The provider ' +
+                  'rejected it; see status and detail.',
+                describeMailFailure(cause),
               );
           }),
       );

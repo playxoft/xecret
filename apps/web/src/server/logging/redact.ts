@@ -129,6 +129,13 @@ const TEXT_SCRUBBERS: readonly { pattern: RegExp; replacement: string }[] = [
       /\b(password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key)"?\s*[:=]\s*"?[^\s",}]+"?/gi,
     replacement: '$1=[redacted]',
   },
+  // An email address is personal data, and a provider that rejects a send
+  // echoes the recipient back in the rejection. Removing it here is what lets
+  // the rest of that rejection — the part that says *why* — be logged at all:
+  // the alternative was recording nothing but the error's class name, which is
+  // how a delivery failure stayed undiagnosable. The user id is on the line
+  // already, so nothing about "who" is lost.
+  { pattern: /\b[\w.+-]+@[\w-]+(\.[\w-]+)+\b/g, replacement: '[redacted-email]' },
 ];
 
 /** Removes credential-shaped substrings from free text and bounds its length. */
