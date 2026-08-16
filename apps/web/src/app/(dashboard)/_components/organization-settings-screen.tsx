@@ -2,9 +2,11 @@
 
 import { useState } from 'react';
 
+import { ORGANIZATION_NAME_MAX_LENGTH } from '@xecret/core/validation';
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { formatAbsoluteTime } from '@/lib/format';
 import { PageHeader } from '@/components/layout';
+import { CreateOrganizationDialog, DeleteOrganizationCard } from '@/components/organizations';
 import {
   Alert,
   Button,
@@ -15,36 +17,47 @@ import {
   CardTitle,
   Field,
   Input,
+  PlusIcon,
   useToast,
 } from '@/components/ui';
 import type { Organization, OrganizationResponse } from '@/components/projects/types';
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState, FormSkeleton } from './resource-states';
-import { isOrgAdmin, useOrganization } from './session';
-
-const NAME_MAX_LENGTH = 100;
+import { isOrgAdmin, useOrganization, useSession } from './session';
 
 /**
- * Organisation settings: one editable field, and one that never will be.
+ * Organisation settings: one editable field, one that never will be, and the
+ * two acts that change which organisations exist.
  *
- * Members, roles, tokens and the audit log are specified in the API contract but
- * are not implemented — they land in Phases 7 and 8 — so this screen does not
- * pretend to offer them. A disabled "Members" tab would be a promise the product
- * cannot keep today.
+ * Creating and deleting sit on the same screen deliberately. They are the two
+ * ends of an organisation's life, and the person who has just discovered that
+ * the slug is permanent is exactly the person who wants to start over with a
+ * different name.
  */
 export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
   const membership = useOrganization(orgSlug);
+  const { refresh } = useSession();
   const organization = useApiResource<OrganizationResponse>(apiPath.org(orgSlug));
+  const [creating, setCreating] = useState(false);
 
   const loaded = organization.data?.organization;
   const canManage = membership !== null && isOrgAdmin(membership.role);
+  // Not `isOrgAdmin`: deleting an organisation is the single action an admin is
+  // denied (`roles.ts`), so the card is drawn for an owner and nobody else.
+  const canDelete = membership?.role === 'owner';
 
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Organisation settings"
         description="Who this organisation is, and the identifier every consumer of it depends on."
+        actions={
+          <Button variant="secondary" onClick={() => setCreating(true)}>
+            <PlusIcon className="size-4" />
+            New organisation
+          </Button>
+        }
       />
 
       {organization.loading && organization.data === null ? (
@@ -61,7 +74,14 @@ export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
             orgSlug={orgSlug}
             organization={loaded}
             canManage={canManage}
-            onSaved={organization.reload}
+            onSaved={() => {
+              organization.reload();
+              // The switcher and the breadcrumb read the name from the session,
+              // not from this screen's resource — so a rename that only reloaded
+              // the latter would leave the old name in the sidebar until the
+              // next full navigation.
+              refresh();
+            }}
           />
 
           <Card>
@@ -81,8 +101,12 @@ export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
               </dl>
             </CardContent>
           </Card>
+
+          {canDelete ? <DeleteOrganizationCard organization={loaded} onDeleted={refresh} /> : null}
         </div>
       ) : null}
+
+      <CreateOrganizationDialog open={creating} onOpenChange={setCreating} onCreated={refresh} />
     </div>
   );
 }
@@ -109,15 +133,24 @@ function OrganizationForm({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<unknown>(null);
 
+  const trimmed = name.trim();
+  const isEmpty = trimmed.length === 0;
+  /**
+   * An organisation created before this limit existed — or by a sign-up that
+   * took its name from a long identity-provider profile — can arrive here
+   * already over it.
+   *
+   * `maxLength` on the input stops such a name growing but does not shorten
+   * one that is already there, which is the right way round: silently trimming
+   * somebody's organisation name because they opened a settings page would be a
+   * rename nobody asked for. So the field states the problem and Save stays
+   * disabled until it is fixed, and deleting characters is all that is needed.
+   */
+  const tooLong = trimmed.length > ORGANIZATION_NAME_MAX_LENGTH;
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
-    if (saving) return;
-
-    const trimmed = name.trim();
-    if (trimmed.length === 0) {
-      setError(new Error('Enter an organisation name.'));
-      return;
-    }
+    if (saving || isEmpty || tooLong) return;
 
     setSaving(true);
     setError(null);
@@ -154,11 +187,19 @@ function OrganizationForm({
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
-            <Field label="Organisation name">
+            <Field
+              label="Organisation name"
+              error={
+                tooLong
+                  ? `Shorten this to ${ORGANIZATION_NAME_MAX_LENGTH} characters or fewer.`
+                  : null
+              }
+              hint={`${name.length} of ${ORGANIZATION_NAME_MAX_LENGTH} characters.`}
+            >
               <Input
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                maxLength={NAME_MAX_LENGTH}
+                maxLength={ORGANIZATION_NAME_MAX_LENGTH}
                 autoComplete="organization"
                 disabled={!canManage}
               />
@@ -173,7 +214,12 @@ function OrganizationForm({
 
             {canManage ? (
               <div>
-                <Button type="submit" variant="primary" loading={saving}>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  loading={saving}
+                  disabled={isEmpty || tooLong}
+                >
                   Save changes
                 </Button>
               </div>

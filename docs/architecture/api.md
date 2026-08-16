@@ -203,11 +203,14 @@ management routes below.
 
 ### Organisations
 
-| Method | Path |
-|---|---|
-| `GET` | `/api/orgs` |
-| `GET` | `/api/orgs/{orgSlug}` |
-| `PATCH` | `/api/orgs/{orgSlug}` |
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/orgs` | The caller's memberships. No `authorize()` call: the answer *is* the set of organisations they hold an active membership in, established in SQL. Refused for a service token, which is pinned to one organisation and has no switcher. |
+| `GET` | `/api/orgs/availability?slug=` | Is an organisation slug free? Returns `{ slug, available, reason?: invalid\|reserved\|taken }` — one bit and a category, never who holds it. Session-authenticated and rate limited on `RL_SLUG_CHECK` so it is not an anonymous namespace scraper. A **snapshot, not a reservation**: the unique index settles the race, and `POST` still answers 409. `availability` is a reserved slug, so no organisation can shadow this route. |
+| `POST` | `/api/orgs` | Body `{ name, slug? }`. `name` is at most `ORGANIZATION_NAME_MAX_LENGTH` (25) characters — shorter than a project name, because it is rendered in the sidebar switcher and every breadcrumb. `slug` is what the dashboard always sends, having shown it to the user and checked it; it is claimed **exactly**, and a collision is a 409 on the `slug` field rather than a silent `acme-2`. Omitted, the slug is derived from the name and uniquified — the path sign-up and API clients take, where there is nobody to ask. Session + CSRF only: a CLI token acts as its user for secrets, not for existence. Provisions the Org Master Key, a default project, its environments and an Env Data Key for each in one transaction — an organisation without them cannot hold a secret and cannot be repaired. Rate limited: `RL_MUTATION` by user. Audited as `org.created`. |
+| `GET` | `/api/orgs/{orgSlug}` | `member.read`, which every active role holds. |
+| `PATCH` | `/api/orgs/{orgSlug}` | The name only, under the same 25-character ceiling as creation. `assertSlugImmutable` refuses a slug change with an explanation rather than ignoring it. Requires `org.update`. Audited as `org.updated`. |
+| `DELETE` | `/api/orgs/{orgSlug}` | Soft delete. Requires `org.delete` — owners only, the one action an admin is denied — a browser session, and `{ "confirm": "<orgSlug>" }`. Everything inside stops resolving at once, for every member, because each read joins back through `organizations` with a `deleted_at is null` filter. Audited as `org.deleted`; an unconfirmed attempt is recorded too. |
 
 ### Projects
 

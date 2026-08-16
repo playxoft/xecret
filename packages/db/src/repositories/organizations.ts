@@ -5,9 +5,11 @@ import type { EnvelopeService } from '@xecret/core/crypto';
 import { uuidv7 } from '@xecret/core/ids';
 import {
   DEFAULT_ENVIRONMENTS,
-  SLUG_MAX_LENGTH,
+  ORGANIZATION_NAME_MAX_LENGTH,
+  ORGANIZATION_SLUG_MAX_LENGTH,
   isReservedSlug,
   slugify,
+  truncateName,
 } from '@xecret/core/validation';
 import { envKeys, orgKeys } from '../schema/keys';
 import { environments, projects } from '../schema/resources';
@@ -136,14 +138,57 @@ export async function generateUniqueOrgSlug(exec: Executor, desiredSlug: string)
   return candidate;
 }
 
-export interface BootstrapPersonalOrganizationParams {
+/**
+ * Whether an organisation slug is free to claim.
+ *
+ * Answers the question the create form asks while somebody types. Two properties
+ * matter, and both are about agreeing with the insert that follows:
+ *
+ *  - **Soft-deleted organisations still hold their slug.** The unique constraint
+ *    is total, not partial, so this does not filter `deleted_at` — for the same
+ *    reason `generateUniqueOrgSlug` does not. A form that says "available" and
+ *    then 409s is worse than one that says "taken".
+ *  - **Reserved slugs are unavailable**, not merely invalid later. They would
+ *    shadow an application route for every tenant, so the honest answer to "can
+ *    I have this one?" is no.
+ *
+ * It is a snapshot, never a reservation: the slug can be claimed by somebody
+ * else between this answer and the insert. That race is settled by the unique
+ * index, which is the only thing that can settle it — this check exists to make
+ * the common case legible, not to make the rare one impossible.
+ */
+export async function isOrgSlugAvailable(exec: Executor, slug: string): Promise<boolean> {
+  if (isReservedSlug(slug)) return false;
+  return !(await isSlugTaken(exec, slug));
+}
+
+export interface ProvisionOrganizationParams {
   user: Pick<User, 'id' | 'email' | 'displayName'>;
   envelope: EnvelopeService;
   /** Overrides the name derived from the user's profile. */
   name?: string | undefined;
+  /**
+   * The exact slug to claim — the one the user chose and can see.
+   *
+   * Takes precedence over `slugSeed`, and **fails rather than adapts**: if it is
+   * taken, this throws `conflict` instead of quietly handing back `acme-2`. That
+   * difference is the whole point. A slug is permanent, so a caller who typed
+   * one and got a different one back would be holding an identifier they never
+   * agreed to, in every URL, forever.
+   */
+  slug?: string | undefined;
+  /**
+   * What the slug is derived from, before uniquifying. Ignored when `slug` is
+   * given.
+   *
+   * This is the path that *is* allowed to adapt, because nobody is watching: it
+   * serves the organisation created at first sign-in, which has nothing to go on
+   * but the address that just signed in and no form in which to object.
+   */
+  slugSeed?: string | undefined;
 }
 
-export interface PersonalOrganization {
+export interface ProvisionedOrganization {
   organization: Organization;
   membership: MemberRecord;
   project: Project;
@@ -151,34 +196,50 @@ export interface PersonalOrganization {
 }
 
 /**
- * Turns a freshly created user into an account that can hold a secret:
- * organisation, owner membership, Org Master Key, a default project, its default
- * environments, and an Env Data Key for each.
+ * Builds an organisation that can hold a secret: the organisation itself, an
+ * owner membership for the caller, an Org Master Key, a default project, its
+ * default environments, and an Env Data Key for each.
+ *
+ * Two paths reach this. The first is sign-up — a verified identity with no
+ * membership anywhere gets one here, which is what makes the product usable
+ * within a minute of signing up. The second is `POST /api/orgs`, where somebody
+ * who already has an account starts a second organisation. The work is
+ * identical; only the name and the slug seed differ.
  *
  * All of it in one transaction. A user who ends up with an organisation but no
  * Org Master Key is permanently broken — they cannot store a secret, and nothing
  * in the product can repair it without an operator going in by hand. That is the
  * single strongest argument for the transaction: partial state here is not an
- * inconvenience to retry past, it is an unrecoverable account.
+ * inconvenience to retry past, it is an unrecoverable organisation.
  *
  * Note the ordering constraint honestly: the `EnvelopeService` calls are awaited
  * inside the transaction, so it is held open across CPU-bound cryptography. That
- * is acceptable *here* because it happens exactly once per user, on a path
+ * is acceptable *here* because it happens once per organisation, on a path
  * nobody waits on twice. Do not copy the shape into a request-serving path,
  * where holding a connection through key derivation is a self-inflicted
  * throughput limit. The environment keys are derived concurrently to keep the
  * window as short as it can be.
  */
-export async function bootstrapPersonalOrganization(
+export async function provisionOrganization(
   exec: Executor,
-  params: BootstrapPersonalOrganizationParams,
-): Promise<PersonalOrganization> {
+  params: ProvisionOrganizationParams,
+): Promise<ProvisionedOrganization> {
   const { user, envelope } = params;
 
   return exec.transaction(async (tx) => {
     const now = new Date();
     const orgId = uuidv7();
-    const slug = await generateUniqueOrgSlug(tx, personalOrgSlugSeed(user.email));
+    // An explicit slug is used as given; only a derived one is uniquified. The
+    // insert below is what actually settles a race for either, via the unique
+    // index — no amount of checking first can, and pretending otherwise is how
+    // two organisations end up believing they own `acme`.
+    const slug =
+      params.slug ??
+      (await generateUniqueOrgSlug(tx, params.slugSeed ?? personalOrgSlugSeed(user.email)));
+
+    if (isReservedSlug(slug)) {
+      throw new RepositoryError('conflict', 'That slug is reserved.');
+    }
 
     const [organization] = await tx
       .insert(organizations)
@@ -190,7 +251,12 @@ export async function bootstrapPersonalOrganization(
         createdAt: now,
         updatedAt: now,
       })
-      .returning();
+      .returning()
+      // The unique index is the arbiter. Mapped to `conflict` so the route can
+      // answer 409 and put the message on the slug field, rather than letting an
+      // unmapped driver error become a 500 for a race the user can resolve by
+      // picking another name.
+      .catch(rethrowSlugCollision);
     // A single-row `INSERT … RETURNING` either returns its row or throws, so this
     // and the checks below are unreachable. They exist because
     // `noUncheckedIndexedAccess` is on and a `!` here would hide a genuine
@@ -364,20 +430,35 @@ export function personalOrgSlugSeed(email: string): string {
  * The candidate slug for a given attempt: attempt 0 is the bare slug, and later
  * attempts append `-2`, `-3`, … Pure, so the suffixing is testable without a
  * database.
+ *
+ * Every branch is bounded by `ORGANIZATION_SLUG_MAX_LENGTH`, including attempt
+ * 0. The seed reaching here is a display name or an email local part, neither of
+ * which is under that limit by construction — and a sign-up that quietly minted
+ * a 40-character slug would create an organisation whose own settings page
+ * reports its slug as invalid.
  */
 export function orgSlugCandidate(base: string, attempt: number): string {
-  return attempt === 0 ? base : withSlugSuffix(base, String(attempt + 1));
+  if (attempt === 0) return trimTrailingHyphens(base.slice(0, ORGANIZATION_SLUG_MAX_LENGTH));
+  return withSlugSuffix(base, String(attempt + 1));
 }
 
 /**
- * Appends a suffix, trimming the base so the result still fits `SLUG_MAX_LENGTH`.
+ * Appends a suffix, trimming the base so the result still fits.
  *
  * Truncating the base rather than the suffix keeps the result unique — a
  * truncated suffix would collide with the very slug it was meant to distinguish.
  */
 function withSlugSuffix(base: string, suffix: string): string {
-  const room = SLUG_MAX_LENGTH - suffix.length - 1;
-  return `${base.slice(0, room).replace(/-+$/, '')}-${suffix}`;
+  const room = ORGANIZATION_SLUG_MAX_LENGTH - suffix.length - 1;
+  return `${trimTrailingHyphens(base.slice(0, room))}-${suffix}`;
+}
+
+/**
+ * A slice can land on a hyphen, and `SLUG_PATTERN` forbids both a trailing one
+ * and the double hyphen that a suffix would then create.
+ */
+function trimTrailingHyphens(value: string): string {
+  return value.replace(/-+$/, '');
 }
 
 /** Six lowercase base-36 characters, from a CSPRNG: ~1.7 × 10⁷ possibilities. */
@@ -398,9 +479,17 @@ async function isSlugTaken(exec: Executor, slug: string): Promise<boolean> {
 /**
  * The organisation is named after the person, because at first login that is the
  * only meaningful name available. Renaming it is one field in settings.
+ *
+ * Truncated to the limit the API enforces on a name somebody types. The source
+ * here is a display name from an identity provider, which arrives at whatever
+ * length that provider allows — and an organisation created at sign-up that the
+ * settings page then refuses to save would be a rule the product breaks on the
+ * user's behalf and then blames them for.
  */
 function defaultOrganizationName(user: Pick<User, 'email' | 'displayName'>): string {
-  return user.displayName?.trim() || personalOrgSlugSeed(user.email) || FALLBACK_ORGANIZATION_NAME;
+  const source =
+    user.displayName?.trim() || personalOrgSlugSeed(user.email) || FALLBACK_ORGANIZATION_NAME;
+  return truncateName(source, ORGANIZATION_NAME_MAX_LENGTH) || FALLBACK_ORGANIZATION_NAME;
 }
 
 /**

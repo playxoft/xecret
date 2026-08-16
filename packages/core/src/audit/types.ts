@@ -44,6 +44,18 @@ export type AuditAction =
   | 'auth.account_deleted'
   | 'org.created'
   | 'org.updated'
+  /**
+   * An organisation was soft-deleted, taking every project, environment and
+   * secret inside it out of reach in one act.
+   *
+   * The row it points at survives the deletion — that is what a soft delete is
+   * for here — so this record, and every record filed against the organisation
+   * before it, stays readable by an operator afterwards. Nobody in the product
+   * can read them: the audit route resolves through `organizations` with a
+   * `deleted_at is null` filter, so the organisation stops answering the moment
+   * this event is written.
+   */
+  | 'org.deleted'
   | 'project.created'
   | 'project.updated'
   | 'project.deleted'

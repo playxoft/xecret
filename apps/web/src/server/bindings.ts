@@ -124,6 +124,7 @@ declare global {
     RL_SECRET_READ?: RateLimit;
     RL_SERVICE?: RateLimit;
     RL_MUTATION?: RateLimit;
+    RL_SLUG_CHECK?: RateLimit;
   }
 }
 

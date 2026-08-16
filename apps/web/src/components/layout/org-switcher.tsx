@@ -34,17 +34,27 @@ export interface ShellOrganization {
 export interface OrgSwitcherProps {
   organizations: readonly ShellOrganization[];
   currentSlug: string;
-  /** Adds a "New organisation" item when provided. */
-  createHref?: string;
+  /**
+   * Adds "New organisation" at the foot of the menu.
+   *
+   * A callback rather than an href because creating one is a dialog, not a page
+   * — see `CreateOrganizationDialog`. The switcher does not own that dialog; it
+   * lives with the session it has to refresh once an organisation exists.
+   */
+  onCreate?: () => void;
   className?: string;
 }
 
-export function OrgSwitcher({
-  organizations,
-  currentSlug,
-  createHref,
-  className,
-}: OrgSwitcherProps) {
+/**
+ * The organisation switcher, and the action that adds to what it switches
+ * between.
+ *
+ * Creating one lives here rather than as a row of its own because this menu is
+ * already the answer to "which organisations do I have?" — and "I want another"
+ * is the same question continued. Separating them would put two organisation
+ * controls within 40px of each other in a 240px column.
+ */
+export function OrgSwitcher({ organizations, currentSlug, onCreate, className }: OrgSwitcherProps) {
   const current = organizations.find((org) => org.slug === currentSlug) ?? organizations[0];
   if (!current) return null;
 
@@ -84,14 +94,15 @@ export function OrgSwitcher({
             </Link>
           </DropdownMenuItem>
         ))}
-        {createHref ? (
+        {onCreate ? (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuItem asChild>
-              <Link href={createHref}>
-                <PlusIcon className="size-4" />
-                New organisation
-              </Link>
+            {/* `onSelect` rather than `onClick`: Radix closes the menu and
+                restores focus to the trigger on select, so the dialog opening
+                behind it inherits a sane focus origin to return to on close. */}
+            <DropdownMenuItem onSelect={onCreate}>
+              <PlusIcon className="size-4" />
+              New organisation
             </DropdownMenuItem>
           </>
         ) : null}

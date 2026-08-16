@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ZodType } from 'zod';
+import { ORGANIZATION_NAME_MAX_LENGTH, truncateName } from '@xecret/core/validation';
 import type {
   EnvironmentRecord,
   Organization,
@@ -15,6 +16,7 @@ import {
   environmentCreateSchema,
   environmentPatchSchema,
   NAME_MAX_LENGTH,
+  organizationCreateSchema,
   organizationPatchSchema,
   pageQuerySchema,
   projectCreateSchema,
@@ -76,6 +78,93 @@ function failingFields<T>(schema: ZodType<T>, value: unknown): string[] {
 function query(search: string): Request {
   return new Request(`https://xecret.playxoft.com/api/orgs/acme/projects${search}`);
 }
+
+describe('organisation creation schema', () => {
+  it('accepts a name, which is the whole of the body', () => {
+    expect(parseWith(organizationCreateSchema, { name: 'Acme' })).toEqual({ name: 'Acme' });
+  });
+
+  it('trims, so a name typed with a trailing space is stored without one', () => {
+    expect(parseWith(organizationCreateSchema, { name: '  Acme  ' })).toEqual({ name: 'Acme' });
+  });
+
+  it('refuses a name that is empty, blank, or past the organisation ceiling', () => {
+    expect(failingFields(organizationCreateSchema, { name: '' })).toEqual(['name']);
+    expect(failingFields(organizationCreateSchema, { name: '   ' })).toEqual(['name']);
+    expect(
+      failingFields(organizationCreateSchema, {
+        name: 'x'.repeat(ORGANIZATION_NAME_MAX_LENGTH + 1),
+      }),
+    ).toEqual(['name']);
+    expect(
+      parseWith(organizationCreateSchema, { name: 'x'.repeat(ORGANIZATION_NAME_MAX_LENGTH) }).name,
+    ).toHaveLength(ORGANIZATION_NAME_MAX_LENGTH);
+  });
+
+  /**
+   * The browser caps the input at the same number. Enforcing it here too is what
+   * makes it a rule rather than a suggestion — a limit only the form knows about
+   * holds until somebody uses `curl`.
+   */
+  it('holds an organisation to a shorter name than a project, on both endpoints', () => {
+    const overLong = 'x'.repeat(ORGANIZATION_NAME_MAX_LENGTH + 1);
+
+    expect(failingFields(organizationCreateSchema, { name: overLong })).toEqual(['name']);
+    expect(failingFields(organizationPatchSchema, { name: overLong })).toEqual(['name']);
+    // The same string is fine for a project, whose names are rendered where
+    // there is room for them.
+    expect(parseWith(projectCreateSchema, { name: overLong }).name).toBe(overLong);
+    expect(ORGANIZATION_NAME_MAX_LENGTH).toBeLessThan(NAME_MAX_LENGTH);
+  });
+
+  it('requires the name, rather than inventing one', () => {
+    expect(failingFields(organizationCreateSchema, {})).toEqual(['name']);
+  });
+
+  /**
+   * The dashboard always sends one, having shown it to the user and checked it.
+   * An organisation slug is permanent, so the identifier somebody is stuck with
+   * must be one they saw and agreed to — not one the server picked because a
+   * stranger they cannot see already held the obvious name.
+   */
+  it('accepts the slug the user chose', () => {
+    expect(parseWith(organizationCreateSchema, { name: 'Acme', slug: 'acme-eu' })).toEqual({
+      name: 'Acme',
+      slug: 'acme-eu',
+    });
+  });
+
+  /** Absent, the server derives and uniquifies — for API callers and sign-up. */
+  it('accepts a name alone, because the slug is derived when it is absent', () => {
+    expect(parseWith(organizationCreateSchema, { name: 'Acme' })).toEqual({ name: 'Acme' });
+  });
+
+  it('applies the same slug rules the rest of the product does', () => {
+    for (const slug of ['Acme', 'acme corp', 'acme_corp', '-acme', 'acme-', 'acme--corp', '']) {
+      const fields = failingFields(organizationCreateSchema, { name: 'Acme', slug });
+      expect(fields.length, slug).toBeGreaterThan(0);
+      expect(new Set(fields), slug).toEqual(new Set(['slug']));
+    }
+  });
+
+  // Reserved slugs would shadow an application route for every tenant, not just
+  // the one that claimed it. `availability` is among them precisely because the
+  // endpoint this form calls lives at `/api/orgs/availability`.
+  it('refuses a reserved slug, including the availability endpoint own name', () => {
+    for (const slug of ['settings', 'api', 'availability', 'members']) {
+      expect(failingFields(organizationCreateSchema, { name: 'Acme', slug }), slug).toEqual([
+        'slug',
+      ]);
+    }
+  });
+
+  it('rejects an unrecognised field without naming it back to the caller', () => {
+    const error = rejected(organizationCreateSchema, { name: 'Acme', ownerId: 'someone-else' });
+
+    expect(error.code).toBe('validation_failed');
+    expect(JSON.stringify(error.toBody('req-1'))).not.toContain('ownerId');
+  });
+});
 
 describe('project creation schema', () => {
   it('accepts the body a dashboard actually sends', () => {
@@ -156,6 +245,27 @@ describe('patch schemas', () => {
     expect(parseWith(projectPatchSchema, { slug: 'renamed' })).toEqual({ slug: 'renamed' });
     expect(parseWith(organizationPatchSchema, { slug: 'renamed' })).toEqual({ slug: 'renamed' });
     expect(parseWith(environmentPatchSchema, { slug: 'renamed' })).toEqual({ slug: 'renamed' });
+  });
+
+  /**
+   * A name from an identity provider can be longer than an organisation name may
+   * be, and a sign-up that failed for that reason would be an unrecoverable first
+   * impression. So the *invented* name is shortened; a typed one is refused.
+   */
+  it('shortens an invented name to fit, preferring a word boundary', () => {
+    expect(truncateName('Nitheesh Kumar Ramakrishnan', ORGANIZATION_NAME_MAX_LENGTH)).toBe(
+      'Nitheesh Kumar',
+    );
+    // No usable boundary: a mid-word cut beats leaving one character behind.
+    expect(truncateName('Extraordinarilylongname', 12)).toBe('Extraordinar');
+    // Already short enough — returned as-is, merely trimmed.
+    expect(truncateName('  Acme  ', ORGANIZATION_NAME_MAX_LENGTH)).toBe('Acme');
+    // And whatever it produces is something the API will accept.
+    expect(
+      parseWith(organizationCreateSchema, {
+        name: truncateName('A Very Long Organisation Name Indeed', ORGANIZATION_NAME_MAX_LENGTH),
+      }).name.length,
+    ).toBeLessThanOrEqual(ORGANIZATION_NAME_MAX_LENGTH);
   });
 
   it('accepts the fields that can genuinely change', () => {
@@ -323,7 +433,10 @@ describe('destructive confirmation', () => {
     expect(confirmationMatches('billing-api', 'Billing-API')).toBe(true);
   });
 
-  it('accepts a request with no body at all, so only production demands one', () => {
+  // The schema admits an empty body; which routes *require* the field is the
+  // handler's call. Today that is deleting an organisation, and deleting a
+  // project that holds a production environment.
+  it('accepts a request with no body at all, so only the routes that need one demand it', () => {
     expect(parseWith(destructiveRequestSchema, undefined)).toEqual({});
     expect(parseWith(destructiveRequestSchema, { confirm: 'billing-api' })).toEqual({
       confirm: 'billing-api',

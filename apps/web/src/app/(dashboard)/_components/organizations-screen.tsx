@@ -2,10 +2,11 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 import { initials } from '@/lib/format';
-import { ArrowRightIcon } from '@/components/ui';
+import { CreateOrganizationDialog } from '@/components/organizations';
+import { ArrowRightIcon, Button, PlusIcon } from '@/components/ui';
 import { appPath } from '../_lib/paths';
 import { useSession } from './session';
 
@@ -24,7 +25,8 @@ import { useSession } from './session';
  */
 export function OrganizationsScreen() {
   const router = useRouter();
-  const { organizations } = useSession();
+  const { organizations, refresh } = useSession();
+  const [creating, setCreating] = useState(false);
   const only = organizations.length === 1 ? organizations[0] : undefined;
 
   useEffect(() => {
@@ -43,10 +45,19 @@ export function OrganizationsScreen() {
 
   return (
     <div className="mx-auto w-full max-w-2xl">
-      <h1 className="text-fg text-xl font-semibold tracking-tight">Choose an organisation</h1>
-      <p className="text-fg-muted mt-1.5 text-sm leading-6">
-        You are a member of {organizations.length} organisations. Your role differs between them.
-      </p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+        <div className="min-w-0">
+          <h1 className="text-fg text-xl font-semibold tracking-tight">Choose an organisation</h1>
+          <p className="text-fg-muted mt-1.5 text-sm leading-6">
+            You are a member of {organizations.length} organisations. Your role differs between
+            them.
+          </p>
+        </div>
+        <Button variant="secondary" className="shrink-0" onClick={() => setCreating(true)}>
+          <PlusIcon className="size-4" />
+          New organisation
+        </Button>
+      </div>
 
       <ul className="mt-6 flex flex-col gap-2">
         {organizations.map((organization) => (
@@ -74,6 +85,8 @@ export function OrganizationsScreen() {
           </li>
         ))}
       </ul>
+
+      <CreateOrganizationDialog open={creating} onOpenChange={setCreating} onCreated={refresh} />
     </div>
   );
 }

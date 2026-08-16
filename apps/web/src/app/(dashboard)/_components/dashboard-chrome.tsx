@@ -1,13 +1,14 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import { api, isApiError, SIGN_IN_PATH } from '@/lib/api';
 import { AppShell, Wordmark } from '@/components/layout';
 import type { BreadcrumbItem, ShellOrganization } from '@/components/layout';
-import { Button, EmptyState, Skeleton, UsersIcon } from '@/components/ui';
+import { CreateOrganizationDialog } from '@/components/organizations';
+import { Button, EmptyState, PlusIcon, Skeleton, UsersIcon } from '@/components/ui';
 import { apiPath, appPath, parseDashboardPath } from '../_lib/paths';
 import { useDashboardNav } from './dashboard-nav';
 import type { DashboardLocation } from '../_lib/paths';
@@ -38,6 +39,13 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const location = useMemo(() => parseDashboardPath(pathname), [pathname]);
   const session = useApiResource<MeResponse>(apiPath.me());
+
+  // Owned here rather than inside the sidebar because the thing that has to
+  // change when an organisation is created is *this* component's session
+  // resource — the membership list every part of the shell is drawn from. It is
+  // also reachable from two places that never render at the same time: the
+  // sidebar, and the empty state below for an account with no memberships left.
+  const [creatingOrg, setCreatingOrg] = useState(false);
 
   // ── Which organisation the shell describes when the URL names none ──
   //
@@ -131,20 +139,36 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   }
 
   if (organizations.length === 0) {
-    // A personal organisation is created at first sign-in (`POST /api/auth/session`),
-    // so this is reachable only once every membership has been revoked. Saying
-    // so is more use than an empty projects list that never explains itself.
+    // An organisation is created at first sign-in (`POST /api/auth/session`), so
+    // this is reachable only once every membership is gone — removed by someone
+    // else, or deleted by this account itself on the organisation settings page.
+    //
+    // Starting a new one is offered first, and it is the reason this screen is
+    // not a dead end: without it, an owner who deleted their last organisation
+    // would be left on a page whose only way forward is to be invited by
+    // somebody else.
     return (
       <ChromeFrame>
         <EmptyState
           icon={<UsersIcon />}
           title="You are not a member of any organisation"
-          description="Every membership on this account has been removed. Ask an owner to invite you again, or sign in with a different account."
+          description="Create one to start again, ask an owner to invite you back, or sign in with a different account."
           action={
+            <Button variant="primary" onClick={() => setCreatingOrg(true)}>
+              <PlusIcon className="size-4" />
+              New organisation
+            </Button>
+          }
+          secondaryAction={
             <Button variant="secondary" asChild>
               <a href={SIGN_IN_PATH}>Sign in with a different account</a>
             </Button>
           }
+        />
+        <CreateOrganizationDialog
+          open={creatingOrg}
+          onOpenChange={setCreatingOrg}
+          onCreated={reloadSession}
         />
       </ChromeFrame>
     );
@@ -185,6 +209,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
         nav={nav}
         organizations={shellOrganizations}
         currentOrgSlug={currentOrg?.slug ?? ''}
+        onCreateOrganization={() => setCreatingOrg(true)}
         user={{ name: user.displayName ?? user.email, email: user.email }}
         accountHref={appPath.account()}
         onLock={lock}
@@ -192,6 +217,15 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
       >
         {children}
       </AppShell>
+
+      {/* Outside `AppShell` rather than inside the sidebar: the dialog is
+          portalled to the document either way, and keeping it here means the
+          mobile drawer closing does not unmount a form somebody is typing in. */}
+      <CreateOrganizationDialog
+        open={creatingOrg}
+        onOpenChange={setCreatingOrg}
+        onCreated={reloadSession}
+      />
     </SessionProvider>
   );
 }

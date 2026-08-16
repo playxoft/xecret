@@ -18,10 +18,10 @@ import type { VerifiedIdentity } from '@xecret/core/auth';
 import { createAuditBuilder } from '@xecret/core/audit';
 import type { AuditRecord } from '@xecret/core/audit';
 import {
-  bootstrapPersonalOrganization,
   createSession,
   findSessionByTokenHash,
   listOrganizationsForUser,
+  provisionOrganization,
   RepositoryError,
   revokeSession,
   upsertUserFromIdentity,
@@ -98,7 +98,7 @@ export const POST = publicRoute(async ({ request, services }) => {
   // organisation but no master key would be unusable and unrepairable.
   let memberships = await listOrganizationsForUser(services.db, user.id);
   if (memberships.length === 0) {
-    const created = await bootstrapPersonalOrganization(services.db, {
+    const created = await provisionOrganization(services.db, {
       user,
       envelope: services.envelope,
     });

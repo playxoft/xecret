@@ -4,6 +4,8 @@ import type { OrgRole } from '@xecret/core/authz';
 import {
   environmentSlugSchema,
   isReservedSlug,
+  ORGANIZATION_NAME_MAX_LENGTH,
+  organizationSlugSchema,
   slugSchema,
   slugify,
   SLUG_MAX_LENGTH,
@@ -81,6 +83,24 @@ const nameSchema = z
   .max(NAME_MAX_LENGTH, `A name must be at most ${NAME_MAX_LENGTH} characters.`);
 
 /**
+ * The same rule, at the organisation's tighter ceiling.
+ *
+ * Enforced here and not only in the browser, because a limit the API does not
+ * share is a limit that holds until somebody uses `curl`. The bound itself lives
+ * in `@xecret/core/validation` so the form that caps the input and the endpoint
+ * that stores the result cannot drift apart — see `ORGANIZATION_NAME_MAX_LENGTH`
+ * for why the number is what it is.
+ */
+const organizationNameSchema = z
+  .string()
+  .trim()
+  .min(1, 'A name cannot be empty.')
+  .max(
+    ORGANIZATION_NAME_MAX_LENGTH,
+    `An organisation name must be at most ${ORGANIZATION_NAME_MAX_LENGTH} characters.`,
+  );
+
+/**
  * Nullable so a description can be cleared. `undefined` means "leave it alone";
  * `null` means "remove it" — a distinction the repository already understands
  * and one a client cannot otherwise express.
@@ -104,8 +124,31 @@ const descriptionSchema = z
  */
 const immutableSlugField = z.unknown().optional();
 
+/**
+ * Creating an organisation: a name, and the permanent identifier that goes with
+ * it.
+ *
+ * `slug` is optional but is what the dashboard always sends. The form derives a
+ * candidate from the name, checks it against `GET /api/orgs/availability`, and
+ * lets the user edit it — so the identifier they are stuck with for the life of
+ * the organisation is one they saw and agreed to.
+ *
+ * Absent, the slug is derived from the name and *uniquified* — `acme`, then
+ * `acme-2`. That path exists for API callers and for first sign-in, where there
+ * is nobody at a keyboard to consult. It is deliberately not what the dashboard
+ * uses: silently handing somebody `acme-2` forever, because a stranger they
+ * cannot see holds `acme`, is the failure this field exists to prevent.
+ */
+export const organizationCreateSchema = z.strictObject(
+  { name: organizationNameSchema, slug: organizationSlugSchema.optional() },
+  UNEXPECTED_FIELD,
+);
+
 export const organizationPatchSchema = z
-  .strictObject({ name: nameSchema.optional(), slug: immutableSlugField }, UNEXPECTED_FIELD)
+  .strictObject(
+    { name: organizationNameSchema.optional(), slug: immutableSlugField },
+    UNEXPECTED_FIELD,
+  )
   // Any recognised key satisfies this, `slug` included, so a body that names
   // only the slug reaches `assertSlugImmutable` and gets the precise refusal
   // instead of a generic "nothing to update".
