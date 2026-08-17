@@ -64,10 +64,15 @@ is permanently unrecoverable — there is no support ticket that fixes this.**
    npm run smoke
    ```
 
-5. **Deploy.**
+5. **Deploy.** `XECRET_PUBLIC_URL` and `XECRET_ENV` have to be in the *build*
+   environment, not only in the Worker's bindings: the documentation pages are
+   prerendered, so their canonical URLs, sitemap entries and `robots.txt` `Host`
+   line are written during the build, and a build that is not told its own
+   origin refuses rather than guesses. The deploy script reads both out of
+   `apps/web/wrangler.jsonc` for the environment being deployed.
 
    ```bash
-   cd apps/web && npx opennextjs-cloudflare build && npx wrangler deploy
+   sh scripts/deploy-web.sh production
    ```
 
 6. **CLI.** Point clients at your deployment: `xecret login --api-url

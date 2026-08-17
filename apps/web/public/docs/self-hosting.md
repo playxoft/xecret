@@ -102,9 +102,22 @@ discover from a 503 in production.
 ### 5. Deploy
 
 ```bash
-cd apps/web
-npx opennextjs-cloudflare build
-npx wrangler deploy
+XECRET_PUBLIC_URL=https://secrets.your-company.com \
+XECRET_ENV=production \
+  npx opennextjs-cloudflare build --env production
+
+npx wrangler deploy --env production
+```
+
+The two variables are not optional at build time. Every documentation and
+marketing page is prerendered, so its canonical URL, its sitemap entry and the
+`Host` line in `robots.txt` are all written during the build — long before the
+Worker can read them from its bindings. A build that is not told will refuse
+rather than guess. `scripts/deploy-web.sh` does this for you, reading both out
+of `wrangler.jsonc` for the environment being deployed:
+
+```bash
+sh scripts/deploy-web.sh production
 ```
 
 ### 6. Point clients at it
