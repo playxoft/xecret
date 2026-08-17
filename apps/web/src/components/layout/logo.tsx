@@ -75,7 +75,16 @@ export function LogoMark({
   );
 }
 
-export function Wordmark({ className, gradientId }: { className?: string; gradientId?: string }) {
+export function Wordmark({
+  className,
+  gradientId,
+}: {
+  className?: string;
+  // Explicitly `| undefined` for the same reason `LogoMark` states it above:
+  // `exactOptionalPropertyTypes` is on, and callers forward the prop whether or
+  // not they were given one.
+  gradientId?: string | undefined;
+}) {
   return (
     <span className={cn('inline-flex items-center gap-2', className)}>
       <LogoMark className="size-6 shrink-0" gradientId={gradientId} />

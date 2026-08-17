@@ -61,6 +61,23 @@ const eslintConfig = defineConfig([
     },
   },
 
+  {
+    name: 'xecret/docs-content-is-read-at-build-time',
+    files: ['src/app/docs/_lib/**/*.ts'],
+    rules: {
+      // The filesystem ban above is right for everything that runs on a
+      // request. This module does not: every reader is a page with
+      // `dynamicParams = false` or a `force-static` route handler, so all of it
+      // executes during `next build` and none of it is reachable at the edge.
+      //
+      // The alternative — inlining twenty-five documents into a TypeScript
+      // module — would put the published documentation somewhere nobody can
+      // edit it as prose, to satisfy a rule about a runtime this code never
+      // reaches.
+      'no-restricted-imports': 'off',
+    },
+  },
+
   globalIgnores([
     '.next/**',
     'out/**',
