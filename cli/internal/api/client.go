@@ -159,6 +159,13 @@ func (c *Client) Patch(ctx context.Context, path string, body, out any) error {
 	return c.do(ctx, http.MethodPatch, path, body, out, nil)
 }
 
+// Put issues a PUT. Not retried, as for Post — the one PUT in this API changes
+// a secret's metadata, and a repeat that raced a concurrent rename would
+// silently undo it.
+func (c *Client) Put(ctx context.Context, path string, body, out any) error {
+	return c.do(ctx, http.MethodPut, path, body, out, nil)
+}
+
 // Delete issues a DELETE. Not retried, as for Post.
 func (c *Client) Delete(ctx context.Context, path string, body, out any) error {
 	return c.do(ctx, http.MethodDelete, path, body, out, nil)

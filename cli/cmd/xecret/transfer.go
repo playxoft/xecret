@@ -27,14 +27,15 @@ func cmdImport(args []string) error {
 	strategy := flags.String("strategy", "skip", "conflicts: skip | overwrite | rename")
 	dryRun := flags.Bool("dry-run", false, "show the plan without writing anything")
 	projectFlag, envFlag := scopedFlags(flags)
-	if err := flags.Parse(args); err != nil {
+	positional, err := parseFlags(flags, args)
+	if err != nil {
 		return err
 	}
 
-	if len(flags.Args()) != 1 {
+	if len(positional) != 1 {
 		return errors.New("usage: xecret import <file> [--strategy skip|overwrite|rename] [--dry-run]")
 	}
-	filePath := flags.Args()[0]
+	filePath := positional[0]
 
 	switch *strategy {
 	case "skip", "overwrite", "rename":
@@ -108,6 +109,102 @@ func cmdImport(args []string) error {
 	return nil
 }
 
+// cmdExport writes every current secret to a file.
+//
+// Writing secrets to a file is a deliberate downgrade in security posture, and
+// this command exists anyway — the server's export route says the same thing at
+// more length, and for the same reason: a team that cannot export will paste
+// values into chat one at a time, which is strictly less safe and completely
+// unaudited. So it is offered, it is audited exactly like a pull, and it warns.
+//
+// It is a separate command from `pull` rather than a flag on it because the two
+// are separate endpoints server-side, and the request path is what tells
+// "a build read its configuration" apart from "somebody took a copy" in the
+// audit record. `pull` is the stdout path; `export` always produces a file.
+func cmdExport(args []string) error {
+	flags := flag.NewFlagSet("export", flag.ContinueOnError)
+	format := flags.String("format", "env", "env | json | yaml | shell | docker")
+	outPath := flags.String("o", "", "file to write (default: derived from the format)")
+	force := flags.Bool("force", false, "overwrite the file if it already exists")
+	projectFlag, envFlag := scopedFlags(flags)
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+
+	if !knownFormat(*format) {
+		return fmt.Errorf("unknown format %q — use env, json, yaml, shell or docker", *format)
+	}
+
+	path := *outPath
+	if path == "" {
+		path = defaultExportPath(*format)
+	}
+
+	// Checked before the request, so a refusal costs no decryption and writes
+	// no audit record for a read that was never going to land anywhere.
+	if _, err := os.Stat(path); err == nil && !*force {
+		return fmt.Errorf("%s already exists — pass --force to overwrite it", path)
+	}
+
+	a := newApp(false)
+	client, credentials, err := a.client()
+	if err != nil {
+		return err
+	}
+	resolved, err := a.resolveScope(credentials, *projectFlag, *envFlag)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	document, err := client.Export(ctx, resolved.Org, resolved.Project, resolved.Environment, *format)
+	if err != nil {
+		return err
+	}
+
+	// 0600 before anything is in it: created world-readable and narrowed
+	// afterwards would leave a window in which the file is both present and
+	// readable by every account on the machine.
+	if err := os.WriteFile(path, document, 0o600); err != nil {
+		return fmt.Errorf("could not write %s", path)
+	}
+
+	a.printer.Successf("Wrote %s/%s to %s (mode 0600).", resolved.Project, resolved.Environment, path)
+	a.printer.Warnf("those secrets are now outside xecret's control: the file is not encrypted, it outlives")
+	a.printer.Warnf("this session, backup and sync tools will copy it, and no grant can be revoked after the")
+	a.printer.Warnf("fact. Add it to .gitignore, and delete it when you are done.")
+	return nil
+}
+
+// defaultExportPath names the file each format usually ends up as, so the
+// common case needs no -o.
+func defaultExportPath(format string) string {
+	switch format {
+	case "json":
+		return "secrets.json"
+	case "yaml":
+		return "secrets.yaml"
+	case "shell":
+		return "secrets.sh"
+	case "docker":
+		// What `docker run --env-file` expects, kept distinct from .env so an
+		// export cannot quietly replace a file a local tool is already reading.
+		return "docker.env"
+	default:
+		return ".env"
+	}
+}
+
+func knownFormat(format string) bool {
+	switch format {
+	case "env", "json", "yaml", "shell", "docker":
+		return true
+	}
+	return false
+}
+
 // cmdPull prints every current secret in the chosen format. This is the other
 // sanctioned place plaintext reaches stdout, and it says so on stderr, where
 // the warning survives `> .env`.
@@ -120,9 +217,7 @@ func cmdPull(args []string) error {
 		return err
 	}
 
-	switch *format {
-	case "env", "json", "yaml", "shell", "docker":
-	default:
+	if !knownFormat(*format) {
 		return fmt.Errorf("unknown format %q — use env, json, yaml, shell or docker", *format)
 	}
 

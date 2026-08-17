@@ -21,9 +21,10 @@ Both are structural, not aspirational — they are properties of how the binary
 is written, and the rest of this documentation depends on them being true.
 
 1. **A secret value is never written** to stdout, stderr, a log file, a
-   temporary file, or a process argument. The two exceptions are
-   `xecret pull` and `xecret secrets get --plain`, whose entire purpose is
-   producing a value, and which write it to stdout raw and nowhere else.
+   temporary file, or a process argument. The exceptions are `xecret pull`,
+   `xecret export` and `xecret secrets get [--version N] --plain`, whose entire
+   purpose is producing a value, and which write it to stdout raw — or, for
+   `export`, to one named file created `0600` — and nowhere else.
 
 2. **Credentials live in the OS keychain**, never in a dotfile you might commit
    or sync — macOS Keychain, Windows Credential Manager, Secret Service on
@@ -34,12 +35,13 @@ is written, and the rest of this documentation depends on them being true.
 
 | Group | Commands | Page |
 |---|---|---|
-| Signing in | `login` `logout` `whoami` | [Commands](cli/commands.md#authentication) |
+| Signing in | `login` `logout` `whoami` `orgs` | [Commands](cli/commands.md#authentication) |
 | Pointing at a project | `init` `projects` `environments` | [Commands](cli/commands.md#project-setup) |
-| Working with secrets | `secrets list` `get` `set` `delete` | [Commands](cli/commands.md#secrets) |
-| Moving in bulk | `import` `pull` | [Commands](cli/commands.md#moving-secrets-in-bulk) |
+| Working with secrets | `secrets list` `get` `set` `annotate` `versions` `restore` `delete` | [Commands](cli/commands.md#secrets) |
+| Moving in bulk | `import` `pull` `export` | [Commands](cli/commands.md#moving-secrets-in-bulk) |
 | **Running your app** | `run` | [Commands](cli/commands.md#run) |
-| Housekeeping | `cache clear` `version` `help` | [Commands](cli/commands.md#housekeeping) |
+| Administration | `audit` `members` `tokens` | [Commands](cli/commands.md#administration) |
+| Housekeeping | `cache clear` `completion` `doctor` `upgrade` `version` `help` | [Commands](cli/commands.md#housekeeping) |
 
 ## How the CLI knows what you mean
 
