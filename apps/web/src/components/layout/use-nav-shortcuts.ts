@@ -60,19 +60,80 @@ function collect(sections: readonly NavSection[]): ReadonlyMap<string, string> {
 }
 
 /**
+ * ARIA roles belonging to a widget that reads plain keys for itself.
+ *
+ * A tag name alone does not identify one. A closed Radix `Select` trigger is a
+ * `<button role="combobox">`, and pressing `M` on it is meant to typeahead to
+ * "Member" — but Radix consumes that letter *without* calling
+ * `preventDefault`, so `event.defaultPrevented` cannot be used to detect it
+ * either. The role is the only thing on the element that announces "I have my
+ * own keyboard", which makes it the thing to match on.
+ *
+ * The list is wider than the roles that typeahead today — a `slider` or a
+ * `tab` reads arrows, not letters — because the two mistakes are not the same
+ * size. Standing down costs the user one keypress somewhere else on the page;
+ * firing costs them the interaction they were halfway through. So anything
+ * that declares itself a keyboard widget is left alone.
+ */
+const SELF_MANAGED_ROLES: ReadonlySet<string> = new Set([
+  // ARIA's composite widgets, which own the arrow keys and usually typeahead.
+  'application',
+  'combobox',
+  'grid',
+  'listbox',
+  'menu',
+  'menubar',
+  'radiogroup',
+  'tablist',
+  'tree',
+  'treegrid',
+  // The descendants that actually hold focus inside those — which is what
+  // `event.target` will be, since a composite moves focus onto its items.
+  'gridcell',
+  'menuitem',
+  'menuitemcheckbox',
+  'menuitemradio',
+  'option',
+  'radio',
+  'row',
+  'tab',
+  'treeitem',
+  // Standalone controls whose key handling goes beyond Enter and Space.
+  'searchbox',
+  'slider',
+  'spinbutton',
+  'textbox',
+]);
+
+/**
  * True when a keystroke belongs to whatever the user is doing, not to us.
  *
  * Unmodified single letters are a hostile thing to claim globally in this
  * product in particular: people paste and hand-edit secret values here all
  * day, and a stray `S` that navigates away mid-edit is indistinguishable from
  * data loss. So the bar for stealing one is deliberately high.
+ *
+ * Split out from the DOM so it can be tested without a browser, and kept to
+ * the focused element's *own* role rather than walking ancestors: an ordinary
+ * button nested inside a widget — the delete button in a table row, say — is a
+ * leaf that handles nothing, and suppressing shortcuts across a whole subtree
+ * would over-reach as badly as the tag-only check under-reached.
  */
-function isTypingContext(target: EventTarget | null): boolean {
+export function ownsPlainKeys(tagName: string, role: string | null): boolean {
+  if (tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT') return true;
+  if (role === null) return false;
+
+  // `role` holds a token list, not one value: `role="combobox listbox"` is a
+  // fallback chain for a user agent that does not recognise the first token.
+  // Any token naming a widget is reason enough to stand down.
+  return role.split(/\s+/).some((token) => SELF_MANAGED_ROLES.has(token.toLowerCase()));
+}
+
+function focusOwnsPlainKeys(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
 
-  const tag = target.tagName;
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+  return ownsPlainKeys(target.tagName, target.getAttribute('role'));
 }
 
 /**
@@ -105,26 +166,16 @@ function isOverlayOpen(): boolean {
 export function useNavShortcuts(nav: readonly NavSection[], enabled = true): void {
   const router = useRouter();
 
-  // Keyed on the nav's own shape rather than the array identity: the dashboard
-  // rebuilds this array on every render, and re-subscribing a document-level
-  // listener that often is both wasteful and a good way to miss a keystroke
-  // between teardown and setup.
+  // `useDashboardNav` hands over a memoised array, so this re-derives only when
+  // the nav genuinely changes — a project arriving, a role resolving — and the
+  // listener is re-subscribed with it. A caller that rebuilt the array every
+  // render would re-subscribe every render, which is wasteful but not lossy:
+  // React runs the cleanup and the setup inside one commit, so there is no gap
+  // between them for a keystroke to fall into.
   const shortcuts = useMemo(() => collect(nav), [nav]);
-  const fingerprint = useMemo(
-    () =>
-      [...shortcuts]
-        .map(([id, href]) => `${id}>${href}`)
-        .sort()
-        .join('|'),
-    [shortcuts],
-  );
 
   useEffect(() => {
-    if (!enabled || fingerprint === '') return;
-
-    const map = new Map(
-      fingerprint.split('|').map((entry) => entry.split('>') as [string, string]),
-    );
+    if (!enabled || shortcuts.size === 0) return;
 
     function onKeyDown(event: KeyboardEvent) {
       // `Ctrl`/`Cmd`/`Alt` belong to the browser and the OS. Only `Shift` is
@@ -132,9 +183,9 @@ export function useNavShortcuts(nav: readonly NavSection[], enabled = true): voi
       // chord rather than a modifier we invented.
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.defaultPrevented || event.repeat) return;
-      if (isTypingContext(event.target) || isOverlayOpen()) return;
+      if (focusOwnsPlainKeys(event.target) || isOverlayOpen()) return;
 
-      const href = map.get(`${event.shiftKey ? 'shift:' : ''}${event.code}`);
+      const href = shortcuts.get(`${event.shiftKey ? 'shift:' : ''}${event.code}`);
       if (href === undefined) return;
 
       event.preventDefault();
@@ -143,5 +194,5 @@ export function useNavShortcuts(nav: readonly NavSection[], enabled = true): voi
 
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [enabled, fingerprint, router]);
+  }, [enabled, shortcuts, router]);
 }
