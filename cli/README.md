@@ -9,7 +9,9 @@ no runtime dependency — see [ADR 0004](../docs/adr/0004-cli-language-go.md).
 
 ## Status
 
-**Phase 8 — v1 command set plus CI support.** In CI, set `XECRET_TOKEN=xst_…`
+**Phase 8 — the full command set plus CI support.** Every endpoint the API
+offers a CLI-shaped credential is reachable from here; the two that are not are
+listed below and are browser-only server-side. In CI, set `XECRET_TOKEN=xst_…`
 and nothing else: the token's own pinned scope answers which organisation,
 project and environment to use, no login flow runs, no keychain is touched,
 and no offline cache is ever written — a runner is ephemeral and a cache that
@@ -30,9 +32,39 @@ xecret secrets list              # masked listing
 xecret secrets get NAME --plain  # reveal one value (audited server-side)
 printf '%s' "$V" | xecret secrets set NAME
 xecret import .env               # server-side parse + plan; --dry-run previews
-xecret pull --format env         # print/export every secret, with a warning
+xecret pull --format env         # print every secret, with a warning
+xecret export -o .env            # the same, to a 0600 file, audited as a copy
 xecret whoami / logout / cache clear
 ```
+
+Version history, resources and administration:
+
+```bash
+xecret secrets versions NAME             # history — metadata only, deliberately
+xecret secrets get NAME --version 3 --plain
+xecret secrets restore NAME --version 3  # re-append an old value; history intact
+xecret secrets annotate NAME --note "…"  # metadata; appends no version
+
+xecret orgs / orgs use SLUG              # which organisation commands address
+xecret projects create "Checkout API"    # + its default environments and keys
+xecret environments create "PR 412" --slug pr-412
+xecret audit --action secret.revealed --since 7d
+xecret members
+xecret tokens list / tokens revoke ID --kind service
+
+xecret completion zsh                    # bash | zsh | fish
+xecret doctor                            # what this machine is set up to do
+xecret upgrade                           # is a newer release published?
+```
+
+Two things are deliberately *not* here, and the commands say so rather than
+letting the server answer with a 403:
+
+- **Minting a service token.** `POST …/tokens/service` requires a browser
+  session: a token that could mint another token turns one leaked credential
+  into a permanent foothold, so the chain has to start with a person.
+- **Inviting or suspending members.** Same reason, same server-side rule.
+  `xecret members` reads; it does not write.
 
 ## How authentication works
 
@@ -73,9 +105,10 @@ From the repository root: `npm run cli:build`, `npm run cli:test`.
 ## Two rules that hold everywhere
 
 1. **A secret value never leaves the process boundary incidentally.** Values go
-   into the child process environment and nowhere else. The two deliberate
-   exceptions — `pull` and `secrets get --plain` — exist to produce a value on
-   request, write it raw to stdout only, and warn on stderr.
+   into the child process environment and nowhere else. The deliberate
+   exceptions — `pull`, `export` and `secrets get [--version N] --plain` — exist
+   to produce a value on request, write it raw to stdout (or, for `export`, to
+   one named `0600` file), and warn on stderr.
 2. **Credentials live in the OS keychain**, never in a dotfile a user might
    commit or sync to cloud storage. The file fallback is `0600` and warns
    visibly. `.xecret.yaml` holds a project and environment slug — never

@@ -13,6 +13,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 // Printer knows where human output and machine output go.
@@ -22,8 +24,8 @@ import (
 // for. That split is what makes `xecret projects --json | jq` work while the
 // human messages stay visible on the terminal.
 type Printer struct {
-	Out   io.Writer
-	Err   io.Writer
+	Out io.Writer
+	Err io.Writer
 	// JSON switches result rendering from tables to one JSON document.
 	JSON  bool
 	color bool
@@ -43,16 +45,29 @@ func New(jsonMode bool) *Printer {
 }
 
 func stdoutIsTerminal() bool {
-	info, err := os.Stdout.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(os.Stdout.Fd()))
 }
 
 // StdoutIsTerminal reports whether stdout is a terminal. Exposed for commands
-// that change behaviour on it — the pull warning, the secrets prompt.
+// that change behaviour on where their output lands — the pull warning.
 func StdoutIsTerminal() bool { return stdoutIsTerminal() }
+
+// StdinIsTerminal reports whether stdin is a terminal — whether there is a
+// person there to answer a prompt.
+//
+// Deliberately separate from StdoutIsTerminal: the two streams are redirected
+// independently, and a confirmation is only answerable if the stream it is
+// *read* from is a terminal. Testing stdout instead would refuse to prompt
+// under `xecret projects delete web > log` with a user sitting right there,
+// and would accept a piped line as consent under `echo web | xecret …`.
+//
+// term.IsTerminal rather than the ModeCharDevice test, because /dev/null *is* a
+// character device. Under `docker run` without -i, under cron, and under a
+// systemd unit, stdin is /dev/null — exactly the "a script forgot --yes" case
+// that has to be told to pass --yes rather than shown a prompt nobody answers.
+func StdinIsTerminal() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
 
 const (
 	ansiReset = "\x1b[0m"

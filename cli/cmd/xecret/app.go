@@ -68,8 +68,18 @@ func userAgent() string {
 // happens to have a developer's credential in its keychain — and otherwise
 // the stored login is used, or the uniform "log in first" error.
 func (a *app) client() (*api.Client, *cred.Credentials, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return a.clientFor(ctx)
+}
+
+// clientFor is client() under the caller's deadline, for commands that budget
+// their own probes. `doctor` needs it: the introspection below is a network
+// call, and one that ran on its own private 30 s clock would silently blow the
+// budget doctor advertises for each check.
+func (a *app) clientFor(ctx context.Context) (*api.Client, *cred.Credentials, error) {
 	if token := serviceTokenFromEnv(); token != "" {
-		return a.serviceClient(token)
+		return a.serviceClient(ctx, token)
 	}
 
 	credentials, err := cred.Load(a.store)
@@ -87,14 +97,11 @@ func (a *app) client() (*api.Client, *cred.Credentials, error) {
 // answers with exactly the credential's own scope, which then fills every gap
 // a missing `.xecret.yaml` leaves. One extra request per invocation, and CI
 // needs zero configuration beyond the token itself.
-func (a *app) serviceClient(token string) (*api.Client, *cred.Credentials, error) {
+func (a *app) serviceClient(ctx context.Context, token string) (*api.Client, *cred.Credentials, error) {
 	base := apiBase("")
 	client := api.New(base, token, userAgent())
 
 	if a.tokenScope == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		self, err := client.TokenSelf(ctx)
 		if err != nil {
 			return nil, nil, err
@@ -107,6 +114,32 @@ func (a *app) serviceClient(token string) (*api.Client, *cred.Credentials, error
 		Token:   token,
 		OrgSlug: a.tokenScope.Organization.Slug,
 	}, nil
+}
+
+// storedCredentials returns the saved login when there is one, and nil
+// otherwise. For the places where a credential sharpens an answer but is not
+// required to give one — which deployment `upgrade` should name, for instance.
+func (a *app) storedCredentials() *cred.Credentials {
+	credentials, err := cred.Load(a.store)
+	if err != nil {
+		return nil
+	}
+	return credentials
+}
+
+// deploymentOrigin is the deployment this machine talks to, and why — the
+// question behind "it is pointing at the wrong server", and behind any command
+// that prints a URL for the user to act on.
+//
+// Under XECRET_TOKEN it deliberately ignores the stored login: a service token
+// resolves through apiBase(""), so a developer credential that happens to sit
+// in this machine's keychain must not answer for a CI job's deployment. That
+// also means the keyring is not touched at all in CI.
+func (a *app) deploymentOrigin() (base, reason string) {
+	if a.usingServiceToken() {
+		return resolvedAPIBase(nil)
+	}
+	return resolvedAPIBase(a.storedCredentials())
 }
 
 // scope is the resolved (org, project, environment) triple every secret
