@@ -14,8 +14,11 @@ import { escapeHtml, highlight, languageLabel } from './highlight';
  * Six renderer overrides do all the work:
  *
  *  - **headings** gain stable ids and a hover anchor, and register themselves
- *    in the table of contents as they are rendered — one pass, so the contents
- *    list and the page can never disagree about a slug.
+ *    in the table of contents as they are rendered, so the contents list and
+ *    the page can never disagree about a slug. One pass over the lexed source
+ *    runs ahead of that to claim every explicit `{#id}` the document declares,
+ *    which is what lets a derived slug give way to a pinned one written below
+ *    it rather than collide with it.
  *  - **code fences** become a labelled block with a copy button.
  *  - **links** written as relative `.md` paths — which is what makes the raw
  *    files navigable in an editor — are rewritten to site routes, and only
@@ -28,8 +31,12 @@ import { escapeHtml, highlight, languageLabel } from './highlight';
  * The last two exist because of where this output goes. `DocBody` hands it to
  * `dangerouslySetInnerHTML` and every page is prerendered, so a `<script>` that
  * survives this module is a `<script>` in the static HTML file, executed while
- * the document is being parsed. The application sets no Content-Security-Policy
- * — there is nothing behind this to catch what it lets past.
+ * the document is being parsed. The application does now send a
+ * Content-Security-Policy, and it does not catch this: `script-src` has to
+ * carry `'unsafe-inline'` for the RSC flight payload, so an inline script in
+ * the prerendered document runs regardless. `lib/csp.ts` says why at length.
+ * What the policy limits is what such a script can then reach; what it never
+ * does is excuse this module from escaping.
  */
 
 export interface TocEntry {
@@ -258,17 +265,43 @@ const ANCHOR_ICON =
 /**
  * Turns one document's markdown into HTML and its contents list.
  *
- * `slug` is the document's own path under `/docs`, used only to resolve
- * relative links.
+ * `slug` is the document's own path under `/docs`. It resolves relative links,
+ * and it names the file in the one error this module throws.
  */
 export function renderMarkdown(source: string, slug: string): RenderedMarkdown {
   const toc: TocEntry[] = [];
-  const usedIds = new Map<string, number>();
+  const usedIds = new Set<string>();
 
+  /**
+   * A fragment no other heading on this page has taken.
+   *
+   * Counting occurrences per base slug is not enough, and the document that
+   * breaks it is an ordinary one: `## Tokens`, `## Tokens`, `## Tokens 2`
+   * slugify to `tokens`, `tokens` and `tokens-2`, so a counter keyed on
+   * `tokens` alone hands the second heading the id `tokens-2` — which the
+   * third heading, whose text really is "Tokens 2", then claims as well. The
+   * page ends up with a duplicate id, a contents entry that jumps to the wrong
+   * heading, and a scroll-spy observer that only ever reports the first of the
+   * two, none of which looks like the same bug from the outside.
+   *
+   * So the suffixed candidate is checked against every id already spoken for —
+   * each one issued so far, and every explicit `{#id}` the document declares
+   * anywhere, seeded below before rendering begins — and the suffix keeps
+   * moving until one is free. Terminates because each pass either finds a free
+   * id or excludes one more of a finite set.
+   */
   function uniqueId(base: string): string {
-    const seen = usedIds.get(base) ?? 0;
-    usedIds.set(base, seen + 1);
-    return seen === 0 ? base : `${base}-${seen + 1}`;
+    if (!usedIds.has(base)) {
+      usedIds.add(base);
+      return base;
+    }
+
+    let suffix = 2;
+    while (usedIds.has(`${base}-${suffix}`)) suffix += 1;
+
+    const unique = `${base}-${suffix}`;
+    usedIds.add(unique);
+    return unique;
   }
 
   const marked = new Marked({
@@ -308,6 +341,12 @@ export function renderMarkdown(source: string, slug: string): RenderedMarkdown {
         // than re-lexing the cleaned string through marked's internals.
         const text = this.parser.parseInline(token.tokens).replace(EXPLICIT_ID, '');
         const title = plainText(raw);
+        // An explicit id is never renamed — a heading pins its fragment
+        // precisely so that links to it survive a copy-edit, and a renamed
+        // "unique" version of it would break the thing it was written for. The
+        // pre-pass below has already claimed every one of them, so a *derived*
+        // slug that would collide with one moves out of the way instead, no
+        // matter which of the two headings comes first in the document.
         const id = explicit ?? uniqueId(slugify(raw) || 'section');
         const depth = token.depth;
 
@@ -456,6 +495,54 @@ export function renderMarkdown(source: string, slug: string): RenderedMarkdown {
         );
       },
     },
+  });
+
+  /**
+   * Every `{#id}` in the document, claimed before a single heading is rendered.
+   *
+   * `heading()` cannot do this on its own account, and the reason is that it
+   * only ever sees one heading. Recording an explicit id as that heading
+   * renders defends it against the headings *below* it and against nothing
+   * above: `## Tokens` followed by `## Access tokens {#tokens}` derives
+   * `tokens` for the first — the id is not taken yet — and then hands the
+   * second the same one, and the page ships two elements with the same id, a
+   * contents entry that scrolls to the wrong heading, and a scroll-spy
+   * observer that only ever reports the first. Exactly the failure `uniqueId`
+   * exists to remove, surviving in one of the two orderings. A separate pass
+   * over the whole document is the smallest thing that does not depend on the
+   * order the author happened to write the headings in.
+   *
+   * The headings come from marked's own lexer rather than from a regular
+   * expression over the lines, because "this is a heading" has to be the same
+   * question here as in `heading()`: a `#` comment inside a fenced block is not
+   * one, a `##` inside a blockquote is, and a second opinion about that is a
+   * derived slug shoved aside to make room for an id that never existed. The
+   * source is lexed twice as a result — a few dozen kilobytes, once per page,
+   * during `next build`, and cheaper than the two answers drifting apart.
+   *
+   * Two headings declaring the *same* id is refused outright rather than
+   * quietly rendered. There is no right answer to give it: the rule above
+   * forbids renaming either one, and a fragment two headings claim cannot be
+   * the durable link that pinning it was for — one of them is already broken,
+   * and only the author knows which. `/docs` is prerendered with
+   * `dynamicParams = false`, so this runs during the build and nowhere else: a
+   * reader can never meet it, and the author meets it immediately, with the
+   * file and the id named.
+   */
+  marked.walkTokens(marked.lexer(source), (token: Token) => {
+    if (token.type !== 'heading') return;
+
+    const explicit = EXPLICIT_ID.exec(token.text)?.[1];
+    if (explicit === undefined) return;
+
+    if (usedIds.has(explicit)) {
+      throw new Error(
+        `${slug}.md declares the heading id "${explicit}" twice — a pinned ` +
+          'fragment is a promise that one heading owns it.',
+      );
+    }
+
+    usedIds.add(explicit);
   });
 
   const html = marked.parse(source, { async: false });

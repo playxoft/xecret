@@ -22,6 +22,7 @@ import {
 import type { Auth, User } from 'firebase/auth';
 
 import { api } from './api';
+import { isHostname } from './csp';
 
 /**
  * Firebase Authentication — identity provider only.
@@ -148,6 +149,34 @@ export function parseFirebaseConfig(raw: string | undefined): FirebaseConfigResu
 
   if (missing.length > 0) {
     return { problem: `NEXT_PUBLIC_FIREBASE_CONFIG is missing ${missing.join(', ')}` };
+  }
+
+  // `authDomain` has to be a bare hostname, and every other check here only
+  // asks whether it is a non-empty string.
+  //
+  // Three values pass that and break the product. `xecret-app.firebaseapp.com `
+  // with a trailing space and `https://xecret-app.firebaseapp.com/` both break
+  // the SDK itself, which interpolates this string raw into
+  // `https://${authDomain}/__/auth/iframe`; `*.firebaseapp.com` is what an
+  // operator types meaning "all our Firebase domains" and is a legal CSP host
+  // source meaning "any subdomain". All three used to leave `check:env` green
+  // while `firebaseAuthOrigin` in `lib/csp.ts` returned null, `frame-src`
+  // collapsed to `'self'`, and sign-in was dead with nothing anywhere naming
+  // the cause — the failure this check exists to convert into a sentence.
+  //
+  // The value is echoed, unlike the blob above: it is one public field rather
+  // than a config object with an API key in it, and the mistakes worth catching
+  // here — a stray space, a scheme, a wildcard — are ones you cannot act on
+  // without seeing them. The quotes are load-bearing for exactly that reason.
+  const authDomain = record['authDomain'] as string;
+  if (!isHostname(authDomain)) {
+    return {
+      problem:
+        `NEXT_PUBLIC_FIREBASE_CONFIG has an authDomain of "${authDomain}", which is not a ` +
+        'hostname. It must be the bare domain the Firebase console shows — ' +
+        '"your-project.firebaseapp.com" — with no scheme, no path, no port and no ' +
+        'surrounding whitespace',
+    };
   }
 
   return {

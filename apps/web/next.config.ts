@@ -1,5 +1,7 @@
 import type { NextConfig } from 'next';
 
+import { contentSecurityPolicy } from './src/lib/csp';
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
 
@@ -13,6 +15,15 @@ const nextConfig: NextConfig = {
   // Keep this honest — never flip it to true to make a build pass.
   // (Next 16 removed the `eslint` config key; linting is a separate CI step.)
   typescript: { ignoreBuildErrors: false },
+
+  // ── `experimental.sri` was considered and not taken ──
+  // It stamps an `integrity` hash on every emitted `<script src>`, which was
+  // verified to work here. It was left off because what it defends against —
+  // a same-origin asset altered between build and browser — is already covered
+  // by HTTPS and by the assets being served from this deployment, while the
+  // inline flight payload it cannot touch is the reason `script-src` needs
+  // `'unsafe-inline'` regardless. An experimental flag that rewrites every
+  // script tag in a secret manager should buy more than that.
 
   async headers() {
     return [
@@ -30,6 +41,16 @@ const nextConfig: NextConfig = {
           {
             key: 'Strict-Transport-Security',
             value: 'max-age=63072000; includeSubDomains; preload',
+          },
+          {
+            // Built here rather than written as a literal because it has to
+            // name the deployment's own Firebase domain — see `lib/csp.ts`,
+            // which also records what this policy can and cannot enforce.
+            key: 'Content-Security-Policy',
+            value: contentSecurityPolicy({
+              isDevelopment: process.env.NODE_ENV === 'development',
+              firebaseConfig: process.env.NEXT_PUBLIC_FIREBASE_CONFIG,
+            }),
           },
         ],
       },

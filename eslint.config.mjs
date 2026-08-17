@@ -17,6 +17,40 @@ import tseslint from 'typescript-eslint';
  * edit away from being weakened everywhere at once; two copies mean a reviewer
  * sees the rule change twice.
  */
+
+/**
+ * ── ADR 0003: the Firebase Admin SDK cannot run on Cloudflare Workers. ──
+ *
+ * A constant, even though the note above argues for hand-written copies. That
+ * argument is about the *other* file: `apps/web` holding its own copy is what
+ * makes a weakening visible twice to a reviewer. It says nothing about the
+ * three blocks in this one file, which a reviewer reads in a single diff — and
+ * hand-copying between them is what caused the bug this constant fixes.
+ *
+ * `no-restricted-imports` is replaced wholesale per block rather than merged,
+ * so a later block that re-declares the rule for its own reasons silently drops
+ * this ban. That is exactly what happened: `packages/core` re-declared it for
+ * ADR 0005's runtime-agnostic list, and `import admin from 'firebase-admin'`
+ * lint-clean in the package this config's own header calls the highest-risk
+ * code in the product. Every block that declares the rule now spreads this in.
+ */
+const FIREBASE_ADMIN_BAN = {
+  paths: [
+    {
+      name: 'firebase-admin',
+      message:
+        'firebase-admin cannot run on Cloudflare Workers (Node-native deps). Use firebase-auth-cloudflare-workers. See docs/adr/0003-firebase-as-identity-provider.md',
+    },
+  ],
+  patterns: [
+    {
+      group: ['firebase-admin/*'],
+      message:
+        'firebase-admin cannot run on Cloudflare Workers. Use firebase-auth-cloudflare-workers. See docs/adr/0003-firebase-as-identity-provider.md',
+    },
+  ],
+};
+
 export default defineConfig([
   globalIgnores([
     '**/node_modules/**',
@@ -65,25 +99,7 @@ export default defineConfig([
       // accidentally dropped promise is not.
       '@typescript-eslint/no-floating-promises': 'error',
 
-      'no-restricted-imports': [
-        'error',
-        {
-          paths: [
-            {
-              name: 'firebase-admin',
-              message:
-                'firebase-admin cannot run on Cloudflare Workers (Node-native deps). Use firebase-auth-cloudflare-workers. See docs/adr/0003-firebase-as-identity-provider.md',
-            },
-          ],
-          patterns: [
-            {
-              group: ['firebase-admin/*'],
-              message:
-                'firebase-admin cannot run on Cloudflare Workers. Use firebase-auth-cloudflare-workers. See docs/adr/0003-firebase-as-identity-provider.md',
-            },
-          ],
-        },
-      ],
+      'no-restricted-imports': ['error', FIREBASE_ADMIN_BAN],
 
       // Underscore-prefixed parameters are a documented "deliberately unused"
       // signal — `redactValue(_value)` exists so no path can carry its input to
@@ -100,6 +116,9 @@ export default defineConfig([
     // Node. Anything Node-specific here would not fail until deploy.
     files: ['packages/core/**/*.ts'],
     rules: {
+      // ADR 0005's list *plus* ADR 0003's, because this declaration replaces
+      // the one above rather than adding to it. Narrowing a block to the rule
+      // it cares about is what let `firebase-admin` through here.
       'no-restricted-imports': [
         'error',
         {
@@ -107,14 +126,18 @@ export default defineConfig([
           // also matches the relative path `../crypto/encoding`, which is one
           // of this package's own modules — the rule then bans exactly the code
           // it was written to protect.
-          paths: ['fs', 'path', 'crypto', 'buffer', 'os', 'child_process', 'stream', 'util'].map(
-            (name) => ({
-              name,
-              message:
-                'packages/core is runtime-agnostic (ADR 0005). Use Web APIs — Web Crypto, TextEncoder, Uint8Array — so the same code runs on Workers, in the browser, and under Node.',
-            }),
-          ),
+          paths: [
+            ...FIREBASE_ADMIN_BAN.paths,
+            ...['fs', 'path', 'crypto', 'buffer', 'os', 'child_process', 'stream', 'util'].map(
+              (name) => ({
+                name,
+                message:
+                  'packages/core is runtime-agnostic (ADR 0005). Use Web APIs — Web Crypto, TextEncoder, Uint8Array — so the same code runs on Workers, in the browser, and under Node.',
+              }),
+            ),
+          ],
           patterns: [
+            ...FIREBASE_ADMIN_BAN.patterns,
             {
               group: ['node:*'],
               message:
@@ -144,6 +167,17 @@ export default defineConfig([
     rules: {
       'no-console': 'off',
       '@typescript-eslint/no-explicit-any': 'error',
+
+      // These files run under Node and never reach the Worker, so ADR 0003's
+      // stated reason — Node-native dependencies do not load on Workers — does
+      // not apply to them on its own terms. The ban is here anyway, because the
+      // thing it actually prevents is `firebase-admin` entering `package.json`
+      // at all: once installed for one script it resolves from every workspace,
+      // and `scripts/check-env.ts` already imports from both `apps/web` and
+      // `packages/core`, so "just for a script" is one refactor from shipping.
+      // ADR 0003 and CONTRIBUTING both state the ban without qualification;
+      // this is the last place the config disagreed with them.
+      'no-restricted-imports': ['error', FIREBASE_ADMIN_BAN],
     },
   },
 

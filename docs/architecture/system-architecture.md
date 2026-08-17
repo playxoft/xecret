@@ -183,16 +183,30 @@ across many IPs — is counted in the database and evaluated per action, not per
 ## 7. Deployment and configuration flow
 
 ```
-Developer laptop                     CI / deploy                     Runtime
-────────────────                     ───────────                     ───────
-phase run -- npm run dev             phase run -- wrangler deploy    env bindings
-   │                                     │                              │
-   └─ secrets in process env             └─ pushes to CF Secrets Store  └─ no network
-      never on disk                         and Worker bindings
+Developer laptop                 CI / deploy                              Runtime
+────────────────                 ───────────                              ───────
+phase run -- npm run dev         phase run -- sh scripts/deploy-web.sh    env bindings
+   │                                │                                        │
+   └─ secrets in process env        └─ reads wrangler.jsonc for that env,     └─ no network
+      never on disk                    builds with its origin, uploads the
+                                       Worker and binds what it names
 ```
 
 No `.env` file exists on any developer machine. `.env.example` documents variable *names*
 only and holds no values.
+
+The deploy is a script rather than a bare `wrangler deploy` for one reason worth stating here:
+a deployment is a *build* and an *upload*, and only the upload can read `wrangler.jsonc`. The
+documentation and marketing pages are prerendered, so each one's canonical URL, its sitemap
+entry and the `Host` line in `robots.txt` are decided while `next build` runs — before any
+binding exists. The script closes that gap by resolving the environment's `vars` itself and
+exporting them into the build, which is what makes the origin in the HTML and the origin the
+Worker answers on the same string rather than two strings kept in step by hand.
+
+The account's Secrets Store entry and the Hyperdrive and KV resources are created once by
+`scripts/deploy-bootstrap.sh`, not by a deploy — a deploy binds those resources and fails if
+they are absent. See [key recovery §3](../security/key-recovery.md) for why that separation is
+deliberate.
 
 ---
 
