@@ -135,7 +135,15 @@ const TEXT_SCRUBBERS: readonly { pattern: RegExp; replacement: string }[] = [
   // the alternative was recording nothing but the error's class name, which is
   // how a delivery failure stayed undiagnosable. The user id is on the line
   // already, so nothing about "who" is lost.
-  { pattern: /\b[\w.+-]+@[\w-]+(\.[\w-]+)+\b/g, replacement: '[redacted-email]' },
+  //
+  // The trailing `\.[a-z]{2,}` is not pedantry about valid domains — it is what
+  // keeps this from eating `@xecret/core@0.1.0` and `react@19.2.0` out of stack
+  // frames and dependency errors. A rule that redacts the version a module was
+  // resolved at, in the name of privacy, would take away the same diagnosability
+  // this pattern exists to make affordable. Addresses at a bare host
+  // (`root@localhost`) are not matched and never were; a provider's rejection
+  // quotes what was submitted, and what is submitted here is always a real one.
+  { pattern: /\b[\w.+-]+@[\w-]+(\.[\w-]+)*\.[a-z]{2,}\b/gi, replacement: '[redacted-email]' },
 ];
 
 /** Removes credential-shaped substrings from free text and bounds its length. */

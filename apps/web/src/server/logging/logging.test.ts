@@ -234,6 +234,48 @@ describe('redaction', () => {
     expect(scrubText('body was {"password": "hunter2"}')).toContain('password=[redacted]');
   });
 
+  // The control that makes logging a provider's rejection body affordable at
+  // all. Without it the choice is between an undiagnosable `{ error: 'Error' }`
+  // and putting a user's address in the log stream.
+  it('strips an email address out of a provider rejection', () => {
+    const rejection =
+      '{"error":{"code":"TM_3201","details":[{"code":"SERR_156",' +
+      '"message":"Invalid email address","target":"to.address",' +
+      '"value":"alice.smith+reset@example.co.uk"}],"message":"Invalid Request"}}';
+
+    const scrubbed = scrubText(rejection);
+
+    expect(scrubbed).not.toContain('alice');
+    expect(scrubbed).not.toContain('example.co.uk');
+    expect(scrubbed).toContain('[redacted-email]');
+    // The half that says *why* has to survive, or the redaction has simply
+    // reinvented logging the class name.
+    expect(scrubbed).toContain('SERR_156');
+    expect(scrubbed).toContain('Invalid Request');
+  });
+
+  // Ordering, not coincidence: the credential rule runs before the address rule,
+  // so a body that carries both loses the credential to `[redacted]` rather than
+  // having its tail eaten by whichever pattern reached it first.
+  it('lets the credential scrubber win a field that holds both', () => {
+    const scrubbed = scrubText('{"api_key":"live-abc123","to":"bob@example.com"}');
+
+    expect(scrubbed).toContain('api_key=[redacted]');
+    expect(scrubbed).not.toContain('live-abc123');
+    expect(scrubbed).toContain('[redacted-email]');
+    expect(scrubbed).not.toContain('bob@example.com');
+  });
+
+  // A versioned module specifier is `name@version`, which is address-shaped.
+  // Redacting it would strip the one detail that makes a stack frame worth
+  // keeping, in the name of protecting a user who is not in it.
+  it('leaves versioned module specifiers alone', () => {
+    expect(scrubText('at load (/app/node_modules/@xecret/core@0.1.0/dist/index.js:1:1)')).toContain(
+      '@xecret/core@0.1.0',
+    );
+    expect(scrubText('npm ERR! peer dep react@19.2.0 required')).toContain('react@19.2.0');
+  });
+
   it('bounds strings, arrays and depth', () => {
     const long = 'a'.repeat(600);
     const redacted = redactFields({ long, list: Array.from({ length: 50 }, (_, i) => i) });
