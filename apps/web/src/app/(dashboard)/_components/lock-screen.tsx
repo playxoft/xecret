@@ -284,9 +284,11 @@ function ResetPanel({ email, onCancel }: { email: string; onCancel: () => void }
     setError(null);
     try {
       const result = await api.post<PinResetResult>('/auth/pin/reset');
-      // `sent: false` is a successful request with an unhappy answer — mail is
-      // not configured on this deployment. Reporting "check your email" would
-      // leave somebody watching an inbox nothing will ever arrive in.
+      // `sent: false` is a successful request with an unhappy answer — either
+      // mail is not configured on this deployment, or the provider refused the
+      // send. Reporting "check your email" would leave somebody watching an
+      // inbox nothing will ever arrive in, and this screen is where that costs
+      // the most: whoever is reading it is already locked out.
       if (!result.sent) {
         setError(result.reason ?? 'A reset link could not be sent.');
         setState('idle');

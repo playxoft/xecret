@@ -40,12 +40,14 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   const location = useMemo(() => parseDashboardPath(pathname), [pathname]);
   const session = useApiResource<MeResponse>(apiPath.me());
 
-  // Owned here rather than inside the sidebar because the thing that has to
-  // change when an organisation is created is *this* component's session
-  // resource — the membership list every part of the shell is drawn from. It is
-  // also reachable from two places that never render at the same time: the
-  // sidebar, and the empty state below for an account with no memberships left.
+  // Owned here, and only here, because the thing that has to change when an
+  // organisation is created is *this* component's session resource — the
+  // membership list every part of the shell is drawn from. Four components used
+  // to mount their own dialog and wire their own refresh; the two screens below
+  // the shell now open this one through `useSession().createOrganization`, so
+  // the behaviour after a successful create is written once.
   const [creatingOrg, setCreatingOrg] = useState(false);
+  const openCreateOrganization = useCallback(() => setCreatingOrg(true), []);
 
   // ── Which organisation the shell describes when the URL names none ──
   //
@@ -106,6 +108,17 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     lock,
   );
 
+  // Built once and rendered in whichever branch below is reached — never in two
+  // at the same time. An element rather than a second `<CreateOrganizationDialog>`
+  // call site, so a prop added to it is added in one place.
+  const createOrganizationDialog = (
+    <CreateOrganizationDialog
+      open={creatingOrg}
+      onOpenChange={setCreatingOrg}
+      onCreated={reloadSession}
+    />
+  );
+
   if (session.loading) return <ChromeSkeleton />;
 
   if (session.error !== null || session.data === null) {
@@ -154,7 +167,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
           title="You are not a member of any organisation"
           description="Create one to start again, ask an owner to invite you back, or sign in with a different account."
           action={
-            <Button variant="primary" onClick={() => setCreatingOrg(true)}>
+            <Button variant="primary" onClick={openCreateOrganization}>
               <PlusIcon className="size-4" />
               New organisation
             </Button>
@@ -165,11 +178,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
             </Button>
           }
         />
-        <CreateOrganizationDialog
-          open={creatingOrg}
-          onOpenChange={setCreatingOrg}
-          onCreated={reloadSession}
-        />
+        {createOrganizationDialog}
       </ChromeFrame>
     );
   }
@@ -203,13 +212,14 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
         pin,
         lock,
         refresh: reloadSession,
+        createOrganization: openCreateOrganization,
       }}
     >
       <AppShell
         nav={nav}
         organizations={shellOrganizations}
         currentOrgSlug={currentOrg?.slug ?? ''}
-        onCreateOrganization={() => setCreatingOrg(true)}
+        onCreateOrganization={openCreateOrganization}
         user={{ name: user.displayName ?? user.email, email: user.email }}
         accountHref={appPath.account()}
         onLock={lock}
@@ -220,12 +230,9 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
 
       {/* Outside `AppShell` rather than inside the sidebar: the dialog is
           portalled to the document either way, and keeping it here means the
-          mobile drawer closing does not unmount a form somebody is typing in. */}
-      <CreateOrganizationDialog
-        open={creatingOrg}
-        onOpenChange={setCreatingOrg}
-        onCreated={reloadSession}
-      />
+          mobile drawer closing does not unmount a form somebody is typing in.
+          Inside the provider, so every screen below can open it. */}
+      {createOrganizationDialog}
     </SessionProvider>
   );
 }

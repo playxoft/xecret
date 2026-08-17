@@ -18,6 +18,7 @@ import type {
   ProjectRecord,
 } from '@xecret/db/repositories';
 import { errors } from '../errors';
+import type { ApiError } from '../errors';
 
 /**
  * The request schemas and response shapes of the organisation, project and
@@ -54,6 +55,26 @@ import { errors } from '../errors';
  */
 export const NAME_MAX_LENGTH = 100;
 export const DESCRIPTION_MAX_LENGTH = 500;
+
+/**
+ * How many organisations one account may hold at a time.
+ *
+ * The rate limiter bounds how *fast* `POST /api/orgs` can be called; nothing
+ * bounded how many times, and the two are not the same control. Every call
+ * derives an Org Master Key and three Env Data Keys inside one transaction, so
+ * a caller spending their mutation budget on this endpoint holds a database
+ * connection open across CPU-bound cryptography ~60 times a minute for as long
+ * as they like. Worse, it is the one endpoint that spends something no deletion
+ * returns: `organizations_slug_unique` is a total constraint, so every slug
+ * claimed is taken out of a namespace shared with every other tenant for good.
+ *
+ * Ten, because separation *inside* an organisation is what projects and
+ * environments are for — an account that genuinely needs an eleventh is asking
+ * the product a question it answers better a level down. It is deliberately far
+ * above the one or two a real account has, so the refusal is only ever met by
+ * something that is not a person filling in a form.
+ */
+export const ORGANIZATIONS_PER_ACCOUNT_LIMIT = 10;
 
 /**
  * The display order of an environment.
@@ -256,6 +277,25 @@ export function assertSlugImmutable(
 
   throw errors.badRequest(
     `The slug of ${resource === 'organisation' ? 'an' : 'a'} ${resource} cannot be changed: it appears in URLs, in .xecret.yaml and in CI configuration, so a rename would break every consumer that is not redeployed at the same instant.`,
+  );
+}
+
+/**
+ * The refusal when an account is already holding as many organisations as it may.
+ *
+ * 409 rather than 403: nothing about the caller's permissions is wrong, and the
+ * same request succeeds the moment they delete one they no longer need. That is
+ * how `mapMembershipError` treats a seat limit — the product's other quota — and
+ * the two should not answer differently.
+ *
+ * The number is stated because it is a published constant and the only
+ * actionable thing left to say. Nothing derived from the request appears: the
+ * caller learns a rule, not an echo of what they sent.
+ */
+export function organizationLimitReached(): ApiError {
+  return errors.conflict(
+    `An account can hold at most ${ORGANIZATIONS_PER_ACCOUNT_LIMIT} organisations. ` +
+      'Delete one you no longer need before creating another.',
   );
 }
 

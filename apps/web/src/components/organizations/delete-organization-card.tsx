@@ -20,8 +20,14 @@ import type { Organization } from '@/components/projects/types';
 
 export interface DeleteOrganizationCardProps {
   organization: Organization;
-  /** Re-reads the session so the switcher stops listing what no longer exists. */
-  onDeleted: () => void;
+  /**
+   * Re-reads the session so the switcher stops listing what no longer exists.
+   *
+   * Must resolve once the new membership list is in state, not once the request
+   * has been sent — this component navigates the moment it resolves, and where
+   * that navigation ends up is decided from that list.
+   */
+  onDeleted: () => Promise<void>;
 }
 
 /**
@@ -55,12 +61,14 @@ export function DeleteOrganizationCard({ organization, onDeleted }: DeleteOrgani
 
     toast({ variant: 'success', title: `Deleted ${organization.name}` });
 
-    // The session is re-read first: `/app` decides between redirecting to the
-    // one remaining organisation and showing the picker, and it decides that
-    // from the shell's membership list. Sending the user there while the list
-    // still contains the organisation they just deleted would bounce them
-    // straight back into a 404.
-    onDeleted();
+    // Awaited, not merely called: `/app` decides between redirecting to the one
+    // remaining organisation and showing the picker, and it decides that from
+    // the shell's membership list. The earlier version started the refresh and
+    // navigated on the next line, which arrived several ticks before the new
+    // list — so an owner deleting their only organisation was sent to `/app`,
+    // which still counted one membership and redirected them straight into the
+    // 404 of the organisation they had just deleted.
+    await onDeleted();
     // `replace`, not `push`: the settings page of a deleted organisation is not
     // somewhere Back should be able to return to.
     router.replace(appPath.root());
