@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { jsonLd } from '@/lib/json-ld';
 import { SITE_ORIGIN } from '@/lib/site';
-import { escapeHtml, highlight } from './highlight';
+import { escapeHtml, highlight, languageLabel } from './highlight';
 import { extractFaq, renderMarkdown } from './markdown';
 import { DOC_SLUGS, DOCS_SECTIONS } from './nav';
 
@@ -197,9 +197,14 @@ describe('rendering', () => {
   });
 
   it('never emits a duplicate heading id', async () => {
+    // All six levels, not the two the contents list shows. An id is unique
+    // across a *document*: a `####` colliding with an `##` is the same
+    // duplicate-anchor bug, and a sweep reading only `h2` and `h3` waves it
+    // through. This is the net under the real pages — it should be under all
+    // of them.
     for (const doc of await loadAll()) {
       const { html } = renderMarkdown(doc.body, doc.slug);
-      const ids = [...html.matchAll(/<h[23] id="([^"]+)"/g)].map((match) => match[1]);
+      const ids = [...html.matchAll(/<h[1-6] id="([^"]+)"/g)].map((match) => match[1]);
       expect(new Set(ids).size, `${doc.slug} has a duplicate heading id`).toBe(ids.length);
     }
   });
@@ -229,6 +234,66 @@ describe('rendering', () => {
     const ids = [...html.matchAll(/<h2 id="([^"]+)"/g)].map((match) => match[1]);
 
     expect(ids).toEqual(['tokens', 'tokens-2']);
+  });
+
+  it('protects an explicit id from a derived slug written above it', () => {
+    // The half of that rule a single pass cannot reach, and the reason the ids
+    // are claimed before rendering starts: a heading that records its own
+    // explicit id while it renders is defended against the headings below it
+    // and against nothing above. This ordering used to emit `tokens` twice.
+    const { html, toc } = renderMarkdown('## Tokens\n\n## Access tokens {#tokens}\n', 'x');
+    const ids = [...html.matchAll(/<h2 id="([^"]+)"/g)].map((match) => match[1]);
+
+    expect(ids).toEqual(['tokens-2', 'tokens']);
+    expect(toc.map((entry) => entry.id)).toEqual(ids);
+  });
+
+  it('keeps a derived slug clear of an explicit id it would otherwise suffix into', () => {
+    // The collision does not need the two headings to share a base slug: `## A`
+    // twice derives `a` and `a-2`, and `a-2` is what the third heading has
+    // pinned. The suffix search has to skip it, from wherever it is declared.
+    const { html } = renderMarkdown('## A\n\n## A\n\n## Zed {#a-2}\n', 'x');
+    const ids = [...html.matchAll(/<h2 id="([^"]+)"/g)].map((match) => match[1]);
+
+    expect(ids).toEqual(['a', 'a-3', 'a-2']);
+  });
+
+  it('keeps ids unique across heading levels, not within one', () => {
+    // An `id` is unique to the document, and a contents list that only shows
+    // `h2` and `h3` does not change that. `#### A` under `## A` is a duplicate.
+    const { html } = renderMarkdown('# A\n\n## A\n\n#### A\n', 'x');
+    const ids = [...html.matchAll(/<h[1-6] id="([^"]+)"/g)].map((match) => match[1]);
+
+    expect(ids).toEqual(['a', 'a-2', 'a-3']);
+  });
+
+  it('still gives a heading with no slugifiable text an id', () => {
+    // `## ***` slugifies to nothing at all, and an empty `id` is an anchor
+    // that cannot be linked to. Two of them still have to differ.
+    const { html } = renderMarkdown('## ***\n\n## 🎉\n', 'x');
+    const ids = [...html.matchAll(/<h2 id="([^"]+)"/g)].map((match) => match[1]);
+
+    expect(ids).toEqual(['section', 'section-2']);
+  });
+
+  it('keeps a unicode heading readable in its fragment', () => {
+    // `\p{Letter}` rather than `[a-z]`: transliterating a heading nobody can
+    // read back would be worse than the percent-encoding a browser shows.
+    const { html } = renderMarkdown('## 日本語\n\n## Größe\n', 'x');
+    const ids = [...html.matchAll(/<h2 id="([^"]+)"/g)].map((match) => match[1]);
+
+    expect(ids).toEqual(['日本語', 'größe']);
+  });
+
+  it('refuses a document that declares the same explicit id twice', () => {
+    // Deliberately an error rather than a rename: the rule above forbids
+    // renaming either heading, and a fragment two headings claim cannot be the
+    // durable link that pinning it was for — one of them is already broken and
+    // only the author knows which. `/docs` is prerendered, so this is a build
+    // failure naming the file, never anything a reader can reach.
+    expect(() => renderMarkdown('## One {#same}\n\n## Two {#same}\n', 'cli/commands')).toThrow(
+      /cli\/commands\.md declares the heading id "same" twice/,
+    );
   });
 
   it('knows every fence language the documentation actually uses', async () => {
@@ -440,8 +505,11 @@ describe('raw HTML in a document is shown, never run', () => {
    * `marked` has had no sanitiser since v5, and this output goes straight into
    * `dangerouslySetInnerHTML` on a page rendered during `next build` — so a tag
    * that survives the renderer is a tag in the static HTML file, executed as
-   * the browser parses it, with no Content-Security-Policy anywhere in this
-   * application to stop it afterwards.
+   * the browser parses it. The application does send a Content-Security-Policy
+   * now, and it does not catch this one: `script-src` has to carry
+   * `'unsafe-inline'` for the RSC flight payload, so an inline script in the
+   * prerendered document runs regardless. What the policy limits is where such
+   * a script can then send what it stole.
    *
    * Asserted as "no element of this name exists in the output" rather than as
    * "the word `onerror` is absent": the escaped text still reads `onerror=`,
@@ -652,5 +720,20 @@ describe('the highlighter cannot emit unescaped markup', () => {
 
   it('escapes the five characters that matter', () => {
     expect(escapeHtml(`<>&"'`)).toBe('&lt;&gt;&amp;&quot;&#39;');
+  });
+
+  it('reads a fence language out of its own tables and never out of Object', () => {
+    // Every name here is a property of `Object.prototype`, which the tables
+    // inherit from because they are object literals, and the first two survive
+    // the `toLowerCase` the lookup performs. `constructor` used to make
+    // `languageLabel` return the `Object` function, which `markdown.ts` handed
+    // to `escapeHtml`, which called `.replace` on it: `value.replace is not a
+    // function`, thrown while prerendering — `next build` brought down by a
+    // fence tag.
+    for (const lang of ['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty']) {
+      expect(languageLabel(lang), `${lang} was labelled from the prototype`).toBe(lang);
+      expect(highlight('x', lang)).toBe('x');
+      expect(() => renderMarkdown(`\`\`\`${lang}\nconst a = 1\n\`\`\`\n`, 'x')).not.toThrow();
+    }
   });
 });

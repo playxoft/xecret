@@ -231,6 +231,27 @@ const LABELS: Record<string, string> = {
   txt: 'text',
 };
 
+/**
+ * A table's own entry for a key, never one it inherited.
+ *
+ * `LABELS` and `ALIASES` are object literals, so both inherit from
+ * `Object.prototype`, and the key they are asked for is whatever an author
+ * typed after three backticks. A fence tagged `constructor` reads the `Object`
+ * function out of that prototype instead of `undefined`; `??` never fires,
+ * because a function is not nullish; and `languageLabel` returns it.
+ * `markdown.ts` then hands that function to `escapeHtml`, which calls
+ * `.replace` on it and throws `value.replace is not a function`. Every
+ * documentation page is prerendered, so what that costs is `next build`, for a
+ * fence tag nobody would look at twice. `__proto__` is the same hole with a
+ * worse payload — the getter hands back the prototype object itself.
+ *
+ * `RULES` is indexed directly below because its key is not the author's: it is
+ * a value `ALIASES` declares, and every one of those names a rule set here.
+ */
+function ownEntry<T>(table: Record<string, T>, key: string): T | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
 export function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -243,7 +264,7 @@ export function escapeHtml(value: string): string {
 /** The label shown on a code block, or null when the fence named no language. */
 export function languageLabel(lang: string | undefined): string | null {
   if (!lang) return null;
-  return LABELS[lang.toLowerCase()] ?? lang;
+  return ownEntry(LABELS, lang.toLowerCase()) ?? lang;
 }
 
 /**
@@ -253,7 +274,8 @@ export function languageLabel(lang: string | undefined): string | null {
  * answer for a diagram or a directory tree in a fenced block.
  */
 export function highlight(code: string, lang: string | undefined): string {
-  const rules = lang ? RULES[ALIASES[lang.toLowerCase()] ?? ''] : undefined;
+  const alias = lang ? ownEntry(ALIASES, lang.toLowerCase()) : undefined;
+  const rules = alias === undefined ? undefined : RULES[alias];
   if (!rules) return escapeHtml(code);
 
   const scanner = new RegExp(rules.map((rule) => `(${rule.pattern})`).join('|'), 'gm');
