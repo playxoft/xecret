@@ -339,17 +339,20 @@ func fishCompletion() string {
 	// These read the fixed slots the CLI's own dispatch reads: word 1 after the
 	// command name is the command, word 2 is its subcommand. bash and zsh keyed
 	// on position from the start, which is why only fish was wrong.
-	b.WriteString("function __xecret_word\n")
+	// The comparison happens inside the function, against a quoted variable
+	// rather than a command substitution: in fish a substitution that produces
+	// no output is an empty *list*, and concatenating a prefix onto an empty
+	// list yields an empty list — so the `x(cmd)` idiom would hand `test` one
+	// argument short and error out on exactly the case that matters here, an
+	// unfilled slot.
+	b.WriteString("function __xecret_at\n")
 	b.WriteString("  set -l tokens (commandline -opc)\n")
 	b.WriteString("  set -l slot (math $argv[1] + 1)\n")
+	b.WriteString("  set -l word \"\"\n")
 	b.WriteString("  if test (count $tokens) -ge $slot\n")
-	b.WriteString("    echo $tokens[$slot]\n")
+	b.WriteString("    set word $tokens[$slot]\n")
 	b.WriteString("  end\n")
-	b.WriteString("end\n\n")
-	// x-prefixed so an empty slot compares as "x" rather than becoming a
-	// missing argument to test.
-	b.WriteString("function __xecret_at\n")
-	b.WriteString("  test x(__xecret_word $argv[1]) = x$argv[2]\n")
+	b.WriteString("  test \"$word\" = \"$argv[2]\"\n")
 	b.WriteString("end\n\n")
 
 	for _, command := range completionTree {
