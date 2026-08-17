@@ -508,7 +508,7 @@ so there is nothing here that could do them.
 ### `xecret tokens`
 
 ```bash
-xecret tokens [list] [--kind cli|service] [--json]
+xecret tokens list [--kind cli|service] [--json]
 xecret tokens revoke ID --kind cli|service [--yes]
 ```
 

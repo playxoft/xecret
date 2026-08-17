@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/playxoft/xecret/cli/internal/buildinfo"
+	"github.com/playxoft/xecret/cli/internal/cred"
 )
 
 // Checking for a newer CLI.
@@ -82,7 +83,16 @@ func cmdUpgrade(args []string) error {
 	// resolved exactly as `doctor` reports it. Printing the compiled-in default
 	// would send a self-hoster to an origin they may not be permitted to reach,
 	// for a binary built against somebody else's server.
-	installBase, _ := resolvedAPIBase(a.storedCredentials())
+	//
+	// Under XECRET_TOKEN there is no stored login in play — a service token
+	// resolves through apiBase(""), the same as doctor's nil — so the developer
+	// credential that happens to sit in this machine's keychain must not answer
+	// for the CI job's deployment.
+	var forInstall *cred.Credentials
+	if !a.usingServiceToken() {
+		forInstall = a.storedCredentials()
+	}
+	installBase, _ := resolvedAPIBase(forInstall)
 
 	fmt.Fprintln(a.printer.Out, "")
 	fmt.Fprintln(a.printer.Out, "  # Homebrew")

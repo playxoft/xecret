@@ -13,6 +13,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 // Printer knows where human output and machine output go.
@@ -43,11 +45,7 @@ func New(jsonMode bool) *Printer {
 }
 
 func stdoutIsTerminal() bool {
-	info, err := os.Stdout.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(os.Stdout.Fd()))
 }
 
 // StdoutIsTerminal reports whether stdout is a terminal. Exposed for commands
@@ -62,12 +60,13 @@ func StdoutIsTerminal() bool { return stdoutIsTerminal() }
 // *read* from is a terminal. Testing stdout instead would refuse to prompt
 // under `xecret projects delete web > log` with a user sitting right there,
 // and would accept a piped line as consent under `echo web | xecret …`.
+//
+// term.IsTerminal rather than the ModeCharDevice test, because /dev/null *is* a
+// character device. Under `docker run` without -i, under cron, and under a
+// systemd unit, stdin is /dev/null — exactly the "a script forgot --yes" case
+// that has to be told to pass --yes rather than shown a prompt nobody answers.
 func StdinIsTerminal() bool {
-	info, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 const (

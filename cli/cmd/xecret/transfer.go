@@ -184,20 +184,25 @@ func cmdExport(args []string) error {
 // decrypted secret into a file readable by every account on the machine, under
 // a message claiming mode 0600.
 //
-// The ordering is deliberate. O_TRUNC empties the file at open, so the moment
-// between opening and the chmod holds nothing; the secrets are written only
-// once 0600 is settled. If the chmod fails there is nothing to salvage — the
-// old contents are already gone — so the empty file is removed rather than
-// left behind as a permissive shell waiting to be filled.
+// The ordering is deliberate, and deliberately not O_TRUNC. Narrow first,
+// destroy second, write third: if the chmod fails — the file belongs to another
+// user, the filesystem does not carry modes — the old contents are still there
+// and the caller is told nothing was written, which is then true. Truncating at
+// open would have destroyed the file *before* learning we could not secure it,
+// leaving the user with neither their old .env nor an error they could act on.
 func writeSecretDocument(path string, document []byte) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
 		return fmt.Errorf("could not write %s", path)
 	}
 	if err := file.Chmod(0o600); err != nil {
 		_ = file.Close()
-		_ = os.Remove(path)
 		return fmt.Errorf("could not restrict %s to mode 0600, so nothing was written to it", path)
+	}
+	// Only now is the file both ours and unreadable by anybody else.
+	if err := file.Truncate(0); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("could not empty %s before writing to it", path)
 	}
 	if _, err := file.Write(document); err != nil {
 		_ = file.Close()

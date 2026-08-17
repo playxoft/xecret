@@ -24,7 +24,7 @@ import (
 var secretNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 const secretsUsage = `Usage:
-  xecret secrets [list]   [--json]
+  xecret secrets list     [--json]
   xecret secrets get      <NAME> [--version N] [--plain] [--json]
   xecret secrets set      <NAME> [--type TYPE] [--note TEXT] [--from-file PATH] [--generate[=BYTES]]
   xecret secrets annotate <NAME> [--note TEXT] [--type TYPE] [--rename NEW]
@@ -33,6 +33,8 @@ const secretsUsage = `Usage:
   xecret secrets delete   <NAME> [--yes]
 
 All subcommands accept --project and --environment to override .xecret.yaml.
+'xecret secrets' with no argument prints this; with a flag first — 'xecret
+secrets --json' — it lists.
 
 The value for 'set' is never taken from the command line — an argument would
 land in shell history and 'ps' output. Pipe it in, read it from a file, have
@@ -252,13 +254,17 @@ func secretsSet(args []string) error {
 		return err
 	}
 	// `--generate 48` cannot bind, because IsBoolFlag makes `--generate` a
-	// standalone flag — the number lands here as a second name instead. Said
-	// plainly, rather than left to oneName's "expected exactly one secret name",
-	// which names neither the flag nor the fix.
-	if generate.set && generate.value == 0 && len(positional) == 2 {
-		if _, numeric := strconv.Atoi(positional[1]); numeric == nil {
-			return fmt.Errorf(
-				"write --generate=%s; the length attaches with '=' because --generate also stands alone", positional[1])
+	// standalone flag — the number lands here as an extra positional instead.
+	// Said plainly, rather than left to oneName's "expected exactly one secret
+	// name", which names neither the flag nor the fix. Any position, because
+	// parseFlags accepts flags anywhere and `set --generate 48 FOO` is as
+	// natural an ordering as `set FOO --generate 48`.
+	if generate.set && generate.value == 0 && len(positional) > 1 {
+		for _, argument := range positional {
+			if _, numeric := strconv.Atoi(argument); numeric == nil {
+				return fmt.Errorf(
+					"write --generate=%s; the length attaches with '=' because --generate also stands alone", argument)
+			}
 		}
 	}
 	name, err := oneName(positional)

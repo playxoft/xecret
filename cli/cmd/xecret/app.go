@@ -68,8 +68,18 @@ func userAgent() string {
 // happens to have a developer's credential in its keychain — and otherwise
 // the stored login is used, or the uniform "log in first" error.
 func (a *app) client() (*api.Client, *cred.Credentials, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return a.clientFor(ctx)
+}
+
+// clientFor is client() under the caller's deadline, for commands that budget
+// their own probes. `doctor` needs it: the introspection below is a network
+// call, and one that ran on its own private 30 s clock would silently blow the
+// budget doctor advertises for each check.
+func (a *app) clientFor(ctx context.Context) (*api.Client, *cred.Credentials, error) {
 	if token := serviceTokenFromEnv(); token != "" {
-		return a.serviceClient(token)
+		return a.serviceClient(ctx, token)
 	}
 
 	credentials, err := cred.Load(a.store)
@@ -87,14 +97,11 @@ func (a *app) client() (*api.Client, *cred.Credentials, error) {
 // answers with exactly the credential's own scope, which then fills every gap
 // a missing `.xecret.yaml` leaves. One extra request per invocation, and CI
 // needs zero configuration beyond the token itself.
-func (a *app) serviceClient(token string) (*api.Client, *cred.Credentials, error) {
+func (a *app) serviceClient(ctx context.Context, token string) (*api.Client, *cred.Credentials, error) {
 	base := apiBase("")
 	client := api.New(base, token, userAgent())
 
 	if a.tokenScope == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		self, err := client.TokenSelf(ctx)
 		if err != nil {
 			return nil, nil, err

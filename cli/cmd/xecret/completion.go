@@ -131,16 +131,20 @@ var completionTree = []completionCommand{
 				Flags: withHelp("--json", "--kind")},
 			{Name: "revoke", Description: "Revoke one credential", Flags: withHelp("--kind", "--yes")},
 		}},
-	{Name: "cache", Description: "Manage the encrypted offline cache", Subcommands: []completionCommand{
-		{Name: "clear", Description: "Remove every offline copy and its key"},
-	}},
+	{Name: "cache", Description: "Manage the encrypted offline cache",
+		Flags: withHelp(),
+		Subcommands: []completionCommand{
+			{Name: "clear", Description: "Remove every offline copy and its key"},
+		}},
 	{Name: "doctor", Description: "Check this machine setup", Flags: withHelp("--json")},
 	{Name: "upgrade", Description: "Check whether a newer CLI is published", Flags: withHelp("--json")},
-	{Name: "completion", Description: "Print a shell completion script", Subcommands: []completionCommand{
-		{Name: "bash", Description: "bash completion"},
-		{Name: "zsh", Description: "zsh completion"},
-		{Name: "fish", Description: "fish completion"},
-	}},
+	{Name: "completion", Description: "Print a shell completion script",
+		Flags: withHelp(),
+		Subcommands: []completionCommand{
+			{Name: "bash", Description: "bash completion"},
+			{Name: "zsh", Description: "zsh completion"},
+			{Name: "fish", Description: "fish completion"},
+		}},
 	{Name: "version", Description: "Print version information"},
 	{Name: "help", Description: "Show help"},
 }
@@ -262,7 +266,11 @@ func zshCompletion() string {
 	}
 	b.WriteString("  )\n\n")
 	b.WriteString("  if (( CURRENT == 2 )); then\n")
-	b.WriteString("    _describe -t commands 'xecret command' commands\n")
+	b.WriteString("    if [[ ${words[2]} == -* ]]; then\n")
+	b.WriteString("      _values 'flag' " + strings.Join(quoteAll(rootFlags), " ") + "\n")
+	b.WriteString("    else\n")
+	b.WriteString("      _describe -t commands 'xecret command' commands\n")
+	b.WriteString("    fi\n")
 	b.WriteString("    return\n")
 	b.WriteString("  fi\n\n")
 	b.WriteString("  local -a subcommands\n")
@@ -336,12 +344,21 @@ func fishCompletion() string {
 	b.WriteString("complete -c xecret -n '__fish_seen_subcommand_from import' -F\n")
 
 	// One condition per command, so no command is offered a flag it does not
-	// define. The subcommand rules are additive on top of the parent's, which
-	// is what a shell user experiences as "the flags that work here".
+	// define.
+	//
+	// The parent's rule has to exclude its own subcommands. `__fish_seen_subcommand_from`
+	// matches anywhere on the line, so a bare `-n '…from secrets'` stays true
+	// inside `secrets set` too — and would go on offering `--json`, which
+	// `secrets set` does not define. bash and zsh get this for free because
+	// their most-specific case arm wins; fish evaluates every rule.
 	for _, command := range completionTree {
+		notASubcommand := ""
+		if names := subcommandNames(command); len(names) > 0 {
+			notASubcommand = "; and not __fish_seen_subcommand_from " + strings.Join(names, " ")
+		}
 		for _, flagName := range command.Flags {
-			b.WriteString(fmt.Sprintf("complete -c xecret -n '__fish_seen_subcommand_from %s' %s\n",
-				command.Name, fishFlag(flagName)))
+			b.WriteString(fmt.Sprintf("complete -c xecret -n '__fish_seen_subcommand_from %s%s' %s\n",
+				command.Name, notASubcommand, fishFlag(flagName)))
 		}
 		for _, sub := range command.Subcommands {
 			for _, flagName := range sub.Flags {
@@ -350,6 +367,10 @@ func fishCompletion() string {
 					command.Name, sub.Name, fishFlag(flagName)))
 			}
 		}
+	}
+	// Before any command is named, the root flags.
+	for _, flagName := range rootFlags {
+		b.WriteString(fmt.Sprintf("complete -c xecret -n '__fish_use_subcommand' %s\n", fishFlag(flagName)))
 	}
 	return b.String()
 }

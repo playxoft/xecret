@@ -11,8 +11,11 @@ import (
 )
 
 const tokensUsage = `Usage:
-  xecret tokens [list]           [--kind cli|service] [--json]
+  xecret tokens list             [--kind cli|service] [--json]
   xecret tokens revoke <ID>      [--kind cli|service] [--yes]
+
+'xecret tokens' with no argument prints this. With a flag first — 'xecret tokens
+--json' — it lists, as the other resource commands do.
 
 'cli' tokens are devices — the credentials 'xecret login' writes. The listing is
 your own devices only: a CLI token acts as its user and confers nothing of its

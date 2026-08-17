@@ -186,7 +186,7 @@ xecret export [--format env|json|yaml|shell|docker] [-o FILE] [--force]
 xecret audit [--action A] [--project P] [--environment E] [--outcome success|denied|error]
              [--since 24h|7d|TIMESTAMP] [--until 1h|7d|TIMESTAMP] [--limit N] [--json]
 xecret members [--json]
-xecret tokens [list] [--kind cli|service] [--json]
+xecret tokens list [--kind cli|service] [--json]
 xecret tokens revoke ID --kind cli|service [--yes]
 ```
 

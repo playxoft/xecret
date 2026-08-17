@@ -18,14 +18,6 @@ import (
 	"github.com/playxoft/xecret/cli/internal/keyring"
 )
 
-// cmdDoctor answers "why is this machine not doing what I expect?" without
-// anybody having to describe their setup down a support channel.
-//
-// Every check is read-only and none of them prints a credential: the keyring
-// probe writes and deletes a value of its own rather than reading the stored
-// token, the config check prints slugs, and the reachability check calls the
-// one endpoint that needs no authentication. What the output does contain is
-// paths, hostnames and a decision trail — enough to paste into an issue.
 // probeTimeout is the budget for one network probe. Each gets its own: sharing
 // a single deadline across both meant a slow server could spend it all on the
 // reachability check and leave the credential check to fail instantly with
@@ -33,6 +25,16 @@ import (
 // which is the one diagnosis that sends a user with a working credential off to
 // re-authenticate.
 const probeTimeout = 15 * time.Second
+
+// credentialRefused reports whether err is the server *judging* the credential
+// rather than failing to answer about it. Only 401 and 403 are a judgement: a
+// 429, a 500 or a dropped connection say nothing about whether the token is
+// still good, and telling someone to log in again over one of those is the
+// mistake this whole check exists to avoid.
+func credentialRefused(err error) bool {
+	apiErr, ok := api.AsError(err)
+	return ok && (apiErr.Status == 401 || apiErr.Status == 403)
+}
 
 // doctorCheck is one verdict. The JSON carries these rather than only the raw
 // values, because the question `xecret doctor --json | jq` exists to answer is
@@ -66,6 +68,14 @@ func glyph(status string) string {
 	}
 }
 
+// cmdDoctor answers "why is this machine not doing what I expect?" without
+// anybody having to describe their setup down a support channel.
+//
+// Every check is read-only and none of them prints a credential: the keyring
+// probe writes and deletes a value of its own rather than reading the stored
+// token, the config check prints slugs, and the reachability check calls the
+// one endpoint that needs no authentication. What the output does contain is
+// paths, hostnames and a decision trail — enough to paste into an issue.
 func cmdDoctor(args []string) error {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	jsonMode := flags.Bool("json", false, "machine-readable output")
@@ -137,30 +147,35 @@ func cmdDoctor(args []string) error {
 	}
 
 	// ── Does the credential still work? ────────────────────────────────────
+	// Only a 401 or a 403 means the credential was judged and found wanting.
+	// Everything else — a timeout, a 429, a 500 — leaves the question open, and
+	// is reported as unanswered rather than as a revocation. This applies to
+	// the service-token path too: the introspection request that a.clientFor
+	// makes is a network call like any other, and it fails the same ways.
 	if credentials != nil || serviceToken {
 		credCtx, cancelCred := context.WithTimeout(context.Background(), probeTimeout)
-		client, resolved, clientErr := a.client()
+		client, resolved, clientErr := a.clientFor(credCtx)
 		switch {
+		case clientErr != nil && credentialRefused(clientErr):
+			say(statusFail, "credentialAccepted", "the credential was refused: %v", clientErr)
 		case clientErr != nil:
-			say(statusFail, "credentialAccepted", "credential unusable: %v", clientErr)
+			say(statusWarn, "credentialAccepted",
+				"could not check the credential — the server did not answer: %v", clientErr)
 		case serviceToken:
 			pin := a.tokenScope
 			say(statusOK, "credentialAccepted", "service token %q is live, pinned to %s/%s/%s",
 				pin.Token.Name, pin.Organization.Slug, pin.Project.Slug, pin.Environment.Slug)
 		default:
-			_, meErr := client.FetchMe(credCtx)
-			switch {
+			switch _, meErr := client.FetchMe(credCtx); {
 			case meErr == nil:
 				say(statusOK, "credentialAccepted", "credential accepted by %s", resolved.APIURL)
-			case api.IsNetworkError(meErr) || errors.Is(meErr, context.DeadlineExceeded):
-				// The credential was never judged. Saying it was refused here
-				// would be a guess, and the wrong one costs a re-login.
-				say(statusWarn, "credentialAccepted",
-					"could not check the credential — the server did not answer: %v", meErr)
-			default:
+			case credentialRefused(meErr):
 				say(statusFail, "credentialAccepted",
 					"the stored credential was refused: %v — run 'xecret login' again, it may have been revoked from the dashboard",
 					meErr)
+			default:
+				say(statusWarn, "credentialAccepted",
+					"could not check the credential — the server did not answer: %v", meErr)
 			}
 		}
 		cancelCred()

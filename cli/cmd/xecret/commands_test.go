@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"github.com/playxoft/xecret/cli/internal/api"
+	"github.com/playxoft/xecret/cli/internal/buildinfo"
+	"github.com/playxoft/xecret/cli/internal/cred"
 )
 
 func TestResolveSinceReadsDurationsAndTimestamps(t *testing.T) {
@@ -70,13 +73,20 @@ func TestResolveUntilTakesTheSameSpellingsAsSince(t *testing.T) {
 			t.Errorf("%q: --since %v, --until %v", value, sinceErr, untilErr)
 			continue
 		}
-		if _, err := time.Parse(time.RFC3339, until); err != nil {
-			t.Errorf("--until %q produced %q, which is not RFC 3339", value, until)
+		sinceAt, err := time.Parse(time.RFC3339, since)
+		if err != nil {
+			t.Errorf("--since %q produced %q, which is not RFC 3339", value, since)
+			continue
 		}
-		// Both anchor at now, so a relative value gives the same instant to the
-		// minute; an absolute one is identical.
-		if len(since) != len(until) {
-			t.Errorf("--since %q = %q but --until = %q", value, since, until)
+		untilAt, err := time.Parse(time.RFC3339, until)
+		if err != nil {
+			t.Errorf("--until %q produced %q, which is not RFC 3339", value, until)
+			continue
+		}
+		// Both anchor at now, so the same input names the same instant — to the
+		// minute for a relative value, exactly for an absolute one.
+		if drift := sinceAt.Sub(untilAt); drift > time.Minute || drift < -time.Minute {
+			t.Errorf("%q: --since = %q but --until = %q, %v apart", value, since, until, drift)
 		}
 	}
 
@@ -94,6 +104,36 @@ func TestResolveUntilTakesTheSameSpellingsAsSince(t *testing.T) {
 	}
 	if _, err := resolveUntil("whenever"); err == nil {
 		t.Error("an unparseable --until must be refused")
+	}
+}
+
+// The server collapses a backwards range to a single instant, so an empty
+// answer to an impossible question reads exactly like an empty log.
+func TestCheckWindowRefusesAnImpossibleRange(t *testing.T) {
+	hourAgo, err := resolveSince("1h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dayAgo, err := resolveSince("24h")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := checkWindow(dayAgo, hourAgo); err != nil {
+		t.Errorf("a window from 24h ago to 1h ago is ordinary: %v", err)
+	}
+	if err := checkWindow(dayAgo, ""); err != nil {
+		t.Errorf("an absent --until means now, which is after 24h ago: %v", err)
+	}
+	if err := checkWindow("", ""); err != nil {
+		t.Errorf("two absent edges are the server's own default: %v", err)
+	}
+	if err := checkWindow(hourAgo, dayAgo); err == nil {
+		t.Error("--since 1h --until 24h ends before it begins and must be refused")
+	}
+	// An absolute timestamp escapes the relative guards entirely.
+	if err := checkWindow("2099-01-01T00:00:00Z", ""); err == nil {
+		t.Error("a --since in the future must be refused, not answered with 'no events'")
 	}
 }
 
@@ -164,6 +204,32 @@ func TestParseFlagsStillRejectsUnknownFlags(t *testing.T) {
 
 	if _, err := parseFlags(flags, []string{"API_KEY", "--nonsense"}); err == nil {
 		t.Error("an unknown flag must fail rather than be swallowed as a positional")
+	}
+}
+
+// Both `doctor` and `upgrade` name the deployment this machine talks to, and
+// `upgrade` turns it into a command the user is told to pipe into a shell. The
+// order the two agree on is the one every other command uses.
+func TestResolvedAPIBaseOrdersItsSources(t *testing.T) {
+	t.Setenv("XECRET_API_URL", "")
+
+	base, reason := resolvedAPIBase(nil)
+	if base != buildinfo.DefaultAPIURL || reason != "compiled-in default" {
+		t.Errorf("no credential, no env = %q (%s)", base, reason)
+	}
+
+	stored := &cred.Credentials{APIURL: "https://vault.acme.internal"}
+	base, reason = resolvedAPIBase(stored)
+	if base != "https://vault.acme.internal" || reason != "stored with the credential at login" {
+		t.Errorf("a self-hoster's stored URL = %q (%s)", base, reason)
+	}
+
+	// The environment overrides the stored credential, and a trailing slash is
+	// stripped so the caller can concatenate a path onto it.
+	t.Setenv("XECRET_API_URL", "https://staging.acme.internal/")
+	base, reason = resolvedAPIBase(stored)
+	if base != "https://staging.acme.internal" || reason != "from XECRET_API_URL" {
+		t.Errorf("XECRET_API_URL = %q (%s)", base, reason)
 	}
 }
 
@@ -325,6 +391,12 @@ func TestSubcommandKeepsTheBareListing(t *testing.T) {
 func TestWriteSecretDocumentNarrowsAFileItOverwrites(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(path, []byte("OLD=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Explicitly, because os.WriteFile's mode is masked by the ambient umask —
+	// under `umask 077` the file would already be 0600 and this test would
+	// prove nothing.
+	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -548,11 +620,26 @@ func TestCompletionFlagsAreScopedToTheirCommand(t *testing.T) {
 
 	// fish had one unconditional rule per common flag, which is exactly the
 	// shape this test exists to prevent coming back.
-	if strings.Contains(fishCompletion(), "\ncomplete -c xecret -l project\n") {
+	fish := fishCompletion()
+	if strings.Contains(fish, "\ncomplete -c xecret -l project\n") {
 		t.Error("fish offers --project for every command, including those that do not define it")
 	}
 	if !strings.Contains(bashCompletion(), `"secrets get") flags=`) {
 		t.Error("bash does not answer flags per subcommand")
+	}
+
+	// __fish_seen_subcommand_from matches anywhere on the line, so a parent's
+	// rule stays live inside its own subcommands unless it excludes them —
+	// which is how `secrets set --<TAB>` came to offer `secrets`' own --json.
+	for _, command := range completionTree {
+		if len(command.Flags) == 0 || len(command.Subcommands) == 0 {
+			continue
+		}
+		bare := fmt.Sprintf("-n '__fish_seen_subcommand_from %s'", command.Name)
+		if strings.Contains(fish, bare) {
+			t.Errorf("fish offers %q's own flags inside its subcommands — the rule does not exclude %v",
+				command.Name, subcommandNames(command))
+		}
 	}
 }
 

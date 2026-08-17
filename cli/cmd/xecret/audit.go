@@ -59,6 +59,9 @@ func cmdAudit(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := checkWindow(from, to); err != nil {
+		return err
+	}
 
 	a := newApp(*jsonMode)
 	client, credentials, err := a.client()
@@ -163,6 +166,43 @@ func resolveWindowEdge(flagName, value string) (string, error) {
 func relativeWindowError(flagName, value string) error {
 	return fmt.Errorf("%s counts backwards from now, so %q must be positive and no longer than %d days",
 		flagName, value, maxWindowDays)
+}
+
+// checkWindow refuses a range that cannot contain anything, rather than letting
+// the server answer it honestly.
+//
+// clampAuditRange collapses a backwards range to a single instant, so `--since
+// 1h --until 24h` and `--since 2030-01-01T00:00:00Z` both come back empty and
+// are printed as "No matching events" — a sentence that reads as a fact about
+// the log when it is really a fact about the question. An empty edge means "the
+// server decides", and now is the far edge whenever --until is absent.
+func checkWindow(from, to string) error {
+	if from == "" {
+		return nil
+	}
+	start, err := time.Parse(time.RFC3339, from)
+	if err != nil {
+		return nil
+	}
+
+	end := time.Now()
+	if to != "" {
+		parsed, parseErr := time.Parse(time.RFC3339, to)
+		if parseErr != nil {
+			return nil
+		}
+		end = parsed
+	}
+
+	if start.After(end) {
+		if to == "" {
+			return fmt.Errorf("--since %s is in the future, so the window ends before it begins",
+				shortTime(from))
+		}
+		return fmt.Errorf("--since %s is after --until %s, so the window is empty",
+			shortTime(from), shortTime(to))
+	}
+	return nil
 }
 
 // actorLabel names who did it. The label the server resolved when it has one —
