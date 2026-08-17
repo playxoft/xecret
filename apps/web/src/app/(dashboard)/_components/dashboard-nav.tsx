@@ -140,6 +140,12 @@ export function useDashboardNav({
             href: appPath.org(orgSlug),
             label: 'Projects',
             icon: <BoxIcon />,
+            // Chords are the initial of the label, which is the only mapping
+            // nobody has to memorise. They are unmodified single letters, so
+            // see `useNavShortcuts` for the (deliberately long) list of
+            // situations in which it declines to act on one — chiefly, any
+            // time the keystroke could have been meant for a text field.
+            shortcut: ['P'],
             // Without this every page beneath `/app/{org}` would highlight
             // "Projects", because they all share its prefix.
             exact: true,
@@ -155,6 +161,7 @@ export function useDashboardNav({
             href: appPath.members(orgSlug),
             label: 'Members',
             icon: <UsersIcon />,
+            shortcut: ['M'],
           },
           ...(showAdminPages
             ? [
@@ -162,11 +169,13 @@ export function useDashboardNav({
                   href: appPath.tokens(orgSlug),
                   label: 'Tokens',
                   icon: <TerminalIcon />,
+                  shortcut: ['T'],
                 },
                 {
                   href: appPath.audit(orgSlug),
                   label: 'Audit',
                   icon: <FileTextIcon />,
+                  shortcut: ['A'],
                 },
               ]
             : []),
@@ -177,6 +186,10 @@ export function useDashboardNav({
             // where they sit is how someone changes the wrong one.
             label: 'Organisation settings',
             icon: <SettingsIcon />,
+            // `S` rather than `O`: it is the initial of the word people
+            // actually say for this page, and `O` is nobody's mnemonic for
+            // "organisation settings".
+            shortcut: ['S'],
           },
         ],
       },
