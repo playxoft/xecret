@@ -78,12 +78,18 @@ func cmdUpgrade(args []string) error {
 		a.printer.Warnf("xecret %s is out of date — %s is available.", buildinfo.Version, latest.TagName)
 	}
 
+	// The installer is served by whichever deployment this machine talks to,
+	// resolved exactly as `doctor` reports it. Printing the compiled-in default
+	// would send a self-hoster to an origin they may not be permitted to reach,
+	// for a binary built against somebody else's server.
+	installBase, _ := resolvedAPIBase(a.storedCredentials())
+
 	fmt.Fprintln(a.printer.Out, "")
 	fmt.Fprintln(a.printer.Out, "  # Homebrew")
 	fmt.Fprintln(a.printer.Out, "  brew upgrade playxoft/tap/xecret")
 	fmt.Fprintln(a.printer.Out, "")
 	fmt.Fprintln(a.printer.Out, "  # anywhere else — the installer verifies the SHA-256 before unpacking")
-	fmt.Fprintln(a.printer.Out, "  curl -fsSL "+buildinfo.DefaultAPIURL+"/install.sh | sh")
+	fmt.Fprintln(a.printer.Out, "  curl -fsSL "+installBase+"/install.sh | sh")
 	fmt.Fprintln(a.printer.Out, "")
 	a.printer.Infof("Release notes: %s", latest.HTMLURL)
 	return nil

@@ -52,7 +52,7 @@ no network change and revokes nothing — switching back is another 'use'.
 `
 
 func cmdProjects(args []string) error {
-	switch subcommand(args) {
+	switch subcommand(args, "list") {
 	case "list":
 		return projectsList(listArgs(args))
 	case "create":
@@ -68,7 +68,7 @@ func cmdProjects(args []string) error {
 }
 
 func cmdEnvironments(args []string) error {
-	switch subcommand(args) {
+	switch subcommand(args, "list") {
 	case "list":
 		return environmentsList(listArgs(args))
 	case "create":
@@ -84,7 +84,7 @@ func cmdEnvironments(args []string) error {
 }
 
 func cmdOrgs(args []string) error {
-	switch subcommand(args) {
+	switch subcommand(args, "list") {
 	case "list":
 		return orgsList(listArgs(args))
 	case "use":
@@ -97,20 +97,26 @@ func cmdOrgs(args []string) error {
 	}
 }
 
-// subcommand classifies the first argument. No argument, or one that is a
-// flag, means the listing this command has always been.
-func subcommand(args []string) string {
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
-			return "help"
-		}
-		return "list"
+// subcommand classifies the first argument, shared by every command that has
+// subcommands so the rule is one rule rather than one per switch.
+//
+// A leading flag always means the listing — `xecret projects --json`, and
+// equally `xecret tokens --json`, which used to be an "unknown subcommand"
+// purely because that command hand-rolled its own dispatch. `bare` is what an
+// empty argument list means, and differs on purpose: for projects,
+// environments and orgs the bare form has always been the listing, while
+// `secrets` and `tokens` print their usage, which is long enough to be worth
+// reading before anything is written.
+func subcommand(args []string, bare string) string {
+	if len(args) == 0 {
+		return bare
 	}
 	switch args[0] {
-	case "list", "create", "delete", "use":
-		return args[0]
-	case "help":
+	case "help", "--help", "-h":
 		return "help"
+	}
+	if strings.HasPrefix(args[0], "-") {
+		return "list"
 	}
 	return args[0]
 }
@@ -507,15 +513,19 @@ func cmdMembers(args []string) error {
 	return nil
 }
 
-// confirmDestructive asks the user to type the slug back. A guard against a
+// confirmDestructive asks the user to type the name back. A guard against a
 // misclick, not against an attacker — anyone who can run the command can also
-// read the slug. Refused outright without a terminal, so a script that forgot
+// read the name. Refused outright without a terminal, so a script that forgot
 // --yes cannot hang on a prompt nobody will answer.
+//
+// The terminal test is on *stdin*, the stream the answer is read from. Stdout
+// is where the caller's redirection usually lands, and it says nothing about
+// whether anybody is there to type.
 func confirmDestructive(a *app, yes bool, expected, question string) error {
 	if yes {
 		return nil
 	}
-	if !output.StdoutIsTerminal() {
+	if !output.StdinIsTerminal() {
 		return errors.New("refusing to delete without confirmation — pass --yes in scripts")
 	}
 	fmt.Fprintf(a.printer.Err, "%s Type %q to confirm: ", question, expected)

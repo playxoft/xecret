@@ -28,8 +28,8 @@ func cmdAudit(args []string) error {
 	projectFlag := flags.String("project", "", "restrict to one project")
 	envFlag := flags.String("environment", "", "restrict to one environment (needs --project)")
 	outcome := flags.String("outcome", "", "success | denied | error")
-	since := flags.String("since", "", "how far back, e.g. 24h, 7d (or an RFC 3339 timestamp)")
-	until := flags.String("until", "", "an RFC 3339 timestamp; defaults to now")
+	since := flags.String("since", "", "where the window starts, e.g. 24h, 7d (or an RFC 3339 timestamp)")
+	until := flags.String("until", "", "where the window ends, same spellings as --since; defaults to now")
 	limit := flags.Int("limit", 50, "how many events to read")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -51,6 +51,14 @@ func cmdAudit(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Both edges go through the same resolver. Forwarding --until raw meant the
+	// two flags accepted different syntaxes: a value --since re-formats into
+	// RFC 3339 (an offset timestamp, "7d") reached the server verbatim as
+	// --until and was rejected by a schema that only takes UTC RFC 3339.
+	to, err := resolveUntil(*until)
+	if err != nil {
+		return err
+	}
 
 	a := newApp(*jsonMode)
 	client, credentials, err := a.client()
@@ -67,7 +75,7 @@ func cmdAudit(args []string) error {
 		EnvironmentSlug: *envFlag,
 		Outcome:         *outcome,
 		From:            from,
-		To:              *until,
+		To:              to,
 		Limit:           *limit,
 	})
 	if err != nil {
@@ -104,10 +112,25 @@ func cmdAudit(args []string) error {
 	return nil
 }
 
-// resolveSince turns "24h" or "7d" into a timestamp, and passes an RFC 3339
-// value through untouched. Empty means "let the server decide", which is its
-// own ninety-day clamp.
-func resolveSince(value string) (string, error) {
+// maxWindowDays bounds a relative window. The multiplication that turns days
+// into hours overflows time.Duration a little past a century, and an overflowed
+// duration negates — which would silently produce an edge in the *future* and
+// an empty result reported as "no matching events". The server clamps to ninety
+// days anyway, so anything beyond ten years is already a typo.
+const maxWindowDays = 3650
+
+// resolveSince turns "24h" or "7d" into a timestamp, and normalises an RFC 3339
+// value to UTC. Empty means "let the server decide", which is its own
+// ninety-day clamp.
+func resolveSince(value string) (string, error) { return resolveWindowEdge("--since", value) }
+
+// resolveUntil reads the far edge of the window with the same grammar, so a
+// spelling that works for one flag works for the other. A relative value counts
+// backwards from now, as it does for --since: `--until 1h` means "up to an hour
+// ago".
+func resolveUntil(value string) (string, error) { return resolveWindowEdge("--until", value) }
+
+func resolveWindowEdge(flagName, value string) (string, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
 		return "", nil
@@ -116,18 +139,30 @@ func resolveSince(value string) (string, error) {
 	// A day is not a unit time.ParseDuration knows, and it is the one people
 	// reach for here.
 	if rest, found := strings.CutSuffix(trimmed, "d"); found {
-		days, err := time.ParseDuration(rest + "h")
-		if err == nil {
+		if days, err := time.ParseDuration(rest + "h"); err == nil {
+			if days <= 0 || days > maxWindowDays*time.Hour {
+				return "", relativeWindowError(flagName, value)
+			}
 			return time.Now().Add(-days * 24).UTC().Format(time.RFC3339), nil
 		}
 	}
 	if duration, err := time.ParseDuration(trimmed); err == nil {
+		// A negative duration would put the edge ahead of now, and the server
+		// would answer honestly with nothing at all.
+		if duration <= 0 {
+			return "", relativeWindowError(flagName, value)
+		}
 		return time.Now().Add(-duration).UTC().Format(time.RFC3339), nil
 	}
 	if parsed, err := time.Parse(time.RFC3339, trimmed); err == nil {
 		return parsed.UTC().Format(time.RFC3339), nil
 	}
-	return "", fmt.Errorf("could not read %q as a duration (24h, 7d) or an RFC 3339 timestamp", value)
+	return "", fmt.Errorf("could not read %s %q as a duration (24h, 7d) or an RFC 3339 timestamp", flagName, value)
+}
+
+func relativeWindowError(flagName, value string) error {
+	return fmt.Errorf("%s counts backwards from now, so %q must be positive and no longer than %d days",
+		flagName, value, maxWindowDays)
 }
 
 // actorLabel names who did it. The label the server resolved when it has one —

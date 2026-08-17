@@ -22,8 +22,8 @@ import (
 // for. That split is what makes `xecret projects --json | jq` work while the
 // human messages stay visible on the terminal.
 type Printer struct {
-	Out   io.Writer
-	Err   io.Writer
+	Out io.Writer
+	Err io.Writer
 	// JSON switches result rendering from tables to one JSON document.
 	JSON  bool
 	color bool
@@ -51,8 +51,24 @@ func stdoutIsTerminal() bool {
 }
 
 // StdoutIsTerminal reports whether stdout is a terminal. Exposed for commands
-// that change behaviour on it — the pull warning, the secrets prompt.
+// that change behaviour on where their output lands — the pull warning.
 func StdoutIsTerminal() bool { return stdoutIsTerminal() }
+
+// StdinIsTerminal reports whether stdin is a terminal — whether there is a
+// person there to answer a prompt.
+//
+// Deliberately separate from StdoutIsTerminal: the two streams are redirected
+// independently, and a confirmation is only answerable if the stream it is
+// *read* from is a terminal. Testing stdout instead would refuse to prompt
+// under `xecret projects delete web > log` with a user sitting right there,
+// and would accept a piped line as consent under `echo web | xecret …`.
+func StdinIsTerminal() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
 
 const (
 	ansiReset = "\x1b[0m"

@@ -11,7 +11,7 @@ import (
 )
 
 const tokensUsage = `Usage:
-  xecret tokens list             [--kind cli|service] [--json]
+  xecret tokens [list]           [--kind cli|service] [--json]
   xecret tokens revoke <ID>      [--kind cli|service] [--yes]
 
 'cli' tokens are devices — the credentials 'xecret login' writes. The listing is
@@ -29,14 +29,9 @@ Create them at <server>/settings/tokens.
 `
 
 func cmdTokens(args []string) error {
-	if len(args) == 0 {
-		_, _ = io.WriteString(os.Stdout, tokensUsage)
-		return nil
-	}
-
-	switch args[0] {
+	switch subcommand(args, "help") {
 	case "list":
-		return tokensList(args[1:])
+		return tokensList(listArgs(args))
 	case "revoke":
 		return tokensRevoke(args[1:])
 	case "create":
@@ -44,7 +39,7 @@ func cmdTokens(args []string) error {
 		// a design decision and the fix is a URL.
 		return errors.New(
 			"service tokens are created in the dashboard, under Settings → Tokens — minting one requires a browser session")
-	case "help", "--help", "-h":
+	case "help":
 		_, _ = io.WriteString(os.Stdout, tokensUsage)
 		return nil
 	default:

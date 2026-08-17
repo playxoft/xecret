@@ -164,17 +164,48 @@ func cmdExport(args []string) error {
 		return err
 	}
 
-	// 0600 before anything is in it: created world-readable and narrowed
-	// afterwards would leave a window in which the file is both present and
-	// readable by every account on the machine.
-	if err := os.WriteFile(path, document, 0o600); err != nil {
-		return fmt.Errorf("could not write %s", path)
+	if err := writeSecretDocument(path, document); err != nil {
+		return err
 	}
 
 	a.printer.Successf("Wrote %s/%s to %s (mode 0600).", resolved.Project, resolved.Environment, path)
 	a.printer.Warnf("those secrets are now outside xecret's control: the file is not encrypted, it outlives")
 	a.printer.Warnf("this session, backup and sync tools will copy it, and no grant can be revoked after the")
 	a.printer.Warnf("fact. Add it to .gitignore, and delete it when you are done.")
+	return nil
+}
+
+// writeSecretDocument writes plaintext secrets to a file that is mode 0600 by
+// the time it holds anything — whether or not it already existed.
+//
+// os.WriteFile is not enough: it passes its permission argument to open(2),
+// which applies it *only when the file is created*. An `export --force` over a
+// .env left at 0644 by `xecret pull > .env` would therefore write every
+// decrypted secret into a file readable by every account on the machine, under
+// a message claiming mode 0600.
+//
+// The ordering is deliberate. O_TRUNC empties the file at open, so the moment
+// between opening and the chmod holds nothing; the secrets are written only
+// once 0600 is settled. If the chmod fails there is nothing to salvage — the
+// old contents are already gone — so the empty file is removed rather than
+// left behind as a permissive shell waiting to be filled.
+func writeSecretDocument(path string, document []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("could not write %s", path)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("could not restrict %s to mode 0600, so nothing was written to it", path)
+	}
+	if _, err := file.Write(document); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("could not write %s", path)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("could not write %s", path)
+	}
 	return nil
 }
 
@@ -240,10 +271,10 @@ func cmdPull(args []string) error {
 	}
 
 	if *outPath != "" {
-		if err := os.WriteFile(*outPath, document, 0o600); err != nil {
-			return fmt.Errorf("could not write %s", *outPath)
+		if err := writeSecretDocument(*outPath, document); err != nil {
+			return err
 		}
-		a.printer.Warnf("wrote plaintext secrets to %s — they are now outside xecret's control. Delete the file when done.", *outPath)
+		a.printer.Warnf("wrote plaintext secrets to %s (mode 0600) — they are now outside xecret's control. Delete the file when done.", *outPath)
 		return nil
 	}
 

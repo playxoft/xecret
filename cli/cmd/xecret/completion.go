@@ -40,53 +40,102 @@ type completionCommand struct {
 	// them as a separator, and no apostrophes, because the generated scripts
 	// quote with single quotes.
 	Description string
+	// Flags are the ones *this* command defines, and nothing else. Every
+	// command in this CLI builds its own FlagSet, so a flag offered where it is
+	// not defined completes to `flag provided but not defined: -project` — a
+	// completion that actively breaks the command it was helping to type.
+	Flags       []string
 	Subcommands []completionCommand
 }
 
-// completionTree mirrors `dispatch` and the subcommand switches beneath it.
+// withHelp adds --help, which the flag package answers for every command that
+// parses flags at all.
+func withHelp(names ...string) []string {
+	return append(names, "--help")
+}
+
+// scoped adds the two flags that override .xecret.yaml, for the commands that
+// read or write secrets in one environment.
+func scoped(names ...string) []string {
+	return withHelp(append(names, "--project", "--environment")...)
+}
+
+// completionTree mirrors `dispatch` and the subcommand switches beneath it —
+// names, descriptions and each command's own flags.
 var completionTree = []completionCommand{
-	{Name: "login", Description: "Authenticate this device via the browser"},
-	{Name: "logout", Description: "Revoke this device and wipe the offline cache"},
-	{Name: "whoami", Description: "Show which account and organisation this device uses"},
-	{Name: "init", Description: "Choose a project and environment for this directory"},
-	{Name: "orgs", Description: "List your organisations, or switch between them", Subcommands: []completionCommand{
-		{Name: "list", Description: "List your organisations"},
-		{Name: "use", Description: "Choose which organisation commands address"},
-	}},
-	{Name: "projects", Description: "List, create and delete projects", Subcommands: []completionCommand{
-		{Name: "list", Description: "List projects"},
-		{Name: "create", Description: "Create a project and its default environments"},
-		{Name: "delete", Description: "Soft-delete a project"},
-	}},
-	{Name: "environments", Description: "List, create and delete environments", Subcommands: []completionCommand{
-		{Name: "list", Description: "List environments"},
-		{Name: "create", Description: "Create an environment and its key"},
-		{Name: "delete", Description: "Soft-delete an environment"},
-	}},
-	{Name: "secrets", Description: "Read and write secrets", Subcommands: []completionCommand{
-		{Name: "list", Description: "Masked listing"},
-		{Name: "get", Description: "Show metadata, or reveal a value with --plain"},
-		{Name: "set", Description: "Write a value as a new version"},
-		{Name: "annotate", Description: "Change name, note or type without a new version"},
-		{Name: "versions", Description: "Version history, metadata only"},
-		{Name: "restore", Description: "Re-append an earlier version as the current one"},
-		{Name: "delete", Description: "Soft-delete a secret"},
-	}},
-	{Name: "import", Description: "Send a .env, JSON, YAML or shell file to the server"},
-	{Name: "pull", Description: "Print every secret in a chosen format"},
-	{Name: "export", Description: "Write every secret to a file"},
-	{Name: "run", Description: "Run a command with secrets injected"},
-	{Name: "audit", Description: "Read the organisation audit log"},
-	{Name: "members", Description: "List who is in the organisation"},
-	{Name: "tokens", Description: "List and revoke credentials", Subcommands: []completionCommand{
-		{Name: "list", Description: "List devices and service tokens"},
-		{Name: "revoke", Description: "Revoke one credential"},
-	}},
+	{Name: "login", Description: "Authenticate this device via the browser",
+		Flags: withHelp("--api-url", "--name")},
+	{Name: "logout", Description: "Revoke this device and wipe the offline cache",
+		Flags: withHelp()},
+	{Name: "whoami", Description: "Show which account and organisation this device uses",
+		Flags: withHelp("--json")},
+	{Name: "init", Description: "Choose a project and environment for this directory",
+		Flags: withHelp("--project", "--environment", "--force")},
+	{Name: "orgs", Description: "List your organisations, or switch between them",
+		// The bare form is the listing, so the bare form takes the listing's flags.
+		Flags: withHelp("--json"),
+		Subcommands: []completionCommand{
+			{Name: "list", Description: "List your organisations", Flags: withHelp("--json")},
+			{Name: "use", Description: "Choose which organisation commands address", Flags: withHelp()},
+		}},
+	{Name: "projects", Description: "List, create and delete projects",
+		Flags: withHelp("--json"),
+		Subcommands: []completionCommand{
+			{Name: "list", Description: "List projects", Flags: withHelp("--json")},
+			{Name: "create", Description: "Create a project and its default environments",
+				Flags: withHelp("--json", "--slug", "--description")},
+			{Name: "delete", Description: "Soft-delete a project", Flags: withHelp("--yes")},
+		}},
+	{Name: "environments", Description: "List, create and delete environments",
+		Flags: withHelp("--json", "--project"),
+		Subcommands: []completionCommand{
+			{Name: "list", Description: "List environments", Flags: withHelp("--json", "--project")},
+			{Name: "create", Description: "Create an environment and its key",
+				Flags: withHelp("--json", "--slug", "--production", "--project")},
+			{Name: "delete", Description: "Soft-delete an environment",
+				Flags: withHelp("--yes", "--project")},
+		}},
+	{Name: "secrets", Description: "Read and write secrets",
+		// The bare form prints usage, but a leading flag means the listing —
+		// so these are the listing's flags.
+		Flags: scoped("--json"),
+		Subcommands: []completionCommand{
+			{Name: "list", Description: "Masked listing", Flags: scoped("--json")},
+			{Name: "get", Description: "Show metadata, or reveal a value with --plain",
+				Flags: scoped("--json", "--plain", "--version")},
+			{Name: "set", Description: "Write a value as a new version",
+				Flags: scoped("--type", "--note", "--from-file", "--generate")},
+			{Name: "annotate", Description: "Change name, note or type without a new version",
+				Flags: scoped("--note", "--type", "--rename")},
+			{Name: "versions", Description: "Version history, metadata only", Flags: scoped("--json")},
+			{Name: "restore", Description: "Re-append an earlier version as the current one",
+				Flags: scoped("--version")},
+			{Name: "delete", Description: "Soft-delete a secret", Flags: scoped("--yes")},
+		}},
+	{Name: "import", Description: "Send a .env, JSON, YAML or shell file to the server",
+		Flags: scoped("--json", "--format", "--strategy", "--dry-run")},
+	{Name: "pull", Description: "Print every secret in a chosen format",
+		Flags: scoped("--format", "-o")},
+	{Name: "export", Description: "Write every secret to a file",
+		Flags: scoped("--format", "-o", "--force")},
+	{Name: "run", Description: "Run a command with secrets injected",
+		Flags: scoped("--offline", "--no-cache")},
+	{Name: "audit", Description: "Read the organisation audit log",
+		Flags: scoped("--json", "--action", "--outcome", "--since", "--until", "--limit")},
+	{Name: "members", Description: "List who is in the organisation",
+		Flags: withHelp("--json")},
+	{Name: "tokens", Description: "List and revoke credentials",
+		Flags: withHelp("--json", "--kind"),
+		Subcommands: []completionCommand{
+			{Name: "list", Description: "List devices and service tokens",
+				Flags: withHelp("--json", "--kind")},
+			{Name: "revoke", Description: "Revoke one credential", Flags: withHelp("--kind", "--yes")},
+		}},
 	{Name: "cache", Description: "Manage the encrypted offline cache", Subcommands: []completionCommand{
 		{Name: "clear", Description: "Remove every offline copy and its key"},
 	}},
-	{Name: "doctor", Description: "Check this machine setup"},
-	{Name: "upgrade", Description: "Check whether a newer CLI is published"},
+	{Name: "doctor", Description: "Check this machine setup", Flags: withHelp("--json")},
+	{Name: "upgrade", Description: "Check whether a newer CLI is published", Flags: withHelp("--json")},
 	{Name: "completion", Description: "Print a shell completion script", Subcommands: []completionCommand{
 		{Name: "bash", Description: "bash completion"},
 		{Name: "zsh", Description: "zsh completion"},
@@ -96,10 +145,8 @@ var completionTree = []completionCommand{
 	{Name: "help", Description: "Show help"},
 }
 
-// commonFlags are offered whenever the current word starts with a dash. Kept
-// short deliberately: the flags every scoped command shares, plus the two that
-// change what the output is for.
-var commonFlags = []string{"--project", "--environment", "--json", "--help"}
+// rootFlags are what `xecret --<TAB>` offers, before any command is named.
+var rootFlags = []string{"--help", "--version"}
 
 func cmdCompletion(args []string) error {
 	flags := flag.NewFlagSet("completion", flag.ContinueOnError)
@@ -140,8 +187,41 @@ func bashCompletion() string {
 	b.WriteString("# bash completion for xecret. Generated by 'xecret completion bash'.\n")
 	b.WriteString("_xecret_complete() {\n")
 	b.WriteString("  local current=\"${COMP_WORDS[COMP_CWORD]}\"\n")
-	b.WriteString("  local flags=\"" + strings.Join(commonFlags, " ") + "\"\n\n")
+	b.WriteString("  local first=\"\" second=\"\"\n")
+	b.WriteString("  (( COMP_CWORD >= 1 )) && first=\"${COMP_WORDS[1]}\"\n")
+	b.WriteString("  (( COMP_CWORD >= 2 )) && second=\"${COMP_WORDS[2]}\"\n\n")
+
+	// Flags are answered per (command, subcommand), most specific first. When
+	// the current word *is* the second one — `xecret secrets --<TAB>` — the pair
+	// matches nothing and the command's own list answers, which is right.
 	b.WriteString("  if [[ \"$current\" == -* ]]; then\n")
+	b.WriteString("    local flags=\"\"\n")
+	b.WriteString("    if (( COMP_CWORD == 1 )); then\n")
+	b.WriteString("      flags=\"" + strings.Join(rootFlags, " ") + "\"\n")
+	b.WriteString("    else\n")
+	b.WriteString("      case \"$first $second\" in\n")
+	for _, command := range completionTree {
+		for _, sub := range command.Subcommands {
+			if len(sub.Flags) == 0 {
+				continue
+			}
+			b.WriteString("        \"" + command.Name + " " + sub.Name + "\") flags=\"" +
+				strings.Join(sub.Flags, " ") + "\" ;;\n")
+		}
+	}
+	b.WriteString("      esac\n")
+	b.WriteString("      if [[ -z \"$flags\" ]]; then\n")
+	b.WriteString("        case \"$first\" in\n")
+	for _, command := range completionTree {
+		if len(command.Flags) == 0 {
+			continue
+		}
+		b.WriteString("          " + command.Name + ") flags=\"" +
+			strings.Join(command.Flags, " ") + "\" ;;\n")
+	}
+	b.WriteString("        esac\n")
+	b.WriteString("      fi\n")
+	b.WriteString("    fi\n")
 	b.WriteString("    COMPREPLY=( $(compgen -W \"$flags\" -- \"$current\") )\n")
 	b.WriteString("    return\n")
 	b.WriteString("  fi\n\n")
@@ -198,11 +278,38 @@ func zshCompletion() string {
 		b.WriteString("      )\n      ;;\n")
 	}
 	b.WriteString("  esac\n\n")
-	b.WriteString("  if (( CURRENT == 3 )) && (( ${#subcommands} )); then\n")
+	// A word already starting with a dash is a flag, not a subcommand, however
+	// early in the line it appears.
+	b.WriteString("  if (( CURRENT == 3 )) && (( ${#subcommands} )) && [[ ${words[3]} != -* ]]; then\n")
 	b.WriteString("    _describe -t subcommands 'subcommand' subcommands\n")
 	b.WriteString("    return\n")
 	b.WriteString("  fi\n\n")
-	b.WriteString("  _values 'flag' " + strings.Join(quoteAll(commonFlags), " ") + "\n")
+
+	b.WriteString("  local -a flags\n")
+	b.WriteString("  flags=()\n")
+	b.WriteString("  case \"${words[2]} ${words[3]}\" in\n")
+	for _, command := range completionTree {
+		for _, sub := range command.Subcommands {
+			if len(sub.Flags) == 0 {
+				continue
+			}
+			b.WriteString("    '" + command.Name + " " + sub.Name + "') flags=( " +
+				strings.Join(quoteAll(sub.Flags), " ") + " ) ;;\n")
+		}
+	}
+	b.WriteString("  esac\n")
+	b.WriteString("  if (( ! ${#flags} )); then\n")
+	b.WriteString("    case ${words[2]} in\n")
+	for _, command := range completionTree {
+		if len(command.Flags) == 0 {
+			continue
+		}
+		b.WriteString("      " + command.Name + ") flags=( " +
+			strings.Join(quoteAll(command.Flags), " ") + " ) ;;\n")
+	}
+	b.WriteString("    esac\n")
+	b.WriteString("  fi\n")
+	b.WriteString("  (( ${#flags} )) && _values 'flag' $flags\n")
 	b.WriteString("}\n\n")
 	b.WriteString("compdef _xecret xecret\n")
 	return b.String()
@@ -227,10 +334,34 @@ func fishCompletion() string {
 		}
 	}
 	b.WriteString("complete -c xecret -n '__fish_seen_subcommand_from import' -F\n")
-	for _, flagName := range commonFlags {
-		b.WriteString(fmt.Sprintf("complete -c xecret -l %s\n", strings.TrimPrefix(flagName, "--")))
+
+	// One condition per command, so no command is offered a flag it does not
+	// define. The subcommand rules are additive on top of the parent's, which
+	// is what a shell user experiences as "the flags that work here".
+	for _, command := range completionTree {
+		for _, flagName := range command.Flags {
+			b.WriteString(fmt.Sprintf("complete -c xecret -n '__fish_seen_subcommand_from %s' %s\n",
+				command.Name, fishFlag(flagName)))
+		}
+		for _, sub := range command.Subcommands {
+			for _, flagName := range sub.Flags {
+				b.WriteString(fmt.Sprintf(
+					"complete -c xecret -n '__fish_seen_subcommand_from %s; and __fish_seen_subcommand_from %s' %s\n",
+					command.Name, sub.Name, fishFlag(flagName)))
+			}
+		}
 	}
 	return b.String()
+}
+
+// fishFlag spells one flag the way `complete` wants it: -l for a long name,
+// -s for the single-character ones (`pull -o`), which Go's flag package
+// accepts with one dash.
+func fishFlag(name string) string {
+	if long, found := strings.CutPrefix(name, "--"); found {
+		return "-l " + long
+	}
+	return "-s " + strings.TrimPrefix(name, "-")
 }
 
 func subcommandNames(command completionCommand) []string {

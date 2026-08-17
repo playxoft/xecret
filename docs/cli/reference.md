@@ -138,7 +138,11 @@ xecret secrets delete NAME [--yes]
   not a rotation, and neither is a rename, so neither may bump the number that
   answers "when did this credential last actually change?". `set --note` on an
   *existing* secret applies the note through this same route, because the
-  version-append body has no field for it and would otherwise discard it.
+  version-append body has no field for it and would otherwise discard it. That
+  makes `set --note` two requests, so it can half-succeed: if the second one
+  fails the value is written and the note is not, and the command says which and
+  **exits non-zero** — `set --note … && deploy` must not treat a partly applied
+  write as a success.
 - `versions` is **metadata only**, and that is the design rather than a
   limitation: a rotated secret usually still works at the provider that issued
   it, so a listing carrying values would serve a page of live credentials under
@@ -169,16 +173,20 @@ xecret export [--format env|json|yaml|shell|docker] [-o FILE] [--force]
   `…/export` endpoint rather than `…/pull`. They stay separate because the
   request path is what tells "a build read its configuration" apart from
   "somebody took a copy" in the audit record. The filename defaults per format,
-  the file is created `0600`, and an existing one is never overwritten without
-  `--force`.
+  and an existing one is never overwritten without `--force`.
+- Both `export` and `pull -o` leave the file at mode `0600` whether they created
+  it or overwrote it. `os.WriteFile` would not: it hands its permission argument
+  to `open(2)`, which applies it only on creation, so a `--force` over a `.env`
+  already sitting at `0644` would have written every decrypted secret into a
+  world-readable file under a message claiming `0600`.
 
 ### Administration
 
 ```
 xecret audit [--action A] [--project P] [--environment E] [--outcome success|denied|error]
-             [--since 24h|7d|TIMESTAMP] [--until TIMESTAMP] [--limit N] [--json]
+             [--since 24h|7d|TIMESTAMP] [--until 1h|7d|TIMESTAMP] [--limit N] [--json]
 xecret members [--json]
-xecret tokens list [--kind cli|service] [--json]
+xecret tokens [list] [--kind cli|service] [--json]
 xecret tokens revoke ID --kind cli|service [--yes]
 ```
 
@@ -186,6 +194,10 @@ xecret tokens revoke ID --kind cli|service [--yes]
   the log spans projects a developer cannot see and holds every denial anyone
   received. The window the server actually scanned is printed, because the range
   is clamped to ninety days and a caller who asked for more must be told.
+- `--since` and `--until` take the same spellings — a duration counting back
+  from now (`24h`, `7d`) or an RFC 3339 timestamp, normalised to UTC before it
+  is sent. A relative value must be positive: a negative one would put the edge
+  in the future and return nothing, which is indistinguishable from "no events".
 - `members` is read-only. Inviting, suspending and role changes require a
   browser session server-side, so a write command here could only print a 403.
 - `tokens revoke` requires `--kind`: the two kinds are addressed through
@@ -233,12 +245,19 @@ xecret help
 
 - `completion` is generated from one table in `cmd/xecret/completion.go`, so a
   command added to `dispatch` and forgotten there is one missing completion
-  rather than three that disagree. Secret *names* are deliberately not
-  completed: that would be an audited API call per press of the Tab key.
+  rather than three that disagree. Flags hang off each command in that table,
+  because a flag offered where it is not defined completes to `flag provided but
+  not defined`. Secret *names* are deliberately not completed: that would be an
+  audited API call per press of the Tab key.
 - `doctor` prints no credential — the keyring check writes and deletes a probe
   value of its own. It reports which store is in use, whether the credential is
   still accepted, which deployment resolved and *why*, the `.xecret.yaml` in
   effect, and what is in the cache.
+- `doctor` **exits non-zero when a check fails**, so `xecret doctor || exit 1`
+  works as a container start-up guard. Warnings (no `.xecret.yaml` here, an
+  unreadable cache) are not failures. `--json` carries a `checks` array of
+  `{name, status, ok, detail}` plus a top-level `ok`, so the verdicts are
+  readable by a machine and not only by a person reading the glyphs.
 - `upgrade` asks GitHub, not the xecret server, and only when asked: a version
   check describes which machine runs which build of a secret-management client,
   and doing it in the background would ship that from inside every CI job. It

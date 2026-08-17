@@ -46,6 +46,55 @@ func TestResolveSinceReadsDurationsAndTimestamps(t *testing.T) {
 	if _, err := resolveSince("last tuesday"); err == nil {
 		t.Error("an unparseable --since must be refused, not silently ignored")
 	}
+
+	// A window edge that lands in the future returns nothing and is reported as
+	// "no matching events", which reads as an answer rather than as the typo it
+	// is. Both spellings of it are refused.
+	if _, err := resolveSince("-24h"); err == nil {
+		t.Error("a negative --since must be refused; it puts the window in the future")
+	}
+	if _, err := resolveSince("1000000d"); err == nil {
+		t.Error("a day count that overflows time.Duration must be refused")
+	}
+}
+
+// --until and --since have to accept the same spellings. --until used to reach
+// the server verbatim, so a value --since normalises into RFC 3339 — "7d", or a
+// timestamp with an offset — was a 400 from the same string that worked for the
+// other half of the window.
+func TestResolveUntilTakesTheSameSpellingsAsSince(t *testing.T) {
+	for _, value := range []string{"24h", "7d", "2026-01-02T03:04:05Z"} {
+		since, sinceErr := resolveSince(value)
+		until, untilErr := resolveUntil(value)
+		if sinceErr != nil || untilErr != nil {
+			t.Errorf("%q: --since %v, --until %v", value, sinceErr, untilErr)
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339, until); err != nil {
+			t.Errorf("--until %q produced %q, which is not RFC 3339", value, until)
+		}
+		// Both anchor at now, so a relative value gives the same instant to the
+		// minute; an absolute one is identical.
+		if len(since) != len(until) {
+			t.Errorf("--since %q = %q but --until = %q", value, since, until)
+		}
+	}
+
+	// An offset timestamp is normalised to UTC, which is all the server takes.
+	offset, err := resolveUntil("2026-01-02T03:04:05+05:30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offset != "2026-01-01T21:34:05Z" {
+		t.Errorf("--until with an offset = %q, want the UTC equivalent", offset)
+	}
+
+	if _, err := resolveUntil("-1h"); err == nil {
+		t.Error("a negative --until must be refused")
+	}
+	if _, err := resolveUntil("whenever"); err == nil {
+		t.Error("an unparseable --until must be refused")
+	}
 }
 
 // Every documented example in this CLI puts the name before the flags —
@@ -157,6 +206,17 @@ func TestOptionalIntAcceptsBareAndValued(t *testing.T) {
 		t.Errorf("--generate=48 = %d", sized.valueOr(32))
 	}
 
+	// IsBoolFlag advertises --generate as a boolean, so a wrapper built from
+	// ${GENERATE:-false} writes --generate=false and means "do not generate".
+	// Refusing it would abort a command that should have read stdin.
+	var off optionalInt
+	if err := off.Set("false"); err != nil {
+		t.Fatalf("--generate=false must mean 'do not generate', not an error: %v", err)
+	}
+	if off.set {
+		t.Error("--generate=false left generation switched on")
+	}
+
 	var bad optionalInt
 	if err := bad.Set("0"); err == nil {
 		t.Error("a zero-byte value must be refused")
@@ -225,20 +285,29 @@ func TestReadValueFileIsVerbatim(t *testing.T) {
 func TestSubcommandKeepsTheBareListing(t *testing.T) {
 	cases := []struct {
 		args []string
+		bare string
 		want string
 	}{
-		{nil, "list"},
-		{[]string{"--json"}, "list"},
-		{[]string{"list"}, "list"},
-		{[]string{"create"}, "create"},
-		{[]string{"delete"}, "delete"},
-		{[]string{"--help"}, "help"},
-		{[]string{"help"}, "help"},
-		{[]string{"nonsense"}, "nonsense"},
+		{nil, "list", "list"},
+		{[]string{"--json"}, "list", "list"},
+		{[]string{"list"}, "list", "list"},
+		{[]string{"create"}, "list", "create"},
+		{[]string{"delete"}, "list", "delete"},
+		{[]string{"--help"}, "list", "help"},
+		{[]string{"-h"}, "list", "help"},
+		{[]string{"help"}, "list", "help"},
+		{[]string{"nonsense"}, "list", "nonsense"},
+		// `secrets` and `tokens` print usage when bare, but a leading flag still
+		// means the listing — `xecret tokens --json` used to be an "unknown
+		// subcommand" only because that command had its own dispatch.
+		{nil, "help", "help"},
+		{[]string{"--json"}, "help", "list"},
+		{[]string{"--kind", "service"}, "help", "list"},
+		{[]string{"revoke"}, "help", "revoke"},
 	}
 	for _, c := range cases {
-		if got := subcommand(c.args); got != c.want {
-			t.Errorf("subcommand(%v) = %q, want %q", c.args, got, c.want)
+		if got := subcommand(c.args, c.bare); got != c.want {
+			t.Errorf("subcommand(%v, %q) = %q, want %q", c.args, c.bare, got, c.want)
 		}
 	}
 
@@ -247,6 +316,48 @@ func TestSubcommandKeepsTheBareListing(t *testing.T) {
 	}
 	if got := listArgs([]string{"--json"}); len(got) != 1 || got[0] != "--json" {
 		t.Errorf("listArgs(%v) changed a bare flag list", got)
+	}
+}
+
+// os.WriteFile applies its permission argument only when it creates the file,
+// so `export --force` over a .env already sitting at 0644 wrote every decrypted
+// secret into a world-readable file while reporting "mode 0600".
+func TestWriteSecretDocumentNarrowsAFileItOverwrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(path, []byte("OLD=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeSecretDocument(path, []byte("API_KEY=live\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("mode = %04o after overwriting an existing file, want 0600", mode)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "API_KEY=live\n" {
+		t.Errorf("contents = %q — the old file was not replaced", contents)
+	}
+
+	// And the create path is 0600 from the start, as it always was.
+	fresh := filepath.Join(t.TempDir(), "secrets.json")
+	if err := writeSecretDocument(fresh, []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+	info, err = os.Stat(fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("mode = %04o on a newly created file, want 0600", mode)
 	}
 }
 
@@ -361,6 +472,87 @@ func TestCompletionTableMatchesTheHelpText(t *testing.T) {
 				t.Errorf("description %q contains a character the generated scripts cannot quote", text)
 			}
 		}
+	}
+}
+
+// A completion that offers a flag the command does not define completes to
+// `flag provided but not defined: -project` — it breaks the very command it was
+// invoked to help type. So the flag list hangs off each command, and this is
+// the check that it stays that way.
+func TestCompletionFlagsAreScopedToTheirCommand(t *testing.T) {
+	flagsFor := func(path ...string) []string {
+		for _, command := range completionTree {
+			if command.Name != path[0] {
+				continue
+			}
+			if len(path) == 1 {
+				return command.Flags
+			}
+			for _, sub := range command.Subcommands {
+				if sub.Name == path[1] {
+					return sub.Flags
+				}
+			}
+			t.Fatalf("no %q subcommand of %q in the completion tree", path[1], path[0])
+		}
+		t.Fatalf("no %q in the completion tree", path[0])
+		return nil
+	}
+	holds := func(names []string, want string) bool {
+		for _, name := range names {
+			if name == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, c := range []struct {
+		path []string
+		flag string
+		want bool
+	}{
+		{[]string{"secrets", "get"}, "--plain", true},
+		{[]string{"secrets", "get"}, "--project", true},
+		{[]string{"secrets", "annotate"}, "--rename", true},
+		{[]string{"secrets", "annotate"}, "--json", false},
+		{[]string{"secrets", "set"}, "--generate", true},
+		{[]string{"orgs", "use"}, "--project", false},
+		{[]string{"projects", "delete"}, "--project", false},
+		{[]string{"projects", "create"}, "--slug", true},
+		{[]string{"tokens", "revoke"}, "--json", false},
+		{[]string{"tokens", "list"}, "--kind", true},
+		{[]string{"doctor"}, "--project", false},
+		{[]string{"upgrade"}, "--environment", false},
+		{[]string{"members"}, "--project", false},
+		{[]string{"export"}, "--force", true},
+		{[]string{"run"}, "--offline", true},
+	} {
+		name := strings.Join(c.path, " ")
+		if got := holds(flagsFor(c.path...), c.flag); got != c.want {
+			t.Errorf("%q offers %s = %v, want %v", name, c.flag, got, c.want)
+		}
+	}
+
+	// Every command that parses flags at all answers --help.
+	for _, command := range completionTree {
+		if len(command.Flags) > 0 && !holds(command.Flags, "--help") {
+			t.Errorf("%q offers flags but not --help", command.Name)
+		}
+		for _, sub := range command.Subcommands {
+			if len(sub.Flags) > 0 && !holds(sub.Flags, "--help") {
+				t.Errorf("%q %q offers flags but not --help", command.Name, sub.Name)
+			}
+		}
+	}
+
+	// fish had one unconditional rule per common flag, which is exactly the
+	// shape this test exists to prevent coming back.
+	if strings.Contains(fishCompletion(), "\ncomplete -c xecret -l project\n") {
+		t.Error("fish offers --project for every command, including those that do not define it")
+	}
+	if !strings.Contains(bashCompletion(), `"secrets get") flags=`) {
+		t.Error("bash does not answer flags per subcommand")
 	}
 }
 

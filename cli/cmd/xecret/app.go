@@ -109,6 +109,17 @@ func (a *app) serviceClient(token string) (*api.Client, *cred.Credentials, error
 	}, nil
 }
 
+// storedCredentials returns the saved login when there is one, and nil
+// otherwise. For the places where a credential sharpens an answer but is not
+// required to give one — which deployment `upgrade` should name, for instance.
+func (a *app) storedCredentials() *cred.Credentials {
+	credentials, err := cred.Load(a.store)
+	if err != nil {
+		return nil
+	}
+	return credentials
+}
+
 // scope is the resolved (org, project, environment) triple every secret
 // command operates in.
 type scope struct {

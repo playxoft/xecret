@@ -404,6 +404,10 @@ The same data as `pull`, written to a file. Without `-o` the name is derived
 from the format — `.env`, `secrets.json`, `secrets.yaml`, `secrets.sh`,
 `docker.env` — and an existing file is never overwritten without `--force`.
 
+The file is mode `0600` whether it was created or overwritten. A `--force` over
+a `.env` that some earlier `xecret pull > .env` left at `0644` narrows it before
+anything is written to it, rather than filling a world-readable file.
+
 ```bash
 xecret export                          # → .env, mode 0600
 xecret export --format json -o config/secrets.json
@@ -458,10 +462,16 @@ above all), and decisions are never softened by a local file. Full behaviour:
 
 ```bash
 xecret audit [--action ACTION] [--project P] [--environment E] [--outcome success|denied|error]
-             [--since 24h|7d|TIMESTAMP] [--until TIMESTAMP] [--limit N] [--json]
+             [--since 24h|7d|TIMESTAMP] [--until 1h|7d|TIMESTAMP] [--limit N] [--json]
 ```
 
 Reads the organisation's audit log — who did what, when, and whether it worked.
+
+`--since` and `--until` take the same spellings: a duration counting back from
+now (`24h`, `7d`), or an RFC 3339 timestamp, normalised to UTC before it is
+sent. A relative value has to be positive — a negative one would put the edge of
+the window in the future and come back empty, which reads exactly like "nothing
+happened".
 
 ```bash
 xecret audit --action secret.revealed --since 7d
@@ -498,7 +508,7 @@ so there is nothing here that could do them.
 ### `xecret tokens`
 
 ```bash
-xecret tokens list [--kind cli|service] [--json]
+xecret tokens [list] [--kind cli|service] [--json]
 xecret tokens revoke ID --kind cli|service [--yes]
 ```
 
@@ -584,6 +594,16 @@ accepted, which `.xecret.yaml` applies, and what is in the offline cache.
 
 It prints no credential. The keyring check writes and deletes a probe value of
 its own rather than reading yours. Paste the output into a bug report.
+
+`doctor` exits non-zero when a check fails, so `xecret doctor || exit 1` works
+as a start-up guard in a container. Warnings — no `.xecret.yaml` in this
+directory, an unreadable cache — are not failures. With `--json` every verdict
+comes back in a `checks` array of `{name, status, ok, detail}`, alongside a
+top-level `ok`:
+
+```bash
+xecret doctor --json | jq -r '.checks[] | select(.ok | not) | .detail'
+```
 
 ### `xecret upgrade`
 

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -18,7 +17,6 @@ import (
 	"golang.org/x/term"
 
 	"github.com/playxoft/xecret/cli/internal/api"
-	"github.com/playxoft/xecret/cli/internal/output"
 )
 
 // secretNamePattern mirrors the server's constraint, so an impossible name
@@ -26,9 +24,9 @@ import (
 var secretNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 const secretsUsage = `Usage:
-  xecret secrets list     [--json]
+  xecret secrets [list]   [--json]
   xecret secrets get      <NAME> [--version N] [--plain] [--json]
-  xecret secrets set      <NAME> [--type TYPE] [--note TEXT] [--from-file PATH] [--generate [N]]
+  xecret secrets set      <NAME> [--type TYPE] [--note TEXT] [--from-file PATH] [--generate[=BYTES]]
   xecret secrets annotate <NAME> [--note TEXT] [--type TYPE] [--rename NEW]
   xecret secrets versions <NAME> [--json]
   xecret secrets restore  <NAME> --version N
@@ -58,14 +56,9 @@ one at a time, each audited.
 `
 
 func cmdSecrets(args []string) error {
-	if len(args) == 0 {
-		_, _ = io.WriteString(os.Stdout, secretsUsage)
-		return nil
-	}
-
-	switch args[0] {
+	switch subcommand(args, "help") {
 	case "list":
-		return secretsList(args[1:])
+		return secretsList(listArgs(args))
 	case "get":
 		return secretsGet(args[1:])
 	case "set":
@@ -78,7 +71,7 @@ func cmdSecrets(args []string) error {
 		return secretsRestore(args[1:])
 	case "delete":
 		return secretsDelete(args[1:])
-	case "help", "--help", "-h":
+	case "help":
 		_, _ = io.WriteString(os.Stdout, secretsUsage)
 		return nil
 	default:
@@ -258,6 +251,16 @@ func secretsSet(args []string) error {
 	if err != nil {
 		return err
 	}
+	// `--generate 48` cannot bind, because IsBoolFlag makes `--generate` a
+	// standalone flag — the number lands here as a second name instead. Said
+	// plainly, rather than left to oneName's "expected exactly one secret name",
+	// which names neither the flag nor the fix.
+	if generate.set && generate.value == 0 && len(positional) == 2 {
+		if _, numeric := strconv.Atoi(positional[1]); numeric == nil {
+			return fmt.Errorf(
+				"write --generate=%s; the length attaches with '=' because --generate also stands alone", positional[1])
+		}
+	}
 	name, err := oneName(positional)
 	if err != nil {
 		return err
@@ -304,14 +307,13 @@ func secretsSet(args []string) error {
 	// field for it and would discard one silently. Applying it through the
 	// metadata route costs a second request on a path that already made two,
 	// and the alternative is a note the user typed and never got.
+	var noteErr error
 	if appended && *note != "" {
 		if _, metaErr := client.UpdateMetadata(ctx,
 			resolved.Org, resolved.Project, resolved.Environment, name,
 			api.MetadataUpdate{Note: note},
 		); metaErr != nil {
-			// The value landed; only the note did not. Saying which is which
-			// matters — a bare failure here reads as "nothing was written".
-			a.printer.Warnf("the value was written, but the note was not: %v", metaErr)
+			noteErr = metaErr
 		}
 	}
 
@@ -329,6 +331,14 @@ func secretsSet(args []string) error {
 		// where it can be read from, once, rather than printing it here and
 		// putting it in the terminal's scrollback for the sake of convenience.
 		a.printer.Infof("The generated value was never printed — 'xecret secrets get %s --plain' reveals it.", name)
+	}
+
+	if noteErr != nil {
+		// The value landed; only the note did not. Which is which is said above,
+		// and the exit code has to carry it too: `xecret secrets set … --note …
+		// && deploy` must not read a half-applied write as success.
+		return fmt.Errorf("%s is at v%d, but the note was not applied: %w — retry with 'xecret secrets annotate %s --note …'",
+			name, result.Version, noteErr, name)
 	}
 	return nil
 }
@@ -356,17 +366,9 @@ func secretsDelete(args []string) error {
 		return err
 	}
 
-	if !*yes {
-		if !output.StdoutIsTerminal() {
-			return errors.New("refusing to delete without confirmation — pass --yes in scripts")
-		}
-		fmt.Fprintf(a.printer.Err, "Delete %s from %s/%s? Type the secret name to confirm: ",
-			name, resolved.Project, resolved.Environment)
-		reader := bufio.NewReader(os.Stdin)
-		line, readErr := reader.ReadString('\n')
-		if readErr != nil || strings.TrimSpace(line) != name {
-			return errors.New("confirmation did not match; nothing deleted")
-		}
+	if err := confirmDestructive(a, *yes, name,
+		fmt.Sprintf("Delete %s from %s/%s?", name, resolved.Project, resolved.Environment)); err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -438,16 +440,24 @@ func (o *optionalInt) String() string {
 }
 
 func (o *optionalInt) Set(raw string) error {
-	o.set = true
-	// What IsBoolFlag delivers for the bare form. "Present, no number."
-	if raw == "true" {
+	switch raw {
+	case "true":
+		// What IsBoolFlag delivers for the bare form. "Present, no number."
+		o.set, o.value = true, 0
+		return nil
+	case "false":
+		// IsBoolFlag advertises this as a boolean, so `--generate=false` is
+		// what a wrapper built from `${GENERATE:-false}` produces, and it means
+		// "do not generate" — not "generate zero bytes". Refusing it would abort
+		// a command that should simply have read the value from stdin.
+		o.set, o.value = false, 0
 		return nil
 	}
 	parsed, err := strconv.Atoi(raw)
 	if err != nil || parsed <= 0 {
 		return fmt.Errorf("expected a positive number of bytes, got %q", raw)
 	}
-	o.value = parsed
+	o.set, o.value = true, parsed
 	return nil
 }
 
@@ -456,8 +466,11 @@ func (o *optionalInt) Set(raw string) error {
 // so the length is given as `--generate=48`.
 func (o *optionalInt) IsBoolFlag() bool { return true }
 
+// valueOr answers the requested length, or fallback for the bare `--generate`,
+// which carries no number. Set never stores a non-positive length, so a zero
+// here means exactly "given, without one".
 func (o *optionalInt) valueOr(fallback int) int {
-	if o.value == 0 {
+	if o.value <= 0 {
 		return fallback
 	}
 	return o.value

@@ -26,6 +26,46 @@ import (
 // token, the config check prints slugs, and the reachability check calls the
 // one endpoint that needs no authentication. What the output does contain is
 // paths, hostnames and a decision trail — enough to paste into an issue.
+// probeTimeout is the budget for one network probe. Each gets its own: sharing
+// a single deadline across both meant a slow server could spend it all on the
+// reachability check and leave the credential check to fail instantly with
+// "context deadline exceeded" — printed as "the stored credential was refused",
+// which is the one diagnosis that sends a user with a working credential off to
+// re-authenticate.
+const probeTimeout = 15 * time.Second
+
+// doctorCheck is one verdict. The JSON carries these rather than only the raw
+// values, because the question `xecret doctor --json | jq` exists to answer is
+// "did anything fail?" — and an outcome expressed solely as a missing key is
+// indistinguishable from a server too old to have the endpoint.
+type doctorCheck struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail"`
+}
+
+const (
+	statusOK   = "ok"
+	statusWarn = "warn"
+	statusFail = "fail"
+	statusInfo = "info"
+)
+
+// glyph is the column the human output leads with.
+func glyph(status string) string {
+	switch status {
+	case statusOK:
+		return "✓"
+	case statusWarn:
+		return "!"
+	case statusFail:
+		return "✗"
+	default:
+		return ""
+	}
+}
+
 func cmdDoctor(args []string) error {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	jsonMode := flags.Bool("json", false, "machine-readable output")
@@ -36,12 +76,17 @@ func cmdDoctor(args []string) error {
 	a := newApp(*jsonMode)
 	report := map[string]any{"cli": buildinfo.String()}
 
-	lines := []string{}
-	say := func(status, format string, values ...any) {
-		lines = append(lines, fmt.Sprintf("%-4s %s", status, fmt.Sprintf(format, values...)))
+	var checks []doctorCheck
+	say := func(status, name, format string, values ...any) {
+		checks = append(checks, doctorCheck{
+			Name:   name,
+			Status: status,
+			OK:     status != statusFail,
+			Detail: fmt.Sprintf(format, values...),
+		})
 	}
 
-	say("", "%s", buildinfo.String())
+	say(statusInfo, "cli", "%s", buildinfo.String())
 
 	// ── Credentials ────────────────────────────────────────────────────────
 	serviceToken := serviceTokenFromEnv() != ""
@@ -50,24 +95,24 @@ func cmdDoctor(args []string) error {
 	backend, keyringErr := probeKeyring()
 	report["keyring"] = backend
 	if keyringErr != nil {
-		say("✗", "credential store: unusable (%v)", keyringErr)
+		say(statusFail, "credentialStore", "credential store: unusable (%v)", keyringErr)
 	} else {
-		say("✓", "credential store: %s", backend)
+		say(statusOK, "credentialStore", "credential store: %s", backend)
 	}
 
 	var credentials *cred.Credentials
 	switch {
 	case serviceToken:
-		say("✓", "XECRET_TOKEN is set — the keychain and the offline cache are both bypassed")
+		say(statusOK, "signedIn", "XECRET_TOKEN is set — the keychain and the offline cache are both bypassed")
 	default:
 		loaded, err := cred.Load(a.store)
 		if errors.Is(err, cred.ErrNotLoggedIn) {
-			say("✗", "not signed in — run 'xecret login'")
+			say(statusFail, "signedIn", "not signed in — run 'xecret login'")
 		} else if err != nil {
-			say("✗", "stored credential unreadable: %v", err)
+			say(statusFail, "signedIn", "stored credential unreadable: %v", err)
 		} else {
 			credentials = loaded
-			say("✓", "signed in as %s, organisation %s", loaded.Email, loaded.OrgSlug)
+			say(statusOK, "signedIn", "signed in as %s, organisation %s", loaded.Email, loaded.OrgSlug)
 			report["email"] = loaded.Email
 			report["organization"] = loaded.OrgSlug
 		}
@@ -77,49 +122,61 @@ func cmdDoctor(args []string) error {
 	base, reason := resolvedAPIBase(credentials)
 	report["apiUrl"] = base
 	report["apiUrlSource"] = reason
-	say("", "server: %s (%s)", base, reason)
+	say(statusInfo, "apiUrl", "server: %s (%s)", base, reason)
 
 	// ── Reachability ───────────────────────────────────────────────────────
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	deployed, err := api.New(base, "", userAgent()).ServerVersion(ctx)
-	if err != nil {
-		say("✗", "cannot reach the server: %v", err)
+	reachCtx, cancelReach := context.WithTimeout(context.Background(), probeTimeout)
+	deployed, reachErr := api.New(base, "", userAgent()).ServerVersion(reachCtx)
+	cancelReach()
+	if reachErr != nil {
+		say(statusFail, "serverReachable", "cannot reach the server: %v", reachErr)
 	} else {
 		report["serverVersion"] = deployed.Version
-		say("✓", "server reachable — %s %s (commit %s)", deployed.Name, deployed.Version, deployed.Commit)
+		say(statusOK, "serverReachable", "server reachable — %s %s (commit %s)",
+			deployed.Name, deployed.Version, deployed.Commit)
 	}
 
 	// ── Does the credential still work? ────────────────────────────────────
 	if credentials != nil || serviceToken {
+		credCtx, cancelCred := context.WithTimeout(context.Background(), probeTimeout)
 		client, resolved, clientErr := a.client()
-		if clientErr != nil {
-			say("✗", "credential unusable: %v", clientErr)
-		} else if serviceToken {
+		switch {
+		case clientErr != nil:
+			say(statusFail, "credentialAccepted", "credential unusable: %v", clientErr)
+		case serviceToken:
 			pin := a.tokenScope
-			say("✓", "service token %q is live, pinned to %s/%s/%s",
+			say(statusOK, "credentialAccepted", "service token %q is live, pinned to %s/%s/%s",
 				pin.Token.Name, pin.Organization.Slug, pin.Project.Slug, pin.Environment.Slug)
-		} else if _, meErr := client.FetchMe(ctx); meErr != nil {
-			say("✗", "the stored credential was refused: %v", meErr)
-			say("", "     run 'xecret login' again — it may have been revoked from the dashboard")
-		} else {
-			say("✓", "credential accepted by %s", resolved.APIURL)
+		default:
+			_, meErr := client.FetchMe(credCtx)
+			switch {
+			case meErr == nil:
+				say(statusOK, "credentialAccepted", "credential accepted by %s", resolved.APIURL)
+			case api.IsNetworkError(meErr) || errors.Is(meErr, context.DeadlineExceeded):
+				// The credential was never judged. Saying it was refused here
+				// would be a guess, and the wrong one costs a re-login.
+				say(statusWarn, "credentialAccepted",
+					"could not check the credential — the server did not answer: %v", meErr)
+			default:
+				say(statusFail, "credentialAccepted",
+					"the stored credential was refused: %v — run 'xecret login' again, it may have been revoked from the dashboard",
+					meErr)
+			}
 		}
+		cancelCred()
 	}
 
 	// ── Where this directory points ────────────────────────────────────────
-	cwd, err := os.Getwd()
-	if err == nil {
+	if cwd, err := os.Getwd(); err == nil {
 		path, file, findErr := config.Find(cwd)
 		if findErr != nil {
-			say("!", "no %s above %s — pass --project/--environment, or run 'xecret init'",
+			say(statusWarn, "config", "no %s above %s — pass --project/--environment, or run 'xecret init'",
 				config.Filename, cwd)
 		} else {
 			report["configPath"] = path
 			report["project"] = file.Project
 			report["environment"] = file.Environment
-			say("✓", "%s → %s/%s", path, file.Project, file.Environment)
+			say(statusOK, "config", "%s → %s/%s", path, file.Project, file.Environment)
 		}
 	}
 
@@ -129,18 +186,40 @@ func cmdDoctor(args []string) error {
 	report["cachedEnvironments"] = entries
 	switch {
 	case cacheErr != nil:
-		say("!", "offline cache: %s is unreadable (%v)", cache.Dir(), cacheErr)
+		say(statusWarn, "offlineCache", "offline cache: %s is unreadable (%v)", cache.Dir(), cacheErr)
 	case entries == 0:
-		say("", "offline cache: empty (%s)", cache.Dir())
+		say(statusInfo, "offlineCache", "offline cache: empty (%s)", cache.Dir())
 	default:
-		say("✓", "offline cache: %d environment(s) in %s", entries, cache.Dir())
+		say(statusOK, "offlineCache", "offline cache: %d environment(s) in %s", entries, cache.Dir())
 	}
 
-	if *jsonMode {
-		return a.printer.WriteJSON(report)
+	failed := 0
+	for _, check := range checks {
+		if !check.OK {
+			failed++
+		}
 	}
-	for _, line := range lines {
-		fmt.Fprintln(a.printer.Out, strings.TrimRight(line, " "))
+	report["checks"] = checks
+	report["ok"] = failed == 0
+
+	if *jsonMode {
+		if err := a.printer.WriteJSON(report); err != nil {
+			return err
+		}
+	} else {
+		for _, check := range checks {
+			fmt.Fprintln(a.printer.Out,
+				strings.TrimRight(fmt.Sprintf("%-4s %s", glyph(check.Status), check.Detail), " "))
+		}
+	}
+
+	// A diagnostic that reports four failures and exits 0 is a diagnostic a
+	// container start-up script cannot use: `xecret doctor || exit 1` would let
+	// a missing credential through, to surface later as an unexplained auth
+	// error from inside the application. Warnings do not count — an absent
+	// .xecret.yaml is a fact about this directory, not a broken machine.
+	if failed > 0 {
+		return fmt.Errorf("%d of %d checks failed", failed, len(checks))
 	}
 	return nil
 }

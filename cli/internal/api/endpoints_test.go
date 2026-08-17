@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -97,9 +98,11 @@ func TestUpdateMetadataSendsNullToClearANote(t *testing.T) {
 	var method string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method = r.Method
-		buffer := make([]byte, 256)
-		n, _ := r.Body.Read(buffer)
-		raw = string(buffer[:n])
+		// io.ReadAll, not a single Read into a fixed buffer: one Read may
+		// legitimately return a prefix, which would make this test flake on the
+		// one wire detail it exists to pin down.
+		body, _ := io.ReadAll(r.Body)
+		raw = string(body)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"secret":{"name":"API_KEY","note":null,"valueType":"string"}}`))
 	}))
