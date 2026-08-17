@@ -56,11 +56,15 @@ export interface PinStatus {
 /**
  * The answer to "email me a PIN reset link".
  *
- * `sent: false` is a **successful** request with an unhappy answer: mail is
- * optional in a self-hosted install, and a deployment without it cannot send
- * anything. It is not an error status, so callers must read this flag rather
- * than treating a resolved promise as "check your inbox" — the failure mode
- * that flag prevents is somebody watching a mailbox nothing will arrive in.
+ * `sent: false` is a **successful** request with an unhappy answer, and it now
+ * covers two of them: mail is optional in a self-hosted install and this
+ * deployment may have none, or the provider refused the send outright. The
+ * route awaits the send precisely so the second case can be answered here
+ * rather than discovered by an empty inbox. `reason` says which.
+ *
+ * Neither is an error status, so callers must read this flag rather than
+ * treating a resolved promise as "check your inbox" — the failure mode that
+ * flag prevents is somebody watching a mailbox nothing will arrive in.
  */
 export interface PinResetResult {
   sent: boolean;
