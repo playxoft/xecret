@@ -8,7 +8,11 @@ import { useFieldControl } from './field';
 export const INPUT_BASE =
   'w-full rounded-md border border-line-strong bg-canvas-inset text-fg text-sm ' +
   'transition-[border-color,background-color] duration-150 ' +
-  'hover:enabled:border-fg-subtle focus-visible:border-accent ' +
+  // Focus deliberately lands on the same border as hover rather than on
+  // `--accent`. Now that the accent is near-white in dark and near-black in
+  // light, an accent border under the 2px focus outline from globals.css
+  // reads as two rings, and the outer one is the one that carries the meaning.
+  'hover:enabled:border-fg-subtle focus-visible:border-fg-subtle ' +
   'aria-[invalid=true]:border-danger aria-[invalid=true]:hover:enabled:border-danger ' +
   'disabled:cursor-not-allowed disabled:text-fg-disabled disabled:bg-surface-hover';
 

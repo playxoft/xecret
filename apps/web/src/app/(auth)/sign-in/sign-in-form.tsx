@@ -111,7 +111,10 @@ export function SignInForm({ next }: SignInFormProps) {
       footer={
         <>
           New here?{' '}
-          <Link href="/sign-up" className="text-accent-text rounded-sm font-medium hover:underline">
+          <Link
+            href="/sign-up"
+            className="text-fg decoration-line-strong hover:decoration-fg rounded-sm font-medium underline underline-offset-4 transition-colors"
+          >
             Create an account
           </Link>
         </>

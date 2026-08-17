@@ -33,7 +33,9 @@ describe('parseAuthorizeRequest', () => {
     expect(parseAuthorizeRequest({ ...valid(), challenge: 'short' })).toBeNull();
     // 44 chars — an S256 challenge is exactly 43.
     expect(parseAuthorizeRequest({ ...valid(), challenge: `${CHALLENGE}a` })).toBeNull();
-    expect(parseAuthorizeRequest({ ...valid(), challenge: `${CHALLENGE.slice(0, 42)}+` })).toBeNull();
+    expect(
+      parseAuthorizeRequest({ ...valid(), challenge: `${CHALLENGE.slice(0, 42)}+` }),
+    ).toBeNull();
   });
 
   it('rejects ports outside the ephemeral-plausible range', () => {
@@ -46,7 +48,7 @@ describe('parseAuthorizeRequest', () => {
   });
 
   it('rejects a device name carrying control characters — a spoof vector in the consent UI', () => {
-    expect(parseAuthorizeRequest({ ...valid(), device: "line\nbreak" })).toBeNull();
+    expect(parseAuthorizeRequest({ ...valid(), device: 'line\nbreak' })).toBeNull();
     expect(parseAuthorizeRequest({ ...valid(), device: 'esc[31m' })).toBeNull();
   });
 

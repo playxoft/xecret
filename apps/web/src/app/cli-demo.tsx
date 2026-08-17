@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
+import { cn } from '@/lib/cn';
 import { TerminalIcon } from '@/components/ui/icons';
 
 /**
@@ -63,7 +64,7 @@ function subscribeReducedMotion(callback: () => void): () => void {
   return () => query.removeEventListener('change', callback);
 }
 
-export function CliDemo() {
+export function CliDemo({ className }: { className?: string }) {
   // The server snapshot says "reduced", so prerendering — and any visitor
   // without JavaScript — gets the complete transcript rather than an empty
   // terminal waiting for an animation that will never run.
@@ -108,7 +109,15 @@ export function CliDemo() {
   const done = visibleCount >= SCRIPT.length;
 
   return (
-    <div className="border-line bg-surface shadow-raised mt-10 max-w-xl overflow-hidden rounded-xl border">
+    // Placement is the caller's: this sits under the copy on a narrow screen
+    // and beside it on a wide one, and a margin baked in here would be wrong
+    // in one of those two.
+    <div
+      className={cn(
+        'border-line bg-surface shadow-raised overflow-hidden rounded-xl border',
+        className,
+      )}
+    >
       <div className="border-line-subtle bg-canvas-inset text-fg-subtle flex items-center gap-2 border-b px-3 py-2 text-sm">
         <TerminalIcon className="size-3.5" />
         the golden path

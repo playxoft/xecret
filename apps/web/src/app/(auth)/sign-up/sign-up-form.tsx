@@ -107,7 +107,10 @@ export function SignUpForm() {
       footer={
         <>
           Already have an account?{' '}
-          <Link href="/sign-in" className="text-accent-text rounded-sm font-medium hover:underline">
+          <Link
+            href="/sign-in"
+            className="text-fg decoration-line-strong hover:decoration-fg rounded-sm font-medium underline underline-offset-4 transition-colors"
+          >
             Sign in
           </Link>
         </>
