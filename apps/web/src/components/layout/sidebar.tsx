@@ -224,8 +224,16 @@ function NavEntry({
           className={cn(
             'x-nav-item relative flex h-9 min-w-0 flex-1 items-center gap-3 rounded-lg pr-2 text-sm transition-colors',
             hasChildren ? 'pl-6' : 'pl-2',
+            // `--surface-active` for the current page, `--surface-hover` for a
+            // row under the pointer. Sharing one fill made "you are here"
+            // reproducible by moving the mouse: every row became the current
+            // row on hover, and the only thing left telling them apart was the
+            // font weight. Deliberately no hover step on the active row — it
+            // already sits at the top of the neutral fill ramp, so anything a
+            // hover could add would have to come back *down* and collide with
+            // the hovered-inactive fill again.
             active
-              ? 'bg-surface-hover text-fg font-medium'
+              ? 'bg-surface-active text-fg font-medium'
               : 'text-fg-muted hover:bg-surface-hover hover:text-fg',
           )}
         >

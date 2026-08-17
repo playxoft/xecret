@@ -68,6 +68,8 @@ export {
 export type { CreatePinResetParams, PinRecord, PinResetRecord } from './pins';
 
 export {
+  accountLockQuery,
+  countOrganizationsHeldBy,
   findOrganizationById,
   findOrganizationBySlug,
   generateUniqueOrgSlug,
@@ -75,6 +77,7 @@ export {
   listOrganizationsForUser,
   orgSlugCandidate,
   organizationsForUserQuery,
+  organizationsHeldByQuery,
   personalOrgSlugSeed,
   provisionOrganization,
   softDeleteOrganization,
@@ -82,6 +85,7 @@ export {
 } from './organizations';
 export type {
   Environment,
+  HeldOrganizations,
   Organization,
   OrganizationMembership,
   OrganizationPatch,

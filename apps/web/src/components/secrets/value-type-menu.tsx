@@ -60,7 +60,12 @@ export function ValueTypeMenu({
         disabled={disabled}
         aria-label={`Value type for ${secretName}: ${descriptor.label}`}
         className={cn(
-          'text-fg-subtle hover:text-fg hover:bg-surface-hover data-[state=open]:bg-surface-hover -mx-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-sm transition-colors',
+          // The open state carries the hover foreground as well as the hover
+          // fill. Opened from the keyboard there is no pointer to supply the
+          // second half, and `--fg-subtle` on `--surface-hover` measures
+          // 4.38:1 in dark — under AA for 14px text, and under it only in the
+          // state where the menu is demanding attention.
+          'text-fg-subtle hover:text-fg hover:bg-surface-hover data-[state=open]:text-fg data-[state=open]:bg-surface-hover -mx-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-sm transition-colors',
           'disabled:pointer-events-none disabled:opacity-60',
           // The default is quieter than a chosen one: a row somebody has
           // deliberately typed should be findable by eye down the column.

@@ -322,8 +322,10 @@ function PinResetSection({ email }: { email: string }) {
   return (
     <div className="border-line-subtle flex flex-col gap-3 border-t pt-4">
       {/* The success alert joins this section rather than replacing it, and the
-          button stays. Delivery is handed to `waitUntil` after the response, so
-          a bounce or a provider outage is logged on the server and never
+          button stays. A provider that refuses the send now arrives here as
+          `sent: false` and is shown, but that only covers the failures the
+          server hears about while the request is open: a message accepted and
+          then bounced, or filed as spam, is logged on the server and never
           reaches this screen — the person it happens to sees "check your email"
           and then nothing arrives. Replacing the section left them no way to
           ask again short of navigating away and back. It also matches the rest

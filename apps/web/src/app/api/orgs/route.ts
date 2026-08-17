@@ -1,4 +1,5 @@
 import {
+  countOrganizationsHeldBy,
   listOrganizationsForUser,
   provisionOrganization,
   RepositoryError,
@@ -7,7 +8,13 @@ import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
-import { organizationCreateSchema, toOrganization } from '@/server/schemas/resources';
+import type { RouteContext } from '@/server/route';
+import {
+  organizationCreateSchema,
+  organizationLimitReached,
+  ORGANIZATIONS_PER_ACCOUNT_LIMIT,
+  toOrganization,
+} from '@/server/schemas/resources';
 
 /**
  * The organisations the caller can act in.
@@ -66,6 +73,19 @@ export const GET = authenticatedRoute(async ({ principal, services }) => {
  * requirement rather than a policy: `organizations.created_by` is NOT NULL and a
  * service token has no user behind it at all.
  *
+ * ── Why there is a ceiling as well as a rate limit ──
+ * See `ORGANIZATIONS_PER_ACCOUNT_LIMIT`. In short: a rate limit bounds the cost
+ * per minute, and this endpoint's cost is not only per minute — a slug is
+ * claimed out of a global namespace permanently, deleted or not.
+ *
+ * The ceiling is *stated* here and *enforced* inside `provisionOrganization`,
+ * behind the row lock it takes on the account. It used to be counted here, one
+ * statement before the transaction, which made it advisory: every concurrent
+ * request that read nine passed, and nothing further down disagreed. This route
+ * now names the number and reads the refusal back off the transaction that
+ * applied it, so there is one place the ceiling is decided and one place it is
+ * imposed.
+ *
  * ── Why the whole bootstrap, rather than an empty organisation ──
  * `provisionOrganization` mints the Org Master Key, a default project, its three
  * environments and an Env Data Key for each, in one transaction. An organisation
@@ -88,6 +108,13 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
   const created = await provisionOrganization(services.db, {
     user: principal.user,
     envelope: services.envelope,
+    // The standing limit, which is a different control from the rate. Sixty of
+    // these a minute, sustained, is still an unbounded number of Org Master Keys
+    // and an unbounded number of slugs burned out of a namespace every tenant
+    // shares — `isOrgSlugAvailable` and `generateUniqueOrgSlug` do not filter
+    // `deleted_at`, deliberately, so deleting the organisation afterwards gives
+    // none of them back.
+    limit: ORGANIZATIONS_PER_ACCOUNT_LIMIT,
     name: body.name,
     // Two different contracts, and the difference matters:
     //
@@ -98,7 +125,7 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
     //    an API client sending only a name. There it is derived and suffixed,
     //    because there is nobody to ask and a refusal would be worse.
     ...(body.slug === undefined ? { slugSeed: body.name } : { slug: body.slug }),
-  }).catch((cause: unknown) => {
+  }).catch(async (cause: unknown) => {
     // Lost the race, or the availability check was stale. Reported against the
     // slug field so the form marks the input the user can actually change,
     // rather than as a sentence at the foot of a form with two fields.
@@ -107,6 +134,12 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
         { field: 'slug', message: 'That slug is already taken. Choose a different one.' },
       ]);
     }
+
+    if (cause instanceof RepositoryError && cause.code === 'quotaExceeded') {
+      await recordQuotaRefusal({ services, audit, record }, principal.user.id);
+      throw organizationLimitReached();
+    }
+
     throw cause;
   });
 
@@ -124,3 +157,55 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
     { status: 201 },
   );
 });
+
+/**
+ * Records the refusal, against an organisation the account is actually in.
+ *
+ * ── Why an account-scoped refusal has no clean home ──
+ * `audit_logs.org_id` is NOT NULL, because a record no organisation's audit view
+ * can reach is a record nobody reads. But the rule broken here belongs to an
+ * *account*, and organisations do not nest — so there is no organisation this
+ * event is truthfully "in". Wherever it lands, `org.created` with
+ * `outcome: error` and a null `resourceId` reads as a failed attempt to create
+ * something inside that organisation, which is not what happened. It is written
+ * anyway because the alternative is worse: one person clicking Create twice
+ * looks nothing like a script working through a word list, and the audit log is
+ * the only place that difference is visible.
+ *
+ * ── Why the anchor has to be a membership ──
+ * `createAuditBuilder` stamps the actor's email address, IP and user agent onto
+ * every record, and `GET /api/orgs/{orgSlug}/audit` shows an organisation's
+ * records to its members. This used to be filed against the most recent
+ * organisation the account had *created*, which — once the account had been
+ * removed from it — was an organisation of strangers, handed a current email,
+ * IP and user agent belonging to somebody with no relationship to their tenant.
+ * `countOrganizationsHeldBy` only returns organisations the account is an active
+ * member of, so the record cannot cross a boundary the actor is not already
+ * inside.
+ *
+ * ── Why this re-reads ──
+ * The transaction counted the same rows and then rolled back, taking the answer
+ * with it. One indexed lookup on a path that has already been refused is a
+ * better trade than keeping a second, permanently advisory count on every
+ * successful creation — which is exactly the check-then-act this change removed.
+ *
+ * Nothing is recorded when the account holds none, as `POST /api/auth/pin/reset`
+ * does with a null organisation: the record has nowhere to live, and inventing
+ * somewhere for it is worse than the gap. Reachable only if the last membership
+ * disappeared between the transaction's count and this one.
+ */
+async function recordQuotaRefusal(
+  context: Pick<RouteContext<unknown>, 'services' | 'audit' | 'record'>,
+  userId: string,
+): Promise<void> {
+  // One row, because one is all this uses: the most recent organisation the
+  // account holds. Ids are UUIDv7, so that is the newest by creation time.
+  const held = await countOrganizationsHeldBy(context.services.db, userId, 1);
+  if (held.latestId === null) return;
+
+  // Queued rather than written: `record` buffers and the route wrapper flushes
+  // in a `finally`, so the refusal survives the exception thrown to carry it out.
+  context.record(
+    context.audit(held.latestId).error('org.created', { type: 'org', id: null }, 'quotaExceeded'),
+  );
+}

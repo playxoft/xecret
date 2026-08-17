@@ -40,11 +40,12 @@
    mislabelled environment costs a production outage, "close enough" contrast
    is a defect, not a preference.
 
-   The status ramps below (success / warning / danger / production) kept their
-   hues when the neutrals went grey, and their annotations are unchanged. They
-   remain accurate as *floors*: the light canvas moved to pure white and the
-   dark canvas got darker, so every ratio measured against a canvas can only
-   have improved. The pairs that moved materially are re-annotated in place.
+   Every ratio below is recomputed against the palette as it now stands. An
+   earlier pass left the status ramps carrying their pre-neutral figures on the
+   argument that a canvas which only got lighter (or darker) can only have
+   improved them — true, but a floor and a measurement are indistinguishable
+   once written down, so a reader could not tell which numbers had ever been
+   checked. Every one of them is a measurement.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 :root {
@@ -66,68 +67,121 @@
      `--fg-muted` and `--fg-subtle` were one step quieter (#525252 / #6b6b6b).
      Both cleared their targets on paper and both read as *greyed out* in
      practice — which is a claim about the content, not about the contrast.
-     Most of the words on this site are secondary by that definition: the
+     Most of the words on the public site are secondary by that definition: the
      paragraph under every heading, the body of every card, the answer to every
      question. Text that is dimmed because of where it sits rather than because
      of what it is teaches a reader to skip it.
 
-     So both moved one step toward the foreground. The ratios below are the
-     new measurements; every pair improved, and nothing here traded contrast
-     for anything. Hierarchy on this site is carried by size and weight, which
-     is where it belongs. */
+     So both moved one step toward the foreground. The ratios below are the new
+     measurements, taken the same way as every other number in this file; every
+     pair improved, and nothing here traded contrast for anything. Hierarchy is
+     carried by size and weight, which is where it belongs. */
   --fg: #0a0a0a; /* 19.80:1 on --surface, 19.80:1 on --canvas — AAA */
-  --fg-muted: #454545; /*  9.60:1 on --surface,  8.80:1 on --canvas-inset — AAA */
-  --fg-subtle: #5c5c5c; /*  6.69:1 on --surface,  6.14:1 on --canvas-inset — AA+ */
+  --fg-muted: #454545; /*  9.59:1 on --surface,  8.79:1 on --canvas-inset — AAA */
+  --fg-subtle: #5c5c5c; /*  6.69:1 on --surface,  6.13:1 on --canvas-inset — AA+ */
   --fg-disabled: #949494; /*  3.0:1 — deliberately below AA; SC 1.4.3 exempts
                               disabled controls, and full contrast would make
                               "disabled" indistinguishable from "available". */
 
-  /* Lines */
-  --line-subtle: #f0f0f0;
-  --line: #e5e5e5;
-  --line-strong: #d4d4d4;
+  /* Lines.
+
+     Three of these four draw furniture: `--line-subtle` for a rule inside a
+     panel, `--line` for the edge of a card, menu or table shell, and
+     `--line-strong` for the step those take on hover. None of them is the
+     only thing identifying what it encloses — a card is identified by the
+     content inside it, a secondary button by its label — so SC 1.4.11 does
+     not reach them, and dragging them all to 3:1 would turn every hairline in
+     a dense table into a fence. They carry their measured ratio anyway, and
+     say the exemption out loud: an unannotated token is indistinguishable
+     from an unchecked one, which is the whole reason this file annotates.
+
+     `--line-control` is the exception, and the reason this is four tokens
+     rather than three. It draws the boundary of a control whose interior says
+     nothing — an empty input well, an unchecked checkbox, a switch track —
+     where the border *is* the component to the eye. An input well sits at
+     1.09:1 from the card behind it and a switch track at 1.26:1, so a border
+     that cannot be seen leaves a control that cannot be found: precisely the
+     "visual information required to identify user interface components and
+     states" SC 1.4.11 names. It therefore clears 3:1 against every surface it
+     is drawn against. The binding one in both themes is the `--surface-active`
+     switch track, being the ground nearest the border's own luminance. */
+  --line-subtle: #f0f0f0; /*  1.14:1 on --surface — panel rule, exempt         */
+  --line: #e5e5e5; /*  1.26:1 on --surface — container edge, exempt            */
+  --line-strong: #d4d4d4; /*  1.48:1 on --surface, 1.36:1 on --canvas-inset —
+                              hover emphasis and the `Kbd` cap, exempt        */
+  --line-control: #7d7d7d; /*  4.12:1 on --surface,  3.78:1 on --canvas-inset,
+                               3.27:1 on --surface-active — SC 1.4.11         */
 
   /* Focus ring */
   --ring: #737373; /*  4.74:1 on --surface,  4.35:1 on --canvas-inset — SC 1.4.11 */
 
+  /* Text selection.
+
+     Its own pair rather than a borrowed tint. Drag-selecting a value to copy
+     it is the most common gesture in this product, and a highlight you have
+     to hunt for leaves you unsure whether what you copied is what you meant.
+     The monochrome pass is what made this urgent: the wash this replaces was
+     equally low-luminance but visibly cyan, so hue carried it where luminance
+     never did. On a neutral ground there is no hue left to do that.
+
+     Both halves are measured, because a selection that is easy to see and
+     hard to read is no better than one that is invisible. The fill is taken
+     against every ground text sits on; the ink against the fill. Selected
+     text is a transient state rather than resting body copy, so it targets
+     AA (4.5:1) rather than the AAA the body holds unselected. */
+  --selection: #8c8c8c; /*  3.36:1 on --canvas, 3.08:1 on --canvas-inset      */
+  --selection-fg: #0a0a0a; /*  5.89:1 on --selection — AA                     */
+
   /* Accent — monochrome. See the palette note above for why this is not a hue.
      `--accent-tint` / `--accent-line` are the quiet neutral ground used for
      selected rows and the numbered step chips, not a coloured wash. */
-  --accent: #171717; /* 15.13:1 against --canvas as a filled control         */
+  --accent: #171717; /* 17.93:1 against --canvas as a filled control         */
   --accent-hover: #000000;
-  --accent-fg: #fafafa; /* 17.17:1 on --accent, 18.88:1 on --accent-hover — AAA */
+  --accent-fg: #fafafa; /* 17.18:1 on --accent, 20.12:1 on --accent-hover — AAA */
   --accent-text: #0a0a0a; /* 19.80:1 on --surface — AAA                          */
   --accent-tint: #f5f5f5;
-  --accent-line: #e5e5e5;
+  --accent-line: #e5e5e5; /*  1.16:1 on --accent-tint — chip edge, exempt      */
+
+  /* Status ramps.
+
+     Each `--*-tint` / `--*-line` pair is the quiet box an alert or badge sits
+     in; the `--*-text` on top is what carries the message. That is why every
+     `--*-line` below is annotated as exempt rather than raised: the hairline
+     is the box's edge, and an alert stripped of its border is still an icon,
+     a heading and a sentence. No state is encoded in the line, so SC 1.4.11
+     has nothing to bite on — and a 3:1 hairline around a pale tint would read
+     as a warning about the warning. */
 
   /* Success */
-  --success: #157f3c; /*  4.81:1 against --canvas                             */
+  --success: #157f3c; /*  5.08:1 against --canvas                             */
   --success-fg: #ffffff; /*  5.08:1 on --success — AA                            */
-  --success-text: #12703a; /*  5.84:1 on --canvas, 5.57:1 on --success-tint — AA   */
+  --success-text: #12703a; /*  6.17:1 on --canvas, 5.57:1 on --success-tint — AA   */
   --success-tint: #e8f7ee;
-  --success-line: #b8e4c8;
+  --success-line: #b8e4c8; /*  1.27:1 on --success-tint — alert edge, exempt   */
 
   /* Warning */
-  --warning: #996600; /*  4.68:1 against --canvas                             */
+  --warning: #996600; /*  4.94:1 against --canvas                             */
   --warning-fg: #ffffff; /*  4.94:1 on --warning — AA                            */
-  --warning-text: #8a5d00; /*  5.46:1 on --canvas, 5.12:1 on --warning-tint — AA   */
+  --warning-text: #8a5d00; /*  5.76:1 on --canvas, 5.12:1 on --warning-tint — AA   */
   --warning-tint: #fbf1d8;
-  --warning-line: #ecd9a0;
+  --warning-line: #ecd9a0; /*  1.25:1 on --warning-tint — alert edge, exempt   */
 
   /* Danger */
   --danger: #d22d2d;
   --danger-hover: #b92525;
   --danger-fg: #ffffff; /*  5.06:1 on --danger, 6.26:1 on --danger-hover — AA  */
-  --danger-text: #b42222; /*  6.23:1 on --canvas, 5.76:1 on --danger-tint — AA   */
+  --danger-text: #b42222; /*  6.58:1 on --canvas, 5.76:1 on --danger-tint — AA   */
   --danger-tint: #fdecec;
-  --danger-line: #f5c2c2;
+  --danger-line: #f5c2c2; /*  1.37:1 on --danger-tint — alert edge, exempt     */
 
   /* Production — see the block below. Nothing but production may use these. */
-  --production: #b84a00; /*  4.95:1 against --canvas                             */
+  --production: #b84a00; /*  5.23:1 against --canvas                             */
   --production-fg: #ffffff; /*  5.23:1 on --production — AA                         */
-  --production-text: #b34a00; /*  5.11:1 on --canvas, 4.87:1 on the tint — AA         */
+  --production-text: #b34a00; /*  5.39:1 on --canvas, 4.87:1 on the tint — AA         */
   --production-tint: #fff1e6;
-  --production-line: #ffcfa8;
+  --production-line: #ffcfa8; /*  1.29:1 on --production-tint — exempt; the
+                                  badge is carried by its uppercase label and
+                                  the hazard hatching, never by this edge.    */
 
   /* Elevation. Light theme can use real shadows; see the dark block. Both are
      softer and more diffuse than a stock Material ramp — on a white canvas a
@@ -163,59 +217,82 @@
   --overlay: rgb(0 0 0 / 0.72);
 
   /* Raised for the reason given in the light block above. */
-  --fg: #fafafa; /* 18.97:1 on --canvas, 17.17:1 on --surface — AAA */
-  --fg-muted: #adadad; /*  8.82:1 on --canvas,  7.98:1 on --surface — AAA */
+  --fg: #fafafa; /* 18.97:1 on --canvas, 17.18:1 on --surface — AAA */
+  --fg-muted: #adadad; /*  8.82:1 on --canvas,  7.99:1 on --surface — AAA */
   --fg-subtle: #9c9c9c; /*  7.21:1 on --canvas,  6.53:1 on --surface — AAA/AA */
   --fg-disabled: #636363; /*  3.3:1 — see the light-theme note above.           */
 
   /* Dark lines are translucent white rather than a fixed grey. A flat #272e39
      hairline is invisible on --canvas and too loud on --surface-active; one
      alpha value tracks whatever it is drawn over, which is what lets the same
-     `border-line` class work on a card, a menu and the sidebar edge. */
-  --line-subtle: rgb(255 255 255 / 0.06);
-  --line: rgb(255 255 255 / 0.1);
-  --line-strong: rgb(255 255 255 / 0.18);
+     `border-line` class work on a card, a menu and the sidebar edge.
+
+     That alpha is also why every ratio here names the ground it was composited
+     over before being measured. A border paints over its own element's
+     background — `background-clip` is `border-box` — so a translucent line is
+     a different grey on an input well than on a switch track, and only the
+     composite has a contrast ratio at all. The three below are furniture and
+     exempt for the reasons the light block gives; `--line-control` is the one
+     held to 3:1, and both of its composites are worked out under it. */
+  --line-subtle: rgb(255 255 255 / 0.06); /*  1.17:1 over --surface — exempt  */
+  --line: rgb(255 255 255 / 0.1); /*  1.32:1 over --surface — container edge, exempt */
+  --line-strong: rgb(255 255 255 / 0.18); /*  1.75:1 over --surface — exempt  */
+
+  /* Over the --canvas-inset of an input well, a select trigger or a checkbox
+     this resolves to #727272: 3.83:1 against that well and 3.73:1 against the
+     --surface behind it. Over the lighter --surface-active of a switch track
+     it resolves to #828282: 3.51:1 and 4.64:1. The switch track is the
+     binding case in both themes, and 0.4 is where the worse of the two pairs
+     clears 3:1 with room left rather than landing on it. — SC 1.4.11 */
+  --line-control: rgb(255 255 255 / 0.4);
 
   --ring: #a1a1a1; /*  7.66:1 on --canvas, 6.94:1 on --surface — SC 1.4.11 */
+
+  --selection: #6b6b6b; /*  3.72:1 on --canvas, 3.36:1 on --surface           */
+  --selection-fg: #fafafa; /*  5.11:1 on --selection — AA                     */
 
   /* Dark inverts the accent relationship: a bright fill carrying dark ink.
      A near-black button on a near-black canvas is technically legible and
      visually dead; the bright fill is what makes a primary action read as
      the primary action at a glance. */
-  --accent: #e5e5e5; /* 14.61:1 against --canvas as a filled control         */
+  --accent: #e5e5e5; /* 15.72:1 against --canvas as a filled control         */
   --accent-hover: #ffffff;
-  --accent-fg: #171717; /* 14.19:1 on --accent, 17.85:1 on --accent-hover — AAA */
-  --accent-text: #fafafa; /* 18.97:1 on --canvas, 17.17:1 on --surface — AAA      */
+  --accent-fg: #171717; /* 14.23:1 on --accent, 17.93:1 on --accent-hover — AAA */
+  --accent-text: #fafafa; /* 18.97:1 on --canvas, 17.18:1 on --surface — AAA      */
   --accent-tint: #262626;
-  --accent-line: rgb(255 255 255 / 0.14);
+  --accent-line: rgb(255 255 255 / 0.14); /*  1.56:1 over --accent-tint — exempt */
 
-  --success: #3fcf6e; /*  9.54:1 against --canvas                             */
+  /* Status ramps — see the light block for why every `--*-line` here is
+     annotated as exempt rather than raised to 3:1. */
+  --success: #3fcf6e; /*  9.77:1 against --canvas                             */
   --success-fg: #04240f; /*  8.19:1 on --success — AA                            */
-  --success-text: #5fdd87; /* 11.21:1 on --canvas, 9.49:1 on --success-tint — AA   */
+  --success-text: #5fdd87; /* 11.48:1 on --canvas, 9.49:1 on --success-tint — AA   */
   --success-tint: #0e2417;
-  --success-line: #1d4a2c;
+  --success-line: #1d4a2c; /*  1.61:1 on --success-tint — alert edge, exempt   */
 
-  --warning: #f5c542; /* 11.92:1 against --canvas                             */
+  --warning: #f5c542; /* 12.21:1 against --canvas                             */
   --warning-fg: #2a1f02; /* 10.00:1 on --warning — AA                            */
-  --warning-text: #f7ce5e; /* 12.84:1 on --canvas, 10.56:1 on --warning-tint — AA  */
+  --warning-text: #f7ce5e; /* 13.15:1 on --canvas, 10.56:1 on --warning-tint — AA  */
   --warning-tint: #2a2109;
-  --warning-line: #5a4713;
+  --warning-line: #5a4713; /*  1.78:1 on --warning-tint — alert edge, exempt   */
 
   /* Danger keeps white-on-red in both themes. Dark ink on red reads as a
      decorative chip; white on red is the shape people already recognise as
      "this destroys something". */
-  --danger: #d93a36; /*  4.24:1 against --canvas                             */
+  --danger: #d93a36; /*  4.35:1 against --canvas                             */
   --danger-hover: #c22f2c;
   --danger-fg: #ffffff; /*  4.56:1 on --danger, 5.62:1 on --danger-hover — AA  */
-  --danger-text: #ff7b74; /*  7.67:1 on --canvas, 6.97:1 on --danger-tint — AA   */
+  --danger-text: #ff7b74; /*  7.86:1 on --canvas, 6.97:1 on --danger-tint — AA   */
   --danger-tint: #2c1113;
-  --danger-line: #5c2225;
+  --danger-line: #5c2225; /*  1.43:1 on --danger-tint — alert edge, exempt     */
 
-  --production: #ff7a2f; /*  7.43:1 against --canvas                             */
+  --production: #ff7a2f; /*  7.61:1 against --canvas                             */
   --production-fg: #2a1102; /*  6.85:1 on --production — AA                         */
-  --production-text: #ff9a5c; /*  9.23:1 on --canvas, 8.02:1 on the tint — AA         */
+  --production-text: #ff9a5c; /*  9.45:1 on --canvas, 8.24:1 on the tint — AA         */
   --production-tint: #2a1608;
-  --production-line: #66330f;
+  --production-line: #66330f; /*  1.68:1 on --production-tint — exempt; the
+                                  badge is carried by its uppercase label and
+                                  the hazard hatching, never by this edge.    */
 
   /* Shadows are nearly invisible against a near-black canvas, so elevation in
      dark is carried by a lifted border plus a very soft ambient shadow. */
@@ -262,6 +339,7 @@
   --color-line-subtle: var(--line-subtle);
   --color-line: var(--line);
   --color-line-strong: var(--line-strong);
+  --color-line-control: var(--line-control);
 
   --color-ring: var(--ring);
 
@@ -395,9 +473,14 @@
     outline: none;
   }
 
+  /* Both halves of the pair are set here rather than letting the fill land
+     under whatever ink happens to be there. A selection dragged across muted
+     help text, a mono secret value and a heading has to stay one legible
+     block, and forcing the ink is what guarantees the measured ratio in the
+     token block is the ratio every selected glyph actually gets. */
   ::selection {
-    background-color: var(--accent-tint);
-    color: var(--fg);
+    background-color: var(--selection);
+    color: var(--selection-fg);
   }
 
   ::placeholder {
@@ -405,9 +488,12 @@
   }
 
   /* Scrollbars follow the theme rather than the OS default, which is jarringly
-     bright against a near-black canvas on Windows. */
+     bright against a near-black canvas on Windows. The thumb takes the control
+     token, not the hairline one it used to: it is a thing you grab and drag,
+     so it is a control by any reading of SC 1.4.11, and a 1.48:1 thumb is one
+     a low-vision user cannot aim at. */
   * {
-    scrollbar-color: var(--line-strong) transparent;
+    scrollbar-color: var(--line-control) transparent;
     scrollbar-width: thin;
   }
 

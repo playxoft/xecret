@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
+import { jsonLd } from '@/lib/json-ld';
 import { absoluteUrl, SITE_KEYWORDS, SITE_NAME } from '@/lib/site';
 import { DocBody } from '../_components/doc-body';
 import { DocPager } from '../_components/doc-pager';
@@ -128,9 +129,10 @@ export default async function DocPage(props: PageProps<'/docs/[...slug]'>) {
       <main id="doc-content" className="w-full max-w-3xl min-w-0 py-10 sm:py-12">
         <script
           type="application/ld+json"
-          // Serialised from module constants and repository frontmatter — no
-          // request data reaches this string.
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
+          // `jsonLd` rather than `JSON.stringify`: the answers below come from
+          // the rendered page and carry whatever a document says, and a `<`
+          // reaching a script element unescaped ends it.
+          dangerouslySetInnerHTML={{ __html: jsonLd(structuredData) }}
         />
 
         <nav

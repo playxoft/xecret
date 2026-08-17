@@ -27,7 +27,10 @@ export function DocPager({ previous, next }: Pager) {
             <ArrowRightIcon className="size-3.5 rotate-180" />
             Previous
           </span>
-          <span className="text-fg group-hover:text-accent-text text-sm font-medium">
+          {/* Underlined on hover, not merely tinted: the card's border answers
+              the pointer, but the title should say "link" on its own terms
+              rather than leaning on a hue the palette is free to change. */}
+          <span className="text-fg group-hover:text-accent-text text-sm font-medium underline-offset-4 group-hover:underline">
             {previous.title}
           </span>
         </Link>
@@ -44,7 +47,7 @@ export function DocPager({ previous, next }: Pager) {
             Next
             <ArrowRightIcon className="size-3.5" />
           </span>
-          <span className="text-fg group-hover:text-accent-text text-sm font-medium">
+          <span className="text-fg group-hover:text-accent-text text-sm font-medium underline-offset-4 group-hover:underline">
             {next.title}
           </span>
         </Link>

@@ -6,7 +6,7 @@ import { ORGANIZATION_NAME_MAX_LENGTH } from '@xecret/core/validation';
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { formatAbsoluteTime } from '@/lib/format';
 import { PageHeader } from '@/components/layout';
-import { CreateOrganizationDialog, DeleteOrganizationCard } from '@/components/organizations';
+import { DeleteOrganizationCard } from '@/components/organizations';
 import {
   Alert,
   Button,
@@ -37,9 +37,11 @@ import { isOrgAdmin, useOrganization, useSession } from './session';
  */
 export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
   const membership = useOrganization(orgSlug);
-  const { refresh } = useSession();
+  // The create dialog belongs to the shell, which is what has to refresh after
+  // one is created — see `SessionValue.createOrganization`. This screen used to
+  // mount a third copy of it, underneath the shell's two.
+  const { refresh, createOrganization } = useSession();
   const organization = useApiResource<OrganizationResponse>(apiPath.org(orgSlug));
-  const [creating, setCreating] = useState(false);
 
   const loaded = organization.data?.organization;
   const canManage = membership !== null && isOrgAdmin(membership.role);
@@ -53,7 +55,7 @@ export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
         title="Organisation settings"
         description="Who this organisation is, and the identifier every consumer of it depends on."
         actions={
-          <Button variant="secondary" onClick={() => setCreating(true)}>
+          <Button variant="secondary" onClick={createOrganization}>
             <PlusIcon className="size-4" />
             New organisation
           </Button>
@@ -105,8 +107,6 @@ export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
           {canDelete ? <DeleteOrganizationCard organization={loaded} onDeleted={refresh} /> : null}
         </div>
       ) : null}
-
-      <CreateOrganizationDialog open={creating} onOpenChange={setCreating} onCreated={refresh} />
     </div>
   );
 }

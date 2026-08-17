@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ORGANIZATION_NAME_MAX_LENGTH } from './names';
 import {
+  checkSlug,
   isReservedSlug,
   normalizeSlugInput,
   ORGANIZATION_SLUG_MAX_LENGTH,
@@ -9,6 +10,7 @@ import {
   slugSchema,
   SLUG_MAX_LENGTH,
 } from './slug';
+import type { SlugProblem } from './slug';
 
 describe('slugify', () => {
   it.each([
@@ -66,6 +68,100 @@ describe('slugSchema', () => {
       expect(isReservedSlug(slug)).toBe(true);
       expect(slugSchema.safeParse(slug).success).toBe(false);
     }
+  });
+});
+
+describe('checkSlug', () => {
+  it.each(['acme', 'acme-corp', 'a1-b2-c3', 'x'])('accepts %s', (slug) => {
+    expect(checkSlug(slug, SLUG_MAX_LENGTH)).toEqual({ valid: true });
+  });
+
+  /**
+   * Each hyphen rule reports itself rather than collapsing into "invalid
+   * characters".
+   *
+   * `normalizeSlugInput` deliberately lets a trailing hyphen be typed, so a
+   * slug field passes *through* these states on the way to a valid slug — and
+   * "use lowercase letters, digits and single hyphens" is no help to somebody
+   * who has just pressed a hyphen and can see that they did.
+   */
+  it.each<[string, SlugProblem]>([
+    ['', 'empty'],
+    ['acme-', 'trailingHyphen'],
+    ['-acme', 'leadingHyphen'],
+    ['acme--corp', 'doubleHyphen'],
+    ['Acme', 'invalidCharacters'],
+    ['acme corp', 'invalidCharacters'],
+    ['acme_corp', 'invalidCharacters'],
+    ['settings', 'reserved'],
+  ])('reports %s as %s', (slug, problem) => {
+    const check = checkSlug(slug, SLUG_MAX_LENGTH);
+
+    expect(check.valid).toBe(false);
+    expect(check.valid === false && check.problem).toBe(problem);
+  });
+
+  it('applies whatever ceiling it is given', () => {
+    const twentySix = 'a'.repeat(26);
+
+    expect(checkSlug(twentySix, ORGANIZATION_SLUG_MAX_LENGTH).valid).toBe(false);
+    expect(checkSlug(twentySix, SLUG_MAX_LENGTH).valid).toBe(true);
+  });
+
+  // The message goes straight under a form field, and this product does not
+  // return user input in error messages.
+  it('never echoes the value it rejected', () => {
+    const check = checkSlug('Not A Slug At All', SLUG_MAX_LENGTH);
+    expect(check.valid === false && check.message).not.toContain('Not A Slug');
+  });
+
+  /**
+   * The invariant the whole function exists for.
+   *
+   * `POST /api/orgs` validates with `organizationSlugSchema`, the create form
+   * words a rejection with `describeSlugProblem`, and
+   * `GET /api/orgs/availability` reports a category — and all three used to
+   * derive the rules from `SLUG_PATTERN` themselves. A fourth rule added to one
+   * of them left the availability endpoint answering `available: true` for a
+   * slug the create endpoint was about to refuse. They now share this function,
+   * and this is what says so out loud.
+   */
+  it('agrees with the schemas built from it, on every case either of them sees', () => {
+    const corpus = [
+      'acme',
+      'acme-corp',
+      'a1-b2-c3',
+      '',
+      'Acme',
+      'acme corp',
+      'acme_corp',
+      '-acme',
+      'acme-',
+      'acme--corp',
+      'settings',
+      'availability',
+      'a'.repeat(ORGANIZATION_SLUG_MAX_LENGTH),
+      'a'.repeat(ORGANIZATION_SLUG_MAX_LENGTH + 1),
+      'a'.repeat(SLUG_MAX_LENGTH + 1),
+    ];
+
+    for (const slug of corpus) {
+      expect(organizationSlugSchema.safeParse(slug).success, slug).toBe(
+        checkSlug(slug, ORGANIZATION_SLUG_MAX_LENGTH).valid,
+      );
+      expect(slugSchema.safeParse(slug).success, slug).toBe(checkSlug(slug, SLUG_MAX_LENGTH).valid);
+    }
+  });
+
+  // The schema is the function, so the sentence a caller reads is the one
+  // written beside the rule rather than zod's description of a regex.
+  it('carries its own wording into the schema’s issue', () => {
+    const result = organizationSlugSchema.safeParse('acme-');
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.message).toBe(
+      'A slug cannot end with a hyphen. Add a letter or digit after it.',
+    );
   });
 });
 

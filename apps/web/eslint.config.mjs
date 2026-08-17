@@ -2,6 +2,33 @@ import { defineConfig, globalIgnores } from 'eslint/config';
 import nextVitals from 'eslint-config-next/core-web-vitals';
 import nextTs from 'eslint-config-next/typescript';
 
+/**
+ * ── ADR 0003: the Firebase Admin SDK cannot run on Cloudflare Workers. ──
+ * It must never arrive, not even as a convenience import during debugging.
+ *
+ * Held in a constant rather than written inline because two config blocks below
+ * need it and `no-restricted-imports` is all-or-nothing per block: the
+ * build-time exemption for the documentation loader has to re-state this ban in
+ * order to drop the filesystem one, and a security rule that exists in two
+ * hand-maintained copies is a security rule that will exist in one.
+ */
+const FIREBASE_ADMIN_BAN = {
+  paths: [
+    {
+      name: 'firebase-admin',
+      message:
+        'firebase-admin cannot run on Cloudflare Workers (Node-native deps). Use firebase-auth-cloudflare-workers. See docs/adr/0003-firebase-as-identity-provider.md',
+    },
+  ],
+  patterns: [
+    {
+      group: ['firebase-admin/*'],
+      message:
+        'firebase-admin cannot run on Cloudflare Workers. Use firebase-auth-cloudflare-workers. See docs/adr/0003-firebase-as-identity-provider.md',
+    },
+  ],
+};
+
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
@@ -9,24 +36,12 @@ const eslintConfig = defineConfig([
   {
     name: 'xecret/security',
     rules: {
-      // ── ADR 0003: the Firebase Admin SDK cannot run on Cloudflare Workers. ──
-      // It must never arrive, not even as a convenience import during debugging.
       'no-restricted-imports': [
         'error',
         {
-          paths: [
-            {
-              name: 'firebase-admin',
-              message:
-                'firebase-admin cannot run on Cloudflare Workers (Node-native deps). Use firebase-auth-cloudflare-workers. See docs/adr/0003-firebase-as-identity-provider.md',
-            },
-          ],
+          paths: FIREBASE_ADMIN_BAN.paths,
           patterns: [
-            {
-              group: ['firebase-admin/*'],
-              message:
-                'firebase-admin cannot run on Cloudflare Workers. Use firebase-auth-cloudflare-workers. See docs/adr/0003-firebase-as-identity-provider.md',
-            },
+            ...FIREBASE_ADMIN_BAN.patterns,
             {
               group: ['node:fs', 'node:fs/*', 'fs', 'fs/*'],
               message:
@@ -74,7 +89,14 @@ const eslintConfig = defineConfig([
       // module — would put the published documentation somewhere nobody can
       // edit it as prose, to satisfy a rule about a runtime this code never
       // reaches. The blog reads its posts the same way, from `public/blog`.
-      'no-restricted-imports': 'off',
+      //
+      // Stated as a narrower rule rather than as `'off'`, because ESLint
+      // replaces a rule's configuration wholesale: switching it off to permit
+      // `node:fs` also switched off ADR 0003's `firebase-admin` ban, in the one
+      // directory where an exemption from this rule already looked deliberate
+      // and nobody would think to check. The ban that has nothing to do with
+      // the filesystem survives here; only the filesystem group is dropped.
+      'no-restricted-imports': ['error', FIREBASE_ADMIN_BAN],
     },
   },
 

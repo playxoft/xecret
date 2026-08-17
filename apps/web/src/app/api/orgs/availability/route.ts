@@ -1,9 +1,5 @@
 import { z } from 'zod';
-import {
-  isReservedSlug,
-  ORGANIZATION_SLUG_MAX_LENGTH,
-  SLUG_PATTERN,
-} from '@xecret/core/validation';
+import { checkSlug, ORGANIZATION_SLUG_MAX_LENGTH } from '@xecret/core/validation';
 import { isOrgSlugAvailable } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
 import { json, parseQuery } from '@/server/http';
@@ -39,9 +35,15 @@ import { authenticatedRoute } from '@/server/route';
  *    it is, or whether the caller could join it. `taken` is all a stranger
  *    learns, which is what every product with a global namespace — GitHub,
  *    Slack, Vercel — already tells anyone who visits a sign-up form.
- *  - **It is authenticated and rate-limited** on a bucket of its own, so it is
- *    not an anonymous, unbounded enumeration tool. That is the difference
- *    between "a form that works" and "a namespace scraper".
+ *  - **It answers a signed-in browser session and nothing else**, and is
+ *    rate-limited on a bucket of its own. That is what makes it a form that
+ *    works rather than a namespace scraper. It is the rule `POST /api/orgs` and
+ *    `DELETE /api/orgs/{slug}` state, held for the same reason — a CLI token
+ *    acts as its user for secrets, not for existence — and this is a question
+ *    about existence, asked of a namespace every tenant shares. The endpoint
+ *    refused only service tokens until a review pointed out the obvious gap: a
+ *    CLI token leaked from a build machine is authenticated too, and could walk
+ *    the whole namespace one debounce at a time.
  *
  * Project and environment slugs get no equivalent endpoint and must not: those
  * are scoped to an organisation, so answering the same question about them would
@@ -56,21 +58,31 @@ const availabilityQuery = z.object({
 type Unavailable = 'invalid' | 'reserved' | 'taken';
 
 export const GET = authenticatedRoute(async ({ request, principal, services }) => {
-  // A service token has no create form and no business enumerating a namespace.
-  if (principal.kind === 'serviceToken') {
-    throw errors.forbidden('Service tokens cannot check organisation slugs.');
+  // The gate the header argues for, enforced rather than described. A create
+  // form only ever exists in a browser; a token asking this question is asking
+  // what else is out there.
+  if (principal.kind !== 'user') {
+    throw errors.forbidden('Checking an organisation slug requires a signed-in browser session.');
   }
-
-  const userId = principal.kind === 'user' ? principal.user.id : principal.userId;
 
   // Before the query, as everywhere: the limit exists to bound how much work an
   // authenticated caller can make the database do by holding down a key.
-  await enforce(services.env, 'RL_SLUG_CHECK', rateLimitKey([userId]));
+  await enforce(services.env, 'RL_SLUG_CHECK', rateLimitKey([principal.user.id]));
 
   const { slug } = parseQuery(request, availabilityQuery);
+  // ── The question is answered about the normalised slug, not the raw one ──
+  // The query schema trims and this lowercases, because somebody who types
+  // "ACME " is asking about `acme` and reporting their slug as invalid would be
+  // answering a question they did not ask. `POST /api/orgs` does no such thing:
+  // `organizationSlugSchema` refuses both, since `SLUG_PATTERN` is lowercase and
+  // a slug is permanent enough that the server has no business quietly editing
+  // one. The two therefore agree about the value in `slug` below and not about
+  // the caller's raw text, which is why the response echoes what was checked
+  // rather than what was asked. Clients must submit that value — the create
+  // form does, via `normalizeSlugInput`.
   const normalized = slug.toLowerCase();
 
-  const reason = await checkSlug(normalized, services.db);
+  const reason = await unavailableBecause(normalized, services.db);
 
   return json({
     slug: normalized,
@@ -81,15 +93,24 @@ export const GET = authenticatedRoute(async ({ request, principal, services }) =
   });
 });
 
-async function checkSlug(
+async function unavailableBecause(
   slug: string,
   db: Parameters<typeof isOrgSlugAvailable>[0],
 ): Promise<Unavailable | null> {
-  // Shape first, so a slug that could never be valid costs no query. This
-  // reproduces `slugSchema`'s clauses rather than parsing with it, because the
-  // caller needs a category to render, not a zod issue list.
-  if (!SLUG_PATTERN.test(slug)) return 'invalid';
-  if (isReservedSlug(slug)) return 'reserved';
+  // Shape first, so a slug that could never be valid costs no query. Answered by
+  // the same function `organizationSlugSchema` is built from, so this endpoint
+  // cannot say "available" about a slug `POST /api/orgs` would then reject for
+  // its shape — which is exactly what it did while it kept its own copy of the
+  // rules. The claim holds for the value this endpoint reports and no further:
+  // it is asked about `slug`, already normalised by the caller above, and
+  // `POST` is stricter about everything that normalisation removed.
+  //
+  // Every problem but `reserved` collapses to `invalid`: the form already knows
+  // the shape rules and words them itself, and the distinction that matters to a
+  // caller is "fix your slug" versus "this one is spoken for".
+  const check = checkSlug(slug, ORGANIZATION_SLUG_MAX_LENGTH);
+  if (!check.valid) return check.problem === 'reserved' ? 'reserved' : 'invalid';
+
   if (!(await isOrgSlugAvailable(db, slug))) return 'taken';
   return null;
 }

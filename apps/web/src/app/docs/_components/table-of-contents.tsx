@@ -91,7 +91,16 @@ export function InlineTableOfContents({ entries }: { entries: readonly TocEntry[
       <ul className="mt-3 flex flex-col gap-1.5">
         {entries.map((entry) => (
           <li key={entry.id} className={entry.depth === 3 ? 'pl-4' : undefined}>
-            <a href={`#${entry.id}`} className="text-fg-muted hover:text-accent-text text-sm">
+            {/* Underlined on hover, not merely tinted. These rows have no
+                border and no background, so a hue was the only thing answering
+                the pointer — and the palette is moving to one where
+                `--accent-text` and `--fg` are the same value, which leaves
+                nothing at all. This list is also the only contents list below
+                `xl`, so it is what every phone and most laptops get. */}
+            <a
+              href={`#${entry.id}`}
+              className="text-fg-muted hover:text-fg text-sm underline-offset-4 hover:underline"
+            >
               {entry.title}
             </a>
           </li>

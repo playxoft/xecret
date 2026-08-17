@@ -17,9 +17,14 @@ import { errorName, scrubText } from './logging';
  *
  * ── This spends one of six connections ──
  * A Worker invocation may open six outgoing connections (ADR 0006), and the
- * database already holds one. Sending mail is therefore never done inline with
- * a response the user is waiting for: the reset route hands this to `waitUntil`,
- * so the request returns while the send is still in flight.
+ * database already holds one. Whether a caller pays that cost before or after
+ * its response is the caller's decision, and the two sites here decide
+ * differently: the invitation mail defers with `waitUntil`, because its response
+ * carries the link itself and a failed send loses nothing. The PIN reset route
+ * awaits, because its response is the *only* thing telling somebody locked out
+ * of their account where to look next, and "check your email" is a lie if the
+ * send has not happened yet. Each site states its reasoning; neither is the
+ * default.
  *
  * ── What is never in an email ──
  * No secret value, no PIN, no session token, and no statement about whether an

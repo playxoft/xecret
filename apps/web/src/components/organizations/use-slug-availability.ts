@@ -2,11 +2,7 @@
 
 import { useEffect, useState } from 'react';
 
-import {
-  isReservedSlug,
-  ORGANIZATION_SLUG_MAX_LENGTH,
-  SLUG_PATTERN,
-} from '@xecret/core/validation';
+import { checkSlug, ORGANIZATION_SLUG_MAX_LENGTH } from '@xecret/core/validation';
 import { api } from '@/lib/api';
 import { apiPath, withQuery } from '@/app/(dashboard)/_lib/paths';
 
@@ -52,37 +48,19 @@ interface AvailabilityResponse {
 }
 
 /**
- * Validates a slug against the rules the server applies, in one sentence.
+ * The rules an organisation slug must satisfy, as a line the person typing can
+ * act on — or `null` when there is nothing to say.
  *
- * The clauses come from `@xecret/core/validation`, so there is still only one
- * definition of what a valid slug is; only the wording differs. `slugSchema`'s
- * own output is a zod issue list written for a developer, and this needs a line
- * written for the person typing. (`create-project-dialog.tsx` does the same, for
- * the same reason.)
- *
- * ── Why the hyphen rules get their own messages ──
- * `normalizeSlugInput` deliberately lets a trailing hyphen be typed, because
- * stripping it is what made `acme-corp` untypable. The consequence is that
- * "invalid" is now a normal, transient state that a user passes through on the
- * way to a valid slug — so the message has to say precisely which rule is
- * unmet. "Use lowercase letters, digits and single hyphens" is useless to
- * somebody who has just typed a hyphen and can see that they did.
+ * All this adds to `checkSlug` is the organisation's ceiling and the shape a
+ * `Field` wants. It used to add the rules themselves, restated from
+ * `SLUG_PATTERN` and `isReservedSlug`, which made this the third place that knew
+ * what a valid slug is and the second that could disagree with `POST /api/orgs`.
+ * The wording lives in `@xecret/core/validation` beside the rules it describes,
+ * so a rule and its explanation are added in one edit.
  */
 export function describeSlugProblem(slug: string): string | null {
-  if (slug.length === 0) return 'Enter a slug.';
-  if (slug.length > ORGANIZATION_SLUG_MAX_LENGTH) {
-    return `A slug can be at most ${ORGANIZATION_SLUG_MAX_LENGTH} characters.`;
-  }
-  // Ordered so the transient case a user is most likely to be in — mid-word,
-  // hyphen just pressed — is the one they are told about.
-  if (slug.endsWith('-')) return 'A slug cannot end with a hyphen. Add a letter or digit after it.';
-  if (slug.startsWith('-')) return 'A slug cannot start with a hyphen.';
-  if (slug.includes('--')) return 'Use single hyphens — two in a row is not allowed.';
-  if (!SLUG_PATTERN.test(slug)) {
-    return 'Use lowercase letters, digits and single hyphens — no spaces.';
-  }
-  if (isReservedSlug(slug)) return 'That slug is reserved. Choose a different one.';
-  return null;
+  const check = checkSlug(slug, ORGANIZATION_SLUG_MAX_LENGTH);
+  return check.valid ? null : check.message;
 }
 
 /**

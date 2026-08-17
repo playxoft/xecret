@@ -21,7 +21,10 @@ export function Switch({ className, ...props }: SwitchProps) {
     <SwitchPrimitive.Root
       {...fieldProps}
       className={cn(
-        'border-line-strong bg-surface-active relative inline-flex h-[1.3rem] w-[2.3rem] shrink-0 items-center rounded-full border',
+        // Of every ground `--line-control` is drawn against, this track is the
+        // one nearest the border's own luminance in both themes — so it is the
+        // case that sets the token's value. See the Lines block in globals.css.
+        'border-line-control bg-surface-active relative inline-flex h-[1.3rem] w-[2.3rem] shrink-0 items-center rounded-full border',
         'transition-colors duration-150',
         'data-[state=checked]:border-accent data-[state=checked]:bg-accent',
         'disabled:cursor-not-allowed disabled:opacity-55',

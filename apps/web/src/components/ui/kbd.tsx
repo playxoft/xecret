@@ -30,8 +30,21 @@ const GLYPHS: Record<string, string> = {
   space: '␣',
 };
 
+/**
+ * The glyph for a key name, or the name itself.
+ *
+ * Asked with `Object.hasOwn` rather than by indexing: `GLYPHS` is an object
+ * literal, so it inherits from `Object.prototype`, and two of the names living
+ * there are already lower case. `constructor` reads back the `Object`
+ * function and `__proto__` the prototype object; `??` never fires on either,
+ * because neither is nullish; and React is handed a value where a string
+ * belongs. Every chord in this repository is a literal written at its call
+ * site, so nothing reaches that today — the guard is one call, and it means
+ * the component stays correct without anyone having to know that.
+ */
 function glyphFor(key: string): string {
-  return GLYPHS[key.toLowerCase()] ?? key;
+  const name = key.toLowerCase();
+  return (Object.hasOwn(GLYPHS, name) ? GLYPHS[name] : undefined) ?? key;
 }
 
 /**

@@ -100,7 +100,7 @@ the Phase.dev TLS session · let one person hold two shares · skip the fingerpr
 ```
 Phase.dev                    ← system of record. Humans read it only here.
    │
-   │  phase run -- wrangler deploy       (deploy time, once per release)
+   │  phase run -- sh scripts/deploy-bootstrap.sh   (once, and after §4.3)
    ▼
 Cloudflare Secrets Store     ← bound to the Worker as env.XECRET_ROOT_KEYS
    │
@@ -108,6 +108,12 @@ Cloudflare Secrets Store     ← bound to the Worker as env.XECRET_ROOT_KEYS
    ▼
 Worker memory                ← unwraps Org key → Env key → secret. No network calls.
 ```
+
+That top arrow is deliberately not part of a release. `phase run -- sh
+scripts/deploy-web.sh production` builds and uploads the Worker and *binds* the Secrets Store
+entry; it never writes it. So a release neither refreshes the key nor can corrupt it, and the
+key crossing from Phase.dev to Cloudflare is a separate, deliberate act — which is also why
+§4.3 is a procedure rather than "redeploy".
 
 **The Worker never contacts Phase.dev at runtime.** See
 [ADR 0002](../adr/0002-root-key-custody.md) for the four reasons why. A Phase.dev outage must
@@ -135,8 +141,12 @@ clean redeploys are blocked.
 
 ### 4.3 Cloudflare Secrets Store entry deleted
 **Impact:** **total outage.** No secret is decryptable until restored.
-**Action:** re-run `phase run -- wrangler deploy` to re-populate from Phase.dev. Expect
-minutes, not hours. If Phase.dev is *also* gone, go to §4.4.
+**Action:** re-create the entry from Phase.dev with `phase run -- sh
+scripts/deploy-bootstrap.sh`, which is idempotent and pipes the value over stdin rather than
+argv. Redeploying does **not** fix this: the deploy binds the entry, it does not write it, and
+wrangler refuses a deploy whose binding names something that no longer exists — so the attempt
+fails without telling you the key is what is missing. Expect minutes, not hours. If Phase.dev
+is *also* gone, go to §4.4.
 
 ### 4.4 Both Phase.dev and Cloudflare are lost — full disaster recovery
 **Impact:** total outage. This is what escrow exists for.
@@ -201,7 +211,11 @@ phase run -- npx tsx scripts/rotate-root-key.ts --from N-1 --to N
 
 1. Generate a new Root KEK by the §2 ceremony. It becomes version N.
 2. Load into Phase.dev alongside the old version — **both must be readable during rotation.**
-3. Deploy. The Worker now holds both versions.
+3. Push the updated map to the Secrets Store, then deploy so a fresh isolate reads it. Note
+   that `scripts/deploy-bootstrap.sh` will *not* do this: it skips a secret that already
+   exists, which is correct for a bootstrap and wrong here. Update the entry in place with
+   `npx wrangler secrets-store secret update <store-id> --secret-id <id> --remote`, which
+   prompts for the value rather than taking it in argv. The Worker now holds both versions.
 4. Run the rotation script: for each organisation, unwrap the Org Master Key with version
    N−1 and re-wrap with N, in a transaction, updating `org_keys.root_key_version`.
 5. Verify no rows remain on version N−1.

@@ -3,6 +3,7 @@ import Link from 'next/link';
 
 import { Button } from '@/components/ui/button';
 import { ArrowRightIcon, BookIcon, KeyIcon, TerminalIcon, UsersIcon } from '@/components/ui/icons';
+import { jsonLd } from '@/lib/json-ld';
 import { absoluteUrl, SITE_KEYWORDS, SITE_NAME } from '@/lib/site';
 import { loadNav } from './_lib/content';
 
@@ -105,7 +106,9 @@ export default async function DocsHomePage() {
     <main id="doc-content" className="w-full min-w-0 px-5 py-10 sm:py-14 lg:px-8">
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
+        // Every name and description here is frontmatter, and a document is
+        // free to contain a `<`. See `jsonLd`.
+        dangerouslySetInnerHTML={{ __html: jsonLd(structuredData) }}
       />
 
       <div className="max-w-3xl">
@@ -118,15 +121,23 @@ export default async function DocsHomePage() {
           cover all of it, from the first command to running the whole thing on your own
           infrastructure.
         </p>
+        {/* Inline links carry a standing underline, not a hover one. Inside a
+            `text-fg-muted` paragraph the only other thing marking them is the
+            accent colour, and colour alone is not an affordance — WCAG 1.4.1
+            says so, and a reader who cannot separate the two hues is left
+            hunting for a link nothing distinguishes. */}
         <p className="text-fg-muted mt-3 text-base leading-7">
           New here? Start with the{' '}
-          <Link href="/docs/quickstart" className="text-accent-text font-medium hover:underline">
+          <Link
+            href="/docs/quickstart"
+            className="text-accent-text font-medium underline underline-offset-4"
+          >
             quickstart
           </Link>
           . If you have never used a secret manager before, read{' '}
           <Link
             href="/docs/what-is-xecret"
-            className="text-accent-text font-medium hover:underline"
+            className="text-accent-text font-medium underline underline-offset-4"
           >
             what xecret is
           </Link>{' '}
@@ -161,7 +172,11 @@ export default async function DocsHomePage() {
                 className="border-line bg-surface hover:border-line-strong group flex h-full flex-col gap-2 rounded-xl border p-5 transition-colors"
               >
                 <Icon className="text-accent-text size-5" />
-                <span className="text-fg group-hover:text-accent-text text-sm font-semibold">
+                {/* The title underlines on hover as well as shifting colour.
+                    The border already answers the pointer, but the tint is the
+                    only signal the title itself carries, and a tint is not one
+                    every reader — or every palette — can be relied on for. */}
+                <span className="text-fg group-hover:text-accent-text text-sm font-semibold underline-offset-4 group-hover:underline">
                   {title}
                 </span>
                 <span className="text-fg-muted text-sm leading-6">{body}</span>
@@ -193,7 +208,10 @@ export default async function DocsHomePage() {
                 {section.items.map((item) => (
                   <li key={item.href} className="border-line-subtle border-b">
                     <Link href={item.href} className="group block py-3">
-                      <span className="text-fg group-hover:text-accent-text text-sm font-medium">
+                      {/* A bare row: no border and no background move under the
+                          pointer, so the underline is the whole of the hover
+                          feedback rather than a reinforcement of it. */}
+                      <span className="text-fg group-hover:text-accent-text text-sm font-medium underline-offset-4 group-hover:underline">
                         {item.title}
                       </span>
                       <span className="text-fg-muted mt-0.5 block text-sm leading-6">
@@ -223,17 +241,26 @@ export default async function DocsHomePage() {
           written in. Append <code className="font-mono">.md</code> to any documentation URL to get
           the source — <code className="font-mono">/docs/cli/commands.md</code>, for instance. There
           is an index at{' '}
-          <Link href="/llms.txt" className="text-accent-text font-medium hover:underline">
+          <Link
+            href="/llms.txt"
+            className="text-accent-text font-medium underline underline-offset-4"
+          >
             /llms.txt
           </Link>{' '}
           and the entire documentation set concatenated into one file at{' '}
-          <Link href="/llms-full.txt" className="text-accent-text font-medium hover:underline">
+          <Link
+            href="/llms-full.txt"
+            className="text-accent-text font-medium underline underline-offset-4"
+          >
             /llms-full.txt
           </Link>
           .
         </p>
         <p className="text-fg-muted mt-3 text-sm leading-7">
-          <Link href="/docs/ai-agents" className="text-accent-text font-medium hover:underline">
+          <Link
+            href="/docs/ai-agents"
+            className="text-accent-text font-medium underline underline-offset-4"
+          >
             Using xecret with AI agents
           </Link>{' '}
           covers the part that matters more: how to let a coding agent run your app without handing
