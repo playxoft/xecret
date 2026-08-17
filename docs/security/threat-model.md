@@ -62,9 +62,20 @@ unauthenticated route added by accident.
 **Mitigations:** authentication is deny-by-default — routes opt *in* to being public, never
 out · Cloudflare rate limiting on login, token exchange, and invitation acceptance ·
 parameterised queries only (Drizzle) · 256-bit random tokens compared in constant time ·
-no user-supplied URL is ever fetched server-side in v1 · security headers and strict CORS.
+no user-supplied URL is ever fetched server-side in v1 · security headers and strict CORS ·
+a Content Security Policy on every response (`apps/web/src/lib/csp.ts`).
 
 **Residual risk:** Low. A zero-day in Cloudflare or Next.js remains possible.
+
+**Known limit of the CSP.** `script-src` carries `'unsafe-inline'`, so the policy does not
+stop an injected inline `<script>` from running — the App Router streams its RSC payload as
+a per-page inline script, and the nonce that would replace it requires a Proxy this stack
+cannot have (ADR 0008). What the policy does remove is what such a script could accomplish:
+`connect-src` and `img-src` refuse exfiltration to any other origin, `script-src 'self'`
+refuses a second stage, `form-action` refuses a redirected POST, and `base-uri 'self'`
+refuses a rewrite of every relative URL on the page. Treat inline execution as *contained*,
+not prevented, and keep escaping at the point of render — see the documentation renderer,
+which is where this was learned.
 
 ---
 
