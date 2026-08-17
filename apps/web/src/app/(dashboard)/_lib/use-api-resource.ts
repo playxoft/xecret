@@ -37,6 +37,22 @@ export interface ApiResource<T> {
    *
    * Ignoring the promise is still perfectly correct for a retry button, and
    * every such caller does.
+   *
+   * ── What "resolved" means, precisely ──
+   * That the response has been handed to `setState` — not that React has
+   * rendered with it. The continuation of an `await` is a microtask and React's
+   * flush is not, so an awaiting caller runs *before* anything re-renders. The
+   * navigating callers are correct regardless, but for a more specific reason
+   * than "the new answer is in state": the update is already queued when they
+   * call `router.push`, so the render that the navigation itself triggers
+   * carries it. What a caller cannot do is read `data` off this hook straight
+   * after the `await` and expect the new value — that is the render it has not
+   * had yet.
+   *
+   * It also resolves *without* an answer in the three cases where one is never
+   * coming: the hook unmounts, its `path` becomes `null`, or the request fails.
+   * A promise that can never settle strands the `await` behind it for the life
+   * of the page, which is a worse failure than an early "no".
    */
   reload: () => Promise<void>;
 }
@@ -120,6 +136,26 @@ export function useApiResource<T>(path: string | null): ApiResource<T> {
 
     return () => controller.abort();
   }, [path, attempt, settle]);
+
+  /**
+   * Releases anyone still awaiting a reload when the hook goes away.
+   *
+   * The effect above aborts its request on cleanup, and both of its callbacks
+   * return early on an aborted signal — before reaching `settle`. That is right
+   * for an abort caused by a *new* attempt, whose own response settles the
+   * earlier waiters along with its own. It is wrong for the last one: unmount
+   * this hook with a caller mid-`await` and that promise can never settle, so
+   * the continuation after it never runs and the caller is left half way through
+   * whatever it was doing, with nothing on screen to say why.
+   *
+   * `nextAttempt.current` is read at cleanup rather than captured, so it is the
+   * highest attempt anyone ever asked about — every waiter is at or below it.
+   * Empty deps, so this runs on unmount only and never between attempts, where
+   * settling early is exactly the bug the attempt tag exists to prevent.
+   */
+  useEffect(() => {
+    return () => settle(nextAttempt.current);
+  }, [settle]);
 
   const reload = useCallback(() => {
     // Set from an event handler rather than from the effect, which is why this
