@@ -66,12 +66,30 @@ describe('token generation', () => {
   });
 });
 
+/**
+ * The random segment of a token — everything past the second separator.
+ *
+ * `token.split('_')[2]` is the obvious way to write this and it is wrong, for
+ * the reason `isWellFormedToken` states: the base64url alphabet contains `_`,
+ * so a split on every underscore cuts the secret into pieces on roughly half of
+ * all tokens. The test below then asserted that a digest does not contain a
+ * *one- or two-character fragment* of the secret, which a 43-character
+ * base64url string swallows about 2.4% of the time — measured, and the run that
+ * failed CI reported `Expected: "B"`. A flake is bad; a flake that reads as a
+ * leak, in the assertion whose whole job is proving no leak exists, teaches
+ * whoever sees it next to re-run the build.
+ */
+function secretOf(token: string): string {
+  const environmentSeparator = token.indexOf('_', token.indexOf('_') + 1);
+  return token.slice(environmentSeparator + 1);
+}
+
 describe('token hashing', () => {
   it('stores a 256-bit digest, never the token', async () => {
     const { token, hash } = await generateToken('session');
 
     expect(hash).toHaveLength(32);
-    expect(toBase64Url(hash)).not.toContain(token.split('_')[2]);
+    expect(toBase64Url(hash)).not.toContain(secretOf(token));
   });
 
   it('is deterministic', async () => {

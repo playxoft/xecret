@@ -112,7 +112,16 @@ export function isSensitiveKey(key: string): boolean {
  * embedded in a sentence rather than as its own field, which no name-based rule
  * can catch.
  */
-const TEXT_SCRUBBERS: readonly { pattern: RegExp; replacement: string }[] = [
+const TEXT_SCRUBBERS: readonly {
+  pattern: RegExp;
+  /**
+   * A function where the decision needs the match itself — a pattern broad
+   * enough to be safe will sometimes catch something that only looks like what
+   * it is hunting, and the judgement about which is which reads better as code
+   * than as more regular expression.
+   */
+  replacement: string | ((match: string, ...groups: string[]) => string);
+}[] = [
   // postgres://user:password@host/db — the documented reason error messages
   // were previously not logged at all in this codebase. The scheme and
   // everything after the `@` survive, because "which host did it fail to reach"
@@ -135,14 +144,59 @@ const TEXT_SCRUBBERS: readonly { pattern: RegExp; replacement: string }[] = [
   // the alternative was recording nothing but the error's class name, which is
   // how a delivery failure stayed undiagnosable. The user id is on the line
   // already, so nothing about "who" is lost.
-  { pattern: /\b[\w.+-]+@[\w-]+(\.[\w-]+)+\b/g, replacement: '[redacted-email]' },
+  //
+  // Matched broadly and then narrowed by `isVersionSpecifier`, rather than
+  // matched narrowly in the first place. The distinction is the whole design:
+  // an expression precise enough to describe a valid address is also an
+  // expression that lets every *invalid* one through, and the malformed
+  // addresses are exactly the ones a provider rejects with the recipient
+  // quoted back. `user@example.c0m` has to be redacted for the same reason
+  // `user@example.com` does, and no rule keyed on what a real domain looks
+  // like will do it. So the default is to redact, and the one shape carved
+  // back out is the one that provably is not an address.
+  //
+  // A bare host (`root@localhost`) still does not match, here as before: with
+  // no dot there is nothing to distinguish it from the `@` in ordinary prose.
+  {
+    pattern: /\b[\w.+-]+@([\w-]+(?:\.[\w-]+)+)\b/g,
+    replacement: (match: string, domain: string) =>
+      isVersionSpecifier(domain) ? match : '[redacted-email]',
+  },
 ];
+
+/**
+ * True for the right-hand side of `react@19.2.0`, false for `example.com`.
+ *
+ * A versioned module specifier is address-shaped, and redacting one costs the
+ * exact detail a stack frame or a dependency error is read for — which is the
+ * diagnosability this module's own email rule exists to make affordable. It is
+ * the only false positive worth carving out, because it is the only one whose
+ * right-hand side can be recognised without knowing anything about domains.
+ *
+ * An IPv4 literal is numeric too, and it *is* a mail domain — `user@10.0.0.1`
+ * is deliverable — so a dotted quad is excluded from the exclusion. That costs
+ * a four-component version (`pkg@1.2.3.4`) its digits in a log line, which is
+ * the right direction to be wrong in.
+ */
+function isVersionSpecifier(domain: string): boolean {
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(domain)) return false;
+  return /^v?\d+(?:\.\d+)*(?:[-+][\w.]+)?$/i.test(domain);
+}
 
 /** Removes credential-shaped substrings from free text and bounds its length. */
 export function scrubText(text: string): string {
   let scrubbed = text;
   for (const { pattern, replacement } of TEXT_SCRUBBERS) {
-    scrubbed = scrubbed.replace(pattern, replacement);
+    // The two branches are identical on purpose. `replace` is overloaded on a
+    // string versus a replacer function and accepts neither as a union, so the
+    // call has to be written once on each side of the narrowing. Passing the
+    // union through a cast instead would work today and silently do the wrong
+    // thing the day a replacer is handed to the string overload, where `$1`
+    // means something else entirely.
+    scrubbed =
+      typeof replacement === 'string'
+        ? scrubbed.replace(pattern, replacement)
+        : scrubbed.replace(pattern, replacement);
   }
   return scrubbed.length > MAX_STRING ? `${scrubbed.slice(0, MAX_STRING)}…` : scrubbed;
 }

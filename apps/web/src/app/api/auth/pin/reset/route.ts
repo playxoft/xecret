@@ -24,10 +24,16 @@ import { authenticatedRoute } from '@/server/route';
  * control of the mailbox. Combined with the session cookie the requester
  * already holds, that is two independent factors to replace a PIN.
  *
- * ── The mail is sent after the response ──
- * `waitUntil`, not `await`. A Worker gets six outgoing connections and the
- * database has one; making the user watch a spinner while Zoho's API is slow
- * buys nothing, since the answer is the same either way.
+ * ── The mail is sent before the response ──
+ * `await`, not `waitUntil`. This used to defer the send, and the reasoning for
+ * the reversal is at the call site below — it is a story about an incident, and
+ * it belongs next to the code it explains.
+ *
+ * ── A minted token is audited whether or not it was delivered ──
+ * The row is written before the send, so a provider that refuses still leaves a
+ * live, single-use reset token behind. Auditing only the delivered case would
+ * mean the log says "no reset was issued" while the database says otherwise,
+ * and an incident review has no way to tell which one to believe.
  */
 
 export const POST = authenticatedRoute(
@@ -99,6 +105,13 @@ export const POST = authenticatedRoute(
 
     const url = `${publicOrigin(services.env)}/reset-pin?token=${encodeURIComponent(token)}`;
 
+    // Resolved before the send rather than after it, so both endings below can
+    // write their record. The audit log is scoped to an organisation and a user
+    // who belongs to none has nowhere to write — which is a gap in the model
+    // rather than in this route, and is why the null is tolerated here.
+    const orgId = await primaryOrgId(services, user.user.id);
+    const subject = { type: 'user', id: user.user.id } as const;
+
     // ── Awaited, not deferred ──
     //
     // This used to go through `waitUntil`, on the reasoning that a Worker has
@@ -140,7 +153,22 @@ export const POST = authenticatedRoute(
 
       // The token stays in the database. It is single-use and short-lived, and
       // an unused row is harmless — whereas rolling it back would mean a second
-      // failure path to get wrong on the way out.
+      // failure path to get wrong on the way out. It is *not* unrecorded,
+      // though: something that can replace a PIN now exists, and the audit log
+      // is where that fact has to live regardless of who read the email.
+      //
+      // `outcome: error` on this action means exactly one thing — a token was
+      // minted and not delivered. It cannot be confused with the other way a
+      // reset fails to arrive, because a deployment with no mailer returns
+      // above without minting anything, so it writes no record at all.
+      if (orgId !== null) {
+        record(
+          audit(orgId).error('auth.pin_reset', subject, 'upstreamUnavailable', {
+            source: 'dashboard',
+          }),
+        );
+      }
+
       return json({
         sent: false,
         reason:
@@ -150,14 +178,12 @@ export const POST = authenticatedRoute(
       });
     }
 
-    const orgId = await primaryOrgId(services, user.user.id);
     if (orgId !== null) {
       record(
-        audit(orgId).success(
-          'auth.pin_reset',
-          { type: 'user', id: user.user.id },
-          { source: 'dashboard', reason: 'requested' },
-        ),
+        audit(orgId).success('auth.pin_reset', subject, {
+          source: 'dashboard',
+          reason: 'requested',
+        }),
       );
     }
 

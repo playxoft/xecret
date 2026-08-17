@@ -17,6 +17,8 @@ import {
   environmentPatchSchema,
   NAME_MAX_LENGTH,
   organizationCreateSchema,
+  organizationLimitReached,
+  ORGANIZATIONS_PER_ACCOUNT_LIMIT,
   organizationPatchSchema,
   pageQuerySchema,
   projectCreateSchema,
@@ -163,6 +165,35 @@ describe('organisation creation schema', () => {
 
     expect(error.code).toBe('validation_failed');
     expect(JSON.stringify(error.toBody('req-1'))).not.toContain('ownerId');
+  });
+});
+
+/**
+ * The refusal itself. Which callers reach it, and after which other gates, is
+ * asserted against the real handler in `app/api/orgs/orgs-routes.test.ts`.
+ */
+describe('the organisation limit', () => {
+  it('answers 409, the same status the product’s other quota answers', () => {
+    const error = organizationLimitReached();
+
+    // Not 403: the caller's permissions are fine, and the identical request
+    // succeeds once they delete one. `mapMembershipError` maps `seatLimit` the
+    // same way, and two quotas answering differently would make the rule look
+    // like a permissions problem to anybody reading a client's error handling.
+    expect(error.code).toBe('conflict');
+    expect(error.status).toBe(409);
+  });
+
+  it('states the number, because it is the only actionable thing left to say', () => {
+    expect(organizationLimitReached().message).toContain(String(ORGANIZATIONS_PER_ACCOUNT_LIMIT));
+  });
+
+  // A limit somebody meets while working normally is a limit that will be raised
+  // by whoever is on support that day. This one exists to stop a script, and the
+  // number should read that way.
+  it('sits far above the one or two organisations a real account holds', () => {
+    expect(ORGANIZATIONS_PER_ACCOUNT_LIMIT).toBeGreaterThanOrEqual(5);
+    expect(Number.isInteger(ORGANIZATIONS_PER_ACCOUNT_LIMIT)).toBe(true);
   });
 });
 

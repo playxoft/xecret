@@ -149,12 +149,122 @@ export function normalizeSlugInput(input: string): string {
   );
 }
 
-export const slugSchema = z
-  .string()
-  .min(1, 'Slug cannot be empty.')
-  .max(SLUG_MAX_LENGTH)
-  .regex(SLUG_PATTERN, 'Use lowercase letters, digits and single hyphens.')
-  .refine((slug) => !isReservedSlug(slug), { message: 'This name is reserved.' });
+/**
+ * Why a slug cannot be used, as a category rather than a sentence.
+ *
+ * Three callers ask the same question and need three different things back: the
+ * create form renders a line of prose under the field,
+ * `GET /api/orgs/availability` reports a machine-readable `reason`, and
+ * `slugSchema` turns it into a zod issue. Each used to derive the rules from
+ * `SLUG_PATTERN` and `isReservedSlug` itself, so adding a rule to one of them
+ * left the availability endpoint answering `available: true` for a slug
+ * `POST /api/orgs` was about to refuse — a form that says yes and an API that
+ * says no, with nothing failing anywhere to say so.
+ */
+export type SlugProblem =
+  | 'empty'
+  | 'tooLong'
+  | 'leadingHyphen'
+  | 'trailingHyphen'
+  | 'doubleHyphen'
+  | 'invalidCharacters'
+  | 'reserved';
+
+/**
+ * A union rather than optional fields, so `valid` narrows: a caller that has
+ * checked it gets a `message` typed `string`, and one that has not cannot reach
+ * for it at all.
+ */
+export type SlugCheck =
+  | { valid: true }
+  /** `message` is safe to show a user directly — it never echoes the input. */
+  | { valid: false; problem: SlugProblem; message: string };
+
+/**
+ * What a valid slug is. The one definition of it.
+ *
+ * ── Why each hyphen rule is its own problem ──
+ * `normalizeSlugInput` deliberately lets a trailing hyphen be typed, because
+ * stripping it is what made `acme-corp` untypable. The consequence is that
+ * "invalid" is a normal, transient state a user passes through on the way to a
+ * valid slug — so the answer has to say precisely which rule is unmet. "Use
+ * lowercase letters, digits and single hyphens" is useless to somebody who has
+ * just typed a hyphen and can see that they did. The three hyphen clauses are
+ * therefore checked before `SLUG_PATTERN`, which would otherwise swallow all
+ * three into one unhelpful category.
+ *
+ * @param maxLength The ceiling to apply — `ORGANIZATION_SLUG_MAX_LENGTH` for an
+ *   organisation, the general `SLUG_MAX_LENGTH` for everything else.
+ */
+export function checkSlug(slug: string, maxLength: number = SLUG_MAX_LENGTH): SlugCheck {
+  if (slug.length === 0) {
+    return { valid: false, problem: 'empty', message: 'A slug cannot be empty.' };
+  }
+  if (slug.length > maxLength) {
+    return {
+      valid: false,
+      problem: 'tooLong',
+      message: `A slug can be at most ${maxLength} characters.`,
+    };
+  }
+  // Ordered so the transient case a user is most likely to be in — mid-word,
+  // hyphen just pressed — is the one they are told about.
+  if (slug.endsWith('-')) {
+    return {
+      valid: false,
+      problem: 'trailingHyphen',
+      message: 'A slug cannot end with a hyphen. Add a letter or digit after it.',
+    };
+  }
+  if (slug.startsWith('-')) {
+    return {
+      valid: false,
+      problem: 'leadingHyphen',
+      message: 'A slug cannot start with a hyphen.',
+    };
+  }
+  if (slug.includes('--')) {
+    return {
+      valid: false,
+      problem: 'doubleHyphen',
+      message: 'Use single hyphens — two in a row is not allowed.',
+    };
+  }
+  if (!SLUG_PATTERN.test(slug)) {
+    return {
+      valid: false,
+      problem: 'invalidCharacters',
+      message: 'Use lowercase letters, digits and single hyphens — no spaces.',
+    };
+  }
+  if (isReservedSlug(slug)) {
+    return {
+      valid: false,
+      problem: 'reserved',
+      message: 'That slug is reserved. Choose a different one.',
+    };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * `checkSlug` wearing a zod schema's clothes.
+ *
+ * `superRefine` over the chain of `.min`/`.max`/`.regex`/`.refine` this used to
+ * be, because that chain *was* the second copy of the rules: it agreed with
+ * `checkSlug` only for as long as somebody kept editing both. A schema whose
+ * only job is to delegate cannot drift.
+ */
+function slugSchemaWithin(maxLength: number) {
+  return z.string().superRefine((slug, ctx) => {
+    const check = checkSlug(slug, maxLength);
+    if (check.valid) return;
+    ctx.addIssue({ code: 'custom', message: check.message });
+  });
+}
+
+export const slugSchema = slugSchemaWithin(SLUG_MAX_LENGTH);
 
 /**
  * The same rules at the organisation's shorter ceiling.
@@ -163,10 +273,7 @@ export const slugSchema = z
  * one identifier shared across the whole installation, so it is the one worth
  * keeping short enough to read at a glance and type without checking.
  */
-export const organizationSlugSchema = slugSchema.max(
-  ORGANIZATION_SLUG_MAX_LENGTH,
-  `An organisation slug can be at most ${ORGANIZATION_SLUG_MAX_LENGTH} characters.`,
-);
+export const organizationSlugSchema = slugSchemaWithin(ORGANIZATION_SLUG_MAX_LENGTH);
 
 /**
  * Environment slugs are additionally constrained: no hyphens, because they

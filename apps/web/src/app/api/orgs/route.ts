@@ -1,4 +1,5 @@
 import {
+  countOrganizationsCreatedBy,
   listOrganizationsForUser,
   provisionOrganization,
   RepositoryError,
@@ -7,7 +8,12 @@ import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
-import { organizationCreateSchema, toOrganization } from '@/server/schemas/resources';
+import {
+  organizationCreateSchema,
+  organizationLimitReached,
+  ORGANIZATIONS_PER_ACCOUNT_LIMIT,
+  toOrganization,
+} from '@/server/schemas/resources';
 
 /**
  * The organisations the caller can act in.
@@ -66,6 +72,11 @@ export const GET = authenticatedRoute(async ({ principal, services }) => {
  * requirement rather than a policy: `organizations.created_by` is NOT NULL and a
  * service token has no user behind it at all.
  *
+ * ── Why there is a ceiling as well as a rate limit ──
+ * See `ORGANIZATIONS_PER_ACCOUNT_LIMIT`. In short: a rate limit bounds the cost
+ * per minute, and this endpoint's cost is not only per minute — a slug is
+ * claimed out of a global namespace permanently, deleted or not.
+ *
  * ── Why the whole bootstrap, rather than an empty organisation ──
  * `provisionOrganization` mints the Org Master Key, a default project, its three
  * environments and an Env Data Key for each, in one transaction. An organisation
@@ -82,6 +93,37 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
   // organisation costs four key derivations and six inserts, which is the most
   // expensive thing an authenticated caller can ask for in one request.
   await enforce(services.env, 'RL_MUTATION', rateLimitKey([principal.user.id]));
+
+  // And then the standing limit, which is a different control from the rate.
+  // Sixty of these a minute, sustained, is still an unbounded number of Org
+  // Master Keys and an unbounded number of slugs burned out of a namespace every
+  // tenant shares — `isOrgSlugAvailable` and `generateUniqueOrgSlug` do not
+  // filter `deleted_at`, deliberately, so deleting the organisation afterwards
+  // gives none of them back.
+  const existing = await countOrganizationsCreatedBy(
+    services.db,
+    principal.user.id,
+    ORGANIZATIONS_PER_ACCOUNT_LIMIT,
+  );
+
+  if (existing.total >= ORGANIZATIONS_PER_ACCOUNT_LIMIT) {
+    // Recorded before the throw, because `record` buffers and the wrapper
+    // flushes in a `finally` — a refusal survives the exception that carries it
+    // out. Filed against the organisation this account created most recently:
+    // `audit_logs.org_id` is NOT NULL and the organisation this request is
+    // about does not exist, which is the same shape `auth.account_deleted`
+    // solves the same way. The `null` branch is unreachable — a limit above zero
+    // cannot be reached without an organisation — and is written out rather than
+    // asserted away for the reason `provisionOrganization`'s own "returned no
+    // row" checks give.
+    if (existing.latestId !== null) {
+      record(
+        audit(existing.latestId).error('org.created', { type: 'org', id: null }, 'quotaExceeded'),
+      );
+    }
+
+    throw organizationLimitReached();
+  }
 
   const body = await parseJsonBody(request, organizationCreateSchema);
 

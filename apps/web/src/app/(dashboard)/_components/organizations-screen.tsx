@@ -2,10 +2,9 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 
 import { initials } from '@/lib/format';
-import { CreateOrganizationDialog } from '@/components/organizations';
 import { ArrowRightIcon, Button, PlusIcon } from '@/components/ui';
 import { appPath } from '../_lib/paths';
 import { useSession } from './session';
@@ -25,8 +24,9 @@ import { useSession } from './session';
  */
 export function OrganizationsScreen() {
   const router = useRouter();
-  const { organizations, refresh } = useSession();
-  const [creating, setCreating] = useState(false);
+  // The dialog itself is the shell's — see `SessionValue.createOrganization`.
+  // This screen only needs the button.
+  const { organizations, createOrganization } = useSession();
   const only = organizations.length === 1 ? organizations[0] : undefined;
 
   useEffect(() => {
@@ -53,7 +53,7 @@ export function OrganizationsScreen() {
             them.
           </p>
         </div>
-        <Button variant="secondary" className="shrink-0" onClick={() => setCreating(true)}>
+        <Button variant="secondary" className="shrink-0" onClick={createOrganization}>
           <PlusIcon className="size-4" />
           New organisation
         </Button>
@@ -85,8 +85,6 @@ export function OrganizationsScreen() {
           </li>
         ))}
       </ul>
-
-      <CreateOrganizationDialog open={creating} onOpenChange={setCreating} onCreated={refresh} />
     </div>
   );
 }

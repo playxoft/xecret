@@ -30,6 +30,7 @@ export {
   ORGANIZATION_SLUG_MAX_LENGTH,
   SLUG_MAX_LENGTH,
   SLUG_PATTERN,
+  checkSlug,
   environmentSlugSchema,
   isReservedSlug,
   normalizeSlugInput,
@@ -37,3 +38,4 @@ export {
   slugSchema,
   slugify,
 } from './slug';
+export type { SlugCheck, SlugProblem } from './slug';
