@@ -254,14 +254,15 @@ describe('redaction', () => {
     expect(scrubbed).toContain('Invalid Request');
   });
 
-  // Ordering, not coincidence: the credential rule runs before the address rule,
-  // so a body that carries both loses the credential to `[redacted]` rather than
-  // having its tail eaten by whichever pattern reached it first.
+  // A credential whose value happens to be address-shaped must lose to the
+  // credential rule, which redacts the whole value, rather than to the address
+  // rule, which would leave the field name and the quotes standing around a
+  // token that was never an address at all.
   it('lets the credential scrubber win a field that holds both', () => {
-    const scrubbed = scrubText('{"api_key":"live-abc123","to":"bob@example.com"}');
+    const scrubbed = scrubText('{"api_key":"svc@build.example.com","to":"bob@example.com"}');
 
     expect(scrubbed).toContain('api_key=[redacted]');
-    expect(scrubbed).not.toContain('live-abc123');
+    expect(scrubbed).not.toContain('svc@build.example.com');
     expect(scrubbed).toContain('[redacted-email]');
     expect(scrubbed).not.toContain('bob@example.com');
   });
@@ -270,10 +271,43 @@ describe('redaction', () => {
   // Redacting it would strip the one detail that makes a stack frame worth
   // keeping, in the name of protecting a user who is not in it.
   it('leaves versioned module specifiers alone', () => {
-    expect(scrubText('at load (/app/node_modules/@xecret/core@0.1.0/dist/index.js:1:1)')).toContain(
+    for (const specifier of [
       '@xecret/core@0.1.0',
-    );
-    expect(scrubText('npm ERR! peer dep react@19.2.0 required')).toContain('react@19.2.0');
+      'react@19.2.0',
+      'next@15.5.0-canary.3',
+      '@types/node@22.10.0',
+      'repo@v1.2.3',
+      'pkg@1.2.3+build.5',
+    ]) {
+      expect(scrubText(`at load (/app/node_modules/${specifier}/dist/index.js:1:1)`)).toContain(
+        specifier,
+      );
+    }
+  });
+
+  // The addresses a *narrower* rule lets through — and the reason the rule is
+  // written as "redact, except the one shape that provably is not an address"
+  // rather than as a description of a valid domain. Rows two to four are
+  // precisely what a provider is rejecting when it quotes the recipient back
+  // with "Invalid email address", so the malformed cases are the likeliest to
+  // appear, not the least. `user@10.0.0.1` is numeric like a version and is
+  // still a deliverable address, which is why a dotted quad is not treated as
+  // one.
+  it('redacts the addresses that do not look like addresses', () => {
+    for (const address of [
+      'user@10.0.0.1',
+      'user@192.168.1.1',
+      'user@example.c0m',
+      'user@example.c',
+      'user@example.123',
+      'user@example.xn--p1ai',
+      'USER@EXAMPLE.COM',
+    ]) {
+      const scrubbed = scrubText(`the provider refused ${address} outright`);
+
+      expect(scrubbed, `${address} survived`).toContain('[redacted-email]');
+      expect(scrubbed, `${address} survived`).not.toContain(address.split('@')[1] as string);
+    }
   });
 
   it('bounds strings, arrays and depth', () => {

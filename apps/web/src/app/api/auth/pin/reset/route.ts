@@ -156,6 +156,11 @@ export const POST = authenticatedRoute(
       // failure path to get wrong on the way out. It is *not* unrecorded,
       // though: something that can replace a PIN now exists, and the audit log
       // is where that fact has to live regardless of who read the email.
+      //
+      // `outcome: error` on this action means exactly one thing — a token was
+      // minted and not delivered. It cannot be confused with the other way a
+      // reset fails to arrive, because a deployment with no mailer returns
+      // above without minting anything, so it writes no record at all.
       if (orgId !== null) {
         record(
           audit(orgId).error('auth.pin_reset', subject, 'upstreamUnavailable', {
