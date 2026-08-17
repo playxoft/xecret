@@ -20,7 +20,14 @@ export interface AppShellProps {
   nav: readonly NavSection[];
   organizations: readonly ShellOrganization[];
   currentOrgSlug: string;
-  createOrgHref?: string;
+  /**
+   * Adds "New organisation" to the organisation switcher's menu.
+   *
+   * A callback rather than an href because creating one is a dialog, not a
+   * page — see `CreateOrganizationDialog` for why. The shell does not own that
+   * dialog: it lives with the session it has to refresh afterwards.
+   */
+  onCreateOrganization?: () => void;
   user: ShellUser;
   accountHref?: string;
   /** Locks the session without ending it. Adds "Lock now" to the account menu. */
@@ -42,7 +49,7 @@ export function AppShell({
   nav,
   organizations,
   currentOrgSlug,
-  createOrgHref,
+  onCreateOrganization,
   user,
   accountHref,
   onLock,
@@ -65,13 +72,31 @@ export function AppShell({
     setDrawerOpen(false);
   }
 
-  const orgSwitcher = (
-    <OrgSwitcher
-      organizations={organizations}
-      currentSlug={currentOrgSlug}
-      {...(createOrgHref === undefined ? {} : { createHref: createOrgHref })}
-    />
-  );
+  /**
+   * The switcher, built per placement rather than once.
+   *
+   * The drawer's copy has to dismiss the drawer before opening the create
+   * dialog: a dialog raised *behind* an open navigation drawer leaves the user
+   * looking at the sidebar they were trying to leave. The desktop sidebar has
+   * nothing to dismiss, so it passes `false`.
+   */
+  function sidebarHeader(inDrawer: boolean) {
+    const create =
+      onCreateOrganization === undefined
+        ? undefined
+        : () => {
+            if (inDrawer) setDrawerOpen(false);
+            onCreateOrganization();
+          };
+
+    return (
+      <OrgSwitcher
+        organizations={organizations}
+        currentSlug={currentOrgSlug}
+        {...(create ? { onCreate: create } : {})}
+      />
+    );
+  }
 
   return (
     <div className="bg-canvas flex min-h-dvh">
@@ -85,7 +110,7 @@ export function AppShell({
       </a>
 
       <aside className="x-sidebar border-line sticky top-0 hidden h-dvh shrink-0 border-r md:block">
-        <Sidebar nav={nav} header={orgSwitcher} collapsible />
+        <Sidebar nav={nav} header={sidebarHeader(false)} collapsible />
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -111,7 +136,11 @@ export function AppShell({
                   <Wordmark />
                 </div>
                 <div className="min-h-0 flex-1">
-                  <Sidebar nav={nav} header={orgSwitcher} onNavigate={() => setDrawerOpen(false)} />
+                  <Sidebar
+                    nav={nav}
+                    header={sidebarHeader(true)}
+                    onNavigate={() => setDrawerOpen(false)}
+                  />
                 </div>
               </DialogPrimitive.Content>
             </DialogPrimitive.Portal>

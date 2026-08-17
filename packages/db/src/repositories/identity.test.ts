@@ -3,7 +3,13 @@ import { hashToken } from '@xecret/core/auth';
 import { uuidv7 } from '@xecret/core/ids';
 import { SLUG_MAX_LENGTH, SLUG_PATTERN } from '@xecret/core/validation';
 import { createDatabase } from '../client';
-import { organizationsForUserQuery, orgSlugCandidate, personalOrgSlugSeed } from './organizations';
+import {
+  accountLockQuery,
+  organizationsForUserQuery,
+  organizationsHeldByQuery,
+  orgSlugCandidate,
+  personalOrgSlugSeed,
+} from './organizations';
 import {
   memberGrantsQuery,
   membersPageQuery,
@@ -169,6 +175,96 @@ describe('every org-scoped read filters on the organisation (threat T2)', () => 
     expect(membersPageQuery(db, ORG_ID, 1, 25).toSQL().sql).toContain(
       '"users"."deleted_at" is null',
     );
+  });
+});
+
+/**
+ * The query behind the per-account organisation cap.
+ *
+ * `provisionOrganization` refuses on what this returns, so each clause is a
+ * security property rather than a detail: attribute it to the wrong column and
+ * one account's colleagues can exhaust their allowance; drop the membership join
+ * and an organisation somebody was removed from stands against their ceiling for
+ * ever, with no request they can make to release it; drop the `deleted_at`
+ * filter and closing an organisation stops giving a place back, turning a cap
+ * into a one-way ratchet.
+ */
+describe('counting the organisations an account holds', () => {
+  it('attributes them by creator, not by who happens to own one now', () => {
+    const { sql, params } = organizationsHeldByQuery(db, USER_ID, 10).toSQL();
+
+    expect(sql).toContain('"organizations"."created_by" = $1');
+    expect(params).toContain(USER_ID);
+  });
+
+  /**
+   * The half that makes the quota recoverable.
+   *
+   * Releasing a place means deleting the organisation, and `DELETE
+   * /api/orgs/{slug}` resolves through `resolveOrg`, which answers 404 without a
+   * membership. Counting `created_by` alone therefore let a co-owner remove the
+   * creator from ten organisations and permanently stop that account creating an
+   * eleventh. It is also what keeps the first-login bootstrap under the ceiling
+   * by construction: no memberships, nothing counted.
+   */
+  it('counts only the ones the account is still an active member of', () => {
+    const { sql, params } = organizationsHeldByQuery(db, USER_ID, 10).toSQL();
+
+    expect(sql).toContain('inner join "org_members"');
+    expect(sql).toContain('"org_members"."org_id" = "organizations"."id"');
+    expect(sql).toContain('"org_members"."user_id" = $2');
+    expect(sql).toContain('"org_members"."status" = $3');
+    expect(params).toEqual([USER_ID, USER_ID, 'active', 10]);
+  });
+
+  it('ignores soft-deleted organisations, so deleting one frees a place', () => {
+    expect(organizationsHeldByQuery(db, USER_ID, 10).toSQL().sql).toContain(
+      '"organizations"."deleted_at" is null',
+    );
+  });
+
+  // The caller asks "is this account at its limit", which `LIMIT n` answers
+  // exactly. Reading further would scan every organisation an account has ever
+  // created to compute a number nobody acts on.
+  it('reads no more rows than the limit it was asked about', () => {
+    const { sql, params } = organizationsHeldByQuery(db, USER_ID, 10).toSQL();
+
+    expect(sql).toContain('limit');
+    expect(params).toContain(10);
+  });
+
+  // The route files the refusal against the first row, and `audit_logs.org_id`
+  // is NOT NULL. Ids are UUIDv7, so descending id is descending creation time.
+  // `organizations_creator_idx` supplies this order, read backwards.
+  it('returns the most recently created organisation first', () => {
+    expect(organizationsHeldByQuery(db, USER_ID, 10).toSQL().sql).toContain(
+      'order by "organizations"."id" desc',
+    );
+  });
+});
+
+/**
+ * The lock that makes the cap a ceiling rather than a suggestion.
+ *
+ * The count and the insert are separate statements with an entire transaction
+ * between them, and no constraint downstream can express "at most ten" — so
+ * without serialisation every concurrent request that read nine passed. The
+ * rate limiter is not a backstop: Cloudflare's counters are per-colo, and
+ * `consume` fails open when the binding is absent, which is the documented state
+ * of a local or self-hosted deployment.
+ */
+describe('serialising one account against itself', () => {
+  it('locks the account row, which is the only row two creations share', () => {
+    const { sql, params } = accountLockQuery(db, USER_ID).toSQL();
+
+    expect(sql).toContain('from "users"');
+    expect(sql).toContain('"users"."id" = $1');
+    expect(sql).toContain('for update');
+    expect(params).toContain(USER_ID);
+  });
+
+  it('takes no lock on an account that has been deleted', () => {
+    expect(accountLockQuery(db, USER_ID).toSQL().sql).toContain('"users"."deleted_at" is null');
   });
 });
 

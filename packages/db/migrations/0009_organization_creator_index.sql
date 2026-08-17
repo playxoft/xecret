@@ -1,0 +1,42 @@
+-- The index behind the per-account organisation ceiling.
+--
+-- `countOrganizationsHeldBy` runs inside the transaction that creates an
+-- organisation, and asks how many live organisations this account created and
+-- is still an active member of:
+--
+--   SELECT organizations.id
+--     FROM organizations
+--     JOIN org_members ON org_members.org_id = organizations.id
+--    WHERE organizations.created_by = $1
+--      AND org_members.user_id = $1
+--      AND org_members.status = 'active'
+--      AND organizations.deleted_at IS NULL
+--    ORDER BY organizations.id DESC
+--    LIMIT $2;
+--
+-- `organizations` carried no index on `created_by` at all — the foreign key
+-- constraint creates none — so this was a sequential scan of every organisation
+-- in the installation followed by a sort, on every creation. The LIMIT could
+-- not shorten it: nothing stops early until the rows are in order, and nothing
+-- put them in order.
+--
+-- Column order is the query's: equality on `created_by` first, then `id` to
+-- supply the ordering, so the LIMIT stops after at most the ceiling's worth of
+-- rows. Ascending rather than DESC because a btree is read backwards for
+-- `ORDER BY id DESC` at no cost, and an explicit DESC would only invite an
+-- argument about NULLS ordering on a NOT NULL primary key. Partial on
+-- `deleted_at IS NULL`, matching the predicate and keeping closed organisations
+-- out of the index entirely — the same shape as `users_firebase_uid_idx` and
+-- `org_members_user_idx`.
+--
+-- The membership half of the join needs nothing new: `org_members_org_user_unique`
+-- already covers (org_id, user_id).
+--
+-- Not CONCURRENTLY: the migrator runs each file inside a transaction, which
+-- forbids it. `organizations` holds one row per organisation in the
+-- installation, so the SHARE lock — which pauses writes to that table, not
+-- reads — lasts milliseconds.
+--
+-- Additive only; nothing dropped, nothing rewritten.
+
+CREATE INDEX IF NOT EXISTS "organizations_creator_idx" ON "organizations" USING btree ("created_by","id") WHERE "organizations"."deleted_at" is null;

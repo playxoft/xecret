@@ -203,11 +203,14 @@ management routes below.
 
 ### Organisations
 
-| Method | Path |
-|---|---|
-| `GET` | `/api/orgs` |
-| `GET` | `/api/orgs/{orgSlug}` |
-| `PATCH` | `/api/orgs/{orgSlug}` |
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/orgs` | The caller's memberships. No `authorize()` call: the answer *is* the set of organisations they hold an active membership in, established in SQL. Refused for a service token, which is pinned to one organisation and has no switcher. |
+| `GET` | `/api/orgs/availability?slug=` | Is an organisation slug free? Returns `{ slug, available, reason?: invalid\|reserved\|taken }` — one bit and a category, never who holds it. The categories come from `checkSlug` in `@xecret/core/validation`, the same function `organizationSlugSchema` is built from, so this route cannot report a slug as available that `POST` would reject. Browser session only — the same rule as `POST /api/orgs` and `DELETE /api/orgs/{orgSlug}`, because a leaked CLI token would otherwise be able to enumerate the global namespace — and rate limited on `RL_SLUG_CHECK`. A **snapshot, not a reservation**: the unique index settles the race, and `POST` still answers 409. `availability` is a reserved slug, so no organisation can shadow this route. |
+| `POST` | `/api/orgs` | Body `{ name, slug? }`. `name` is at most `ORGANIZATION_NAME_MAX_LENGTH` (25) characters — shorter than a project name, because it is rendered in the sidebar switcher and every breadcrumb. `slug` is what the dashboard always sends, having shown it to the user and checked it; it is claimed **exactly**, and a collision is a 409 on the `slug` field rather than a silent `acme-2`. Omitted, the slug is derived from the name and uniquified — the path sign-up and API clients take, where there is nobody to ask. Session + CSRF only: a CLI token acts as its user for secrets, not for existence. Provisions the Org Master Key, a default project, its environments and an Env Data Key for each in one transaction — an organisation without them cannot hold a secret and cannot be repaired. Rate limited: `RL_MUTATION` by user, and capped at `ORGANIZATIONS_PER_ACCOUNT_LIMIT` (10) — counted as the live organisations the account created **and is still an active member of**, so being removed from one releases the place and being made an owner of somebody else's spends nothing. A rate limit bounds the cost per minute, and this endpoint also spends something no deletion returns, since a claimed slug leaves the shared namespace permanently. The count and the refusal happen inside the provisioning transaction, behind a `SELECT … FOR UPDATE` on the account row, so concurrent creations from one account queue rather than race past the ceiling. Over the cap the answer is 409. Audited as `org.created` — the refusal too, with `reason: quotaExceeded`, filed against an organisation the account is a member of, or not at all when it is in none. |
+| `GET` | `/api/orgs/{orgSlug}` | `member.read`, which every active role holds. |
+| `PATCH` | `/api/orgs/{orgSlug}` | The name only, under the same 25-character ceiling as creation. `assertSlugImmutable` refuses a slug change with an explanation rather than ignoring it. Requires `org.update`. Audited as `org.updated`. |
+| `DELETE` | `/api/orgs/{orgSlug}` | Soft delete. Requires `org.delete` — owners only, the one action an admin is denied — a browser session, and `{ "confirm": "<orgSlug>" }`. Everything inside stops resolving at once, for every member, because each read joins back through `organizations` with a `deleted_at is null` filter. Audited as `org.deleted`; an unconfirmed attempt is recorded too. |
 
 ### Projects
 

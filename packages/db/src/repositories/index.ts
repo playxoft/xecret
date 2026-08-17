@@ -68,25 +68,30 @@ export {
 export type { CreatePinResetParams, PinRecord, PinResetRecord } from './pins';
 
 export {
-  bootstrapPersonalOrganization,
+  accountLockQuery,
+  countOrganizationsHeldBy,
   findOrganizationById,
   findOrganizationBySlug,
   generateUniqueOrgSlug,
+  isOrgSlugAvailable,
   listOrganizationsForUser,
   orgSlugCandidate,
   organizationsForUserQuery,
+  organizationsHeldByQuery,
   personalOrgSlugSeed,
+  provisionOrganization,
   softDeleteOrganization,
   updateOrganization,
 } from './organizations';
 export type {
-  BootstrapPersonalOrganizationParams,
   Environment,
+  HeldOrganizations,
   Organization,
   OrganizationMembership,
   OrganizationPatch,
-  PersonalOrganization,
   Project,
+  ProvisionedOrganization,
+  ProvisionOrganizationParams,
 } from './organizations';
 
 export {
