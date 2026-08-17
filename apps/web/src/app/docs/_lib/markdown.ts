@@ -28,8 +28,12 @@ import { escapeHtml, highlight, languageLabel } from './highlight';
  * The last two exist because of where this output goes. `DocBody` hands it to
  * `dangerouslySetInnerHTML` and every page is prerendered, so a `<script>` that
  * survives this module is a `<script>` in the static HTML file, executed while
- * the document is being parsed. The application sets no Content-Security-Policy
- * — there is nothing behind this to catch what it lets past.
+ * the document is being parsed. The application does now send a
+ * Content-Security-Policy, and it does not catch this: `script-src` has to
+ * carry `'unsafe-inline'` for the RSC flight payload, so an inline script in
+ * the prerendered document runs regardless. `lib/csp.ts` says why at length.
+ * What the policy limits is what such a script can then reach; what it never
+ * does is excuse this module from escaping.
  */
 
 export interface TocEntry {
@@ -263,12 +267,36 @@ const ANCHOR_ICON =
  */
 export function renderMarkdown(source: string, slug: string): RenderedMarkdown {
   const toc: TocEntry[] = [];
-  const usedIds = new Map<string, number>();
+  const usedIds = new Set<string>();
 
+  /**
+   * A fragment no other heading on this page has taken.
+   *
+   * Counting occurrences per base slug is not enough, and the document that
+   * breaks it is an ordinary one: `## Tokens`, `## Tokens`, `## Tokens 2`
+   * slugify to `tokens`, `tokens` and `tokens-2`, so a counter keyed on
+   * `tokens` alone hands the second heading the id `tokens-2` — which the
+   * third heading, whose text really is "Tokens 2", then claims as well. The
+   * page ends up with a duplicate id, a contents entry that jumps to the wrong
+   * heading, and a scroll-spy observer that only ever reports the first of the
+   * two, none of which looks like the same bug from the outside.
+   *
+   * So the suffixed candidate is checked against every id already issued, and
+   * the suffix keeps moving until one is free. Terminates because each pass
+   * either finds a free id or excludes one more of a finite set.
+   */
   function uniqueId(base: string): string {
-    const seen = usedIds.get(base) ?? 0;
-    usedIds.set(base, seen + 1);
-    return seen === 0 ? base : `${base}-${seen + 1}`;
+    if (!usedIds.has(base)) {
+      usedIds.add(base);
+      return base;
+    }
+
+    let suffix = 2;
+    while (usedIds.has(`${base}-${suffix}`)) suffix += 1;
+
+    const unique = `${base}-${suffix}`;
+    usedIds.add(unique);
+    return unique;
   }
 
   const marked = new Marked({
@@ -308,7 +336,13 @@ export function renderMarkdown(source: string, slug: string): RenderedMarkdown {
         // than re-lexing the cleaned string through marked's internals.
         const text = this.parser.parseInline(token.tokens).replace(EXPLICIT_ID, '');
         const title = plainText(raw);
+        // An explicit id is never renamed — a heading pins its fragment
+        // precisely so that links to it survive a copy-edit, and a renamed
+        // "unique" version of it would break the thing it was written for. It
+        // is still recorded, so a *derived* slug that would collide with it
+        // moves out of the way instead.
         const id = explicit ?? uniqueId(slugify(raw) || 'section');
+        if (explicit) usedIds.add(explicit);
         const depth = token.depth;
 
         if (depth === 2 || depth === 3) toc.push({ id, title, depth });

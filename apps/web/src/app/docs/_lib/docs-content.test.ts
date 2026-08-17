@@ -204,6 +204,33 @@ describe('rendering', () => {
     }
   });
 
+  // The real documentation happens not to contain the collision, which is why
+  // the sweep above passed while the renderer was wrong. `tokens`, `tokens-2`,
+  // `tokens-2` was the output: a counter kept per base slug gives the second
+  // `## Tokens` the id `tokens-2`, and the heading whose text actually is
+  // "Tokens 2" then derives the same one. The visible cost is a contents entry
+  // that scrolls to the wrong heading and a scroll-spy that never sees the
+  // second element.
+  it('gives a heading an id no earlier heading already took', () => {
+    const { html, toc } = renderMarkdown('## Tokens\n\n## Tokens\n\n## Tokens 2\n', 'x');
+    const ids = [...html.matchAll(/<h2 id="([^"]+)"/g)].map((match) => match[1]);
+
+    expect(ids).toEqual(['tokens', 'tokens-2', 'tokens-2-2']);
+    // The contents list is built in the same pass, so it cannot list an anchor
+    // the page does not have.
+    expect(toc.map((entry) => entry.id)).toEqual(ids);
+  });
+
+  it('never renames an explicit id, and moves a derived one out of its way', () => {
+    // A pinned fragment exists so links to it survive a copy-edit; renaming it
+    // for uniqueness would break exactly what it was written for. The derived
+    // slug is the one that gives way.
+    const { html } = renderMarkdown('## Tokens {#tokens}\n\n## Tokens\n', 'x');
+    const ids = [...html.matchAll(/<h2 id="([^"]+)"/g)].map((match) => match[1]);
+
+    expect(ids).toEqual(['tokens', 'tokens-2']);
+  });
+
   it('knows every fence language the documentation actually uses', async () => {
     // A fence whose language has no rule set renders as plain text, which looks
     // like a styling bug rather than a missing entry in `ALIASES`. `text` is
