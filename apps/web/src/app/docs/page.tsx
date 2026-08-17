@@ -199,7 +199,11 @@ export default async function DocsHomePage() {
           {sections.map((section) => (
             <div key={section.title}>
               <h3 className="text-fg text-sm font-semibold">{section.title}</h3>
-              <p className="text-fg-subtle mt-1 text-sm leading-6">{section.summary}</p>
+              {/* `--fg-muted`, not `--fg-subtle`: this line is the only
+                  description a reader gets of what an entire section of the
+                  documentation contains, and setting it at the tone reserved
+                  for timestamps and field labels told them not to read it. */}
+              <p className="text-fg-muted mt-1 text-sm leading-6">{section.summary}</p>
               <ul className="border-line-subtle mt-3 flex flex-col border-t">
                 {section.items.map((item) => (
                   <li key={item.href} className="border-line-subtle border-b">

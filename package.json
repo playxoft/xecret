@@ -34,6 +34,8 @@
     "keygen": "tsx scripts/keygen.ts",
     "// icons": "Regenerates app/icon.svg, favicon.ico and apple-icon.png from the single mark in scripts/generate-icons.ts",
     "icons": "tsx scripts/generate-icons.ts",
+    "// og": "Regenerates public/og.png, the social preview card. Same mark and gradient as the icons above.",
+    "og": "tsx scripts/generate-og.ts",
     "rotate:root-key": "tsx scripts/rotate-root-key.ts",
     "check:db-role": "tsx scripts/check-db-role.ts",
     "// phase": "Phase.dev wrappers, grouped so an editor lists them together. The plain scripts above stay vendor-neutral: CI and self-hosters on Doppler or a .env file run those directly.",

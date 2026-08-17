@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { cache } from 'react';
 
+import { parseFrontmatter, required } from '@/lib/frontmatter';
 import { DOC_SLUGS, DOCS_SECTIONS, docHref } from './nav';
 
 /**
@@ -51,75 +52,27 @@ export interface DocSource extends DocMeta {
 }
 
 /**
- * Splits `---`-delimited frontmatter from the body.
- *
- * A deliberately small parser rather than a YAML dependency: the fields are
- * fixed, the files are ours, and the shapes it accepts are `key: value` and
- * `key: [a, b, c]`. Anything else in a frontmatter block is a mistake that
- * should be noticed, so it throws rather than guessing.
- */
-function parseFrontmatter(
-  raw: string,
-  slug: string,
-): { data: Record<string, string[]>; body: string } {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(raw);
-  if (!match) {
-    throw new Error(`docs/${slug}.md has no frontmatter block.`);
-  }
-
-  const data: Record<string, string[]> = {};
-
-  for (const line of (match[1] ?? '').split(/\r?\n/)) {
-    if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
-
-    const separator = line.indexOf(':');
-    if (separator === -1) {
-      throw new Error(`docs/${slug}.md frontmatter line is not "key: value": ${line}`);
-    }
-
-    const key = line.slice(0, separator).trim();
-    const value = line.slice(separator + 1).trim();
-
-    data[key] = value.startsWith('[')
-      ? value
-          .slice(1, value.endsWith(']') ? -1 : undefined)
-          .split(',')
-          .map(unquote)
-          .filter((entry) => entry !== '')
-      : [unquote(value)];
-  }
-
-  return { data, body: raw.slice(match[0].length) };
-}
-
-function unquote(value: string): string {
-  const trimmed = value.trim();
-  return /^(['"]).*\1$/.test(trimmed) ? trimmed.slice(1, -1) : trimmed;
-}
-
-function required(data: Record<string, string[]>, key: string, slug: string): string {
-  const value = data[key]?.[0];
-  if (!value) throw new Error(`docs/${slug}.md is missing frontmatter "${key}".`);
-  return value;
-}
-
-/**
  * Reads one document. Memoised per render pass, because the sidebar asks for
  * every document's metadata on every page.
+ *
+ * The frontmatter parser lives in `lib/frontmatter.ts`: the blog reads the same
+ * header shape out of `public/blog`, and one parser is one definition of what a
+ * valid content file looks like.
  */
 export const loadDoc = cache(async (slug: string): Promise<DocSource> => {
+  const source = `docs/${slug}.md`;
   const raw = await readFile(join(CONTENT_ROOT, `${slug}.md`), 'utf8');
-  const { data, body } = parseFrontmatter(raw, slug);
+  const { data, body } = parseFrontmatter(raw, source);
 
-  const title = required(data, 'title', slug);
+  const title = required(data, 'title', source);
 
   return {
     slug,
     title,
     navTitle: data.navTitle?.[0] ?? title,
-    description: required(data, 'description', slug),
+    description: required(data, 'description', source),
     keywords: data.keywords ?? [],
-    updated: required(data, 'updated', slug),
+    updated: required(data, 'updated', source),
     schema: data.schema?.[0] === 'faq' ? 'faq' : null,
     markdown: body,
   };

@@ -9,7 +9,10 @@ import { escapeHtml, highlight, languageLabel } from './highlight';
  * The `.md` files under `public/docs/` are the single source of truth: this
  * module renders them for people, the same files are served verbatim for
  * machines (see `app/llms.txt`), and nothing is written twice. That is the
- * whole reason the content is markdown rather than JSX.
+ * whole reason the content is markdown rather than JSX. The blog under
+ * `public/blog/` renders through the same function — see `basePath` on
+ * `renderMarkdown` — because a second renderer is a second set of escaping
+ * rules, and the second one is always the one that is missing a case.
  *
  * Six renderer overrides do all the work:
  *
@@ -184,7 +187,9 @@ function resolveRelative(path: string, fromSlug: string): string {
  * `./cli/commands.md` → `/docs/cli/commands`, `../faq.md#pin` → `/docs/faq#pin`.
  *
  * Resolved against the linking document's own slug, so a relative link means
- * the same thing in an editor and in the browser.
+ * the same thing in an editor and in the browser. `basePath` is the route the
+ * collection is published under — `/docs` for the documentation, `/blog` for
+ * the blog, which is the only thing that differs between the two.
  *
  * `null` means the href does not name a destination this renderer is willing
  * to vouch for — an unlisted scheme, or a path that turns out to leave the
@@ -192,11 +197,12 @@ function resolveRelative(path: string, fromSlug: string): string {
  * visible mistake somebody fixes, whereas a destination reaching the page as a
  * live `href` is not visible at all until somebody follows it.
  */
-function resolveDocHref(href: string, fromSlug: string): string | null {
+function resolveDocHref(href: string, fromSlug: string, basePath: string): string | null {
   const scheme = schemeOf(href);
   if (scheme !== null) return SAFE_SCHEMES.has(scheme) ? href : null;
 
-  const path = href.startsWith('#') || href.startsWith('/') ? href : docRoute(href, fromSlug);
+  const path =
+    href.startsWith('#') || href.startsWith('/') ? href : docRoute(href, fromSlug, basePath);
 
   // Everything arriving without a scheme is claiming to be somewhere on this
   // site, and that claim is checked by resolving it rather than by reading it.
@@ -209,15 +215,15 @@ function resolveDocHref(href: string, fromSlug: string): string | null {
   return staysOnSite(path) ? path : null;
 }
 
-/** The `/docs` route a relative `.md` path names. */
-function docRoute(href: string, fromSlug: string): string {
+/** The site route a relative `.md` path names, under the collection's base. */
+function docRoute(href: string, fromSlug: string, basePath: string): string {
   const [pathPart = '', hash] = href.split('#');
   const fragment = hash ? `#${hash}` : '';
 
   const path = resolveRelative(pathPart, fromSlug)
     .replace(/\.md$/, '')
     .replace(/\/index$/, '');
-  return path ? `/docs/${path}${fragment}` : `/docs${fragment}`;
+  return path ? `${basePath}/${path}${fragment}` : `${basePath}${fragment}`;
 }
 
 /**
@@ -237,11 +243,15 @@ function docRoute(href: string, fromSlug: string): string {
  * every image a document needs ships in this repository beside it, which is
  * also the only way it stays available once somebody else's host is
  * reorganised. If that ever stops being true, the image gets copied in.
+ *
+ * `basePath` is the collection's route, for the same reason `link()` needs it:
+ * a picture beside a blog post lives under `/blog`, and resolving it under
+ * `/docs` would be a 404 on every post that ever ships one.
  */
-function resolveDocSrc(src: string, fromSlug: string): string | null {
+function resolveDocSrc(src: string, fromSlug: string, basePath: string): string | null {
   if (schemeOf(src) !== null) return null;
 
-  const path = src.startsWith('/') ? src : `/docs/${resolveRelative(src, fromSlug)}`;
+  const path = src.startsWith('/') ? src : `${basePath}/${resolveRelative(src, fromSlug)}`;
   return staysOnSite(path) ? path : null;
 }
 
@@ -265,10 +275,13 @@ const ANCHOR_ICON =
 /**
  * Turns one document's markdown into HTML and its contents list.
  *
- * `slug` is the document's own path under `/docs`. It resolves relative links,
- * and it names the file in the one error this module throws.
+ * `slug` is the document's own path within its collection. It resolves relative
+ * links, and it names the file in the one error this module throws. `basePath`
+ * is where that collection is published: the blog renders through this same
+ * function and the only thing it needs differently is that `./concepts.md`
+ * means `/blog/concepts`, not `/docs/concepts`.
  */
-export function renderMarkdown(source: string, slug: string): RenderedMarkdown {
+export function renderMarkdown(source: string, slug: string, basePath = '/docs'): RenderedMarkdown {
   const toc: TocEntry[] = [];
   const usedIds = new Set<string>();
 
@@ -381,7 +394,7 @@ export function renderMarkdown(source: string, slug: string): RenderedMarkdown {
       },
 
       link(token: Tokens.Link): string {
-        const href = resolveDocHref(token.href, slug);
+        const href = resolveDocHref(token.href, slug, basePath);
         const text = this.parser.parseInline(token.tokens);
 
         // A refused scheme keeps its words and loses its anchor. The sentence
@@ -404,7 +417,7 @@ export function renderMarkdown(source: string, slug: string): RenderedMarkdown {
       },
 
       image(token: Tokens.Image): string {
-        const src = resolveDocSrc(token.href, slug);
+        const src = resolveDocSrc(token.href, slug, basePath);
 
         // Rendered through marked's plain-text renderer, exactly as its own
         // image renderer does: `![**a**](x)` describes the picture as "a", not

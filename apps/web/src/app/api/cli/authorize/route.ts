@@ -73,13 +73,7 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
     authorize(scope, 'member.read');
   } catch (cause) {
     if (cause instanceof AuthorizationError) {
-      record(
-        audit(orgId).denied(
-          'token.authorized',
-          { type: 'token', id: null },
-          cause.decision,
-        ),
-      );
+      record(audit(orgId).denied('token.authorized', { type: 'token', id: null }, cause.decision));
     }
     throw cause;
   }

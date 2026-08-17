@@ -45,6 +45,25 @@ async function markdownFiles(dir = CONTENT_ROOT, prefix = ''): Promise<string[]>
   return found;
 }
 
+/**
+ * Every `.ts`/`.tsx` file under a directory, with its contents.
+ *
+ * Used by the structured-data test at the foot of this file, which has to be
+ * able to find a page nobody remembered to add to a list.
+ */
+async function tsxFilesUnder(dir: string): Promise<{ path: string; text: string }[]> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const found: { path: string; text: string }[] = [];
+
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) found.push(...(await tsxFilesUnder(path)));
+    else if (/\.tsx?$/.test(entry.name)) found.push({ path, text: await readFile(path, 'utf8') });
+  }
+
+  return found;
+}
+
 interface LoadedDoc {
   slug: string;
   frontmatter: string;
@@ -634,18 +653,26 @@ describe('structured data cannot end its own script block', () => {
     expect(jsonLd({ headline: 'Tokens </script><script>alert(1)</script>' })).not.toContain('<');
   });
 
-  it('is what both documentation pages actually serialise with', async () => {
-    // Asserted against the source because the alternative is rendering a
-    // Server Component in a test runner that has no DOM. The failure it guards
+  it('is what every page that emits structured data serialises with', async () => {
+    // Asserted against the source because the alternative is rendering a dozen
+    // Server Components in a test runner that has no DOM. The failure it guards
     // is a one-word edit — `JSON.stringify` reads as obviously correct in a
     // `dangerouslySetInnerHTML`, and is not.
-    for (const page of ['page.tsx', join('[...slug]', 'page.tsx')]) {
-      const source = await readFile(join(import.meta.dirname, '..', page), 'utf8');
+    //
+    // Swept over the whole of `src` rather than named page by page, because the
+    // list of pages carrying a schema.org graph is exactly the list that grows:
+    // the marketing pages, the blog and the legal pages all arrived after the
+    // documentation did, and the second serialiser this repository grew — a
+    // component with its own weaker escape, breaking `</` and not `<!--` —
+    // arrived with them. A test that enumerates its subjects cannot catch the
+    // one that has not been written yet.
+    const sources = await tsxFilesUnder(join(import.meta.dirname, '..', '..', '..'));
+    const emitters = sources.filter(({ text }) => text.includes('application/ld+json'));
 
-      expect(source, `docs/${page} no longer emits structured data`).toContain(
-        'application/ld+json',
-      );
-      expect(source, `docs/${page} serialises it with JSON.stringify`).not.toMatch(
+    expect(emitters.length, 'nothing emits structured data any more').toBeGreaterThan(0);
+
+    for (const { path, text } of emitters) {
+      expect(text, `${path} serialises structured data with JSON.stringify`).not.toMatch(
         /__html:\s*JSON\.stringify/,
       );
     }
