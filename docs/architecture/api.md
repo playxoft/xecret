@@ -150,6 +150,14 @@ rejected input reaches the client; in this product the rejected input may be a s
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/version` | `{ name, version, commit, builtAt }`. No credential, no database, no rate limit. |
+| `GET` | `/version` | The same body, outside the `/api` prefix. Not a redirect — both routes call `versionPayload()`. |
+
+`/api/version` is the canonical one and sits with everything else. `/version`
+exists because a version check is the one request made by somebody handed a
+hostname and nothing else — an uptime monitor, a `curl` during an incident — and
+a 404 there reads as a broken deployment. A 308 was rejected: it costs a monitor
+a round trip and has to be explicitly followed by `curl` and most shell scripts,
+which is a worse trade than one shared function.
 
 The one endpoint that answers before anything else works. It goes through
 `publicRoute` — so it carries a request id, logs, and the same error envelope as

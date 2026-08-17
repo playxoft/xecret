@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { versionPayload } from './route';
+import { versionPayload } from './version';
 
 /**
  * `versionPayload` is four strings, so the interesting assertions are not about
@@ -10,6 +10,10 @@ import { versionPayload } from './route';
  * harmless on its own. Pinning the shape with `toEqual` rather than
  * `toMatchObject` means a fifth field cannot arrive without this test being
  * edited, which is the point at which the question gets asked.
+ *
+ * Both `GET /version` and `GET /api/version` return this function's result, so
+ * pinning it here pins both. That is the reason they share a function rather
+ * than each building their own object.
  */
 afterEach(() => {
   vi.unstubAllEnvs();

@@ -18,6 +18,10 @@ pagination — none of it is repeated here.
 |---|---|---|
 | `GET` | `/version` | What is deployed. No credential required. |
 
+Answered at **both** `https://<host>/api/version` and `https://<host>/version` —
+the same body, no redirect between them. The second is there because a version
+check is the one request made by someone holding a hostname and nothing else.
+
 ```json
 {
   "name": "xecret",
