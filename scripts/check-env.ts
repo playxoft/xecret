@@ -69,6 +69,19 @@ function checkRootKeys(): void {
   }
 }
 
+/**
+ * The client config, checked by the same parser the browser uses.
+ *
+ * `parseFirebaseConfig` is imported rather than reimplemented so this script
+ * cannot pass a value the application then refuses — including the `authDomain`
+ * hostname check, which is the one failure here that is otherwise completely
+ * silent: a wildcard, a stray trailing space or a pasted `https://` prefix
+ * leaves sign-in dead and every directive in `lib/csp.ts` looking reasonable.
+ *
+ * The domain is printed beside the project id because it is the value that ends
+ * up inside `frame-src` and `connect-src`, and seeing it is how an operator
+ * catches it pointing at the wrong project.
+ */
 function checkFirebase(): string | null {
   const raw = required('NEXT_PUBLIC_FIREBASE_CONFIG');
   if (raw === null) return null;
@@ -79,7 +92,11 @@ function checkFirebase(): string | null {
     return null;
   }
 
-  check('NEXT_PUBLIC_FIREBASE_CONFIG', true, `project "${parsed.config.projectId}"`);
+  check(
+    'NEXT_PUBLIC_FIREBASE_CONFIG',
+    true,
+    `project "${parsed.config.projectId}", auth domain "${parsed.config.authDomain}"`,
+  );
   return parsed.config.projectId;
 }
 
