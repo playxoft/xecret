@@ -191,12 +191,21 @@ func cmdExport(args []string) error {
 // open would have destroyed the file *before* learning we could not secure it,
 // leaving the user with neither their old .env nor an error they could act on.
 func writeSecretDocument(path string, document []byte) error {
+	_, statErr := os.Stat(path)
+	existed := statErr == nil
+
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
 		return fmt.Errorf("could not write %s", path)
 	}
 	if err := file.Chmod(0o600); err != nil {
 		_ = file.Close()
+		if !existed {
+			// We made it and could not secure it. Nobody wants the empty file,
+			// and leaving one behind means the next run refuses with "already
+			// exists — pass --force".
+			_ = os.Remove(path)
+		}
 		return fmt.Errorf("could not restrict %s to mode 0600, so nothing was written to it", path)
 	}
 	// Only now is the file both ours and unreadable by anybody else.

@@ -127,6 +127,21 @@ func (a *app) storedCredentials() *cred.Credentials {
 	return credentials
 }
 
+// deploymentOrigin is the deployment this machine talks to, and why — the
+// question behind "it is pointing at the wrong server", and behind any command
+// that prints a URL for the user to act on.
+//
+// Under XECRET_TOKEN it deliberately ignores the stored login: a service token
+// resolves through apiBase(""), so a developer credential that happens to sit
+// in this machine's keychain must not answer for a CI job's deployment. That
+// also means the keyring is not touched at all in CI.
+func (a *app) deploymentOrigin() (base, reason string) {
+	if a.usingServiceToken() {
+		return resolvedAPIBase(nil)
+	}
+	return resolvedAPIBase(a.storedCredentials())
+}
+
 // scope is the resolved (org, project, environment) triple every secret
 // command operates in.
 type scope struct {

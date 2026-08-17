@@ -174,8 +174,12 @@ func relativeWindowError(flagName, value string) error {
 // clampAuditRange collapses a backwards range to a single instant, so `--since
 // 1h --until 24h` and `--since 2030-01-01T00:00:00Z` both come back empty and
 // are printed as "No matching events" — a sentence that reads as a fact about
-// the log when it is really a fact about the question. An empty edge means "the
-// server decides", and now is the far edge whenever --until is absent.
+// the log when it is really a fact about the question.
+//
+// The timestamps are echoed as the UTC the server will see, not as local time:
+// the user typed one of these, and answering in a different zone reads as a
+// third value neither side mentioned. An absent --until means now, and an
+// absent --since leaves the whole thing to the server's own ninety-day clamp.
 func checkWindow(from, to string) error {
 	if from == "" {
 		return nil
@@ -185,22 +189,21 @@ func checkWindow(from, to string) error {
 		return nil
 	}
 
-	end := time.Now()
-	if to != "" {
-		parsed, parseErr := time.Parse(time.RFC3339, to)
-		if parseErr != nil {
-			return nil
-		}
-		end = parsed
+	// Nothing has been recorded after now, whatever the far edge says, so this
+	// catches a window that is well-ordered but entirely in the future.
+	if start.After(time.Now()) {
+		return fmt.Errorf("--since %s is in the future, and nothing has happened yet", from)
 	}
 
+	if to == "" {
+		return nil
+	}
+	end, err := time.Parse(time.RFC3339, to)
+	if err != nil {
+		return nil
+	}
 	if start.After(end) {
-		if to == "" {
-			return fmt.Errorf("--since %s is in the future, so the window ends before it begins",
-				shortTime(from))
-		}
-		return fmt.Errorf("--since %s is after --until %s, so the window is empty",
-			shortTime(from), shortTime(to))
+		return fmt.Errorf("--since %s is after --until %s, so the window is empty", from, to)
 	}
 	return nil
 }

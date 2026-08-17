@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -233,6 +235,80 @@ func TestResolvedAPIBaseOrdersItsSources(t *testing.T) {
 	}
 }
 
+// `upgrade` turns this into a command it tells the user to pipe into a shell,
+// so the CI case matters: a service token resolves through XECRET_API_URL or
+// the compiled-in default, never through whichever developer happens to be
+// logged in on the build machine.
+func TestDeploymentOriginIgnoresAStoredLoginUnderAServiceToken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XECRET_KEYRING", "file")
+	t.Setenv("XECRET_API_URL", "")
+	t.Setenv("XECRET_TOKEN", "")
+
+	a := newApp(false)
+	stored := cred.Credentials{
+		APIURL:  "https://vault.developer-laptop.internal",
+		Token:   "xct_live_stored",
+		Email:   "ada@example.com",
+		OrgSlug: "acme",
+	}
+	if err := cred.Save(a.store, stored); err != nil {
+		t.Skipf("this platform's file keyring is not writable under a temporary HOME: %v", err)
+	}
+	if _, err := cred.Load(a.store); err != nil {
+		t.Skipf("the seeded credential did not round-trip: %v", err)
+	}
+
+	if base, _ := a.deploymentOrigin(); base != stored.APIURL {
+		t.Errorf("logged in: origin = %q, want the URL stored at login %q", base, stored.APIURL)
+	}
+
+	t.Setenv("XECRET_TOKEN", "xst_live_ci")
+	base, reason := a.deploymentOrigin()
+	if base != buildinfo.DefaultAPIURL {
+		t.Errorf("under XECRET_TOKEN: origin = %q, want %q — CI must not inherit a developer's deployment",
+			base, buildinfo.DefaultAPIURL)
+	}
+	if reason != "compiled-in default" {
+		t.Errorf("under XECRET_TOKEN: reason = %q", reason)
+	}
+
+	// XECRET_API_URL is how a self-hoster points CI at their own deployment.
+	t.Setenv("XECRET_API_URL", "https://vault.ci.example")
+	if base, _ := a.deploymentOrigin(); base != "https://vault.ci.example" {
+		t.Errorf("under XECRET_TOKEN with XECRET_API_URL: origin = %q", base)
+	}
+}
+
+// Only the server judging a credential may be reported as a refusal. A 429 or a
+// 500 says nothing about the token, and telling somebody to log in again over
+// one costs them a working session.
+func TestCredentialRefusedOnlyForAJudgement(t *testing.T) {
+	for status, want := range map[int]bool{
+		401: true,
+		403: true,
+		0:   false, // never reached the server
+		404: false,
+		429: false,
+		500: false,
+		502: false,
+		503: false,
+	} {
+		if got := credentialRefused(&api.Error{Status: status}); got != want {
+			t.Errorf("credentialRefused(%d) = %v, want %v", status, got, want)
+		}
+	}
+
+	if credentialRefused(errors.New("could not reach the server")) {
+		t.Error("a plain transport error is not the server refusing anything")
+	}
+	if credentialRefused(context.DeadlineExceeded) {
+		t.Error("a timeout is not a refusal")
+	}
+}
+
 func TestCompareVersions(t *testing.T) {
 	cases := []struct {
 		a, b string
@@ -433,6 +509,32 @@ func TestWriteSecretDocumentNarrowsAFileItOverwrites(t *testing.T) {
 	}
 }
 
+// The write is not O_TRUNC — the file is emptied only after the mode is settled
+// — so the truncate is a separate step, and a missing one is invisible unless
+// the new document is shorter than the old one. It usually is: an environment
+// that lost a secret writes fewer bytes than the export before it.
+func TestWriteSecretDocumentLeavesNoTailOfTheOldFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	old := "A=1\nOLD_SECRET_B=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nOLD_SECRET_C=cccccccccccccccccc\n"
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const short = "A=1\n"
+	if err := writeSecretDocument(path, []byte(short)); err != nil {
+		t.Fatal(err)
+	}
+
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != short {
+		t.Errorf("contents = %q, want %q — the tail of the old file survived, so secrets the export no longer contains are still on disk",
+			contents, short)
+	}
+}
+
 func TestExportPathsAndFormats(t *testing.T) {
 	for format, want := range map[string]string{
 		"env":    ".env",
@@ -628,17 +730,30 @@ func TestCompletionFlagsAreScopedToTheirCommand(t *testing.T) {
 		t.Error("bash does not answer flags per subcommand")
 	}
 
-	// __fish_seen_subcommand_from matches anywhere on the line, so a parent's
-	// rule stays live inside its own subcommands unless it excludes them —
-	// which is how `secrets set --<TAB>` came to offer `secrets`' own --json.
+	// __fish_seen_subcommand_from matches a name anywhere on the line, so it
+	// cannot tell a verb from an argument spelled like one: `secrets set list
+	// --<TAB>` offered `secrets list`'s --json because the word "list" was
+	// present. Every condition has to key on the slot instead.
+	if strings.Contains(fish, "__fish_seen_subcommand_from") {
+		t.Error("fish still matches subcommands by presence rather than by position")
+	}
 	for _, command := range completionTree {
-		if len(command.Flags) == 0 || len(command.Subcommands) == 0 {
-			continue
+		for _, sub := range command.Subcommands {
+			if len(sub.Flags) == 0 {
+				continue
+			}
+			want := fmt.Sprintf("__xecret_at 1 %s; and __xecret_at 2 %s", command.Name, sub.Name)
+			if !strings.Contains(fish, want) {
+				t.Errorf("fish has no slot-keyed rule for %q %q", command.Name, sub.Name)
+			}
 		}
-		bare := fmt.Sprintf("-n '__fish_seen_subcommand_from %s'", command.Name)
-		if strings.Contains(fish, bare) {
-			t.Errorf("fish offers %q's own flags inside its subcommands — the rule does not exclude %v",
-				command.Name, subcommandNames(command))
+		// A parent with subcommands offers its own flags only while slot 2 is
+		// empty — otherwise `secrets set` inherits `secrets`' --json again.
+		if len(command.Flags) > 0 && len(command.Subcommands) > 0 {
+			want := fmt.Sprintf("__xecret_at 1 %s; and __xecret_at 2 \"\"", command.Name)
+			if !strings.Contains(fish, want) {
+				t.Errorf("fish offers %q's own flags regardless of its subcommand", command.Name)
+			}
 		}
 	}
 }

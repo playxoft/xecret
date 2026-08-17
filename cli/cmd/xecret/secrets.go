@@ -17,6 +17,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/playxoft/xecret/cli/internal/api"
+	"github.com/playxoft/xecret/cli/internal/output"
 )
 
 // secretNamePattern mirrors the server's constraint, so an impossible name
@@ -259,8 +260,11 @@ func secretsSet(args []string) error {
 	// name", which names neither the flag nor the fix. Any position, because
 	// parseFlags accepts flags anywhere and `set --generate 48 FOO` is as
 	// natural an ordering as `set FOO --generate 48`.
-	if generate.set && generate.value == 0 && len(positional) > 1 {
+	if generate.set && generate.value == 0 {
 		for _, argument := range positional {
+			// A secret name can never be all digits — secretNamePattern forbids
+			// a leading one — so a numeric positional here is only ever the
+			// length that failed to bind.
 			if _, numeric := strconv.Atoi(argument); numeric == nil {
 				return fmt.Errorf(
 					"write --generate=%s; the length attaches with '=' because --generate also stands alone", argument)
@@ -388,11 +392,16 @@ func secretsDelete(args []string) error {
 	return nil
 }
 
-// readSecretValue takes the value from a pipe when stdin is one, otherwise
-// from a hidden prompt. Never from an argument — see the usage text.
+// readSecretValue prompts when there is a terminal to prompt, and otherwise
+// reads whatever stdin is. Never from an argument — see the usage text.
+//
+// The test is term.IsTerminal, not the ModeCharDevice one it used to be:
+// /dev/null is a character device, so under `docker run` without -i, under
+// cron, and under a systemd unit this printed a hidden prompt into the void and
+// then reported "could not read the value from the terminal". Reading /dev/null
+// instead reaches the empty-stdin message, which is the true one.
 func readSecretValue(a *app, name string) (string, error) {
-	stat, err := os.Stdin.Stat()
-	if err == nil && stat.Mode()&os.ModeCharDevice == 0 {
+	if !output.StdinIsTerminal() {
 		data, readErr := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
 		if readErr != nil {
 			return "", readErr

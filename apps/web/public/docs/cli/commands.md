@@ -469,9 +469,11 @@ Reads the organisation's audit log — who did what, when, and whether it worked
 
 `--since` and `--until` take the same spellings: a duration counting back from
 now (`24h`, `7d`), or an RFC 3339 timestamp, normalised to UTC before it is
-sent. A relative value has to be positive — a negative one would put the edge of
-the window in the future and come back empty, which reads exactly like "nothing
-happened".
+sent. A window that cannot contain anything — a negative duration, a `--since`
+after `--until`, a `--since` in the future — is refused here rather than sent.
+The server collapses a backwards range to a single instant, so each of those
+would otherwise come back as "No matching events", which reads exactly like
+"nothing happened".
 
 ```bash
 xecret audit --action secret.revealed --since 7d

@@ -196,8 +196,11 @@ xecret tokens revoke ID --kind cli|service [--yes]
   is clamped to ninety days and a caller who asked for more must be told.
 - `--since` and `--until` take the same spellings — a duration counting back
   from now (`24h`, `7d`) or an RFC 3339 timestamp, normalised to UTC before it
-  is sent. A relative value must be positive: a negative one would put the edge
-  in the future and return nothing, which is indistinguishable from "no events".
+  is sent. A window that cannot contain anything is refused rather than sent: a
+  negative or absurd relative value, a `--since` after `--until`, a `--since` in
+  the future. The server clamps a backwards range to a single instant, so each
+  of those would otherwise come back as "No matching events" — a sentence that
+  reads as a fact about the log when it is a fact about the question.
 - `members` is read-only. Inviting, suspending and role changes require a
   browser session server-side, so a write command here could only print a 403.
 - `tokens revoke` requires `--kind`: the two kinds are addressed through
