@@ -272,6 +272,105 @@ describe('rendering', () => {
   });
 });
 
+describe('the link renderer will only emit a scheme it allows', () => {
+  /**
+   * Every document under `public/docs` is written in this repository, so none
+   * of the inputs below can reach the renderer today. They are here because the
+   * renderer outlives that guarantee: the moment it is pointed at a collection
+   * somebody else writes, a `javascript:` href is a stored XSS, and escaping
+   * the attribute — which is all `escapeHtml` does — never touched the scheme.
+   */
+  function hrefsIn(markdown: string): string[] {
+    const { html } = renderMarkdown(markdown, 'x');
+    return [...html.matchAll(/<a href="([^"]*)"/g)].map((match) => match[1] as string);
+  }
+
+  const hostile = [
+    ['plain', 'javascript:alert(1)'],
+    ['mixed case', 'JaVaScRiPt:alert(1)'],
+    // Written inside `<…>` because that is the only link form marked will
+    // parse with whitespace in the destination — and a browser strips the tab
+    // back out again, so what parses as inert is what navigates.
+    ['a tab inside the scheme', '<java\tscript:alert(1)>'],
+    ['a leading space', ' javascript:alert(1)'],
+    ['a character reference', '&#106;avascript:alert(1)'],
+    ['a character reference for the colon', 'javascript&#58;alert(1)'],
+    ['data', 'data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=='],
+    ['vbscript', 'vbscript:msgbox(1)'],
+    ['file', 'file:///etc/passwd'],
+  ] as const;
+
+  for (const [name, href] of hostile) {
+    it(`refuses ${name}`, () => {
+      const { html } = renderMarkdown(`[click](${href})`, 'x');
+
+      // The words survive — a refused link is not a deleted sentence.
+      expect(html).toContain('click');
+
+      // Nothing that could execute reaches the document, whether as an href or
+      // anywhere else in the markup.
+      for (const emitted of hrefsIn(`[click](${href})`)) {
+        expect(emitted, `${name} kept a live scheme`).toMatch(/^(?:\/|#|https?:|mailto:)/);
+      }
+      expect(html.toLowerCase()).not.toContain('href="javascript');
+      expect(html.toLowerCase()).not.toContain('href="data:');
+      expect(html.toLowerCase()).not.toContain('href="vbscript');
+      expect(html.toLowerCase()).not.toContain('href="file:');
+    });
+  }
+
+  it('leaves the schemes documentation actually uses alone', () => {
+    expect(hrefsIn('[x](https://example.com/a?b=1#c)')).toEqual(['https://example.com/a?b=1#c']);
+    expect(hrefsIn('[x](http://localhost:8787)')).toEqual(['http://localhost:8787']);
+    expect(hrefsIn('[x](HTTPS://Example.com)')).toEqual(['HTTPS://Example.com']);
+    expect(hrefsIn('[x](mailto:support@example.com)')).toEqual(['mailto:support@example.com']);
+  });
+
+  // A destination that leaves the site while reading as a path. The scheme
+  // allowlist never sees these — they have no scheme — so they are refused on
+  // their shape instead.
+  it('refuses a host that arrives without a scheme', () => {
+    // Scheme-relative: inherits https and departs. Passing it through was also
+    // what made "every outbound link carries noreferrer noopener" untrue, since
+    // it is classified as neither internal nor external.
+    expect(hrefsIn('[x](//evil.example/steal)')).toEqual([]);
+
+    // `new URL('/\\evil.example', 'https://xecret.dev/docs/x')` is
+    // `https://evil.example/` — a browser reads the backslash as a slash, so
+    // this departs while `startsWith('/')` reads it as a path on this origin.
+    expect(hrefsIn('[x](/\\evil.example)')).toEqual([]);
+    expect(hrefsIn('[x](/\\\\evil.example)')).toEqual([]);
+
+    // One leading backslash is *not* the same trick: it resolves to
+    // `https://xecret.dev/evil.example`, which never leaves. Refusing it too
+    // would only break an author who mistyped a slash.
+    expect(hrefsIn('[x](\\\\evil.example)')).toEqual(['/docs/\\evil.example']);
+
+    // The words still survive, as with a refused scheme.
+    expect(renderMarkdown('[click](//evil.example)', 'x').html).toContain('click');
+  });
+
+  it('gives every link that does leave the site the opener guard', () => {
+    // The rule the file states. Asserted over the shapes that can still reach
+    // the document at all, so a future scheme added to the allowlist has to
+    // decide this question rather than inherit an answer.
+    const { html } = renderMarkdown('[a](https://example.com) [b](/docs/api) [c](#top)', 'x');
+    const outbound = [...html.matchAll(/<a href="(https?:[^"]*)"[^>]*>/g)].map((m) => m[0]);
+
+    expect(outbound).toHaveLength(1);
+    expect(outbound[0]).toContain('rel="noreferrer noopener"');
+  });
+
+  it('leaves relative, absolute and same-page links alone', () => {
+    expect(hrefsIn('[x](../faq.md#pin)')).toEqual(['/docs/faq#pin']);
+    expect(hrefsIn('[x](/docs/api)')).toEqual(['/docs/api']);
+    expect(hrefsIn('[x](#a-heading)')).toEqual(['#a-heading']);
+    // A colon after a slash or a hash belongs to the path or the fragment, not
+    // to a scheme, and must not be read as one.
+    expect(hrefsIn('[x](../cli/commands.md#run:once)')).toEqual(['/docs/cli/commands#run:once']);
+  });
+});
+
 describe('the highlighter cannot emit unescaped markup', () => {
   it('escapes HTML in every supported language', () => {
     const hostile = `<img src=x onerror="alert(1)"> & 'quoted' "double"`;

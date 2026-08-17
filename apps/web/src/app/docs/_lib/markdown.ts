@@ -17,7 +17,8 @@ import { escapeHtml, highlight, languageLabel } from './highlight';
  *    list and the page can never disagree about a slug.
  *  - **code fences** become a labelled block with a copy button.
  *  - **links** written as relative `.md` paths — which is what makes the raw
- *    files navigable in an editor — are rewritten to site routes.
+ *    files navigable in an editor — are rewritten to site routes, and only
+ *    `http`, `https` and `mailto` are allowed to leave the site at all.
  *  - **blockquotes** opening with `**Note**`, `**Tip**`, `**Warning**` or
  *    `**Important**` become callouts.
  */
@@ -73,15 +74,75 @@ function plainText(text: string): string {
 }
 
 /**
+ * Schemes an authored link is allowed to use.
+ *
+ * `javascript:` and `data:` in an `href` are script execution, and escaping the
+ * attribute does nothing about it — `escapeHtml` quotes the quotes and hands
+ * the scheme through untouched. Every document under `public/docs` is written
+ * in this repository and rendered during `next build`, so there is no attacker
+ * on this path today; the allowlist is here because this is the renderer that
+ * will be pointed at the next collection, and one that is only safe while its
+ * input is trusted is one nobody can safely reuse.
+ *
+ * `mailto:` earns its place because a support address is a link people write.
+ * Anything further — `tel:`, `ftp:` — belongs here only when a document that
+ * needs it exists, added by whoever writes that document.
+ */
+const SAFE_SCHEMES: ReadonlySet<string> = new Set(['http', 'https', 'mailto']);
+
+/**
+ * The scheme of an href as a *browser* would read it, or `null` if it has none.
+ *
+ * The scheme is the text before the first colon, and only when no `/`, `?` or
+ * `#` comes first — past any of those the colon belongs to a path, a query or a
+ * fragment, as in `commands.md#run:once`.
+ *
+ * Whitespace is dropped before the comparison because a browser drops it too:
+ * `java<tab>script:` and `javascript:` navigate to exactly the same place, and
+ * markdown's angle-bracket link form carries a literal tab through the parser
+ * intact, where the bare form would not have parsed as a link at all.
+ *
+ * Nothing else is normalised, and nothing else needs to be, because the caller
+ * matches this against an allowlist rather than against a list of dangerous
+ * schemes: whatever residue an obfuscation leaves behind — a stray control
+ * character, an undecoded `&#106;` — is simply not equal to `http`, `https` or
+ * `mailto`, and the link is refused.
+ */
+function schemeOf(href: string): string | null {
+  const scheme = /^([^:/?#]+):/.exec(href)?.[1];
+  return scheme === undefined ? null : scheme.replace(/\s/g, '').toLowerCase();
+}
+
+/**
  * `./cli/commands.md` → `/docs/cli/commands`, `../faq.md#pin` → `/docs/faq#pin`.
  *
  * Resolved against the linking document's own slug, so a relative link means
  * the same thing in an editor and in the browser.
+ *
+ * `null` means the href does not name a destination this renderer is willing
+ * to vouch for — an unlisted scheme, or a scheme-relative host. `link()`
+ * renders those as plain text: a link losing its anchor is a visible mistake
+ * somebody fixes, whereas a destination reaching the page as a live `href` is
+ * not visible at all until somebody follows it.
  */
-function resolveDocHref(href: string, fromSlug: string): string {
-  if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('//') || href.startsWith('#')) {
-    return href;
-  }
+function resolveDocHref(href: string, fromSlug: string): string | null {
+  const scheme = schemeOf(href);
+  if (scheme !== null) return SAFE_SCHEMES.has(scheme) ? href : null;
+
+  if (href.startsWith('#')) return href;
+
+  // A leading `//` is scheme-relative: it inherits `https` and then leaves for
+  // whatever host follows. Refused rather than resolved, because the only
+  // reason to write one instead of `https://` is a mixed-content problem that
+  // stopped existing years ago — and because passing it through made the
+  // "every outbound link gets `noreferrer noopener`" rule below untrue for the
+  // one link shape that reads as internal.
+  //
+  // Browsers treat a backslash in that position as a slash, so `/\evil.com`
+  // and `\\evil.com` navigate off-site while `href.startsWith('/')` reads them
+  // as a site path. No author writes those by hand; they only appear where
+  // somebody is trying to get a same-origin check to say yes.
+  if (/^[/\\][/\\]/.test(href)) return null;
   if (href.startsWith('/')) return href;
 
   const [pathPart = '', hash] = href.split('#');
@@ -187,8 +248,17 @@ export function renderMarkdown(source: string, slug: string): RenderedMarkdown {
       link(token: Tokens.Link): string {
         const href = resolveDocHref(token.href, slug);
         const text = this.parser.parseInline(token.tokens);
+
+        // A refused scheme keeps its words and loses its anchor. The sentence
+        // still reads, and the page cannot navigate anywhere this renderer was
+        // unwilling to vouch for.
+        if (href === null) return text;
+
         const title = token.title ? ` title="${escapeHtml(token.title)}"` : '';
-        const external = /^https?:/i.test(href);
+        // Asked of the same helper that vetted the scheme, so "safe" and
+        // "outbound" can never disagree about what the scheme actually is.
+        const scheme = schemeOf(href);
+        const external = scheme === 'http' || scheme === 'https';
 
         // `noreferrer noopener` on every outbound link: a documentation page is
         // linked from a security product, and `window.opener` is a real hole.

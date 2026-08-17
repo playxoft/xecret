@@ -21,6 +21,19 @@ function normaliseOrigin(value: string): string {
 /** The origin the published documentation is served from. No trailing slash. */
 export const SITE_ORIGIN = normaliseOrigin(process.env.XECRET_PUBLIC_URL ?? FALLBACK_ORIGIN);
 
+/**
+ * The same deployment as a bare hostname, with a port only if the origin had
+ * one — `xecret.playxoft.com`, not `https://xecret.playxoft.com/`.
+ *
+ * A few formats ask for a host rather than a URL, and `robots.txt`'s `Host`
+ * directive is the one this application writes. Its grammar admits a hostname
+ * and an optional port and nothing else, and a crawler that reads a scheme or
+ * a trailing slash there does not complain — it drops the line. That is the
+ * worst possible failure for a directive whose entire job is to name the
+ * canonical host while the deployment is moving between two of them.
+ */
+export const SITE_HOST = new URL(SITE_ORIGIN).host;
+
 /** An absolute URL for a site-relative path, for canonicals and structured data. */
 export function absoluteUrl(path: string): string {
   return `${SITE_ORIGIN}${path.startsWith('/') ? path : `/${path}`}`;

@@ -1,6 +1,6 @@
 import type { MetadataRoute } from 'next';
 
-import { absoluteUrl } from '@/lib/site';
+import { absoluteUrl, SITE_HOST } from '@/lib/site';
 
 /**
  * What a crawler may read.
@@ -13,6 +13,10 @@ import { absoluteUrl } from '@/lib/site';
  * Single-use links (`/invite`, `/reset-password`, `/cli/authorize`) are
  * disallowed for the same reason plus one more: those URLs land in email, and
  * email lands in places that fetch every link in it.
+ *
+ * `host` names which of the deployment's hostnames is the real one, which
+ * matters while the move to a permanent domain is still pending. It takes a
+ * bare host, never a URL — see `SITE_HOST`.
  */
 export default function robots(): MetadataRoute.Robots {
   return {
@@ -24,6 +28,6 @@ export default function robots(): MetadataRoute.Robots {
       },
     ],
     sitemap: absoluteUrl('/sitemap.xml'),
-    host: absoluteUrl('/'),
+    host: SITE_HOST,
   };
 }
