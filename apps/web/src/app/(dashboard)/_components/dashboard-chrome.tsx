@@ -96,7 +96,11 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   const reloadSession = session.reload;
   const lock = useCallback(async () => {
     await api.post('/auth/pin/lock');
-    reloadSession();
+    // `void`, not awaited: `reload` returns a promise now, and nothing after
+    // this line depends on the answer — the re-render it causes is the whole
+    // point, and it is what lands on the lock screen. Left bare it was a
+    // floating promise, which is the shape a genuine forgotten `await` also has.
+    void reloadSession();
   }, [reloadSession]);
 
   // The idle lock. Armed only while there is an unlock to lose; the interval

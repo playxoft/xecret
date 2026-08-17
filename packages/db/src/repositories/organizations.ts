@@ -11,6 +11,7 @@ import {
   slugify,
   truncateName,
 } from '@xecret/core/validation';
+import { users } from '../schema/identity';
 import { envKeys, orgKeys } from '../schema/keys';
 import { environments, projects } from '../schema/resources';
 import { orgMembers, organizations } from '../schema/tenancy';
@@ -109,22 +110,40 @@ export async function listOrganizationsForUser(
   return organizationsForUserQuery(exec, userId);
 }
 
-/** What `countOrganizationsCreatedBy` found. */
-export interface CreatedOrganizations {
+/** What `countOrganizationsHeldBy` found. */
+export interface HeldOrganizations {
   /** How many, counted no further than the limit that was asked about. */
   total: number;
-  /** The most recent of them, or `null` when the account has created none. */
+  /** The most recent of them, or `null` when the account holds none. */
   latestId: string | null;
 }
 
 /**
- * How many live organisations one account has created.
+ * How many live organisations one account **created and is still in**.
  *
- * Attributed by `created_by` rather than by owner membership, because the thing
- * being bounded is the work and the namespace this account has spent, and that
- * is not something other people can inflate on its behalf — somebody who
- * promotes a colleague to owner of ten organisations must not thereby stop them
- * creating their own.
+ * Both halves of that are load-bearing, and each answers a way the other one
+ * alone fails:
+ *
+ *  - **`created_by`**, so that being promoted to owner of somebody else's
+ *    organisation does not spend this account's allowance. Ten colleagues
+ *    handing somebody an owner seat must not stop them starting their own.
+ *  - **an active membership**, so that a place can always be given back. The
+ *    only way to release one is `DELETE /api/orgs/{slug}`, which resolves
+ *    through `resolveOrg` and answers 404 without a membership — so counting
+ *    `created_by` alone meant an organisation you were removed from stood
+ *    against your ceiling for ever, with no request you could make to clear it.
+ *    A co-owner removing the creator from ten organisations was enough to stop
+ *    that account creating an eleventh, permanently. What you can no longer
+ *    reach is not something you are still holding.
+ *
+ * The membership join is what makes the ceiling coherent elsewhere, too: an
+ * account with no memberships counts zero, so the organisation created at first
+ * sign-in is within any cap by construction rather than by an exemption
+ * somebody has to remember to keep correct.
+ *
+ * `status = 'active'` for the same reason the read exists at all — a suspended
+ * member cannot delete the organisation either, so a suspension frees the place
+ * rather than freezing it.
  *
  * Soft-deleted organisations are excluded, so deleting one frees a place. Note
  * what that does *not* give back: `organizations_slug_unique` is a total
@@ -133,31 +152,48 @@ export interface CreatedOrganizations {
  *
  * ── Why a bounded row scan rather than `count(*)` ──
  * The caller is asking "is this account at its limit", which `LIMIT n` answers
- * exactly, and reading at most `n` ids is cheaper than aggregating over every
- * organisation an account has ever created. The ids are UUIDv7, so ordering by
- * them descending puts the most recently created first — which is the row the
- * refusal is filed against, `audit_logs.org_id` being NOT NULL.
+ * exactly, and it can stop at `n` rows rather than aggregating over every
+ * organisation an account has ever created. That is only true because
+ * `organizations_creator_idx` supplies the rows in `id desc` order under the
+ * `created_by` predicate — without it PostgreSQL has to find every candidate
+ * row before it can sort, and the `LIMIT` saves nothing on the common path
+ * where the account is under the ceiling. The ids are UUIDv7, so descending id
+ * is descending creation time, and the first row is the one the refusal is
+ * filed against — `audit_logs.org_id` being NOT NULL.
  */
-export async function countOrganizationsCreatedBy(
+export async function countOrganizationsHeldBy(
   exec: Executor,
   userId: string,
   limit: number,
-): Promise<CreatedOrganizations> {
-  const rows = await organizationsCreatedByQuery(exec, userId, limit);
+): Promise<HeldOrganizations> {
+  const rows = await organizationsHeldByQuery(exec, userId, limit);
   return { total: rows.length, latestId: rows[0]?.id ?? null };
 }
 
 /**
- * @internal Exported so `identity.test.ts` can assert that the count excludes
- * soft-deleted rows and stops at the limit, without needing a database.
+ * @internal Exported so `identity.test.ts` can assert that the count is joined
+ * to membership, excludes soft-deleted rows and stops at the limit, without
+ * needing a database.
  */
-export function organizationsCreatedByQuery(exec: Executor, userId: string, limit: number) {
-  return exec
-    .select({ id: organizations.id })
-    .from(organizations)
-    .where(and(eq(organizations.createdBy, userId), isNull(organizations.deletedAt)))
-    .orderBy(desc(organizations.id))
-    .limit(limit);
+export function organizationsHeldByQuery(exec: Executor, userId: string, limit: number) {
+  return (
+    exec
+      .select({ id: organizations.id })
+      .from(organizations)
+      // `org_members_org_user_unique` makes this at most one row per
+      // organisation, so the join cannot inflate the count it is part of.
+      .innerJoin(orgMembers, eq(orgMembers.orgId, organizations.id))
+      .where(
+        and(
+          eq(organizations.createdBy, userId),
+          eq(orgMembers.userId, userId),
+          eq(orgMembers.status, 'active'),
+          isNull(organizations.deletedAt),
+        ),
+      )
+      .orderBy(desc(organizations.id))
+      .limit(limit)
+  );
 }
 
 /**
@@ -216,6 +252,17 @@ export async function isOrgSlugAvailable(exec: Executor, slug: string): Promise<
 export interface ProvisionOrganizationParams {
   user: Pick<User, 'id' | 'email' | 'displayName'>;
   envelope: EnvelopeService;
+  /**
+   * The most organisations this account may hold, counted by
+   * `countOrganizationsHeldBy` and refused with `quotaExceeded`.
+   *
+   * Required, and deliberately not defaulted. This is the only ceiling on
+   * organisation creation there is, and a parameter with a default is one a
+   * future caller can omit and silently get no ceiling at all — which is
+   * precisely how the bootstrap at `POST /api/auth/session` came to create
+   * organisations without consulting one.
+   */
+  limit: number;
   /** Overrides the name derived from the user's profile. */
   name?: string | undefined;
   /**
@@ -270,6 +317,22 @@ export interface ProvisionedOrganization {
  * where holding a connection through key derivation is a self-inflicted
  * throughput limit. The environment keys are derived concurrently to keep the
  * window as short as it can be.
+ *
+ * ── Why the ceiling is enforced in here rather than by the caller ──
+ * It used to be a count in `POST /api/orgs`, one statement before this
+ * transaction and with the whole of it in between. That is check-then-act:
+ * every concurrent request that read `total = 9` passed, and nothing downstream
+ * disagreed — no unique constraint expresses "at most ten", so the database
+ * accepted every one of them. The rate limiter is not a backstop for it either.
+ * Cloudflare's counters are per-colo, so a distributed caller gets roughly its
+ * whole `RL_MUTATION` allowance *per data centre* in flight at once, and
+ * `consume` fails open when the binding is absent — which is the documented
+ * state of a local or self-hosted deployment, where the overshoot is then
+ * unbounded.
+ *
+ * So the count happens here, behind `lockAccount`, and the number it compares
+ * against is the caller's — one place where the ceiling is decided and one
+ * place where it is applied.
  */
 export async function provisionOrganization(
   exec: Executor,
@@ -278,6 +341,20 @@ export async function provisionOrganization(
   const { user, envelope } = params;
 
   return exec.transaction(async (tx) => {
+    // First, before the slug lookup and long before any key material: nothing
+    // below is worth doing for a request that is about to be refused, and the
+    // lock has to be held across the count *and* the insert for the count to
+    // mean anything.
+    await lockAccount(tx, user.id);
+
+    const held = await countOrganizationsHeldBy(tx, user.id, params.limit);
+    if (held.total >= params.limit) {
+      throw new RepositoryError(
+        'quotaExceeded',
+        `An account can hold at most ${params.limit} organisations.`,
+      );
+    }
+
     const now = new Date();
     const orgId = uuidv7();
     // An explicit slug is used as given; only a derived one is uniquified. The
@@ -515,6 +592,52 @@ function trimTrailingHyphens(value: string): string {
 /** Six lowercase base-36 characters, from a CSPRNG: ~1.7 × 10⁷ possibilities. */
 function randomSlugSuffix(): string {
   return Array.from(randomBytes(3), (byte) => byte.toString(36).padStart(2, '0')).join('');
+}
+
+/**
+ * Serialises one account's organisation creations against each other.
+ *
+ * The lock is taken on the *account* row rather than on anything the
+ * transaction is about to write, for the same reason `lockOrgAndLoadMember`
+ * locks the organisation rather than the member being changed: "at most ten" is
+ * a property of a set, and locking the rows a transaction writes serialises
+ * nothing when each writes a different row. Two concurrent creations insert two
+ * different organisations, each counts nine, and both commit — and no
+ * constraint downstream disagrees, because none of them can express a ceiling
+ * across rows. `users` is the only row the two have in common, so holding it
+ * forces the second to count again under the first one's committed effect.
+ *
+ * The honest cost: the lock is held for the rest of the transaction, which in
+ * `provisionOrganization` means across four key derivations — so a second
+ * creation from the same account waits the first one out. That is the intent —
+ * one account may not mint Org Master Keys in parallel — and the contention is
+ * confined to that account, since nobody else has any reason to touch this row.
+ * The one other writer of it is `upsertUserFromIdentity`, so a sign-in landing
+ * mid-creation for the same person waits too, on a request that has just spent
+ * far longer verifying a Firebase token.
+ *
+ * A soft-deleted account is filtered out rather than locked. It cannot
+ * authenticate, so this is unreachable from the two callers; if it ever became
+ * reachable, `notFound` is a better ending than provisioning an organisation
+ * for a row on its way out.
+ */
+async function lockAccount(exec: Executor, userId: string): Promise<void> {
+  const [account] = await accountLockQuery(exec, userId);
+  if (!account) throw new RepositoryError('notFound', 'Account not found.');
+}
+
+/**
+ * @internal Exported so `identity.test.ts` can assert that the serialisation is
+ * a `SELECT … FOR UPDATE` on one account row, without needing a database to
+ * demonstrate the race it closes.
+ */
+export function accountLockQuery(exec: Executor, userId: string) {
+  return exec
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.id, userId), isNull(users.deletedAt)))
+    .limit(1)
+    .for('update');
 }
 
 async function isSlugTaken(exec: Executor, slug: string): Promise<boolean> {

@@ -73,7 +73,7 @@ describe('slugSchema', () => {
 
 describe('checkSlug', () => {
   it.each(['acme', 'acme-corp', 'a1-b2-c3', 'x'])('accepts %s', (slug) => {
-    expect(checkSlug(slug)).toEqual({ valid: true });
+    expect(checkSlug(slug, SLUG_MAX_LENGTH)).toEqual({ valid: true });
   });
 
   /**
@@ -95,7 +95,7 @@ describe('checkSlug', () => {
     ['acme_corp', 'invalidCharacters'],
     ['settings', 'reserved'],
   ])('reports %s as %s', (slug, problem) => {
-    const check = checkSlug(slug);
+    const check = checkSlug(slug, SLUG_MAX_LENGTH);
 
     expect(check.valid).toBe(false);
     expect(check.valid === false && check.problem).toBe(problem);
@@ -111,7 +111,7 @@ describe('checkSlug', () => {
   // The message goes straight under a form field, and this product does not
   // return user input in error messages.
   it('never echoes the value it rejected', () => {
-    const check = checkSlug('Not A Slug At All');
+    const check = checkSlug('Not A Slug At All', SLUG_MAX_LENGTH);
     expect(check.valid === false && check.message).not.toContain('Not A Slug');
   });
 

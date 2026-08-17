@@ -70,6 +70,16 @@ export const GET = authenticatedRoute(async ({ request, principal, services }) =
   await enforce(services.env, 'RL_SLUG_CHECK', rateLimitKey([principal.user.id]));
 
   const { slug } = parseQuery(request, availabilityQuery);
+  // ── The question is answered about the normalised slug, not the raw one ──
+  // The query schema trims and this lowercases, because somebody who types
+  // "ACME " is asking about `acme` and reporting their slug as invalid would be
+  // answering a question they did not ask. `POST /api/orgs` does no such thing:
+  // `organizationSlugSchema` refuses both, since `SLUG_PATTERN` is lowercase and
+  // a slug is permanent enough that the server has no business quietly editing
+  // one. The two therefore agree about the value in `slug` below and not about
+  // the caller's raw text, which is why the response echoes what was checked
+  // rather than what was asked. Clients must submit that value — the create
+  // form does, via `normalizeSlugInput`.
   const normalized = slug.toLowerCase();
 
   const reason = await unavailableBecause(normalized, services.db);
@@ -89,8 +99,11 @@ async function unavailableBecause(
 ): Promise<Unavailable | null> {
   // Shape first, so a slug that could never be valid costs no query. Answered by
   // the same function `organizationSlugSchema` is built from, so this endpoint
-  // cannot say "available" about a slug `POST /api/orgs` would reject — which is
-  // exactly what it did while it kept its own copy of the rules.
+  // cannot say "available" about a slug `POST /api/orgs` would then reject for
+  // its shape — which is exactly what it did while it kept its own copy of the
+  // rules. The claim holds for the value this endpoint reports and no further:
+  // it is asked about `slug`, already normalised by the caller above, and
+  // `POST` is stricter about everything that normalisation removed.
   //
   // Every problem but `reserved` collapses to `invalid`: the form already knows
   // the shape rules and words them itself, and the distinction that matters to a

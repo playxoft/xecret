@@ -194,9 +194,15 @@ export type SlugCheck =
  * three into one unhelpful category.
  *
  * @param maxLength The ceiling to apply — `ORGANIZATION_SLUG_MAX_LENGTH` for an
- *   organisation, the general `SLUG_MAX_LENGTH` for everything else.
+ *   organisation, the general `SLUG_MAX_LENGTH` for everything else. Required,
+ *   and deliberately not defaulted to either: the two differ by 38 characters,
+ *   and the wider one was the default. A caller who forgot the argument
+ *   therefore got a *looser* rule than the one it meant to apply, silently —
+ *   which for the organisation form is a slug the create endpoint refuses, and
+ *   is the same class of mistake as an availability check that disagrees with
+ *   the schema. Failing to compile is the only version of this that cannot ship.
  */
-export function checkSlug(slug: string, maxLength: number = SLUG_MAX_LENGTH): SlugCheck {
+export function checkSlug(slug: string, maxLength: number): SlugCheck {
   if (slug.length === 0) {
     return { valid: false, problem: 'empty', message: 'A slug cannot be empty.' };
   }
