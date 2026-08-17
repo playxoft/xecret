@@ -3,7 +3,7 @@ title: API endpoint reference
 navTitle: Endpoint reference
 description: Every HTTP endpoint — auth, organisations, projects, environments, secrets, bulk read, import and export, members, tokens and the audit log.
 keywords: [xecret api endpoints, secrets rest endpoints, pull endpoint, audit api, members api, api reference]
-updated: 2026-08-16
+updated: 2026-08-17
 ---
 
 Every route, grouped the way you will look for them. Paths are relative to
@@ -11,6 +11,33 @@ Every route, grouped the way you will look for them. Paths are relative to
 
 Read [the API overview](../api.md) first for authentication, errors and
 pagination — none of it is repeated here.
+
+## Version
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/version` | What is deployed. No credential required. |
+
+```json
+{
+  "name": "xecret",
+  "version": "0.1.0",
+  "commit": "a1b2c3d",
+  "builtAt": "2026-08-17T12:00:00Z"
+}
+```
+
+The only unauthenticated endpoint that answers a `GET`, and the only one that
+touches no database. Use it to check what a deployment is running before
+reporting a bug against it, and to watch a deploy roll out.
+
+`commit` is `git describe --always --dirty`, so a build made from a modified
+tree says `a1b2c3d-dirty`. Both `commit` and `builtAt` read `unknown` on a build
+that did not come from `scripts/deploy-web.sh` — a local `next build`, or CI.
+
+It reports the build, never the install: no environment name, no bindings, no
+dependency versions, no Firebase or database detail. Those describe how one
+deployment is configured, which is not public.
 
 ## Auth
 

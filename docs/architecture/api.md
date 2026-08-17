@@ -145,6 +145,32 @@ rejected input reaches the client; in this product the rejected input may be a s
 
 ## 4. Endpoints
 
+### Version
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/version` | `{ name, version, commit, builtAt }`. No credential, no database, no rate limit. |
+
+The one endpoint that answers before anything else works. It goes through
+`publicRoute` — so it carries a request id, logs, and the same error envelope as
+everything else — but issues no query, which is deliberate: the moment you most
+want to know what is deployed is the moment something else is failing.
+
+`version` is inlined from `apps/web/package.json` at build time; `commit` and
+`builtAt` are stamped by `scripts/deploy-web.sh`. A build from any other path
+reports `unknown` for the latter two rather than inventing them, which also
+means an `unknown` in production is itself a finding: that Worker was not
+deployed by the script.
+
+Unauthenticated on purpose, and the trade is worth stating because
+`next.config.ts` turns `poweredByHeader` off on the principle that a secret
+manager leaks no build detail. That rule is about disclosure bought for nothing.
+Here the disclosure is close to nil — the server is AGPL, so the version names a
+tag anyone can already read — and the value is real: the CLI can warn before
+issuing a request this server is too old to satisfy. What the endpoint must
+never grow is anything describing the *install* rather than the build; the shape
+is pinned by a test for that reason.
+
 ### Auth
 
 | Method | Path | Notes |
