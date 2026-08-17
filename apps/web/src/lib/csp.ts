@@ -90,6 +90,28 @@ const GOOGLE_IDENTITY_HOSTS = [
 const GOOGLE_SCRIPT_HOST = 'https://apis.google.com';
 
 /**
+ * A hostname — and specifically not the other things a CSP source expression is
+ * willing to read.
+ *
+ * Labels of ASCII letters, digits and inner hyphens, joined by dots. What that
+ * rules out is the reason the check exists: `*` and `*.firebaseapp.com` are not
+ * malformed values, they are legal CSP host sources meaning "any host" and "any
+ * subdomain", and both survive a `URL` round trip untouched —
+ * `new URL('https://*').origin` is the string `'https://*'`. A wildcard
+ * reaching `connect-src` or `frame-src` hands an injected script exactly the
+ * outbound destination the rest of this file exists to deny it, and it gets
+ * there from a value an operator can plausibly type while meaning "all our
+ * Firebase domains".
+ *
+ * It also rules out a port, a userinfo section, an IP literal and an
+ * internationalised name. None of those is an `authDomain`: the value names the
+ * one host serving `/__/auth/handler` over 443, and an IDN reaches DNS — and so
+ * this policy — already punycoded. Refusing them costs a deployment that has
+ * never existed and buys a check that can be read in one line.
+ */
+const HOSTNAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/i;
+
+/**
  * The project's own Firebase domain, read from the config the client already
  * gets.
  *
@@ -100,10 +122,13 @@ const GOOGLE_SCRIPT_HOST = 'https://apis.google.com';
  * self-hoster's own Firebase project working — the alternative is a policy that
  * silently only permits sign-in to this project's deployment.
  *
- * Absent or unparseable config yields nothing, and the policy is simply built
- * without those entries: a deployment with no Firebase configured has no
- * sign-in to break, and a malformed value is already reported by `check:env`
- * with a far better message than a CSP failure would give.
+ * Config that is absent, unparseable, or carrying an `authDomain` that is not a
+ * hostname yields nothing, and the policy is simply built without those
+ * entries: a deployment with no Firebase configured has no sign-in to break,
+ * and a malformed value is already reported by `check:env` with a far better
+ * message than a CSP failure would give. Failing closed is the point — the
+ * alternative is a directive that permits more than the operator meant, which
+ * is the one failure mode a policy must not have.
  */
 export function firebaseAuthOrigin(rawConfig: string | undefined): string | null {
   if (!rawConfig) return null;
@@ -115,10 +140,21 @@ export function firebaseAuthOrigin(rawConfig: string | undefined): string | null
     const authDomain = (parsed as Record<string, unknown>)['authDomain'];
     if (typeof authDomain !== 'string' || authDomain === '') return null;
 
-    // Through `URL` rather than by concatenation, so a value that already
-    // carries a scheme, a path or a stray slash cannot smuggle a second source
-    // expression into the directive it lands in.
-    return new URL(`https://${authDomain.replace(/^https?:\/\//, '')}`).origin;
+    // A pasted value often still carries its scheme, which is the obvious
+    // mistake and worth absorbing rather than refusing. Case-insensitively:
+    // `HTTPS://P.FIREBASEAPP.COM` is what a shell or a spreadsheet that
+    // upper-cases things hands over, and a case-sensitive strip left the scheme
+    // on the front to be read as the hostname — producing the origin
+    // `https://https`, which is a perfectly well-formed source expression
+    // naming a host that does not exist.
+    const host = authDomain.replace(/^https?:\/\//i, '');
+    if (!HOSTNAME.test(host)) return null;
+
+    // Lower-cased because DNS does not care and a header is read by people:
+    // `https://P.FIREBASEAPP.COM` sitting in `frame-src` invites the question
+    // of whether it matches anything, which is a question nobody should have to
+    // answer while reading a policy.
+    return `https://${host.toLowerCase()}`;
   } catch {
     return null;
   }

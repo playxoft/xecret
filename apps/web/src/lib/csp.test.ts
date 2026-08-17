@@ -173,6 +173,50 @@ describe('a configured value cannot become a source expression', () => {
     }
   });
 
+  // What the assertion above never actually saw. Every hostile value fed to it
+  // was malformed in a way `URL` happened to reject or flatten; a wildcard is
+  // not malformed at all. `*` and `*.firebaseapp.com` are legal CSP host
+  // sources meaning "anywhere" and "any subdomain", `new URL('https://*')`
+  // parses happily, and its `.origin` is the wildcard right back — so the round
+  // trip that was doing the vetting passed it straight through into
+  // `connect-src`, which is the one directive whose entire value is that it
+  // names somewhere specific.
+  it('refuses a wildcard, which is a source expression rather than a host', () => {
+    for (const wildcard of ['*', '*.firebaseapp.com', 'https://*', '*.*', 'a.*.example', '.']) {
+      expect(
+        firebaseAuthOrigin(JSON.stringify({ authDomain: wildcard })),
+        `${wildcard} reached the policy`,
+      ).toBeNull();
+    }
+
+    const policy = contentSecurityPolicy({
+      isDevelopment: false,
+      firebaseConfig: JSON.stringify({ authDomain: '*.firebaseapp.com' }),
+    });
+
+    // Built without the entries rather than with a permissive one: sign-in is
+    // broken either way, and only one of the two is also a hole.
+    expect(policy).toContain("frame-src 'self'");
+    expect(policy).not.toContain('*');
+  });
+
+  // `HTTPS://P.FIREBASEAPP.COM` — a value that has been through something that
+  // upper-cases environment variables. The scheme strip was case-sensitive, so
+  // the scheme stayed on the front and was read as the hostname: the policy
+  // named `https://https`, a well-formed source expression for a host nobody
+  // owns, and sign-in failed with no directive obviously wrong.
+  it('strips a scheme however it was capitalised', () => {
+    expect(firebaseAuthOrigin(JSON.stringify({ authDomain: 'HTTPS://P.FIREBASEAPP.COM' }))).toBe(
+      'https://p.firebaseapp.com',
+    );
+    expect(firebaseAuthOrigin(JSON.stringify({ authDomain: 'HtTp://p.firebaseapp.com' }))).toBe(
+      'https://p.firebaseapp.com',
+    );
+    expect(firebaseAuthOrigin(JSON.stringify({ authDomain: 'P.FirebaseApp.com' }))).toBe(
+      'https://p.firebaseapp.com',
+    );
+  });
+
   it('accepts the domain shapes a console actually gives', () => {
     expect(firebaseAuthOrigin(JSON.stringify({ authDomain: 'p.firebaseapp.com' }))).toBe(
       'https://p.firebaseapp.com',
