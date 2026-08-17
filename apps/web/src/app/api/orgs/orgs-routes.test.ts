@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuditRecord } from '@xecret/core/audit';
 import { uuidv7 } from '@xecret/core/ids';
+import { RepositoryError } from '@xecret/db/repositories';
 import type { RequestLog } from '@/server/logging';
 import { createLogger } from '@/server/logging';
 import { ORGANIZATIONS_PER_ACCOUNT_LIMIT } from '@/server/schemas/resources';
@@ -44,7 +45,7 @@ const actor = vi.hoisted(() => ({
 }));
 
 const repository = vi.hoisted(() => ({
-  countOrganizationsCreatedBy: vi.fn(),
+  countOrganizationsHeldBy: vi.fn(),
   provisionOrganization: vi.fn(),
   isOrgSlugAvailable: vi.fn(),
   listOrganizationsForUser: vi.fn(),
@@ -180,7 +181,7 @@ beforeEach(() => {
 
   rateLimit.enforce.mockResolvedValue({ allowed: true, enforced: true });
 
-  repository.countOrganizationsCreatedBy.mockResolvedValue({ total: 0, latestId: null });
+  repository.countOrganizationsHeldBy.mockResolvedValue({ total: 0, latestId: null });
   repository.isOrgSlugAvailable.mockResolvedValue(true);
   repository.listOrganizationsForUser.mockResolvedValue([]);
   repository.provisionOrganization.mockImplementation(async () => provisioned());
@@ -262,18 +263,23 @@ describe('POST /api/orgs — who may create one', () => {
 
     expect(response.status).toBe(403);
     // Refused before anything was counted, provisioned, or spent.
-    expect(repository.countOrganizationsCreatedBy).not.toHaveBeenCalled();
+    expect(repository.countOrganizationsHeldBy).not.toHaveBeenCalled();
     expect(repository.provisionOrganization).not.toHaveBeenCalled();
   });
 });
 
+/** The refusal `provisionOrganization` raises from inside its transaction. */
+function atTheLimit(): void {
+  repository.provisionOrganization.mockRejectedValue(
+    new RepositoryError(
+      'quotaExceeded',
+      `An account can hold at most ${ORGANIZATIONS_PER_ACCOUNT_LIMIT} organisations.`,
+    ),
+  );
+}
+
 describe('POST /api/orgs — how many an account may hold', () => {
   it('creates one while the account is below its limit', async () => {
-    repository.countOrganizationsCreatedBy.mockResolvedValue({
-      total: ORGANIZATIONS_PER_ACCOUNT_LIMIT - 1,
-      latestId: ORG_ID,
-    });
-
     const response = await orgs.POST(createRequest());
 
     expect(response.status).toBe(201);
@@ -281,52 +287,63 @@ describe('POST /api/orgs — how many an account may hold', () => {
   });
 
   /**
+   * The ceiling is applied where it can actually hold.
+   *
+   * It used to be counted here, one statement before `provisionOrganization`,
+   * with the whole transaction in between — check-then-act with no row lock and
+   * no constraint underneath it, so every concurrent request that read nine
+   * passed. The rate limiter does not bound the overshoot either: Cloudflare's
+   * counters are per-colo, and `consume` fails open when the binding is absent,
+   * which is the documented state of a local or self-hosted deployment. The
+   * route now names the number and the transaction imposes it.
+   */
+  it('hands the ceiling to the transaction rather than checking it beforehand', async () => {
+    await orgs.POST(createRequest());
+
+    expect(repository.provisionOrganization).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ limit: ORGANIZATIONS_PER_ACCOUNT_LIMIT }),
+    );
+    // Nothing counted outside the transaction on the way in: a second count out
+    // here would be a second, weaker copy of the ceiling.
+    expect(repository.countOrganizationsHeldBy).not.toHaveBeenCalled();
+  });
+
+  /**
    * The refusal that bounds the standing cost. A rate limit bounds how fast this
    * endpoint can be called; only this bounds how many organisations — and how
    * many permanently claimed slugs — one account can accumulate by calling it
    * patiently.
+   *
+   * 409 rather than the 422 a `conflict` from the same call would produce: the
+   * two are told apart by the repository's code, because a slug somebody else
+   * holds is fixed by renaming and this one is not.
    */
-  it('refuses at the limit, before the transaction that would derive the keys', async () => {
-    repository.countOrganizationsCreatedBy.mockResolvedValue({
-      total: ORGANIZATIONS_PER_ACCOUNT_LIMIT,
-      latestId: ORG_ID,
-    });
+  it('answers the transaction refusal with a conflict', async () => {
+    atTheLimit();
 
     const response = await orgs.POST(createRequest());
 
     expect(response.status).toBe(409);
-    expect(repository.provisionOrganization).not.toHaveBeenCalled();
   });
 
-  // Counting past the limit costs a wider scan and answers a question nobody
-  // asked. The route must ask only what it can act on.
-  it('asks the repository for no more rows than the limit it is checking', async () => {
-    await orgs.POST(createRequest());
-
-    expect(repository.countOrganizationsCreatedBy).toHaveBeenCalledWith(
-      expect.anything(),
-      USER_ID,
-      ORGANIZATIONS_PER_ACCOUNT_LIMIT,
-    );
-  });
-
-  // The rate limiter is the cheaper gate and guards the count query itself, so
+  // The rate limiter is the cheaper gate and guards the transaction itself, so
   // it has to run first — otherwise a caller who is being limited can still make
-  // the database answer.
-  it('spends the rate limit before it queries', async () => {
+  // the database open one.
+  it('spends the rate limit before it provisions', async () => {
     const order: string[] = [];
     rateLimit.enforce.mockImplementation(async () => {
       order.push('rate-limit');
       return { allowed: true, enforced: true };
     });
-    repository.countOrganizationsCreatedBy.mockImplementation(async () => {
-      order.push('count');
-      return { total: 0, latestId: null };
+    repository.provisionOrganization.mockImplementation(async () => {
+      order.push('provision');
+      return provisioned();
     });
 
     await orgs.POST(createRequest());
 
-    expect(order).toEqual(['rate-limit', 'count']);
+    expect(order).toEqual(['rate-limit', 'provision']);
   });
 
   /**
@@ -334,11 +351,9 @@ describe('POST /api/orgs — how many an account may hold', () => {
    * clicking Create twice looks nothing like a script working through a word
    * list, and only the audit log can tell them apart.
    */
-  it('records the refusal, against an organisation the account actually created', async () => {
-    repository.countOrganizationsCreatedBy.mockResolvedValue({
-      total: ORGANIZATIONS_PER_ACCOUNT_LIMIT,
-      latestId: ORG_ID,
-    });
+  it('records the refusal, against an organisation the account is a member of', async () => {
+    atTheLimit();
+    repository.countOrganizationsHeldBy.mockResolvedValue({ total: 1, latestId: ORG_ID });
 
     await orgs.POST(createRequest());
     await settle();
@@ -355,12 +370,45 @@ describe('POST /api/orgs — how many an account may hold', () => {
     });
   });
 
+  /**
+   * The record carries the actor's email address, IP and user agent, and an
+   * organisation's audit log is readable by its members. So the anchor has to be
+   * an organisation this account is *in*, which is what the membership join in
+   * `countOrganizationsHeldBy` guarantees — filing it against the most recent
+   * organisation the account had merely *created* put a stranger's current
+   * contact details and network position in front of a tenant they had been
+   * removed from.
+   */
+  it('reads the anchor from the membership-scoped count, and asks for one row', async () => {
+    atTheLimit();
+    repository.countOrganizationsHeldBy.mockResolvedValue({ total: 1, latestId: ORG_ID });
+
+    await orgs.POST(createRequest());
+
+    expect(repository.countOrganizationsHeldBy).toHaveBeenCalledWith(expect.anything(), USER_ID, 1);
+  });
+
+  /**
+   * An account-scoped refusal and an organisation-scoped audit log do not fit,
+   * and `audit_logs.org_id` is NOT NULL. With nowhere truthful to file it,
+   * nothing is filed — the same answer `POST /api/auth/pin/reset` gives a user
+   * who belongs to no organisation. The caller is still refused.
+   */
+  it('records nothing when the account is in no organisation at all', async () => {
+    atTheLimit();
+    repository.countOrganizationsHeldBy.mockResolvedValue({ total: 0, latestId: null });
+
+    const response = await orgs.POST(createRequest());
+    await settle();
+
+    expect(response.status).toBe(409);
+    expect(written).toHaveLength(0);
+  });
+
   // The message is a rule, not an echo. Nothing the caller sent comes back.
   it('states the limit without repeating the request back', async () => {
-    repository.countOrganizationsCreatedBy.mockResolvedValue({
-      total: ORGANIZATIONS_PER_ACCOUNT_LIMIT,
-      latestId: ORG_ID,
-    });
+    atTheLimit();
+    repository.countOrganizationsHeldBy.mockResolvedValue({ total: 1, latestId: ORG_ID });
 
     const payload = await body(await orgs.POST(createRequest({ name: 'Acme', slug: 'acme' })));
     const error = payload['error'] as { code: string; message: string };

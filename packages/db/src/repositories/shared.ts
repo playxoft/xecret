@@ -68,6 +68,16 @@ export type RepositoryErrorCode =
   | 'notFound'
   | 'lastOwner'
   | 'seatLimit'
+  /**
+   * A standing per-account ceiling would be exceeded by this write.
+   *
+   * Distinct from `conflict`, which the organisation routes already spend on a
+   * slug somebody else claimed: the two are both 409s and both resolvable by
+   * the caller, but they are resolved by opposite acts — pick another name
+   * versus close one you already have — and `POST /api/orgs` puts the first on
+   * the slug field and the second at the foot of the form.
+   */
+  | 'quotaExceeded'
   | 'immutable'
   /**
    * The call itself is malformed — an update with nothing to update, say.

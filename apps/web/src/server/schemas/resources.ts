@@ -73,6 +73,33 @@ export const DESCRIPTION_MAX_LENGTH = 500;
  * the product a question it answers better a level down. It is deliberately far
  * above the one or two a real account has, so the refusal is only ever met by
  * something that is not a person filling in a form.
+ *
+ * ── What this bounds, and what it does not ──
+ * It bounds what one account **holds at once**: `countOrganizationsHeldBy`
+ * counts the live organisations the account created and is still an active
+ * member of, and `provisionOrganization` refuses past this number under a lock
+ * on the account row, so the ceiling is exact rather than approximate.
+ *
+ * It does not bound **churn**, and cannot, because a place is freed by two acts
+ * that do not give the slug back:
+ *
+ *  - *Deleting.* A soft delete frees the place; the slug stays claimed, since
+ *    the unique constraint is total. One account can therefore cycle
+ *    create-and-delete at whatever rate `RL_MUTATION` permits.
+ *  - *Handing over.* An account can create an organisation, invite a second
+ *    account as owner, be removed by it, and be back under its ceiling with the
+ *    organisation — and its slug — still live. Repeat, and the pair burns the
+ *    namespace between them without either ever exceeding ten.
+ *
+ * That second path is the price of the membership join, and it is worth paying:
+ * counting `created_by` alone made the quota unrecoverable instead, so an
+ * organisation somebody removed you from stood against your ceiling for ever
+ * and a co-owner could permanently stop you creating another. What bounds the
+ * hand-off is that it takes a *second consenting account* — verified address,
+ * accepted invitation, deliberate removal — per organisation, and that each
+ * step is separately rate-limited (`RL_INVITE`, `RL_MUTATION`). That makes it a
+ * slow, attributable, multi-account act rather than a loop, which is the shape
+ * abuse response deals with. It is not a claim that the ceiling closes it.
  */
 export const ORGANIZATIONS_PER_ACCOUNT_LIMIT = 10;
 
