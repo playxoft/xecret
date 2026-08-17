@@ -70,12 +70,27 @@ a Content Security Policy on every response (`apps/web/src/lib/csp.ts`).
 **Known limit of the CSP.** `script-src` carries `'unsafe-inline'`, so the policy does not
 stop an injected inline `<script>` from running — the App Router streams its RSC payload as
 a per-page inline script, and the nonce that would replace it requires a Proxy this stack
-cannot have (ADR 0008). What the policy does remove is what such a script could accomplish:
-`connect-src` and `img-src` refuse exfiltration to any other origin, `script-src 'self'`
-refuses a second stage, `form-action` refuses a redirected POST, and `base-uri 'self'`
-refuses a rewrite of every relative URL on the page. Treat inline execution as *contained*,
-not prevented, and keep escaping at the point of render — see the documentation renderer,
-which is where this was learned.
+cannot have (ADR 0008). What the policy does remove is what such a script could accomplish.
+`img-src` names no remote origin at all; `connect-src` names only this origin, Google's two
+identity endpoints and the deployment's own Firebase domain — so the `fetch` and the `<img>`
+beacon a review actually demonstrated are both refused. `form-action` refuses a redirected
+POST, and `base-uri 'self'` refuses a rewrite of every relative URL on the page.
+
+`script-src` is **not** `'self'` alone, and reading it as such overstates the policy. Sign-in
+needs Google's script loader at `apis.google.com`, and the email/password flows load
+reCAPTCHA Enterprise from `www.google.com/recaptcha/` and `www.gstatic.com/recaptcha/` by
+themselves whenever an operator enables enforcement in the Firebase console. So a second
+stage has nowhere to be loaded from *except* those three Google-operated sources. Two are
+scoped to a path, which keeps the rest of `www.google.com` — an origin with a long history
+of script-reflecting endpoints — out of the allowlist; `apis.google.com` cannot be, because
+gapi fetches its own modules from a different prefix on the same host. A host allowlist is
+only ever as tight as the least careful endpoint on an allowed origin, and that residual is
+the price of Google sign-in working at all. `apps/web/src/lib/csp.test.ts` enumerates each
+directive's sources exactly, so widening any of them is a deliberate edit in two places
+rather than a silent one.
+
+Treat inline execution as *contained*, not prevented, and keep escaping at the point of
+render — see the documentation renderer, which is where this was learned.
 
 ---
 

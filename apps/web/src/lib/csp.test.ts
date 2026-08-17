@@ -29,21 +29,86 @@ const production = contentSecurityPolicy({
 });
 
 /**
- * Every host `script-src` is allowed to name, enumerated.
+ * Every source a production policy may name, directive by directive.
  *
- * This block used to assert that no source in `script-src` began with `http`,
- * which reads as "no remote script host" and is not an invariant this
- * application can hold: `signInWithPopup` loads Google's script loader before it
- * opens anything. So the policy shipped without the allowance, Google sign-in
- * could not work at all, and the assertion stood over the hole looking like a
- * security property.
+ * The `script-src` list came first, and it came from an incident. It began as an
+ * assertion that no source in `script-src` started with `http`, which reads as
+ * "no remote script host" and is not an invariant this application can hold —
+ * `signInWithPopup` loads Google's script loader before it opens anything. So
+ * the policy shipped without the allowance, Google sign-in could not work at
+ * all, and the assertion stood over the hole looking like a security property.
  *
- * The real invariant is that the set is *this* set. A host arriving in
- * `script-src` that nobody wrote down here fails, which is the thing worth
- * catching, and adding one is a deliberate edit in two places rather than a
+ * The other three directives were left to weaker checks, and a review showed
+ * what that bought. `connect-src … https:`, `img-src … //evil.example` and
+ * `frame-src … https://evil.example` could each be added to `csp.ts` with the
+ * whole suite still green: `not.toContain('*')` is an exact-element match, so a
+ * scheme-only source walks past it, and `startsWith('http')` does not see a
+ * scheme-relative host at all. `csp.ts` opens by promising a policy that leaves
+ * exfiltration nowhere to go, and the tests under it could not tell that policy
+ * apart from its opposite.
+ *
+ * So the invariant for each is that the set is *this* set, keywords included.
+ * Filtering the quoted sources out and checking only the hosts is how
+ * `'strict-dynamic'` gets in — a keyword that makes browsers ignore every host
+ * beside it. Adding a source is a deliberate edit in two places rather than a
  * silent widening in one.
  */
-const SCRIPT_HOSTS = ['https://apis.google.com'];
+const SCRIPT_SOURCES = [
+  "'self'",
+  "'unsafe-inline'",
+  // The sign-in popup's loader.
+  'https://apis.google.com',
+  // reCAPTCHA Enterprise, which `signInWithEmailAndPassword`,
+  // `createUserWithEmailAndPassword` and `sendPasswordResetEmail` all load by
+  // themselves once an operator enables enforcement in the Firebase console.
+  // Path-scoped because a bare `https://www.google.com` in `script-src` is a
+  // known allowlist bypass; `csp.ts` has the trace.
+  'https://www.google.com/recaptcha/',
+  'https://www.gstatic.com/recaptcha/',
+];
+
+const CONNECT_SOURCES = [
+  "'self'",
+  'https://identitytoolkit.googleapis.com',
+  'https://securetoken.googleapis.com',
+  'https://xecret-app.firebaseapp.com',
+];
+
+const IMG_SOURCES = ["'self'", 'data:', 'blob:'];
+
+const FRAME_SOURCES = [
+  "'self'",
+  'https://xecret-app.firebaseapp.com',
+  'https://www.google.com/recaptcha/',
+];
+
+/** Every `directive source` pair in a policy, flattened. */
+function everySource(policy: string): Array<{ directive: string; source: string }> {
+  return [...directives(policy)].flatMap(([directive, sources]) =>
+    sources.map((source) => ({ directive, source })),
+  );
+}
+
+/**
+ * `https:`, `data:`, `ws:` — a scheme with nothing after it, which permits every
+ * origin reachable over that scheme. It is a legal source expression, it
+ * contains no wildcard, and it does not begin with `http`, so it is what walked
+ * past the checks this file used to make.
+ */
+const SCHEME_ONLY = /^[a-z][a-z0-9+.-]*:$/i;
+
+/**
+ * The two scheme-only sources that are deliberately here, and the only
+ * directives allowed to carry them.
+ *
+ * Neither names a remote origin, which is why they are not exfiltration; but
+ * `data:` in `script-src` would be a hole large enough to drive an injection
+ * through, so where they appear is checked rather than assumed.
+ */
+const NON_NETWORK_SCHEMES = new Map([
+  ['data:', ['img-src']],
+  ['blob:', ['img-src', 'worker-src']],
+]);
 
 describe('the policy an injection runs into', () => {
   // The payload the docs-renderer review actually demonstrated. Script
@@ -53,26 +118,48 @@ describe('the policy an injection runs into', () => {
   it('gives exfiltration nowhere to send anything', () => {
     const parsed = directives(production);
 
-    expect(parsed.get('connect-src')).not.toContain('*');
-    expect(parsed.get('connect-src')?.[0]).toBe("'self'");
-    expect(parsed.get('img-src')).not.toContain('*');
-    expect(parsed.get('img-src')?.some((source) => source.startsWith('http'))).toBe(false);
+    expect(parsed.get('connect-src')).toEqual(CONNECT_SOURCES);
+    expect(parsed.get('img-src')).toEqual(IMG_SOURCES);
     expect(parsed.get('form-action')).toEqual(["'self'"]);
+  });
+
+  /**
+   * The net under the enumerations above, and the one that would have caught
+   * the mutations the review demonstrated even if nobody had thought to write a
+   * list for the directive in question.
+   */
+  it('never names a source that quietly means "anywhere"', () => {
+    for (const { directive, source } of everySource(production)) {
+      const where = `${directive} ${source}`;
+
+      // A substring check, not an element match: `*`, `*.evil.example`,
+      // `https://*` and `https://*.evil.example` are all the same mistake.
+      expect(source, where).not.toContain('*');
+      // Scheme-relative. Inherits the page's scheme and is a host source in
+      // every other respect, so nothing that looks for `http` finds it.
+      expect(source, where).not.toMatch(/^\/\//);
+      // Would let a network attacker on a coffee-shop wifi supply the response,
+      // which no allowance in this policy is worth.
+      expect(source, where).not.toMatch(/^http:\/\//);
+      // Makes a browser ignore every host named beside it, so it would undo the
+      // enumerations above without removing a line from them.
+      expect(source, where).not.toBe("'strict-dynamic'");
+      expect(source, where).not.toBe("'unsafe-eval'");
+
+      if (SCHEME_ONLY.test(source)) {
+        expect(NON_NETWORK_SCHEMES.get(source) ?? [], where).toContain(directive);
+      }
+    }
   });
 
   it('refuses a second stage, a rewritten base and the plugin vectors', () => {
     const parsed = directives(production);
-    const script = parsed.get('script-src') ?? [];
 
-    // Keywords aside, the hosts are exactly the enumerated ones — so a second
-    // stage still has nowhere to be loaded from, and an origin quietly added
-    // to the directive shows up here rather than in production.
-    expect(script.filter((source) => !source.startsWith("'"))).toEqual(SCRIPT_HOSTS);
-    expect(script).toContain("'self'");
-    expect(script).not.toContain('*');
-    // Plain http would let a network attacker on a coffee-shop wifi supply the
-    // script, which no allowance in this file is worth.
-    expect(script.some((source) => source.startsWith('http://'))).toBe(false);
+    // Sources are exactly the enumerated ones, keywords included — so a second
+    // stage still has nowhere to be loaded from, and an origin quietly added to
+    // the directive shows up here rather than in production.
+    expect(parsed.get('script-src')).toEqual(SCRIPT_SOURCES);
+    expect(parsed.get('frame-src')).toEqual(FRAME_SOURCES);
 
     expect(parsed.get('base-uri')).toEqual(["'self'"]);
     expect(parsed.get('object-src')).toEqual(["'none'"]);
@@ -124,6 +211,38 @@ describe('the allowances sign-in needs', () => {
     expect(directives(unconfigured).get('script-src')).toContain('https://apis.google.com');
   });
 
+  /**
+   * The flows nobody thought were reCAPTCHA flows.
+   *
+   * `signInWithEmailAndPassword`, `createUserWithEmailAndPassword` and
+   * `sendPasswordResetEmail` each go through `handleRecaptchaFlow(…,
+   * EMAIL_PASSWORD_PROVIDER)` in `@firebase/auth`. The application constructs no
+   * `RecaptchaVerifier` and never asks for any of this — one console toggle on
+   * the Firebase side makes the SDK inject `enterprise.js`, which injects
+   * `recaptcha__en.js` from gstatic, which embeds the badge frame. Refuse any of
+   * the three and all three flows fail at once, with a generic message and
+   * nothing in the repository to point at.
+   *
+   * Scoped to `/recaptcha/` rather than named as hosts, so this stays an
+   * allowance for reCAPTCHA rather than for everything Google serves.
+   */
+  it('names the reCAPTCHA sources the email/password flows load by themselves', () => {
+    const parsed = directives(production);
+
+    expect(parsed.get('script-src')).toContain('https://www.google.com/recaptcha/');
+    expect(parsed.get('script-src')).toContain('https://www.gstatic.com/recaptcha/');
+    expect(parsed.get('frame-src')).toContain('https://www.google.com/recaptcha/');
+
+    for (const source of parsed.get('script-src') ?? []) {
+      if (
+        source.startsWith('https://www.google.com') ||
+        source.startsWith('https://www.gstatic.com')
+      ) {
+        expect(source, `${source} is not scoped to a path`).toMatch(/\/recaptcha\/$/);
+      }
+    }
+  });
+
   // A self-hoster runs their own Firebase project. A hard-coded domain would
   // produce a policy that silently only permits sign-in to this deployment.
   it('follows the configured project rather than this one', () => {
@@ -137,7 +256,9 @@ describe('the allowances sign-in needs', () => {
   });
 
   // A deployment with no Firebase has no sign-in to break, and a malformed
-  // value is reported by `check:env` with a better message than a CSP failure.
+  // value is reported by `check:env` with a better message than a CSP failure —
+  // `parseFirebaseConfig` applies the same `isHostname` check this module
+  // exports, so the two cannot disagree about what an `authDomain` is.
   it('builds without them rather than throwing', () => {
     for (const config of [undefined, '', 'not json', '[]', '{}', '{"authDomain":""}']) {
       const policy = contentSecurityPolicy({ isDevelopment: false, firebaseConfig: config });
