@@ -19,11 +19,13 @@ jobs:
     name: Web & packages
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22"
+          # .nvmrc is the single source of truth, so CI, contributors and the
+          # engines field in package.json cannot drift apart.
+          node-version-file: .nvmrc
           cache: npm
 
       # `npm ci` installs strictly from the lockfile. `npm install` could resolve
@@ -71,9 +73,9 @@ jobs:
       run:
         working-directory: cli
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.25"
           cache-dependency-path: cli/go.sum
@@ -98,11 +100,13 @@ jobs:
     name: Worker bundle size
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22"
+          # .nvmrc is the single source of truth, so CI, contributors and the
+          # engines field in package.json cannot drift apart.
+          node-version-file: .nvmrc
           cache: npm
 
       - run: npm ci
@@ -120,13 +124,37 @@ jobs:
     name: Secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       # Leaking a credential in a secret manager's own repository would be
       # existential. This gate is not optional.
-      - name: gitleaks
-        uses: gitleaks/gitleaks-action@83373cf2f8c4db6e24b41c1a9b086bb9619e9cd3 # v2.3.7
+      #
+      # We install the gitleaks binary rather than using gitleaks/gitleaks-action.
+      # The action is commercially licensed and refuses to run for a GitHub
+      # organisation without a paid GITLEAKS_LICENSE: it exits 1 in about six
+      # seconds, before it has downloaded gitleaks or read a single commit. This
+      # job was red for that reason alone and had never scanned anything. The
+      # scanner itself is MIT and carries no such gate.
+      - name: Install gitleaks
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          set -euo pipefail
+          workdir="$(mktemp -d)"
+          cd "$workdir"
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -O "${base}/${archive}"
+          curl -sSfL -O "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep " ${archive}\$" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" | sha256sum -c -
+          tar -xzf "${archive}" gitleaks
+          install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      # --redact so a finding names the rule, file and line without reprinting
+      # the credential into a build log that is far easier to read than the
+      # commit it came from.
+      - name: gitleaks
+        run: gitleaks git . --redact --verbose --exit-code 1
