@@ -162,6 +162,11 @@ Query on `event` and `level`, never on `message` — the prose is meant to be im
 - `outcome:server_error` rate over 5 minutes.
 - `reason:mail_not_configured` — the deployment cannot send PIN reset links, and every person who
   asks for one is told to find an operator.
+- `error:MailDeliveryError` — the provider refused a send. The sibling of the alert above and the
+  one that fires while mail *is* configured: read `status` and `detail` on the same line for which
+  of quota, credentials or sending domain is at fault. A minted reset token with no delivery also
+  lands in the audit log as `auth.pin_reset` with `outcome: error`, which is the only place the two
+  non-delivery cases are distinguishable — the unconfigured one never mints a token to record.
 - `event:secret.pull` — one request, every plaintext in an environment. The most sensitive read in the product.
 - `event:secret.pull AND isProduction:true` grouped by `userId` — who bulk-read production, and how often.
 - `level:error AND fn:settle` — the audit log is missing entries.
