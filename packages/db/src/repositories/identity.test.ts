@@ -3,7 +3,12 @@ import { hashToken } from '@xecret/core/auth';
 import { uuidv7 } from '@xecret/core/ids';
 import { SLUG_MAX_LENGTH, SLUG_PATTERN } from '@xecret/core/validation';
 import { createDatabase } from '../client';
-import { organizationsForUserQuery, orgSlugCandidate, personalOrgSlugSeed } from './organizations';
+import {
+  organizationsCreatedByQuery,
+  organizationsForUserQuery,
+  orgSlugCandidate,
+  personalOrgSlugSeed,
+} from './organizations';
 import {
   memberGrantsQuery,
   membersPageQuery,
@@ -168,6 +173,51 @@ describe('every org-scoped read filters on the organisation (threat T2)', () => 
   it('excludes soft-deleted users from the member list', () => {
     expect(membersPageQuery(db, ORG_ID, 1, 25).toSQL().sql).toContain(
       '"users"."deleted_at" is null',
+    );
+  });
+});
+
+/**
+ * The query behind the per-account organisation cap.
+ *
+ * `POST /api/orgs` refuses on what this returns, so each clause is a security
+ * property rather than a detail: attribute it to the wrong column and one
+ * account's colleagues can exhaust their allowance; drop the `deleted_at` filter
+ * and closing an organisation stops giving a place back, turning a cap into a
+ * one-way ratchet.
+ */
+describe('counting the organisations an account has created', () => {
+  it('attributes them by creator, not by who happens to own one now', () => {
+    const { sql, params } = organizationsCreatedByQuery(db, USER_ID, 10).toSQL();
+
+    expect(sql).toContain('"organizations"."created_by" = $1');
+    expect(params).toContain(USER_ID);
+    // No join to `org_members`: being made an owner of somebody else's
+    // organisation must not spend this account's allowance.
+    expect(sql).not.toContain('org_members');
+  });
+
+  it('ignores soft-deleted organisations, so deleting one frees a place', () => {
+    expect(organizationsCreatedByQuery(db, USER_ID, 10).toSQL().sql).toContain(
+      '"organizations"."deleted_at" is null',
+    );
+  });
+
+  // The caller asks "is this account at its limit", which `LIMIT n` answers
+  // exactly. Reading further would scan every organisation an account has ever
+  // created to compute a number nobody acts on.
+  it('reads no more rows than the limit it was asked about', () => {
+    const { sql, params } = organizationsCreatedByQuery(db, USER_ID, 10).toSQL();
+
+    expect(sql).toContain('limit');
+    expect(params).toContain(10);
+  });
+
+  // The route files the refusal against the first row, and `audit_logs.org_id`
+  // is NOT NULL. Ids are UUIDv7, so descending id is descending creation time.
+  it('returns the most recently created organisation first', () => {
+    expect(organizationsCreatedByQuery(db, USER_ID, 10).toSQL().sql).toContain(
+      'order by "organizations"."id" desc',
     );
   });
 });

@@ -36,14 +36,21 @@ export interface CreateOrganizationDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /**
-   * Called once the organisation exists, before the navigation to it.
+   * Called once the organisation exists, and **awaited** before the navigation
+   * to it.
    *
    * The shell's copy of the membership list comes from `GET /api/auth/me`, and
    * nothing about creating an organisation invalidates it on its own — so
    * without this the switcher would keep listing the old set while the user
    * stood inside the new organisation.
+   *
+   * Awaited rather than fired and forgotten because the page being navigated to
+   * is drawn from that list: pushing first means the shell resolves the new
+   * organisation's slug against a list that does not contain it yet, falls back
+   * to the first organisation it does know, and briefly labels the new
+   * organisation's page with somebody else's name.
    */
-  onCreated?: () => void;
+  onCreated?: () => void | Promise<void>;
 }
 
 /**
@@ -117,7 +124,7 @@ function CreateOrganizationForm({
 }: {
   onOpenChange: (open: boolean) => void;
   onSubmittingChange: (submitting: boolean) => void;
-  onCreated?: () => void;
+  onCreated?: () => void | Promise<void>;
 }) {
   const router = useRouter();
   const { toast } = useToast();
@@ -192,14 +199,14 @@ function CreateOrganizationForm({
       });
 
       onOpenChange(false);
-      // Before the navigation, so the shell is already refetching its membership
-      // list as the new organisation's page mounts. The switcher briefly falls
-      // back to the first known organisation and corrects itself when the
-      // response lands, which is a beat of staleness rather than a dead link.
-      onCreated?.();
+      // Awaited, so the shell's membership list already contains the new
+      // organisation when its page mounts. Fired and forgotten, the push landed
+      // first: the shell could not find the new slug in the list it still held,
+      // fell back to the first organisation it knew, and drew that one's name
+      // over the new organisation's page until the refetch caught up.
+      await onCreated?.();
       router.push(appPath.org(created.organization.slug));
     } catch (cause) {
-      setBusy(false);
       if (isApiError(cause)) {
         const fields = cause.fieldErrors();
         // The slug first: a 409 from losing the race arrives as a field error on
@@ -219,6 +226,14 @@ function CreateOrganizationForm({
       // the reason `errorMessage` gives: an arbitrary exception's message may
       // have been built from the request payload.
       setFormError('Could not create the organisation.');
+    } finally {
+      // Released on *every* path, including the successful one. It used to be
+      // released only on failure, which left the parent believing a request was
+      // still in flight for the rest of the session — and the parent is what
+      // refuses Escape and outside-click dismissal while one is. So the next
+      // time this dialog opened, neither worked, and Cancel was the only way
+      // out. `finally` also covers the early returns in the catch above.
+      setBusy(false);
     }
   }
 

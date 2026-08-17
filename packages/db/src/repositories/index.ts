@@ -68,12 +68,14 @@ export {
 export type { CreatePinResetParams, PinRecord, PinResetRecord } from './pins';
 
 export {
+  countOrganizationsCreatedBy,
   findOrganizationById,
   findOrganizationBySlug,
   generateUniqueOrgSlug,
   isOrgSlugAvailable,
   listOrganizationsForUser,
   orgSlugCandidate,
+  organizationsCreatedByQuery,
   organizationsForUserQuery,
   personalOrgSlugSeed,
   provisionOrganization,
@@ -81,6 +83,7 @@ export {
   updateOrganization,
 } from './organizations';
 export type {
+  CreatedOrganizations,
   Environment,
   Organization,
   OrganizationMembership,

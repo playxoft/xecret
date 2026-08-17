@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import type { OrgRole } from '@xecret/core/authz';
 import { randomBytes } from '@xecret/core/crypto';
 import type { EnvelopeService } from '@xecret/core/crypto';
@@ -107,6 +107,57 @@ export async function listOrganizationsForUser(
   userId: string,
 ): Promise<OrganizationMembership[]> {
   return organizationsForUserQuery(exec, userId);
+}
+
+/** What `countOrganizationsCreatedBy` found. */
+export interface CreatedOrganizations {
+  /** How many, counted no further than the limit that was asked about. */
+  total: number;
+  /** The most recent of them, or `null` when the account has created none. */
+  latestId: string | null;
+}
+
+/**
+ * How many live organisations one account has created.
+ *
+ * Attributed by `created_by` rather than by owner membership, because the thing
+ * being bounded is the work and the namespace this account has spent, and that
+ * is not something other people can inflate on its behalf — somebody who
+ * promotes a colleague to owner of ten organisations must not thereby stop them
+ * creating their own.
+ *
+ * Soft-deleted organisations are excluded, so deleting one frees a place. Note
+ * what that does *not* give back: `organizations_slug_unique` is a total
+ * constraint, so the slug stays claimed for ever. The limit bounds the standing
+ * cost; only the rate limiter bounds the churn.
+ *
+ * ── Why a bounded row scan rather than `count(*)` ──
+ * The caller is asking "is this account at its limit", which `LIMIT n` answers
+ * exactly, and reading at most `n` ids is cheaper than aggregating over every
+ * organisation an account has ever created. The ids are UUIDv7, so ordering by
+ * them descending puts the most recently created first — which is the row the
+ * refusal is filed against, `audit_logs.org_id` being NOT NULL.
+ */
+export async function countOrganizationsCreatedBy(
+  exec: Executor,
+  userId: string,
+  limit: number,
+): Promise<CreatedOrganizations> {
+  const rows = await organizationsCreatedByQuery(exec, userId, limit);
+  return { total: rows.length, latestId: rows[0]?.id ?? null };
+}
+
+/**
+ * @internal Exported so `identity.test.ts` can assert that the count excludes
+ * soft-deleted rows and stops at the limit, without needing a database.
+ */
+export function organizationsCreatedByQuery(exec: Executor, userId: string, limit: number) {
+  return exec
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(and(eq(organizations.createdBy, userId), isNull(organizations.deletedAt)))
+    .orderBy(desc(organizations.id))
+    .limit(limit);
 }
 
 /**
