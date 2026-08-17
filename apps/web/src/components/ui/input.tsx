@@ -6,7 +6,10 @@ import { cn } from '@/lib/cn';
 import { useFieldControl } from './field';
 
 export const INPUT_BASE =
-  'w-full rounded-md border border-line-strong bg-canvas-inset text-fg text-sm ' +
+  // `--line-control`, not `--line-strong`: an empty well is 1.09:1 from the
+  // card behind it, so this border is the only thing that says a field is
+  // here. See the Lines block in globals.css for the split.
+  'w-full rounded-md border border-line-control bg-canvas-inset text-fg text-sm ' +
   'transition-[border-color,background-color] duration-150 ' +
   // Focus deliberately lands on the same border as hover rather than on
   // `--accent`. Now that the accent is near-white in dark and near-black in

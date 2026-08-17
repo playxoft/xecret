@@ -31,7 +31,10 @@ export function SelectTrigger({
     <SelectPrimitive.Trigger
       {...fieldProps}
       className={cn(
-        'border-line-strong bg-canvas-inset text-fg flex h-9 w-full items-center justify-between gap-2 rounded-md border px-3 text-sm',
+        // `--line-control` rather than `--line-strong` — the trigger's fill is
+        // 1.09:1 from the surface behind it, so the border is what makes this
+        // read as a control at all. See the Lines block in globals.css.
+        'border-line-control bg-canvas-inset text-fg flex h-9 w-full items-center justify-between gap-2 rounded-md border px-3 text-sm',
         'transition-colors duration-150',
         'hover:enabled:border-fg-subtle',
         'data-[state=open]:border-accent',

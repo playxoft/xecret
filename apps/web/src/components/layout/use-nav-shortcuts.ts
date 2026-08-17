@@ -118,6 +118,23 @@ const SELF_MANAGED_ROLES: ReadonlySet<string> = new Set([
  * button nested inside a widget — the delete button in a table row, say — is a
  * leaf that handles nothing, and suppressing shortcuts across a whole subtree
  * would over-reach as badly as the tag-only check under-reached.
+ *
+ * ── The invariant that makes reading only the explicit `role` safe ──
+ * Nothing here computes an *implicit* role, and that is only sound because
+ * every native element carrying a self-managed implicit role is already caught
+ * by the tag check on the line above: `<input type="range">` is a `slider`,
+ * `type="number"` a `spinbutton`, `type="search"` a `searchbox`, `<select>` a
+ * `combobox`, `<select multiple>` a `listbox`, and `<textarea>` a `textbox` —
+ * all of them INPUT, SELECT or TEXTAREA, all matched before `role` is ever
+ * consulted. The set below therefore only ever has to catch elements that
+ * *declare* a role, which in practice means a widget library.
+ *
+ * Adding a native element that owns plain keys without one of those three tags
+ * breaks this silently — no test fails, the shortcut simply fires mid
+ * interaction. `<audio controls>` and `<video controls>` are the likely next
+ * arrivals, and a native `<dialog>` after them; each belongs in the tag check,
+ * not in the set, because none of them writes a `role` attribute for the set
+ * to match on.
  */
 export function ownsPlainKeys(tagName: string, role: string | null): boolean {
   if (tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT') return true;

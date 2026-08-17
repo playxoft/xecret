@@ -144,13 +144,20 @@ export function PinInput({
           aria-label={`Digit ${index + 1}`}
           aria-invalid={invalid || undefined}
           className={cn(
-            'border-line bg-surface text-fg h-12 w-11 rounded-lg border text-center font-mono text-lg',
+            // `--line-control`, not the container hairline these used to take:
+            // a PIN box is empty until typed into and its fill is the surface
+            // it sits on, so the border is the only thing that says there is a
+            // box at all — six of them, and you have to count along the row.
+            'border-line-control bg-surface text-fg h-12 w-11 rounded-lg border text-center font-mono text-lg',
             'focus:border-accent focus:ring-accent/30 outline-none focus:ring-2',
             'disabled:cursor-not-allowed disabled:opacity-60',
             invalid && 'border-danger focus:border-danger focus:ring-danger/30',
             // The box the caret is in gets a resting highlight, so it is obvious
-            // where a keystroke will land before you press one.
-            !invalid && index === active && 'border-line-strong',
+            // where a keystroke will land before you press one. It has to be a
+            // step *above* the resting border, which `--line-strong` no longer
+            // is now that the resting one clears 3:1; `--fg-subtle` is the same
+            // emphasis `Input` uses for hover and focus.
+            !invalid && index === active && 'border-fg-subtle',
           )}
         />
       ))}
