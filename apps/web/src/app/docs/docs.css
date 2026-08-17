@@ -143,7 +143,13 @@
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 0.2em;
-  text-decoration-color: color-mix(in oklab, var(--accent-text) 35%, transparent);
+  /* Strong enough to be the whole signal on its own. The 35%-alpha rule this
+     replaces was chosen while the accent colour was carrying it, and the
+     palette is moving to one where `--accent-text` and `--fg` are the same
+     value: a link tinted exactly like the sentence it sits in has nothing left
+     but this line and a half-step of weight. `currentcolor` rather than the
+     accent variable so it keeps tracking whatever colour the link ends up. */
+  text-decoration-color: color-mix(in oklab, currentcolor 70%, transparent);
 }
 
 .doc-prose a:hover {

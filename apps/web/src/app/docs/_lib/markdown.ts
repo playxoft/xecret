@@ -1,5 +1,6 @@
-import { Marked, type Tokens } from 'marked';
+import { Marked, type Token, type Tokens } from 'marked';
 
+import { SITE_ORIGIN } from '@/lib/site';
 import { escapeHtml, highlight, languageLabel } from './highlight';
 
 /**
@@ -10,7 +11,7 @@ import { escapeHtml, highlight, languageLabel } from './highlight';
  * machines (see `app/llms.txt`), and nothing is written twice. That is the
  * whole reason the content is markdown rather than JSX.
  *
- * Four renderer overrides do all the work:
+ * Six renderer overrides do all the work:
  *
  *  - **headings** gain stable ids and a hover anchor, and register themselves
  *    in the table of contents as they are rendered — one pass, so the contents
@@ -19,8 +20,16 @@ import { escapeHtml, highlight, languageLabel } from './highlight';
  *  - **links** written as relative `.md` paths — which is what makes the raw
  *    files navigable in an editor — are rewritten to site routes, and only
  *    `http`, `https` and `mailto` are allowed to leave the site at all.
+ *  - **images** are resolved the same way, and only ever load from this origin.
+ *  - **raw HTML** is escaped rather than passed through.
  *  - **blockquotes** opening with `**Note**`, `**Tip**`, `**Warning**` or
  *    `**Important**` become callouts.
+ *
+ * The last two exist because of where this output goes. `DocBody` hands it to
+ * `dangerouslySetInnerHTML` and every page is prerendered, so a `<script>` that
+ * survives this module is a `<script>` in the static HTML file, executed while
+ * the document is being parsed. The application sets no Content-Security-Policy
+ * — there is nothing behind this to catch what it lets past.
  */
 
 export interface TocEntry {
@@ -97,20 +106,71 @@ const SAFE_SCHEMES: ReadonlySet<string> = new Set(['http', 'https', 'mailto']);
  * `#` comes first — past any of those the colon belongs to a path, a query or a
  * fragment, as in `commands.md#run:once`.
  *
- * Whitespace is dropped before the comparison because a browser drops it too:
- * `java<tab>script:` and `javascript:` navigate to exactly the same place, and
- * markdown's angle-bracket link form carries a literal tab through the parser
- * intact, where the bare form would not have parsed as a link at all.
+ * Case is folded, because `HTTPS:` is a scheme somebody writes. Nothing else
+ * is normalised, and nothing else should be, because the caller matches this
+ * against an allowlist rather than against a list of dangerous schemes:
+ * whatever residue an obfuscation leaves behind — a stray tab from markdown's
+ * angle-bracket link form, an undecoded `&#106;` — is simply not equal to
+ * `http`, `https` or `mailto`, and the link is refused.
  *
- * Nothing else is normalised, and nothing else needs to be, because the caller
- * matches this against an allowlist rather than against a list of dangerous
- * schemes: whatever residue an obfuscation leaves behind — a stray control
- * character, an undecoded `&#106;` — is simply not equal to `http`, `https` or
- * `mailto`, and the link is refused.
+ * An earlier version stripped whitespace here, reasoning that a browser strips
+ * it too. It does, but the conclusion runs backwards: against a positive
+ * allowlist, normalising an obfuscation can only ever turn a refusal into an
+ * acceptance. `java<tab>script:` was refused either way, while `htt<tab>ps:`
+ * was refused without the stripping and allowed with it.
  */
 function schemeOf(href: string): string | null {
-  const scheme = /^([^:/?#]+):/.exec(href)?.[1];
-  return scheme === undefined ? null : scheme.replace(/\s/g, '').toLowerCase();
+  return /^([^:/?#]+):/.exec(href)?.[1]?.toLowerCase() ?? null;
+}
+
+/**
+ * Whether a schemeless href really does stay on this origin.
+ *
+ * Asked of the URL parser rather than of the string, because the string does
+ * not know the answer. `URL` strips every ASCII tab, line feed and carriage
+ * return before it parses — the standard requires it and every browser does it
+ * — so `/<tab>/evil.example` reassembles into a scheme-relative URL and departs
+ * for `evil.example`, *after* a `startsWith('/')` guard has read it as a path
+ * on this site. A backslash is folded into a slash for the same reason. Writing
+ * another regular expression against those two shapes is guessing at which
+ * spelling comes next; resolving the href is the question itself.
+ *
+ * `SITE_ORIGIN` is the base rather than the page's own URL because the answer
+ * is identical either way — a reference beginning with `/` ignores the base's
+ * path, and one beginning with `//` ignores everything but its scheme — and
+ * this renderer should not have to know which page it is rendering in order to
+ * know whether a link leaves the site.
+ */
+function staysOnSite(href: string): boolean {
+  try {
+    return new URL(href, SITE_ORIGIN).origin === SITE_ORIGIN;
+  } catch {
+    // `new URL` throws on a host it cannot parse at all — an unclosed IPv6
+    // literal is the usual one. Unparseable is not the same as harmless.
+    return false;
+  }
+}
+
+/**
+ * A relative path joined onto the directory the linking document sits in.
+ *
+ * Shared by links and images because both mean the same thing by `./` and
+ * `../`: the position on disk, so a path resolves identically in an editor and
+ * in the browser. Returns the joined path with no leading slash.
+ */
+function resolveRelative(path: string, fromSlug: string): string {
+  const fromSegments = fromSlug ? fromSlug.split('/') : [];
+  // Drop the document's own filename: a relative path resolves against the
+  // directory it sits in, exactly as it would on disk.
+  const base = fromSegments.slice(0, -1);
+
+  for (const segment of path.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') base.pop();
+    else base.push(segment);
+  }
+
+  return base.join('/');
 }
 
 /**
@@ -120,50 +180,62 @@ function schemeOf(href: string): string | null {
  * the same thing in an editor and in the browser.
  *
  * `null` means the href does not name a destination this renderer is willing
- * to vouch for — an unlisted scheme, or a scheme-relative host. `link()`
- * renders those as plain text: a link losing its anchor is a visible mistake
- * somebody fixes, whereas a destination reaching the page as a live `href` is
- * not visible at all until somebody follows it.
+ * to vouch for — an unlisted scheme, or a path that turns out to leave the
+ * site. `link()` renders those as plain text: a link losing its anchor is a
+ * visible mistake somebody fixes, whereas a destination reaching the page as a
+ * live `href` is not visible at all until somebody follows it.
  */
 function resolveDocHref(href: string, fromSlug: string): string | null {
   const scheme = schemeOf(href);
   if (scheme !== null) return SAFE_SCHEMES.has(scheme) ? href : null;
 
-  if (href.startsWith('#')) return href;
+  const path = href.startsWith('#') || href.startsWith('/') ? href : docRoute(href, fromSlug);
 
-  // A leading `//` is scheme-relative: it inherits `https` and then leaves for
-  // whatever host follows. Refused rather than resolved, because the only
-  // reason to write one instead of `https://` is a mixed-content problem that
-  // stopped existing years ago — and because passing it through made the
-  // "every outbound link gets `noreferrer noopener`" rule below untrue for the
-  // one link shape that reads as internal.
-  //
-  // Browsers treat a backslash in that position as a slash, so `/\evil.com`
-  // and `\\evil.com` navigate off-site while `href.startsWith('/')` reads them
-  // as a site path. No author writes those by hand; they only appear where
-  // somebody is trying to get a same-origin check to say yes.
-  if (/^[/\\][/\\]/.test(href)) return null;
-  if (href.startsWith('/')) return href;
+  // Everything arriving without a scheme is claiming to be somewhere on this
+  // site, and that claim is checked by resolving it rather than by reading it.
+  // A scheme-relative `//host` is the honest version of the claim and is
+  // refused here along with the dishonest ones: the only reason to write one
+  // instead of `https://` is a mixed-content problem that stopped existing
+  // years ago, and passing it through is what made the "every outbound link
+  // gets `noreferrer noopener`" rule below untrue for the one link shape that
+  // reads as internal.
+  return staysOnSite(path) ? path : null;
+}
 
+/** The `/docs` route a relative `.md` path names. */
+function docRoute(href: string, fromSlug: string): string {
   const [pathPart = '', hash] = href.split('#');
   const fragment = hash ? `#${hash}` : '';
 
-  const fromSegments = fromSlug ? fromSlug.split('/') : [];
-  // Drop the document's own filename: a relative link resolves against the
-  // directory it sits in, exactly as it would on disk.
-  const base = fromSegments.slice(0, -1);
-
-  for (const segment of pathPart.split('/')) {
-    if (segment === '' || segment === '.') continue;
-    if (segment === '..') base.pop();
-    else base.push(segment);
-  }
-
-  const path = base
-    .join('/')
+  const path = resolveRelative(pathPart, fromSlug)
     .replace(/\.md$/, '')
     .replace(/\/index$/, '');
   return path ? `/docs/${path}${fragment}` : `/docs${fragment}`;
+}
+
+/**
+ * `./diagram.png` → `/docs/cli/diagram.png`, or `null` for a source this
+ * renderer will not fetch.
+ *
+ * An image is not a link, and the difference is the whole of this function.
+ * Nobody decides to load one: the browser requests it while the page is still
+ * arriving, so an off-site `<img>` hands that host the reader's IP address,
+ * user agent and referring URL on every single view, silently, with nothing to
+ * click and nothing on the page to notice. That is a tracking pixel whether or
+ * not it was meant as one, and this is the documentation for a secret manager.
+ *
+ * So the allowlist `link()` uses does not apply here: `https:` is refused along
+ * with everything else, and the only sources that survive are the ones served
+ * from this origin. Nothing under `public/docs` has ever wanted otherwise —
+ * every image a document needs ships in this repository beside it, which is
+ * also the only way it stays available once somebody else's host is
+ * reorganised. If that ever stops being true, the image gets copied in.
+ */
+function resolveDocSrc(src: string, fromSlug: string): string | null {
+  if (schemeOf(src) !== null) return null;
+
+  const path = src.startsWith('/') ? src : `/docs/${resolveRelative(src, fromSlug)}`;
+  return staysOnSite(path) ? path : null;
 }
 
 const COPY_ICON =
@@ -202,6 +274,30 @@ export function renderMarkdown(source: string, slug: string): RenderedMarkdown {
   const marked = new Marked({
     gfm: true,
     breaks: false,
+
+    /**
+     * Undoes marked's "this run of text is already escaped" promise.
+     *
+     * Inside `<pre>`, `<code>`, `<kbd>` and `<script>`, marked flags the text
+     * between the tags as escaped so that raw HTML written around it survives
+     * intact. `html()` below has just withdrawn that offer — nothing raw
+     * survives — and what the flag now buys is a hole rather than a feature:
+     * the inline tokenizer only produces an HTML token for a tag its regular
+     * expression recognises, and `<img/src=x onerror=…>` is one it rejects and
+     * every browser accepts. Written inside an inline `<pre>` it arrives here
+     * as "already escaped" text and reaches the document verbatim.
+     *
+     * Cleared in a token walk rather than in a `text()` override because the
+     * parser re-uses the same flag for a legitimate purpose: block-level text
+     * it has *already* rendered is re-wrapped in a synthetic paragraph carrying
+     * `escaped: true`, and escaping that would double-escape every loose list
+     * item on the site. That token is built after this pass has run, so the two
+     * uses stay distinguishable only from here.
+     */
+    walkTokens(token: Token) {
+      if (token.type === 'text' && token.escaped) token.escaped = false;
+    },
+
     renderer: {
       heading(token: Tokens.Heading): string {
         const explicit = EXPLICIT_ID.exec(token.text)?.[1];
@@ -266,6 +362,51 @@ export function renderMarkdown(source: string, slug: string): RenderedMarkdown {
         const marker = external ? '<span class="doc-external" aria-hidden="true">↗</span>' : '';
 
         return `<a href="${escapeHtml(href)}"${title}${rel}>${text}${marker}</a>`;
+      },
+
+      image(token: Tokens.Image): string {
+        const src = resolveDocSrc(token.href, slug);
+
+        // Rendered through marked's plain-text renderer, exactly as its own
+        // image renderer does: `![**a**](x)` describes the picture as "a", not
+        // as `<strong>a</strong>`, because an `alt` holds text and nothing
+        // else. Escaped afterwards, because that renderer hands back raw HTML
+        // for anything it does not understand.
+        const alt = escapeHtml(this.parser.parseInline(token.tokens, this.parser.textRenderer));
+
+        // A refused source keeps its description and loses its picture — the
+        // same trade `link()` makes, and exactly what a reader browsing with
+        // images turned off sees anyway.
+        if (src === null) return alt;
+
+        const title = token.title ? ` title="${escapeHtml(token.title)}"` : '';
+        return `<img src="${escapeHtml(src)}" alt="${alt}"${title}>`;
+      },
+
+      /**
+       * Raw HTML written in a document is shown, not run.
+       *
+       * `marked` removed its `sanitize` option and offers nothing in its place,
+       * so without this every tag in a `.md` file is copied into the output
+       * verbatim — a `<script>` into the prerendered document, an `onerror=`
+       * onto an element that fires it without being clicked. Escaping is the
+       * bargain `link()` already strikes: the author's mistake becomes visible
+       * on the page rather than becoming behaviour nobody can see.
+       *
+       * One override covers both paths. marked routes a block of HTML and a tag
+       * written mid-sentence to the same method, which is also why a tag inside
+       * a table cell, a list item or a blockquote arrives here — those parse
+       * their contents as ordinary inline markdown.
+       *
+       * Code samples never reach it: a fence is a `code` token and backticks
+       * are a `codespan`, both escaped by their own renderers, so a document
+       * showing what a `<script>` tag looks like still shows it.
+       */
+      html(token: Tokens.HTML | Tokens.Tag): string {
+        // A block of it stands as its own paragraph, so the escaped text keeps
+        // the article's typography instead of landing between two blocks with
+        // no styling at all; a tag written mid-sentence stays in that sentence.
+        return token.block ? `<p>${escapeHtml(token.text.trim())}</p>\n` : escapeHtml(token.text);
       },
 
       table(token: Tokens.Table): string {

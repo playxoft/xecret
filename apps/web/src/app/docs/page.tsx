@@ -3,6 +3,7 @@ import Link from 'next/link';
 
 import { Button } from '@/components/ui/button';
 import { ArrowRightIcon, BookIcon, KeyIcon, TerminalIcon, UsersIcon } from '@/components/ui/icons';
+import { jsonLd } from '@/lib/json-ld';
 import { absoluteUrl, SITE_KEYWORDS, SITE_NAME } from '@/lib/site';
 import { loadNav } from './_lib/content';
 
@@ -105,7 +106,9 @@ export default async function DocsHomePage() {
     <main id="doc-content" className="w-full min-w-0 px-5 py-10 sm:py-14 lg:px-8">
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
+        // Every name and description here is frontmatter, and a document is
+        // free to contain a `<`. See `jsonLd`.
+        dangerouslySetInnerHTML={{ __html: jsonLd(structuredData) }}
       />
 
       <div className="max-w-3xl">
