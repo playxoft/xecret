@@ -1,0 +1,26 @@
+title = "Xecret secret scan"
+
+# Inherit the upstream rule set rather than restating it; upstream adds new
+# credential formats faster than we would notice them.
+[extend]
+useDefault = true
+
+# A secret manager cannot test its own credential detector without feeding it
+# things that look like credentials. Every value in these files is a vendor's
+# published documentation specimen — AWS's AKIAIOSFODNN7EXAMPLE, Stripe's
+# sk_live_4eC39HqLyjWDarjtT1zdp7dc, jwt.io's example token — or an obvious
+# dummy. None of them unlock anything.
+#
+# Scoped to named files, not to a `*.test.ts` glob, on purpose: a fixture added
+# to some new test file will fail the scan and force a deliberate decision.
+# That friction is the point. Widening this list should feel like a change.
+[[allowlists]]
+description = "credential-shaped fixtures in the detector's own test suite"
+paths = [
+  '''^packages/core/src/audit/audit\.test\.ts$''',
+  '''^packages/core/src/validation/value-type\.test\.ts$''',
+  '''^packages/core/src/importer/importer\.test\.ts$''',
+  '''^packages/core/src/format/format\.test\.ts$''',
+  '''^apps/web/src/server/server\.test\.ts$''',
+  '''^apps/web/src/server/secrets-service\.test\.ts$''',
+]
