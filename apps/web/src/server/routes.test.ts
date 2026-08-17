@@ -185,9 +185,7 @@ describe('the organisation limit', () => {
   });
 
   it('states the number, because it is the only actionable thing left to say', () => {
-    expect(organizationLimitReached().message).toContain(
-      String(ORGANIZATIONS_PER_ACCOUNT_LIMIT),
-    );
+    expect(organizationLimitReached().message).toContain(String(ORGANIZATIONS_PER_ACCOUNT_LIMIT));
   });
 
   // A limit somebody meets while working normally is a limit that will be raised

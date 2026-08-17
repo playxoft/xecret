@@ -149,9 +149,7 @@ describe('checkSlug', () => {
       expect(organizationSlugSchema.safeParse(slug).success, slug).toBe(
         checkSlug(slug, ORGANIZATION_SLUG_MAX_LENGTH).valid,
       );
-      expect(slugSchema.safeParse(slug).success, slug).toBe(
-        checkSlug(slug, SLUG_MAX_LENGTH).valid,
-      );
+      expect(slugSchema.safeParse(slug).success, slug).toBe(checkSlug(slug, SLUG_MAX_LENGTH).valid);
     }
   });
 
