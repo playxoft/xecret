@@ -28,6 +28,23 @@ const production = contentSecurityPolicy({
   }),
 });
 
+/**
+ * Every host `script-src` is allowed to name, enumerated.
+ *
+ * This block used to assert that no source in `script-src` began with `http`,
+ * which reads as "no remote script host" and is not an invariant this
+ * application can hold: `signInWithPopup` loads Google's script loader before it
+ * opens anything. So the policy shipped without the allowance, Google sign-in
+ * could not work at all, and the assertion stood over the hole looking like a
+ * security property.
+ *
+ * The real invariant is that the set is *this* set. A host arriving in
+ * `script-src` that nobody wrote down here fails, which is the thing worth
+ * catching, and adding one is a deliberate edit in two places rather than a
+ * silent widening in one.
+ */
+const SCRIPT_HOSTS = ['https://apis.google.com'];
+
 describe('the policy an injection runs into', () => {
   // The payload the docs-renderer review actually demonstrated. Script
   // execution is not what this policy stops — the RSC flight payload is inline
@@ -45,8 +62,18 @@ describe('the policy an injection runs into', () => {
 
   it('refuses a second stage, a rewritten base and the plugin vectors', () => {
     const parsed = directives(production);
+    const script = parsed.get('script-src') ?? [];
 
-    expect(parsed.get('script-src')?.some((source) => source.startsWith('http'))).toBe(false);
+    // Keywords aside, the hosts are exactly the enumerated ones — so a second
+    // stage still has nowhere to be loaded from, and an origin quietly added
+    // to the directive shows up here rather than in production.
+    expect(script.filter((source) => !source.startsWith("'"))).toEqual(SCRIPT_HOSTS);
+    expect(script).toContain("'self'");
+    expect(script).not.toContain('*');
+    // Plain http would let a network attacker on a coffee-shop wifi supply the
+    // script, which no allowance in this file is worth.
+    expect(script.some((source) => source.startsWith('http://'))).toBe(false);
+
     expect(parsed.get('base-uri')).toEqual(["'self'"]);
     expect(parsed.get('object-src')).toEqual(["'none'"]);
     expect(parsed.get('frame-ancestors')).toEqual(["'none'"]);
@@ -79,6 +106,22 @@ describe('the allowances sign-in needs', () => {
     expect(connect).toContain('https://xecret-app.firebaseapp.com');
     // `signInWithPopup` keeps a hidden iframe on that host to hear the answer.
     expect(directives(production).get('frame-src')).toContain('https://xecret-app.firebaseapp.com');
+  });
+
+  // The step before the popup, and the one that was missing. `signInWithPopup`
+  // initialises `browserPopupRedirectResolver` first, and that injects a
+  // `<script>` for Google's loader; refused, the whole flow ends in
+  // `auth/network-request-failed` before a window has opened.
+  it('names the script loader the popup flow starts with', () => {
+    expect(directives(production).get('script-src')).toContain('https://apis.google.com');
+
+    // Google's, not the project's, so a deployment with no Firebase config
+    // still gets the same policy rather than a differently-shaped one.
+    const unconfigured = contentSecurityPolicy({
+      isDevelopment: false,
+      firebaseConfig: undefined,
+    });
+    expect(directives(unconfigured).get('script-src')).toContain('https://apis.google.com');
   });
 
   // A self-hoster runs their own Firebase project. A hard-coded domain would
