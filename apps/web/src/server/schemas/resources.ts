@@ -4,6 +4,8 @@ import type { OrgRole } from '@xecret/core/authz';
 import {
   environmentSlugSchema,
   isReservedSlug,
+  ORGANIZATION_NAME_MAX_LENGTH,
+  organizationSlugSchema,
   slugSchema,
   slugify,
   SLUG_MAX_LENGTH,
@@ -16,6 +18,7 @@ import type {
   ProjectRecord,
 } from '@xecret/db/repositories';
 import { errors } from '../errors';
+import type { ApiError } from '../errors';
 
 /**
  * The request schemas and response shapes of the organisation, project and
@@ -54,6 +57,53 @@ export const NAME_MAX_LENGTH = 100;
 export const DESCRIPTION_MAX_LENGTH = 500;
 
 /**
+ * How many organisations one account may hold at a time.
+ *
+ * The rate limiter bounds how *fast* `POST /api/orgs` can be called; nothing
+ * bounded how many times, and the two are not the same control. Every call
+ * derives an Org Master Key and three Env Data Keys inside one transaction, so
+ * a caller spending their mutation budget on this endpoint holds a database
+ * connection open across CPU-bound cryptography ~60 times a minute for as long
+ * as they like. Worse, it is the one endpoint that spends something no deletion
+ * returns: `organizations_slug_unique` is a total constraint, so every slug
+ * claimed is taken out of a namespace shared with every other tenant for good.
+ *
+ * Ten, because separation *inside* an organisation is what projects and
+ * environments are for — an account that genuinely needs an eleventh is asking
+ * the product a question it answers better a level down. It is deliberately far
+ * above the one or two a real account has, so the refusal is only ever met by
+ * something that is not a person filling in a form.
+ *
+ * ── What this bounds, and what it does not ──
+ * It bounds what one account **holds at once**: `countOrganizationsHeldBy`
+ * counts the live organisations the account created and is still an active
+ * member of, and `provisionOrganization` refuses past this number under a lock
+ * on the account row, so the ceiling is exact rather than approximate.
+ *
+ * It does not bound **churn**, and cannot, because a place is freed by two acts
+ * that do not give the slug back:
+ *
+ *  - *Deleting.* A soft delete frees the place; the slug stays claimed, since
+ *    the unique constraint is total. One account can therefore cycle
+ *    create-and-delete at whatever rate `RL_MUTATION` permits.
+ *  - *Handing over.* An account can create an organisation, invite a second
+ *    account as owner, be removed by it, and be back under its ceiling with the
+ *    organisation — and its slug — still live. Repeat, and the pair burns the
+ *    namespace between them without either ever exceeding ten.
+ *
+ * That second path is the price of the membership join, and it is worth paying:
+ * counting `created_by` alone made the quota unrecoverable instead, so an
+ * organisation somebody removed you from stood against your ceiling for ever
+ * and a co-owner could permanently stop you creating another. What bounds the
+ * hand-off is that it takes a *second consenting account* — verified address,
+ * accepted invitation, deliberate removal — per organisation, and that each
+ * step is separately rate-limited (`RL_INVITE`, `RL_MUTATION`). That makes it a
+ * slow, attributable, multi-account act rather than a loop, which is the shape
+ * abuse response deals with. It is not a claim that the ceiling closes it.
+ */
+export const ORGANIZATIONS_PER_ACCOUNT_LIMIT = 10;
+
+/**
  * The display order of an environment.
  *
  * Bounded because `environments.sort_order` is a PostgreSQL `integer`: a value
@@ -81,6 +131,24 @@ const nameSchema = z
   .max(NAME_MAX_LENGTH, `A name must be at most ${NAME_MAX_LENGTH} characters.`);
 
 /**
+ * The same rule, at the organisation's tighter ceiling.
+ *
+ * Enforced here and not only in the browser, because a limit the API does not
+ * share is a limit that holds until somebody uses `curl`. The bound itself lives
+ * in `@xecret/core/validation` so the form that caps the input and the endpoint
+ * that stores the result cannot drift apart — see `ORGANIZATION_NAME_MAX_LENGTH`
+ * for why the number is what it is.
+ */
+const organizationNameSchema = z
+  .string()
+  .trim()
+  .min(1, 'A name cannot be empty.')
+  .max(
+    ORGANIZATION_NAME_MAX_LENGTH,
+    `An organisation name must be at most ${ORGANIZATION_NAME_MAX_LENGTH} characters.`,
+  );
+
+/**
  * Nullable so a description can be cleared. `undefined` means "leave it alone";
  * `null` means "remove it" — a distinction the repository already understands
  * and one a client cannot otherwise express.
@@ -104,8 +172,31 @@ const descriptionSchema = z
  */
 const immutableSlugField = z.unknown().optional();
 
+/**
+ * Creating an organisation: a name, and the permanent identifier that goes with
+ * it.
+ *
+ * `slug` is optional but is what the dashboard always sends. The form derives a
+ * candidate from the name, checks it against `GET /api/orgs/availability`, and
+ * lets the user edit it — so the identifier they are stuck with for the life of
+ * the organisation is one they saw and agreed to.
+ *
+ * Absent, the slug is derived from the name and *uniquified* — `acme`, then
+ * `acme-2`. That path exists for API callers and for first sign-in, where there
+ * is nobody at a keyboard to consult. It is deliberately not what the dashboard
+ * uses: silently handing somebody `acme-2` forever, because a stranger they
+ * cannot see holds `acme`, is the failure this field exists to prevent.
+ */
+export const organizationCreateSchema = z.strictObject(
+  { name: organizationNameSchema, slug: organizationSlugSchema.optional() },
+  UNEXPECTED_FIELD,
+);
+
 export const organizationPatchSchema = z
-  .strictObject({ name: nameSchema.optional(), slug: immutableSlugField }, UNEXPECTED_FIELD)
+  .strictObject(
+    { name: organizationNameSchema.optional(), slug: immutableSlugField },
+    UNEXPECTED_FIELD,
+  )
   // Any recognised key satisfies this, `slug` included, so a body that names
   // only the slug reaches `assertSlugImmutable` and gets the precise refusal
   // instead of a generic "nothing to update".
@@ -213,6 +304,25 @@ export function assertSlugImmutable(
 
   throw errors.badRequest(
     `The slug of ${resource === 'organisation' ? 'an' : 'a'} ${resource} cannot be changed: it appears in URLs, in .xecret.yaml and in CI configuration, so a rename would break every consumer that is not redeployed at the same instant.`,
+  );
+}
+
+/**
+ * The refusal when an account is already holding as many organisations as it may.
+ *
+ * 409 rather than 403: nothing about the caller's permissions is wrong, and the
+ * same request succeeds the moment they delete one they no longer need. That is
+ * how `mapMembershipError` treats a seat limit — the product's other quota — and
+ * the two should not answer differently.
+ *
+ * The number is stated because it is a published constant and the only
+ * actionable thing left to say. Nothing derived from the request appears: the
+ * caller learns a rule, not an echo of what they sent.
+ */
+export function organizationLimitReached(): ApiError {
+  return errors.conflict(
+    `An account can hold at most ${ORGANIZATIONS_PER_ACCOUNT_LIMIT} organisations. ` +
+      'Delete one you no longer need before creating another.',
   );
 }
 

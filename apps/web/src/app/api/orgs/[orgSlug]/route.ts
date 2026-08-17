@@ -1,19 +1,26 @@
 import { AuthorizationError } from '@xecret/core/authz';
-import { RepositoryError, updateOrganization } from '@xecret/db/repositories';
+import {
+  RepositoryError,
+  softDeleteOrganization,
+  updateOrganization,
+} from '@xecret/db/repositories';
 import { actorId } from '@/server/actor';
 import { errors } from '@/server/errors';
-import { json, parseJsonBody } from '@/server/http';
+import { json, noContent, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 import {
   assertSlugImmutable,
+  confirmationMatches,
+  destructiveRequestSchema,
   organizationPatchSchema,
   toOrganization,
 } from '@/server/schemas/resources';
 import { authorize, resolveOrg } from '@/server/tenancy';
 
 /**
- * One organisation: the settings page, and the only field of it that can change.
+ * One organisation: the settings page, the only field of it that can change, and
+ * its removal.
  *
  * `resolveOrg` is what makes a slug from another tenant indistinguishable from
  * one that never existed — it looks the organisation up and then requires a
@@ -86,5 +93,82 @@ export const PATCH = authenticatedRoute<Params>(
     return json({
       organization: toOrganization(organization, scope.membership?.role ?? null),
     });
+  },
+);
+
+/**
+ * Soft-deletes an organisation.
+ *
+ * This is the largest blast radius in the product. One column changes and every
+ * project, environment and secret beneath it stops resolving at once — for every
+ * member, not only for the person who pressed the button — because each read
+ * joins back through `organizations` with a `deleted_at is null` filter. The
+ * applications holding those secrets keep working until their next deploy, which
+ * is what makes the mistake expensive: it is discovered late, by somebody else,
+ * during an outage.
+ *
+ * Three gates, each doing a different job:
+ *
+ *  - **A browser session.** Same rule as `DELETE /api/auth/account`: a CLI token
+ *    acts as its user for secrets, not for existence. A credential left on a
+ *    build machine must not be able to erase the organisation it reads from.
+ *  - **`org.delete`.** Owners only, and only owners — it is the single action an
+ *    admin is denied (`roles.ts`). Nothing a grant can widen.
+ *  - **The slug, typed back.** A permission check answers "may they?"; this
+ *    answers "did they mean to?", and it is the second question that goes wrong.
+ *    The owner entitled to do this is exactly the person clicking through a
+ *    settings page at speed.
+ *
+ * Never a hard delete. The audit records that say this organisation existed —
+ * including the one written below — are filed against `org_id`, and a row that
+ * vanished would take the history of everything that ever happened inside it out
+ * of an operator's reach. The wrapped keys stay wrapped; nothing here touches key
+ * material, so this is not cryptographic erasure and does not pretend to be.
+ */
+export const DELETE = authenticatedRoute<Params>(
+  async ({ request, params, principal, services, audit, record }) => {
+    if (principal.kind !== 'user') {
+      throw errors.forbidden('Deleting an organisation requires a signed-in browser session.');
+    }
+
+    await enforce(services.env, 'RL_MUTATION', rateLimitKey([actorId(principal)]));
+
+    const scope = await resolveOrg(principal, params.orgSlug, services);
+    const orgId = scope.organization.id;
+    const resource = { type: 'org' as const, id: orgId };
+
+    try {
+      authorize(scope, 'org.delete');
+    } catch (cause) {
+      // An admin reaching for this is the denial most worth having on record:
+      // it is one role short of permitted, so it is the shape both a confused
+      // colleague and a partially-successful account takeover produce.
+      if (cause instanceof AuthorizationError) {
+        record(audit(orgId).denied('org.deleted', resource, cause.decision));
+      }
+      throw cause;
+    }
+
+    const body = await parseJsonBody(request, destructiveRequestSchema);
+    if (!confirmationMatches(scope.organization.slug, body.confirm)) {
+      // Recorded rather than merely refused: a run of unconfirmed attempts
+      // against one organisation is a signal, and it only exists if the refusal
+      // writes a record too.
+      record(audit(orgId).error('org.deleted', resource, 'invalidInput'));
+
+      throw errors.badRequest(
+        'Deleting an organisation removes every project and secret in it for every member. ' +
+          'Repeat the request with {"confirm": "<organisation slug>"}.',
+      );
+    }
+
+    // Idempotent by construction — the update filters on `deleted_at is null`,
+    // so a second call changes nothing. `resolveOrg` has already answered 404
+    // for an organisation deleted before this request arrived.
+    await softDeleteOrganization(services.db, orgId);
+
+    record(audit(orgId).success('org.deleted', resource));
+
+    return noContent();
   },
 );

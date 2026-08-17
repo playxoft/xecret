@@ -72,6 +72,14 @@
         },
         { "name": "RL_SERVICE", "namespace_id": "1005", "simple": { "limit": 600, "period": 60 } },
         { "name": "RL_MUTATION", "namespace_id": "1006", "simple": { "limit": 60, "period": 60 } },
+        // Generous: a debounced form issues one of these per pause in typing,
+        // and each is a single indexed lookup. Tight enough that it is not a
+        // free namespace-enumeration tool.
+        {
+          "name": "RL_SLUG_CHECK",
+          "namespace_id": "1007",
+          "simple": { "limit": 120, "period": 60 },
+        },
       ],
     },
     "staging": {
@@ -134,7 +142,8 @@
   //   { "name": "RL_INVITE",     "namespace_id": "1003", "simple": { "limit": 20,   "period": 60 } },
   //   { "name": "RL_SECRET_READ","namespace_id": "1004", "simple": { "limit": 120,  "period": 60 } },
   //   { "name": "RL_SERVICE",    "namespace_id": "1005", "simple": { "limit": 600,  "period": 60 } },
-  //   { "name": "RL_MUTATION",   "namespace_id": "1006", "simple": { "limit": 60,   "period": 60 } }
+  //   { "name": "RL_MUTATION",   "namespace_id": "1006", "simple": { "limit": 60,   "period": 60 } },
+  //   { "name": "RL_SLUG_CHECK", "namespace_id": "1007", "simple": { "limit": 120,  "period": 60 } }
   // ]
   // ────────────────────────────────────────────────────────────────────────────
 }

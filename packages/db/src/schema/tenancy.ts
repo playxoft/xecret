@@ -32,7 +32,22 @@ export const organizations = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
-  (t) => [check('organizations_seat_limit_check', sql`${t.seatLimit} >= 0`)],
+  (t) => [
+    check('organizations_seat_limit_check', sql`${t.seatLimit} >= 0`),
+    // Read on every organisation creation, inside the transaction that creates
+    // one: `countOrganizationsHeldBy` asks how many live organisations this
+    // account created and is still in. The column order is the query's —
+    // equality on `created_by`, then `id` to supply the ordering — so its
+    // `LIMIT` can stop after the ceiling's worth of rows instead of finding
+    // every organisation the account ever created and sorting the lot. Left
+    // ascending: the query wants `id desc`, and a btree is read backwards for
+    // that at no cost. Partial, because the count never looks at a soft-deleted
+    // row. The membership half of the join is already served by
+    // `org_members_org_user_unique`.
+    index('organizations_creator_idx')
+      .on(t.createdBy, t.id)
+      .where(sql`${t.deletedAt} is null`),
+  ],
 );
 
 /**

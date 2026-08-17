@@ -30,7 +30,6 @@
 import { sql } from 'drizzle-orm';
 import { createDatabase } from '../packages/db/src/client.ts';
 import {
-  bootstrapPersonalOrganization,
   createSecret,
   createSession,
   findPinForUser,
@@ -39,6 +38,7 @@ import {
   loadEnvironmentKeyChain,
   lockSessions,
   markSessionUnlocked,
+  provisionOrganization,
   updateSecretMetadata,
   upsertPin,
   upsertUserFromIdentity,
@@ -100,7 +100,7 @@ async function main(): Promise<void> {
       step('user created', true, `id ${user.id.slice(0, 8)}…`);
 
       // ── 2. Organisation bootstrap: org, master key, project, env keys ───
-      const account = await bootstrapPersonalOrganization(tx, { user, envelope });
+      const account = await provisionOrganization(tx, { user, envelope });
       step(
         'organisation bootstrapped',
         account.environments.length === 3,
