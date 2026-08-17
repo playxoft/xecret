@@ -115,5 +115,69 @@ export XECRET_PUBLIC_URL XECRET_ENV
 echo "Building for $XECRET_ENV at $XECRET_PUBLIC_URL"
 echo "  (from apps/web/wrangler.jsonc → env.$env_name.vars — stop now if that is not your deployment)"
 
+# ── The build-time secrets have to belong to the environment being deployed ──
+#
+# `NEXT_PUBLIC_FIREBASE_CONFIG` arrives from whatever populates the environment,
+# and nothing about that wrapper is tied to `$env_name`. `phase run` resolves
+# `.phase.json`'s `defaultEnv`, which is `Development`; a self-hoster's wrapper
+# has its own default. So the ordinary mistake is not a missing variable, it is
+# a *present* one from the wrong environment — and it is invisible, because the
+# build succeeds and the deployment looks fine until sign-in fails against a
+# Firebase project that never issued the token.
+#
+# `env.$env_name.vars.FIREBASE_PROJECT_ID` is what the deployed Worker will
+# verify tokens against, and the client config names the project the browser
+# will get them from. If those two disagree, every sign-in on the deployment is
+# rejected. Comparing them here is the only point where both are in hand.
+#
+# Skipped when the target environment declares no `FIREBASE_PROJECT_ID` —
+# `env.staging` currently does not — because a comparison against nothing would
+# fail every deploy of an environment that has simply not been filled in yet.
+expected_project="$(wrangler_var FIREBASE_PROJECT_ID 2>/dev/null || true)"
+if [ -n "$expected_project" ]; then
+  building_project="$(
+    printf '%s' "$NEXT_PUBLIC_FIREBASE_CONFIG" |
+      node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).projectId??""))}catch{process.stdout.write("")}})'
+  )"
+
+  if [ "$building_project" != "$expected_project" ]; then
+    cat >&2 <<EOF
+Refusing to build: the Firebase project in this environment is not the one
+env.$env_name deploys against.
+
+  NEXT_PUBLIC_FIREBASE_CONFIG projectId : ${building_project:-<unparseable>}
+  wrangler env.$env_name.FIREBASE_PROJECT_ID : $expected_project
+
+The client config almost certainly came from the wrong environment of whatever
+supplies it. With Phase, the environment is chosen explicitly:
+
+    phase run --env Production -- sh $0 $env_name
+
+Building anyway would deploy a site whose browser gets tokens from one Firebase
+project while the Worker verifies them against another, so every sign-in is
+rejected — and nothing about the build or the deploy would report it.
+EOF
+    exit 1
+  fi
+fi
+
+# ── What `GET /api/version` will answer with ──
+#
+# Nothing in the tree knows the commit or the build time, and the Worker has no
+# build environment to read at request time, so they are stamped in here and
+# inlined by `next.config.ts`. A build that skips this script reports `unknown`
+# for both, which is the truth: it did not come from a deploy.
+#
+# `--dirty` rather than a bare short SHA, because the commit is only an honest
+# answer if the tree it was built from matched it. A deployment reporting
+# `a1b2c3d-dirty` is telling whoever is debugging it that the source is not on
+# any branch. `2>/dev/null || echo unknown` covers a build from a tarball with
+# no `.git` — a self-hoster's perfectly ordinary case, not an error.
+XECRET_BUILD_COMMIT="$(git describe --always --dirty --abbrev=7 2>/dev/null || echo unknown)"
+XECRET_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export XECRET_BUILD_COMMIT XECRET_BUILD_TIME
+
+echo "  (build $XECRET_BUILD_COMMIT at $XECRET_BUILD_TIME)"
+
 npx opennextjs-cloudflare build
 npx opennextjs-cloudflare deploy --env "$env_name"
