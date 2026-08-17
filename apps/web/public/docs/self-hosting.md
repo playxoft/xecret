@@ -3,7 +3,7 @@ title: Self-hosting xecret
 navTitle: Self-hosting
 description: Run xecret yourself — the honest dependency list, the root-key ceremony, a step-by-step deployment, and what you are signing up to operate.
 keywords: [self host secret manager, cloudflare workers deployment, open source secrets manager, agpl, neon postgres, root key]
-updated: 2026-08-16
+updated: 2026-08-17
 ---
 
 xecret is AGPL-3.0 and designed to be run by people other than us. This page is
@@ -89,7 +89,46 @@ Create:
 The repository's `wrangler.jsonc` names every binding the code expects, and
 `.env.example` names every variable.
 
-### 4. Verify before deploying
+### 4. Tell the deployment its own origin
+
+`apps/web/wrangler.jsonc` is committed to the repository, and the domain in it
+is **ours**. Nothing you have done so far has changed it, and nothing later on
+this page checks it for you — an origin is a fact about your deployment that
+only you know. Edit it now, before the first deploy:
+
+```jsonc
+"env": {
+  "production": {
+    "routes": [{ "pattern": "secrets.your-company.com", "custom_domain": true }],
+    "vars": {
+      "XECRET_ENV": "production",
+      "XECRET_PUBLIC_URL": "https://secrets.your-company.com",
+      // …the rest as shipped
+    },
+  },
+},
+```
+
+`XECRET_PUBLIC_URL` is read twice, and both readings matter:
+
+- **During `next build`.** Every documentation and marketing page is
+  prerendered, so its canonical URL, its `sitemap.xml` entry, the `Host` line in
+  `robots.txt` and the JSON-LD `@id` are all written before the Worker exists.
+  Left as shipped, your deployment tells every crawler that our site is the
+  canonical version of your pages.
+- **At runtime, by the Worker.** It is what the `Origin` header on every
+  mutation is compared against — deliberately, rather than the request's own
+  `Host`, so that an attacker who can reach the Worker cannot choose the value
+  the check uses. It is also the base of the links in invitation and PIN-reset
+  emails. Left as shipped, mutations from your own dashboard are rejected as
+  cross-site, and the invitation you send a colleague points at a server you do
+  not control.
+
+The two are kept identical by construction: the deploy script reads
+`XECRET_PUBLIC_URL` out of this file and hands it to the build, so there is one
+place to change and no second copy to forget.
+
+### 5. Verify before deploying
 
 ```bash
 npm run check:env      # states exactly what is missing or malformed
@@ -99,28 +138,58 @@ npm run smoke          # proves the whole stack against the real database
 Run both. The config checker catches the missing binding you will otherwise
 discover from a 503 in production.
 
-### 5. Deploy
+### 6. Deploy
 
 ```bash
+phase run -- sh scripts/deploy-web.sh production
+```
+
+The `phase run --` prefix is how *this* repository populates the deploy-time
+environment; substitute Doppler, a CI secret block, or `set -a; . ./.env`. The
+script does not care which, but it does require that
+`NEXT_PUBLIC_FIREBASE_CONFIG` is genuinely in the environment, and stops if it
+is not. That check exists because the Content-Security-Policy's `frame-src` is
+derived from that value while the bundle is built: a build that cannot see it
+still succeeds and still deploys, and then blocks its own sign-in popup — with
+an error that reads like a network outage.
+
+The script then reads `XECRET_PUBLIC_URL` and `XECRET_ENV` out of
+`wrangler.jsonc` for the environment you named, exports them into the build, and
+prints them before it starts:
+
+```
+Building for production at https://secrets.your-company.com
+  (from apps/web/wrangler.jsonc → env.production.vars — stop now if that is not your deployment)
+```
+
+Read that line. If it does not name your domain, step 4 has not been done, and
+everything after this point publishes somebody else's.
+
+#### If you build without the script
+
+Both variables have to be in the **build** environment, not only in the Worker's
+bindings, for the reasons in step 4:
+
+```bash
+NEXT_PUBLIC_FIREBASE_CONFIG='{"apiKey":"…","authDomain":"…"}' \
 XECRET_PUBLIC_URL=https://secrets.your-company.com \
 XECRET_ENV=production \
   npx opennextjs-cloudflare build --env production
 
-npx wrangler deploy --env production
+npx opennextjs-cloudflare deploy --env production
 ```
 
-The two variables are not optional at build time. Every documentation and
-marketing page is prerendered, so its canonical URL, its sitemap entry and the
-`Host` line in `robots.txt` are all written during the build — long before the
-Worker can read them from its bindings. A build that is not told will refuse
-rather than guess. `scripts/deploy-web.sh` does this for you, reading both out
-of `wrangler.jsonc` for the environment being deployed:
+Set `XECRET_ENV` even though it looks redundant beside `--env production`. Two
+things make it load-bearing. `--env` puts nothing into the build's *environment*
+— it selects which environment's `compatibility_date` and `assets` settings the
+adapter reads, and none of that reaches `next build`. And the build only
+*refuses* to guess an origin when `XECRET_ENV` names a deployment: with
+`XECRET_ENV` unset it does not error at all, it quietly falls back to
+`http://localhost:3030` and writes that into the canonical URL of every page it
+prerenders. `XECRET_ENV` is what converts that silent wrong answer into a build
+failure, which is the only reason to type it.
 
-```bash
-sh scripts/deploy-web.sh production
-```
-
-### 6. Point clients at it
+### 7. Point clients at it
 
 ```bash
 xecret login --api-url https://secrets.your-company.com
