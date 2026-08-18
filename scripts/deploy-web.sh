@@ -65,12 +65,12 @@ export CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="${DATABASE_URL:
 # `lib/site.ts` bakes the deployment's origin into every prerendered page:
 # canonical URLs, sitemap.xml, robots.txt's Host line, the JSON-LD `@id`. All of
 # those are decided during `next build`, and `XECRET_PUBLIC_URL` in
-# `wrangler.jsonc` is a *runtime* var — it is uploaded with the Worker and does
+# `wrangler.toml` is a *runtime* var — it is uploaded with the Worker and does
 # not exist while the build runs. Nothing connected the two, so a staging deploy
 # built with whatever happened to be in the shell and told crawlers its
 # canonical was production.
 #
-# Read out of `wrangler.jsonc` for the environment being deployed, using
+# Read out of `wrangler.toml` for the environment being deployed, using
 # wrangler's own config reader rather than a second copy of the values here:
 # there is then one file naming each environment's host, and the origin the
 # build writes into the HTML is the origin the Worker answers requests on
@@ -94,7 +94,7 @@ wrangler_var() {
     const value = (await unstable_readConfig({ env: environment })).vars?.[name];
 
     if (typeof value !== "string" || value === "") {
-      console.error(`wrangler.jsonc: env.${environment}.vars.${name} is missing or not a string`);
+      console.error(`wrangler.toml: env.${environment}.vars.${name} is missing or not a string`);
       process.exit(1);
     }
 
@@ -113,7 +113,7 @@ export XECRET_PUBLIC_URL XECRET_ENV
 # This line is the last chance to notice, and it names the file so that noticing
 # leads somewhere.
 echo "Building for $XECRET_ENV at $XECRET_PUBLIC_URL"
-echo "  (from apps/web/wrangler.jsonc → env.$env_name.vars — stop now if that is not your deployment)"
+echo "  (from apps/web/wrangler.toml → env.$env_name.vars — stop now if that is not your deployment)"
 
 # ── The build-time secrets have to belong to the environment being deployed ──
 #

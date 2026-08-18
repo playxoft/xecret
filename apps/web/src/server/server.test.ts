@@ -84,7 +84,7 @@ describe('binding access', () => {
 /**
  * Regression, twice over.
  *
- * `next dev` builds the Worker's `env` from `wrangler.jsonc`, faithfully
+ * `next dev` builds the Worker's `env` from `wrangler.toml`, faithfully
  * excluding the shell — so `phase run -- npm run dev` supplied values the
  * application could not see, and every route answered 503 while the identical
  * configuration worked in every script.

@@ -52,10 +52,10 @@ is permanently unrecoverable — there is no support ticket that fixes this.**
 
 3. **Cloudflare.** Create a Hyperdrive binding for the database, a KV
    namespace (JWKS cache), the rate-limit bindings, and a Secrets Store entry
-   holding the Root KEK. `apps/web/wrangler.jsonc` names every binding the
+   holding the Root KEK. `apps/web/wrangler.toml` names every binding the
    code expects; `.env.example` names every variable.
 
-4. **Your own origin.** `apps/web/wrangler.jsonc` is committed and the domain in
+4. **Your own origin.** `apps/web/wrangler.toml` is committed and the domain in
    it is *ours*. Change `env.production.routes[].pattern` and
    `env.production.vars.XECRET_PUBLIC_URL` to your deployment's origin before
    deploying anything — nothing below checks it for you.
@@ -80,7 +80,7 @@ is permanently unrecoverable — there is no support ticket that fixes this.**
    ```
 
 6. **Deploy.** The script reads `XECRET_PUBLIC_URL` and `XECRET_ENV` out of
-   `apps/web/wrangler.jsonc` for the environment named, exports them into the
+   `apps/web/wrangler.toml` for the environment named, exports them into the
    build — they have to be in the *build* environment, not only in the Worker's
    bindings, because the prerendered pages are written before a binding exists —
    and prints the origin it resolved before it starts. Read that line; if it is

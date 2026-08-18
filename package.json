@@ -15,7 +15,7 @@
     "dev": "npm run dev --workspace @xecret/web",
     "build": "npm run build --workspace @xecret/web",
     "preview": "npm run preview --workspace @xecret/web",
-    "// deploy": "Always the script, never a bare opennextjs-cloudflare build. The build bakes the deployment's origin into every prerendered canonical, sitemap.xml and robots.txt Host line, and reads it from the environment — which only scripts/deploy-web.sh populates, out of wrangler.jsonc for the environment being deployed. A build without it publishes localhost. Defaults to production; `npm run deploy -- staging` for the other one.",
+    "// deploy": "Always the script, never a bare opennextjs-cloudflare build. The build bakes the deployment's origin into every prerendered canonical, sitemap.xml and robots.txt Host line, and reads it from the environment — which only scripts/deploy-web.sh populates, out of wrangler.toml for the environment being deployed. A build without it publishes localhost. Defaults to production; `npm run deploy -- staging` for the other one.",
     "deploy": "sh scripts/deploy-web.sh",
     "// lint": "Two configs: eslint.config.mjs covers packages/ and scripts/; apps/web has its own because it needs the Next.js and React rules",
     "lint": "eslint packages scripts && npm run lint --workspaces --if-present",

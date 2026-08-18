@@ -86,12 +86,12 @@ Create:
 - the **rate-limit** bindings;
 - a **Secrets Store** entry holding the root key.
 
-The repository's `wrangler.jsonc` names every binding the code expects, and
+The repository's `wrangler.toml` names every binding the code expects, and
 `.env.example` names every variable.
 
 ### 4. Tell the deployment its own origin
 
-`apps/web/wrangler.jsonc` is committed to the repository, and the domain in it
+`apps/web/wrangler.toml` is committed to the repository, and the domain in it
 is **ours**. Nothing you have done so far has changed it, and nothing later on
 this page checks it for you — an origin is a fact about your deployment that
 only you know. Edit it now, before the first deploy:
@@ -154,12 +154,12 @@ still succeeds and still deploys, and then blocks its own sign-in popup — with
 an error that reads like a network outage.
 
 The script then reads `XECRET_PUBLIC_URL` and `XECRET_ENV` out of
-`wrangler.jsonc` for the environment you named, exports them into the build, and
+`wrangler.toml` for the environment you named, exports them into the build, and
 prints them before it starts:
 
 ```
 Building for production at https://secrets.your-company.com
-  (from apps/web/wrangler.jsonc → env.production.vars — stop now if that is not your deployment)
+  (from apps/web/wrangler.toml → env.production.vars — stop now if that is not your deployment)
 ```
 
 Read that line. If it does not name your domain, step 4 has not been done, and

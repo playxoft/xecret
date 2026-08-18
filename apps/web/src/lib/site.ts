@@ -8,10 +8,10 @@
  * exists yet.
  *
  * ── Which makes `XECRET_PUBLIC_URL` two variables wearing one name ──
- * The Worker gets it from `wrangler.jsonc`'s `vars`, which is a *runtime*
+ * The Worker gets it from `wrangler.toml`'s `vars`, which is a *runtime*
  * declaration: nothing about it is present while `next build` runs. So this
  * module reads the build environment, and `scripts/deploy-web.sh` is what puts
- * the value there — it resolves the same `wrangler.jsonc`, for the same `--env`
+ * the value there — it resolves the same `wrangler.toml`, for the same `--env`
  * it is about to deploy, and exports the result before building. Build-time and
  * runtime therefore name one origin because they are read from one file, rather
  * than because two places were kept in step by hand.
@@ -36,7 +36,7 @@ function normaliseOrigin(value: string): string {
  * Both variables, read as what a build actually finds rather than as what they
  * are declared to be.
  *
- * `cloudflare-env.d.ts` is generated from `wrangler.jsonc` and types these as
+ * `cloudflare-env.d.ts` is generated from `wrangler.toml` and types these as
  * the exact literals the Worker will be given — never absent, never anything
  * else. That is true of the Worker and false here: `next build` runs wherever
  * somebody runs it, and the whole reason this module exists is that the
@@ -91,7 +91,7 @@ function buildOrigin(): string {
   if (configured !== undefined) return requireAbsoluteOrigin(normaliseOrigin(configured));
 
   // `XECRET_ENV` names the deployment being built for, and is exported from the
-  // same `wrangler.jsonc` environment as the URL. Its presence with anything
+  // same `wrangler.toml` environment as the URL. Its presence with anything
   // but `development` therefore means "this build is going somewhere real and
   // does not know where", which is not a state to paper over: every canonical
   // on every prerendered page would be wrong, and no test after this point can
@@ -103,7 +103,7 @@ function buildOrigin(): string {
       `XECRET_PUBLIC_URL is not set, but XECRET_ENV is "${environment}". Canonical URLs, ` +
         'sitemap.xml, robots.txt and the JSON-LD @id are all decided during `next build`, so ' +
         "a build that cannot name its own origin would publish somebody else's. Deploy with " +
-        '`scripts/deploy-web.sh <env>`, which reads the origin out of apps/web/wrangler.jsonc, ' +
+        '`scripts/deploy-web.sh <env>`, which reads the origin out of apps/web/wrangler.toml, ' +
         'or set XECRET_PUBLIC_URL in the build environment yourself. If you are not building ' +
         'for a deployment, XECRET_ENV is coming from your shell — a sourced .env, or ' +
         '`phase run -- ...` — and this check runs on import, so it lands as a crash in every ' +
