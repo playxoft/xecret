@@ -17,13 +17,14 @@ import {
   parseCookies,
   parseWith,
   readJsonBody,
+  rayIdFrom,
   requestIdFrom,
   toApiError,
   userAgent,
 } from './http';
 import { FirebaseIdentityProvider, InMemoryKeyStore } from './firebase';
 import type { FirebaseClaims, IdTokenVerifier } from './firebase';
-import { attemptKey, consume, enforce } from './rate-limit';
+import { attemptKey, consume, enforce, rateLimitKey } from './rate-limit';
 
 /**
  * Tests for the request-handling spine.
@@ -310,15 +311,20 @@ describe('bearer token extraction', () => {
 });
 
 describe('request metadata', () => {
-  it('prefers the Cloudflare ray id so support can cross into platform logs', () => {
-    const request = new Request('https://xecret.playxoft.com/', { headers: { 'cf-ray': 'ray-1' } });
-    expect(requestIdFrom(request)).toBe('ray-1');
+  // The id is ours, never the client's: `cf-ray` is a header, and a request
+  // that reaches the Worker without passing the edge can set it to an id
+  // already in use.
+  it('mints a UUIDv7 rather than trusting a supplied ray id', () => {
+    const uuidv7Pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+    expect(requestIdFrom()).toMatch(uuidv7Pattern);
+    expect(requestIdFrom()).not.toBe(requestIdFrom());
   });
 
-  it('generates an id when the edge did not supply one', () => {
-    expect(requestIdFrom(new Request('https://xecret.playxoft.com/'))).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-    );
+  it('keeps the ray id as its own correlation field', () => {
+    const request = new Request('https://xecret.playxoft.com/', { headers: { 'cf-ray': 'ray-1' } });
+    expect(rayIdFrom(request)).toBe('ray-1');
+    expect(rayIdFrom(new Request('https://xecret.playxoft.com/'))).toBeNull();
   });
 
   // X-Forwarded-For is client-appendable; CF-Connecting-IP is set by the edge.
@@ -524,5 +530,18 @@ describe('rate limiting', () => {
 
   it('represents an unknown IP distinctly rather than as an empty string', () => {
     expect(attemptKey(null, 'a@b.test')).toBe('-:a%40b.test');
+  });
+
+  // The shape `/api/auth/pin/reset` and its `confirm` use. Both properties are
+  // load-bearing: no address in the key, or every proxy is a fresh allowance to
+  // send mail to somebody else's inbox; and a prefix of its own, or failed
+  // unlock attempts spend the budget the reset needs and the 429 lands on the
+  // emailed link.
+  it('gives a per-subject limit a counter that neither follows the address nor shares another', () => {
+    const key = rateLimitKey(['pin_reset', 'user-1']);
+    expect(key).toBe('pin_reset:user-1');
+    expect(key).not.toBe(attemptKey('1.2.3.4', 'user-1'));
+    expect(key).not.toBe(attemptKey(null, 'user-1'));
+    expect(key).not.toBe(rateLimitKey(['pin_reset', 'user-2']));
   });
 });

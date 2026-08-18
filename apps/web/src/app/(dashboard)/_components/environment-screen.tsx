@@ -47,6 +47,11 @@ export function EnvironmentScreen({
     <div className="flex flex-col gap-6">
       <PageHeader
         title={environment?.name ?? envSlug}
+        // The slug and the display name differ by more than case for most
+        // environments, so the heading waits for the project rather than
+        // rewriting itself a beat later. The badge waits with it: `isProduction`
+        // is false until the same request lands.
+        titleLoading={project.data === null && project.error === null}
         badge={<EnvironmentBadge isProduction={isProduction} />}
         description={
           isProduction

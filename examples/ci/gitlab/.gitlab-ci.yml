@@ -1,0 +1,27 @@
+# xecret + GitLab CI.
+#
+# Add XECRET_TOKEN under Settings → CI/CD → Variables. Mark it Masked (it is
+# one line of high-entropy base64url, so masking works) and, if your plan has
+# it, Protected.
+#
+# Two equivalent shapes — pick one.
+
+# Shape 1: your own image, CLI installed by the checksum-verifying installer.
+build:
+  image: node:22
+  script:
+    - curl -fsSL https://xecret.playxoft.com/install.sh | sh
+    - xecret run -- npm run build
+
+# Shape 2: the released image, for jobs that only need the CLI itself —
+# here writing an env file for a later stage that cannot be changed.
+# (`xecret run` in your own image is the better default; see ../README.md.)
+export-legacy-env:
+  image:
+    name: ghcr.io/playxoft/xecret:latest
+    entrypoint: [""]
+  script:
+    - /usr/local/bin/xecret pull --format env > .env
+  artifacts:
+    paths: [.env]
+    expire_in: 30 min

@@ -4,6 +4,16 @@ import { cn } from '@/lib/cn';
 
 export interface PageHeaderProps {
   title: string;
+  /**
+   * Renders a placeholder in place of the title until the real one arrives.
+   *
+   * The screens that need it title themselves from a resource but have a slug
+   * on hand from the URL, and the tempting `name ?? slug` writes the heading
+   * twice: `development` for as long as the request takes, then `Development`.
+   * A page whose first word changes under the reader is worse than a page that
+   * takes a beat to have one, so this holds the space instead.
+   */
+  titleLoading?: boolean;
   description?: ReactNode;
   /** Sits beside the title — an environment badge, a status chip. */
   badge?: ReactNode;
@@ -19,7 +29,14 @@ export interface PageHeaderProps {
  * the document outline always starts at level one and "jump to heading" lands
  * somewhere useful.
  */
-export function PageHeader({ title, description, badge, actions, className }: PageHeaderProps) {
+export function PageHeader({
+  title,
+  titleLoading = false,
+  description,
+  badge,
+  actions,
+  className,
+}: PageHeaderProps) {
   return (
     <div
       className={cn(
@@ -29,8 +46,23 @@ export function PageHeader({ title, description, badge, actions, className }: Pa
     >
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2.5">
-          <h1 className="text-fg truncate text-xl font-semibold tracking-tight">{title}</h1>
-          {badge}
+          <h1 className="text-fg truncate text-xl font-semibold tracking-tight">
+            {titleLoading ? (
+              <>
+                {/* A `<span>` carrying the skeleton's styling rather than the
+                    `Skeleton` primitive, which renders a `<div>`: `<h1>` takes
+                    phrasing content, and the heading has to stay a heading. */}
+                <span
+                  aria-hidden="true"
+                  className="bg-surface-active my-1 inline-block h-5 w-44 max-w-full animate-pulse rounded-md align-middle"
+                />
+                <span className="sr-only">Loading</span>
+              </>
+            ) : (
+              title
+            )}
+          </h1>
+          {titleLoading ? null : badge}
         </div>
         {description ? (
           <p className="text-fg-muted mt-1.5 max-w-2xl text-sm leading-6">{description}</p>

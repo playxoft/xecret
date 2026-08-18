@@ -19,9 +19,13 @@ xecret run -- npm run dev
 Your app starts with every secret already in `process.env`. No `.env` file on
 disk, no secrets in Slack, no "works on my machine".
 
-> **Status: pre-alpha, under active development.** Phase 1 of 11 is complete —
-> the foundation, schema, and tooling. It is not usable yet. See
-> [the plan](_developer/plan/xecret-plan-v2.md).
+> **Status: pre-alpha, feature-complete for v1, not yet deployed.** Phases 0–9
+> of 11 are built: crypto core, auth, the secrets API, the dashboard, the Go
+> CLI, teams and granular access, CI service tokens, the audit log, and the
+> docs you are reading. What remains before real credentials belong here:
+> integration against a live database (nothing has run against production
+> infrastructure yet) and the Phase 10 security pass. See
+> [the plan](_developer/plan/xecret-plan-v2.md) and [the docs](docs/README.md).
 
 ## Why
 

@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 
 import { initials } from '@/lib/format';
-import { ArrowRightIcon } from '@/components/ui';
+import { ArrowRightIcon, Button, PlusIcon } from '@/components/ui';
 import { appPath } from '../_lib/paths';
 import { useSession } from './session';
 
@@ -24,7 +24,9 @@ import { useSession } from './session';
  */
 export function OrganizationsScreen() {
   const router = useRouter();
-  const { organizations } = useSession();
+  // The dialog itself is the shell's — see `SessionValue.createOrganization`.
+  // This screen only needs the button.
+  const { organizations, createOrganization } = useSession();
   const only = organizations.length === 1 ? organizations[0] : undefined;
 
   useEffect(() => {
@@ -43,10 +45,19 @@ export function OrganizationsScreen() {
 
   return (
     <div className="mx-auto w-full max-w-2xl">
-      <h1 className="text-fg text-xl font-semibold tracking-tight">Choose an organisation</h1>
-      <p className="text-fg-muted mt-1.5 text-sm leading-6">
-        You are a member of {organizations.length} organisations. Your role differs between them.
-      </p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+        <div className="min-w-0">
+          <h1 className="text-fg text-xl font-semibold tracking-tight">Choose an organisation</h1>
+          <p className="text-fg-muted mt-1.5 text-sm leading-6">
+            You are a member of {organizations.length} organisations. Your role differs between
+            them.
+          </p>
+        </div>
+        <Button variant="secondary" className="shrink-0" onClick={createOrganization}>
+          <PlusIcon className="size-4" />
+          New organisation
+        </Button>
+      </div>
 
       <ul className="mt-6 flex flex-col gap-2">
         {organizations.map((organization) => (
@@ -57,7 +68,7 @@ export function OrganizationsScreen() {
             >
               <span
                 aria-hidden="true"
-                className="bg-accent-tint text-accent-text grid size-9 shrink-0 place-items-center rounded-lg text-xs font-semibold"
+                className="bg-accent-tint text-accent-text grid size-9 shrink-0 place-items-center rounded-lg text-sm font-semibold"
               >
                 {initials(organization.name)}
               </span>
@@ -65,7 +76,7 @@ export function OrganizationsScreen() {
                 <span className="text-fg block truncate text-sm font-medium">
                   {organization.name}
                 </span>
-                <span className="text-fg-subtle block truncate text-xs">
+                <span className="text-fg-subtle block truncate text-sm">
                   <span className="font-mono">{organization.slug}</span> · {organization.role}
                 </span>
               </span>

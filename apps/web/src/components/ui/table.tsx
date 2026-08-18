@@ -58,7 +58,7 @@ export function TableHead({ className, ...props }: ComponentProps<'th'>) {
     <th
       scope="col"
       className={cn(
-        'text-fg-subtle h-9 px-3 text-left text-xs font-medium tracking-wide whitespace-nowrap',
+        'text-fg-subtle h-9 px-3 text-left text-sm font-medium tracking-wide whitespace-nowrap',
         className,
       )}
       {...props}
@@ -71,5 +71,5 @@ export function TableCell({ className, ...props }: ComponentProps<'td'>) {
 }
 
 export function TableCaption({ className, ...props }: ComponentProps<'caption'>) {
-  return <caption className={cn('text-fg-subtle mt-3 text-xs', className)} {...props} />;
+  return <caption className={cn('text-fg-subtle mt-3 text-sm', className)} {...props} />;
 }

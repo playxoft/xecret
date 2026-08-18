@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PBKDF2_ITERATIONS,
   PIN_FREE_ATTEMPTS,
   PIN_LENGTH,
   PIN_LOCKOUT_BASE_MS,
@@ -95,32 +96,69 @@ describe('hashing a PIN', () => {
     expect(await verifyPin(GOOD_PIN, b)).toBe(true);
   });
 
-  it('records its own parameters, so the cost can be raised later', async () => {
+  it('records its own parameters, so the cost can change later', async () => {
     const stored = await hashPin(GOOD_PIN);
     const [algorithm, iterations] = stored.split('$');
     expect(algorithm).toBe('pbkdf2-sha256');
-    expect(Number(iterations)).toBe(600_000);
+    expect(Number(iterations)).toBe(100_000);
     expect(stored.split('$')).toHaveLength(4);
   });
 
-  it('verifies against the iteration count the row was written with', async () => {
-    // The forward-compatibility promise: raising the constant must not lock out
-    // every existing user on the next deploy.
-    const stored = await hashPin(GOOD_PIN);
-    const downgraded = stored.replace('$600000$', '$600000$');
-    expect(await verifyPin(GOOD_PIN, downgraded)).toBe(true);
+  it('never exceeds the Workers runtime PBKDF2 cap', () => {
+    // workerd throws on iteration counts above 100,000 — and local wrangler
+    // dev does NOT enforce it, so only this assertion stands between a raised
+    // constant and a PIN that fails on every deployed request while every
+    // local test passes. See the constant's comment before touching this.
+    expect(PBKDF2_ITERATIONS).toBeLessThanOrEqual(100_000);
   });
 
-  it('flags a row that predates the current cost', async () => {
+  it('verifies against the iteration count the row was written with', async () => {
+    // The compatibility promise: changing the constant must not lock out every
+    // existing user on the next deploy. A row written at another cost keeps
+    // verifying at that cost (where the runtime supports it). The row is
+    // derived here by hand, at a cost the constant has never been.
+    const iterations = 1_000;
+    const salt = new Uint8Array(16).fill(7);
+    const key = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(GOOD_PIN),
+      'PBKDF2',
+      false,
+      ['deriveBits'],
+    );
+    const bits = new Uint8Array(
+      await crypto.subtle.deriveBits(
+        { name: 'PBKDF2', hash: 'SHA-256', salt, iterations },
+        key,
+        256,
+      ),
+    );
+    const toB64url = (bytes: Uint8Array) =>
+      btoa(String.fromCharCode(...bytes))
+        .replaceAll('+', '-')
+        .replaceAll('/', '_')
+        .replace(/=+$/, '');
+
+    const legacyRow = `pbkdf2-sha256$${iterations}$${toB64url(salt)}$${toB64url(bits)}`;
+    expect(await verifyPin(GOOD_PIN, legacyRow)).toBe(true);
+    expect(await verifyPin('000001', legacyRow)).toBe(false);
+    expect(pinNeedsRehash(legacyRow)).toBe(true);
+  });
+
+  it('flags a row written at any cost other than the current one', async () => {
     const stored = await hashPin(GOOD_PIN);
     expect(pinNeedsRehash(stored)).toBe(false);
-    expect(pinNeedsRehash(stored.replace('$600000$', '$100000$'))).toBe(true);
+    // Cheaper than current: upgrade on next unlock.
+    expect(pinNeedsRehash(stored.replace('$100000$', '$50000$'))).toBe(true);
+    // More expensive than current: the legacy 600k rows the Workers runtime
+    // cannot derive at all — they must rehash DOWN on a Node-side unlock.
+    expect(pinNeedsRehash(stored.replace('$100000$', '$600000$'))).toBe(true);
   });
 
   it('treats a corrupt record as a wrong PIN rather than throwing', async () => {
     // A 500 here would strand the user with no way forward; "wrong PIN" sends
     // them to the reset flow, which repairs the row.
-    for (const stored of ['', 'garbage', 'pbkdf2-sha256$600000$', 'argon2$3$abc$def', '$$$']) {
+    for (const stored of ['', 'garbage', 'pbkdf2-sha256$100000$', 'argon2$3$abc$def', '$$$']) {
       expect(await verifyPin(GOOD_PIN, stored)).toBe(false);
       expect(pinNeedsRehash(stored)).toBe(true);
     }

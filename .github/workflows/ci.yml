@@ -78,9 +78,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.25"
-          # go.mod, not go.sum: the CLI has no third-party dependencies yet, so
-          # go.sum does not exist and setup-go would fail resolving the cache key.
-          cache-dependency-path: cli/go.mod
+          cache-dependency-path: cli/go.sum
 
       - name: Vet
         run: go vet ./...

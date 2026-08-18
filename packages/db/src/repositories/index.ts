@@ -27,6 +27,7 @@ export {
   findUserByFirebaseUid,
   findUserById,
   isUniqueViolation,
+  softDeleteUser,
   touchLastLogin,
   upsertUserFromIdentity,
 } from './users';
@@ -61,40 +62,51 @@ export {
   hasPin,
   recordPinAttempt,
   rehashPin,
+  setAutoLockMinutes,
   upsertPin,
 } from './pins';
 export type { CreatePinResetParams, PinRecord, PinResetRecord } from './pins';
 
 export {
-  bootstrapPersonalOrganization,
+  accountLockQuery,
+  countOrganizationsHeldBy,
   findOrganizationById,
   findOrganizationBySlug,
   generateUniqueOrgSlug,
+  isOrgSlugAvailable,
   listOrganizationsForUser,
   orgSlugCandidate,
   organizationsForUserQuery,
+  organizationsHeldByQuery,
   personalOrgSlugSeed,
+  provisionOrganization,
+  softDeleteOrganization,
   updateOrganization,
 } from './organizations';
 export type {
-  BootstrapPersonalOrganizationParams,
   Environment,
+  HeldOrganizations,
   Organization,
   OrganizationMembership,
   OrganizationPatch,
-  PersonalOrganization,
   Project,
+  ProvisionedOrganization,
+  ProvisionOrganizationParams,
 } from './organizations';
 
 export {
+  accountMembershipSummary,
   addMember,
   findMembership,
+  findMemberWithUser,
   listGrantsForMember,
+  listGrantsForOrganization,
   listMembers,
   loadAuthorizationContext,
   memberGrantsQuery,
   membersPageQuery,
   membershipQuery,
+  reinstateMember,
   removeAccessGrant,
   removeMember,
   suspendMember,
@@ -105,6 +117,7 @@ export {
 } from './membership';
 export type {
   AccessGrantParams,
+  AccountMembership,
   AddMemberParams,
   AuthorizationContext,
   AuthorizationContextParams,
@@ -139,8 +152,10 @@ export type {
 
 export {
   createEnvironment,
+  findEnvironmentById,
   findEnvironmentBySlug,
   listEnvironments,
+  listEnvironmentsForOrganization,
   loadEnvironmentKeyChain,
   softDeleteEnvironment,
   toBytes,
@@ -153,6 +168,7 @@ export type {
   CreateEnvironmentParams,
   EnvironmentKeyChain,
   EnvironmentRecord,
+  OrganizationEnvironment,
   UpdateEnvironmentParams,
 } from './environments';
 
@@ -168,6 +184,7 @@ export {
   restoreSecret,
   softDeleteSecret,
   updateSecretMetadata,
+  writerColumns,
 } from './secrets';
 export type {
   AddSecretVersionParams,
@@ -178,17 +195,51 @@ export type {
   SecretRecord,
   SecretVersionPage,
   SecretVersionSummary,
+  SecretWriterRef,
   UpdateSecretMetadataParams,
 } from './secrets';
+
+export {
+  acceptInvitation,
+  createInvitation,
+  deleteExpiredInvitations,
+  findInvitationByToken,
+  findInvitationByTokenHash,
+  invitationClaimQuery,
+  listInvitations,
+  pendingInvitationsQuery,
+  revokeInvitation,
+  seatUsage,
+} from './invitations';
+export type {
+  AcceptedInvitation,
+  AcceptInvitationParams,
+  CreateInvitationParams,
+  InvitationClaim,
+  InvitationListEntry,
+  InvitationRecord,
+  IssuedInvitation,
+  SeatUsage,
+} from './invitations';
+
+export {
+  consumeCliAuthCode,
+  consumeCliAuthCodeByValue,
+  createCliAuthCode,
+  deleteExpiredCliAuthCodes,
+} from './cli-auth';
+export type { CliAuthCodeGrant, CreateCliAuthCodeParams, IssuedCliAuthCode } from './cli-auth';
 
 export {
   createCliToken,
   createServiceToken,
   findCliTokenByHash,
+  findCliTokenById,
   findServiceTokenByHash,
   isIpAllowed,
   listCliTokens,
   listServiceTokens,
+  revokeAllCliTokensForUser,
   revokeCliToken,
   revokeServiceToken,
   touchCliTokenUsage,

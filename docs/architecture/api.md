@@ -41,25 +41,37 @@ A cookie and a bearer token on the same request is a **rejected** request, not a
 question. Silently picking one is how a CSRF-able cookie ends up authorising a call the
 client believed was bearer-authenticated.
 
-### Service tokens are read-only in v1
+### Service tokens and writes
 
-The authorization engine permits `secret.create` and `secret.update` to a service token
-holding a `write` grant, but the API refuses both with 403. The reason is
-`secret_versions.created_by`: it is `NOT NULL` and references `users`, and a service token
-has no user behind it by construction (threat T5).
+A service token holding a `write` grant may create and update secrets. What it may never
+do is act as a person: writes are attributed by a **pair** of columns — `created_by`
+naming a user, or `created_by_service_token_id` naming the token — with a CHECK constraint
+requiring exactly one (migration 0006). A CI write is recorded as the act of a named
+token, never as the act of whoever minted it.
 
-The two ways out were both worse than the restriction:
+Two repairs were considered in Phase 4 and rejected, and the reasoning still governs the
+design: attributing the write to the token's creator would put a person's name on a write
+they did not make, in the one log a company reaches for during an incident; and making
+`created_by` nullable *without* the paired column would have weakened attribution for
+every write in the product.
 
-- **Attribute the write to whoever created the token.** The "who changed this" column would
-  then name a person for a write they did not make, in the one log a company reaches for
-  during an incident.
-- **Make `created_by` nullable.** That weakens attribution for *every* write in the product
-  to accommodate a case v1 does not have.
+`secret.delete` and `secret.rotate` remain outside the service-token allowlist entirely —
+CI rotates a value by writing a new one; destroying history is a human's decision.
 
-The right fix is a nullable `created_by_service_token_id` alongside the user column, with a
-check constraint requiring exactly one. That is a migration, and it belongs with the rest of
-the CI work in Phase 8 rather than bolted onto Phase 4. Until then: CI reads secrets, and a
-human or a CLI token writes them.
+### Invitation-time access — deny-by-default
+
+`POST /api/orgs/{orgSlug}/members` accepts a `grants` array of
+`{ projectSlug, environmentSlug | null }` selections. When present (an empty array
+included), acceptance becomes **deny-by-default**: every project the organisation has at
+acceptance time receives an explicit project-wide `none` grant unless selected, selected
+whole-projects and environments receive grants at the invited role's non-production level,
+and the existing resolution rules (environment → project → role default, `none` always
+denies) do the rest. A ticked production environment is the conscious act that grants it.
+Selections are resolved to ids at invitation time — a bad slug fails in front of the person
+who can fix it — and anything deleted before acceptance is skipped, safely covered by the
+`none` rows. Invitations without the field (from before it existed) keep the old
+role-default behaviour. Projects created *after* acceptance fall back to the role default;
+narrowing that is the member page's job.
 
 Firebase ID tokens are accepted at exactly one endpoint — `POST /api/auth/session` — and
 never again. See ADR 0003.
@@ -133,6 +145,40 @@ rejected input reaches the client; in this product the rejected input may be a s
 
 ## 4. Endpoints
 
+### Version
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/version` | `{ name, version, commit, builtAt }`. No credential, no database, no rate limit. |
+| `GET` | `/version` | The same body, outside the `/api` prefix. Not a redirect — both routes call `versionPayload()`. |
+
+`/api/version` is the canonical one and sits with everything else. `/version`
+exists because a version check is the one request made by somebody handed a
+hostname and nothing else — an uptime monitor, a `curl` during an incident — and
+a 404 there reads as a broken deployment. A 308 was rejected: it costs a monitor
+a round trip and has to be explicitly followed by `curl` and most shell scripts,
+which is a worse trade than one shared function.
+
+The one endpoint that answers before anything else works. It goes through
+`publicRoute` — so it carries a request id, logs, and the same error envelope as
+everything else — but issues no query, which is deliberate: the moment you most
+want to know what is deployed is the moment something else is failing.
+
+`version` is inlined from `apps/web/package.json` at build time; `commit` and
+`builtAt` are stamped by `scripts/deploy-web.sh`. A build from any other path
+reports `unknown` for the latter two rather than inventing them, which also
+means an `unknown` in production is itself a finding: that Worker was not
+deployed by the script.
+
+Unauthenticated on purpose, and the trade is worth stating because
+`next.config.ts` turns `poweredByHeader` off on the principle that a secret
+manager leaks no build detail. That rule is about disclosure bought for nothing.
+Here the disclosure is close to nil — the server is AGPL, so the version names a
+tag anyone can already read — and the value is real: the CLI can warn before
+issuing a request this server is too old to satisfy. What the endpoint must
+never grow is anything describing the *install* rather than the build; the shape
+is pinned by a test for that reason.
+
 ### Auth
 
 | Method | Path | Notes |
@@ -143,32 +189,62 @@ rejected input reaches the client; in this product the rejected input may be a s
 | `GET` `POST` | `/api/auth/pin` | Read the PIN state; set or change the PIN. Changing one requires the current PIN. Rate limited: `RL_LOGIN`. Exempt from the lock gate. |
 | `POST` | `/api/auth/pin/unlock` | Body `{ pin }`. Unlocks this session for 8 hours. Rate limited: `RL_LOGIN`, plus the per-account lockout. Exempt from the lock gate. |
 | `POST` | `/api/auth/pin/lock` | Locks this session, or every session with `{ everywhere: true }`. Does **not** revoke — the user stays signed in. |
-| `POST` | `/api/auth/pin/reset` | Emails a single-use reset link to the account's own address. Requires a session, so there is no enumeration oracle. Exempt from the lock gate. |
-| `POST` | `/api/auth/pin/reset/confirm` | Body `{ token, pin }`. Requires the emailed token **and** a session belonging to the same account. Exempt from the lock gate. |
+| `POST` | `/api/auth/pin/reset` | Emails a single-use reset link to the account's own address. Requires a session, so there is no enumeration oracle. Returns `{ sent, reason? }`; `sent` is false when mail is unconfigured **or** when the provider refused the send — a **200** either way, because the request was handled, so callers read the flag rather than the status. The send is awaited rather than deferred, so a refusal reaches the caller instead of an empty inbox. Rate limited: `RL_LOGIN` under a `pin_reset` key on the user alone, shared with `confirm` and separate from the unlock counter. Exempt from the lock gate. |
+| `POST` | `/api/auth/pin/reset/confirm` | Body `{ token, pin }`. Requires the emailed token **and** a session belonging to the same account. Rate limited: the same `pin_reset` counter as above. Exempt from the lock gate. |
 | `GET` | `/api/auth/sessions` | Active sessions for the "signed-in devices" view. Never returns a token hash. |
 | `DELETE` | `/api/auth/sessions` | Sign out everywhere. Optional `?except=current`. |
+| `DELETE` | `/api/auth/account` | The account deletes itself. Body `{ confirm: <account email> }`. Browser sessions only (never a bearer token), PIN-gated, rate limited `RL_MUTATION`. One transaction: solo organisations are soft-deleted with the account, other memberships removed, every session and CLI token revoked, the user row soft-deleted — terminal, since the identity upsert refuses to revive a deleted row. **409** while the caller is the only active owner of an organisation other people are in: ownership must move first. Audited as `auth.account_deleted`; the response clears both cookies. |
 
 `POST /api/auth/session` returns **401 with a fixed message** for every verification
 failure — expired, wrong audience, bad signature, unverified email. The specific reason is
 logged, never returned: telling a caller which part of a forged token to fix is a gift.
 
-### Members
+### CLI authorization — how `xecret login` gets its token
 
-| Method | Path |
-| --- | --- |
-| `GET` | `/api/orgs/{orgSlug}/members` |
+RFC 8252-style loopback flow with PKCE (S256 only), against this server — never Firebase
+directly. The CLI opens `/cli/authorize?challenge&port&device&state` in a browser; an
+already-signed-in person approves the named device; the consent screen redirects the
+one-time code to `http://127.0.0.1:{port}/callback`; the CLI exchanges code + verifier.
 
-Requires `member.read`, which every active role holds. Returns names, emails,
-roles, status and join dates — never access grants, which are per-project and
-would cost a query per row.
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/api/cli/authorize` | Session + CSRF only — a bearer credential may not mint further credentials, and the PIN lock gate applies. Body `{ orgSlug, deviceName, codeChallenge }`. Mints a single-use code (10 min TTL, hashed at rest, supersedes the user's outstanding codes). Requires active membership (`member.read`) — deliberately **not** `token.create`, which gates *service* tokens: a CLI token acts as its user and adds no authority. Rate limited: `RL_CLI_TOKEN`. Audited as `token.authorized`. |
+| `POST` | `/api/cli/token` | Public — the caller holds no credential yet. Body `{ code, codeVerifier }`. The code is consumed atomically **before** the PKCE check, so a failed binding kills it rather than leaving it guessable. Membership is re-checked; the minted `xct_` token is returned exactly once. Every failure is the same fixed 401. Rate limited: `RL_CLI_TOKEN` by IP. Audited as `token.created`. |
+| `DELETE` | `/api/cli/token` | The token revokes itself — `xecret logout`. CLI-token bearers only; idempotent; audited as `token.revoked` by the call that actually did it. |
+
+Listing and revoking CLI tokens from the dashboard ("your devices") is the token
+management routes below.
+
+### Members, invitations, grants
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/orgs/{orgSlug}/members` | `member.read`, which every active role holds. Names, emails, roles, status, join dates, and the seat count — never access grants, which are per-project and belong on the member's own page. |
+| `POST` | `/api/orgs/{orgSlug}/members` | Invite by email. Session + CSRF only — an invitation is a minted credential, and a bearer credential may not mint further credentials (same rule as `/api/cli/authorize`). Requires `member.invite` **and** the role hierarchy: nobody hands out a role above their own. Supersedes any open invitation for the address; enforces the seat limit under the organisation lock. Returns the acceptance link **once**; only the token's hash is stored. Rate limited: `RL_INVITE` by org. Audited as `member.invited`. |
+| `PATCH` | `/api/orgs/{orgSlug}/members/{memberId}` | Exactly one of `{ role }` or `{ status: active\|suspended }` per request — they are different acts with different audit records (`member.role_changed`, `member.suspended`, `member.reinstated`). Requires `member.update`, the role hierarchy on *both* sides (the role held and the role assigned), refuses self-changes, and the repository transaction enforces the last-owner invariant under the organisation lock. |
+| `DELETE` | `/api/orgs/{orgSlug}/members/{memberId}` | Requires `member.remove` and the role hierarchy; refuses self-removal; last-owner guarded. Grants die with the membership (`ON DELETE CASCADE`). Audited as `member.removed`. |
+| `PUT` `DELETE` | `/api/orgs/{orgSlug}/members/{memberId}/grants` | Create/replace or remove one grant, addressed by `{ projectSlug, environmentSlug?, accessLevel }` — `environmentSlug` absent or `null` means the whole project. Requires `member.update` + the hierarchy on the member being granted. Audited as `access.granted` / `access.revoked` with the previous and new levels. |
+| `GET` | `/api/orgs/{orgSlug}/members/{memberId}/access` | The effective-permission preview: every project and environment with the member's resolved level and the rule that produced it (`environment-grant` / `project-grant` / `role-default` / `suspended`). Computed by the same `resolveAccessLevel` the enforcement path calls, so it cannot disagree with it. Own row: any member. Someone else's: `member.update`. |
+| `GET` | `/api/orgs/{orgSlug}/invitations` | Open invitations, expired ones included (`state` says which). Gated on `member.invite`: who has been *asked* is recruitment metadata, not membership. |
+| `DELETE` | `/api/orgs/{orgSlug}/invitations/{invitationId}` | Withdraws an open invitation; the emailed link stops working at commit. `member.invite`; audited as `invitation.revoked`. |
+
+### Accepting an invitation
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/api/invitations/lookup` | Public — the holder may have no account yet. Body `{ token }`. Returns the organisation's display name, the invited address, role, state and expiry; nothing else. The token travels in the body, never the query string. Rate limited: `RL_INVITE` by IP. |
+| `POST` | `/api/invitations/accept` | Session + CSRF. Body `{ token }`. The session's address must match the invited one — a forwarded email must not let a colleague join as somebody else. State, address, seat count and the membership insert are all settled inside one transaction under the organisation lock. Audited as `member.joined`. |
 
 ### Organisations
 
-| Method | Path |
-|---|---|
-| `GET` | `/api/orgs` |
-| `GET` | `/api/orgs/{orgSlug}` |
-| `PATCH` | `/api/orgs/{orgSlug}` |
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/orgs` | The caller's memberships. No `authorize()` call: the answer *is* the set of organisations they hold an active membership in, established in SQL. Refused for a service token, which is pinned to one organisation and has no switcher. |
+| `GET` | `/api/orgs/availability?slug=` | Is an organisation slug free? Returns `{ slug, available, reason?: invalid\|reserved\|taken }` — one bit and a category, never who holds it. The categories come from `checkSlug` in `@xecret/core/validation`, the same function `organizationSlugSchema` is built from, so this route cannot report a slug as available that `POST` would reject. Browser session only — the same rule as `POST /api/orgs` and `DELETE /api/orgs/{orgSlug}`, because a leaked CLI token would otherwise be able to enumerate the global namespace — and rate limited on `RL_SLUG_CHECK`. A **snapshot, not a reservation**: the unique index settles the race, and `POST` still answers 409. `availability` is a reserved slug, so no organisation can shadow this route. |
+| `POST` | `/api/orgs` | Body `{ name, slug? }`. `name` is at most `ORGANIZATION_NAME_MAX_LENGTH` (25) characters — shorter than a project name, because it is rendered in the sidebar switcher and every breadcrumb. `slug` is what the dashboard always sends, having shown it to the user and checked it; it is claimed **exactly**, and a collision is a 409 on the `slug` field rather than a silent `acme-2`. Omitted, the slug is derived from the name and uniquified — the path sign-up and API clients take, where there is nobody to ask. Session + CSRF only: a CLI token acts as its user for secrets, not for existence. Provisions the Org Master Key, a default project, its environments and an Env Data Key for each in one transaction — an organisation without them cannot hold a secret and cannot be repaired. Rate limited: `RL_MUTATION` by user, and capped at `ORGANIZATIONS_PER_ACCOUNT_LIMIT` (10) — counted as the live organisations the account created **and is still an active member of**, so being removed from one releases the place and being made an owner of somebody else's spends nothing. A rate limit bounds the cost per minute, and this endpoint also spends something no deletion returns, since a claimed slug leaves the shared namespace permanently. The count and the refusal happen inside the provisioning transaction, behind a `SELECT … FOR UPDATE` on the account row, so concurrent creations from one account queue rather than race past the ceiling. Over the cap the answer is 409. Audited as `org.created` — the refusal too, with `reason: quotaExceeded`, filed against an organisation the account is a member of, or not at all when it is in none. |
+| `GET` | `/api/orgs/{orgSlug}` | `member.read`, which every active role holds. |
+| `PATCH` | `/api/orgs/{orgSlug}` | The name only, under the same 25-character ceiling as creation. `assertSlugImmutable` refuses a slug change with an explanation rather than ignoring it. Requires `org.update`. Audited as `org.updated`. |
+| `DELETE` | `/api/orgs/{orgSlug}` | Soft delete. Requires `org.delete` — owners only, the one action an admin is denied — a browser session, and `{ "confirm": "<orgSlug>" }`. Everything inside stops resolving at once, for every member, because each read joins back through `organizations` with a `deleted_at is null` filter. Audited as `org.deleted`; an unconfirmed attempt is recorded too. |
 
 ### Projects
 
@@ -198,7 +274,7 @@ environment without a key cannot hold a secret and cannot be repaired without an
 | `POST` | `…/secrets` | Create. Body `{ name, value, note?, valueType? }`. |
 | `GET` | `…/secrets/{name}` | **Reveal.** Decrypts one value. Audited as `secret.revealed` every time. |
 | `PATCH` | `…/secrets/{name}` | Appends a new version. Body `{ value, valueType? }`. A value identical to the current one is a no-op, detected via `value_hmac` without decrypting. |
-| `PUT` | `…/secrets/{name}` | Metadata only — `{ note?, valueType? }`. Appends **no** version and unwraps no key: declaring a type is not a rotation. |
+| `PUT` | `…/secrets/{name}` | Metadata only — `{ name?, note?, valueType? }`. Appends **no** version and unwraps no key: declaring a type is not a rotation, and neither is a rename — the history follows the secret's id, the audit event records `previousSecretName`, and every reader addressing the old name stops finding it. |
 | `DELETE` | `…/secrets/{name}` | Soft delete. |
 | `GET` | `…/secrets/{name}/versions/{version}` | **Reveal one historical version.** Audited as `secret.revealed`, with the version in `reason`. The listing beside it stays metadata-only. |
 | `GET` | `…/secrets/{name}/versions` | History. Metadata only — no ciphertext, no values. |
@@ -229,24 +305,24 @@ outgoing fetches**, constant in the number of secrets. Audited once per call as
 The dry run and the real import call the **same** planning function, so the preview cannot
 disagree with the outcome.
 
-### Members, tokens, audit — **specified, not yet implemented**
+### Tokens
 
-These land in Phases 7 and 8. They are written down here because the data layer and the
-authorization engine already support them, and agreeing the shape now is what keeps those
-phases additive. **No handler exists for any of them today** — a request returns 404.
-
-| Method | Path | Phase |
+| Method | Path | Notes |
 |---|---|---|
-| `GET` `POST` | `/api/orgs/{orgSlug}/members` | 7 |
-| `PATCH` `DELETE` | `/api/orgs/{orgSlug}/members/{memberId}` | 7 |
-| `GET` `POST` | `/api/orgs/{orgSlug}/tokens/cli` | 8 |
-| `GET` `POST` | `/api/orgs/{orgSlug}/tokens/service` | 8 |
-| `DELETE` | `/api/orgs/{orgSlug}/tokens/{kind}/{tokenId}` | 8 |
-| `GET` | `/api/orgs/{orgSlug}/audit` | 8 |
+| `GET` `POST` | `/api/orgs/{orgSlug}/tokens/service` | Both gated on `token.create` — the listing is a map of every standing credential, which is reconnaissance for anyone who should not hold it. Minting is session + CSRF only (a bearer credential may not mint further credentials). Body `{ name, projectSlug, environmentSlug, accessLevel?: read\|write, expiresAt?, ipAllowlist? }` — `read` by default, `admin` unrepresentable. The token is returned **once**; only its hash is stored. Audited as `token.created`. |
+| `GET` | `/api/orgs/{orgSlug}/tokens/cli` | "Your devices" — the caller's **own** CLI tokens only, revoked ones included so a recent revocation is visible. An admin revokes others' tokens without browsing their device names first. |
+| `DELETE` | `/api/orgs/{orgSlug}/tokens/{kind}/{tokenId}` | `kind` is `cli` or `service`. Your own CLI token: always. Someone else's, or any service token: `token.revoke`. Immediate — the hash lookup filters `revoked_at IS NULL` in SQL — and idempotent, with the audit record written only by the call that actually did it. |
+| `GET` | `/api/tokens/self` | Service-token introspection: the pinned organisation, project and environment as names and slugs, plus the token's own name and level. The answer derives from the credential row alone — there is no parameter to lie in. This is how `XECRET_TOKEN=… xecret run` learns its scope without configuration. |
 
-A created token's value will be returned **once**, in the creation response, and is never
-retrievable again. Only its hash is stored — the repository layer already enforces this,
-and no listing function selects `token_hash`.
+A created token's value appears in exactly one response — the creation's — and is never
+retrievable again. No listing function selects `token_hash`. The same rule governs the
+invitation link above.
+
+### Audit
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/orgs/{orgSlug}/audit` | `audit.read` (owners and admins). Filters: `actorId`, `action`, `projectSlug` (+`environmentSlug` within it), `outcome`, `from`, `to`. Keyset pagination over `(created_at, id)` behind an opaque cursor — §5's prescription, on the one table where offset pagination would corrupt under its own write load. The response includes the `window` actually scanned, because the range is clamped to 90 days and a UI showing less than it was asked for must say so. |
 
 ---
 

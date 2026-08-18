@@ -125,7 +125,7 @@ export function OrDivider() {
   return (
     <div className="flex items-center gap-3" aria-hidden="true">
       <span className="bg-line h-px flex-1" />
-      <span className="text-fg-subtle text-xs">or</span>
+      <span className="text-fg-subtle text-sm">or</span>
       <span className="bg-line h-px flex-1" />
     </div>
   );
@@ -146,16 +146,16 @@ export function FirebaseConfigNotice() {
     <Alert tone="warning" title="Authentication is not configured">
       <p>
         This deployment has no usable Firebase project, so sign-in is unavailable:{' '}
-        <span className="font-mono text-xs">{problem}</span>.
+        <span className="font-mono text-sm">{problem}</span>.
       </p>
       <p className="mt-2">
-        Set <code className="font-mono text-xs">NEXT_PUBLIC_FIREBASE_CONFIG</code> to the JSON
+        Set <code className="font-mono text-sm">NEXT_PUBLIC_FIREBASE_CONFIG</code> to the JSON
         object from the Firebase console — Project settings → Your apps → SDK setup and
         configuration — then restart.
       </p>
       <p className="mt-2">
-        See <code className="font-mono text-xs">.env.example</code> and{' '}
-        <code className="font-mono text-xs">docs/adr/0003-firebase-as-identity-provider.md</code>.
+        See <code className="font-mono text-sm">.env.example</code> and{' '}
+        <code className="font-mono text-sm">docs/adr/0003-firebase-as-identity-provider.md</code>.
       </p>
     </Alert>
   );

@@ -14,6 +14,7 @@ import { bytea } from './columns';
 import { envKeys } from './keys';
 import { environments } from './resources';
 import { users } from './identity';
+import { serviceTokens } from './tokens';
 
 export const secrets = pgTable(
   'secrets',
@@ -38,14 +39,24 @@ export const secrets = pgTable(
      * this column is already correct rather than merely tolerated.
      */
     valueType: text('value_type').notNull().default('string'),
-    createdBy: uuid('created_by')
-      .notNull()
-      .references(() => users.id),
+    /**
+     * Exactly one of these two is set — `secrets_writer_check` enforces it.
+     * A person's write names the person; a CI write names the token. Neither
+     * column may stand in for the other: attributing a CI write to whoever
+     * minted the token would put a name on a write they did not make (see
+     * docs/architecture/api.md §2).
+     */
+    createdBy: uuid('created_by').references(() => users.id),
+    createdByServiceTokenId: uuid('created_by_service_token_id').references(() => serviceTokens.id),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (t) => [
+    check(
+      'secrets_writer_check',
+      sql`num_nonnulls(${t.createdBy}, ${t.createdByServiceTokenId}) = 1`,
+    ),
     // Mirrors packages/core/validation/secret-name.ts. Both halves exist on
     // purpose: the application gives a good error message, the database
     // guarantees the invariant even if a query bypasses the application layer.
@@ -96,12 +107,16 @@ export const secretVersions = pgTable(
      * value is useless without the key hierarchy.
      */
     valueHmac: bytea('value_hmac'),
-    createdBy: uuid('created_by')
-      .notNull()
-      .references(() => users.id),
+    /** Same exactly-one pairing as `secrets` — see the comment there. */
+    createdBy: uuid('created_by').references(() => users.id),
+    createdByServiceTokenId: uuid('created_by_service_token_id').references(() => serviceTokens.id),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    check(
+      'secret_versions_writer_check',
+      sql`num_nonnulls(${t.createdBy}, ${t.createdByServiceTokenId}) = 1`,
+    ),
     unique('secret_versions_secret_version_unique').on(t.secretId, t.version),
     // Resolves "current value" and drives the bulk read path used by `xecret run`.
     index('secret_versions_current_idx').on(t.secretId, t.version.desc()),

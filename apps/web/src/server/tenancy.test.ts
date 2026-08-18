@@ -49,7 +49,10 @@ const OTHER_ENV_ID = uuidv7();
 const USER_ID = uuidv7();
 const MEMBER_ID = uuidv7();
 
-const services = { db: {} } as unknown as Services;
+// `bindLog` is real rather than absent: the resolvers stamp the tenancy onto
+// the request's logger, and a fixture without it would make every resolution
+// throw on a missing method.
+const services = { db: {}, bindLog: () => {} } as unknown as Services;
 
 const organization = { id: ORG_ID, name: 'Playxoft', slug: 'playxoft' };
 const project = { id: PROJECT_ID, orgId: ORG_ID, slug: 'default', name: 'Default' };

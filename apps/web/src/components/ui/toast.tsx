@@ -155,7 +155,7 @@ export function Toaster({ children }: { children?: ReactNode }) {
               <div className="min-w-0 flex-1">
                 <p className="text-fg text-sm leading-5 font-medium">{item.title}</p>
                 {item.description ? (
-                  <p className="text-fg-muted mt-0.5 text-[0.8125rem] leading-5 break-words">
+                  <p className="text-fg-muted mt-0.5 text-sm leading-5 break-words">
                     {item.description}
                   </p>
                 ) : null}

@@ -45,7 +45,9 @@ export interface SecretListItem {
   note: string | null;
   /** One of `SECRET_VALUE_TYPES`. Left as the raw column — see `SecretMaterial`. */
   valueType: string;
-  createdBy: string;
+  /** Exactly one of these two is set — `secrets_writer_check`. */
+  createdBy: string | null;
+  createdByServiceTokenId: string | null;
   createdAt: Date;
   updatedAt: Date;
   /** Highest version number. Resolved in the same statement, not per row. */
@@ -68,7 +70,9 @@ export interface SecretVersionSummary {
    * this build cannot decrypt — that is exactly when an operator needs to see it.
    */
   algorithm: string;
-  createdBy: string;
+  /** Exactly one of these two is set — `secret_versions_writer_check`. */
+  createdBy: string | null;
+  createdByServiceTokenId: string | null;
   createdAt: Date;
 }
 
@@ -103,8 +107,33 @@ export interface SecretMaterial {
   envKeyId: string;
   encrypted: EncryptedValue;
   valueHmac: Uint8Array | null;
-  createdBy: string;
+  createdBy: string | null;
+  createdByServiceTokenId: string | null;
   createdAt: Date;
+}
+
+/**
+ * Who a write is attributed to: a person, or a named service token — never
+ * both, never neither. The CHECK constraints are the arbiter; this type makes
+ * the two shapes explicit at the call site, and `writerColumns` refuses at
+ * runtime what a cast might sneak past the compiler.
+ */
+export type SecretWriterRef =
+  { userId: string; serviceTokenId?: undefined } | { serviceTokenId: string; userId?: undefined };
+
+/** The column pair a writer reference stores as. */
+export function writerColumns(writer: SecretWriterRef): {
+  createdBy: string | null;
+  createdByServiceTokenId: string | null;
+} {
+  const userId = writer.userId ?? null;
+  const serviceTokenId = writer.serviceTokenId ?? null;
+
+  if ((userId === null) === (serviceTokenId === null)) {
+    throw new RepositoryError('invalid', 'A write must name exactly one writer.');
+  }
+
+  return { createdBy: userId, createdByServiceTokenId: serviceTokenId };
 }
 
 export interface CreateSecretParams {
@@ -129,7 +158,7 @@ export interface CreateSecretParams {
   /** Exactly what `EnvelopeService.encrypt` returned. */
   encrypted: EncryptedValue;
   valueHmac?: Uint8Array | null | undefined;
-  createdBy: string;
+  writer: SecretWriterRef;
 }
 
 export interface AddSecretVersionParams {
@@ -138,7 +167,7 @@ export interface AddSecretVersionParams {
   envKeyId: string;
   encrypted: EncryptedValue;
   valueHmac?: Uint8Array | null | undefined;
-  createdBy: string;
+  writer: SecretWriterRef;
 }
 
 /**
@@ -170,6 +199,7 @@ export async function listSecrets(
       note: secrets.note,
       valueType: secrets.valueType,
       createdBy: secrets.createdBy,
+      createdByServiceTokenId: secrets.createdByServiceTokenId,
       createdAt: secrets.createdAt,
       updatedAt: secrets.updatedAt,
       latestVersion: sql<number>`(
@@ -238,6 +268,7 @@ export async function loadEnvironmentSecrets(
       algorithm: secretVersions.algorithm,
       valueHmac: secretVersions.valueHmac,
       createdBy: secretVersions.createdBy,
+      createdByServiceTokenId: secretVersions.createdByServiceTokenId,
       createdAt: secretVersions.createdAt,
     })
     .from(secretVersions)
@@ -285,6 +316,7 @@ export async function findSecretByName(
       algorithm: secretVersions.algorithm,
       valueHmac: secretVersions.valueHmac,
       createdBy: secretVersions.createdBy,
+      createdByServiceTokenId: secretVersions.createdByServiceTokenId,
       createdAt: secretVersions.createdAt,
     })
     .from(secretVersions)
@@ -357,7 +389,7 @@ export async function createSecret(
         name: params.name,
         note: params.note ?? null,
         valueType: params.valueType ?? 'string',
-        createdBy: params.createdBy,
+        ...writerColumns(params.writer),
       })
       .onConflictDoNothing()
       .returning();
@@ -380,7 +412,7 @@ export async function createSecret(
         envKeyId: params.envKeyId,
         algorithm: params.encrypted.algorithm,
         valueHmac: params.valueHmac ?? null,
-        createdBy: params.createdBy,
+        ...writerColumns(params.writer),
       })
       .returning(versionSummaryColumns);
 
@@ -457,7 +489,7 @@ export async function addSecretVersion(
           envKeyId: params.envKeyId,
           algorithm: params.encrypted.algorithm,
           valueHmac: params.valueHmac ?? null,
-          createdBy: params.createdBy,
+          ...writerColumns(params.writer),
         })
         .returning(versionSummaryColumns);
 
@@ -555,6 +587,7 @@ export async function getSecretVersion(
       algorithm: secretVersions.algorithm,
       valueHmac: secretVersions.valueHmac,
       createdBy: secretVersions.createdBy,
+      createdByServiceTokenId: secretVersions.createdByServiceTokenId,
       createdAt: secretVersions.createdAt,
     })
     .from(secretVersions)
@@ -638,6 +671,13 @@ export interface UpdateSecretMetadataParams {
   orgId: string;
   environmentId: string;
   name: string;
+  /**
+   * Omit to leave unchanged. Renames the secret: the versions hang off the
+   * secret's id, so the history survives, but everything that reads the secret
+   * *by name* — `xecret run`, service tokens, other people's shells — sees the
+   * old name vanish. The caller is expected to have said so to the user.
+   */
+  newName?: string | undefined;
   /** Omit to leave unchanged. */
   note?: string | null | undefined;
   /** Omit to leave unchanged. One of `SECRET_VALUE_TYPES`. */
@@ -659,12 +699,19 @@ export interface UpdateSecretMetadataParams {
  * impossible to perform in either order. The API validates the value against the
  * type on the next write, which is the moment the plaintext is legitimately in
  * hand anyway.
+ *
+ * A rename travels this path too, for the same reason: the name is a label on
+ * the secret's id, and the versions — which reference the id, never the name —
+ * stay attached through it. What a rename *does* break is every reader that
+ * addresses the secret by name, which is why the API records the old name in
+ * the audit event.
  */
 export async function updateSecretMetadata(
   exec: Executor,
   params: UpdateSecretMetadataParams,
 ): Promise<SecretRecord> {
   const patch: Record<string, unknown> = {};
+  if (params.newName !== undefined) patch['name'] = params.newName;
   if (params.note !== undefined) patch['note'] = params.note;
   if (params.valueType !== undefined) patch['valueType'] = params.valueType;
 
@@ -672,24 +719,36 @@ export async function updateSecretMetadata(
     throw new RepositoryError('invalid', 'No secret metadata was supplied to update.');
   }
 
-  const [row] = await exec
-    .update(secrets)
-    .set({ ...patch, updatedAt: sql`now()` })
-    .where(
-      and(
-        eq(secrets.name, params.name),
-        eq(secrets.environmentId, params.environmentId),
-        isNull(secrets.deletedAt),
-        withinOrganization(params.orgId),
-      ),
-    )
-    .returning();
+  try {
+    const [row] = await exec
+      .update(secrets)
+      .set({ ...patch, updatedAt: sql`now()` })
+      .where(
+        and(
+          eq(secrets.name, params.name),
+          eq(secrets.environmentId, params.environmentId),
+          isNull(secrets.deletedAt),
+          withinOrganization(params.orgId),
+        ),
+      )
+      .returning();
 
-  if (!row) {
-    throw new RepositoryError('notFound', `No secret named "${params.name}" in this environment`);
+    if (!row) {
+      throw new RepositoryError('notFound', `No secret named "${params.name}" in this environment`);
+    }
+
+    return row;
+  } catch (error) {
+    // A rename racing another live secret with the target name. The index —
+    // not a pre-flight `SELECT` — is what notices, same as `restoreSecret`.
+    if (isUniqueViolation(error, 'secrets_env_name_idx')) {
+      throw new RepositoryError(
+        'conflict',
+        `The name "${params.newName ?? params.name}" is in use by another secret in this environment`,
+      );
+    }
+    throw error;
   }
-
-  return row;
 }
 
 /** Counts an environment's live secrets, for quota checks and list headers. */
@@ -742,6 +801,7 @@ const versionSummaryColumns = {
   envKeyId: secretVersions.envKeyId,
   algorithm: secretVersions.algorithm,
   createdBy: secretVersions.createdBy,
+  createdByServiceTokenId: secretVersions.createdByServiceTokenId,
   createdAt: secretVersions.createdAt,
 };
 
@@ -757,7 +817,8 @@ interface CiphertextRow {
   iv: Uint8Array;
   algorithm: string;
   valueHmac: Uint8Array | null;
-  createdBy: string;
+  createdBy: string | null;
+  createdByServiceTokenId: string | null;
   createdAt: Date;
 }
 
@@ -784,6 +845,7 @@ function toSecretMaterial(row: CiphertextRow): SecretMaterial {
     },
     valueHmac: row.valueHmac,
     createdBy: row.createdBy,
+    createdByServiceTokenId: row.createdByServiceTokenId,
     createdAt: row.createdAt,
   };
 }

@@ -32,6 +32,7 @@ export function EnvironmentSettingsScreen({
     <div className="flex flex-col gap-6">
       <PageHeader
         title={`${environment.data?.environment.name ?? envSlug} settings`}
+        titleLoading={environment.data === null && environment.error === null}
         badge={
           <EnvironmentBadge isProduction={environment.data?.environment.isProduction ?? false} />
         }

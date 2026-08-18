@@ -120,7 +120,7 @@ export function ResetPasswordForm({ oobCode }: ResetPasswordFormProps) {
         footer={
           <Link
             href="/forgot-password"
-            className="text-accent-text rounded-sm font-medium hover:underline"
+            className="text-fg decoration-line-strong hover:decoration-fg rounded-sm font-medium underline underline-offset-4 transition-colors"
           >
             Request a new link
           </Link>
@@ -142,7 +142,10 @@ export function ResetPasswordForm({ oobCode }: ResetPasswordFormProps) {
         ) : undefined
       }
       footer={
-        <Link href="/sign-in" className="text-accent-text rounded-sm font-medium hover:underline">
+        <Link
+          href="/sign-in"
+          className="text-fg decoration-line-strong hover:decoration-fg rounded-sm font-medium underline underline-offset-4 transition-colors"
+        >
           Back to sign in
         </Link>
       }

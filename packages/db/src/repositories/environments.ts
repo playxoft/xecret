@@ -181,6 +181,38 @@ export async function createEnvironment(
  * legitimate caller: a bare project id from a URL proves nothing, and this is
  * precisely the IDOR shape threat T2 describes.
  */
+/**
+ * Every live environment in the organisation, with the project it belongs to.
+ *
+ * Exists for the effective-permission preview, which answers "what can this
+ * member reach?" and therefore needs the whole grid in one query — per-project
+ * calls to `listEnvironments` would be a query per project, on a page whose
+ * point is to render all of them. Ordered by project then `sort_order` so the
+ * grid renders in the same order the project pages do.
+ */
+export async function listEnvironmentsForOrganization(
+  exec: Executor,
+  orgId: string,
+): Promise<OrganizationEnvironment[]> {
+  return exec
+    .select({
+      ...environmentColumns,
+      project: {
+        id: projects.id,
+        name: projects.name,
+        slug: projects.slug,
+      },
+    })
+    .from(environments)
+    .innerJoin(projects, and(eq(projects.id, environments.projectId), isNull(projects.deletedAt)))
+    .where(and(eq(projects.orgId, orgId), isNull(environments.deletedAt)))
+    .orderBy(asc(projects.createdAt), asc(projects.id), asc(environments.sortOrder));
+}
+
+export interface OrganizationEnvironment extends EnvironmentRecord {
+  project: { id: string; name: string; slug: string };
+}
+
 export async function listEnvironments(
   exec: Executor,
   orgId: string,
@@ -210,6 +242,33 @@ export async function listEnvironments(
  * lookup "simpler" by dropping the join, it has removed the isolation boundary,
  * not a redundant condition.
  */
+/**
+ * One environment by id, tenant-filtered through its project like every other
+ * read here. Exists for the service-token introspection endpoint, which knows
+ * the environment only by the id pinned on the token row.
+ */
+export async function findEnvironmentById(
+  exec: Executor,
+  orgId: string,
+  environmentId: string,
+): Promise<EnvironmentRecord | undefined> {
+  const [row] = await exec
+    .select(environmentColumns)
+    .from(environments)
+    .innerJoin(projects, eq(projects.id, environments.projectId))
+    .where(
+      and(
+        eq(environments.id, environmentId),
+        eq(projects.orgId, orgId),
+        isNull(projects.deletedAt),
+        isNull(environments.deletedAt),
+      ),
+    )
+    .limit(1);
+
+  return row;
+}
+
 export async function findEnvironmentBySlug(
   exec: Executor,
   orgId: string,

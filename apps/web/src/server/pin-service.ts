@@ -1,6 +1,7 @@
 import {
   checkPin,
   clearedPinFailures,
+  DEFAULT_AUTO_LOCK_MINUTES,
   evaluatePinLockout,
   hashPin,
   isSessionUnlocked,
@@ -53,6 +54,12 @@ export interface PinStatus {
   unlocked: boolean;
   /** When the current unlock lapses. `null` when locked. */
   unlockedUntil: string | null;
+  /**
+   * Minutes of idleness before the dashboard locks itself; `0` never. The
+   * timer runs in the client — idleness is a fact only the client can
+   * observe — but the lock it triggers is the server-side one.
+   */
+  autoLockMinutes: number;
 }
 
 export async function pinStatus(
@@ -62,9 +69,10 @@ export async function pinStatus(
 ): Promise<PinStatus> {
   // A bearer credential is never locked and has no PIN to set — reporting it as
   // "configured: false" would send the CLI into a setup flow it has no screen
-  // for. See `isUnlocked` in `actor.ts`.
+  // for. See `isUnlocked` in `actor.ts`. `autoLockMinutes: 0` for the same
+  // reason: a token has no screen to lock.
   if (principal.kind !== 'user') {
-    return { configured: true, unlocked: true, unlockedUntil: null };
+    return { configured: true, unlocked: true, unlockedUntil: null, autoLockMinutes: 0 };
   }
 
   const record = await findPinForUser(services.db, principal.user.id);
@@ -77,6 +85,7 @@ export async function pinStatus(
       unlocked && principal.pinVerifiedAt !== null
         ? unlockExpiryFrom(principal.pinVerifiedAt).toISOString()
         : null,
+    autoLockMinutes: record?.autoLockMinutes ?? DEFAULT_AUTO_LOCK_MINUTES,
   };
 }
 
@@ -199,11 +208,20 @@ async function assertPinMatches(
     // suggestion.
     await recordPinAttempt(services.db, userId, nextPinFailure(record, now));
 
-    console.warn('pin attempt failed', {
-      requestId: services.meta.requestId,
-      // The count, never the PIN and never the user's email.
-      failedAttempts: record.failedAttempts + 1,
-    });
+    services.log
+      .at('assertPinMatches')
+      .warn(
+        `Rejected an incorrect unlock PIN — this account has now failed ` +
+          `${record.failedAttempts + 1} time(s) in a row and will be locked out if it keeps ` +
+          'failing',
+        {
+          // The count, never the PIN and never the user's email. The user id is
+          // on the line already — the route wrapper bound it — which is what
+          // makes "this account is being brute-forced" a query rather than a
+          // hunch.
+          failedAttempts: record.failedAttempts + 1,
+        },
+      );
 
     throw errors.unauthenticated('incorrect pin');
   }
@@ -212,9 +230,13 @@ async function assertPinMatches(
     await recordPinAttempt(services.db, userId, clearedPinFailures());
   }
 
-  // Raising `PBKDF2_ITERATIONS` upgrades accounts as their owners use them,
-  // rather than through a migration that would have to know every PIN. Deferred:
-  // the user is already through, and re-deriving costs as much as the check did.
+  // Any change to `PBKDF2_ITERATIONS` — up or down — converges accounts as
+  // their owners use them, rather than through a migration that would have to
+  // know every PIN. Down matters as much as up: rows hashed above the Workers
+  // runtime's 100k PBKDF2 cap can only verify under Node, and this rewrite on
+  // a successful local unlock is what makes them usable on the Worker again.
+  // Deferred: the user is already through, and re-deriving costs what the
+  // check did.
   if (pinNeedsRehash(record.pinHash)) {
     services.waitUntil(
       hashPin(pin)

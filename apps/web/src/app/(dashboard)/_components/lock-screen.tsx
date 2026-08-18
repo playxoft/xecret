@@ -7,7 +7,7 @@ import { api, endSession, errorMessage, isApiError, SIGN_IN_PATH } from '@/lib/a
 import { PinInput } from '@/components/auth/pin-input';
 import { Wordmark } from '@/components/layout';
 import { Alert, Button, LockIcon, ShieldCheckIcon } from '@/components/ui';
-import type { PinStatus } from './session';
+import type { PinResetResult, PinStatus } from './session';
 
 /**
  * The screen between a signed-in session and the secrets it can reach.
@@ -215,7 +215,7 @@ function SetupPanel({ email, onDone }: { email: string; onDone: () => void }) {
         className="flex flex-col gap-5"
       >
         <div className="flex flex-col gap-2">
-          <p className="text-fg-muted text-center text-xs font-medium">Choose a PIN</p>
+          <p className="text-fg-muted text-center text-sm font-medium">Choose a PIN</p>
           <PinInput
             label="New PIN"
             value={pin}
@@ -229,7 +229,7 @@ function SetupPanel({ email, onDone }: { email: string; onDone: () => void }) {
         </div>
 
         <div className="flex flex-col gap-2">
-          <p className="text-fg-muted text-center text-xs font-medium">Enter it again</p>
+          <p className="text-fg-muted text-center text-sm font-medium">Enter it again</p>
           <PinInput
             label="Confirm PIN"
             value={confirm}
@@ -283,7 +283,17 @@ function ResetPanel({ email, onCancel }: { email: string; onCancel: () => void }
     setState('sending');
     setError(null);
     try {
-      await api.post('/auth/pin/reset');
+      const result = await api.post<PinResetResult>('/auth/pin/reset');
+      // `sent: false` is a successful request with an unhappy answer — either
+      // mail is not configured on this deployment, or the provider refused the
+      // send. Reporting "check your email" would leave somebody watching an
+      // inbox nothing will ever arrive in, and this screen is where that costs
+      // the most: whoever is reading it is already locked out.
+      if (!result.sent) {
+        setError(result.reason ?? 'A reset link could not be sent.');
+        setState('idle');
+        return;
+      }
       setState('sent');
     } catch (cause) {
       setError(errorMessage(cause));
@@ -355,7 +365,7 @@ function Footer({ children }: { children?: React.ReactNode }) {
   }
 
   return (
-    <div className="text-fg-subtle mt-5 space-y-2 text-center text-xs leading-5">
+    <div className="text-fg-subtle mt-5 space-y-2 text-center text-sm leading-5">
       {children ? <p>{children}</p> : null}
       <p>
         <button

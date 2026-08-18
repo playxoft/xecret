@@ -13,8 +13,9 @@ import {
   authorizeSecretAction,
   decryptOne,
   enforceSecretRateLimit,
+  rethrowRepositoryFailure,
   writeSecretValue,
-  writerUserId,
+  secretWriter,
 } from '@/server/secrets-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
 
@@ -100,6 +101,7 @@ export const GET = authenticatedRoute<Params>(
         version: material.version,
         updatedAt: material.createdAt.toISOString(),
         updatedBy: material.createdBy,
+        updatedByServiceTokenId: material.createdByServiceTokenId,
       },
     });
   },
@@ -118,7 +120,7 @@ export const PATCH = authenticatedRoute<Params>(
     const scope = await resolveEnvironmentPath(principal, params, services);
     authorizeSecretAction(scope, principal, 'secret.update');
 
-    const writer = writerUserId(principal);
+    const writer = secretWriter(principal);
     await enforceSecretRateLimit(services, principal, 'write');
 
     const name = secretNameFromPath(params.name);
@@ -210,14 +212,18 @@ export const PUT = authenticatedRoute<Params>(
 
     const name = secretNameFromPath(params.name);
     const body = await parseJsonBody(request, patchSecretMetadataBody);
+    const renamed = body.name !== undefined && body.name !== name;
 
     const updated = await updateSecretMetadata(services.db, {
       orgId: scope.organization.id,
       environmentId: scope.environment.id,
       name,
+      ...(renamed ? { newName: body.name } : {}),
       ...(body.note === undefined ? {} : { note: body.note }),
       ...(body.valueType === undefined ? {} : { valueType: body.valueType }),
-    });
+      // A rename that collides with a live secret comes back from the unique
+      // index as `conflict`, and leaves here as a 409 rather than a 500.
+    }).catch(rethrowRepositoryFailure);
 
     record(
       audit(scope.organization.id).success(
@@ -230,6 +236,10 @@ export const PUT = authenticatedRoute<Params>(
         },
         {
           secretName: updated.name,
+          // The old name, kept only when it changed: "SECRET renamed from X" is
+          // the fact an incident review needs, because everything reading the
+          // old name stopped finding it at this moment.
+          ...(renamed ? { previousSecretName: name } : {}),
           projectSlug: scope.project.slug,
           environmentSlug: scope.environment.slug,
           source: auditSource(principal),

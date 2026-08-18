@@ -49,6 +49,27 @@ export interface PinStatus {
   unlocked: boolean;
   /** ISO 8601. When the current unlock lapses; `null` while locked. */
   unlockedUntil: string | null;
+  /** Minutes of idleness before the dashboard locks itself; `0` never. */
+  autoLockMinutes: number;
+}
+
+/**
+ * The answer to "email me a PIN reset link".
+ *
+ * `sent: false` is a **successful** request with an unhappy answer, and it now
+ * covers two of them: mail is optional in a self-hosted install and this
+ * deployment may have none, or the provider refused the send outright. The
+ * route awaits the send precisely so the second case can be answered here
+ * rather than discovered by an empty inbox. `reason` says which.
+ *
+ * Neither is an error status, so callers must read this flag rather than
+ * treating a resolved promise as "check your inbox" — the failure mode that
+ * flag prevents is somebody watching a mailbox nothing will arrive in.
+ */
+export interface PinResetResult {
+  sent: boolean;
+  /** Why nothing was sent, and what to do instead. Present when `sent` is false. */
+  reason?: string;
 }
 
 export interface SessionValue {
@@ -57,6 +78,29 @@ export interface SessionValue {
   pin: PinStatus;
   /** Locks this session without ending it, then re-reads the session. */
   lock: () => Promise<void>;
+  /**
+   * Re-reads `GET /api/auth/me`. For screens that change what it reports —
+   * the auto-lock interval, the display name — so the shell's copy does not
+   * go stale until the next full navigation.
+   *
+   * Resolves once the new answer is in state, which is what a screen that
+   * navigates afterwards has to wait for: the membership list decides where
+   * `/app` sends a viewer, so redirecting while it still lists a deleted
+   * organisation lands them in its 404. Screens that only need the shell to
+   * catch up eventually — a rename, an auto-lock change — ignore the promise.
+   */
+  refresh: () => Promise<void>;
+  /**
+   * Opens the "New organisation" dialog.
+   *
+   * The dialog is mounted once, by `DashboardChrome`, and this is how the three
+   * screens with a "New organisation" button reach it. They used to mount their
+   * own — four copies of the same dialog, three of them alive at once on the
+   * settings page, each with its own idea of what to do afterwards. Sharing the
+   * open-state means the wiring that follows a successful create is written
+   * once, where the session it has to refresh actually lives.
+   */
+  createOrganization: () => void;
 }
 
 /** The body of `GET /api/auth/me`. `credential` is for the CLI and unused here. */

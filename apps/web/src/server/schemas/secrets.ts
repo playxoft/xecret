@@ -98,12 +98,20 @@ export const updateSecretBody = z.object({
  */
 export const patchSecretMetadataBody = z
   .object({
+    /**
+     * A new name for the secret — metadata, not a rotation: the versions follow
+     * the secret's id, so the history survives. The dashboard warns that
+     * everything reading the old name stops finding it; the API's part is to
+     * validate the new name exactly like a created one and record the old name
+     * in the audit event.
+     */
+    name: secretNameSchema.optional(),
     note: noteSchema,
     valueType: valueTypeSchema.optional(),
   })
   .refine(
-    (body) => body.note !== undefined || body.valueType !== undefined,
-    'Supply a note or a value type to change.',
+    (body) => body.name !== undefined || body.note !== undefined || body.valueType !== undefined,
+    'Supply a name, note or value type to change.',
   );
 
 export const restoreSecretBody = z.object({

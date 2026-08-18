@@ -17,7 +17,7 @@ import {
   auditSource,
   authorizeSecretAction,
   enforceSecretRateLimit,
-  writerUserId,
+  secretWriter,
 } from '@/server/secrets-service';
 import type { SecretWrite } from '@/server/secrets-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
@@ -90,7 +90,7 @@ export const POST = authenticatedRoute<Params>(
     authorizeSecretAction(scope, principal, 'secret.create');
     authorizeSecretAction(scope, principal, 'secret.update');
 
-    const writer = writerUserId(principal);
+    const writer = secretWriter(principal);
 
     // Applied to a dry run too. A preview parses a megabyte, reads every secret
     // in the environment and unwraps the environment key; it writes nothing, but

@@ -57,16 +57,16 @@ export function ErrorState({ subject, error, onRetry }: ErrorStateProps) {
             // 404 also covers "exists, but not for you" — §3 makes the two
             // indistinguishable on purpose, so that a stranger cannot use this
             // screen to work out which slugs are real in another tenant.
-            <p className="text-fg-subtle mt-1.5 text-[0.8125rem] leading-5">
+            <p className="text-fg-subtle mt-1.5 text-sm leading-5">
               It may have been deleted, renamed, or it may belong to an organisation you are not a
               member of.
             </p>
           ) : null}
 
           {requestId ? (
-            <p className="text-fg-subtle mt-3 text-[0.8125rem]">
+            <p className="text-fg-subtle mt-3 text-sm">
               Quote this if you contact support:{' '}
-              <code className="text-fg-muted bg-canvas-inset border-line rounded border px-1.5 py-0.5 font-mono text-xs select-all">
+              <code className="text-fg-muted bg-canvas-inset border-line rounded border px-1.5 py-0.5 font-mono text-sm select-all">
                 {requestId}
               </code>
             </p>

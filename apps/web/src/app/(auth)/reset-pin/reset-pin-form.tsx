@@ -95,7 +95,7 @@ export function ResetPinForm({ token }: { token: string | null }) {
         <Button variant="primary" className="w-full" asChild>
           <a href={`${SIGN_IN_PATH}?next=${next}`}>Sign in and continue</a>
         </Button>
-        <p className="text-fg-subtle mt-3 text-center text-xs leading-5">
+        <p className="text-fg-subtle mt-3 text-center text-sm leading-5">
           Your link is still good — you will come straight back here.
         </p>
       </AuthCard>
@@ -115,7 +115,7 @@ export function ResetPinForm({ token }: { token: string | null }) {
         className="flex flex-col gap-5"
       >
         <div className="flex flex-col gap-2">
-          <p className="text-fg-muted text-center text-xs font-medium">New PIN</p>
+          <p className="text-fg-muted text-center text-sm font-medium">New PIN</p>
           <PinInput
             label="New PIN"
             value={pin}
@@ -129,7 +129,7 @@ export function ResetPinForm({ token }: { token: string | null }) {
         </div>
 
         <div className="flex flex-col gap-2">
-          <p className="text-fg-muted text-center text-xs font-medium">Enter it again</p>
+          <p className="text-fg-muted text-center text-sm font-medium">Enter it again</p>
           <PinInput
             label="Confirm PIN"
             value={confirm}

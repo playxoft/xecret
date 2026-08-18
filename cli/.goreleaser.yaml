@@ -38,6 +38,74 @@ checksum:
   name_template: 'checksums.txt'
   algorithm: sha256
 
+# Homebrew is how most macOS developers will install this. The formula is
+# pushed to the tap repository on release; `skip_upload: auto` keeps
+# prereleases out of it.
+brews:
+  - repository:
+      owner: playxoft
+      name: homebrew-tap
+      # Crossing repositories needs more than the workflow's GITHUB_TOKEN — a
+      # fine-grained PAT with contents:write on the tap, supplied by
+      # release.yml. See the note there.
+      token: '{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}'
+    directory: Formula
+    homepage: https://xecret.playxoft.com
+    description: Open-source, developer-first secret management
+    license: MIT
+    commit_author:
+      name: nitheeshkr
+      email: nitheesh@playxoft.com
+    skip_upload: auto
+    install: |
+      bin.install "xecret"
+    test: |
+      system "#{bin}/xecret", "version"
+
+# The CI image: ghcr.io/playxoft/xecret. Distroless static — the binary is
+# CGO_ENABLED=0, so the image is the binary plus CA certificates and nothing
+# with a shell for a compromised pipeline step to pivot through. Built per
+# architecture and stitched into one multi-arch manifest below.
+dockers:
+  - image_templates:
+      - ghcr.io/playxoft/xecret:{{ .Version }}-amd64
+    use: buildx
+    goarch: amd64
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - --platform=linux/amd64
+      - --label=org.opencontainers.image.title=xecret
+      - --label=org.opencontainers.image.description=Open-source, developer-first secret management
+      - --label=org.opencontainers.image.source=https://github.com/playxoft/xecret
+      - --label=org.opencontainers.image.version={{ .Version }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.licenses=MIT
+  - image_templates:
+      - ghcr.io/playxoft/xecret:{{ .Version }}-arm64
+    use: buildx
+    goarch: arm64
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - --platform=linux/arm64
+      - --label=org.opencontainers.image.title=xecret
+      - --label=org.opencontainers.image.description=Open-source, developer-first secret management
+      - --label=org.opencontainers.image.source=https://github.com/playxoft/xecret
+      - --label=org.opencontainers.image.version={{ .Version }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.licenses=MIT
+
+docker_manifests:
+  - name_template: ghcr.io/playxoft/xecret:{{ .Version }}
+    image_templates:
+      - ghcr.io/playxoft/xecret:{{ .Version }}-amd64
+      - ghcr.io/playxoft/xecret:{{ .Version }}-arm64
+  # `latest` tracks stable releases only; a prerelease must be asked for by
+  # version, never handed to whoever wrote `image: …:latest` a year ago.
+  - name_template: '{{ if not .Prerelease }}ghcr.io/playxoft/xecret:latest{{ end }}'
+    image_templates:
+      - ghcr.io/playxoft/xecret:{{ .Version }}-amd64
+      - ghcr.io/playxoft/xecret:{{ .Version }}-arm64
+
 # Users are being asked to trust this binary with production credentials.
 # Releases are signed so the download can be verified, not merely checksummed.
 signs:

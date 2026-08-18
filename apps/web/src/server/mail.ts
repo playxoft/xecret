@@ -1,5 +1,6 @@
 import { requireBinding } from './bindings';
 import type { Bindings } from './bindings';
+import { errorName, scrubText } from './logging';
 
 /**
  * Transactional email.
@@ -16,9 +17,14 @@ import type { Bindings } from './bindings';
  *
  * ── This spends one of six connections ──
  * A Worker invocation may open six outgoing connections (ADR 0006), and the
- * database already holds one. Sending mail is therefore never done inline with
- * a response the user is waiting for: the reset route hands this to `waitUntil`,
- * so the request returns while the send is still in flight.
+ * database already holds one. Whether a caller pays that cost before or after
+ * its response is the caller's decision, and the two sites here decide
+ * differently: the invitation mail defers with `waitUntil`, because its response
+ * carries the link itself and a failed send loses nothing. The PIN reset route
+ * awaits, because its response is the *only* thing telling somebody locked out
+ * of their account where to look next, and "check your email" is a lie if the
+ * send has not happened yet. Each site states its reasoning; neither is the
+ * default.
  *
  * ── What is never in an email ──
  * No secret value, no PIN, no session token, and no statement about whether an
@@ -56,6 +62,44 @@ export class MailDeliveryError extends Error {
     super(`Mail delivery failed with status ${status}`);
     this.name = 'MailDeliveryError';
   }
+}
+
+/**
+ * What a delivery failure is allowed to say in a log.
+ *
+ * ── Why this exists ──
+ * Both mail call sites used to log the error's *class name* and nothing else,
+ * on the reasoning that a provider's rejection embeds the recipient address.
+ * That reasoning was sound and the result was useless: "MailDeliveryError" does
+ * not distinguish a token issued in the wrong Zoho region from an unverified
+ * sending domain from a malformed payload, and those have completely different
+ * fixes. A person watching an inbox that stays empty got no further than the
+ * operator reading the log did.
+ *
+ * The address is the only part that needed removing, and `scrubText` removes
+ * it. What is left — the status and the provider's own explanation — is exactly
+ * what makes the failure actionable.
+ */
+// A type alias rather than an interface, so it satisfies the logger's
+// `Record<string, unknown>` — TypeScript gives aliases an implicit index
+// signature and interfaces none, and this is passed straight in as log fields.
+export type MailFailure = {
+  error: string;
+  /** The provider's HTTP status. Carries no personal data and names the class of fault. */
+  status?: number;
+  /** The provider's explanation, with any address stripped out. */
+  detail?: string;
+};
+
+export function describeMailFailure(cause: unknown): MailFailure {
+  if (cause instanceof MailDeliveryError) {
+    return {
+      error: cause.name,
+      status: cause.status,
+      detail: scrubText(cause.detail),
+    };
+  }
+  return { error: errorName(cause) };
 }
 
 /**

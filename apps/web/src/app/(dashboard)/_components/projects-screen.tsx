@@ -85,15 +85,13 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
         <>
           <ProjectCards orgSlug={orgSlug} projects={projects.data.projects} />
           {projects.data.hasMore ? (
-            <p className="text-fg-subtle text-[0.8125rem]">
-              Showing the first {PAGE_SIZE} projects.
-            </p>
+            <p className="text-fg-subtle text-sm">Showing the first {PAGE_SIZE} projects.</p>
           ) : null}
         </>
       ) : null}
 
       {projects.data !== null && projects.data.projects.length > 0 ? (
-        <p className="text-fg-subtle flex items-center gap-2 text-[0.8125rem]">
+        <p className="text-fg-subtle flex items-center gap-2 text-sm">
           <TerminalIcon className="size-3.5 shrink-0" />
           Run <code className="text-fg-muted font-mono">xecret init</code> in a repository to link
           it to one of these.

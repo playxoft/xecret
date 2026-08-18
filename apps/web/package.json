@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
-    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "// deploy": "Delegates to the repository script rather than calling opennextjs-cloudflare directly. `lib/site.ts` reads the deployment's origin from the build environment, and only the script puts it there — reading it from wrangler.jsonc for the environment being deployed. A bare `opennextjs-cloudflare build && deploy` here still built and still succeeded, and shipped http://localhost:3030 as the canonical of every prerendered page.",
+    "deploy": "sh ../../scripts/deploy-web.sh",
     "cf-typegen": "wrangler types --env-interface CloudflareEnv src/cloudflare-env.d.ts"
   },
   "dependencies": {
@@ -33,6 +34,7 @@
     "clsx": "^2.1.1",
     "firebase": "^12.17.1",
     "firebase-auth-cloudflare-workers": "^2.0.6",
+    "marked": "^16.4.2",
     "next": "16.3.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",

@@ -88,7 +88,7 @@ export function EnvironmentSwitcher({
             href={href(environment.slug)}
             aria-current={active ? 'page' : undefined}
             className={cn(
-              'relative rounded-md px-2.5 py-1 text-[0.8125rem] whitespace-nowrap transition-colors',
+              'relative rounded-md px-2.5 py-1 text-sm whitespace-nowrap transition-colors',
               active
                 ? 'bg-surface text-fg shadow-raised font-medium'
                 : 'text-fg-muted hover:text-fg',

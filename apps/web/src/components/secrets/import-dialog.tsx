@@ -449,7 +449,7 @@ function ImportBody({
               <Alert tone="danger" title="Could not build a preview">
                 <p>{errorMessage(planError)}</p>
                 {isApiError(planError) && planError.requestId ? (
-                  <p className="mt-1.5 text-xs">
+                  <p className="mt-1.5 text-sm">
                     Request id: <code className="font-mono select-all">{planError.requestId}</code>
                   </p>
                 ) : null}
@@ -485,7 +485,7 @@ function ImportBody({
                   applies completely or not at all.
                 </p>
                 {isApiError(applyError) && applyError.requestId ? (
-                  <p className="mt-1.5 text-xs">
+                  <p className="mt-1.5 text-sm">
                     Request id: <code className="font-mono select-all">{applyError.requestId}</code>
                   </p>
                 ) : null}
@@ -572,18 +572,14 @@ function PlanTable({ items }: { items: readonly ImportPlanItem[] }) {
         <TableBody>
           {items.map((item) => (
             <TableRow key={`${item.sourceKey}-${item.name}`}>
-              <TableCell className="font-mono text-[0.8125rem] break-all">
-                {item.sourceKey}
-              </TableCell>
-              <TableCell className="font-mono text-[0.8125rem] break-all">
+              <TableCell className="font-mono text-sm break-all">{item.sourceKey}</TableCell>
+              <TableCell className="font-mono text-sm break-all">
                 {item.name === '' ? <span className="text-fg-subtle">—</span> : item.name}
               </TableCell>
               <TableCell>
                 <Badge tone={STATUS_TONE[item.status]}>{STATUS_LABEL[item.status]}</Badge>
               </TableCell>
-              <TableCell className="text-fg-muted text-[0.8125rem] leading-5">
-                {item.note ?? ''}
-              </TableCell>
+              <TableCell className="text-fg-muted text-sm leading-5">{item.note ?? ''}</TableCell>
             </TableRow>
           ))}
         </TableBody>

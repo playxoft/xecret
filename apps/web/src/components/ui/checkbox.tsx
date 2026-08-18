@@ -16,7 +16,10 @@ export function Checkbox({ className, ...props }: CheckboxProps) {
     <CheckboxPrimitive.Root
       {...fieldProps}
       className={cn(
-        'border-line-strong bg-canvas-inset grid size-[1.05rem] shrink-0 place-items-center rounded-[0.3rem] border',
+        // An unchecked box is an empty 17px square: no glyph, no label, a fill
+        // 1.09:1 from the card. The border is the entire control, which is why
+        // it takes `--line-control` and not the hairline token.
+        'border-line-control bg-canvas-inset grid size-[1.05rem] shrink-0 place-items-center rounded-[0.3rem] border',
         'transition-colors duration-150',
         'hover:enabled:border-fg-subtle',
         'data-[state=checked]:border-accent data-[state=checked]:bg-accent data-[state=checked]:text-accent-fg',

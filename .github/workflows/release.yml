@@ -1,0 +1,75 @@
+# Releasing the CLI: tag → binaries, archives, Homebrew formula, Docker image,
+# checksums, cosign signatures, SBOMs. Everything GoReleaser produces comes
+# from `cli/.goreleaser.yaml`; this workflow only supplies the machinery.
+#
+# Third-party actions are pinned to commit SHAs, not tags — a tag can be moved
+# to malicious code after review, a SHA cannot (threat T8, as in ci.yml).
+#
+# Signing is keyless: cosign obtains a short-lived certificate from Fulcio
+# against this workflow's OIDC identity (`id-token: write`), so there is no
+# signing key to store, rotate, or leak. Verification pins the certificate to
+# this repository's release workflow identity — see docs/cli/install.
+#
+# The release is created as a DRAFT (see .goreleaser.yaml): a human reads the
+# generated notes and presses publish. An unreviewed release of a secrets tool
+# is not a convenience worth having.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  # Create the release and push the Homebrew formula.
+  contents: write
+  # Push ghcr.io/playxoft/xecret.
+  packages: write
+  # Keyless cosign signing.
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # The changelog is generated from history; a shallow clone would
+          # produce release notes describing one commit.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        with:
+          go-version: "1.25"
+          cache-dependency-path: cli/go.sum
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Multi-arch image builds: arm64 layers are produced on an amd64 runner
+      # through qemu + buildx.
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          workdir: cli
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pushing the Homebrew formula crosses into playxoft/homebrew-tap,
+          # which GITHUB_TOKEN cannot do. A fine-grained PAT with contents:write
+          # on that one repository, set as a repo secret before the first
+          # release. Absent, GoReleaser fails the brew step and says why.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

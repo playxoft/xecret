@@ -230,7 +230,7 @@ function CreateEnvironmentForm({
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <Label htmlFor="environment-is-production">This is a production environment</Label>
-              <p className="text-fg-muted mt-1 text-[0.8125rem] leading-5">
+              <p className="text-fg-muted mt-1 text-sm leading-5">
                 Production is <span className="text-fg font-medium">deny-by-default</span>. Even
                 developers in this organisation cannot read or write its secrets until an admin
                 grants them access explicitly, and it is marked in the interface everywhere it

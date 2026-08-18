@@ -112,10 +112,11 @@ export function VersionHistoryDialog({
   /**
    * Decrypts one historical version.
    *
-   * Not memoised, and never cached after the first call. `SecretValue` invokes
-   * it on every reveal and every copy, and each invocation must reach the
-   * server — caching would make the audit trail claim one read of an old
-   * production credential where the user performed six.
+   * Each row's `SecretValue` holds what this returns for its own reveal window
+   * and re-shows it without asking again, so the `secret.revealed` records count
+   * decryptions of an old credential rather than glances at one — see the note
+   * in `SecretValue`'s header about which of the two the audit log can honestly
+   * claim to answer.
    */
   async function revealVersion(version: number): Promise<string> {
     const response = await api.get<RevealedSecretVersion>(
@@ -171,7 +172,7 @@ export function VersionHistoryDialog({
               <Alert tone="danger" title="Could not load the history">
                 <p>{errorMessage(error)}</p>
                 {isApiError(error) && error.requestId ? (
-                  <p className="mt-1.5 text-xs">
+                  <p className="mt-1.5 text-sm">
                     Request id: <code className="font-mono select-all">{error.requestId}</code>
                   </p>
                 ) : null}
@@ -199,16 +200,20 @@ export function VersionHistoryDialog({
                           </span>
                           {version.current ? <Badge tone="accent">Current</Badge> : null}
                         </div>
-                        <p className="text-fg-muted mt-1 text-[0.8125rem] leading-5">
+                        <p className="text-fg-muted mt-1 text-sm leading-5">
                           <time
                             dateTime={toIsoString(version.createdAt)}
                             title={formatAbsoluteTime(version.createdAt)}
                           >
                             {formatRelativeTime(version.createdAt)}
                           </time>{' '}
-                          by <Actor userId={version.createdBy} />
+                          by{' '}
+                          <Actor
+                            userId={version.createdBy}
+                            serviceTokenId={version.createdByServiceTokenId}
+                          />
                         </p>
-                        <p className="text-fg-subtle mt-0.5 font-mono text-xs">
+                        <p className="text-fg-subtle mt-0.5 font-mono text-sm">
                           {version.algorithm}
                         </p>
                       </div>
@@ -226,8 +231,9 @@ export function VersionHistoryDialog({
                     </div>
 
                     {/* The same masked field the table uses, and therefore the
-                        same auto-hide, the same blur handling, and the same
-                        copy-without-rendering. Its reveal targets *this*
+                        same reveal window, the same masking when the tab is
+                        hidden, and the same copy-without-rendering. Its reveal
+                        targets *this*
                         version, so the audit record names the version rather
                         than saying only that the secret was read. */}
                     <SecretValue

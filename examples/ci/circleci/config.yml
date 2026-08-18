@@ -1,0 +1,23 @@
+# xecret + CircleCI.
+#
+# Add XECRET_TOKEN under Project Settings → Environment Variables (or a
+# Context shared across projects).
+version: 2.1
+
+jobs:
+  build:
+    docker:
+      - image: cimg/node:22.9
+    steps:
+      - checkout
+      - run:
+          name: Install xecret
+          command: curl -fsSL https://xecret.playxoft.com/install.sh | sh
+      - run:
+          name: Build with secrets injected
+          command: xecret run -- npm run build
+
+workflows:
+  build:
+    jobs:
+      - build

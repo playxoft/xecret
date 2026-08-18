@@ -25,7 +25,22 @@ export type { CookieOptions, SessionRecord } from './session';
 export { generateToken, hashToken, isWellFormedToken, TOKEN_PREFIXES, verifyToken } from './tokens';
 export type { GeneratedToken, TokenKind } from './tokens';
 
+export { INVITATION_TTL_MS, invitationExpiryFrom, invitationState } from './invitation';
+export type { InvitationLifecycle, InvitationState } from './invitation';
+
 export {
+  CLI_AUTH_CODE_TTL_MS,
+  cliAuthCodeExpiryFrom,
+  computePkceChallenge,
+  PKCE_CHALLENGE_PATTERN,
+  PKCE_VERIFIER_PATTERN,
+  verifyPkce,
+} from './pkce';
+
+export {
+  AUTO_LOCK_MINUTES_OPTIONS,
+  DEFAULT_AUTO_LOCK_MINUTES,
+  isAutoLockMinutes,
   PBKDF2_ITERATIONS,
   PIN_FREE_ATTEMPTS,
   PIN_LENGTH,
@@ -45,7 +60,7 @@ export {
   unlockExpiryFrom,
   verifyPin,
 } from './pin';
-export type { PinAttemptState, PinCheck, PinLockout, PinProblem } from './pin';
+export type { AutoLockMinutes, PinAttemptState, PinCheck, PinLockout, PinProblem } from './pin';
 
 export { IdentityVerificationError } from './types';
 export type {

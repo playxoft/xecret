@@ -24,3 +24,19 @@ paths = [
   '''^apps/web/src/server/server\.test\.ts$''',
   '''^apps/web/src/server/secrets-service\.test\.ts$''',
 ]
+
+# Writing about leaked credentials means printing things shaped like them. The
+# specimens below name themselves — a reader who cannot tell the example from
+# the real thing has been failed by the prose, not by the scanner.
+#
+# Matched on the value, not on a path, and deliberately so. A path entry would
+# hand a whole article a permanent exemption, and articles get edited by people
+# who never read this file; a value entry expires the moment the specimen is
+# renamed, and covers it wherever it is quoted. It also survives the thing that
+# makes the alternative unworkable here: `gitleaks git` reads every commit on
+# every branch, so a specimen is still in the history it was introduced in long
+# after the file that carried it has been rewritten.
+[[allowlists]]
+description = "self-identifying credential specimens quoted in the documentation"
+regexTarget = "secret"
+regexes = ['''(?i)example[-_]?not[-_]?a[-_]?real[-_]?key''']

@@ -171,7 +171,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
                   className="font-mono"
                   aria-describedby={`${inputId}-hint`}
                 />
-                <p id={`${inputId}-hint`} className="text-fg-subtle text-xs">
+                <p id={`${inputId}-hint`} className="text-fg-subtle text-sm">
                   Case-sensitive, and must match exactly.
                 </p>
               </div>

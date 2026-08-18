@@ -29,6 +29,7 @@ export function ProjectScreen({ orgSlug, projectSlug }: { orgSlug: string; proje
     <div className="flex flex-col gap-6">
       <PageHeader
         title={project.data?.project.name ?? projectSlug}
+        titleLoading={project.data === null && project.error === null}
         description={project.data?.project.description ?? undefined}
         actions={
           project.data === null ? undefined : (

@@ -53,7 +53,7 @@ export function Tooltip({ children, content, side = 'top', align = 'center' }: T
           align={align}
           sideOffset={6}
           className={cn(
-            'border-line bg-surface text-fg shadow-overlay z-50 max-w-64 rounded-md border px-2 py-1 text-xs leading-5',
+            'border-line bg-surface text-fg shadow-overlay z-50 max-w-64 rounded-md border px-2 py-1 text-sm leading-5',
             'data-[state=delayed-open]:animate-enter data-[state=closed]:animate-exit',
           )}
         >

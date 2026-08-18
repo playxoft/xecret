@@ -125,7 +125,7 @@ export function BulkAddPanel({
     <div className="border-line bg-surface flex flex-col gap-3 rounded-xl border p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-fg text-sm font-medium">Add several at once</h2>
-        <p className="text-fg-subtle text-xs">
+        <p className="text-fg-subtle text-sm">
           One <code className="font-mono">KEY=value</code> per line. Quoted multi-line values —
           certificates, private keys — are read whole.
         </p>
@@ -144,7 +144,7 @@ export function BulkAddPanel({
         autoCorrect="off"
         autoCapitalize="off"
         spellCheck={false}
-        className="font-mono text-[0.8125rem]"
+        className="font-mono text-sm"
         autoFocus
       />
 
@@ -154,7 +154,7 @@ export function BulkAddPanel({
             A secret name becomes an environment variable, so it may only hold letters, digits and
             underscores. These were corrected — edit any of them in the table before saving:
           </p>
-          <ul className="mt-1.5 space-y-0.5 font-mono text-xs">
+          <ul className="mt-1.5 space-y-0.5 font-mono text-sm">
             {parsed.renamed.slice(0, 8).map((entry) => (
               <li key={entry.from} className="break-all">
                 {entry.from} → {entry.to}
@@ -162,20 +162,20 @@ export function BulkAddPanel({
             ))}
           </ul>
           {parsed.renamed.length > 8 ? (
-            <p className="mt-1 text-xs">…and {parsed.renamed.length - 8} more.</p>
+            <p className="mt-1 text-sm">…and {parsed.renamed.length - 8} more.</p>
           ) : null}
         </Alert>
       ) : null}
 
       {parsed !== null && parsed.warnings.length > 0 ? (
         <Alert tone="warning" title={`${pluralize(parsed.warnings.length, 'line')} skipped`}>
-          <ul className="space-y-0.5 text-xs">
+          <ul className="space-y-0.5 text-sm">
             {parsed.warnings.slice(0, 5).map((warning) => (
               <li key={`${warning.line}-${warning.message}`}>{warning.message}</li>
             ))}
           </ul>
           {parsed.warnings.length > 5 ? (
-            <p className="mt-1 text-xs">…and {parsed.warnings.length - 5} more.</p>
+            <p className="mt-1 text-sm">…and {parsed.warnings.length - 5} more.</p>
           ) : null}
         </Alert>
       ) : null}
@@ -191,7 +191,7 @@ export function BulkAddPanel({
       {outcomes !== null ? <FanOutResults outcomes={outcomes} /> : null}
 
       <div className="flex flex-wrap items-center gap-3">
-        <p role="status" aria-live="polite" className="text-fg-subtle text-[0.8125rem]">
+        <p role="status" aria-live="polite" className="text-fg-subtle text-sm">
           {text.trim().length === 0
             ? 'Nothing pasted yet'
             : found === 0
@@ -256,15 +256,15 @@ function TargetPicker({
 
   return (
     <fieldset className="flex flex-wrap items-center gap-x-4 gap-y-2">
-      <legend className="text-fg-muted mb-1 text-xs font-medium">Also write to</legend>
+      <legend className="text-fg-muted mb-1 text-sm font-medium">Also write to</legend>
 
       {current ? (
-        <span className="text-fg-subtle inline-flex items-center gap-2 text-[0.8125rem]">
+        <span className="text-fg-subtle inline-flex items-center gap-2 text-sm">
           {/* Always on and never interactive: the paste is happening on this
               environment's screen, so excluding it is not a coherent request. */}
           <Checkbox checked disabled aria-label={`${current.name} (always included)`} />
           {current.name}
-          <span className="text-fg-subtle text-xs">(this one)</span>
+          <span className="text-fg-subtle text-sm">(this one)</span>
         </span>
       ) : null}
 
@@ -272,7 +272,7 @@ function TargetPicker({
         <label
           key={environment.slug}
           className={cn(
-            'text-fg-muted inline-flex cursor-pointer items-center gap-2 text-[0.8125rem]',
+            'text-fg-muted inline-flex cursor-pointer items-center gap-2 text-sm',
             disabled && 'cursor-not-allowed opacity-60',
           )}
         >
@@ -376,7 +376,7 @@ function FanOutResults({ outcomes }: { outcomes: readonly EnvironmentOutcome[] }
       tone={failed > 0 ? 'danger' : 'success'}
       title={failed > 0 ? `${pluralize(failed, 'key')} could not be written` : 'Written'}
     >
-      <ul className="space-y-1.5 text-xs">
+      <ul className="space-y-1.5 text-sm">
         {outcomes.map((outcome) => (
           <li key={outcome.slug}>
             <span className="font-medium">{outcome.name}</span>

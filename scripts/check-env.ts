@@ -69,6 +69,19 @@ function checkRootKeys(): void {
   }
 }
 
+/**
+ * The client config, checked by the same parser the browser uses.
+ *
+ * `parseFirebaseConfig` is imported rather than reimplemented so this script
+ * cannot pass a value the application then refuses — including the `authDomain`
+ * hostname check, which is the one failure here that is otherwise completely
+ * silent: a wildcard, a stray trailing space or a pasted `https://` prefix
+ * leaves sign-in dead and every directive in `lib/csp.ts` looking reasonable.
+ *
+ * The domain is printed beside the project id because it is the value that ends
+ * up inside `frame-src` and `connect-src`, and seeing it is how an operator
+ * catches it pointing at the wrong project.
+ */
 function checkFirebase(): string | null {
   const raw = required('NEXT_PUBLIC_FIREBASE_CONFIG');
   if (raw === null) return null;
@@ -79,7 +92,11 @@ function checkFirebase(): string | null {
     return null;
   }
 
-  check('NEXT_PUBLIC_FIREBASE_CONFIG', true, `project "${parsed.config.projectId}"`);
+  check(
+    'NEXT_PUBLIC_FIREBASE_CONFIG',
+    true,
+    `project "${parsed.config.projectId}", auth domain "${parsed.config.authDomain}"`,
+  );
   return parsed.config.projectId;
 }
 
@@ -166,7 +183,7 @@ function checkEmail(): void {
     check(
       'ZEPTOMAIL_TOKEN',
       true,
-      'not set — email is optional; PIN reset will report it as unavailable',
+      'not set — email is optional; PIN reset answers 200 with `sent: false` and a reason',
     );
     return;
   }
@@ -209,10 +226,85 @@ function checkEmail(): void {
   );
 }
 
+/**
+ * Log shipping, which is optional for the same reason email is.
+ *
+ * A self-hoster has Cloudflare's own log tail and no reason to sign up for
+ * anything, so an absent token is reported rather than failed. The two failures
+ * worth catching here are the ones that produce a 401 with no explanation:
+ *
+ *  - a regional source token pointed at the shared ingest host, which is the
+ *    same class of mistake as ZeptoMail's regional endpoint;
+ *  - an ingest URL that is not a Better Stack host at all, which usually means
+ *    somebody pasted the dashboard URL instead of the ingest one.
+ *
+ * The log threshold is checked too: a typo there is silent, and "we turned
+ * debug on during the incident and saw nothing" is a bad thing to discover
+ * during an incident.
+ */
+function checkLogging(): void {
+  const token = process.env['BETTERSTACK_SOURCE_TOKEN'];
+  const url = process.env['BETTERSTACK_INGEST_URL'];
+  const level = process.env['XECRET_LOG_LEVEL'];
+
+  if (level) {
+    const allowed = ['debug', 'info', 'warn', 'error'];
+    check(
+      'XECRET_LOG_LEVEL',
+      allowed.includes(level),
+      allowed.includes(level) ? level : `"${level}" is not one of ${allowed.join(', ')}`,
+    );
+  }
+
+  if (!token) {
+    check(
+      'BETTERSTACK_SOURCE_TOKEN',
+      true,
+      'not set — log shipping is optional; lines still go to the Cloudflare log tail',
+    );
+    return;
+  }
+
+  // The token itself is never printed. Its length distinguishes "set to
+  // something plausible" from "set to a placeholder".
+  check(
+    'BETTERSTACK_SOURCE_TOKEN',
+    token.length > 12,
+    token.length > 12 ? 'set' : 'suspiciously short',
+  );
+
+  if (!url) {
+    check(
+      'BETTERSTACK_INGEST_URL',
+      true,
+      'not set — using in.logs.betterstack.com. A source created after mid-2024 has its own ' +
+        '<id>.betterstackdata.com host and answers 401 without it',
+    );
+    return;
+  }
+
+  let host: string;
+  try {
+    host = new URL(url).host;
+  } catch {
+    check('BETTERSTACK_INGEST_URL', false, 'not a valid URL');
+    return;
+  }
+
+  check(
+    'BETTERSTACK_INGEST_URL',
+    host.includes('betterstack') || host.includes('betterstackdata'),
+    host.includes('betterstack')
+      ? host
+      : `${host} is not a Better Stack host — the ingest URL is not the dashboard URL`,
+  );
+}
+
 checkDatabase();
 checkRootKeys();
 checkFirebaseAgreement(checkFirebase());
 checkEmail();
+checkLogging();
 
 const width = Math.max(...results.map((r) => r.name.length));
 const failed = results.filter((r) => !r.ok).length;

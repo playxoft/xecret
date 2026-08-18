@@ -7,7 +7,7 @@ import type { ReactNode } from 'react';
 
 import { cn } from '@/lib/cn';
 import { sidebarCollapsedStore } from '@/lib/theme';
-import { ChevronRightIcon, PanelLeftIcon } from '@/components/ui';
+import { ariaKeyShortcuts, ChevronRightIcon, PanelLeftIcon, Shortcut } from '@/components/ui';
 import { PlayxoftMark } from './logo';
 
 export interface NavItem {
@@ -18,6 +18,17 @@ export interface NavItem {
   icon?: ReactNode;
   /** A count or status chip shown at the trailing edge. */
   badge?: ReactNode;
+  /**
+   * A chord that navigates here, as key caps at the trailing edge — `['G']`,
+   * `['Shift', '1']`.
+   *
+   * Declaring it is what *creates* the shortcut: `useNavShortcuts` in
+   * `app-shell.tsx` walks this same nav tree to build its key map, so a cap
+   * can never be drawn for a chord that does nothing, and a chord can never
+   * exist without a cap advertising it. See that hook for what it refuses to
+   * fire on.
+   */
+  shortcut?: readonly string[];
   /** Highlight only on an exact path match. Use for an index route whose
    *  prefix would otherwise match every page beneath it. */
   exact?: boolean;
@@ -25,10 +36,10 @@ export interface NavItem {
    * Nested items, revealed by a disclosure triangle beside the label.
    *
    * One level deep, and deliberately not more. The tenancy chain is
-   * organisation → project → environment, and the organisation is already the
-   * switcher at the top of this panel — so a project and its environments is
-   * the whole of what remains. A generic tree would invite a third level that
-   * has nothing to put in it.
+   * organisation → project → environment; the organisation is already the
+   * switcher at the top of this panel, and environments belong to the screens
+   * that compare them rather than to a third row of truncated labels in a
+   * 240px column. So "Projects" and the projects under it is the whole of it.
    */
   children?: readonly NavItem[];
 }
@@ -54,12 +65,6 @@ function isActive(pathname: string, item: NavItem): boolean {
   return pathname === item.href || pathname.startsWith(`${item.href}/`);
 }
 
-/** True when the item or anything beneath it is the current page. */
-function containsActive(pathname: string, item: NavItem): boolean {
-  if (isActive(pathname, item)) return true;
-  return (item.children ?? []).some((child) => containsActive(pathname, child));
-}
-
 export function Sidebar({ nav, header, collapsible = false, onNavigate, className }: SidebarProps) {
   const pathname = usePathname();
 
@@ -75,17 +80,24 @@ export function Sidebar({ nav, header, collapsible = false, onNavigate, classNam
   );
 
   return (
-    <div className={cn('bg-canvas-inset flex h-full min-h-0 flex-col', className)}>
+    // The sidebar shares the canvas rather than sitting on its own tinted
+    // panel. With the neutrals gone grey there is no tint left that reads as
+    // "chrome" instead of "a different kind of content", so the hairline on
+    // the shell's edge does the separating — one line instead of a slab.
+    <div className={cn('bg-canvas flex h-full min-h-0 flex-col', className)}>
       {header ? <div className="shrink-0 p-3">{header}</div> : null}
 
       <nav aria-label="Main" className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
         {nav.map((section, sectionIndex) => (
           <div
             key={section.label ?? `section-${sectionIndex}`}
-            className={cn(sectionIndex > 0 && 'mt-5')}
+            className={cn(sectionIndex > 0 && 'mt-6')}
           >
             {section.label ? (
-              <p className="x-sidebar-wide text-fg-subtle px-2 pb-1.5 text-[0.6875rem] font-medium tracking-wide uppercase">
+              // Small, letterspaced and quiet. A section heading in a 240px
+              // column competes with the items under it at any weight that
+              // also has size; this one gives up size to keep the weight.
+              <p className="x-sidebar-wide text-fg-subtle px-2 pb-2 text-xs font-medium tracking-[0.06em] uppercase">
                 {section.label}
               </p>
             ) : null}
@@ -131,19 +143,28 @@ export function Sidebar({ nav, header, collapsible = false, onNavigate, classNam
  * One row, and its children when it has any.
  *
  * ── Why the disclosure and the link are separate controls ──
- * A project row does two things: it navigates to the project, and it expands to
- * show that project's environments. Merging them means one of the two is
- * unreachable — either clicking the name cannot open the project, or it cannot
- * expand without leaving the page you are on. So the triangle is its own button,
- * with its own accessible name, and the label beside it stays an ordinary link.
+ * A parent row does two things: it navigates to itself, and it expands to show
+ * what is under it. Merging them means one of the two is unreachable — either
+ * clicking the name cannot open the page, or it cannot expand without leaving
+ * the page you are on. So the triangle is its own button, with its own
+ * accessible name, and the label beside it stays an ordinary link.
  *
  * ── Folding ──
- * A project opens when it is the one you are looking at, which is the whole of
- * "fold the others": navigating into a project expands it, and navigating away
- * lets it close again. That default is *overridable* — `open` is only consulted
- * once the user has touched the triangle — because a sidebar that keeps
- * re-collapsing something you deliberately opened is worse than one that never
- * folded at all.
+ * A parent starts open, always. The projects under "Projects" are the thing
+ * this sidebar is mostly *for*, and hiding them until you are already inside
+ * one inverts that: the list you navigate with is only visible once you no
+ * longer need it to navigate.
+ *
+ * This used to open a parent only when the current page was inside it, so the
+ * tree folded and unfolded as you moved. That is a reasonable default for a
+ * deep tree; it is the wrong one here, where the tree is a single level and
+ * short enough to show whole.
+ *
+ * Collapsing is still available and still sticky — once the triangle is
+ * touched, that choice outranks the default for as long as the row is
+ * mounted, including while you are inside the branch you just closed. A
+ * sidebar that re-opens something you deliberately shut is worse than one
+ * that never folded at all.
  */
 function NavEntry({
   item,
@@ -159,11 +180,12 @@ function NavEntry({
   const children = item.children ?? [];
   const hasChildren = children.length > 0;
 
-  // `null` means "nobody has expressed a preference", which is what lets the
-  // active project drive the state until somebody overrides it.
+  // `null` means "nobody has touched the triangle", which is what makes the
+  // default below a default rather than an initial value: it keeps applying
+  // until the user actually expresses a preference, and their preference then
+  // survives every subsequent navigation.
   const [override, setOverride] = useState<boolean | null>(null);
-  const holdsActive = hasChildren && containsActive(pathname, item);
-  const open = override ?? holdsActive;
+  const open = override ?? true;
 
   const active = isActive(pathname, item);
 
@@ -194,9 +216,22 @@ function NavEntry({
           // `aria-current="page"` is the machine-readable half of the highlight.
           // The colour alone tells a screen reader user nothing.
           aria-current={active ? 'page' : undefined}
+          // …and this is the machine-readable half of the key caps, which are
+          // `aria-hidden`. See `ariaKeyShortcuts`.
+          aria-keyshortcuts={
+            item.shortcut && item.shortcut.length > 0 ? ariaKeyShortcuts(item.shortcut) : undefined
+          }
           className={cn(
-            'x-nav-item relative flex min-w-0 flex-1 items-center gap-2.5 rounded-md py-1.5 pr-2 text-[0.8125rem] transition-colors',
+            'x-nav-item relative flex h-9 min-w-0 flex-1 items-center gap-3 rounded-lg pr-2 text-sm transition-colors',
             hasChildren ? 'pl-6' : 'pl-2',
+            // `--surface-active` for the current page, `--surface-hover` for a
+            // row under the pointer. Sharing one fill made "you are here"
+            // reproducible by moving the mouse: every row became the current
+            // row on hover, and the only thing left telling them apart was the
+            // font weight. Deliberately no hover step on the active row — it
+            // already sits at the top of the neutral fill ramp, so anything a
+            // hover could add would have to come back *down* and collide with
+            // the hovered-inactive fill again.
             active
               ? 'bg-surface-active text-fg font-medium'
               : 'text-fg-muted hover:bg-surface-hover hover:text-fg',
@@ -209,6 +244,16 @@ function NavEntry({
           ) : null}
           <span className="x-nav-label min-w-0 flex-1 truncate">{item.label}</span>
           {item.badge ? <span className="x-sidebar-wide shrink-0">{item.badge}</span> : null}
+          {item.shortcut && item.shortcut.length > 0 ? (
+            // `x-sidebar-wide` hides it along with the label when the rail is
+            // collapsed: a column of bare key caps with nothing to name them
+            // is furniture, not a hint.
+            //
+            // Always visible rather than revealed on hover, because the whole
+            // point of the cap is to be read by somebody who was not looking
+            // for it — a hint you have to hover to find teaches nobody.
+            <Shortcut keys={item.shortcut} className="x-sidebar-wide" />
+          ) : null}
         </Link>
       </div>
 

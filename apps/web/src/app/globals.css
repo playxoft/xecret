@@ -22,10 +22,16 @@
    we design for first; light is a fully supported equal, not an afterthought.
 
    ── Palette ───────────────────────────────────────────────────────────────
-   Neutrals carry a slight cool cast (blue channel ~8% above red) so surfaces
-   read as instrument panels rather than as warm paper. The accent is a
-   cyan-teal we call "cipher": cold, high-signal, and deliberately not the
-   indigo/violet that every other developer tool has converged on.
+   Neutrals are pure achromatic grey — R, G and B are equal in every surface
+   and text token. The earlier palette carried a deliberate cool cast; it was
+   dropped because a tinted grey and a saturated status colour compete, and in
+   this product the status colour has to win. Against a neutral ground, the
+   only chroma on screen is chroma that *means* something.
+
+   The primary action is monochrome too: near-white ink on dark, near-black on
+   light. A product whose one saturated highlight is a button teaches people
+   that colour means "clickable"; here colour means "production", "destructive"
+   or "failed", and nothing else may borrow it.
 
    Every colour pair below is annotated with its measured WCAG 2.1 contrast
    ratio. Body text targets AAA (7:1), secondary text and all interactive
@@ -33,145 +39,270 @@
    focus rings, status fills) targets 3:1 per SC 1.4.11. In a product where a
    mislabelled environment costs a production outage, "close enough" contrast
    is a defect, not a preference.
+
+   Every ratio below is recomputed against the palette as it now stands. An
+   earlier pass left the status ramps carrying their pre-neutral figures on the
+   argument that a canvas which only got lighter (or darker) can only have
+   improved them — true, but a floor and a measurement are indistinguishable
+   once written down, so a reader could not tell which numbers had ever been
+   checked. Every one of them is a measurement.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 :root {
   color-scheme: light;
 
-  /* Surfaces */
-  --canvas: #f7f9fb;
-  --canvas-inset: #f1f4f8; /* code blocks, table headers, input wells */
+  /* Surfaces. Canvas and surface are both pure white: the shell is separated
+     by hairlines rather than by tone, which is what keeps a dense table from
+     reading as a stack of trays. --canvas-inset is the only grey ground. */
+  --canvas: #ffffff;
+  --canvas-inset: #f5f5f5; /* code blocks, table headers, input wells */
   --surface: #ffffff;
-  --surface-hover: #f1f4f8;
-  --surface-active: #e9edf3;
-  --overlay: rgb(11 14 19 / 0.45);
+  --surface-hover: #f5f5f5;
+  --surface-active: #e5e5e5;
+  --overlay: rgb(10 10 10 / 0.45);
 
-  /* Text */
-  --fg: #0b0e13; /* 18.31:1 on --surface, 17.50:1 on --canvas — AAA */
-  --fg-muted: #525b69; /*  6.86:1 on --surface,  6.50:1 on --canvas — AA   */
-  --fg-subtle: #666e7c; /*  5.14:1 on --surface,  4.87:1 on --canvas — AA   */
-  --fg-disabled: #7e8898; /*  3.3:1 — deliberately below AA; SC 1.4.3 exempts
+  /* Text
+
+     ── Secondary text was raised, deliberately ──
+     `--fg-muted` and `--fg-subtle` were one step quieter (#525252 / #6b6b6b).
+     Both cleared their targets on paper and both read as *greyed out* in
+     practice — which is a claim about the content, not about the contrast.
+     Most of the words on the public site are secondary by that definition: the
+     paragraph under every heading, the body of every card, the answer to every
+     question. Text that is dimmed because of where it sits rather than because
+     of what it is teaches a reader to skip it.
+
+     So both moved one step toward the foreground. The ratios below are the new
+     measurements, taken the same way as every other number in this file; every
+     pair improved, and nothing here traded contrast for anything. Hierarchy is
+     carried by size and weight, which is where it belongs. */
+  --fg: #0a0a0a; /* 19.80:1 on --surface, 19.80:1 on --canvas — AAA */
+  --fg-muted: #454545; /*  9.59:1 on --surface,  8.79:1 on --canvas-inset — AAA */
+  --fg-subtle: #5c5c5c; /*  6.69:1 on --surface,  6.13:1 on --canvas-inset — AA+ */
+  --fg-disabled: #949494; /*  3.0:1 — deliberately below AA; SC 1.4.3 exempts
                               disabled controls, and full contrast would make
                               "disabled" indistinguishable from "available". */
 
-  /* Lines */
-  --line-subtle: #e9edf3;
-  --line: #dde3ea;
-  --line-strong: #c6ced9;
+  /* Lines.
+
+     Three of these four draw furniture: `--line-subtle` for a rule inside a
+     panel, `--line` for the edge of a card, menu or table shell, and
+     `--line-strong` for the step those take on hover. None of them is the
+     only thing identifying what it encloses — a card is identified by the
+     content inside it, a secondary button by its label — so SC 1.4.11 does
+     not reach them, and dragging them all to 3:1 would turn every hairline in
+     a dense table into a fence. They carry their measured ratio anyway, and
+     say the exemption out loud: an unannotated token is indistinguishable
+     from an unchecked one, which is the whole reason this file annotates.
+
+     `--line-control` is the exception, and the reason this is four tokens
+     rather than three. It draws the boundary of a control whose interior says
+     nothing — an empty input well, an unchecked checkbox, a switch track —
+     where the border *is* the component to the eye. An input well sits at
+     1.09:1 from the card behind it and a switch track at 1.26:1, so a border
+     that cannot be seen leaves a control that cannot be found: precisely the
+     "visual information required to identify user interface components and
+     states" SC 1.4.11 names. It therefore clears 3:1 against every surface it
+     is drawn against. The binding one in both themes is the `--surface-active`
+     switch track, being the ground nearest the border's own luminance. */
+  --line-subtle: #f0f0f0; /*  1.14:1 on --surface — panel rule, exempt         */
+  --line: #e5e5e5; /*  1.26:1 on --surface — container edge, exempt            */
+  --line-strong: #d4d4d4; /*  1.48:1 on --surface, 1.36:1 on --canvas-inset —
+                              hover emphasis and the `Kbd` cap, exempt        */
+  --line-control: #7d7d7d; /*  4.12:1 on --surface,  3.78:1 on --canvas-inset,
+                               3.27:1 on --surface-active — SC 1.4.11         */
 
   /* Focus ring */
-  --ring: #0e8da3; /*  3.92:1 on --surface,  3.71:1 on --canvas — SC 1.4.11 */
+  --ring: #737373; /*  4.74:1 on --surface,  4.35:1 on --canvas-inset — SC 1.4.11 */
 
-  /* Accent — "cipher" cyan */
-  --accent: #0b7d8f; /*  4.58:1 against --canvas as a filled control          */
-  --accent-hover: #075d6a;
-  --accent-fg: #ffffff; /*  4.83:1 on --accent, 6.27:1 on --accent-hover — AA  */
-  --accent-text: #0a6b7b; /*  6.17:1 on --surface, 5.85:1 on --canvas — AA      */
-  --accent-tint: #e3f5f8;
-  --accent-line: #b4e6ef;
+  /* Text selection.
+
+     Its own pair rather than a borrowed tint. Drag-selecting a value to copy
+     it is the most common gesture in this product, and a highlight you have
+     to hunt for leaves you unsure whether what you copied is what you meant.
+     The monochrome pass is what made this urgent: the wash this replaces was
+     equally low-luminance but visibly cyan, so hue carried it where luminance
+     never did. On a neutral ground there is no hue left to do that.
+
+     Both halves are measured, because a selection that is easy to see and
+     hard to read is no better than one that is invisible. The fill is taken
+     against every ground text sits on; the ink against the fill. Selected
+     text is a transient state rather than resting body copy, so it targets
+     AA (4.5:1) rather than the AAA the body holds unselected. */
+  --selection: #8c8c8c; /*  3.36:1 on --canvas, 3.08:1 on --canvas-inset      */
+  --selection-fg: #0a0a0a; /*  5.89:1 on --selection — AA                     */
+
+  /* Accent — monochrome. See the palette note above for why this is not a hue.
+     `--accent-tint` / `--accent-line` are the quiet neutral ground used for
+     selected rows and the numbered step chips, not a coloured wash. */
+  --accent: #171717; /* 17.93:1 against --canvas as a filled control         */
+  --accent-hover: #000000;
+  --accent-fg: #fafafa; /* 17.18:1 on --accent, 20.12:1 on --accent-hover — AAA */
+  --accent-text: #0a0a0a; /* 19.80:1 on --surface — AAA                          */
+  --accent-tint: #f5f5f5;
+  --accent-line: #e5e5e5; /*  1.16:1 on --accent-tint — chip edge, exempt      */
+
+  /* Status ramps.
+
+     Each `--*-tint` / `--*-line` pair is the quiet box an alert or badge sits
+     in; the `--*-text` on top is what carries the message. That is why every
+     `--*-line` below is annotated as exempt rather than raised: the hairline
+     is the box's edge, and an alert stripped of its border is still an icon,
+     a heading and a sentence. No state is encoded in the line, so SC 1.4.11
+     has nothing to bite on — and a 3:1 hairline around a pale tint would read
+     as a warning about the warning. */
 
   /* Success */
-  --success: #157f3c; /*  4.81:1 against --canvas                             */
+  --success: #157f3c; /*  5.08:1 against --canvas                             */
   --success-fg: #ffffff; /*  5.08:1 on --success — AA                            */
-  --success-text: #12703a; /*  5.84:1 on --canvas, 5.57:1 on --success-tint — AA   */
+  --success-text: #12703a; /*  6.17:1 on --canvas, 5.57:1 on --success-tint — AA   */
   --success-tint: #e8f7ee;
-  --success-line: #b8e4c8;
+  --success-line: #b8e4c8; /*  1.27:1 on --success-tint — alert edge, exempt   */
 
   /* Warning */
-  --warning: #996600; /*  4.68:1 against --canvas                             */
+  --warning: #996600; /*  4.94:1 against --canvas                             */
   --warning-fg: #ffffff; /*  4.94:1 on --warning — AA                            */
-  --warning-text: #8a5d00; /*  5.46:1 on --canvas, 5.12:1 on --warning-tint — AA   */
+  --warning-text: #8a5d00; /*  5.76:1 on --canvas, 5.12:1 on --warning-tint — AA   */
   --warning-tint: #fbf1d8;
-  --warning-line: #ecd9a0;
+  --warning-line: #ecd9a0; /*  1.25:1 on --warning-tint — alert edge, exempt   */
 
   /* Danger */
   --danger: #d22d2d;
   --danger-hover: #b92525;
   --danger-fg: #ffffff; /*  5.06:1 on --danger, 6.26:1 on --danger-hover — AA  */
-  --danger-text: #b42222; /*  6.23:1 on --canvas, 5.76:1 on --danger-tint — AA   */
+  --danger-text: #b42222; /*  6.58:1 on --canvas, 5.76:1 on --danger-tint — AA   */
   --danger-tint: #fdecec;
-  --danger-line: #f5c2c2;
+  --danger-line: #f5c2c2; /*  1.37:1 on --danger-tint — alert edge, exempt     */
 
   /* Production — see the block below. Nothing but production may use these. */
-  --production: #b84a00; /*  4.95:1 against --canvas                             */
+  --production: #b84a00; /*  5.23:1 against --canvas                             */
   --production-fg: #ffffff; /*  5.23:1 on --production — AA                         */
-  --production-text: #b34a00; /*  5.11:1 on --canvas, 4.87:1 on the tint — AA         */
+  --production-text: #b34a00; /*  5.39:1 on --canvas, 4.87:1 on the tint — AA         */
   --production-tint: #fff1e6;
-  --production-line: #ffcfa8;
+  --production-line: #ffcfa8; /*  1.29:1 on --production-tint — exempt; the
+                                  badge is carried by its uppercase label and
+                                  the hazard hatching, never by this edge.    */
 
-  /* Elevation. Light theme can use real shadows; see the dark block. */
-  --shadow-raised: 0 1px 2px rgb(11 14 19 / 0.06), 0 1px 3px rgb(11 14 19 / 0.08);
-  --shadow-overlay: 0 8px 12px -4px rgb(11 14 19 / 0.1), 0 20px 40px -12px rgb(11 14 19 / 0.18);
+  /* Elevation. Light theme can use real shadows; see the dark block. Both are
+     softer and more diffuse than a stock Material ramp — on a white canvas a
+     tight dark shadow reads as a seam, and cards here are already bounded by
+     a hairline that does the separating. */
+  --shadow-raised: 0 1px 2px rgb(10 10 10 / 0.04), 0 1px 3px rgb(10 10 10 / 0.06);
+  --shadow-overlay: 0 8px 16px -6px rgb(10 10 10 / 0.08), 0 24px 48px -16px rgb(10 10 10 / 0.14);
+
+  /* The one place a hairline is drawn *inside* an element rather than around
+     it, giving a small raised control the depth of a physical key. Light
+     catches the underside here and the top edge in dark — see that block. */
+  --sheen: inset 0 -1px 0 rgb(10 10 10 / 0.07);
 
   /* Shell geometry, read by the sidebar rules at the bottom of this file. */
-  --sidebar-width: 15.5rem;
+  --sidebar-width: 15rem;
   --topbar-height: 3.5rem;
+
+  /* The public site's measure. Every marketing page, the header pill and the
+     footer share this one number, which is what keeps a visitor's eye tracking
+     the same left edge as they move between them. See the `.x-container` rule
+     near the bottom of this file. */
+  --site-width: 80rem;
 }
 
 :root[data-theme='dark'] {
   color-scheme: dark;
 
-  --canvas: #0b0e13;
-  --canvas-inset: #0f131a;
-  --surface: #12161d;
-  --surface-hover: #181d26;
-  --surface-active: #1d232c;
-  --overlay: rgb(3 5 8 / 0.72);
+  --canvas: #0a0a0a;
+  --canvas-inset: #141414;
+  --surface: #171717;
+  --surface-hover: #262626;
+  --surface-active: #2e2e2e;
+  --overlay: rgb(0 0 0 / 0.72);
 
-  --fg: #e9edf3; /* 16.31:1 on --canvas, 15.30:1 on --surface — AAA */
-  --fg-muted: #a7b0be; /*  8.83:1 on --canvas,  8.29:1 on --surface — AA  */
-  --fg-subtle: #7e8898; /*  5.40:1 on --canvas,  5.06:1 on --surface — AA  */
-  --fg-disabled: #666e7c; /*  3.5:1 — see the light-theme note above.        */
+  /* Raised for the reason given in the light block above. */
+  --fg: #fafafa; /* 18.97:1 on --canvas, 17.18:1 on --surface — AAA */
+  --fg-muted: #adadad; /*  8.82:1 on --canvas,  7.99:1 on --surface — AAA */
+  --fg-subtle: #9c9c9c; /*  7.21:1 on --canvas,  6.53:1 on --surface — AAA/AA */
+  --fg-disabled: #636363; /*  3.3:1 — see the light-theme note above.           */
 
-  --line-subtle: #181d26;
-  --line: #272e39;
-  --line-strong: #39424f;
+  /* Dark lines are translucent white rather than a fixed grey. A flat #272e39
+     hairline is invisible on --canvas and too loud on --surface-active; one
+     alpha value tracks whatever it is drawn over, which is what lets the same
+     `border-line` class work on a card, a menu and the sidebar edge.
 
-  --ring: #38d6ea; /* 11.02:1 on --canvas, 10.34:1 on --surface — SC 1.4.11 */
+     That alpha is also why every ratio here names the ground it was composited
+     over before being measured. A border paints over its own element's
+     background — `background-clip` is `border-box` — so a translucent line is
+     a different grey on an input well than on a switch track, and only the
+     composite has a contrast ratio at all. The three below are furniture and
+     exempt for the reasons the light block gives; `--line-control` is the one
+     held to 3:1, and both of its composites are worked out under it. */
+  --line-subtle: rgb(255 255 255 / 0.06); /*  1.17:1 over --surface — exempt  */
+  --line: rgb(255 255 255 / 0.1); /*  1.32:1 over --surface — container edge, exempt */
+  --line-strong: rgb(255 255 255 / 0.18); /*  1.75:1 over --surface — exempt  */
+
+  /* Over the --canvas-inset of an input well, a select trigger or a checkbox
+     this resolves to #727272: 3.83:1 against that well and 3.73:1 against the
+     --surface behind it. Over the lighter --surface-active of a switch track
+     it resolves to #828282: 3.51:1 and 4.64:1. The switch track is the
+     binding case in both themes, and 0.4 is where the worse of the two pairs
+     clears 3:1 with room left rather than landing on it. — SC 1.4.11 */
+  --line-control: rgb(255 255 255 / 0.4);
+
+  --ring: #a1a1a1; /*  7.66:1 on --canvas, 6.94:1 on --surface — SC 1.4.11 */
+
+  --selection: #6b6b6b; /*  3.72:1 on --canvas, 3.36:1 on --surface           */
+  --selection-fg: #fafafa; /*  5.11:1 on --selection — AA                     */
 
   /* Dark inverts the accent relationship: a bright fill carrying dark ink.
-     A deep teal button on a near-black canvas is technically legible and
+     A near-black button on a near-black canvas is technically legible and
      visually dead; the bright fill is what makes a primary action read as
      the primary action at a glance. */
-  --accent: #2ac9e0; /*  9.69:1 against --canvas as a filled control          */
-  --accent-hover: #4fd8ea;
-  --accent-fg: #04222a; /*  8.31:1 on --accent, 9.74:1 on --accent-hover — AA  */
-  --accent-text: #4fd8ea; /* 11.37:1 on --canvas, 10.67:1 on --surface — AA      */
-  --accent-tint: #082129;
-  --accent-line: #12414d;
+  --accent: #e5e5e5; /* 15.72:1 against --canvas as a filled control         */
+  --accent-hover: #ffffff;
+  --accent-fg: #171717; /* 14.23:1 on --accent, 17.93:1 on --accent-hover — AAA */
+  --accent-text: #fafafa; /* 18.97:1 on --canvas, 17.18:1 on --surface — AAA      */
+  --accent-tint: #262626;
+  --accent-line: rgb(255 255 255 / 0.14); /*  1.56:1 over --accent-tint — exempt */
 
-  --success: #3fcf6e; /*  9.54:1 against --canvas                             */
+  /* Status ramps — see the light block for why every `--*-line` here is
+     annotated as exempt rather than raised to 3:1. */
+  --success: #3fcf6e; /*  9.77:1 against --canvas                             */
   --success-fg: #04240f; /*  8.19:1 on --success — AA                            */
-  --success-text: #5fdd87; /* 11.21:1 on --canvas, 9.49:1 on --success-tint — AA   */
+  --success-text: #5fdd87; /* 11.48:1 on --canvas, 9.49:1 on --success-tint — AA   */
   --success-tint: #0e2417;
-  --success-line: #1d4a2c;
+  --success-line: #1d4a2c; /*  1.61:1 on --success-tint — alert edge, exempt   */
 
-  --warning: #f5c542; /* 11.92:1 against --canvas                             */
+  --warning: #f5c542; /* 12.21:1 against --canvas                             */
   --warning-fg: #2a1f02; /* 10.00:1 on --warning — AA                            */
-  --warning-text: #f7ce5e; /* 12.84:1 on --canvas, 10.56:1 on --warning-tint — AA  */
+  --warning-text: #f7ce5e; /* 13.15:1 on --canvas, 10.56:1 on --warning-tint — AA  */
   --warning-tint: #2a2109;
-  --warning-line: #5a4713;
+  --warning-line: #5a4713; /*  1.78:1 on --warning-tint — alert edge, exempt   */
 
   /* Danger keeps white-on-red in both themes. Dark ink on red reads as a
      decorative chip; white on red is the shape people already recognise as
      "this destroys something". */
-  --danger: #d93a36; /*  4.24:1 against --canvas                             */
+  --danger: #d93a36; /*  4.35:1 against --canvas                             */
   --danger-hover: #c22f2c;
   --danger-fg: #ffffff; /*  4.56:1 on --danger, 5.62:1 on --danger-hover — AA  */
-  --danger-text: #ff7b74; /*  7.67:1 on --canvas, 6.97:1 on --danger-tint — AA   */
+  --danger-text: #ff7b74; /*  7.86:1 on --canvas, 6.97:1 on --danger-tint — AA   */
   --danger-tint: #2c1113;
-  --danger-line: #5c2225;
+  --danger-line: #5c2225; /*  1.43:1 on --danger-tint — alert edge, exempt     */
 
-  --production: #ff7a2f; /*  7.43:1 against --canvas                             */
+  --production: #ff7a2f; /*  7.61:1 against --canvas                             */
   --production-fg: #2a1102; /*  6.85:1 on --production — AA                         */
-  --production-text: #ff9a5c; /*  9.23:1 on --canvas, 8.02:1 on the tint — AA         */
+  --production-text: #ff9a5c; /*  9.45:1 on --canvas, 8.24:1 on the tint — AA         */
   --production-tint: #2a1608;
-  --production-line: #66330f;
+  --production-line: #66330f; /*  1.68:1 on --production-tint — exempt; the
+                                  badge is carried by its uppercase label and
+                                  the hazard hatching, never by this edge.    */
 
   /* Shadows are nearly invisible against a near-black canvas, so elevation in
      dark is carried by a lifted border plus a very soft ambient shadow. */
   --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.4);
   --shadow-overlay: 0 12px 24px -8px rgb(0 0 0 / 0.6), 0 32px 64px -24px rgb(0 0 0 / 0.5);
+
+  /* The one place a hairline is drawn *inside* an element rather than around
+     it: the top edge of a raised control, catching light the way a physical
+     key does. Used by `Kbd` and the composer-style floating panels. */
+  --sheen: inset 0 1px 0 rgb(255 255 255 / 0.08);
 }
 
 /* ───────────────────────────────────────────────────────────────────────────
@@ -208,6 +339,7 @@
   --color-line-subtle: var(--line-subtle);
   --color-line: var(--line);
   --color-line-strong: var(--line-strong);
+  --color-line-control: var(--line-control);
 
   --color-ring: var(--ring);
 
@@ -245,14 +377,22 @@
 
   --shadow-raised: var(--shadow-raised);
   --shadow-overlay: var(--shadow-overlay);
+  --shadow-sheen: var(--sheen);
 
-  /* A tighter radius scale than Tailwind's default. Secret managers are
-     dense, tabular tools; softer corners make dense rows read as mush. */
-  --radius-sm: 0.25rem;
-  --radius-md: 0.375rem;
-  --radius-lg: 0.5rem;
-  --radius-xl: 0.75rem;
-  --radius-2xl: 1rem;
+  /* The scale is anchored on 0.625rem — `lg`, the radius of a nav row, a menu
+     and a popover. Everything else steps out from there in 2px increments.
+
+     This replaced a deliberately tighter scale, whose reasoning was that soft
+     corners make dense table rows read as mush. That holds for the rows
+     themselves, which is why `sm` and `md` stayed small — a table cell and an
+     input are still crisp. What changed is the containers: at 14px a card
+     reads as one object instead of a rectangle with a border, and that is the
+     difference between a panel of data and a stack of fences. */
+  --radius-sm: 0.375rem; /*  6px — kbd chips, swatches, tag-sized controls   */
+  --radius-md: 0.5rem; /*  8px — buttons, inputs, table-row affordances    */
+  --radius-lg: 0.625rem; /* 10px — nav rows, menus, popovers, dropdowns      */
+  --radius-xl: 0.875rem; /* 14px — cards, dialogs, the composer-style panels */
+  --radius-2xl: 1.25rem; /* 20px — hero panels and the floating landing nav  */
 
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, 'SF Mono', 'Menlo', monospace;
@@ -333,9 +473,14 @@
     outline: none;
   }
 
+  /* Both halves of the pair are set here rather than letting the fill land
+     under whatever ink happens to be there. A selection dragged across muted
+     help text, a mono secret value and a heading has to stay one legible
+     block, and forcing the ink is what guarantees the measured ratio in the
+     token block is the ratio every selected glyph actually gets. */
   ::selection {
-    background-color: var(--accent-tint);
-    color: var(--fg);
+    background-color: var(--selection);
+    color: var(--selection-fg);
   }
 
   ::placeholder {
@@ -343,15 +488,22 @@
   }
 
   /* Scrollbars follow the theme rather than the OS default, which is jarringly
-     bright against a near-black canvas on Windows. */
+     bright against a near-black canvas on Windows. The thumb takes the control
+     token, not the hairline one it used to: it is a thing you grab and drag,
+     so it is a control by any reading of SC 1.4.11, and a 1.48:1 thumb is one
+     a low-vision user cannot aim at. */
   * {
-    scrollbar-color: var(--line-strong) transparent;
+    scrollbar-color: var(--line-control) transparent;
     scrollbar-width: thin;
   }
 
-  /* Firefox renders a focus ring on scrollable regions; keep it consistent. */
+  /* Contained on the x axis only: a trackpad swipe across a wide table must
+     not become the browser's back gesture. The y axis is deliberately left to
+     chain — these regions scroll horizontally at most, and containing both
+     axes made every table a dead zone for the page's own scroll: the wheel
+     stopped working the moment the cursor crossed onto a list. */
   [data-scroll-region] {
-    overscroll-behavior: contain;
+    overscroll-behavior-x: contain;
   }
 }
 
@@ -433,11 +585,360 @@
   );
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   The public site
+
+   Rules used only by the marketing pages, the blog and the legal pages —
+   never by the dashboard. They live here rather than in a page-scoped file
+   because the header, the footer and eight different pages all share them.
+
+   Unlayered, like the shell geometry above: these express layout invariants
+   (one measure for the whole site, one reveal animation) that a stray utility
+   class must not be able to win against by accident.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* One measure. The gutter grows with the viewport so the text block never
+   touches the edge of a phone and never floats in the middle of a 27" display
+   with 400px of nothing beside it. */
+.x-container {
+  width: 100%;
+  max-width: var(--site-width);
+  margin-inline: auto;
+  padding-inline: 1.25rem;
+}
+
+@media (min-width: 640px) {
+  .x-container {
+    padding-inline: 2rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .x-container {
+    padding-inline: 2.5rem;
+  }
+}
+
+/* ── The section directly under a full-height hero ────────────────────────
+   A screen-height hero ends in a band of deliberate emptiness — that is what
+   centring the copy costs. The section beneath it then adds its own generous
+   top padding on top of that emptiness, and the two together read as a hole
+   rather than as breathing room.
+
+   So the first section after such a hero starts tight. Expressed here as a
+   sibling rule rather than as a prop threaded through six pages, because it
+   is a fact about the *arrangement* — "you follow a full-height hero" — and
+   not a decision any individual page should be able to get wrong.
+
+   Scoped to `Section` deliberately. A page that puts a bare `Container` under
+   the hero — `/blog` does — has no top padding to trim in the first place,
+   and a rule that *added* some would be this same fix making the gap worse on
+   the one page it was not needed.
+
+   Unlayered, so it beats the `py-*` utility the container already carries. */
+.x-hero-screen + section > .x-container {
+  padding-top: 2.5rem;
+}
+
+@media (min-width: 640px) {
+  .x-hero-screen + section > .x-container {
+    padding-top: 3rem;
+  }
+}
+
+/* ── Scroll reveal ────────────────────────────────────────────────────────
+   Content lifts in as it enters the viewport. The `Reveal` component (see
+   components/marketing/reveal.tsx) does nothing but observe intersection and
+   set `data-shown`; the geometry is all here, so a page can reveal a hundred
+   elements without shipping a hundred inline styles.
+
+   ── Why the hidden state is safe ──
+   `opacity: 0` at rest means content is invisible until something sets the
+   attribute. Two escape hatches make that safe rather than reckless:
+
+     1. `<noscript>` in the root layout unhides everything, so a reader with
+        JavaScript off gets the page rather than a blank column.
+     2. The reduced-motion block at the foot of this file resets the rule
+        entirely — not merely to a 0.01ms duration, which for a *transition*
+        out of `opacity: 0` would still depend on the attribute arriving.
+
+   Anything that would be genuinely lost if the observer never ran — the h1,
+   the primary call to action — is not wrapped in a Reveal at all. Motion is
+   for the sections below the fold. */
+/* ── Why an animation and not a transition ──
+   This was a `transition` on `opacity` and `transform`, and it was wrong in a
+   way that only showed up once pages started adding hover states.
+
+   These rules are unlayered, and unlayered CSS outranks every cascade layer —
+   including Tailwind's `utilities`. So `.x-reveal-group > *` setting the
+   `transition` *shorthand* silently deleted any `transition-colors` a card
+   carried, and a hover border on a direct child of a reveal group snapped
+   instead of easing. Worse, a `hover:-translate-y-*` inherited the 460ms
+   reveal curve, because the shorthand had claimed `transform` too.
+
+   A keyframe animation has no such conflict: `animation` and `transition` are
+   separate properties, so a child keeps its own hover transitions untouched.
+
+   `animation-fill-mode: backwards` rather than `both` is the other half of it.
+   `both` would keep applying the final keyframe — including `transform: none` —
+   for the life of the element, which blocks a hover transform forever.
+   `backwards` applies the *first* keyframe during any delay and then hands the
+   element back to its ordinary computed style once the animation ends, which
+   is exactly the lifecycle an entrance wants.
+
+   460ms, not the 620ms this started at: the observer fires as a section clears
+   the fold, so the animation runs while the reader's eye is already on the
+   content, and a longer curve does not read as "graceful" — it reads as a
+   section that has not loaded yet. */
+@keyframes reveal-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem);
+  }
+}
+
+.x-reveal {
+  opacity: 0;
+}
+
+.x-reveal[data-shown] {
+  opacity: 1;
+  animation: reveal-in 460ms cubic-bezier(0.16, 1, 0.3, 1) var(--reveal-delay, 0ms) backwards;
+}
+
+/* A group reveals its direct children in sequence from a single observer.
+   The alternative — one observer per card — costs a component instance and an
+   inline style for every tile on the page, and produces a ragged entrance
+   because each card crosses the threshold at its own moment. Here the row
+   arrives as a row. The ramp stops at the sixth child: beyond that the delay
+   is longer than a reader will wait, and everything after simply joins in. */
+.x-reveal-group > * {
+  opacity: 0;
+}
+
+.x-reveal-group[data-shown] > * {
+  opacity: 1;
+  animation: reveal-in 460ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+.x-reveal-group[data-shown] > *:nth-child(2) {
+  animation-delay: 70ms;
+}
+.x-reveal-group[data-shown] > *:nth-child(3) {
+  animation-delay: 140ms;
+}
+.x-reveal-group[data-shown] > *:nth-child(4) {
+  animation-delay: 210ms;
+}
+.x-reveal-group[data-shown] > *:nth-child(5) {
+  animation-delay: 280ms;
+}
+.x-reveal-group[data-shown] > *:nth-child(n + 6) {
+  animation-delay: 350ms;
+}
+
+/* ── Ambient hero wash ────────────────────────────────────────────────────
+   A single soft radial bloom behind the hero, drawn from the brand gradient's
+   own cyan rather than from a palette token — it is the one place on the site
+   where the mark's colour is allowed to bleed onto the page. Very low alpha:
+   the point is that you notice the page has depth, not that you notice a
+   gradient. `pointer-events: none` because it sits over the canvas and under
+   the copy, and it must never eat a click. */
+.x-hero-glow {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.x-hero-glow::before {
+  content: '';
+  position: absolute;
+  top: -40%;
+  left: 50%;
+  width: min(72rem, 130%);
+  aspect-ratio: 1;
+  translate: -50% 0;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, #2380e2 14%, transparent) 0%,
+    color-mix(in srgb, #3ad4ec 6%, transparent) 38%,
+    transparent 68%
+  );
+}
+
+:root[data-theme='dark'] .x-hero-glow::before {
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, #2380e2 20%, transparent) 0%,
+    color-mix(in srgb, #2a3fd0 10%, transparent) 40%,
+    transparent 70%
+  );
+}
+
+/* The hairline grid under the hero glow. Structure, faintly — a secrets
+   product should read as engineered, and a grid is the cheapest honest way to
+   say so. Masked to fade out before it reaches the copy. */
+.x-grid-lines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(to right, var(--line-subtle) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--line-subtle) 1px, transparent 1px);
+  background-size: 4rem 4rem;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, #000 0%, transparent 75%);
+}
+
+/* ── The gradient rule ────────────────────────────────────────────────────
+   A hairline that fades to nothing at both ends, used to close a section
+   without the hard stop of a full-width border. */
+.x-rule {
+  height: 1px;
+  border: 0;
+  background: linear-gradient(to right, transparent, var(--line), transparent);
+}
+
+/* ── The footer sign-off ──────────────────────────────────────────────────
+   The oversized wordmark at the base of every page.
+
+   Its opacity is a rule here rather than a `text-fg/[0.05]` utility because
+   the two themes need different numbers to look like the same thing. Ink on
+   white loses contrast far faster than light on near-black at the same alpha:
+   the first version used one value for both and read as a faint smudge in
+   light and as almost nothing in dark.
+
+   These are tuned to sit clearly above the page's hairlines — you are meant
+   to see it — while staying well under the footer's own body text, so it
+   still reads as a mark rather than as a heading nobody labelled. */
+.x-footer-mark {
+  color: color-mix(in srgb, var(--fg) 16%, transparent);
+}
+
+:root[data-theme='dark'] .x-footer-mark {
+  color: color-mix(in srgb, var(--fg) 22%, transparent);
+}
+
+/* ── Theme toggle ─────────────────────────────────────────────────────────
+   Which face of the toggle is showing is decided by CSS from
+   `<html data-theme>`, not by React state.
+
+   That attribute is written by the inline bootstrap script before the first
+   paint, so the correct icon is painted immediately. Driving it from a
+   component instead would render the server's default on the first frame and
+   correct it after hydration — a sun that visibly flips to a moon on every
+   page load, in the corner of the screen, on every page of the site.
+
+   Both faces are always in the DOM, and `display: none` takes the hidden one
+   out of the accessibility tree along with its label. So the button's
+   accessible name is always the label of the half you can actually see. */
+.x-theme-when-light {
+  display: inline-flex;
+}
+
+.x-theme-when-dark {
+  display: none;
+}
+
+:root[data-theme='dark'] .x-theme-when-light {
+  display: none;
+}
+
+:root[data-theme='dark'] .x-theme-when-dark {
+  display: inline-flex;
+}
+
+/* ── Compact accordion ────────────────────────────────────────────────────
+   The FAQ, built on `<details>`: it opens without JavaScript, it is in the
+   accessibility tree correctly by construction, and browsers already
+   implement the keyboard interaction that a hand-rolled accordion gets wrong.
+   These rules only remove the default marker and animate the chevron. */
+.x-faq summary::-webkit-details-marker {
+  display: none;
+}
+
+.x-faq summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.x-faq summary .x-faq-chevron {
+  transition: rotate 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.x-faq details[open] summary .x-faq-chevron {
+  rotate: 180deg;
+}
+
+/* ── The billing period control ───────────────────────────────────────────
+   /pricing shows a monthly and a yearly figure for every plan, and both are in
+   the markup: CSS reveals whichever the checked radio names.
+
+   State would have been the obvious implementation and is the wrong one here.
+   A `useState` toggle turns the four plan cards into a client island, and on a
+   slow connection the page paints $9, the bundle lands, and the number changes
+   under the reader — on the one page where a price that moves on its own costs
+   trust. This way the correct figure is in the server-rendered HTML, and the
+   toggle works before, during and without JavaScript.
+
+   The selector is the general sibling combinator from `:checked`, which is why
+   /pricing puts both radios first and everything they govern in one wrapper
+   beside them. `:has()` would allow a freer shape and a worse support floor.
+
+   `display: none` on the figure that is not showing, never `visibility` or
+   `opacity`: the hidden one has to leave the accessibility tree, or every card
+   announces two prices one after the other. */
+.x-price-yearly {
+  display: none;
+}
+
+.x-billing-yearly:checked ~ .x-billing-body .x-price-monthly {
+  display: none;
+}
+
+.x-billing-yearly:checked ~ .x-billing-body .x-price-yearly {
+  display: block;
+}
+
+/* The selected half of the segmented control. Unlayered, so it wins over the
+   resting `text-fg-muted` the label carries as a utility. */
+.x-billing-monthly:checked ~ .x-billing-body [data-billing='monthly'],
+.x-billing-yearly:checked ~ .x-billing-body [data-billing='yearly'] {
+  background: var(--surface);
+  color: var(--fg);
+  box-shadow: var(--shadow-raised);
+}
+
+/* The inputs are `sr-only`, so the base `:focus-visible` outline would be drawn
+   around a clipped 1px box nobody can see. It is drawn on the label the input
+   names instead — same treatment, moved to where the eye already is. Without
+   this the control is operable by keyboard and invisible to one. */
+.x-billing-monthly:focus-visible ~ .x-billing-body [data-billing='monthly'],
+.x-billing-yearly:focus-visible ~ .x-billing-body [data-billing='yearly'] {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 /* Honour the OS setting. Motion here is decorative — a dialog that appears
    instantly is a dialog that works. The one exception is marked
    `data-motion="essential"`: a spinner that stops spinning stops telling the
    user anything, so it slows down instead of freezing. */
 @media (prefers-reduced-motion: reduce) {
+  /* Reset rather than shorten. The generic rule below collapses every
+     animation to a single 0.01ms iteration, which for the reveal would still
+     leave content at `opacity: 0` until the observer fires — a reader who
+     asked for less motion would get a blank page if the script were slow.
+     Here the content simply starts where it ends up. */
+  .x-reveal,
+  .x-reveal-group > * {
+    opacity: 1;
+    transform: none;
+    animation: none !important;
+  }
+
   *,
   *::before,
   *::after {

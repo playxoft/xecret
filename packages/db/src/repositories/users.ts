@@ -158,6 +158,25 @@ export async function upsertUserFromIdentity(
 }
 
 /**
+ * Soft-deletes an account.
+ *
+ * The row survives because the audit log and `secret_versions.created_by`
+ * reference it — "who wrote this secret" must keep an answer after the author
+ * is gone. What ends is the *account*: `upsertUserFromIdentity` refuses to
+ * revive a soft-deleted row (`setWhere`), so the same Firebase identity can
+ * never sign in to it again. The caller is responsible for what surrounds the
+ * row — sessions, tokens, memberships — which is `deleteAccount` in the web
+ * layer, inside one transaction with this.
+ */
+export async function softDeleteUser(exec: Executor, userId: string): Promise<void> {
+  const now = new Date();
+  await exec
+    .update(users)
+    .set({ deletedAt: now, updatedAt: now })
+    .where(and(eq(users.id, userId), isNull(users.deletedAt)));
+}
+
+/**
  * Records that the user authenticated.
  *
  * Deliberately does not touch `updated_at`: that column tracks changes to the

@@ -1,12 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api } from '@/lib/api';
 import { apiPath, withQuery } from '@/app/(dashboard)/_lib/paths';
 
 /**
- * Revealing every value in an environment at once.
+ * One decryption of a whole environment, and the two ways it is shown.
  *
  * ── One request, one audit record ──
  * This calls `GET …/pull?format=json`, which decrypts the whole environment
@@ -24,43 +24,57 @@ import { apiPath, withQuery } from '@/app/(dashboard)/_lib/paths';
  * exporting the whole environment to a file — which is strictly worse for the
  * secrets involved.
  *
- * ── The same protections as a single reveal ──
- * The values live in React state only. They are dropped on a timer, when the tab
- * is hidden, when the window loses focus, and on unmount — the same rules
- * `SecretValue` applies to one value, applied to all of them. The window is
- * deliberately shorter than a single reveal's: sixty credentials on screen is a
- * bigger screenshot than one.
+ * ── Decrypted once, displayed in two ways ──
+ * `reveal` puts every value on screen. `load` performs the same decryption and
+ * shows nothing, which is what "Reveal on hover" runs on: the table then
+ * un-masks one row at a time as the pointer moves. Both share this cache, so
+ * turning hover mode on and then pressing "Reveal all" costs one request, not
+ * two, and neither writes a second audit record.
+ *
+ * ── Masking and forgetting are two different things ──
+ * `hide` masks: the plaintexts stay in state and showing them again is free.
+ * They are dropped outright when the window ends, when the environment changes,
+ * and on unmount. Mirrors `SecretValue`, and the note in its header about what
+ * the audit log does and does not claim applies here too.
  */
 
-/** Shorter than `SecretValue`'s 30s: this is the whole environment, not one row. */
-const REVEAL_DURATION_MS = 20_000;
+/** Matches `SecretValue`'s window, so both controls forget at the same pace. */
+const REVEAL_DURATION_MS = 180_000;
 
 export interface RevealAll {
-  /** Name → plaintext while revealed; `null` otherwise. */
+  /** Name → plaintext for as long as the window lasts; `null` once dropped. */
   values: Readonly<Record<string, string>> | null;
+  /** Whether every value is currently on screen. */
   revealed: boolean;
   loading: boolean;
   error: string | null;
-  secondsLeft: number;
+  /** Decrypt if needed, then show everything. */
   reveal: () => void;
+  /** Mask everything, keeping the plaintexts for the rest of the window. */
   hide: () => void;
+  /** Decrypt if needed and show nothing — for a caller that reveals per row. */
+  load: () => void;
 }
 
 export function useRevealAll(orgSlug: string, projectSlug: string, envSlug: string): RevealAll {
   const [values, setValues] = useState<Readonly<Record<string, string>> | null>(null);
+  const [shown, setShown] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [secondsLeft, setSecondsLeft] = useState(0);
 
-  const hide = useCallback(() => {
+  const path = apiPath.pull(orgSlug, projectSlug, envSlug);
+
+  const hide = useCallback(() => setShown(false), []);
+
+  const forget = useCallback(() => {
     // Dropping the plaintexts from state is the point: they must not survive in
     // a React fibre for the rest of the page's life, where the next error
     // boundary or dev-tools inspection would surface every one of them.
     setValues(null);
-    setSecondsLeft(0);
+    setShown(false);
   }, []);
 
-  // Any change of environment hides immediately. Without this, navigating from
+  // Any change of environment forgets immediately. Without this, navigating from
   // dev to production with values on screen would leave dev's plaintexts
   // rendered under production's heading for a frame.
   //
@@ -70,85 +84,117 @@ export function useRevealAll(orgSlug: string, projectSlug: string, envSlug: stri
   // would be on screen for that frame, which is the entire thing being
   // prevented. State, not a ref, because a ref read during render cannot
   // schedule the re-render this needs.
-  const path = apiPath.pull(orgSlug, projectSlug, envSlug);
   const [renderedPath, setRenderedPath] = useState(path);
   if (renderedPath !== path) {
     setRenderedPath(path);
-    if (values !== null) hide();
+    if (values !== null) forget();
   }
 
-  const reveal = useCallback(() => {
-    setError(null);
-    setLoading(true);
+  // The request in flight, so a second click cannot start a second decryption
+  // of the same environment, and so a response for the environment the user has
+  // just navigated away from is discarded rather than shown under the new one.
+  const inFlight = useRef<AbortController | null>(null);
+  const showWhenLoaded = useRef(false);
 
-    api
-      .get<Record<string, unknown>>(withQuery(path, { format: 'json' }))
-      .then((document) => {
-        // The pull endpoint answers with a flat `{ NAME: value }` document.
-        // Non-string members are dropped rather than coerced: `String(…)` on an
-        // unexpected shape would put `[object Object]` in a field people are
-        // about to copy into a terminal.
-        const plaintexts: Record<string, string> = {};
-        for (const [name, value] of Object.entries(document)) {
-          if (typeof value === 'string') plaintexts[name] = value;
-        }
+  useEffect(
+    () => () => {
+      inFlight.current?.abort();
+      inFlight.current = null;
+      setLoading(false);
+    },
+    [path],
+  );
 
-        setValues(plaintexts);
-        setSecondsLeft(Math.ceil(REVEAL_DURATION_MS / 1000));
-        setLoading(false);
-      })
-      .catch(() => {
-        // Nothing from the thrown value is kept beyond a fixed string. A failure
-        // on this path is a failure to decrypt an environment, and its detail is
-        // the server's business — see the note in `lib/api.ts` about bodies.
-        setError('Could not reveal these values.');
-        setLoading(false);
-      });
-  }, [path]);
+  const request = useCallback(
+    (show: boolean) => {
+      setError(null);
 
-  // Auto-hide. Values left on screen are values in every subsequent screenshot,
-  // screen share and shoulder-surf — multiplied by the size of the environment.
+      if (values !== null) {
+        if (show) setShown(true);
+        return;
+      }
+
+      if (inFlight.current !== null) {
+        // "Reveal all" pressed while hover mode's silent load is still out:
+        // upgrade that request rather than issuing another one.
+        if (show) showWhenLoaded.current = true;
+        return;
+      }
+
+      const controller = new AbortController();
+      inFlight.current = controller;
+      showWhenLoaded.current = show;
+      setLoading(true);
+
+      api
+        .get<Record<string, unknown>>(withQuery(path, { format: 'json' }), {
+          signal: controller.signal,
+        })
+        .then((document) => {
+          if (controller.signal.aborted) return;
+
+          // The pull endpoint answers with a flat `{ NAME: value }` document.
+          // Non-string members are dropped rather than coerced: `String(…)` on an
+          // unexpected shape would put `[object Object]` in a field people are
+          // about to copy into a terminal.
+          const plaintexts: Record<string, string> = {};
+          for (const [name, value] of Object.entries(document)) {
+            if (typeof value === 'string') plaintexts[name] = value;
+          }
+
+          setValues(plaintexts);
+          setShown(showWhenLoaded.current);
+          setLoading(false);
+        })
+        .catch(() => {
+          if (controller.signal.aborted) return;
+          // Nothing from the thrown value is kept beyond a fixed string. A failure
+          // on this path is a failure to decrypt an environment, and its detail is
+          // the server's business — see the note in `lib/api.ts` about bodies.
+          setError('Could not reveal these values.');
+          setLoading(false);
+        })
+        .finally(() => {
+          if (inFlight.current === controller) inFlight.current = null;
+        });
+    },
+    [path, values],
+  );
+
+  const reveal = useCallback(() => request(true), [request]);
+  const load = useCallback(() => request(false), [request]);
+
+  // The end of the window, counted from the decryption rather than from the last
+  // time the values happened to be on screen.
   useEffect(() => {
     if (values === null) return;
 
-    // Its own timeout rather than a side effect inside the counter's updater:
-    // state updaters must stay pure, and hanging security-relevant behaviour off
-    // a once-per-second tick would let a throttled background tab hold sixty
-    // credentials on screen indefinitely.
-    const hideAt = setTimeout(hide, REVEAL_DURATION_MS);
-    const tick = setInterval(() => setSecondsLeft((current) => Math.max(current - 1, 0)), 1000);
+    const forgetAt = setTimeout(forget, REVEAL_DURATION_MS);
+    return () => clearTimeout(forgetAt);
+  }, [values, forget]);
 
-    return () => {
-      clearTimeout(hideAt);
-      clearInterval(tick);
-    };
-  }, [values, hide]);
-
-  // Hide the moment the tab is hidden or the window loses focus: switching to a
-  // call, or starting a screen share, must not leave an environment's worth of
-  // credentials visible in a background tab that gets restored later.
+  // Mask the moment the tab is hidden: starting a screen share must not leave an
+  // environment's worth of credentials visible in a background tab that gets
+  // restored later. Only `visibilitychange` — see the note in `SecretValue`
+  // about why `blur` is not in this list.
   useEffect(() => {
-    if (values === null) return;
+    if (!shown) return;
 
     const onVisibility = () => {
       if (document.visibilityState === 'hidden') hide();
     };
 
     document.addEventListener('visibilitychange', onVisibility);
-    window.addEventListener('blur', hide);
-    return () => {
-      document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('blur', hide);
-    };
-  }, [values, hide]);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, [shown, hide]);
 
   return {
     values,
-    revealed: values !== null,
+    revealed: shown && values !== null,
     loading,
     error,
-    secondsLeft,
     reveal,
     hide,
+    load,
   };
 }

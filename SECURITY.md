@@ -5,7 +5,12 @@ a problem early and awkwardly than late and publicly.
 
 ## Reporting a vulnerability
 
-**Email:** security@playxoft.com
+Two private channels, either is fine:
+
+- **GitHub:** [open a private security advisory](https://github.com/playxoft/xecret/security/advisories/new) —
+  the report stays between you and the maintainers, and the eventual advisory
+  is published from the same thread.
+- **Email:** security@playxoft.com
 
 Please do **not** open a public GitHub issue for a security problem.
 

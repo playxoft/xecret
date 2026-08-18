@@ -27,6 +27,8 @@ export interface PinRecord extends PinAttemptState {
   userId: string;
   /** `pbkdf2-sha256$<iterations>$<salt>$<hash>`. Opaque to this module. */
   pinHash: string;
+  /** Minutes of dashboard idleness before the client locks itself; `0` never. */
+  autoLockMinutes: number;
   updatedAt: Date;
 }
 
@@ -35,6 +37,7 @@ const PIN_COLUMNS = {
   pinHash: userPins.pinHash,
   failedAttempts: userPins.failedAttempts,
   lockedUntil: userPins.lockedUntil,
+  autoLockMinutes: userPins.autoLockMinutes,
   updatedAt: userPins.updatedAt,
 } as const;
 
@@ -51,6 +54,28 @@ export async function findPinForUser(exec: Executor, userId: string): Promise<Pi
 
 export async function hasPin(exec: Executor, userId: string): Promise<boolean> {
   return (await findPinForUser(exec, userId)) !== null;
+}
+
+/**
+ * Changes how long the dashboard may sit idle before locking itself.
+ *
+ * The value is validated by the caller against `AUTO_LOCK_MINUTES_OPTIONS` and
+ * again by the table's CHECK; this module only stores, as ever. No row means
+ * no PIN — there is nothing an idle timer could ask for — so the update
+ * refusing to invent one is the correct answer, not an error to paper over.
+ */
+export async function setAutoLockMinutes(
+  exec: Executor,
+  userId: string,
+  minutes: number,
+): Promise<PinRecord | null> {
+  const [row] = await exec
+    .update(userPins)
+    .set({ autoLockMinutes: minutes, updatedAt: sql`now()` })
+    .where(eq(userPins.userId, userId))
+    .returning(PIN_COLUMNS);
+
+  return row ?? null;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { and, asc, count, eq, isNull } from 'drizzle-orm';
+import { and, asc, count, eq, isNull, sql } from 'drizzle-orm';
 import type { AccessLevel, OrgRole } from '@xecret/core/authz';
 import { uuidv7 } from '@xecret/core/ids';
 import { accessGrants } from '../schema/access';
@@ -160,6 +160,39 @@ export function toAuthorizationContext(
   };
 }
 
+/**
+ * One member with the person behind them, or `null`.
+ *
+ * The route layer reaches for this whenever a member is the *target* of a
+ * change: the audit record needs their address, and the member page needs
+ * their identity. The soft-deleted-user join matches `membersPageQuery` — a
+ * member whose account is gone is not a row anyone may act on.
+ */
+export async function findMemberWithUser(
+  exec: Executor,
+  orgId: string,
+  memberId: string,
+): Promise<MemberListEntry | null> {
+  const [row] = await exec
+    .select({
+      ...MEMBER_COLUMNS,
+      seatAssigned: orgMembers.seatAssigned,
+      createdAt: orgMembers.createdAt,
+      user: {
+        id: users.id,
+        email: users.email,
+        displayName: users.displayName,
+        avatarUrl: users.avatarUrl,
+      },
+    })
+    .from(orgMembers)
+    .innerJoin(users, and(eq(users.id, orgMembers.userId), isNull(users.deletedAt)))
+    .where(and(eq(orgMembers.id, memberId), eq(orgMembers.orgId, orgId)))
+    .limit(1);
+
+  return row ?? null;
+}
+
 export async function listMembers(
   exec: Executor,
   orgId: string,
@@ -288,6 +321,29 @@ export async function suspendMember(exec: Executor, params: MemberRef): Promise<
   });
 }
 
+/**
+ * Reverses a suspension.
+ *
+ * No last-owner guard: adding an active member back can only strengthen the
+ * ownership invariant, never violate it. The transaction and lock are still
+ * taken so the write serialises with the guards that do count owners — a
+ * reinstatement racing a demotion must not slip between its count and commit.
+ */
+export async function reinstateMember(exec: Executor, params: MemberRef): Promise<MemberRecord> {
+  return exec.transaction(async (tx) => {
+    const member = await lockOrgAndLoadMember(tx, params.orgId, params.memberId);
+
+    const [row] = await tx
+      .update(orgMembers)
+      .set({ status: 'active', updatedAt: new Date() })
+      .where(and(eq(orgMembers.id, member.id), eq(orgMembers.orgId, params.orgId)))
+      .returning(MEMBER_COLUMNS);
+
+    if (!row) throw new RepositoryError('notFound', 'Member not found in this organisation.');
+    return row;
+  });
+}
+
 export interface AccessGrantParams {
   orgId: string;
   memberId: string;
@@ -397,6 +453,32 @@ export async function listGrantsForMember(
   memberId: string,
 ): Promise<MemberGrant[]> {
   return memberGrantsQuery(exec, { orgId, memberId });
+}
+
+/**
+ * Every grant in the organisation, each row naming its member.
+ *
+ * One query instead of one per member, for the callers that answer a question
+ * across the whole roster — "which projects can each member reach" on the
+ * member list. The `projects` join carries the same tenancy assertion as
+ * `memberGrantsQuery`: a grant row pointing at another tenant's project, or at
+ * a soft-deleted one, does not come back.
+ */
+export async function listGrantsForOrganization(
+  exec: Executor,
+  orgId: string,
+): Promise<(MemberGrant & { memberId: string })[]> {
+  return exec
+    .select({ ...GRANT_COLUMNS, memberId: accessGrants.orgMemberId })
+    .from(accessGrants)
+    .innerJoin(
+      projects,
+      and(
+        eq(projects.id, accessGrants.projectId),
+        eq(projects.orgId, orgId),
+        isNull(projects.deletedAt),
+      ),
+    );
 }
 
 export interface OwnershipChange {
@@ -658,4 +740,66 @@ async function requireProjectScope(
 function clampPageNumber(requested: number | undefined): number {
   if (requested === undefined || !Number.isFinite(requested)) return 1;
   return Math.max(Math.trunc(requested), 1);
+}
+
+/** One organisation as account deletion sees it. */
+export interface AccountMembership {
+  orgId: string;
+  orgName: string;
+  /** The `org_members.id` of the leaver's row — what `removeMember` takes. */
+  memberId: string;
+  role: OrgRole;
+  status: MemberStatus;
+  /** Every membership row in the organisation, the leaver and any status included. */
+  totalMembers: number;
+  /** Active owners including the leaver, when they are one. */
+  activeOwners: number;
+}
+
+/**
+ * Every live organisation a user belongs to, with the counts that decide what
+ * their departure means: alone → the organisation goes with them; the only
+ * active owner among others → they cannot leave until ownership moves;
+ * otherwise → plain removal.
+ *
+ * One statement, counts included, so the deletion transaction classifies from
+ * a single consistent read rather than from N follow-up queries that can each
+ * see a different moment. `totalMembers` counts every status on purpose: an
+ * organisation whose only other members are suspended is still somebody
+ * else's — suspension is reversible, so their presence keeps it alive, and
+ * the leaver's departure must not erase it under them.
+ *
+ * Ordered with the same tiebreaker as `organizationsForUserQuery`, for the same
+ * reason: `organizations.name` carries no unique constraint, and a deletion
+ * preview that lists the same organisations in a different order each time it is
+ * opened is a confirmation screen nobody can check.
+ */
+export async function accountMembershipSummary(
+  exec: Executor,
+  userId: string,
+): Promise<AccountMembership[]> {
+  return exec
+    .select({
+      orgId: organizations.id,
+      orgName: organizations.name,
+      memberId: orgMembers.id,
+      role: orgMembers.role,
+      status: orgMembers.status,
+      totalMembers: sql<number>`(
+        select count(*)::int from org_members counted
+        where counted.org_id = ${organizations.id}
+      )`,
+      activeOwners: sql<number>`(
+        select count(*)::int from org_members counted
+        where counted.org_id = ${organizations.id}
+          and counted.status = 'active' and counted.role = 'owner'
+      )`,
+    })
+    .from(orgMembers)
+    .innerJoin(
+      organizations,
+      and(eq(orgMembers.orgId, organizations.id), isNull(organizations.deletedAt)),
+    )
+    .where(eq(orgMembers.userId, userId))
+    .orderBy(asc(organizations.name), asc(organizations.id));
 }

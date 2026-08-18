@@ -8,7 +8,7 @@ import {
   authorizeSecretAction,
   enforceSecretRateLimit,
   restoreSecretVersion,
-  writerUserId,
+  secretWriter,
 } from '@/server/secrets-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
 
@@ -43,7 +43,7 @@ export const POST = authenticatedRoute<Params>(
     const scope = await resolveEnvironmentPath(principal, params, services);
     authorizeSecretAction(scope, principal, 'secret.rotate');
 
-    const writer = writerUserId(principal);
+    const writer = secretWriter(principal);
     await enforceSecretRateLimit(services, principal, 'write');
 
     const name = secretNameFromPath(params.name);

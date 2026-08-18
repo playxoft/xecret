@@ -200,6 +200,27 @@ export async function listCliTokens(
 }
 
 /**
+ * One CLI token by id, for the revocation route's ownership check.
+ *
+ * "May I revoke this?" depends on whose device it is: anyone may kill their
+ * own, and killing someone else's requires `token.revoke`. Never selects
+ * `token_hash`, like every read in this file.
+ */
+export async function findCliTokenById(
+  exec: Executor,
+  orgId: string,
+  tokenId: string,
+): Promise<CliTokenSummary | undefined> {
+  const [row] = await exec
+    .select(cliTokenColumns)
+    .from(cliTokens)
+    .where(and(eq(cliTokens.orgId, orgId), eq(cliTokens.id, tokenId)))
+    .limit(1);
+
+  return row;
+}
+
+/**
  * Revokes a CLI token.
  *
  * Returns whether this call was the one that revoked it. Revoking an already
@@ -218,6 +239,23 @@ export async function revokeCliToken(
     .returning({ id: cliTokens.id });
 
   return rows.length > 0;
+}
+
+/**
+ * Revokes every live CLI token a user holds, across all organisations.
+ *
+ * The account-deletion path: a deleted account must not leave a laptop
+ * somewhere that can still read secrets. Returns how many this call revoked,
+ * for the audit record.
+ */
+export async function revokeAllCliTokensForUser(exec: Executor, userId: string): Promise<number> {
+  const rows = await exec
+    .update(cliTokens)
+    .set({ revokedAt: sql`now()` })
+    .where(and(eq(cliTokens.userId, userId), isNull(cliTokens.revokedAt)))
+    .returning({ id: cliTokens.id });
+
+  return rows.length;
 }
 
 /**

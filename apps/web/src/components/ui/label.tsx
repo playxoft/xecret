@@ -17,7 +17,7 @@ export function Label({ className, ...props }: LabelProps) {
   return (
     <LabelPrimitive.Root
       className={cn(
-        'text-fg text-[0.8125rem] leading-5 font-medium',
+        'text-fg text-sm leading-5 font-medium',
         // Matches the control's own disabled treatment when the field is off.
         'peer-disabled:text-fg-disabled',
         className,

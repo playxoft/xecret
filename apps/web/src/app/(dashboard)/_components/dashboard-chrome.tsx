@@ -1,17 +1,20 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import { api, isApiError, SIGN_IN_PATH } from '@/lib/api';
 import { AppShell, Wordmark } from '@/components/layout';
 import type { BreadcrumbItem, ShellOrganization } from '@/components/layout';
-import { Button, EmptyState, Skeleton, UsersIcon } from '@/components/ui';
+import { CreateOrganizationDialog } from '@/components/organizations';
+import { Button, EmptyState, PlusIcon, Skeleton, UsersIcon } from '@/components/ui';
 import { apiPath, appPath, parseDashboardPath } from '../_lib/paths';
 import { useDashboardNav } from './dashboard-nav';
 import type { DashboardLocation } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
+import { useAutoLock } from '../_lib/use-auto-lock';
+import { useLastVisitedOrg } from '../_lib/use-last-visited-org';
 import { ErrorState } from './resource-states';
 import { LockScreen } from './lock-screen';
 import { SessionProvider } from './session';
@@ -37,10 +40,55 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   const location = useMemo(() => parseDashboardPath(pathname), [pathname]);
   const session = useApiResource<MeResponse>(apiPath.me());
 
+  // Owned here, and only here, because the thing that has to change when an
+  // organisation is created is *this* component's session resource — the
+  // membership list every part of the shell is drawn from. Four components used
+  // to mount their own dialog and wire their own refresh; the two screens below
+  // the shell now open this one through `useSession().createOrganization`, so
+  // the behaviour after a successful create is written once.
+  const [creatingOrg, setCreatingOrg] = useState(false);
+  const openCreateOrganization = useCallback(() => setCreatingOrg(true), []);
+
+  // ── Which organisation the shell describes when the URL names none ──
+  //
+  // The account area — `/app/settings/*` — has no organisation in its path, and
+  // neither does the organisation picker. The sidebar used to empty itself out
+  // on those routes, which rearranged the shell underneath somebody who only
+  // opened their own settings; it now keeps describing an organisation. Which
+  // one matters more than it looks: every sidebar href, the switcher's label
+  // and the admin gate are computed from this one slug, so naming the wrong
+  // organisation sends "Projects" into a different tenant. See the note in
+  // `use-last-visited-org.ts` for why the first membership is not that answer.
+  //
+  // The remembered slug is only honoured if it is still a membership, so an
+  // organisation the viewer has been removed from cannot outlive their access
+  // to it. A cold load with nothing remembered falls back to the first
+  // membership — the shell has to name something, and there is nothing better
+  // to know at that point.
+  const lastVisitedOrgSlug = useLastVisitedOrg(location.orgSlug);
+  const memberships = session.data?.organizations;
+  const navOrgSlug =
+    location.orgSlug ??
+    memberships?.find((organization) => organization.slug === lastVisitedOrgSlug)?.slug ??
+    memberships?.[0]?.slug ??
+    null;
+
   // Built before the early returns below, because hooks cannot run
-  // conditionally. It issues no request until `orgSlug` is non-null, so the
-  // loading and locked paths cost nothing extra.
-  const nav = useDashboardNav(location);
+  // conditionally. It issues no request until there is an organisation in the
+  // *URL* — `projectsOrgSlug`, not the resolved slug — so the loading and
+  // locked paths, and the account area, cost nothing extra. The role is
+  // threaded in from the session resource because this runs above the
+  // SessionProvider, and is read for the same organisation the hrefs are built
+  // from, so the admin-only items can never describe one organisation's role
+  // over another's links.
+  const viewerRole =
+    memberships?.find((organization) => organization.slug === navOrgSlug)?.role ?? null;
+  const nav = useDashboardNav({
+    ...location,
+    orgSlug: navOrgSlug,
+    projectsOrgSlug: location.orgSlug,
+    viewerRole,
+  });
 
   // Locking re-reads the session, which re-renders this component and lands on
   // the lock screen. One code path for "we are locked", whether that came from
@@ -48,8 +96,32 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   const reloadSession = session.reload;
   const lock = useCallback(async () => {
     await api.post('/auth/pin/lock');
-    reloadSession();
+    // `void`, not awaited: `reload` returns a promise now, and nothing after
+    // this line depends on the answer — the re-render it causes is the whole
+    // point, and it is what lands on the lock screen. Left bare it was a
+    // floating promise, which is the shape a genuine forgotten `await` also has.
+    void reloadSession();
   }, [reloadSession]);
+
+  // The idle lock. Armed only while there is an unlock to lose; the interval
+  // comes from the account's setting on the security page, `0` disarms it.
+  const pinState = session.data?.pin;
+  useAutoLock(
+    pinState?.autoLockMinutes ?? 0,
+    pinState?.configured === true && pinState.unlocked,
+    lock,
+  );
+
+  // Built once and rendered in whichever branch below is reached — never in two
+  // at the same time. An element rather than a second `<CreateOrganizationDialog>`
+  // call site, so a prop added to it is added in one place.
+  const createOrganizationDialog = (
+    <CreateOrganizationDialog
+      open={creatingOrg}
+      onOpenChange={setCreatingOrg}
+      onCreated={reloadSession}
+    />
+  );
 
   if (session.loading) return <ChromeSkeleton />;
 
@@ -84,31 +156,50 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   }
 
   if (organizations.length === 0) {
-    // A personal organisation is created at first sign-in (`POST /api/auth/session`),
-    // so this is reachable only once every membership has been revoked. Saying
-    // so is more use than an empty projects list that never explains itself.
+    // An organisation is created at first sign-in (`POST /api/auth/session`), so
+    // this is reachable only once every membership is gone — removed by someone
+    // else, or deleted by this account itself on the organisation settings page.
+    //
+    // Starting a new one is offered first, and it is the reason this screen is
+    // not a dead end: without it, an owner who deleted their last organisation
+    // would be left on a page whose only way forward is to be invited by
+    // somebody else.
     return (
       <ChromeFrame>
         <EmptyState
           icon={<UsersIcon />}
           title="You are not a member of any organisation"
-          description="Every membership on this account has been removed. Ask an owner to invite you again, or sign in with a different account."
+          description="Create one to start again, ask an owner to invite you back, or sign in with a different account."
           action={
+            <Button variant="primary" onClick={openCreateOrganization}>
+              <PlusIcon className="size-4" />
+              New organisation
+            </Button>
+          }
+          secondaryAction={
             <Button variant="secondary" asChild>
               <a href={SIGN_IN_PATH}>Sign in with a different account</a>
             </Button>
           }
         />
+        {createOrganizationDialog}
       </ChromeFrame>
     );
   }
 
-  // Screens outside an organisation — the picker and account settings — still
-  // need the switcher to show something. The first membership is the sensible
-  // default: `listOrganizationsForUser` returns the personal organisation first.
+  // Resolved through `navOrgSlug` rather than repeating its fallback, so the
+  // switcher and the sidebar always name the same organisation. The two
+  // disagreeing would be worse than either of them being wrong on its own —
+  // a sidebar full of Zebra's links under a switcher reading "Acme" is a shell
+  // that cannot be trusted about where you are.
+  //
+  // The `?? organizations[0]` below is reached only when the URL names an
+  // organisation the viewer is not a member of — a typed or stale link, where
+  // the switcher has nothing truthful to show and `resolveOrg` answers the page
+  // behind it with a 404 regardless. It is not the account-area fallback; that
+  // one has already been applied above.
   const currentOrg =
-    organizations.find((organization) => organization.slug === location.orgSlug) ??
-    organizations[0];
+    organizations.find((organization) => organization.slug === navOrgSlug) ?? organizations[0];
 
   const shellOrganizations: readonly ShellOrganization[] = organizations.map((organization) => ({
     slug: organization.slug,
@@ -124,12 +215,15 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
         organizations,
         pin,
         lock,
+        refresh: reloadSession,
+        createOrganization: openCreateOrganization,
       }}
     >
       <AppShell
         nav={nav}
         organizations={shellOrganizations}
         currentOrgSlug={currentOrg?.slug ?? ''}
+        onCreateOrganization={openCreateOrganization}
         user={{ name: user.displayName ?? user.email, email: user.email }}
         accountHref={appPath.account()}
         onLock={lock}
@@ -137,6 +231,12 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
       >
         {children}
       </AppShell>
+
+      {/* Outside `AppShell` rather than inside the sidebar: the dialog is
+          portalled to the document either way, and keeping it here means the
+          mobile drawer closing does not unmount a form somebody is typing in.
+          Inside the provider, so every screen below can open it. */}
+      {createOrganizationDialog}
     </SessionProvider>
   );
 }

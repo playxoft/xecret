@@ -34,28 +34,81 @@
 
 const segment = encodeURIComponent;
 
+/**
+ * The host the dashboard is being served from — `xecret.playxoft.com` today,
+ * `xecret.dev` once that move happens.
+ *
+ * Read from the browser rather than pinned to a constant, so the one place a
+ * URL is *shown* to a person rather than navigated to stays true in every
+ * environment — localhost, staging, production — and survives the domain change
+ * without a code edit. `XECRET_PUBLIC_URL` is the server's answer to the same
+ * question, but it is a Cloudflare binding and so unreachable from a client
+ * component, which is where the question actually gets asked.
+ *
+ * Returns an empty string during server rendering, so callers must be mounted
+ * client-side only. Today's sole caller sits inside a Radix dialog, whose
+ * content stays unmounted until it opens.
+ */
+export function dashboardHost(): string {
+  return typeof window === 'undefined' ? '' : window.location.host;
+}
+
 /** Pages. Everything under `/app` requires a session. */
 export const appPath = {
   root: (): string => '/app',
   org: (org: string): string => `/app/${segment(org)}`,
   orgSettings: (org: string): string => `/app/${segment(org)}/settings`,
   members: (org: string): string => `/app/${segment(org)}/members`,
+  tokens: (org: string): string => `/app/${segment(org)}/tokens`,
+  audit: (org: string): string => `/app/${segment(org)}/audit`,
+  /** The invitation-acceptance page. Top-level: the visitor may have no session. */
+  invite: (token: string): string => `/invite/${segment(token)}`,
   project: (org: string, project: string): string => `${appPath.org(org)}/${segment(project)}`,
   environment: (org: string, project: string, env: string): string =>
     `${appPath.project(org, project)}/${segment(env)}`,
   environmentSettings: (org: string, project: string, env: string): string =>
     `${appPath.environment(org, project, env)}/settings`,
   account: (): string => '/app/settings/account',
+  settingsSecurity: (): string => '/app/settings/security',
+  settingsDanger: (): string => '/app/settings/danger',
 } as const;
 
 /** API routes, as documented in `docs/architecture/api.md` §4. */
 export const apiPath = {
   me: (): string => '/api/auth/me',
   sessions: (): string => '/api/auth/sessions',
+  account: (): string => '/api/auth/account',
+  pin: (): string => '/api/auth/pin',
+  pinLock: (): string => '/api/auth/pin/lock',
+  /** Requests a reset link to the account's own address. See `PinResetResult`. */
+  pinReset: (): string => '/api/auth/pin/reset',
   orgs: (): string => '/api/orgs',
+  /**
+   * Whether an organisation slug is free. Takes `?slug=`.
+   *
+   * A sibling of `/api/orgs/{orgSlug}` rather than a nested route, which works
+   * only because `availability` is in the reserved slug list — no organisation
+   * can claim it and shadow this.
+   */
+  orgSlugAvailability: (): string => '/api/orgs/availability',
   org: (org: string): string => `/api/orgs/${segment(org)}`,
   projects: (org: string): string => `${apiPath.org(org)}/projects`,
   members: (org: string): string => `${apiPath.org(org)}/members`,
+  member: (org: string, memberId: string): string => `${apiPath.members(org)}/${segment(memberId)}`,
+  memberGrants: (org: string, memberId: string): string =>
+    `${apiPath.member(org, memberId)}/grants`,
+  memberAccess: (org: string, memberId: string): string =>
+    `${apiPath.member(org, memberId)}/access`,
+  invitations: (org: string): string => `${apiPath.org(org)}/invitations`,
+  invitation: (org: string, invitationId: string): string =>
+    `${apiPath.invitations(org)}/${segment(invitationId)}`,
+  invitationLookup: (): string => '/api/invitations/lookup',
+  invitationAccept: (): string => '/api/invitations/accept',
+  serviceTokens: (org: string): string => `${apiPath.org(org)}/tokens/service`,
+  cliTokens: (org: string): string => `${apiPath.org(org)}/tokens/cli`,
+  token: (org: string, kind: 'cli' | 'service', tokenId: string): string =>
+    `${apiPath.org(org)}/tokens/${kind}/${segment(tokenId)}`,
+  audit: (org: string): string => `${apiPath.org(org)}/audit`,
   project: (org: string, project: string): string => `${apiPath.projects(org)}/${segment(project)}`,
   environments: (org: string, project: string): string =>
     `${apiPath.project(org, project)}/environments`,
@@ -137,10 +190,11 @@ export function parseDashboardPath(pathname: string): DashboardLocation {
   if (root !== 'app' || first === undefined) return empty;
   if (first === 'settings') return { ...empty, isAccountArea: true };
 
-  // Org-level pages that occupy the slot a project slug would. Both names are in
-  // the reserved slug list, so no project can ever shadow one — which is what
-  // makes this a lookup rather than a guess.
-  const orgPage = second === 'settings' || second === 'members';
+  // Org-level pages that occupy the slot a project slug would. All four names
+  // are in the reserved slug list, so no project can ever shadow one — which is
+  // what makes this a lookup rather than a guess.
+  const orgPage =
+    second === 'settings' || second === 'members' || second === 'tokens' || second === 'audit';
 
   return {
     orgSlug: decodeURIComponent(first),

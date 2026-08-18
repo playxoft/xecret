@@ -44,6 +44,42 @@ export function accessLevelAtLeast(held: AccessLevel, required: AccessLevel): bo
   return compareAccessLevel(held, required) >= 0;
 }
 
+const ORG_ROLE_RANK: Record<OrgRole, number> = {
+  viewer: 0,
+  developer: 1,
+  admin: 2,
+  owner: 3,
+};
+
+/**
+ * Total ordering on roles: `viewer` < `developer` < `admin` < `owner`.
+ *
+ * Same convention as `compareAccessLevel`: negative when `a` is the lesser
+ * role, zero when equal, positive when greater.
+ */
+export function compareOrgRole(a: OrgRole, b: OrgRole): number {
+  return ORG_ROLE_RANK[a] - ORG_ROLE_RANK[b];
+}
+
+/**
+ * Whether an actor may hand out — or take away — a given role.
+ *
+ * The rule is "no role above your own": an admin may invite or appoint another
+ * admin, but only an owner may create an owner. Without this, `member.invite`
+ * plus one forged request would let an admin mint an owner and then act through
+ * them — a privilege escalation the capability table alone does not stop,
+ * because the capability gate only asks *whether* a role may manage members,
+ * not *which* members.
+ *
+ * The same predicate covers both sides of a change: assigning the new role and
+ * touching a member who currently holds one. A route changing a member must
+ * check it against the member's current role too, or an admin could "demote" an
+ * owner — which is removing an owner's authority without holding it.
+ */
+export function canAssignRole(actorRole: OrgRole, role: OrgRole): boolean {
+  return compareOrgRole(actorRole, role) >= 0;
+}
+
 export interface RoleAccessDefaults {
   nonProduction: AccessLevel;
   production: AccessLevel;

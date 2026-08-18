@@ -101,7 +101,7 @@ export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps
       >
         <span
           aria-hidden="true"
-          className="bg-surface-active text-fg-muted grid size-7 shrink-0 place-items-center rounded-full text-[0.6875rem] font-semibold"
+          className="bg-surface-active text-fg-muted grid size-7 shrink-0 place-items-center rounded-full text-sm font-semibold"
         >
           {initials(user.name)}
         </span>
@@ -110,7 +110,7 @@ export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps
       <DropdownMenuContent className="w-60">
         <div className="px-2 py-1.5">
           <p className="text-fg truncate text-sm font-medium">{user.name}</p>
-          <p className="text-fg-subtle truncate text-xs">{user.email}</p>
+          <p className="text-fg-subtle truncate text-sm">{user.email}</p>
         </div>
 
         <DropdownMenuSeparator />
@@ -118,9 +118,12 @@ export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps
         {accountHref ? (
           <>
             <DropdownMenuItem asChild>
+              {/* Emphasised: this is the only route to the account area from
+                  an organisation, and the sidebar's "Organisation settings"
+                  is the plausible-but-wrong place people look first. */}
               <Link href={accountHref}>
-                <SettingsIcon className="size-4" />
-                Account settings
+                <SettingsIcon className="text-accent-text size-4" />
+                <span className="font-medium">Account settings</span>
               </Link>
             </DropdownMenuItem>
             <DropdownMenuSeparator />

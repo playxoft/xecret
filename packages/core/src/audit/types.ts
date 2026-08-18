@@ -32,8 +32,30 @@ export type AuditAction =
   | 'auth.pin_reset'
   /** A session was locked without being revoked — the user is still signed in. */
   | 'auth.locked'
+  /** The idle auto-lock interval was changed. `reason` carries the new value. */
+  | 'auth.autolock_changed'
+  /**
+   * The account deleted itself: memberships removed, solo organisations
+   * soft-deleted, every session and CLI token revoked, the user row
+   * soft-deleted. Terminal — the same identity can never sign in to it again.
+   * Recorded against the account's primary organisation, whose soft-deleted
+   * row keeps the record reachable.
+   */
+  | 'auth.account_deleted'
   | 'org.created'
   | 'org.updated'
+  /**
+   * An organisation was soft-deleted, taking every project, environment and
+   * secret inside it out of reach in one act.
+   *
+   * The row it points at survives the deletion — that is what a soft delete is
+   * for here — so this record, and every record filed against the organisation
+   * before it, stays readable by an operator afterwards. Nobody in the product
+   * can read them: the audit route resolves through `organizations` with a
+   * `deleted_at is null` filter, so the organisation stops answering the moment
+   * this event is written.
+   */
+  | 'org.deleted'
   | 'project.created'
   | 'project.updated'
   | 'project.deleted'
@@ -51,8 +73,38 @@ export type AuditAction =
   | 'member.joined'
   | 'member.removed'
   | 'member.role_changed'
+  /**
+   * A membership was switched off without being deleted, or switched back on.
+   *
+   * Distinct from `member.removed` because the histories differ in what they
+   * imply: a suspension is reversible and keeps the member's grants intact,
+   * which is exactly what an incident review needs to know when asking "could
+   * this person still act during the window?" (they could not — a suspended
+   * member resolves to `none` everywhere).
+   */
+  | 'member.suspended'
+  | 'member.reinstated'
+  /**
+   * A pending invitation was withdrawn before anyone accepted it.
+   *
+   * `member.invited` records the offer and `member.joined` records the
+   * acceptance; this records the third ending. An invitation that is neither
+   * accepted nor revoked merely expires, which no event marks — expiry is the
+   * absence of action, and inventing an actor for it would put a name on
+   * something nobody did.
+   */
+  | 'invitation.revoked'
   | 'access.granted'
   | 'access.revoked'
+  /**
+   * A person approved CLI access for a named device on the consent screen.
+   *
+   * Distinct from `token.created`, which is recorded when the credential is
+   * actually minted at exchange. The two happen from different network
+   * positions — the browser and the CLI — and an incident review needs both:
+   * an approval that was never exchanged is itself a signal.
+   */
+  | 'token.authorized'
   | 'token.created'
   | 'token.revoked'
   | 'token.used'
@@ -68,13 +120,27 @@ export type AuditAction =
  */
 export interface AuditMetadata {
   secretName?: string;
+  /** The name a secret held before a rename; `secretName` carries the new one. */
+  previousSecretName?: string;
   secretCount?: number;
   environmentSlug?: string;
   projectSlug?: string;
   targetEmail?: string;
   previousRole?: string;
   newRole?: string;
+  /**
+   * The access level a grant held before and after a change, e.g. `read`.
+   *
+   * Level names, never values. `access.granted` without them says a grant
+   * changed; with them it says what the change *was*, which is the difference
+   * between an audit line and a useful one when reviewing how someone came to
+   * hold production access.
+   */
+  previousAccessLevel?: string;
+  newAccessLevel?: string;
   tokenPrefix?: string;
+  /** The device a CLI credential was approved for, e.g. a hostname. */
+  deviceName?: string;
   keyVersion?: number;
   /** How many sessions one act affected — "lock everywhere", "sign out everywhere". */
   sessionCount?: number;

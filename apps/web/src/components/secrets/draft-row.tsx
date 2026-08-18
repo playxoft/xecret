@@ -140,25 +140,40 @@ export function DraftRow({
           autoCorrect="off"
           autoCapitalize="off"
           spellCheck={false}
-          className="h-8 font-mono text-[0.8125rem]"
+          className="h-8 font-mono text-sm"
           autoFocus={focusOnMount}
         />
 
         {nameError !== null ? (
-          <p className="text-danger-text mt-1 text-xs leading-5">{nameError}</p>
+          <p className="text-danger-text mt-1 text-sm leading-5">{nameError}</p>
         ) : null}
 
         {suggestion !== undefined ? (
           <Button
             variant="secondary"
             size="sm"
-            className="mt-1.5 h-7 font-mono text-xs"
+            className="mt-1.5 h-7 font-mono text-sm"
             disabled={disabled}
             onClick={() => onPatch({ name: suggestion })}
           >
             Use {suggestion}
           </Button>
         ) : null}
+
+        {/* Beneath the name it annotates — the same place a saved row shows it,
+            so the draft reads like the row it is about to become. */}
+        <Input
+          value={draft.note}
+          onChange={(event) => onPatch({ note: event.target.value })}
+          onKeyDown={handleKeyDown}
+          disabled={disabled}
+          placeholder="Note (optional)"
+          aria-label="Note"
+          maxLength={NOTE_MAX_LENGTH}
+          autoComplete="off"
+          className="mt-1.5 h-8 text-sm"
+        />
+        <p className="text-fg-subtle mt-1 text-sm leading-5">Never put part of the value here.</p>
       </TableCell>
 
       <TableCell className="align-top">
@@ -182,12 +197,12 @@ export function DraftRow({
           autoCapitalize="off"
           spellCheck={false}
           className={cn(
-            'min-h-8 py-1.5 font-mono text-[0.8125rem] leading-5',
+            'min-h-8 py-1.5 font-mono text-sm leading-5',
             valueError !== null && 'border-danger focus:border-danger focus:ring-danger/30',
           )}
         />
         {valueError !== null ? (
-          <p className="text-danger-text mt-1 text-xs leading-5">{valueError}</p>
+          <p className="text-danger-text mt-1 text-sm leading-5">{valueError}</p>
         ) : null}
       </TableCell>
 
@@ -201,20 +216,12 @@ export function DraftRow({
         />
       </TableCell>
 
-      <TableCell colSpan={3} className="align-top">
-        <Input
-          value={draft.note}
-          onChange={(event) => onPatch({ note: event.target.value })}
-          onKeyDown={handleKeyDown}
-          disabled={disabled}
-          placeholder="Note (optional)"
-          aria-label="Note"
-          maxLength={NOTE_MAX_LENGTH}
-          autoComplete="off"
-          className="h-8 text-[0.8125rem]"
-        />
-        <p className="text-fg-subtle mt-1 text-xs leading-5">Never put part of the value here.</p>
-      </TableCell>
+      {/* Version, updated and author: a draft has none yet, but the cells are
+          kept so this row lands on exactly the columns of the row it becomes —
+          nothing shifts sideways the moment a save succeeds. */}
+      <TableCell className="align-top" />
+      <TableCell className="align-top" />
+      <TableCell className="align-top" />
 
       <TableCell className="align-top">
         <Button

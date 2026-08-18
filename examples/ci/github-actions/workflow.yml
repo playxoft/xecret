@@ -1,0 +1,25 @@
+# xecret + GitHub Actions.
+#
+# Store the service token as a repository (or environment) secret named
+# XECRET_TOKEN: Settings → Secrets and variables → Actions.
+name: build
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs the CLI and puts it on PATH. Pin a version for reproducible
+      # builds: `with: { version: v1.2.3 }`.
+      - uses: playxoft/xecret@v1
+
+      # Secrets are injected into `npm run build`'s environment only — they
+      # never touch the workspace, the logs, or later steps.
+      - run: xecret run -- npm run build
+        env:
+          XECRET_TOKEN: ${{ secrets.XECRET_TOKEN }}

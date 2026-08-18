@@ -14,7 +14,9 @@ import type { MemberStatus, ResolvedGrant } from './grants';
 import {
   accessLevelAtLeast,
   ACTION_REQUIREMENTS,
+  canAssignRole,
   compareAccessLevel,
+  compareOrgRole,
   ROLE_ACCESS_DEFAULTS,
   ROLE_CAPABILITIES,
   roleDefaultAccessLevel,
@@ -827,5 +829,36 @@ describe('the tables themselves', () => {
     for (const action of Object.keys(SERVICE_TOKEN_ACTIONS)) {
       expect(action.startsWith('secret.'), action).toBe(true);
     }
+  });
+});
+
+describe('role assignment — who may hand out which role', () => {
+  it('orders roles viewer < developer < admin < owner', () => {
+    expect(compareOrgRole('viewer', 'developer')).toBeLessThan(0);
+    expect(compareOrgRole('developer', 'admin')).toBeLessThan(0);
+    expect(compareOrgRole('admin', 'owner')).toBeLessThan(0);
+    expect(compareOrgRole('owner', 'owner')).toBe(0);
+  });
+
+  it('never lets anyone assign a role above their own', () => {
+    for (const actor of ROLES) {
+      for (const target of ROLES) {
+        const permitted = compareOrgRole(actor, target) >= 0;
+        expect(canAssignRole(actor, target), `${actor} assigning ${target}`).toBe(permitted);
+      }
+    }
+  });
+
+  it('reserves creating owners to owners — the escalation this predicate exists to stop', () => {
+    expect(canAssignRole('admin', 'owner')).toBe(false);
+    expect(canAssignRole('owner', 'owner')).toBe(true);
+  });
+
+  it('covers the touch side too: an admin may not manage a member who holds owner', () => {
+    // The same predicate guards both the role being assigned and the role
+    // currently held; a route that checks only one lets an admin "demote" an
+    // owner, which is removing authority the admin does not hold.
+    expect(canAssignRole('admin', 'owner')).toBe(false);
+    expect(canAssignRole('admin', 'admin')).toBe(true);
   });
 });

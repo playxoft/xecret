@@ -23,9 +23,10 @@ import type { Bytes } from '../crypto/types';
  *  2. **It is never the only credential.** A PIN alone opens nothing. It unlocks
  *     a session that was already established by a verified Firebase identity, so
  *     an attacker needs the cookie *and* the PIN.
- *  3. **The KDF.** PBKDF2 at 600,000 iterations makes an offline sweep of a
- *     million candidates cost hours per account rather than milliseconds. That is
- *     a delay, not a wall, which is why the blocklist below matters: the PINs
+ *  3. **The KDF.** PBKDF2 at the highest cost the platform permits slows an
+ *     offline sweep of a million candidates from milliseconds to minutes. That
+ *     is a delay, not a wall — no iteration count makes six digits survive an
+ *     offline attack — which is why the blocklist below matters: the PINs
  *     people actually choose are a few hundred, not a million.
  *
  * ── Why PBKDF2 and not argon2 or bcrypt ──
@@ -47,6 +48,23 @@ import type { Bytes } from '../crypto/types';
 export const PIN_LENGTH = 6;
 
 export const PIN_PATTERN = /^\d{6}$/;
+
+/**
+ * How long a session may sit idle before the dashboard locks itself, in
+ * minutes. `0` means never. A fixed menu rather than a free number: the choice
+ * is a security posture, and "43 minutes" is not a posture anyone holds — it
+ * is a typo waiting to be enforced. One list feeds the settings menu, the
+ * request schema, and the database CHECK, so they cannot drift.
+ */
+export const AUTO_LOCK_MINUTES_OPTIONS = [0, 5, 10, 20, 30, 45, 60] as const;
+
+export type AutoLockMinutes = (typeof AUTO_LOCK_MINUTES_OPTIONS)[number];
+
+export const DEFAULT_AUTO_LOCK_MINUTES: AutoLockMinutes = 10;
+
+export function isAutoLockMinutes(value: number): value is AutoLockMinutes {
+  return (AUTO_LOCK_MINUTES_OPTIONS as readonly number[]).includes(value);
+}
 
 /** Free guesses before the escalating delay starts. */
 export const PIN_FREE_ATTEMPTS = 5;
@@ -77,7 +95,20 @@ export const PIN_UNLOCK_MS = 8 * 60 * 60 * 1000;
 /** How long a PIN reset link is good for. */
 export const PIN_RESET_TTL_MS = 15 * 60 * 1000;
 
-export const PBKDF2_ITERATIONS = 600_000;
+/**
+ * The **Workers runtime hard-caps PBKDF2 at 100,000 iterations** — verified
+ * against production workerd, which throws `Pbkdf2 failed: iteration counts
+ * above 100000 are not supported` (local `wrangler dev` does NOT enforce the
+ * cap, so a local test proves nothing here). At 100,000 the derived bits match
+ * Node's byte for byte.
+ *
+ * This constant was 600,000 once, and the result was a PIN that verified in
+ * development and failed on every deployed request. Do not raise it above the
+ * platform cap again: for a six-digit PIN the KDF was never the real defence —
+ * the durable lockout is (see the header) — so the portable maximum is the
+ * right value, not the largest one Node would accept.
+ */
+export const PBKDF2_ITERATIONS = 100_000;
 const PBKDF2_HASH = 'SHA-256';
 const SALT_BYTES = 16;
 const DERIVED_BYTES = 32;
@@ -193,7 +224,7 @@ function isSequential(pin: string): boolean {
 /**
  * Derives the stored form of a PIN.
  *
- * The result is self-describing — `pbkdf2-sha256$600000$<salt>$<hash>` — so the
+ * The result is self-describing — `pbkdf2-sha256$100000$<salt>$<hash>` — so the
  * iteration count can be raised later and old rows keep verifying against the
  * count they were written with. A bare hash column would make that a migration
  * over every user, at a moment (a security response) when nobody wants one.
@@ -220,10 +251,17 @@ export async function verifyPin(pin: string, stored: string): Promise<boolean> {
   return timingSafeEqual(derived, parsed.hash);
 }
 
-/** True when `stored` was written with fewer iterations than we now use. */
+/**
+ * True when `stored` was written at any cost other than the current one.
+ *
+ * `!==`, not `<`, deliberately: a rehash must also *lower* a cost. Rows hashed
+ * at 600,000 iterations exist from before the platform cap was understood, and
+ * they can only ever verify under Node — one successful unlock there rewrites
+ * them at the portable cost, after which every runtime agrees.
+ */
 export function pinNeedsRehash(stored: string): boolean {
   const parsed = parseStoredPin(stored);
-  return parsed === null || parsed.iterations < PBKDF2_ITERATIONS;
+  return parsed === null || parsed.iterations !== PBKDF2_ITERATIONS;
 }
 
 interface ParsedPin {

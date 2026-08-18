@@ -1,0 +1,23 @@
+name: Feature request
+description: A capability xecret should have.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Worth a skim first: the plan's **"Deliberately NOT in v1"** list
+        (billing, custom roles, SSO, webhooks, E2E mode, …). Those are
+        sequenced, not rejected — a request adds most when it brings a concrete
+        use case the sequencing should know about.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and where xecret currently stops you. The problem is more valuable to us than a proposed design.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape (optional)
+      description: If you have a design in mind, sketch it — CLI flags, UI, API.

@@ -36,6 +36,41 @@
       "when": 1786924900000,
       "tag": "0004_pin_lock_and_value_types",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786925000000,
+      "tag": "0005_cli_auth_codes",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786925100000,
+      "tag": "0006_service_token_write_attribution",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786925200000,
+      "tag": "0007_invitation_initial_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786925300000,
+      "tag": "0008_pin_auto_lock",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1786925400000,
+      "tag": "0009_organization_creator_index",
+      "breakpoints": true
     }
   ]
 }

@@ -18,10 +18,11 @@ import type { VerifiedIdentity } from '@xecret/core/auth';
 import { createAuditBuilder } from '@xecret/core/audit';
 import type { AuditRecord } from '@xecret/core/audit';
 import {
-  bootstrapPersonalOrganization,
   createSession,
   findSessionByTokenHash,
   listOrganizationsForUser,
+  provisionOrganization,
+  RepositoryError,
   revokeSession,
   upsertUserFromIdentity,
 } from '@xecret/db/repositories';
@@ -30,8 +31,10 @@ import { DatabaseAuditSink } from '@/server/audit-sink';
 import { firebaseIdentityProvider } from '@/server/firebase';
 import { errors } from '@/server/errors';
 import { json, noContent, parseCookies, parseJsonBody } from '@/server/http';
+import { describeError } from '@/server/logging';
 import { attemptKey, enforce } from '@/server/rate-limit';
 import { publicRoute } from '@/server/route';
+import { ORGANIZATIONS_PER_ACCOUNT_LIMIT } from '@/server/schemas/resources';
 import type { ServiceContext } from '@/server/context';
 
 /**
@@ -78,17 +81,45 @@ export const POST = publicRoute(async ({ request, services }) => {
     throw errors.forbidden('Verify your email address before signing in.');
   }
 
-  const user = await upsertUserFromIdentity(services.db, identity);
+  // A soft-deleted account is terminal: the repository refuses to revive the
+  // row (`setWhere` in `upsertUserFromIdentity`), and that refusal surfaces
+  // here as a plain statement rather than a 500. 403, not 404: this caller has
+  // just proven control of the identity, so "this account was deleted" reveals
+  // nothing they are not entitled to know.
+  const user = await upsertUserFromIdentity(services.db, identity).catch((cause: unknown) => {
+    if (cause instanceof RepositoryError && cause.code === 'notFound') {
+      throw errors.forbidden('This account was deleted and cannot be signed in to again.');
+    }
+    throw cause;
+  });
 
   // First login has no organisation yet. Bootstrapping one here — rather than
   // asking the user to create it — is what makes the product usable within a
   // minute of signing up, and it is transactional: an account with an
   // organisation but no master key would be unusable and unrepairable.
+  //
+  // ── Why this path is under the same ceiling as `POST /api/orgs` ──
+  // It was not, and that was a hole rather than an exemption: the gate below is
+  // membership, the ceiling was `created_by`, and the two are different sets. An
+  // account at its limit could invite a second owner to each of its ten
+  // organisations, be removed by them, and arrive here with no memberships and
+  // ten organisations still to its name — and the next sign-in would mint an
+  // eleventh with no ceiling consulted, burning another slug, indefinitely.
+  //
+  // `countOrganizationsHeldBy` now counts organisations the account created *and
+  // is still in*, which is a subset of exactly what the gate below reads. So an
+  // account reaching this branch holds zero and cannot possibly be refused. The
+  // limit is threaded through anyway, because "it cannot happen" is an argument
+  // that has to be re-derived by every reader, whereas a path that consults the
+  // ceiling is one that cannot become a bypass when the reasoning around it
+  // changes. There is now no way to create an organisation without naming a
+  // ceiling first — `ProvisionOrganizationParams.limit` is required.
   let memberships = await listOrganizationsForUser(services.db, user.id);
   if (memberships.length === 0) {
-    const created = await bootstrapPersonalOrganization(services.db, {
+    const created = await provisionOrganization(services.db, {
       user,
       envelope: services.envelope,
+      limit: ORGANIZATIONS_PER_ACCOUNT_LIMIT,
     });
     memberships = await listOrganizationsForUser(services.db, user.id);
 
@@ -201,10 +232,14 @@ async function verifyIdentity(
       // The category is logged; the client is told only that it failed.
       // Distinguishing "expired" from "wrong signature" from "wrong audience"
       // tells an attacker which part of a forged token to fix next.
-      console.warn('identity verification failed', {
-        requestId: services.meta.requestId,
-        reason: cause.reason,
-      });
+      services.log
+        .at('verifyIdentity')
+        .warn(
+          `Rejected the Firebase ID token presented at sign-in because it was ${cause.reason}. ` +
+            'The caller was told only that authentication failed — naming the reason would tell ' +
+            'an attacker which part of a forged token to fix next.',
+          { reason: cause.reason },
+        );
       throw errors.unauthenticated(`identity ${cause.reason}`);
     }
     throw cause;
@@ -253,11 +288,13 @@ async function writeEvents(services: ServiceContext, events: AuditRecord[]): Pro
   try {
     await new DatabaseAuditSink(services.db).write(events);
   } catch (cause) {
-    console.error('audit write failed', {
-      requestId: services.meta.requestId,
-      action: events[0]?.action,
-      error: cause instanceof Error ? cause.name : 'unknown',
-    });
+    services.log
+      .at('writeEvents')
+      .error(
+        `Failed to write the audit record for ${events[0]?.action ?? 'an event'} — the sign-in ` +
+          'itself succeeded, but this event is now missing from the audit log',
+        { action: events[0]?.action, error: describeError(cause) },
+      );
   }
 }
 

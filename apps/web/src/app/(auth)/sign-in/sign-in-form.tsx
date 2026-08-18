@@ -111,7 +111,10 @@ export function SignInForm({ next }: SignInFormProps) {
       footer={
         <>
           New here?{' '}
-          <Link href="/sign-up" className="text-accent-text rounded-sm font-medium hover:underline">
+          <Link
+            href="/sign-up"
+            className="text-fg decoration-line-strong hover:decoration-fg rounded-sm font-medium underline underline-offset-4 transition-colors"
+          >
             Create an account
           </Link>
         </>
@@ -160,7 +163,7 @@ export function SignInForm({ next }: SignInFormProps) {
             <div className="-mt-1 flex justify-end">
               <Link
                 href="/forgot-password"
-                className="text-fg-muted hover:text-fg rounded-sm text-[0.8125rem]"
+                className="text-fg-muted hover:text-fg rounded-sm text-sm"
               >
                 Forgot your password?
               </Link>

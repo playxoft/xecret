@@ -31,13 +31,13 @@ export function ProjectCards({ orgSlug, projects }: ProjectCardsProps) {
             <span className="text-fg truncate text-[0.9375rem] font-semibold tracking-tight">
               {project.name}
             </span>
-            <span className="text-fg-subtle mt-0.5 truncate font-mono text-xs">{project.slug}</span>
+            <span className="text-fg-subtle mt-0.5 truncate font-mono text-sm">{project.slug}</span>
 
             <span className="text-fg-muted mt-3 line-clamp-2 min-h-[2.5rem] text-sm leading-5">
               {project.description ?? 'No description.'}
             </span>
 
-            <span className="border-line-subtle text-fg-subtle mt-4 flex items-center gap-2 border-t pt-3 text-xs">
+            <span className="border-line-subtle text-fg-subtle mt-4 flex items-center gap-2 border-t pt-3 text-sm">
               <LayersIcon className="size-3.5 shrink-0" />
               {pluralize(project.environmentCount, 'environment')}
               <span aria-hidden="true">·</span>

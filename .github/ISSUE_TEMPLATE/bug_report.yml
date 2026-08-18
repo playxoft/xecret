@@ -1,0 +1,40 @@
+name: Bug report
+description: Something behaves differently than documented or intended.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **If this bug has security impact — however small — do not file it here.**
+        Use [private reporting](https://github.com/playxoft/xecret/security/advisories/new)
+        or security@playxoft.com; SECURITY.md states the response times.
+
+        And a matching rule for everyone: **never paste a real secret value,
+        token, or `.env` content into an issue** — redact first, the shape of
+        the data is always enough.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead.
+      placeholder: |
+        1. Ran `xecret run -- npm run dev` in a repo with .xecret.yaml
+        2. Expected the app to start with secrets injected
+        3. Got …
+    validations:
+      required: true
+  - type: input
+    id: request-id
+    attributes:
+      label: Request id (if the dashboard or API showed one)
+      description: Error screens and API error bodies carry a `requestId` — it lets us find your exact request in the logs.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: CLI version (`xecret version`), OS, browser if a dashboard bug, self-hosted or hosted.
+      placeholder: |
+        xecret 1.2.3 (abc1234, 2026-08-01), macOS 15.1
+        hosted (xecret.playxoft.com)
+    validations:
+      required: true

@@ -110,6 +110,13 @@ export const EyeOffIcon = (props: IconProps) => (
   </Icon>
 );
 
+/** An arrow cursor — "this happens where the pointer is". */
+export const PointerIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M5 3.5 18.5 9.9l-6.2 1.8-1.9 6.3L5 3.5Z" />
+  </Icon>
+);
+
 export const SearchIcon = (props: IconProps) => (
   <Icon {...props}>
     <circle cx="11" cy="11" r="7" />

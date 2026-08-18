@@ -28,7 +28,7 @@ import {
   toBytes,
   updateSecretMetadata,
 } from '@xecret/db/repositories';
-import type { SecretMaterial } from '@xecret/db/repositories';
+import type { SecretMaterial, SecretWriterRef } from '@xecret/db/repositories';
 import { actorId } from './actor';
 import type { Principal } from './actor';
 import type { ServiceContext } from './context';
@@ -85,7 +85,9 @@ export interface DecryptedSecret {
   value: string;
   version: number;
   updatedAt: Date;
-  updatedBy: string;
+  /** Exactly one of these two names the writer — a person, or a CI token. */
+  updatedBy: string | null;
+  updatedByServiceTokenId: string | null;
 }
 
 /**
@@ -153,8 +155,8 @@ export interface SecretWriteResult {
  * rather than by a parallel implementation that can disagree with it.
  */
 export interface SecretWriteBatch {
-  /** The user the rows are attributed to. See `writerUserId`. */
-  writer: string;
+  /** Who the rows are attributed to — a person or a token. See `secretWriter`. */
+  writer: SecretWriterRef;
   writes: readonly SecretWrite[];
   dryRun?: boolean | undefined;
 }
@@ -197,6 +199,7 @@ export async function decryptEnvironment(
         version: material.version,
         updatedAt: material.createdAt,
         updatedBy: material.createdBy,
+        updatedByServiceTokenId: material.createdByServiceTokenId,
       });
     }
 
@@ -231,7 +234,7 @@ export async function decryptOne(
 export async function writeSecretValue(
   scope: EnvironmentScope,
   services: ServiceContext,
-  params: SecretWrite & { writer: string },
+  params: SecretWrite & { writer: SecretWriterRef },
 ): Promise<SecretWriteResult> {
   const { writer, ...write } = params;
   const [result] = await applySecretWrites(scope, services, { writer, writes: [write] });
@@ -318,7 +321,7 @@ export async function applySecretWrites(
 export async function restoreSecretVersion(
   scope: EnvironmentScope,
   services: ServiceContext,
-  params: { writer: string; current: SecretMaterial; previous: SecretMaterial },
+  params: { writer: SecretWriterRef; current: SecretMaterial; previous: SecretMaterial },
 ): Promise<SecretWriteResult> {
   return withEnvironmentKey(scope, services, async (key) => {
     const value = await openValue(scope, services, key.bytes, params.previous);
@@ -400,35 +403,30 @@ export function authorizeSecretAction(
 }
 
 /**
- * The user a write is attributed to.
+ * Who a write is attributed to.
  *
- * `secrets.created_by` and `secret_versions.created_by` are `NOT NULL` and
- * reference `users`, and a service token has no user behind it — structurally,
- * so that a stolen CI credential can never act as a person (threat T5).
- * The policy layer permits `secret.create` and `secret.update` for a service
- * token, but the storage layer cannot record who performed one, and the two
- * plausible repairs are both worse than refusing:
+ * Phase 4 refused service-token writes outright, because `created_by` was
+ * `NOT NULL REFERENCES users` and a CI credential has no person behind it —
+ * structurally, so that a stolen CI credential can never act as a person
+ * (threat T5). Migration 0006 resolved that the honest way: a second
+ * attribution column naming the *token*, with a CHECK requiring exactly one of
+ * the two. A CI write is now recorded as the act of a named token — never as
+ * the act of whoever minted it, which would put a person's name on a write
+ * they did not make in the exact column the dashboard shows as "who changed
+ * this".
  *
- *  - attributing the row to `service_tokens.created_by` would put the name of
- *    the person who minted the token on a write they did not make, in the exact
- *    column the dashboard shows as "who changed this";
- *  - making the column nullable would remove the attribution guarantee from
- *    every write in the product to accommodate one credential type.
- *
- * So a service-token write is refused, with a message that says why. 403 rather
- * than 404 leaks nothing: the token is pinned to this environment, so it already
- * knows it exists.
+ * Whether a given service token *may* write is still the policy layer's
+ * question: `can()` requires a `write`-level token, and `secret.delete` /
+ * `secret.rotate` remain outside `SERVICE_TOKEN_ACTIONS` entirely.
  */
-export function writerUserId(principal: Principal): string {
+export function secretWriter(principal: Principal): SecretWriterRef {
   switch (principal.kind) {
     case 'user':
-      return principal.user.id;
+      return { userId: principal.user.id };
     case 'cliToken':
-      return principal.userId;
+      return { userId: principal.userId };
     case 'serviceToken':
-      throw errors.forbidden(
-        'Service tokens cannot write secrets. A write must be attributable to a person.',
-      );
+      return { serviceTokenId: principal.tokenId };
   }
 }
 
@@ -668,7 +666,7 @@ async function commitWrites(
   services: ServiceContext,
   scope: EnvironmentScope,
   key: EnvironmentKey,
-  writer: string,
+  writer: SecretWriterRef,
   writes: readonly PendingWrite[],
   retypes: readonly UnchangedWrite[] = [],
 ): Promise<void> {
@@ -686,7 +684,7 @@ async function commitWrites(
             envKeyId: key.envKeyId,
             encrypted: write.encrypted,
             valueHmac: write.valueHmac,
-            createdBy: writer,
+            writer,
           });
           continue;
         }
@@ -697,7 +695,7 @@ async function commitWrites(
           envKeyId: key.envKeyId,
           encrypted: write.encrypted,
           valueHmac: write.valueHmac,
-          createdBy: writer,
+          writer,
         });
 
         if (version.version !== write.version) {
@@ -781,10 +779,14 @@ async function withEnvironmentKey<T>(
     // this is not reachable by any normal path. If it happens, the environment
     // is unusable and only an operator holding the Root KEK can repair it —
     // which is a 503, not a 500: the deployment is broken, not the request.
-    console.error('environment has no active data key', {
-      requestId: services.meta.requestId,
-      environmentId: scope.environment.id,
-    });
+    services.log
+      .at('withEnvironmentKey')
+      .error(
+        'This environment has no active data key, so nothing in it can be encrypted or ' +
+          'decrypted. An environment is created together with its key in one transaction, so ' +
+          'this should be unreachable — repairing it needs an operator holding the Root KEK.',
+        { environmentId: scope.environment.id },
+      );
     throw errors.unavailable('environment has no active env key');
   }
 
@@ -850,12 +852,15 @@ async function openValue(
  * log line records the category and the request id and nothing about the value.
  */
 function rethrowCryptoFailure(cause: unknown, services: ServiceContext): never {
+  const log = services.log.at('rethrowCryptoFailure');
+
   if (cause instanceof DecryptionError) {
-    console.error('secret decryption failed', {
-      requestId: services.meta.requestId,
-      path: services.meta.path,
-      reason: 'decryptionFailed',
-    });
+    log.error(
+      'Could not decrypt a stored secret value. The ciphertext, the environment key, or the ' +
+        'associated data does not match — which means either tampering with a stored row or a ' +
+        'key that no longer corresponds to it. Neither is a client error.',
+      { reason: 'decryptionFailed' },
+    );
     throw errors.internal('decryptionFailed');
   }
 
@@ -863,10 +868,12 @@ function rethrowCryptoFailure(cause: unknown, services: ServiceContext): never {
     // A stored row references a root key version the provider can no longer
     // supply: a rotation was completed before every row was re-wrapped. The
     // deployment is misconfigured, so 503 rather than 500.
-    console.error('root key version unavailable', {
-      requestId: services.meta.requestId,
-      requestedVersion: cause.requestedVersion,
-    });
+    log.error(
+      `A stored key is wrapped with root key version ${cause.requestedVersion}, which this ` +
+        'deployment cannot supply. A key rotation was completed before every row had been ' +
+        're-wrapped; restore that version to XECRET_ROOT_KEYS to make these secrets readable.',
+      { requestedVersion: cause.requestedVersion },
+    );
     throw errors.unavailable('root key version unavailable');
   }
 
@@ -888,7 +895,7 @@ function rethrowCryptoFailure(cause: unknown, services: ServiceContext): never {
  * environment or secret vanished between resolution and write; it is the same
  * response a caller with no right to it would have received.
  */
-function rethrowRepositoryFailure(cause: unknown): never {
+export function rethrowRepositoryFailure(cause: unknown): never {
   if (cause instanceof RepositoryError) {
     switch (cause.code) {
       case 'conflict':

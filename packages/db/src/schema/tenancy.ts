@@ -4,6 +4,7 @@ import {
   check,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -31,7 +32,22 @@ export const organizations = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
-  (t) => [check('organizations_seat_limit_check', sql`${t.seatLimit} >= 0`)],
+  (t) => [
+    check('organizations_seat_limit_check', sql`${t.seatLimit} >= 0`),
+    // Read on every organisation creation, inside the transaction that creates
+    // one: `countOrganizationsHeldBy` asks how many live organisations this
+    // account created and is still in. The column order is the query's —
+    // equality on `created_by`, then `id` to supply the ordering — so its
+    // `LIMIT` can stop after the ceiling's worth of rows instead of finding
+    // every organisation the account ever created and sorting the lot. Left
+    // ascending: the query wants `id desc`, and a btree is read backwards for
+    // that at no cost. Partial, because the count never looks at a soft-deleted
+    // row. The membership half of the join is already served by
+    // `org_members_org_user_unique`.
+    index('organizations_creator_idx')
+      .on(t.createdBy, t.id)
+      .where(sql`${t.deletedAt} is null`),
+  ],
 );
 
 /**
@@ -71,6 +87,15 @@ export const orgMembers = pgTable(
   ],
 );
 
+/**
+ * One selection in an invitation's `initial_grants` snapshot.
+ * `environmentId: null` selects the whole project.
+ */
+export interface InvitationGrantSeed {
+  projectId: string;
+  environmentId: string | null;
+}
+
 export const invitations = pgTable(
   'invitations',
   {
@@ -84,6 +109,24 @@ export const invitations = pgTable(
     invitedBy: uuid('invited_by')
       .notNull()
       .references(() => users.id),
+    /**
+     * The access the inviter selected, applied when the invitation is accepted.
+     *
+     * `NULL` means the invitation predates selection and acceptance behaves as
+     * it always did: role defaults everywhere. Non-null — an empty array
+     * included — switches acceptance to **deny-by-default**: every project the
+     * organisation has at acceptance time receives an explicit `none` grant
+     * unless it appears here, and each listed environment receives a grant at
+     * the invited role's non-production level.
+     *
+     * A snapshot in jsonb rather than a relational table on purpose: these
+     * rows are a *request in transit*, not live authority. Authority only
+     * exists once acceptance copies them into `access_grants`, which is where
+     * the relational modelling, the uniqueness rules and the audit live.
+     * Entries are ids, not slugs — a rename must not re-address a grant — and
+     * anything that no longer exists at acceptance is simply skipped.
+     */
+    initialGrants: jsonb('initial_grants').$type<InvitationGrantSeed[] | null>(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     acceptedAt: timestamp('accepted_at', { withTimezone: true }),
     acceptedBy: uuid('accepted_by').references(() => users.id),

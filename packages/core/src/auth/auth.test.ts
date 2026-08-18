@@ -15,6 +15,7 @@ import {
   shouldTouchSession,
 } from './session';
 import type { SessionRecord } from './session';
+import { INVITATION_TTL_MS, invitationExpiryFrom, invitationState } from './invitation';
 import { generateToken, hashToken, isWellFormedToken, verifyToken } from './tokens';
 
 const NOW = new Date('2026-08-11T12:00:00Z');
@@ -65,12 +66,30 @@ describe('token generation', () => {
   });
 });
 
+/**
+ * The random segment of a token — everything past the second separator.
+ *
+ * `token.split('_')[2]` is the obvious way to write this and it is wrong, for
+ * the reason `isWellFormedToken` states: the base64url alphabet contains `_`,
+ * so a split on every underscore cuts the secret into pieces on roughly half of
+ * all tokens. The test below then asserted that a digest does not contain a
+ * *one- or two-character fragment* of the secret, which a 43-character
+ * base64url string swallows about 2.4% of the time — measured, and the run that
+ * failed CI reported `Expected: "B"`. A flake is bad; a flake that reads as a
+ * leak, in the assertion whose whole job is proving no leak exists, teaches
+ * whoever sees it next to re-run the build.
+ */
+function secretOf(token: string): string {
+  const environmentSeparator = token.indexOf('_', token.indexOf('_') + 1);
+  return token.slice(environmentSeparator + 1);
+}
+
 describe('token hashing', () => {
   it('stores a 256-bit digest, never the token', async () => {
     const { token, hash } = await generateToken('session');
 
     expect(hash).toHaveLength(32);
-    expect(toBase64Url(hash)).not.toContain(token.split('_')[2]);
+    expect(toBase64Url(hash)).not.toContain(secretOf(token));
   });
 
   it('is deterministic', async () => {
@@ -277,5 +296,47 @@ describe('CSRF', () => {
     expect(header).toContain('Secure');
     expect(header).toContain('SameSite=Lax');
     expect(header).not.toContain('HttpOnly');
+  });
+});
+
+describe('invitation lifecycle', () => {
+  const open = {
+    expiresAt: new Date(NOW.getTime() + INVITATION_TTL_MS),
+    acceptedAt: null,
+    revokedAt: null,
+  };
+
+  it('stands for seven days', () => {
+    expect(INVITATION_TTL_MS).toBe(7 * 24 * 60 * 60 * 1000);
+    expect(invitationExpiryFrom(NOW).getTime() - NOW.getTime()).toBe(INVITATION_TTL_MS);
+  });
+
+  it('reads an open, unexpired invitation as pending', () => {
+    expect(invitationState(open, NOW)).toBe('pending');
+  });
+
+  it('expires at the boundary instant, not after it', () => {
+    expect(invitationState({ ...open, expiresAt: NOW }, NOW)).toBe('expired');
+  });
+
+  it('lets the explicit endings win over expiry', () => {
+    // A revoked-then-expired invitation reads as revoked: the fact somebody
+    // withdrew it is the informative one, and the one the audit trail records.
+    const past = new Date(NOW.getTime() - 1000);
+
+    expect(invitationState({ expiresAt: past, acceptedAt: past, revokedAt: null }, NOW)).toBe(
+      'accepted',
+    );
+    expect(invitationState({ expiresAt: past, acceptedAt: null, revokedAt: past }, NOW)).toBe(
+      'revoked',
+    );
+  });
+
+  it('ranks accepted above revoked, so a corrupt row still reads deterministically', () => {
+    const past = new Date(NOW.getTime() - 1000);
+
+    expect(invitationState({ expiresAt: past, acceptedAt: past, revokedAt: past }, NOW)).toBe(
+      'accepted',
+    );
   });
 });

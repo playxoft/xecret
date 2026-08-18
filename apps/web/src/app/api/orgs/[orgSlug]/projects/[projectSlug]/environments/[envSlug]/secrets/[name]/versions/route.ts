@@ -73,6 +73,7 @@ export const GET = authenticatedRoute<Params>(async ({ request, params, principa
       envKeyId: version.envKeyId,
       createdAt: version.createdAt.toISOString(),
       createdBy: version.createdBy,
+      createdByServiceTokenId: version.createdByServiceTokenId,
       current: version.version === secret.version,
     })),
     nextCursor: versions.hasMore ? String(page + 1) : null,
