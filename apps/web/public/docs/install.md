@@ -1,9 +1,9 @@
 ---
 title: Installing the CLI
 navTitle: Installing the CLI
-description: Install the xecret command-line tool on macOS, Linux, Windows, in Docker and in CI — with checksum verification and upgrade instructions.
-keywords: [install xecret cli, homebrew xecret, curl install script, xecret windows, xecret docker install]
-updated: 2026-08-16
+description: Install the xecret command-line tool on macOS, Linux, Windows, from npm, in Docker and in CI — with checksum verification and upgrade instructions.
+keywords: [install xecret cli, homebrew xecret, npm install xecret, curl install script, xecret windows, xecret docker install]
+updated: 2026-08-18
 ---
 
 The `xecret` binary is a single static executable written in Go
@@ -52,10 +52,51 @@ curl -fsSL https://xecret.playxoft.com/install.sh | sh -s -- --version v1.2.0
 Pinning a version is the right default in CI: an installer that always fetches
 the newest release makes your pipeline depend on our release schedule.
 
+## npm
+
+```bash
+npm install -g xecret
+```
+
+Or as a dev dependency, so everyone on the project gets the same version from
+the lockfile:
+
+```bash
+npm install --save-dev xecret
+npx xecret run -- npm run dev
+```
+
+`xecret` is a small wrapper whose `optionalDependencies` are six packages
+holding one executable each — npm installs exactly the one that matches your
+machine and skips the other five.
+
+> **Note** — There is no `postinstall` script and nothing is downloaded during
+> the install. That is deliberate. `npm ci --ignore-scripts` is a sensible thing
+> to run, and a secret manager whose installer silently broke under it would be
+> teaching people to turn that protection off. Shipping the binary *as* a
+> package also puts it under npm's own `integrity` hash in your lockfile,
+> checked on every install, instead of behind a download our own code would have
+> to verify.
+
+The published packages carry [npm
+provenance](https://docs.npmjs.com/generating-provenance-statements): the
+registry can show you the workflow run and the commit each tarball was built
+from. The binaries inside are the same ones the GitHub release serves, verified
+against the signed `checksums.txt` before they were packaged.
+
+One trade-off worth knowing: installed this way, a Node process sits in front of
+the binary for the life of each command. It costs a few milliseconds and one
+process. For `xecret run -- npm run dev`, which runs for hours, Homebrew or the
+install script are the better choice — they give you the executable and nothing
+else.
+
 ## Windows
 
 Download the `windows_amd64` or `windows_arm64` archive from the releases page,
 unzip it, and put `xecret.exe` somewhere on your `PATH`.
+
+`npm install -g xecret` works on Windows too, and is usually the shortest route
+if you already have Node.
 
 The CLI stores its credential in **Windows Credential Manager**. PowerShell,
 `cmd.exe` and WSL all work; under WSL you are using the Linux binary and the

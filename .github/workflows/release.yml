@@ -13,19 +13,35 @@
 # The release is created as a DRAFT (see .goreleaser.yaml): a human reads the
 # generated notes and presses publish. An unreviewed release of a secrets tool
 # is not a convenience worth having.
+#
+# That gate is why this file has two triggers rather than one:
+#
+#   push of a v* tag   →  `goreleaser`, which builds everything and leaves a
+#                         draft release for review. Nothing is public yet:
+#                         `skip_upload: auto` holds the Homebrew formula, and
+#                         a draft's assets need a credential to fetch.
+#   release published  →  `npm`, which publishes the registry packages built
+#                         from that release's own archives.
+#
+# npm is on the second trigger because the registry has no draft state and no
+# meaningful undo: publishing at tag time would put an unreviewed build of a
+# secrets tool one `npm install` away, which is exactly what the draft exists
+# to prevent.
 name: release
 
 on:
   push:
     tags:
       - "v*"
+  release:
+    types: [published]
 
 permissions:
   # Create the release and push the Homebrew formula.
   contents: write
   # Push ghcr.io/playxoft/xecret.
   packages: write
-  # Keyless cosign signing.
+  # Keyless cosign signing, and npm provenance.
   id-token: write
 
 concurrency:
@@ -34,6 +50,7 @@ concurrency:
 
 jobs:
   goreleaser:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -73,3 +90,45 @@ jobs:
           # on that one repository, set as a repo secret before the first
           # release. Absent, GoReleaser fails the brew step and says why.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+  # ── npm ────────────────────────────────────────────────────────────────
+  #
+  # Seven packages: the `xecret` wrapper, and one per platform holding nothing
+  # but the executable, so npm installs exactly the one that matches the
+  # machine. No postinstall script, no download at install time — see the note
+  # at the top of cli/npm/lib/resolve.js for why that shape and not the usual
+  # one.
+  #
+  # The binaries come from the release's **own archives**, each verified
+  # against the `checksums.txt` published beside it — the file cosign signed.
+  # So what npm serves is byte-for-byte what GitHub serves, and that is a
+  # property anybody can check rather than a claim about our build.
+  npm:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download the release archives
+        run: |
+          mkdir -p "${RUNNER_TEMP}/release"
+          gh release download "${TAG}" \
+            --dir "${RUNNER_TEMP}/release" \
+            --pattern 'xecret_*' \
+            --pattern 'checksums.txt'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+
+      - name: Publish to npm
+        working-directory: cli/npm
+        run: node publish.mjs --version "${TAG}" --archives "${RUNNER_TEMP}/release"
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          # An automation token from the npm account that owns `xecret`.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

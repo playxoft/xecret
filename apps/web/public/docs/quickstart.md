@@ -49,6 +49,9 @@ brew install playxoft/tap/xecret
 
 # Linux, WSL, CI — verifies the release checksum before unpacking
 curl -fsSL https://xecret.playxoft.com/install.sh | sh
+
+# anywhere you already have Node
+npm install -g xecret
 ```
 
 Windows, other package managers and manual installs are covered in

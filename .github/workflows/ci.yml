@@ -96,6 +96,19 @@ jobs:
               && echo "  ok  $target" || exit 1
           done
 
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: "22"
+
+      # The npm distribution's platform table is written out three times — in
+      # .goreleaser.yaml, in lib/resolve.js and in publish.mjs — and these tests
+      # assert the three agree. A target added to the matrix above and forgotten
+      # in one of them is a machine that installs xecret and is told there is no
+      # build for it, discovered by a user rather than here.
+      - name: Test the npm distribution
+        working-directory: cli/npm
+        run: node --test
+
   bundle:
     name: Worker bundle size
     runs-on: ubuntu-latest
