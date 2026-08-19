@@ -1,7 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="xecret">
   <defs>
-    <linearGradient id="xecret-mark" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#3ad4ec"/><stop offset="0.55" stop-color="#2380e2"/><stop offset="1" stop-color="#2a3fd0"/></linearGradient>
+    <linearGradient id="xecret-mark" x1="0" y1="0" x2="0" y2="32" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1c1c1c"/><stop offset="1" stop-color="#000000"/></linearGradient>
   </defs>
-  <rect width="32" height="32" rx="8" fill="url(#xecret-mark)"/>
-  <path d="M8.5 8.5L23.5 23.5M23.5 8.5L8.5 23.5" stroke="#ffffff" stroke-width="3.2" stroke-linecap="round"/>
+  <rect width="32" height="32" rx="9" fill="url(#xecret-mark)"/>
+  <rect x="0.5" y="0.5" width="31" height="31" rx="8.5" fill="none" stroke="#ffffff" stroke-opacity="0.13" stroke-width="1"/>
+  <path fill="#fafafa" d="M25.9 25.9L23.07 26.18L17.98 21.09L17.84 17.84L21.09 17.98L26.18 23.07ZM25.9 6.1L26.18 8.93L21.09 14.02L17.84 14.16L17.98 10.91L23.07 5.82ZM6.1 6.1L8.93 5.82L14.02 10.91L14.16 14.16L10.91 14.02L5.82 8.93ZM6.1 25.9L5.82 23.07L10.91 17.98L14.16 17.84L14.02 21.09L8.93 26.18Z"/>
 </svg>

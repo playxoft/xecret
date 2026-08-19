@@ -204,6 +204,13 @@
      the same left edge as they move between them. See the `.x-container` rule
      near the bottom of this file. */
   --site-width: 80rem;
+
+  /* What the public header costs in normal flow: `pt-4` above an `h-14` pill —
+     see components/layout/site-header. It is sticky, not fixed, so those 72px
+     sit between the top of the document and the first section. A section that
+     wants to be exactly one screen tall has to subtract them; see
+     `.x-first-screen`. */
+  --site-header-flow: 4.5rem;
 }
 
 :root[data-theme='dark'] {
@@ -636,6 +643,17 @@
    the one page it was not needed.
 
    Unlayered, so it beats the `py-*` utility the container already carries. */
+/* A section that is exactly the first screen and no taller.
+   `min-h-svh` overshoots by whatever the sticky header already took in flow
+   above it — invisible while a hero holds nothing but centred type, and
+   obvious the moment it has something anchored to its foot, which then hangs
+   below the fold by exactly the header's height. `min-height`, not `height`,
+   so a four-line headline or a short window grows the section instead of
+   being clipped by it. */
+.x-first-screen {
+  min-height: calc(100svh - var(--site-header-flow));
+}
+
 .x-hero-screen + section > .x-container {
   padding-top: 2.5rem;
 }
