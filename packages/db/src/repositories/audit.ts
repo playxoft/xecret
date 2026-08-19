@@ -17,7 +17,7 @@ import type { Executor } from './shared';
  * editing history is a thing the system contemplates. A log an operator can
  * quietly amend is not evidence of anything.
  *
- * The table is range-partitioned by month, which shapes both functions below:
+ * The table is range-partitioned by quarter, which shapes both functions below:
  * inserts go to the current partition and are cheap, while any read that is not
  * bounded in time visits every partition that has ever existed.
  */
@@ -29,8 +29,9 @@ export type AuditLogRecord = typeof auditLogs.$inferSelect;
  *
  * Retention outlives this by design — partitions are kept far longer — but one
  * request must not be able to ask for all of it. Ninety days covers every
- * ordinary investigation and roughly three partitions; anything broader is an
- * export, which is a background job with its own budget, not a page in a UI.
+ * ordinary investigation, and is one quarter, so a clamped query opens one or
+ * two partitions. Anything broader is an export, which is a background job with
+ * its own budget, not a page in a UI.
  */
 export const MAX_AUDIT_RANGE_DAYS = 90;
 

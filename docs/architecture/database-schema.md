@@ -401,9 +401,19 @@ CREATE INDEX audit_logs_environment_idx ON audit_logs (environment_id, created_a
 
 **Design notes**
 
-- **Monthly range partitions.** `secret.read` is the highest-volume event in the system (every
+- **Quarterly range partitions.** `secret.read` is the highest-volume event in the system (every
   `xecret run`, every CI build). Partitioning keeps queries fast and makes retention a
-  `DROP TABLE` rather than a mass `DELETE`.
+  `DROP TABLE` rather than a mass `DELETE`. Quarterly rather than monthly because reads are
+  clamped to 90 days by `MAX_AUDIT_RANGE_DAYS` — exactly one quarter — so a bounded query opens
+  one or two partitions instead of three or four, and 3–5 years of retention is 12–20 child
+  tables rather than 36–60.
+- **Partitions live in the `audit_parts` schema**, not `public`. Purely an ergonomic decision, and
+  a real one: at multi-year retention the children outnumber the fifteen real tables three to one,
+  and a `public` listing an operator cannot scan is one they stop reading — in the schema where
+  the append-only guarantee lives. PostgreSQL allows a partition in a different schema from its
+  parent, and nothing about it is visible to queries; the application only ever names
+  `public.audit_logs`. Migration 0010 made both changes, while the table was small enough that
+  they were free.
 - `created_at` is in the primary key because PostgreSQL requires the partition key there.
 - **No foreign keys.** Audit records must outlive the rows they reference. A deleted project
   must not erase the record that it existed and who deleted it.
