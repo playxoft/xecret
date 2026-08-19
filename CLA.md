@@ -102,8 +102,8 @@ Four things worth knowing before you do:
   account or that commit cannot be matched to anyone.
 - **What is recorded is public and permanent**: your GitHub username, numeric
   account id, the comment id, the pull request number and a timestamp, committed
-  to `.github/cla-signatures.json` in this repository. Your legal name and email
-  are not collected.
+  to `.github/cla-signatures.json` on this repository's `cla-signatures` branch.
+  Your legal name and email are not collected.
 - **Bot accounts are exempt** — they cannot agree to anything. That exempts the
   account, not the work: a person or an agent submitting substantive code
   through an automated account is contributing, and that needs a signature.

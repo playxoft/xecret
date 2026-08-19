@@ -59,7 +59,11 @@ jobs:
           lock-pullrequest-aftermerge: false
           path-to-signatures: ".github/cla-signatures.json"
           path-to-document: "https://github.com/playxoft/xecret/blob/main/CLA.md"
-          branch: "main"
+          # Signatures live on their own branch, not on main. The action commits
+          # each one, and main requires a pull request - a protected branch
+          # would reject that commit and fail the check for everybody, so the
+          # gate would be broken by the rule meant to enforce it.
+          branch: "cla-signatures"
           # Every bot account, not three named ones. A bot cannot agree to
           # anything, so a signature it can never give must not block a pull
           # request forever - and an allowlist of three would have done exactly
