@@ -763,12 +763,14 @@
    card draws (see `scripts/generate-og.ts`), so the two must desaturate
    together or the card stops matching the page it previews.
 
-   Very low alpha: the point is that you notice the page has depth, not that
-   you notice a gradient. White lifts the top of the hero off the canvas in
-   both themes without spending the one thing the palette reserves — colour
-   here means production, destructive or failed, and nothing else may borrow
-   it. `pointer-events: none` because it sits over the canvas and under the
-   copy, and it must never eat a click. */
+   Achromatic in both themes, but not the same colour in both: dark blooms
+   white and light blooms black, because a wash has to move *away* from the
+   canvas it sits on and white on white is nothing at all. Very low alpha
+   either way — the point is that you notice the page has depth, not that you
+   notice a gradient — and neither spends the one thing the palette reserves:
+   colour here means production, destructive or failed, and nothing else may
+   borrow it. `pointer-events: none` because it sits over the canvas and under
+   the copy, and it must never eat a click. */
 .x-hero-glow {
   position: absolute;
   inset: 0;

@@ -41,7 +41,23 @@ const SCRIPT: readonly Line[] = [
   { kind: 'child', text: 'ready — http://localhost:3000' },
 ];
 
-const TICK_MS = 45;
+/**
+ * Milliseconds per typed character.
+ *
+ * 36, not the 45 this ran at, and the number is set by WCAG rather than by
+ * taste. SC 2.2.2 asks that motion which starts by itself, runs longer than
+ * five seconds and sits beside other content can be paused, stopped or
+ * hidden. This transcript starts on load, next to the headline and both
+ * calls to action, and there is no on-page control — so the honest options
+ * were to add one, or to come in under the five seconds. At 45ms the run was
+ * 133 ticks × 45 = 5.99s, just over; at 36ms it is 4.79s, just under, and the
+ * rhythm between typing and dwell is unchanged because both are counted in
+ * the same ticks.
+ *
+ * If a line is ever added to `SCRIPT`, re-check the total: `sum(len + DWELL +
+ * 1)` for commands, `DWELL + 1` for output, `2` for a blank.
+ */
+const TICK_MS = 36;
 /** Ticks a finished command or an output line stays current before the next. */
 const DWELL_TICKS = 8;
 
@@ -66,7 +82,7 @@ export function CliDemo({ className }: { className?: string }) {
       <div className="border-line-subtle bg-canvas-inset text-fg-subtle flex items-center gap-2 border-b px-3 py-2 text-sm">
         <TerminalIcon className="size-3.5" />
         the golden path
-        <span className="text-fg-disabled ml-auto">typed from the CLI&apos;s real output</span>
+        <span className="text-fg-subtle ml-auto">typed from the CLI&apos;s real output</span>
       </div>
 
       <Transcript

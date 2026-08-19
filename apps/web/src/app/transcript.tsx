@@ -45,11 +45,29 @@ function subscribeReducedMotion(callback: () => void): () => void {
 }
 
 /**
+ * Does this reader want motion, asked once rather than subscribed to?
+ *
+ * For callers that must decide whether to animate exactly once and then hold
+ * that decision — see `install-guide.tsx`. Subscribing there would let the
+ * flag flip under a reader who is mid-panel, which is the one transition
+ * `enabled` must never make.
+ */
+export function prefersReducedMotion(): boolean {
+  return window.matchMedia(REDUCED_MOTION_QUERY).matches;
+}
+
+/**
  * Does this reader want motion?
  *
  * The server snapshot says "reduced", so prerendering — and any visitor
  * without JavaScript — gets the complete transcript rather than an empty
  * terminal waiting for an animation that will never run.
+ *
+ * This is a live subscription: turning the OS setting *on* mid-animation
+ * correctly completes the transcript at once. Turning it *off* mid-read is the
+ * hazard — that flips `enabled` false → true and wipes the panel — so a caller
+ * that can be on screen when it happens should latch `prefersReducedMotion()`
+ * instead of subscribing.
  */
 export function useReducedMotion(): boolean {
   return useSyncExternalStore(
@@ -76,10 +94,12 @@ export interface TypeOutOptions {
    * immediately, which is the answer for reduced motion and for any panel the
    * reader has already been shown in full.
    *
-   * This is the flag that decides *what is on screen*, so it must be settled
-   * by the first render after hydration and never flipped afterwards: going
-   * `false → true` empties a transcript the reader is looking at, and
-   * `true → false` fills one mid-type.
+   * This is the flag that decides *what is on screen*, so flipping it while a
+   * reader is looking at the panel is destructive: `false → true` empties a
+   * transcript they were reading, and `true → false` fills one mid-type. A
+   * caller that may be on screen at hydration must therefore settle it from
+   * something that cannot change on its own — see `install-guide.tsx`, which
+   * latches both the motion preference and the panel's position at mount.
    */
   enabled: boolean;
   /**
@@ -104,22 +124,28 @@ export interface TypeOut {
 /**
  * Advance a transcript one character at a time.
  *
- * Progress resets whenever `script` changes identity, which is what makes tab
- * switching replay from the top: the reader picked that tab to watch *this*
- * install happen, not to arrive at its last frame.
+ * Progress resets whenever the script's content changes, which is what makes
+ * tab switching replay from the top: the reader picked that tab to watch
+ * *this* install happen, not to arrive at its last frame.
  */
 export function useTypeOut(script: readonly Line[], options: TypeOutOptions): TypeOut {
   const { tickMs, dwellTicks, enabled } = options;
   const running = options.running ?? enabled;
   const [progress, setProgress] = useState<Progress>({ line: 0, ticks: 0 });
 
-  // Keyed on the script so a caller does not have to remember to reset. The
-  // state update during render is React's own documented way to derive state
-  // from a changed prop, and it costs one extra render of this component
-  // rather than an effect and a painted frame of the wrong transcript.
-  const [seenScript, setSeenScript] = useState(script);
-  if (seenScript !== script) {
-    setSeenScript(script);
+  // Keyed on the script's *content*, not its identity, so a caller does not
+  // have to remember to reset — and cannot bring the page down by forgetting
+  // to memoise. Keying on identity would mean an inline array literal produced
+  // a new script every render, so this branch would never settle and React
+  // would throw "Too many re-renders". The join is a handful of short strings.
+  //
+  // The state update during render is React's own documented way to derive
+  // state from a changed prop, and it costs one extra render of this hook's
+  // owner rather than an effect and a painted frame of the wrong transcript.
+  const signature = script.map((line) => (line.kind === 'blank' ? '' : line.text)).join('\u0000');
+  const [seenSignature, setSeenSignature] = useState(signature);
+  if (seenSignature !== signature) {
+    setSeenSignature(signature);
     setProgress({ line: 0, ticks: 0 });
   }
 
@@ -167,12 +193,12 @@ export function useTypeOut(script: readonly Line[], options: TypeOutOptions): Ty
  * The arithmetic is `TRANSCRIPT_BODY`'s own: `leading-6` per line, `gap-0.5`
  * between them, `py-3.5` top and bottom.
  */
-export function transcriptMinHeight(lines: number): string {
+function transcriptMinHeight(lines: number): string {
   return `${lines * 1.5 + Math.max(0, lines - 1) * 0.125 + 1.75}rem`;
 }
 
 /** The panel body every transcript shares — type, rhythm and padding. */
-export const TRANSCRIPT_BODY = 'flex flex-col gap-0.5 px-4 py-3.5 font-mono text-sm leading-6';
+const TRANSCRIPT_BODY = 'flex flex-col gap-0.5 px-4 py-3.5 font-mono text-sm leading-6';
 
 export interface TranscriptProps {
   script: readonly Line[];
@@ -181,6 +207,14 @@ export interface TranscriptProps {
    * Hold the panel at the height of a transcript this many lines long, so it
    * does not resize as lines arrive or as the reader switches between scripts.
    * Pass the longest script's length.
+   *
+   * A floor, not a fixed height: it holds while each entry occupies one line,
+   * which is every width down to about 640px. Narrower than that — and at the
+   * 320px reflow target especially — commands wrap and the rendered height
+   * exceeds the floor by however many rows they take, so panels can still
+   * differ in height from one another. Pinning that too would mean measuring
+   * after layout, which costs a reflow on every resize to fix a jump nobody
+   * has at a readable width.
    */
   minLines?: number;
   /**
@@ -287,7 +321,7 @@ function TranscriptLine({
             <CopyButton
               value={line.text}
               label={line.text}
-              className="text-fg-disabled hover:text-fg-muted size-6"
+              className="text-fg-subtle hover:text-fg size-6"
             />
           ) : null}
         </span>
@@ -299,25 +333,36 @@ function TranscriptLine({
   // would claim it was typed by the user, which it was not.
   if (partial === 0) return null;
 
+  // ── Why these wrap differently from a command ──
+  // `break-all` breaks between any two characters, which is right for a
+  // command: it carries URLs and absolute paths with no spaces to break at,
+  // and the alternative is a line that overflows its panel. Output lines are
+  // prose — "Opening your browser to approve this device…" — and `break-all`
+  // on prose breaks mid-word at whatever column the box ends, so a phone
+  // renders "approve this d / evice…". `break-words` keeps to the spaces and
+  // only splits a word that genuinely cannot fit.
   if (line.kind === 'success') {
     return (
-      <span className="text-fg-muted break-all">
+      <span className="text-fg-muted break-words">
         <span className="text-success-text">✓ </span>
         {line.text}
       </span>
     );
   }
   if (line.kind === 'comment' || line.kind === 'child') {
-    return <span className="text-fg-subtle break-all">{line.text}</span>;
+    return <span className="text-fg-subtle break-words">{line.text}</span>;
   }
   if (line.kind === 'file') {
-    // `whitespace-pre-wrap` rather than the default: this is the only kind
-    // whose leading space carries meaning — the continuation of a `RUN` is
-    // indented under it — and HTML would otherwise collapse it away and print
-    // a Dockerfile nobody writes.
+    // `whitespace-pre-wrap` rather than the default: a file is shown as
+    // written, and HTML collapses leading space. No current snippet is
+    // indented — the Dockerfile lost its `RUN` continuation when it became a
+    // `COPY --from` — but the next one to need a nested `ENV` or a heredoc
+    // body would silently print flush left, and a file panel that reformats
+    // its file is worse than useless. `break-all` for the same reason as a
+    // command: image references and paths have nowhere to break.
     return <span className="text-fg break-all whitespace-pre-wrap">{line.text}</span>;
   }
-  return <span className="text-fg-muted break-all">{line.text}</span>;
+  return <span className="text-fg-muted break-words">{line.text}</span>;
 }
 
 function Prompt() {

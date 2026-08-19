@@ -30,7 +30,10 @@ Semantic tokens, not raw colours — components speak `bg-surface`,
   8.83:1 — AA), `fg-subtle` (5.14:1 / 5.40:1 — AA), `fg-disabled`
 - **Lines:** `line-subtle`, `line`, `line-strong`; `ring` for focus
   (3.92:1 / 11.02:1 — SC 1.4.11)
-- **Accent** ("cipher" cyan) and three status families — `success`,
+- **Accent** — monochrome, not a hue: `#171717` in light and `#e5e5e5` in
+  dark. It used to be a "cipher" cyan, and the mark that justified it went
+  achromatic too, so nothing on the site now carries a brand colour. Three
+  status families — `success`,
   `warning`, `danger` — each in the same five-part shape:
   base, `-hover`, `-fg` (text on the fill), `-text` (the colour as text),
   `-tint` + `-line` (washes and borders). Every `-fg` and `-text` value is AA

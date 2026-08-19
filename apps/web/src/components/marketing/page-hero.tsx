@@ -56,17 +56,20 @@ export function PageHero({
   children?: ReactNode;
 }) {
   return (
-    // ── Full viewport height ──
-    // `min-h-svh`, not `h-screen` and not `dvh`. `min-h` because a three-line
-    // headline on a 13" laptop must be allowed to push past the fold rather
-    // than being clipped by it; `svh` because `dvh` re-measures as a mobile
-    // browser's address bar hides on scroll, which would resize the hero
-    // under the reader's thumb the moment they start scrolling.
+    // ── The first screen, exactly ──
+    // `.x-first-screen` for the `screen` variant: `min-height: calc(100svh -
+    // var(--site-header-flow))`. `min-height` because a three-line headline on
+    // a 13" laptop must be allowed to push past the fold rather than being
+    // clipped by it; `svh` because `dvh` re-measures as a mobile browser's
+    // address bar hides on scroll, which would resize the hero under the
+    // reader's thumb the moment they start scrolling.
     //
-    // The header floats over this rather than sitting above it — it is
-    // `sticky top-0` with a transparent gutter — so the hero genuinely owns
-    // the first screen, and the vertical centring accounts for the bar with
-    // padding rather than by subtracting its height from the viewport.
+    // The header is `sticky`, not `fixed`, so it does not float over this — it
+    // sits above it and spends 4.5rem of normal flow first (`pt-4` around an
+    // `h-14` pill). A full `100svh` here would therefore make header plus hero
+    // one screen *and a header* tall, hanging the foot of the composition
+    // below the fold by exactly that much. Subtracting it is what the class is
+    // for; see the token's note in globals.css.
     <section
       className={cn(
         'relative isolate flex flex-col justify-center overflow-hidden',
@@ -105,11 +108,11 @@ export function PageHero({
       <div className="x-hero-glow" aria-hidden="true" />
       <div className="x-grid-lines" aria-hidden="true" />
 
-      {/* The top value is the larger of the two because the floating header
-          overlaps this padding and eats about 4.5rem of it — so `pt-32 pb-24`
-          is closer to balanced than it looks, and on a short viewport where
-          there is no spare height to centre within it is what stops the
-          headline landing under the bar.
+      {/* The top value is the larger of the two because the header has already
+          spent 4.5rem above this section — so `pt-32 pb-24` is closer to
+          balanced than it looks against the screen as a whole, and on a short
+          viewport where there is no spare height to centre within it is what
+          keeps the headline clear of the bar.
 
           Any *deliberate* upward shift belongs to the section, not here — see
           the optical-lift note above. Splitting one adjustment across two

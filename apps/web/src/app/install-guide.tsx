@@ -7,16 +7,16 @@ import { cn } from '@/lib/cn';
 import { isInViewport, observeOnce } from '@/lib/observe-once';
 import { CopyButton } from '@/components/ui/copy-button';
 import { ArrowRightIcon, TerminalIcon } from '@/components/ui/icons';
-import { Transcript, useReducedMotion, useTypeOut } from './transcript';
+import { Transcript, prefersReducedMotion, useTypeOut } from './transcript';
 import type { Line } from './transcript';
 
 /**
  * The install guide: four ways onto the machine, each typed out.
  *
- * The transcript engine, the line renderer and the reduced-motion store live
- * in `transcript.tsx`, shared with the hero's `CliDemo`. What is here is what
- * is particular to this panel: the four channels, the tab set, and the rule
- * about when a type-out may start.
+ * The transcript engine, the line renderer and the reduced-motion read live in
+ * `transcript.tsx`, shared with the hero's `CliDemo`. What is here is what is
+ * particular to this panel: the four channels, the tab set, and the rule about
+ * when a type-out may start.
  *
  * Same standing rule as the hero — every line that is not a command is real
  * output, copied from the source that prints it:
@@ -71,7 +71,7 @@ interface Channel {
   script: readonly Line[];
 }
 
-/** The tail three of the four channels share. */
+/** The tail two of the four channels share. */
 function KeychainNote({ where }: { where: string }) {
   return (
     <>
@@ -81,9 +81,24 @@ function KeychainNote({ where }: { where: string }) {
   );
 }
 
-const VERSION = 'v1.2.0';
+/**
+ * The release tag, and the same tag without its `v`.
+ *
+ * Two constants because the toolchain uses both and they are not
+ * interchangeable. `install-cli.sh` prints the git tag as-is (`downloading
+ * xecret v1.2.0 …`), while everything GoReleaser templates from `{{ .Version }}`
+ * — the archive name, the container tags, and the `buildinfo.Version` stamped
+ * into the binary — carries the tag with the leading `v` stripped. The repo
+ * says so itself at `scripts/install-cli.sh`: "Archive names carry the version
+ * without the leading v". Using one form for both is how the Docker tab ends
+ * up telling a reader to pull an image that was never published.
+ */
+const VERSION_TAG = 'v1.2.0';
+const VERSION = '1.2.0';
 const COMMIT = '9f3c1ab';
 const BUILT = '2026-08-16';
+/** `cli/go.mod` is `go 1.25.0` and both workflows pin 1.25. */
+const GO_VERSION = 'go1.25.5';
 
 /**
  * The container image, not `curl | sh` inside a builder stage.
@@ -96,7 +111,8 @@ const BUILT = '2026-08-16';
  * passed no `XECRET_VERSION`, so `install-cli.sh` resolved "latest" at build
  * time and the same Dockerfile produced a different binary on every rebuild.
  *
- * Kept in step with the same snippet in `public/docs/install.md`.
+ * Kept in step with the same snippet in `public/docs/install.md` and
+ * `public/docs/guides/docker.md`.
  */
 const DOCKERFILE = [
   `FROM ghcr.io/playxoft/xecret:${VERSION} AS xecret`,
@@ -126,10 +142,24 @@ function buildChannels(installUrl: string, releasesUrl: string): readonly Channe
       id: 'linux',
       label: 'Linux & WSL',
       source: 'bash',
-      note: <KeychainNote where="Secret Service, your desktop keyring" />,
+      // Not a `KeychainNote`: on Linux the keyring is the *usual* case rather
+      // than the guaranteed one. `cli/internal/keyring` falls back to a 0600
+      // file when no Secret Service is reachable — which is every headless box
+      // and most WSL setups, the two environments this tab is named for — and
+      // `xecret doctor` reports it as `0600 file at ~/.xecret/credentials.json
+      // (no system keyring)`. Every other surface in the repo carries that
+      // caveat; the landing page must not be the one that promises otherwise.
+      note: (
+        <>
+          The credential lives in <span className="text-fg-muted">Secret Service</span>, your
+          desktop keyring — or, on a headless box with none, a{' '}
+          <span className="text-fg-muted">0600 file</span> that{' '}
+          <span className="text-fg-muted">xecret doctor</span> names for you.
+        </>
+      ),
       script: [
         { kind: 'command', text: `curl -fsSL ${installUrl} | sh` },
-        { kind: 'info', text: `downloading xecret ${VERSION} for linux/amd64…` },
+        { kind: 'info', text: `downloading xecret ${VERSION_TAG} for linux/amd64…` },
         { kind: 'info', text: 'verifying checksum…' },
         { kind: 'info', text: 'installed /usr/local/bin/xecret' },
         { kind: 'command', text: 'xecret login' },
@@ -149,7 +179,7 @@ function buildChannels(installUrl: string, releasesUrl: string): readonly Channe
         { kind: 'command', text: 'xecret version' },
         {
           kind: 'info',
-          text: `xecret ${VERSION} (commit ${COMMIT}, built ${BUILT}, windows/amd64, go1.24.0)`,
+          text: `xecret ${VERSION} (commit ${COMMIT}, built ${BUILT}, windows/amd64, ${GO_VERSION})`,
         },
         { kind: 'command', text: 'xecret login' },
         { kind: 'info', text: 'Opening your browser to approve this device…' },
@@ -180,10 +210,10 @@ function buildChannels(installUrl: string, releasesUrl: string): readonly Channe
 /**
  * Milliseconds per typed character.
  *
- * Faster than the hero's 45ms, deliberately. The hero's transcript is the
- * first thing on the page and has the whole screen to itself, so it can take
- * its time; this one is four sections down, in front of a reader who has
- * already decided to look for their own platform and wants the line, not the
+ * Faster than the hero's, deliberately. The hero's transcript is the first
+ * thing on the page and has the whole screen to itself, so it can take its
+ * time; this one is four sections down, in front of a reader who has already
+ * decided to look for their own platform and wants the line, not the
  * performance. Under a second for the longest command here.
  */
 const TICK_MS = 20;
@@ -205,7 +235,13 @@ const DWELL_TICKS = 9;
  * the WCAG reflow target — 320px wide at 400% zoom, where every command line
  * wraps three ways — a `threshold` gate would simply never fire and the panel
  * would stay blank forever. See `observeOnce`.
+ *
+ * The same fraction answers both questions below, and it has to: if "already
+ * visible" were the lenient one-pixel test while "has arrived" demanded the
+ * band, a panel whose top edge happened to clip the fold at load would count
+ * as seen, never animate, and never be allowed to.
  */
+const START_INSET = 0.25;
 const START_MARGIN = { rootMargin: '-25% 0px -25% 0px', threshold: 0 };
 
 export interface InstallGuideProps {
@@ -219,40 +255,64 @@ export interface InstallGuideProps {
 
 export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuideProps) {
   const channels = useMemo(() => buildChannels(installUrl, releasesUrl), [installUrl, releasesUrl]);
-  const reducedMotion = useReducedMotion();
 
   const [active, setActive] = useState(0);
   const [started, setStarted] = useState(false);
   /**
-   * Was this panel already on the reader's screen when the page hydrated?
+   * What this run intends to do with the transcript, settled once on mount and
+   * never revisited.
    *
-   * `null` until the first effect answers it. It decides whether there is an
-   * animation at all, and it cannot be answered by the observer: the
-   * observer's first callback reports the current state either way, so
-   * "already here" and "just scrolled to" look identical to it.
+   *   - `print`   — render it whole and leave it alone. Reduced motion, and
+   *                 the server's own answer, so it is the initial value.
+   *   - `type`    — the panel is below the fold, so blanking it costs the
+   *                 reader nothing and it may type when scrolled to.
+   *   - `settled` — the panel was already on screen at hydration, so what the
+   *                 server drew stays; but the reader may still ask for an
+   *                 animation by choosing a tab.
    *
-   * Why it matters: the server renders the transcript whole — that is what
-   * makes the panel correct without JavaScript. If the reader can already see
-   * that transcript when hydration lands, switching into type-out mode empties
-   * a panel they are looking at and retypes it in front of them. So a panel
-   * that arrives on screen keeps what the server drew, and only a panel that
-   * is still below the fold — where blanking it costs the reader nothing — is
-   * allowed to type.
+   * Latched rather than derived, because it decides *what is on screen*. The
+   * motion preference is a live media query, so reading it through a
+   * subscription would let a reader who turns "Reduce motion" off mid-page
+   * empty a transcript they were part-way through. The panel's position cannot
+   * be asked of an observer at all: its first callback reports the current
+   * state whether the panel was there at load or has just been scrolled to,
+   * and those two want opposite treatment.
+   *
+   * Why position matters: the server renders the transcript whole — that is
+   * what makes the panel correct without JavaScript. If the reader can already
+   * see it when hydration lands, switching into type-out mode empties a panel
+   * they are looking at and retypes it in front of them.
+   *
+   * One state rather than three booleans so the effect commits its decision in
+   * a single update; a sequence of `setState` calls in an effect body is a
+   * cascade of renders, and the lint rule that says so is right.
    */
-  const [visibleAtMount, setVisibleAtMount] = useState<boolean | null>(null);
+  const [plan, setPlan] = useState<'print' | 'type' | 'settled'>('print');
+  /**
+   * Has the reader picked a tab themselves?
+   *
+   * This is what re-enables the animation under `settled`. The rule above
+   * protects the transcript the *server* drew; once the reader chooses a
+   * different platform there is nothing of the server's left to protect, and
+   * replaying from the top is the whole point of the choice — they picked that
+   * tab to watch this install happen, not to arrive at its last frame. It
+   * deliberately cannot revive the animation under `print`, which is where
+   * reduced motion lands.
+   */
+  const [interacted, setInteracted] = useState(false);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const element = panelRef.current;
-    if (!element) return;
+    if (!element || prefersReducedMotion()) return;
 
-    if (isInViewport(element)) {
-      setVisibleAtMount(true);
+    if (isInViewport(element, START_INSET)) {
+      setPlan('settled');
       return;
     }
 
-    setVisibleAtMount(false);
+    setPlan('type');
     // The hero's demo can start on mount because it is on screen at load. This
     // one is four sections down, so a timer that starts on mount plays to
     // nobody and the reader arrives at the last frame of an animation they
@@ -262,25 +322,26 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
 
   const channel = channels[active] as Channel;
 
-  // Settled on the first render after hydration and never flipped again: this
-  // is what is on screen, and changing it mid-life is what a wipe is.
-  // `visibleAtMount === false` is deliberate — `null` means the effect has not
-  // run, and until it has, the whole transcript stays up.
-  const enabled = !reducedMotion && visibleAtMount === false;
-
+  const enabled = plan === 'type' || (plan === 'settled' && interacted);
   const typeOut = useTypeOut(channel.script, {
     tickMs: TICK_MS,
     dwellTicks: DWELL_TICKS,
     enabled,
-    // …and the clock only runs once the panel has been scrolled to.
-    running: enabled && started,
+    // …and the clock runs once the panel has been scrolled to, or immediately
+    // if the reader asked for this tab by clicking it.
+    running: enabled && (started || interacted),
   });
 
-  /** The longest of the four, so switching tabs never resizes the panel. */
+  /** The longest of the four, so the panel does not resize as lines arrive. */
   const longestScript = useMemo(
     () => Math.max(...channels.map((entry) => entry.script.length)),
     [channels],
   );
+
+  function selectTab(index: number) {
+    setActive(index);
+    setInteracted(true);
+  }
 
   /** Arrow keys move between tabs and activate as they go, which is the
    *  expected behaviour for a tab set whose panels are already loaded. */
@@ -303,7 +364,7 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
 
     if (next === null) return;
     event.preventDefault();
-    setActive(next);
+    selectTab(next);
     tabRefs.current[next]?.focus();
   }
 
@@ -339,10 +400,18 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
               aria-controls="install-panel"
               // Roving tabindex: one stop for the whole row, then arrow keys.
               tabIndex={index === active ? 0 : -1}
-              onClick={() => setActive(index)}
+              onClick={() => selectTab(index)}
               onKeyDown={(event) => onTabKeyDown(event, index)}
+              // No `focus-visible:outline-none` and no ring of its own. The
+              // application draws one focus treatment in `globals.css`, whose
+              // note says in terms that a component must not add
+              // `outline-none` — Tailwind's utilities layer outranks the base
+              // rule, so doing it here silently deletes the indicator. What it
+              // replaced it with was `--accent-line`, which is 1.16:1 against
+              // this strip: on a row whose selected tab is already filled,
+              // that left keyboard focus with nothing to show for itself.
               className={cn(
-                'focus-visible:ring-accent-line rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:outline-none',
+                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
                 index === active
                   ? 'bg-surface text-fg shadow-raised'
                   : 'text-fg-subtle hover:text-fg-muted',
@@ -353,46 +422,62 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
           ))}
         </div>
 
-        <span className="text-fg-disabled ml-auto hidden items-center gap-1.5 pr-1 text-xs sm:flex">
+        {/* `aria-hidden` because it is the one piece of per-tab furniture that
+            cannot live inside the panel without moving it out of the title
+            bar, and a screen reader has better sources for the same fact: the
+            tab is named "Docker", and the transcript below either opens with a
+            `$` prompt or does not. `text-fg-subtle`, not `text-fg-disabled` —
+            that token is documented as deliberately below AA and exempt only
+            because it marks disabled controls, which this is not. */}
+        <span
+          aria-hidden="true"
+          className="text-fg-subtle ml-auto hidden items-center gap-1.5 pr-1 text-xs sm:flex"
+        >
           <TerminalIcon className="size-3.5" />
           {channel.source}
         </span>
       </div>
 
-      <Transcript
-        script={channel.script}
-        typeOut={typeOut}
-        minLines={longestScript}
-        copyable
+      {/* The panel is the transcript *and* the line under it. Everything that
+          changes with the tab has to be inside the element the tabs' own
+          `aria-controls` names, or following that relationship dead-ends: the
+          Windows transcript would tell a reader to go to the releases page
+          while the link to it sat outside, and Docker's panel would be a file
+          with its copy button somewhere else entirely.
+
+          Keyed on the channel so the subtree is rebuilt per tab. Without it,
+          React reuses the copy button at each index across scripts, and one
+          clicked on macOS keeps its two-second "Copied" state — claiming, on
+          the Linux tab, to have copied a command it never saw. */}
+      <div
+        key={channel.id}
         role="tabpanel"
         id="install-panel"
         aria-labelledby={`install-tab-${channel.id}`}
-        // Docker's panel is built entirely from `file` lines, so it contains no
-        // copy button and no other focusable child — without this, a keyboard
-        // user tabs straight past it and cannot scroll it where it overflows.
-        tabIndex={0}
-      />
+      >
+        <Transcript script={channel.script} typeOut={typeOut} minLines={longestScript} copyable />
 
-      {/* The payoff line. It changes with the tab because the answer does:
-          the same command puts the credential in three different places, and
-          naming the one the reader's own machine will use is worth more than
-          a generic promise about "secure storage". */}
-      <div className="border-line-subtle bg-canvas-inset/60 flex flex-wrap items-center gap-x-3 gap-y-2 border-t px-4 py-2.5">
-        <p className="text-fg-subtle min-w-0 flex-1 text-xs leading-5">{channel.note}</p>
+        {/* The payoff line. It changes with the tab because the answer does:
+            the same command puts the credential in three different places, and
+            naming the one the reader's own machine will use is worth more than
+            a generic promise about "secure storage". */}
+        <div className="border-line-subtle bg-canvas-inset/60 flex flex-wrap items-center gap-x-3 gap-y-2 border-t px-4 py-2.5">
+          <p className="text-fg-subtle min-w-0 flex-1 text-xs leading-5">{channel.note}</p>
 
-        {channel.copy ? (
-          <CopyButton value={channel.copy.value} label={channel.copy.label} />
-        ) : channel.link ? (
-          <a
-            href={channel.link.href}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="text-fg-muted hover:text-fg inline-flex shrink-0 items-center gap-1 text-xs font-medium transition-colors"
-          >
-            {channel.link.label}
-            <ArrowRightIcon className="size-3" />
-          </a>
-        ) : null}
+          {channel.copy ? (
+            <CopyButton value={channel.copy.value} label={channel.copy.label} />
+          ) : channel.link ? (
+            <a
+              href={channel.link.href}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="text-fg-muted hover:text-fg inline-flex shrink-0 items-center gap-1 text-xs font-medium transition-colors"
+            >
+              {channel.link.label}
+              <ArrowRightIcon className="size-3" />
+            </a>
+          ) : null}
+        </div>
       </div>
     </div>
   );

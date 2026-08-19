@@ -53,11 +53,18 @@ export function observeOnce(
  * cannot answer for you: its first callback reports the current state whether
  * the element was on screen at load or has just been scrolled to, and those
  * two cases deserve opposite treatment when a server-rendered element is about
- * to be animated. See the note in `transcript.tsx`.
+ * to be animated. See the `visibleAtMount` note in `install-guide.tsx`.
+ *
+ * @param insetFraction Shrink the viewport by this fraction of its height at
+ *   top and bottom before testing, so "on screen" can be asked with the same
+ *   strictness as an `observeOnce` band. Pass the same number both places:
+ *   answering "is it visible?" leniently and "has it arrived?" strictly leaves
+ *   a gap where an element counts as seen but never triggers.
  */
-export function isInViewport(element: Element): boolean {
+export function isInViewport(element: Element, insetFraction = 0): boolean {
   const box = element.getBoundingClientRect();
   const height = window.innerHeight || document.documentElement.clientHeight;
   const width = window.innerWidth || document.documentElement.clientWidth;
-  return box.top < height && box.bottom > 0 && box.left < width && box.right > 0;
+  const inset = height * insetFraction;
+  return box.top < height - inset && box.bottom > inset && box.left < width && box.right > 0;
 }
