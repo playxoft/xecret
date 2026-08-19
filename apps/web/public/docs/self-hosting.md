@@ -205,10 +205,10 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
 - **Migrations.** Generated SQL, committed and reviewed, applied with
   `npm run db:migrate`. Never auto-applied on deploy.
 - **The audit log.** Append-only and partitioned by quarter, with the child
-  tables kept in the `audit_parts` schema and partitions pre-created two years
-  ahead. Nothing extends that automatically yet, so run this before the runway
-  ends — once a quarter's rows land in the default partition, that quarter can
-  no longer be given a real partition:
+  tables kept in the `audit_parts` schema and partitions pre-created eight
+  quarters ahead. Nothing extends that automatically yet, so run this before the
+  runway ends — once a quarter's rows land in the default partition, that
+  quarter can no longer be given a real partition:
 
   ```sql
   SELECT create_audit_log_partition(d::date)
@@ -222,15 +222,39 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
   Run it as the owner of the audit tables — it issues `CREATE TABLE` and
   `GRANT`, and the application role holds neither. It fills every quarter to the
   end of the runway, so it is idempotent and any cadence shorter than 21 months
-  is safe.
+  is safe. If any quarter in the range already has rows in the default
+  partition, the whole statement aborts and no quarter is created — recover
+  those first, oldest first, then re-run it.
 
-  If a quarter's rows reach the default partition before its own partition
-  exists, that partition can no longer simply be created — the rows would
-  violate the default partition's constraint. Recovering is a single
-  transaction, run as the table owner: detach the default partition, create the
-  real one, re-insert those rows through `public.audit_logs`, delete them from
-  the detached table, and re-attach it. No audit row is destroyed; each one is
-  written back through the parent before it is removed from the holding table.
+  Recovering one is a single transaction, as the table owner, substituting that
+  quarter's UTC bounds. Detaching is what makes the `CREATE TABLE` possible; the
+  `DELETE` is what makes the re-attach possible; and no audit row is destroyed,
+  because every one is written back through the parent before it is removed:
+
+  ```sql
+  BEGIN;
+
+  ALTER TABLE public.audit_logs DETACH PARTITION audit_parts.audit_logs_default;
+
+  SELECT create_audit_log_partition(DATE '2028-07-01');
+
+  INSERT INTO public.audit_logs
+  SELECT * FROM audit_parts.audit_logs_default
+  WHERE created_at >= TIMESTAMPTZ '2028-07-01 00:00:00+00'
+    AND created_at <  TIMESTAMPTZ '2028-10-01 00:00:00+00';
+
+  DELETE FROM audit_parts.audit_logs_default
+  WHERE created_at >= TIMESTAMPTZ '2028-07-01 00:00:00+00'
+    AND created_at <  TIMESTAMPTZ '2028-10-01 00:00:00+00';
+
+  ALTER TABLE public.audit_logs ATTACH PARTITION audit_parts.audit_logs_default DEFAULT;
+
+  COMMIT;
+  ```
+
+  Do it in a maintenance window: `DETACH` takes `ACCESS EXCLUSIVE` on
+  `public.audit_logs` and holds it to `COMMIT`, so audit writes block
+  throughout, and a blocked audit write fails the request that produced it.
 - **Mail, monitoring and error reporting.** Yours to wire. The log pipeline
   contains no secret values by construction, but where the logs go is your
   decision.

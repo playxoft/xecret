@@ -149,8 +149,9 @@ BEGIN
 	expected_from := start_bound::timestamptz;
 	expected_to := end_bound::timestamptz;
 
-	-- Attachment, not mere existence. The recovery procedure documented at the
-	-- foot of this file detaches a partition, and an interrupted recovery leaves
+	-- Attachment, not mere existence. The recovery procedure in
+	-- docs/operations/database-setup.md detaches a partition, and an interrupted
+	-- recovery leaves
 	-- the name occupied by a table that is no longer part of `audit_logs`. A
 	-- name check would report that quarter covered while the parent has no
 	-- partition for it at all.
@@ -180,15 +181,26 @@ BEGIN
 		existing_from := (regexp_match(existing_bound, 'FROM \(''([^'']+)''\)'))[1]::timestamptz;
 		existing_to := (regexp_match(existing_bound, 'TO \(''([^'']+)''\)'))[1]::timestamptz;
 
-		-- Only a confirmed mismatch raises. If the bound does not parse it is not
-		-- a range partition this function wrote, and guessing would turn a safety
-		-- check into a migration that refuses to run.
+		-- Only a confirmed mismatch raises, and two independent signals have to
+		-- agree on it: the bounds must differ as instants *and* the rendered text
+		-- must differ from what this function would have written. `%L` and
+		-- pg_get_expr use the same output function, so under an ordinary DateStyle
+		-- the two agree; under one that renders a timezone abbreviation rather than
+		-- an offset, re-parsing can resolve the abbreviation elsewhere, and the
+		-- second signal keeps that from aborting a correctly bounded partition.
+		-- If the bound does not parse at all it is not a range partition this
+		-- function wrote, and guessing would turn a safety check into a migration
+		-- that refuses to run.
 		IF existing_from IS NOT NULL AND existing_to IS NOT NULL
-			AND (existing_from <> expected_from OR existing_to <> expected_to) THEN
+			AND (existing_from <> expected_from OR existing_to <> expected_to)
+			AND existing_bound IS DISTINCT FROM
+				format('FOR VALUES FROM (%L) TO (%L)', expected_from, expected_to) THEN
 			RAISE EXCEPTION
-				'audit_parts.% covers [%, %) but should cover [%, %). '
-				'Detach it, move its rows through public.audit_logs, and drop it; '
-				'see docs/operations/database-setup.md, "Audit partition maintenance".',
+				'audit_parts.% covers [%, %) but should cover [%, %), so it was '
+				'created against a different session time zone. Detach it first, then '
+				'create the correctly bounded partition, move the rows through '
+				'public.audit_logs, and drop the detached table — in that order. See '
+				'docs/operations/database-setup.md, "Audit partition maintenance".',
 				partition_name, existing_from, existing_to, expected_from, expected_to;
 		END IF;
 	ELSE
@@ -243,6 +255,7 @@ DECLARE
 	n integer := 0;
 	est_rows double precision;
 	total_rows bigint;
+	allow_rewrite boolean;
 	q date;
 	last_q date;
 	is_attached boolean;
@@ -258,8 +271,21 @@ BEGIN
 	-- Establishing the premise after taking the lock would mean paying the outage
 	-- in order to decide the outage was unaffordable.
 	--
+	-- The refusal is a default, not a verdict. An operator who has read what the
+	-- rewrite costs and has a maintenance window can take it deliberately:
+	--
+	--     ALTER DATABASE <db> SET xecret.allow_audit_rewrite = 'on';
+	--
+	-- and reset it afterwards. Without an override, a table over the threshold
+	-- aborts drizzle's transaction on every attempt — which blocks every other
+	-- pending migration too, not just this one, with no route forward.
+	allow_rewrite := COALESCE(current_setting('xecret.allow_audit_rewrite', true), 'off') = 'on';
+
 	-- The planner's estimate goes first because it is free: a table far over the
-	-- threshold is refused without reading a row.
+	-- threshold is refused without reading a row. Its threshold is deliberately
+	-- looser than the exact one below — reltuples is stale by nature, and a
+	-- never-analyzed table reports -1 — so this catches only the unarguable
+	-- cases and leaves the real decision to the count.
 	SELECT COALESCE(sum(GREATEST(c.reltuples, 0)), 0)
 	INTO est_rows
 	FROM pg_inherits inh
@@ -268,23 +294,26 @@ BEGIN
 	JOIN pg_namespace pn ON pn.oid = p.relnamespace
 	WHERE p.relname = 'audit_logs' AND pn.nspname = 'public';
 
-	IF est_rows > 4000000 THEN
+	IF est_rows > 4000000 AND NOT allow_rewrite THEN
 		RAISE EXCEPTION
 			'audit_logs is estimated at % rows; this migration rewrites the whole '
 			'table under ACCESS EXCLUSIVE and is only safe while that table is '
-			'small. See docs/operations/database-setup.md, '
-			'"Audit partition maintenance", for the partition-by-partition procedure.',
+			'small. To take the rewrite deliberately in a maintenance window, run '
+			'ALTER DATABASE <db> SET xecret.allow_audit_rewrite = ''on'' and re-run '
+			'the migration. See docs/operations/database-setup.md, '
+			'"Audit partition maintenance".',
 			est_rows::bigint;
 	END IF;
 
 	SELECT count(*) INTO total_rows FROM public.audit_logs;
 
-	IF total_rows > 1000000 THEN
+	IF total_rows > 1000000 AND NOT allow_rewrite THEN
 		RAISE EXCEPTION
 			'audit_logs holds % rows; this migration rewrites the whole table under '
-			'ACCESS EXCLUSIVE and is only safe while that table is small. See '
-			'docs/operations/database-setup.md, "Audit partition maintenance", for '
-			'the partition-by-partition procedure.',
+			'ACCESS EXCLUSIVE and is only safe while that table is small. To take '
+			'the rewrite deliberately in a maintenance window, run ALTER DATABASE '
+			'<db> SET xecret.allow_audit_rewrite = ''on'' and re-run the migration. '
+			'See docs/operations/database-setup.md, "Audit partition maintenance".',
 			total_rows;
 	END IF;
 

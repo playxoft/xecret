@@ -212,6 +212,10 @@ only at an exactly quarterly cadence, and leaves permanently uncoverable gaps at
 `timestamptz` resolves in the session's time zone, so without it a run near a quarter boundary picks
 the wrong quarter.
 
+If **any** quarter in that range already has rows in the default partition, the statement aborts as
+a whole and no quarter is created — it is one statement, so it is one transaction. Recover each
+affected quarter first, oldest first, then re-run the extension.
+
 ### Recovering a quarter that already has rows in the default partition
 
 If you find that quarter's rows in `audit_parts.audit_logs_default`, the partition cannot simply be
@@ -245,9 +249,83 @@ possible. Both act on a table that is outside the parent at the time, and no aud
 operation that is consistent with an append-only log, and it is why the two statements are one
 transaction rather than a sequence you could stop halfway.
 
-The same procedure, with the partition named instead of the default, recovers a partition left
-detached by an interrupted run — `create_audit_log_partition()` raises rather than silently skipping
-when it finds one.
+**This is a maintenance-window operation.** `DETACH PARTITION` cannot be `CONCURRENTLY` inside a
+transaction block, so it takes `ACCESS EXCLUSIVE` on `public.audit_logs` and holds it to `COMMIT`,
+and the closing `ATTACH ... DEFAULT` scans the whole default partition to validate it. Audit writes
+block throughout, and a blocked audit write fails the request that produced it. Size it by how many
+rows are in the default partition, and repeat the block once per affected quarter — it recovers the
+one quarter named in its predicates, not all of them.
+
+### Recovering a partition left detached
+
+`create_audit_log_partition()` raises rather than silently skipping when it finds a table with the
+right name in `audit_parts` that is not attached to `public.audit_logs` — the residue of an
+interrupted recovery. Which remedy applies depends on whether its rows already reached the parent:
+
+- **They did not.** Re-attach it, naming the quarter's UTC bounds explicitly:
+
+  ```sql
+  ALTER TABLE public.audit_logs
+      ATTACH PARTITION audit_parts.audit_logs_2028q3
+      FOR VALUES FROM (TIMESTAMPTZ '2028-07-01 00:00:00+00')
+                   TO (TIMESTAMPTZ '2028-10-01 00:00:00+00');
+  ```
+
+- **They did**, because an earlier run re-inserted them before it was interrupted. Confirm it —
+  compare `count(*)` on the detached table against the same range in `public.audit_logs` — and then
+  `DROP TABLE` the detached one. Do not re-insert first; that duplicates rows.
+
+### Recovering a mis-bounded partition
+
+If `create_audit_log_partition()` reports that a partition covers one range but should cover
+another, it was created from a session in a non-UTC time zone. Detach it **first** — the correctly
+bounded partition cannot be created while the wrong one occupies the range — then create the right
+one, move the rows through the parent, and drop the detached table:
+
+```sql
+BEGIN;
+
+ALTER TABLE public.audit_logs DETACH PARTITION audit_parts.audit_logs_2028q3;
+ALTER TABLE audit_parts.audit_logs_2028q3 RENAME TO audit_logs_2028q3_old;
+
+SELECT create_audit_log_partition(DATE '2028-07-01');
+
+INSERT INTO public.audit_logs SELECT * FROM audit_parts.audit_logs_2028q3_old;
+DROP TABLE audit_parts.audit_logs_2028q3_old;
+
+COMMIT;
+```
+
+The rename is what frees the name for the new partition. Same lock cost as above.
+
+### If the migration refuses: too many rows to rewrite
+
+Migration 0010 rewrites the whole of `audit_logs` — it detaches every partition, re-inserts every
+row through the parent, and rebuilds the primary key and four indexes. That is free on a small table
+and an outage on a large one, so it measures first, before taking any lock, and refuses above about
+a million rows.
+
+The refusal aborts the migration transaction, and drizzle runs all pending migrations in one
+transaction, so nothing else applies either. Two ways forward:
+
+- **Take the rewrite deliberately**, in a maintenance window, accepting that audit writes block for
+  its duration:
+
+  ```sql
+  ALTER DATABASE your_database SET xecret.allow_audit_rewrite = 'on';
+  ```
+
+  Then run `npm run db:migrate`, and afterwards:
+
+  ```sql
+  ALTER DATABASE your_database RESET xecret.allow_audit_rewrite;
+  ```
+
+  Set it on the database or on the migrating role, not with a bare `SET` in another session — the
+  migration reads it on its own connection.
+
+- **Stay on monthly partitions.** Nothing in the application names a partition; 0001's layout keeps
+  working. You are choosing more child tables in `public`, not a broken system.
 
 ---
 
