@@ -55,8 +55,8 @@ project to one vendor for no gain.
 The script prefers `MIGRATION_DATABASE_URL` and falls back to `DATABASE_URL`. If neither is set it
 exits with a message naming both.
 
-This creates the 15 tables, partitions `audit_logs` by month, and creates the **`xecret_app_permissions`
-role** with its grants.
+This creates the 15 tables, partitions `audit_logs` by quarter into the `audit_parts` schema, and
+creates the **`xecret_app_permissions` role** with its grants.
 
 `xecret_app_permissions` is deliberately **`NOLOGIN`**. It is a *group* role: it holds privileges and nothing
 else. You cannot connect as it, and that is the point — see step 3.
@@ -184,11 +184,12 @@ people will rely on.
 ## Known sharp edges
 
 **A new table in a future migration needs an explicit grant.** Migration 0002 lists the tenant
-tables by name. The `ALTER DEFAULT PRIVILEGES` line at the end grants only `SELECT, INSERT` on
-future tables, because it exists to cover the monthly `audit_logs` partitions. So a migration that
-adds an ordinary table will give the application read-and-insert but *not* update-or-delete, and
-the failure will surface at runtime as a permission error rather than at migration time. Any
-migration adding a table must add its own `GRANT`.
+tables by name, and nothing grants anything on a table added later. Migration 0010 revoked the
+`ALTER DEFAULT PRIVILEGES` rule in `public` that used to paper over this — it existed only to cover
+audit partitions, which now live in `audit_parts` and are granted explicitly by
+`create_audit_log_partition()`. So a migration that adds an ordinary table and forgets its `GRANT`
+now fails loudly on first use rather than half-working with read-and-insert but no update-or-delete.
+Any migration adding a table must add its own `GRANT`.
 
 **`CREATE ROLE` may need the account owner.** On some managed providers role creation is
 restricted. If migration 0002 fails on `CREATE ROLE`, create `xecret_app_permissions` through the provider's

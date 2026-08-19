@@ -127,8 +127,11 @@ is permanently unrecoverable — there is no support ticket that fixes this.**
   [key recovery](security/key-recovery.md) exists to be run, quarterly.
 - **Migrations:** generated SQL, committed and reviewed, applied with
   `npm run db:migrate`. Never auto-applied on deploy.
-- **The audit log** is append-only and partitioned by month; partitions are
-  pre-created a year ahead by migration 0001. Revisit before the runway ends.
+- **The audit log** is append-only and partitioned by quarter, with the child
+  tables in the `audit_parts` schema. Partitions are pre-created two years ahead
+  by migration 0010, and nothing extends that automatically yet — run
+  `SELECT create_audit_log_partition((now() + interval '21 months')::date);`
+  before the runway ends, or writes fall into the default partition.
 - **Mail, monitoring, error reporting** are yours to wire; the log pipeline
   never contains secret values by construction, but where the logs go is your
   decision.

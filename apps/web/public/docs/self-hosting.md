@@ -204,8 +204,10 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
   key escrow is a paperweight. Test restore of **both**.
 - **Migrations.** Generated SQL, committed and reviewed, applied with
   `npm run db:migrate`. Never auto-applied on deploy.
-- **The audit log.** Append-only and partitioned by month, with partitions
-  pre-created a year ahead. Revisit before that runway ends.
+- **The audit log.** Append-only and partitioned by quarter, with the child
+  tables kept in the `audit_parts` schema and partitions pre-created two years
+  ahead. Nothing extends that automatically yet — revisit before the runway ends
+  or writes fall into the default partition.
 - **Mail, monitoring and error reporting.** Yours to wire. The log pipeline
   contains no secret values by construction, but where the logs go is your
   decision.
