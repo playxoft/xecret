@@ -23,7 +23,21 @@ async function main(): Promise<void> {
   }
 
   // max: 1 — migrations must run sequentially on a single connection.
-  const client = postgres(url, { max: 1, onnotice: () => {} });
+  //
+  // NOTICE is dropped: it is drizzle's advisory-lock chatter and the `IF NOT
+  // EXISTS` no-ops, and it is noise. WARNING and above is forwarded, because a
+  // migration that completes only part of its work says so that way. Migration
+  // 0010 warns when it cannot revoke a default privilege owned by another role;
+  // swallowing that would print "Migrations applied." over a step the operator
+  // still has to perform, and they would have no way to know.
+  const client = postgres(url, {
+    max: 1,
+    onnotice: (notice) => {
+      if (notice.severity !== 'NOTICE' && notice.severity !== 'DEBUG') {
+        console.warn(`${notice.severity}: ${notice.message}`);
+      }
+    },
+  });
 
   try {
     console.warn('Applying migrations…');

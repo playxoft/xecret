@@ -408,10 +408,10 @@ CREATE INDEX audit_logs_environment_idx ON audit_logs (environment_id, created_a
   one or two partitions instead of three or four, and 3–5 years of retention is 12–20 child
   tables rather than 36–60.
 - **Partitions live in the `audit_parts` schema**, not `public`. Purely an ergonomic decision, and
-  a real one: at multi-year retention 12–20 children sit beside 18 real tables, roughly doubling
-  what `\dt` prints — and under the monthly scheme this replaces they would have outnumbered the
-  real tables three to one. A `public` listing an operator cannot scan is one they stop reading —
-  in the schema where the append-only guarantee lives. PostgreSQL allows a partition in a different schema from its
+  a real one. Left in `public`, 12–20 quarterly children would sit beside the 18 real tables and
+  roughly double what `\dt` prints; under the monthly scheme this replaces, 36–60 of them would
+  have outnumbered the real tables three to one. A `public` listing an operator cannot scan is one
+  they stop reading — and this is the schema where the append-only guarantee lives. PostgreSQL allows a partition in a different schema from its
   parent, and nothing about it is visible to queries; the application only ever names
   `public.audit_logs`. Migration 0010 made both changes, while the table was small enough that
   they were free.
@@ -449,7 +449,7 @@ audit_logs — no FKs by design; references are soft
 ## 10. Migration order
 
 ```
-0000  initial schema: extensions (citext), enums, and all 15 tables above
+0000  initial schema: extensions (citext), enums, and the 15 tables above
 0001  audit_logs partitioning + partition management function
 0002  grants: least-privilege application role
 0003  rename the application role to xecret_app_permissions
@@ -461,6 +461,10 @@ audit_logs — no FKs by design; references are soft
 0009  organization creator index
 0010  audit partitions: quarterly, and into the audit_parts schema
 ```
+
+The 15 tables catalogued above are the ones 0000 creates. `user_pins`, `pin_reset_tokens` and
+`cli_auth_codes` arrive in 0004 and 0005 and are not catalogued in this document — which is why §8
+counts 18 tables in `public` and this list counts 15.
 
 Migration `0002` is not optional. The application role gets `SELECT`/`INSERT`/`UPDATE`/
 `DELETE` on tenant tables, `SELECT`/`INSERT` only on `audit_logs`, and no DDL rights

@@ -136,15 +136,19 @@ is permanently unrecoverable — there is no support ticket that fixes this.**
   ```sql
   SELECT create_audit_log_partition(d::date)
   FROM generate_series(
-      date_trunc('quarter', now()),
-      date_trunc('quarter', now() + interval '21 months'),
+      date_trunc('quarter', now() AT TIME ZONE 'UTC'),
+      date_trunc('quarter', (now() + interval '21 months') AT TIME ZONE 'UTC'),
       interval '3 months'
   ) AS d;
   ```
 
-  It fills every quarter to the end of the runway, not just the last one, so it
-  is idempotent and any cadence shorter than two years is safe. Extending only
-  the far quarter would leave the ones in between permanently uncoverable.
+  Run it as the owner of the audit tables — it issues `CREATE TABLE` and
+  `GRANT`, and the application role holds neither. It fills every quarter to the
+  end of the runway, not just the last one, so it is idempotent and any cadence
+  shorter than 21 months is safe. Extending only the far quarter would leave the
+  ones in between permanently uncoverable. The procedure, and the recovery for a
+  quarter whose rows reached the default partition first, are in
+  [database setup](operations/database-setup.md).
 - **Mail, monitoring, error reporting** are yours to wire; the log pipeline
   never contains secret values by construction, but where the logs go is your
   decision.

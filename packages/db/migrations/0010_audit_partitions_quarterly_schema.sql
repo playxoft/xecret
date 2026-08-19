@@ -124,11 +124,30 @@ DECLARE
 	partition_name text;
 	start_date date;
 	end_date date;
+	start_bound text;
+	end_bound text;
+	expected_from timestamptz;
+	expected_to timestamptz;
+	existing_bound text;
+	existing_from timestamptz;
+	existing_to timestamptz;
 	is_attached boolean;
 BEGIN
 	start_date := date_trunc('quarter', target_date)::date;
 	end_date := (start_date + interval '3 months')::date;
 	partition_name := 'audit_logs_' || to_char(start_date, 'YYYY') || 'q' || to_char(start_date, 'Q');
+
+	-- Bounds are written as explicit UTC timestamps. `created_at` is
+	-- `timestamptz`, so a bare date literal is resolved using the session's
+	-- TimeZone: a partition added by hand from a psql session set to, say,
+	-- Asia/Kolkata would start 18:30 UTC of the previous day, and would either
+	-- collide with its neighbour or leave a silent five-and-a-half hour gap whose
+	-- rows land in the default partition — which then blocks that quarter's real
+	-- partition permanently.
+	start_bound := to_char(start_date, 'YYYY-MM-DD') || ' 00:00:00+00';
+	end_bound := to_char(end_date, 'YYYY-MM-DD') || ' 00:00:00+00';
+	expected_from := start_bound::timestamptz;
+	expected_to := end_bound::timestamptz;
 
 	-- Attachment, not mere existence. The recovery procedure documented at the
 	-- foot of this file detaches a partition, and an interrupted recovery leaves
@@ -146,7 +165,33 @@ BEGIN
 			AND p.relname = 'audit_logs' AND pn.nspname = 'public'
 	) INTO is_attached;
 
-	IF NOT is_attached THEN
+	IF is_attached THEN
+		-- Attached is not the same as correctly bounded. A partition re-created by
+		-- hand during recovery, from a session in another time zone, is attached
+		-- under the right name over the wrong range, and the gap that leaves is
+		-- invisible until rows have already fallen into the default partition. The
+		-- bound is rendered in the session's TimeZone and DateStyle, so the two are
+		-- compared as instants rather than as text.
+		SELECT pg_get_expr(c.relpartbound, c.oid) INTO existing_bound
+		FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE c.relname = partition_name AND n.nspname = 'audit_parts';
+
+		existing_from := (regexp_match(existing_bound, 'FROM \(''([^'']+)''\)'))[1]::timestamptz;
+		existing_to := (regexp_match(existing_bound, 'TO \(''([^'']+)''\)'))[1]::timestamptz;
+
+		-- Only a confirmed mismatch raises. If the bound does not parse it is not
+		-- a range partition this function wrote, and guessing would turn a safety
+		-- check into a migration that refuses to run.
+		IF existing_from IS NOT NULL AND existing_to IS NOT NULL
+			AND (existing_from <> expected_from OR existing_to <> expected_to) THEN
+			RAISE EXCEPTION
+				'audit_parts.% covers [%, %) but should cover [%, %). '
+				'Detach it, move its rows through public.audit_logs, and drop it; '
+				'see docs/operations/database-setup.md, "Audit partition maintenance".',
+				partition_name, existing_from, existing_to, expected_from, expected_to;
+		END IF;
+	ELSE
 		IF EXISTS (
 			SELECT 1 FROM pg_class c
 			JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -154,23 +199,14 @@ BEGIN
 		) THEN
 			RAISE EXCEPTION
 				'audit_parts.% exists but is not attached to public.audit_logs. '
-				'Re-attach it, or drop it if its rows are already in the parent, '
-				'then retry.',
+				'Re-attach it, or drop it if its rows are already in the parent; '
+				'see docs/operations/database-setup.md, "Audit partition maintenance".',
 				partition_name;
 		END IF;
 
-		-- Bounds are written as explicit UTC timestamps. `created_at` is
-		-- `timestamptz`, so a bare date literal is resolved using the session's
-		-- TimeZone: a partition added by hand from a psql session set to, say,
-		-- Asia/Kolkata would start 18:30 UTC of the previous day, and would
-		-- either collide with its neighbour or leave a silent five-and-a-half
-		-- hour gap whose rows land in the default partition — which then blocks
-		-- that quarter's real partition permanently.
 		EXECUTE format(
 			'CREATE TABLE audit_parts.%I PARTITION OF public.audit_logs FOR VALUES FROM (%L) TO (%L)',
-			partition_name,
-			to_char(start_date, 'YYYY-MM-DD') || ' 00:00:00+00',
-			to_char(end_date, 'YYYY-MM-DD') || ' 00:00:00+00'
+			partition_name, start_bound, end_bound
 		);
 	END IF;
 
@@ -202,20 +238,85 @@ DO $$
 DECLARE
 	child record;
 	held record;
+	slot record;
 	holding text;
 	n integer := 0;
-	span_min timestamptz;
-	span_max timestamptz;
-	row_min timestamptz;
-	row_max timestamptz;
-	row_count bigint;
-	total_rows bigint := 0;
-	span_floor timestamptz;
-	span_ceiling timestamptz;
+	est_rows double precision;
+	total_rows bigint;
 	q date;
 	last_q date;
 	is_attached boolean;
 BEGIN
+	-- Measure first, while the heaviest lock held is ACCESS SHARE and writers are
+	-- unaffected. Everything after the first DETACH runs under ACCESS EXCLUSIVE on
+	-- `audit_logs`, held to the end of the transaction drizzle wraps around the
+	-- pending migrations: every audit write blocks for the duration, and a blocked
+	-- audit write fails the request that produced it. Re-inserting through the
+	-- parent also rebuilds the primary key and four indexes and needs room for a
+	-- second copy. That is a moment on a small table; `secret.read` fires on every
+	-- `xecret run` and every CI build, so it does not stay a small table forever.
+	-- Establishing the premise after taking the lock would mean paying the outage
+	-- in order to decide the outage was unaffordable.
+	--
+	-- The planner's estimate goes first because it is free: a table far over the
+	-- threshold is refused without reading a row.
+	SELECT COALESCE(sum(GREATEST(c.reltuples, 0)), 0)
+	INTO est_rows
+	FROM pg_inherits inh
+	JOIN pg_class c ON c.oid = inh.inhrelid
+	JOIN pg_class p ON p.oid = inh.inhparent
+	JOIN pg_namespace pn ON pn.oid = p.relnamespace
+	WHERE p.relname = 'audit_logs' AND pn.nspname = 'public';
+
+	IF est_rows > 4000000 THEN
+		RAISE EXCEPTION
+			'audit_logs is estimated at % rows; this migration rewrites the whole '
+			'table under ACCESS EXCLUSIVE and is only safe while that table is '
+			'small. See docs/operations/database-setup.md, '
+			'"Audit partition maintenance", for the partition-by-partition procedure.',
+			est_rows::bigint;
+	END IF;
+
+	SELECT count(*) INTO total_rows FROM public.audit_logs;
+
+	IF total_rows > 1000000 THEN
+		RAISE EXCEPTION
+			'audit_logs holds % rows; this migration rewrites the whole table under '
+			'ACCESS EXCLUSIVE and is only safe while that table is small. See '
+			'docs/operations/database-setup.md, "Audit partition maintenance", for '
+			'the partition-by-partition procedure.',
+			total_rows;
+	END IF;
+
+	-- The quarters the rebuild has to cover: every quarter that actually holds
+	-- rows, plus the forward runway. Taking the set from the data rather than
+	-- walking forward from the oldest row means one outlying `created_at` — a
+	-- restored dump, a clock that skewed — costs a single extra partition instead
+	-- of the hundreds a contiguous walk would create, and no row has to be
+	-- refused or deleted to make the migration run. Deleting one is not available
+	-- anyway: it is the operation this whole table is built to make impossible.
+	--
+	-- `AT TIME ZONE 'UTC'` because `date_trunc` on a `timestamptz` resolves in the
+	-- session's TimeZone. The partition bounds are UTC, so the quarter a row is
+	-- assigned to must be computed in UTC too — otherwise a row an hour either
+	-- side of a quarter boundary is assigned to a quarter whose partition does not
+	-- cover it, and it lands in the default partition instead.
+	CREATE TEMP TABLE _audit_quarters (quarter date PRIMARY KEY) ON COMMIT DROP;
+
+	INSERT INTO _audit_quarters (quarter)
+	SELECT DISTINCT date_trunc('quarter', created_at AT TIME ZONE 'UTC')::date
+	FROM public.audit_logs;
+
+	-- Eight quarters of runway. Longer than 0001's twelve months, and the
+	-- maintenance job extends it — see the note at the end of this file.
+	q := date_trunc('quarter', now() AT TIME ZONE 'UTC')::date;
+	last_q := date_trunc('quarter', (now() + interval '21 months') AT TIME ZONE 'UTC')::date;
+
+	WHILE q <= last_q LOOP
+		INSERT INTO _audit_quarters (quarter) VALUES (q) ON CONFLICT DO NOTHING;
+		q := (q + interval '3 months')::date;
+	END LOOP;
+
 	CREATE TEMP TABLE _audit_holding (name text) ON COMMIT DROP;
 
 	-- Park every current partition as an ordinary table. Detaching first means
@@ -245,68 +346,8 @@ BEGIN
 		INSERT INTO _audit_holding VALUES (holding);
 	END LOOP;
 
-	-- One pass per parked table: the span the new partitions must cover, and the
-	-- number of rows this migration is about to rewrite. LEAST and GREATEST
-	-- ignore NULLs, so an empty audit log simply yields the current quarter
-	-- forward.
-	FOR held IN SELECT name FROM _audit_holding LOOP
-		EXECUTE format('SELECT count(*), min(created_at), max(created_at) FROM public.%I', held.name)
-			INTO row_count, row_min, row_max;
-
-		total_rows := total_rows + row_count;
-		span_min := LEAST(span_min, row_min);
-		span_max := GREATEST(span_max, row_max);
-	END LOOP;
-
-	-- The premise, enforced. Everything here runs inside the single transaction
-	-- drizzle wraps around the pending migrations, holding ACCESS EXCLUSIVE on
-	-- `audit_logs` from the first DETACH to the final DROP: every audit write
-	-- blocks for the duration, and a blocked audit write fails the request that
-	-- produced it. Re-inserting through the parent also rebuilds the primary key
-	-- and four indexes, and needs room for a second copy of the data. On a small
-	-- table that is a moment; `secret.read` fires on every `xecret run` and every
-	-- CI build, so it does not stay a small table forever. Refuse rather than
-	-- take an unbounded outage on a table nobody measured first.
-	IF total_rows > 1000000 THEN
-		RAISE EXCEPTION
-			'audit_logs holds % rows; this migration rewrites the whole table '
-			'under ACCESS EXCLUSIVE and is only safe while that table is small. '
-			'Move the data with a partition-by-partition ATTACH instead, during '
-			'a maintenance window, then mark this migration applied.',
-			total_rows;
-	END IF;
-
-	-- Bound the rebuild. The loop below walks one quarter at a time, so without
-	-- a floor a single outlying `created_at` — a restored dump, a clock that
-	-- skewed — turns it into hundreds of CREATE TABLEs inside this transaction.
-	-- Outliers are refused rather than absorbed: quietly leaving them for the
-	-- default partition poisons the quarter they belong to, and creating that
-	-- quarter's real partition afterwards then fails permanently.
-	span_floor := date_trunc('quarter', now() - interval '5 years');
-	span_ceiling := date_trunc('quarter', now() + interval '21 months');
-
-	IF span_min IS NOT NULL AND span_min < span_floor THEN
-		RAISE EXCEPTION
-			'audit_logs holds a row dated %, before the five-year floor this '
-			'migration covers. Archive or correct it, then retry.',
-			span_min;
-	END IF;
-
-	IF span_max IS NOT NULL AND span_max >= span_ceiling + interval '3 months' THEN
-		RAISE EXCEPTION
-			'audit_logs holds a row dated %, beyond the runway this migration '
-			'creates. Archive or correct it, then retry.',
-			span_max;
-	END IF;
-
-	-- Eight quarters of runway. Longer than 0001's twelve months, and the
-	-- maintenance job extends it — see the note at the end of this file.
-	q := date_trunc('quarter', LEAST(span_min, now()))::date;
-	last_q := date_trunc('quarter', GREATEST(span_max, now() + interval '21 months'))::date;
-
-	WHILE q <= last_q LOOP
-		PERFORM create_audit_log_partition(q);
-		q := (q + interval '3 months')::date;
+	FOR slot IN SELECT quarter FROM _audit_quarters ORDER BY quarter LOOP
+		PERFORM create_audit_log_partition(slot.quarter);
 	END LOOP;
 
 	-- Safety net, same reasoning as 0001: an audit record must never be lost
@@ -365,13 +406,24 @@ $$;--> statement-breakpoint
 -- interval '21 months')::date)` is correct only if it runs exactly quarterly:
 -- run it eight months apart and it creates the far quarter while leaving the
 -- ones in between uncovered, which is the unrecoverable case above. Filling the
--- whole range is idempotent, so cadence stops mattering — any interval shorter
--- than the runway is safe:
+-- whole range is idempotent, so cadence stops mattering, up to a point: the
+-- statement always creates eight quarters, which reach between 21 and 24 months
+-- out depending on where in the current quarter it runs. Twenty-one months is
+-- therefore the honest bound, not two years.
 --
 --     SELECT create_audit_log_partition(d::date)
 --     FROM generate_series(
---         date_trunc('quarter', now()),
---         date_trunc('quarter', now() + interval '21 months'),
+--         date_trunc('quarter', now() AT TIME ZONE 'UTC'),
+--         date_trunc('quarter', (now() + interval '21 months') AT TIME ZONE 'UTC'),
 --         interval '3 months'
 --     ) AS d;
+--
+-- `AT TIME ZONE 'UTC'` for the same reason the bounds are UTC: without it the
+-- quarter is chosen in the session's TimeZone, and a run near a boundary picks
+-- the wrong one. Run it as the role that owns the audit tables — it issues
+-- CREATE TABLE and GRANT, neither of which the application role holds.
+--
+-- The procedure, and the recovery for a quarter whose rows have already reached
+-- the default partition, are in docs/operations/database-setup.md under
+-- "Audit partition maintenance".
 SELECT 1;

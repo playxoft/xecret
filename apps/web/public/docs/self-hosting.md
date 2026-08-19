@@ -3,7 +3,7 @@ title: Self-hosting xecret
 navTitle: Self-hosting
 description: Run xecret yourself — the honest dependency list, the root-key ceremony, a step-by-step deployment, and what you are signing up to operate.
 keywords: [self host secret manager, cloudflare workers deployment, open source secrets manager, agpl, neon postgres, root key]
-updated: 2026-08-17
+updated: 2026-08-19
 ---
 
 xecret is AGPL-3.0 and designed to be run by people other than us. This page is
@@ -213,14 +213,24 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
   ```sql
   SELECT create_audit_log_partition(d::date)
   FROM generate_series(
-      date_trunc('quarter', now()),
-      date_trunc('quarter', now() + interval '21 months'),
+      date_trunc('quarter', now() AT TIME ZONE 'UTC'),
+      date_trunc('quarter', (now() + interval '21 months') AT TIME ZONE 'UTC'),
       interval '3 months'
   ) AS d;
   ```
 
-  It fills every quarter to the end of the runway, so it is idempotent and any
-  cadence shorter than two years is safe.
+  Run it as the owner of the audit tables — it issues `CREATE TABLE` and
+  `GRANT`, and the application role holds neither. It fills every quarter to the
+  end of the runway, so it is idempotent and any cadence shorter than 21 months
+  is safe.
+
+  If a quarter's rows reach the default partition before its own partition
+  exists, that partition can no longer simply be created — the rows would
+  violate the default partition's constraint. Recovering is a single
+  transaction, run as the table owner: detach the default partition, create the
+  real one, re-insert those rows through `public.audit_logs`, delete them from
+  the detached table, and re-attach it. No audit row is destroyed; each one is
+  written back through the parent before it is removed from the holding table.
 - **Mail, monitoring and error reporting.** Yours to wire. The log pipeline
   contains no secret values by construction, but where the logs go is your
   decision.

@@ -181,15 +181,101 @@ people will rely on.
 
 ---
 
+## 6. Audit partition maintenance
+
+`audit_logs` is partitioned by quarter, with the child tables in the `audit_parts` schema.
+Migration 0010 pre-creates eight quarters. **Nothing extends that automatically.** When the runway
+runs out, audit writes land in `audit_parts.audit_logs_default`, and a quarter with rows sitting in
+the default partition can no longer be given a real partition — the `CREATE TABLE ... PARTITION OF`
+fails, because the rows would violate the default partition's constraint.
+
+Run this before the runway ends, **as the owner of the audit tables** — it issues `CREATE TABLE`
+and `GRANT`, and the application role holds neither:
+
+```sql
+SELECT create_audit_log_partition(d::date)
+FROM generate_series(
+    date_trunc('quarter', now() AT TIME ZONE 'UTC'),
+    date_trunc('quarter', (now() + interval '21 months') AT TIME ZONE 'UTC'),
+    interval '3 months'
+) AS d;
+```
+
+It fills every quarter from the current one to the end of the runway, not only the last one, and it
+is idempotent — so the cadence does not matter as long as it is **shorter than 21 months**. The
+statement always creates eight quarters, which reach between 21 and 24 months out depending on
+where in the current quarter you run it; 21 is the bound you can rely on. Extending only the far
+quarter — `create_audit_log_partition((now() + interval '21 months')::date)` on its own — is correct
+only at an exactly quarterly cadence, and leaves permanently uncoverable gaps at any other.
+
+`AT TIME ZONE 'UTC'` is not decoration. Partition bounds are UTC, and `date_trunc` on a
+`timestamptz` resolves in the session's time zone, so without it a run near a quarter boundary picks
+the wrong quarter.
+
+### Recovering a quarter that already has rows in the default partition
+
+If you find that quarter's rows in `audit_parts.audit_logs_default`, the partition cannot simply be
+created. Detach the default partition, create the real one, move the rows through the parent, and
+re-attach. As the table owner, in one transaction, substituting the quarter's UTC bounds:
+
+```sql
+BEGIN;
+
+ALTER TABLE public.audit_logs DETACH PARTITION audit_parts.audit_logs_default;
+
+SELECT create_audit_log_partition(DATE '2028-07-01');
+
+INSERT INTO public.audit_logs
+SELECT * FROM audit_parts.audit_logs_default
+WHERE created_at >= TIMESTAMPTZ '2028-07-01 00:00:00+00'
+  AND created_at <  TIMESTAMPTZ '2028-10-01 00:00:00+00';
+
+DELETE FROM audit_parts.audit_logs_default
+WHERE created_at >= TIMESTAMPTZ '2028-07-01 00:00:00+00'
+  AND created_at <  TIMESTAMPTZ '2028-10-01 00:00:00+00';
+
+ALTER TABLE public.audit_logs ATTACH PARTITION audit_parts.audit_logs_default DEFAULT;
+
+COMMIT;
+```
+
+Detaching first is what makes the `CREATE TABLE` possible; the `DELETE` is what makes the re-attach
+possible. Both act on a table that is outside the parent at the time, and no audit row is destroyed
+— every one of them is re-inserted through `public.audit_logs` first. That is the only form of this
+operation that is consistent with an append-only log, and it is why the two statements are one
+transaction rather than a sequence you could stop halfway.
+
+The same procedure, with the partition named instead of the default, recovers a partition left
+detached by an interrupted run — `create_audit_log_partition()` raises rather than silently skipping
+when it finds one.
+
+---
+
 ## Known sharp edges
 
 **A new table in a future migration needs an explicit grant.** Migration 0002 lists the tenant
-tables by name, and nothing grants anything on a table added later. Migration 0010 revoked the
+tables by name, and nothing grants anything on a table added later. Migration 0010 revokes the
 `ALTER DEFAULT PRIVILEGES` rule in `public` that used to paper over this — it existed only to cover
 audit partitions, which now live in `audit_parts` and are granted explicitly by
-`create_audit_log_partition()`. So a migration that adds an ordinary table and forgets its `GRANT`
-now fails loudly on first use rather than half-working with read-and-insert but no update-or-delete.
-Any migration adding a table must add its own `GRANT`.
+`create_audit_log_partition()`. With that rule gone, a migration that adds an ordinary table and
+forgets its `GRANT` fails loudly on first use rather than half-working with read-and-insert but no
+update-or-delete.
+
+That revoke is best-effort, and there is one case where it does not happen. A default-privilege rule
+belongs to the role that created it, and removing it means being that role or a member of it. If you
+applied migration 0002 as one role — `postgres` during bootstrap, say — and later migrations under a
+dedicated migration role, 0010 cannot remove it. It does not fail; it warns, naming the role and the
+statement to run:
+
+```
+WARNING: could not revoke the public default-privilege rule owned by postgres. Run this as
+that role before adding any new table: ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE
+SELECT, INSERT ON TABLES FROM xecret_app_permissions;
+```
+
+`npm run db:migrate` forwards warnings, so this appears in the migration output. **If you see it,
+the sharp edge is still open until you run the statement it names.** Either way, any migration
+adding a table must add its own `GRANT`.
 
 **`CREATE ROLE` may need the account owner.** On some managed providers role creation is
 restricted. If migration 0002 fails on `CREATE ROLE`, create `xecret_app_permissions` through the provider's
