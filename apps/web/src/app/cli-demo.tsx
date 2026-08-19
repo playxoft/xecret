@@ -3,21 +3,15 @@
 import { cn } from '@/lib/cn';
 import { TerminalIcon } from '@/components/ui/icons';
 import { Transcript, useReducedMotion, useTypeOut } from './transcript';
-import type { Line } from './transcript';
+import { DWELL_TICKS, SCRIPT, TICK_MS } from './cli-demo-script';
 
 /**
  * The landing page's CLI demo: the golden path, animated.
  *
  * The type-out engine and the line renderer are in `transcript.tsx`, shared
- * with `InstallGuide`. What is here is the script and the window around it.
- *
- * Every non-child line below is the CLI's real output, copied from the
- * format strings in `cli/cmd/xecret` — when those change, this transcript
- * must change with them, because a demo that shows output the tool does not
- * produce is a small lie on the one page that must not contain any. The two
- * dimmed lines after `run` are the *child process* speaking (npm's own
- * banner), which is the point of the feature: the app runs untouched, secrets
- * already in its environment.
+ * with `InstallGuide`; the script and its pacing are in `cli-demo-script.ts`,
+ * which is a plain module so that a test can hold its run time under the five
+ * seconds SC 2.2.2 allows. What is left here is the window around it.
  *
  * Honest limitation, recorded here and in the phase report: this is a typed
  * re-enactment, not an asciinema recording — there is no deployed server to
@@ -26,40 +20,6 @@ import type { Line } from './transcript';
  * Reduced motion is a first-class path, not a degradation: the full
  * transcript renders immediately, and the type-out never starts.
  */
-
-const SCRIPT: readonly Line[] = [
-  { kind: 'command', text: 'xecret login' },
-  { kind: 'info', text: 'Opening your browser to approve this device…' },
-  { kind: 'success', text: 'Signed in as dev@acme.dev (organisation acme)' },
-  { kind: 'blank' },
-  { kind: 'command', text: 'xecret init' },
-  { kind: 'success', text: 'Wrote .xecret.yaml — project storefront, environment development.' },
-  { kind: 'info', text: 'The file holds slugs only, never secrets; commit it.' },
-  { kind: 'blank' },
-  { kind: 'command', text: 'xecret run -- npm run dev' },
-  { kind: 'child', text: '> storefront@0.4.2 dev' },
-  { kind: 'child', text: 'ready — http://localhost:3000' },
-];
-
-/**
- * Milliseconds per typed character.
- *
- * 36, not the 45 this ran at, and the number is set by WCAG rather than by
- * taste. SC 2.2.2 asks that motion which starts by itself, runs longer than
- * five seconds and sits beside other content can be paused, stopped or
- * hidden. This transcript starts on load, next to the headline and both
- * calls to action, and there is no on-page control — so the honest options
- * were to add one, or to come in under the five seconds. At 45ms the run was
- * 133 ticks × 45 = 5.99s, just over; at 36ms it is 4.79s, just under, and the
- * rhythm between typing and dwell is unchanged because both are counted in
- * the same ticks.
- *
- * If a line is ever added to `SCRIPT`, re-check the total: `sum(len + DWELL +
- * 1)` for commands, `DWELL + 1` for output, `2` for a blank.
- */
-const TICK_MS = 36;
-/** Ticks a finished command or an output line stays current before the next. */
-const DWELL_TICKS = 8;
 
 export function CliDemo({ className }: { className?: string }) {
   const reducedMotion = useReducedMotion();

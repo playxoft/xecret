@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import type { CSSProperties } from 'react';
 
 import { cn } from '@/lib/cn';
 import { CopyButton } from '@/components/ui/copy-button';
+import { lineLifetime, scriptSignature, transcriptMinHeight } from './transcript-model';
+import type { Line } from './transcript-model';
 
 /**
  * The terminal transcript: the type-out engine and the line renderer, shared
@@ -25,16 +26,7 @@ import { CopyButton } from '@/components/ui/copy-button';
  * email, a version — are illustrative.
  */
 
-export type Line =
-  | { kind: 'command'; text: string }
-  | { kind: 'success'; text: string }
-  | { kind: 'info'; text: string }
-  | { kind: 'comment'; text: string }
-  /** The *child process* speaking — npm's own banner under `xecret run`. */
-  | { kind: 'child'; text: string }
-  /** A file being shown rather than a session — the Dockerfile. */
-  | { kind: 'file'; text: string }
-  | { kind: 'blank' };
+export type { Line } from './transcript-model';
 
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
 
@@ -142,7 +134,7 @@ export function useTypeOut(script: readonly Line[], options: TypeOutOptions): Ty
   // The state update during render is React's own documented way to derive
   // state from a changed prop, and it costs one extra render of this hook's
   // owner rather than an effect and a painted frame of the wrong transcript.
-  const signature = script.map((line) => (line.kind === 'blank' ? '' : line.text)).join('\u0000');
+  const signature = scriptSignature(script);
   const [seenSignature, setSeenSignature] = useState(signature);
   if (seenSignature !== signature) {
     setSeenSignature(signature);
@@ -159,12 +151,7 @@ export function useTypeOut(script: readonly Line[], options: TypeOutOptions): Ty
         const line = script[current.line];
         if (line === undefined) return current;
 
-        const lifetime =
-          line.kind === 'command'
-            ? line.text.length + dwellTicks
-            : line.kind === 'blank'
-              ? 1
-              : dwellTicks;
+        const lifetime = lineLifetime(line, dwellTicks);
 
         if (current.ticks < lifetime) {
           return { line: current.line, ticks: current.ticks + 1 };
@@ -178,23 +165,6 @@ export function useTypeOut(script: readonly Line[], options: TypeOutOptions): Ty
 
   if (!enabled) return { visibleCount: script.length, partial: null };
   return { visibleCount: progress.line, partial: finished ? null : progress.ticks };
-}
-
-/**
- * The height a transcript of `lines` occupies, as a CSS length.
- *
- * Computed rather than eyeballed: both callers had hand-written a `min-h-[…]`
- * roughly a line and a half short of their own longest script, which is the
- * difference between "the panel is a fixed size" and "the panel grows at the
- * end of every animation and shoves the page down". It is an inline style
- * because the value depends on the script — a Tailwind arbitrary value built
- * at runtime is a class the compiler never saw and never emitted.
- *
- * The arithmetic is `TRANSCRIPT_BODY`'s own: `leading-6` per line, `gap-0.5`
- * between them, `py-3.5` top and bottom.
- */
-function transcriptMinHeight(lines: number): string {
-  return `${lines * 1.5 + Math.max(0, lines - 1) * 0.125 + 1.75}rem`;
 }
 
 /** The panel body every transcript shares — type, rhythm and padding. */
@@ -224,12 +194,15 @@ export interface TranscriptProps {
    */
   copyable?: boolean;
   className?: string;
-  style?: CSSProperties;
-  id?: string;
+  /**
+   * Only `role`/`aria-label` are forwarded, and only because `CliDemo` labels
+   * the transcript itself. `InstallGuide` puts `role="tabpanel"` on a wrapper
+   * that also holds the footer, so it needs none of this — and a `tabIndex`
+   * here would invite a caller to hand-roll a focus fix that belongs to
+   * whichever element is actually the panel.
+   */
   role?: string;
-  tabIndex?: number;
   'aria-label'?: string;
-  'aria-labelledby'?: string;
 }
 
 /** The lines themselves, printed and typing. */
@@ -239,12 +212,8 @@ export function Transcript({
   minLines,
   copyable = false,
   className,
-  style,
-  id,
   role,
-  tabIndex,
   'aria-label': ariaLabel,
-  'aria-labelledby': ariaLabelledBy,
 }: TranscriptProps) {
   const { visibleCount, partial } = typeOut;
   const typing = partial !== null && script[visibleCount] !== undefined;
@@ -252,14 +221,9 @@ export function Transcript({
   return (
     <div
       className={cn(TRANSCRIPT_BODY, className)}
-      style={
-        minLines === undefined ? style : { minHeight: transcriptMinHeight(minLines), ...style }
-      }
-      id={id}
+      style={minLines === undefined ? undefined : { minHeight: transcriptMinHeight(minLines) }}
       role={role}
-      tabIndex={tabIndex}
       aria-label={ariaLabel}
-      aria-labelledby={ariaLabelledBy}
     >
       {script.slice(0, visibleCount).map((line, index) => (
         <TranscriptLine key={index} line={line} partial={null} copyable={copyable} />

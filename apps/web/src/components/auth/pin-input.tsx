@@ -149,7 +149,14 @@ export function PinInput({
             // it sits on, so the border is the only thing that says there is a
             // box at all — six of them, and you have to count along the row.
             'border-line-control bg-surface text-fg h-12 w-11 rounded-lg border text-center font-mono text-lg',
-            'focus:border-accent focus:ring-accent/30 outline-none focus:ring-2',
+            // No `outline-none` and no ring of its own. This used to carry
+            // `outline-none focus:ring-accent/30`, which deleted the
+            // application's focus treatment — globals.css says in terms that a
+            // component must not do that — and replaced it with roughly 1.96:1
+            // on `--surface`, under SC 1.4.11's 3:1. `focus-visible`, not
+            // `focus`, for the same reason the base rule pairs them: pointer
+            // users get no ring, keyboard users always do.
+            'focus-visible:border-accent',
             'disabled:cursor-not-allowed disabled:opacity-60',
             invalid && 'border-danger focus:border-danger focus:ring-danger/30',
             // The box the caret is in gets a resting highlight, so it is obvious

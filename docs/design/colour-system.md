@@ -29,7 +29,7 @@ Semantic tokens, not raw colours — components speak `bg-surface`,
 - **Text:** `fg` (18.31:1 light / 16.31:1 dark — AAA), `fg-muted` (6.86:1 /
   8.83:1 — AA), `fg-subtle` (5.14:1 / 5.40:1 — AA), `fg-disabled`
 - **Lines:** `line-subtle`, `line`, `line-strong`; `ring` for focus
-  (3.92:1 / 11.02:1 — SC 1.4.11)
+  (4.74:1 light on `surface`, 7.66:1 dark on `canvas` — SC 1.4.11)
 - **Accent** — monochrome, not a hue: `#171717` in light and `#e5e5e5` in
   dark. It used to be a "cipher" cyan, and the mark that justified it went
   achromatic too, so nothing on the site now carries a brand colour. Three

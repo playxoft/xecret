@@ -8,7 +8,8 @@ import { isInViewport, observeOnce } from '@/lib/observe-once';
 import { CopyButton } from '@/components/ui/copy-button';
 import { ArrowRightIcon, TerminalIcon } from '@/components/ui/icons';
 import { Transcript, prefersReducedMotion, useTypeOut } from './transcript';
-import type { Line } from './transcript';
+import { nextTabIndex, transcriptGates } from './transcript-model';
+import type { Line, TranscriptPlan } from './transcript-model';
 
 /**
  * The install guide: four ways onto the machine, each typed out.
@@ -236,12 +237,25 @@ const DWELL_TICKS = 9;
  * wraps three ways — a `threshold` gate would simply never fire and the panel
  * would stay blank forever. See `observeOnce`.
  *
- * The same fraction answers both questions below, and it has to: if "already
- * visible" were the lenient one-pixel test while "has arrived" demanded the
- * band, a panel whose top edge happened to clip the fold at load would count
- * as seen, never animate, and never be allowed to.
+ * The two questions below are deliberately *not* asked with the same
+ * strictness, and the asymmetry runs one way on purpose. "Is the reader
+ * looking at it?" — the question that decides whether blanking the panel is
+ * destructive — is asked leniently: any pixel on screen counts, because the
+ * cost of getting it wrong is erasing a transcript somebody is reading. "Has
+ * it arrived?" — which only ever starts an animation on a panel already
+ * confirmed to be off screen — is asked with the band.
+ *
+ * Making the two match, by asking the first one strictly too, looks tidier and
+ * is worse: a panel sitting four fifths of the way down the viewport is
+ * plainly visible but not yet in the middle band, so it would be planned as a
+ * type-out and the reader would watch the server's transcript vanish. The
+ * failure mode of leniency is only that a panel with a sliver showing at load
+ * never animates, which costs nothing anyone can see.
+ *
+ * There is no gap between them: a panel that fails the lenient test is
+ * entirely off screen, and reaching the reader from there means scrolling
+ * through the band.
  */
-const START_INSET = 0.25;
 const START_MARGIN = { rootMargin: '-25% 0px -25% 0px', threshold: 0 };
 
 export interface InstallGuideProps {
@@ -287,7 +301,7 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
    * a single update; a sequence of `setState` calls in an effect body is a
    * cascade of renders, and the lint rule that says so is right.
    */
-  const [plan, setPlan] = useState<'print' | 'type' | 'settled'>('print');
+  const [plan, setPlan] = useState<TranscriptPlan>('print');
   /**
    * Has the reader picked a tab themselves?
    *
@@ -307,7 +321,7 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
     const element = panelRef.current;
     if (!element || prefersReducedMotion()) return;
 
-    if (isInViewport(element, START_INSET)) {
+    if (isInViewport(element)) {
       setPlan('settled');
       return;
     }
@@ -322,15 +336,22 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
 
   const channel = channels[active] as Channel;
 
-  const enabled = plan === 'type' || (plan === 'settled' && interacted);
+  const { enabled, running } = transcriptGates(plan, interacted, started);
   const typeOut = useTypeOut(channel.script, {
     tickMs: TICK_MS,
     dwellTicks: DWELL_TICKS,
     enabled,
-    // …and the clock runs once the panel has been scrolled to, or immediately
-    // if the reader asked for this tab by clicking it.
-    running: enabled && (started || interacted),
+    running,
   });
+
+  /**
+   * Does the panel currently contain anything focusable? Its footer action, if
+   * this channel has one, plus a copy button for every command line that has
+   * finished typing.
+   */
+  const panelHasFocusable =
+    Boolean(channel.copy ?? channel.link) ||
+    channel.script.slice(0, typeOut.visibleCount).some((line) => line.kind === 'command');
 
   /** The longest of the four, so the panel does not resize as lines arrive. */
   const longestScript = useMemo(
@@ -339,6 +360,14 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
   );
 
   function selectTab(index: number) {
+    // Re-activating the tab that is already open is not the reader choosing a
+    // different platform, and must not be treated as one: under `settled` it
+    // would flip `enabled` with the script unchanged, so `useTypeOut` would
+    // not reset — it would simply stop printing the transcript that is on
+    // screen and retype it from an untouched `progress`. Reachable by a stray
+    // tap on the active tab, and by `Home` or `End` when focus is already on
+    // the first or last one.
+    if (index === active) return;
     setActive(index);
     setInteracted(true);
   }
@@ -346,22 +375,7 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
   /** Arrow keys move between tabs and activate as they go, which is the
    *  expected behaviour for a tab set whose panels are already loaded. */
   function onTabKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, index: number) {
-    const last = channels.length - 1;
-    const next =
-      event.key === 'ArrowRight'
-        ? index === last
-          ? 0
-          : index + 1
-        : event.key === 'ArrowLeft'
-          ? index === 0
-            ? last
-            : index - 1
-          : event.key === 'Home'
-            ? 0
-            : event.key === 'End'
-              ? last
-              : null;
-
+    const next = nextTabIndex(event.key, index, channels.length - 1);
     if (next === null) return;
     event.preventDefault();
     selectTab(next);
@@ -454,6 +468,14 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
         role="tabpanel"
         id="install-panel"
         aria-labelledby={`install-tab-${channel.id}`}
+        // The APG asks for a tab stop only on a panel with nothing focusable
+        // in it — otherwise it is a stop that does nothing on the way to the
+        // control the reader actually wanted. Which case this is changes as
+        // the transcript types: a command's copy button only exists once its
+        // line has finished, so macOS and Linux genuinely have nothing
+        // focusable for the first second or so, and without this the panel is
+        // skipped entirely during exactly that window.
+        tabIndex={panelHasFocusable ? undefined : 0}
       >
         <Transcript script={channel.script} typeOut={typeOut} minLines={longestScript} copyable />
 
@@ -462,7 +484,12 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
             naming the one the reader's own machine will use is worth more than
             a generic promise about "secure storage". */}
         <div className="border-line-subtle bg-canvas-inset/60 flex flex-wrap items-center gap-x-3 gap-y-2 border-t px-4 py-2.5">
-          <p className="text-fg-subtle min-w-0 flex-1 text-xs leading-5">{channel.note}</p>
+          {/* Two lines' worth of floor. The notes are not the same length —
+              Linux has to carry the keyring's fallback — so without it the
+              footer is one line on three tabs and two on the fourth, and the
+              panel changes height on switch after all the trouble the
+              transcript above goes to not to. */}
+          <p className="text-fg-subtle min-h-10 min-w-0 flex-1 text-xs leading-5">{channel.note}</p>
 
           {channel.copy ? (
             <CopyButton value={channel.copy.value} label={channel.copy.label} />
