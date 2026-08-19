@@ -1,11 +1,18 @@
 # Contributor Licence Agreement
 
-**Status: draft — not yet reviewed by a lawyer.** The operative clauses below
-follow the structure of the Apache Software Foundation's Individual Contributor
-Licence Agreement v2.0, which is the text most contributors have met before and
-are willing to sign. It has been reworded for readability, and rewording a legal
-document can change what it means. Have a solicitor read it before the first
-outside pull request is merged.
+**Version 0 (draft) — no effective date.** Every later version carries a number
+and a date, and a signature binds only the version in force when it was given.
+
+**Status: draft — do not rely on this text.** It was reworded from the Apache
+Software Foundation's Individual Contributor Licence Agreement (current version
+v2.2) for readability, and a review found that the rewording changed the meaning
+in several places — in one clause, reversing it. Those defects are being fixed
+by restoring Apache's own wording rather than paraphrasing it again.
+
+Until that is done and a solicitor has read the result, this is not a sound
+basis for a contribution, and no outside pull request should be merged against
+it. If you signed an earlier version you will be asked again once the final text
+lands: a signature against this draft is not agreement to whatever replaces it.
 
 ---
 
@@ -19,7 +26,8 @@ elsewhere.
 What it does is keep one door open. Without it, the licence could never be
 changed once external contributions exist, because every contributor would have
 to be found and agree. That is not a hypothetical: it is the reason projects
-that later needed to move — to a different open licence, or to a commercial
+that later needed to move — to a different open licence, to a source-available
+licence such as BSL or FSL which is **not** open source, or to a commercial
 exception for a customer who cannot use AGPL — either could not, or spent a year
 tracking down people who had long since moved on.
 
@@ -83,7 +91,21 @@ and you reply in the thread with:
 I have read the CLA and I agree to its terms.
 ```
 
-That comment is recorded against your GitHub account in
-`.github/cla-signatures.json`, and you will not be asked again on later pull
-requests. Bot accounts are exempt — they contribute nothing copyrightable of
-their own and cannot agree to anything.
+Type it on its own, with nothing else in the comment — the check is an exact
+match, so a "thanks!" in front of it fails with no explanation.
+
+Four things worth knowing before you do:
+
+- **Everyone whose commits are in the pull request has to sign**, not just
+  whoever opened it. A cherry-picked or co-authored commit brings its author in
+  too. If a commit's email is not attached to a GitHub account, add it to your
+  account or that commit cannot be matched to anyone.
+- **What is recorded is public and permanent**: your GitHub username, numeric
+  account id, the comment id, the pull request number and a timestamp, committed
+  to `.github/cla-signatures.json` in this repository. Your legal name and email
+  are not collected.
+- **Bot accounts are exempt** — they cannot agree to anything. That exempts the
+  account, not the work: a person or an agent submitting substantive code
+  through an automated account is contributing, and that needs a signature.
+- **You are not asked again** on later pull requests, unless the agreement
+  itself changes version.

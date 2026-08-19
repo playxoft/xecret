@@ -21,6 +21,6 @@
 
 ---
 
-By submitting, you confirm you can license this contribution under the
-repository's licences (AGPL-3.0 server / MIT CLI) — see CONTRIBUTING.md on the
-CLA.
+By submitting, you agree to the [CLA](../CLA.md), which grants rights beyond the
+repository's current licences. Read it rather than this line — this is a
+pointer, not the terms.

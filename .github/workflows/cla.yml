@@ -44,9 +44,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: CLA assistant
-        if: >-
-          github.event.type != 'closed' ||
-          github.event_name == 'pull_request_target'
         uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           # The default token is enough because signatures live in this
@@ -54,13 +51,24 @@ jobs:
           # second secret to rotate for no benefit at this size.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          # The action otherwise locks a pull request when it closes - to stop
+          # a signature comment being deleted afterwards. It keys on `closed`,
+          # not `merged`, so it would also lock every *rejected* pull request
+          # and end the discussion on it. Not worth an anti-revocation measure
+          # nobody was told about.
+          lock-pullrequest-aftermerge: false
           path-to-signatures: ".github/cla-signatures.json"
           path-to-document: "https://github.com/playxoft/xecret/blob/main/CLA.md"
           branch: "main"
-          # Bots cannot agree to anything. Dependabot's pull requests carry no
-          # copyrightable contribution of its own, so they are exempt rather
-          # than blocked forever on a signature that can never arrive.
-          allowlist: dependabot[bot],renovate[bot],github-actions[bot]
+          # Every bot account, not three named ones. A bot cannot agree to
+          # anything, so a signature it can never give must not block a pull
+          # request forever - and an allowlist of three would have done exactly
+          # that to the fourth. The action turns a `*` into a regex.
+          #
+          # This exempts the account, not the work: a human operating a service
+          # account, or an agent submitting substantive code, is a signer. If
+          # that starts happening, this line is the wrong tool for it.
+          allowlist: "*[bot]"
           custom-notsigned-prcomment: >-
             Thanks for this. Before it can be merged, please read
             [the CLA](https://github.com/playxoft/xecret/blob/main/CLA.md) and

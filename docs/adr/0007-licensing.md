@@ -39,7 +39,7 @@ produced the OpenTofu fork within weeks.
 |---|---|---|
 | `apps/web`, `packages/*` | **AGPL-3.0-only** | Delivers the stated goal: fork, modify, run as a service → publish your changes. Keeps xecret honestly OSI open source, which is a security feature for this product. |
 | `cli/`, future client SDKs | **MIT** | The CLI is embedded in customers' Docker images and CI pipelines. AGPL there triggers corporate legal bans and would suppress exactly the adoption the CLI exists to drive. This split is standard practice. |
-| Contributions | **CLA required** | Contributors assign the rights needed for us to relicense. |
+| Contributions | **CLA required** | Contributors grant a sublicensable licence broad enough to relicense. [^assign] |
 
 The CLA is the load-bearing part and the one most often skipped. Without it, once external
 contributors exist, the licence can **never** be changed — not to BSL, not to a dual
@@ -75,3 +75,13 @@ commercial licence, not at all. With it, those options stay open.
 A competitor runs an unmodified xecret as a commercial service at meaningful scale. At that
 point the CLA makes an FSL or BSL migration legally possible — expect community backlash and
 budget for it.
+
+[^assign]: **Correction, 2026-08-19.** This decision originally read "Contributors
+    assign the rights needed for us to relicense". `CLA.md` does not take an
+    assignment and never did — clause 2 is a non-exclusive licence, and the
+    contributor keeps their copyright. The relicensing capability comes from the
+    word *sublicense* in that grant, not from a transfer of ownership. The
+    outcome the decision describes is unaffected; the instrument named was
+    wrong, and a contributor sent here from `CLA.md` to weigh the trade was
+    reading a description of a different transaction. Recorded as a footnote
+    rather than an edit because an accepted ADR is immutable.
