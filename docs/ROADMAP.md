@@ -305,7 +305,7 @@ Estimates assume focused work; treat as relative sizing, not commitments.
 - [x] Go CLI skeleton — builds, vets, tests, cross-compiles
 - [ ] Neon project + Hyperdrive binding created *(needs your Cloudflare/Neon account)*
 - [ ] Phase.dev project + values populated *(you're doing this)*
-- [ ] CLA bot configured *(before the repo goes public)*
+- [x] CLA bot configured — `.github/workflows/cla.yml` + [CLA.md](../CLA.md) *(text still wants a legal read)*
 - [ ] Deploy a live Worker *(needs Cloudflare auth)*
 
 #### ✅ Phase 2 — Crypto core

@@ -29,13 +29,16 @@ npm run cli:test   # if you touched cli/
 
 ## The CLA
 
-Every contributor signs a Contributor Licence Agreement — one click on your
-first pull request, handled by a bot.
+Every contributor signs a Contributor Licence Agreement, once. Open a pull
+request and a bot will ask you in the thread; you reply with one line and it
+never asks again. Bot accounts are exempt.
 
 We ask because without it the licence could never be changed once external
-contributions exist. That would remove our ability to respond if the project's
-licensing needs change. It is not about taking your work; you keep your
-copyright.
+contributions exist — every contributor would have to be found and agree. That
+would remove our ability to respond if the project's licensing needs change. It
+is not about taking your work: you keep your copyright, and the reasoning,
+including what it costs you, is in [CLA.md](CLA.md) and
+[ADR 0007](docs/adr/0007-licensing.md).
 
 ## Non-negotiable rules
 
