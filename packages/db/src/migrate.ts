@@ -14,6 +14,17 @@ import postgres from 'postgres';
 async function main(): Promise<void> {
   const url = process.env.MIGRATION_DATABASE_URL ?? process.env.DATABASE_URL;
 
+  // Migration 0010 rewrites the whole of audit_logs and refuses to do it to a
+  // large table, because the rewrite holds ACCESS EXCLUSIVE throughout. This is
+  // the deliberate override, for an operator with a maintenance window.
+  //
+  // It is set here, on the migration's own session, rather than with
+  // ALTER DATABASE ... SET. Custom placeholder GUCs like xecret.* can only be
+  // stored in pg_db_role_setting by a true superuser, which none of the managed
+  // providers this runs on — Neon, RDS, Cloud SQL, Supabase — hand out. A
+  // session-scoped SET has no such restriction.
+  const allowAuditRewrite = process.env.XECRET_ALLOW_AUDIT_REWRITE === 'on';
+
   if (!url) {
     console.error(
       'No database URL. Set DATABASE_URL (or MIGRATION_DATABASE_URL).\n' +
@@ -40,6 +51,13 @@ async function main(): Promise<void> {
   });
 
   try {
+    if (allowAuditRewrite) {
+      // Session scope, not SET LOCAL: drizzle opens its own transaction for the
+      // migrations, and a LOCAL setting would not survive into it.
+      await client.unsafe("SET xecret.allow_audit_rewrite = 'on'");
+      console.warn('xecret.allow_audit_rewrite=on — audit table rewrites are permitted.');
+    }
+
     console.warn('Applying migrations…');
     await migrate(drizzle(client), { migrationsFolder: './migrations' });
     console.warn('Migrations applied.');

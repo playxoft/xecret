@@ -149,12 +149,11 @@ BEGIN
 	expected_from := start_bound::timestamptz;
 	expected_to := end_bound::timestamptz;
 
-	-- Attachment, not mere existence. The recovery procedure in
+	-- Attachment, not mere existence. The repair procedure in
 	-- docs/operations/database-setup.md detaches a partition, and an interrupted
-	-- recovery leaves
-	-- the name occupied by a table that is no longer part of `audit_logs`. A
-	-- name check would report that quarter covered while the parent has no
-	-- partition for it at all.
+	-- repair leaves the name occupied by a table that is no longer part of
+	-- `audit_logs`. A name check would report that quarter covered while the
+	-- parent has no partition for it at all.
 	SELECT EXISTS (
 		SELECT 1
 		FROM pg_inherits inh
@@ -274,11 +273,14 @@ BEGIN
 	-- The refusal is a default, not a verdict. An operator who has read what the
 	-- rewrite costs and has a maintenance window can take it deliberately:
 	--
-	--     ALTER DATABASE <db> SET xecret.allow_audit_rewrite = 'on';
+	--     XECRET_ALLOW_AUDIT_REWRITE=on npm run db:migrate
 	--
-	-- and reset it afterwards. Without an override, a table over the threshold
-	-- aborts drizzle's transaction on every attempt — which blocks every other
-	-- pending migration too, not just this one, with no route forward.
+	-- which migrate.ts turns into a session-scoped SET. It is deliberately not an
+	-- ALTER DATABASE ... SET: a custom placeholder GUC can only be stored in
+	-- pg_db_role_setting by a true superuser, and no managed provider this runs on
+	-- grants one. Without a working override, a table over the threshold aborts
+	-- drizzle's transaction on every attempt — which blocks every other pending
+	-- migration too, not just this one, with no route forward.
 	allow_rewrite := COALESCE(current_setting('xecret.allow_audit_rewrite', true), 'off') = 'on';
 
 	-- The planner's estimate goes first because it is free: a table far over the
@@ -298,10 +300,9 @@ BEGIN
 		RAISE EXCEPTION
 			'audit_logs is estimated at % rows; this migration rewrites the whole '
 			'table under ACCESS EXCLUSIVE and is only safe while that table is '
-			'small. To take the rewrite deliberately in a maintenance window, run '
-			'ALTER DATABASE <db> SET xecret.allow_audit_rewrite = ''on'' and re-run '
-			'the migration. See docs/operations/database-setup.md, '
-			'"Audit partition maintenance".',
+			'small. To take the rewrite deliberately in a maintenance window, re-run '
+			'with XECRET_ALLOW_AUDIT_REWRITE=on. See '
+			'docs/operations/database-setup.md, "Audit partition maintenance".',
 			est_rows::bigint;
 	END IF;
 
@@ -311,9 +312,9 @@ BEGIN
 		RAISE EXCEPTION
 			'audit_logs holds % rows; this migration rewrites the whole table under '
 			'ACCESS EXCLUSIVE and is only safe while that table is small. To take '
-			'the rewrite deliberately in a maintenance window, run ALTER DATABASE '
-			'<db> SET xecret.allow_audit_rewrite = ''on'' and re-run the migration. '
-			'See docs/operations/database-setup.md, "Audit partition maintenance".',
+			'the rewrite deliberately in a maintenance window, re-run with '
+			'XECRET_ALLOW_AUDIT_REWRITE=on. See docs/operations/database-setup.md, '
+			'"Audit partition maintenance".',
 			total_rows;
 	END IF;
 
@@ -403,8 +404,10 @@ BEGIN
 		) THEN
 			RAISE EXCEPTION
 				'audit_parts.audit_logs_default exists but is not attached to '
-				'public.audit_logs. Re-attach it, or drop it if its rows are '
-				'already in the parent, then retry.';
+				'public.audit_logs. Re-attach it with ATTACH PARTITION ... DEFAULT '
+				'(not FOR VALUES), or drop it if its rows are already in the parent, '
+				'then retry. See docs/operations/database-setup.md, '
+				'"Audit partition maintenance".';
 		END IF;
 
 		CREATE TABLE audit_parts.audit_logs_default PARTITION OF public.audit_logs DEFAULT;

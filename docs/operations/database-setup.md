@@ -216,116 +216,113 @@ If **any** quarter in that range already has rows in the default partition, the 
 a whole and no quarter is created — it is one statement, so it is one transaction. Recover each
 affected quarter first, oldest first, then re-run the extension.
 
-### Recovering a quarter that already has rows in the default partition
+### Repairing the partitions
 
-If you find that quarter's rows in `audit_parts.audit_logs_default`, the partition cannot simply be
-created. Detach the default partition, create the real one, move the rows through the parent, and
-re-attach. As the table owner, in one transaction, substituting the quarter's UTC bounds:
+`create_audit_log_partition()` refuses rather than papering over three states, and one procedure
+recovers all of them:
+
+- a quarter whose rows are already in `audit_parts.audit_logs_default`, so its real partition can no
+  longer be created;
+- a partition left detached by an interrupted repair;
+- a partition attached under the right name over the wrong range, because it was created from a
+  session in a non-UTC time zone.
+
+They share a cause, and it dictates the order. `CREATE TABLE ... PARTITION OF` and
+`ATTACH PARTITION` both scan the default partition to prove the incoming range is free, and both
+fail if it holds a single row belonging to that range. So the default partition comes out **first**,
+before anything is created, and goes back **last**. Repairing one quarter at a time with the default
+still attached is what fails, and it fails in exactly the case you are trying to repair.
+
+As the table owner, in one transaction, substituting the partition names and quarters you actually
+have:
 
 ```sql
 BEGIN;
 
+-- 1. The net comes out first. Skip if it is already detached.
 ALTER TABLE public.audit_logs DETACH PARTITION audit_parts.audit_logs_default;
 
-SELECT create_audit_log_partition(DATE '2028-07-01');
+-- 2. Park every partition that is wrong — mis-bounded, or already detached.
+--    Repeat per partition; the rename is what frees the name for step 3.
+ALTER TABLE public.audit_logs DETACH PARTITION audit_parts.audit_logs_2028q3;
+ALTER TABLE audit_parts.audit_logs_2028q3 RENAME TO audit_logs_2028q3_old;
 
-INSERT INTO public.audit_logs
-SELECT * FROM audit_parts.audit_logs_default
-WHERE created_at >= TIMESTAMPTZ '2028-07-01 00:00:00+00'
-  AND created_at <  TIMESTAMPTZ '2028-10-01 00:00:00+00';
+-- 3. Create the runway, then a partition for every quarter with rows waiting.
+SELECT create_audit_log_partition(d::date)
+FROM generate_series(
+    date_trunc('quarter', now() AT TIME ZONE 'UTC'),
+    date_trunc('quarter', (now() + interval '21 months') AT TIME ZONE 'UTC'),
+    interval '3 months'
+) AS d;
 
-DELETE FROM audit_parts.audit_logs_default
-WHERE created_at >= TIMESTAMPTZ '2028-07-01 00:00:00+00'
-  AND created_at <  TIMESTAMPTZ '2028-10-01 00:00:00+00';
+SELECT create_audit_log_partition(q)
+FROM (
+    SELECT DISTINCT date_trunc('quarter', created_at AT TIME ZONE 'UTC')::date AS q
+    FROM audit_parts.audit_logs_default
+    UNION
+    SELECT DISTINCT date_trunc('quarter', created_at AT TIME ZONE 'UTC')::date
+    FROM audit_parts.audit_logs_2028q3_old
+) s;
 
+-- 4. Replay through the parent, which routes each row to its quarter.
+INSERT INTO public.audit_logs SELECT * FROM audit_parts.audit_logs_2028q3_old;
+DROP TABLE audit_parts.audit_logs_2028q3_old;
+
+INSERT INTO public.audit_logs SELECT * FROM audit_parts.audit_logs_default;
+TRUNCATE audit_parts.audit_logs_default;
+
+-- 5. Put the net back. It is empty now, so the validating scan is free.
 ALTER TABLE public.audit_logs ATTACH PARTITION audit_parts.audit_logs_default DEFAULT;
 
 COMMIT;
 ```
 
-Detaching first is what makes the `CREATE TABLE` possible; the `DELETE` is what makes the re-attach
-possible. Both act on a table that is outside the parent at the time, and no audit row is destroyed
-— every one of them is re-inserted through `public.audit_logs` first. That is the only form of this
-operation that is consistent with an append-only log, and it is why the two statements are one
-transaction rather than a sequence you could stop halfway.
+No audit record is destroyed: every row is written back through `public.audit_logs` before the table
+holding it is dropped or truncated. That is the only form of this operation consistent with an
+append-only log, and it is why the whole thing is one transaction rather than a sequence you could
+stop halfway.
+
+If a parked table's rows had already reached the parent before an earlier attempt was interrupted,
+step 4 does not duplicate them — the primary key is `(id, created_at)`, so the replay fails on a
+unique violation and the transaction rolls back. Confirm with a `count(*)` against the same range in
+`public.audit_logs`, then drop the parked table instead of replaying it.
 
 **This is a maintenance-window operation.** `DETACH PARTITION` cannot be `CONCURRENTLY` inside a
-transaction block, so it takes `ACCESS EXCLUSIVE` on `public.audit_logs` and holds it to `COMMIT`,
-and the closing `ATTACH ... DEFAULT` scans the whole default partition to validate it. Audit writes
-block throughout, and a blocked audit write fails the request that produced it. Size it by how many
-rows are in the default partition, and repeat the block once per affected quarter — it recovers the
-one quarter named in its predicates, not all of them.
-
-### Recovering a partition left detached
-
-`create_audit_log_partition()` raises rather than silently skipping when it finds a table with the
-right name in `audit_parts` that is not attached to `public.audit_logs` — the residue of an
-interrupted recovery. Which remedy applies depends on whether its rows already reached the parent:
-
-- **They did not.** Re-attach it, naming the quarter's UTC bounds explicitly:
-
-  ```sql
-  ALTER TABLE public.audit_logs
-      ATTACH PARTITION audit_parts.audit_logs_2028q3
-      FOR VALUES FROM (TIMESTAMPTZ '2028-07-01 00:00:00+00')
-                   TO (TIMESTAMPTZ '2028-10-01 00:00:00+00');
-  ```
-
-- **They did**, because an earlier run re-inserted them before it was interrupted. Confirm it —
-  compare `count(*)` on the detached table against the same range in `public.audit_logs` — and then
-  `DROP TABLE` the detached one. Do not re-insert first; that duplicates rows.
-
-### Recovering a mis-bounded partition
-
-If `create_audit_log_partition()` reports that a partition covers one range but should cover
-another, it was created from a session in a non-UTC time zone. Detach it **first** — the correctly
-bounded partition cannot be created while the wrong one occupies the range — then create the right
-one, move the rows through the parent, and drop the detached table:
-
-```sql
-BEGIN;
-
-ALTER TABLE public.audit_logs DETACH PARTITION audit_parts.audit_logs_2028q3;
-ALTER TABLE audit_parts.audit_logs_2028q3 RENAME TO audit_logs_2028q3_old;
-
-SELECT create_audit_log_partition(DATE '2028-07-01');
-
-INSERT INTO public.audit_logs SELECT * FROM audit_parts.audit_logs_2028q3_old;
-DROP TABLE audit_parts.audit_logs_2028q3_old;
-
-COMMIT;
-```
-
-The rename is what frees the name for the new partition. Same lock cost as above.
+transaction block, so it takes `ACCESS EXCLUSIVE` on `public.audit_logs` and holds it to `COMMIT`.
+Audit writes block throughout, and a blocked audit write fails the request that produced it. Size it
+by how many rows are parked and in the default partition.
 
 ### If the migration refuses: too many rows to rewrite
 
 Migration 0010 rewrites the whole of `audit_logs` — it detaches every partition, re-inserts every
 row through the parent, and rebuilds the primary key and four indexes. That is free on a small table
-and an outage on a large one, so it measures first, before taking any lock, and refuses above about
-a million rows.
+and an outage on a large one, so it measures first — before taking any lock that blocks writers —
+and refuses above about a million rows.
 
 The refusal aborts the migration transaction, and drizzle runs all pending migrations in one
-transaction, so nothing else applies either. Two ways forward:
+transaction, so nothing else applies either.
 
-- **Take the rewrite deliberately**, in a maintenance window, accepting that audit writes block for
-  its duration:
+**Take the rewrite deliberately**, in a maintenance window, accepting that audit writes block for
+its duration:
 
-  ```sql
-  ALTER DATABASE your_database SET xecret.allow_audit_rewrite = 'on';
-  ```
+```bash
+XECRET_ALLOW_AUDIT_REWRITE=on npm run db:migrate
+```
 
-  Then run `npm run db:migrate`, and afterwards:
+`migrate.ts` turns that into a session-scoped `SET xecret.allow_audit_rewrite = 'on'` on its own
+connection, and it applies to that run only — there is nothing to reset afterwards.
 
-  ```sql
-  ALTER DATABASE your_database RESET xecret.allow_audit_rewrite;
-  ```
+It is deliberately not `ALTER DATABASE ... SET xecret.allow_audit_rewrite`. That would be the
+obvious way to do it, and it does not work here: `xecret.*` is a *custom placeholder* parameter, and
+PostgreSQL only lets a true superuser store one in `pg_db_role_setting`. Neon, RDS, Cloud SQL and
+Supabase all withhold superuser, so the `ALTER` fails with `permission denied to set parameter`, and
+`ALTER ROLE ... SET` fails identically. Setting it in a session has no such restriction.
 
-  Set it on the database or on the migrating role, not with a bare `SET` in another session — the
-  migration reads it on its own connection.
-
-- **Stay on monthly partitions.** Nothing in the application names a partition; 0001's layout keeps
-  working. You are choosing more child tables in `public`, not a broken system.
+There is no alternative that consists of skipping it. Nothing in the application names a partition,
+so 0001's monthly layout would serve perfectly well — but drizzle applies pending migrations in one
+transaction, so a 0010 that keeps aborting keeps every later migration from applying too. Declining
+it is not "stay on monthly"; it is "no migrations from here on". 0010 is currently the last one, so
+that cost is invisible until the next release.
 
 ---
 

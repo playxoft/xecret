@@ -128,8 +128,9 @@ is permanently unrecoverable — there is no support ticket that fixes this.**
 - **Migrations:** generated SQL, committed and reviewed, applied with
   `npm run db:migrate`. Never auto-applied on deploy.
 - **The audit log** is append-only and partitioned by quarter, with the child
-  tables in the `audit_parts` schema. Partitions are pre-created eight quarters ahead
-  by migration 0010, and nothing extends that automatically yet. Run this before
+  tables in the `audit_parts` schema. Migration 0010 pre-creates eight
+  quarters, counting the current one, and nothing extends that automatically
+  yet. Run this before
   the runway ends, or writes fall into the default partition — and a quarter
   with rows in the default partition can no longer be given a real one:
 

@@ -205,10 +205,10 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
 - **Migrations.** Generated SQL, committed and reviewed, applied with
   `npm run db:migrate`. Never auto-applied on deploy.
 - **The audit log.** Append-only and partitioned by quarter, with the child
-  tables kept in the `audit_parts` schema and partitions pre-created eight
-  quarters ahead. Nothing extends that automatically yet, so run this before the
-  runway ends — once a quarter's rows land in the default partition, that
-  quarter can no longer be given a real partition:
+  tables kept in the `audit_parts` schema. Migration 0010 pre-creates eight
+  quarters, counting the current one, and nothing extends that automatically
+  yet, so run this before the runway ends — once a quarter's rows land in the
+  default partition, that quarter can no longer be given a real partition:
 
   ```sql
   SELECT create_audit_log_partition(d::date)

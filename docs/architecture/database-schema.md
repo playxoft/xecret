@@ -411,10 +411,10 @@ CREATE INDEX audit_logs_environment_idx ON audit_logs (environment_id, created_a
   a real one. Left in `public`, 12–20 quarterly children would sit beside the 18 real tables and
   roughly double what `\dt` prints; under the monthly scheme this replaces, 36–60 of them would
   have outnumbered the real tables three to one. A `public` listing an operator cannot scan is one
-  they stop reading — and this is the schema where the append-only guarantee lives. PostgreSQL allows a partition in a different schema from its
-  parent, and nothing about it is visible to queries; the application only ever names
-  `public.audit_logs`. Migration 0010 made both changes, while the table was small enough that
-  they were free.
+  they stop reading — and this is the schema where the append-only guarantee lives. PostgreSQL
+  allows a partition in a different schema from its parent, and nothing about it is visible to
+  queries; the application only ever names `public.audit_logs`. Migration 0010 made both changes,
+  while the table was small enough that they were free.
 - `created_at` is in the primary key because PostgreSQL requires the partition key there.
 - **No foreign keys.** Audit records must outlive the rows they reference. A deleted project
   must not erase the record that it existed and who deleted it.
