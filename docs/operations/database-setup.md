@@ -247,13 +247,15 @@ WHERE n.nspname = 'audit_parts'
   AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid);
 
 -- Attached partitions and their bounds. Anything not starting and ending at
--- 00:00:00+00 on a quarter boundary is mis-bounded.
+-- 00:00:00+00 on a quarter boundary is mis-bounded. The default partition is
+-- excluded: its bound reads DEFAULT, which is not a range and is not wrong.
 SELECT c.relname, pg_get_expr(c.relpartbound, c.oid) AS bounds
 FROM pg_inherits i
 JOIN pg_class c ON c.oid = i.inhrelid
 JOIN pg_class p ON p.oid = i.inhparent
 JOIN pg_namespace pn ON pn.oid = p.relnamespace
 WHERE p.relname = 'audit_logs' AND pn.nspname = 'public'
+  AND c.relname <> 'audit_logs_default'
 ORDER BY c.relname;
 
 -- Quarters with rows stranded in the default partition.
@@ -264,7 +266,7 @@ ORDER BY quarter;
 
 Then, as the table owner, in one transaction. **Steps 2 and 4a and the second `UNION` arm exist only
 if something needs parking** — in the common case, rows stranded in the default partition with every
-partition attached and correctly bounded, delete them and run the rest as printed:
+partition attached and correctly bounded, omit those three and run the rest as printed:
 
 ```sql
 BEGIN;
@@ -349,7 +351,7 @@ XECRET_ALLOW_AUDIT_REWRITE=on npm run db:migrate
 `migrate.ts` turns that into a session-scoped `SET xecret.allow_audit_rewrite = 'on'` on its own
 connection, and it applies to that run only — there is nothing to reset afterwards.
 
-Point `MIGRATION_DATABASE_URL` at the **direct** endpoint, not a pooled one, as step 2 already says.
+Point `MIGRATION_DATABASE_URL` at the **direct** endpoint, not a pooled one, as step 1 already says.
 Under transaction pooling the `SET` is its own transaction and the backend can be handed to someone
 else before the migration's own transaction begins, which would leave the override unset and the
 guard armed. It fails closed — you get the refusal, not a surprise rewrite — but it fails.
