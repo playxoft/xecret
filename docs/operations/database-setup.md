@@ -213,13 +213,14 @@ only at an exactly quarterly cadence, and leaves permanently uncoverable gaps at
 the wrong quarter.
 
 If **any** quarter in that range already has rows in the default partition, the statement aborts as
-a whole and no quarter is created — it is one statement, so it is one transaction. Recover each
-affected quarter first, oldest first, then re-run the extension.
+a whole and no quarter is created — it is one statement, so it is one transaction. Repair the
+partitions first, with the procedure below, which extends the runway on its way through.
 
 ### Repairing the partitions
 
-`create_audit_log_partition()` refuses rather than papering over three states, and one procedure
-recovers all of them:
+Three states need repair, and one procedure recovers all of them. `create_audit_log_partition()`
+raises on the second and third rather than papering over them; the first is refused by PostgreSQL
+itself, when the default partition's constraint check rejects the `CREATE TABLE`:
 
 - a quarter whose rows are already in `audit_parts.audit_logs_default`, so its real partition can no
   longer be created;
@@ -233,8 +234,37 @@ fail if it holds a single row belonging to that range. So the default partition 
 before anything is created, and goes back **last**. Repairing one quarter at a time with the default
 still attached is what fails, and it fails in exactly the case you are trying to repair.
 
-As the table owner, in one transaction, substituting the partition names and quarters you actually
-have:
+First find out what needs repairing. The procedure needs the **complete** set up front — parking
+one partition and discovering a second mid-transaction wastes the whole maintenance window:
+
+```sql
+-- Partitions sitting in audit_parts that are not attached to the parent.
+SELECT c.relname
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'audit_parts'
+  AND c.relkind = 'r'
+  AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid);
+
+-- Attached partitions and their bounds. Anything not starting and ending at
+-- 00:00:00+00 on a quarter boundary is mis-bounded.
+SELECT c.relname, pg_get_expr(c.relpartbound, c.oid) AS bounds
+FROM pg_inherits i
+JOIN pg_class c ON c.oid = i.inhrelid
+JOIN pg_class p ON p.oid = i.inhparent
+JOIN pg_namespace pn ON pn.oid = p.relnamespace
+WHERE p.relname = 'audit_logs' AND pn.nspname = 'public'
+ORDER BY c.relname;
+
+-- Quarters with rows stranded in the default partition.
+SELECT DISTINCT date_trunc('quarter', created_at AT TIME ZONE 'UTC')::date AS quarter
+FROM audit_parts.audit_logs_default
+ORDER BY quarter;
+```
+
+Then, as the table owner, in one transaction. **Steps 2 and 4a and the second `UNION` arm exist only
+if something needs parking** — in the common case, rows stranded in the default partition with every
+partition attached and correctly bounded, delete them and run the rest as printed:
 
 ```sql
 BEGIN;
@@ -242,8 +272,10 @@ BEGIN;
 -- 1. The net comes out first. Skip if it is already detached.
 ALTER TABLE public.audit_logs DETACH PARTITION audit_parts.audit_logs_default;
 
--- 2. Park every partition that is wrong — mis-bounded, or already detached.
---    Repeat per partition; the rename is what frees the name for step 3.
+-- 2. Park every partition the queries above listed as detached or mis-bounded,
+--    one pair of statements each. Omit this step if there were none. For a
+--    partition that is ALREADY detached, omit its DETACH and keep the rename —
+--    detaching it again errors and poisons the transaction.
 ALTER TABLE public.audit_logs DETACH PARTITION audit_parts.audit_logs_2028q3;
 ALTER TABLE audit_parts.audit_logs_2028q3 RENAME TO audit_logs_2028q3_old;
 
@@ -255,6 +287,7 @@ FROM generate_series(
     interval '3 months'
 ) AS d;
 
+--    Drop the second UNION arm, and add one per parked table, to match step 2.
 SELECT create_audit_log_partition(q)
 FROM (
     SELECT DISTINCT date_trunc('quarter', created_at AT TIME ZONE 'UTC')::date AS q
@@ -264,10 +297,12 @@ FROM (
     FROM audit_parts.audit_logs_2028q3_old
 ) s;
 
--- 4. Replay through the parent, which routes each row to its quarter.
+-- 4a. Replay each parked table through the parent, which routes every row to
+--     its quarter. Omit if step 2 was omitted.
 INSERT INTO public.audit_logs SELECT * FROM audit_parts.audit_logs_2028q3_old;
 DROP TABLE audit_parts.audit_logs_2028q3_old;
 
+-- 4b. Then the default partition, the same way.
 INSERT INTO public.audit_logs SELECT * FROM audit_parts.audit_logs_default;
 TRUNCATE audit_parts.audit_logs_default;
 
@@ -297,7 +332,9 @@ by how many rows are parked and in the default partition.
 Migration 0010 rewrites the whole of `audit_logs` — it detaches every partition, re-inserts every
 row through the parent, and rebuilds the primary key and four indexes. That is free on a small table
 and an outage on a large one, so it measures first — before taking any lock that blocks writers —
-and refuses above about a million rows.
+and refuses above about a million rows. It checks the planner's row estimate before that, and
+refuses outright above four million, so the message you see may say "estimated at N rows"; the
+estimate is deliberately the looser of the two, because `reltuples` is stale by nature.
 
 The refusal aborts the migration transaction, and drizzle runs all pending migrations in one
 transaction, so nothing else applies either.
@@ -311,6 +348,11 @@ XECRET_ALLOW_AUDIT_REWRITE=on npm run db:migrate
 
 `migrate.ts` turns that into a session-scoped `SET xecret.allow_audit_rewrite = 'on'` on its own
 connection, and it applies to that run only — there is nothing to reset afterwards.
+
+Point `MIGRATION_DATABASE_URL` at the **direct** endpoint, not a pooled one, as step 2 already says.
+Under transaction pooling the `SET` is its own transaction and the backend can be handed to someone
+else before the migration's own transaction begins, which would leave the override unset and the
+guard armed. It fails closed — you get the refusal, not a surprise rewrite — but it fails.
 
 It is deliberately not `ALTER DATABASE ... SET xecret.allow_audit_rewrite`. That would be the
 obvious way to do it, and it does not work here: `xecret.*` is a *custom placeholder* parameter, and

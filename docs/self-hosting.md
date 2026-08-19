@@ -130,9 +130,9 @@ is permanently unrecoverable — there is no support ticket that fixes this.**
 - **The audit log** is append-only and partitioned by quarter, with the child
   tables in the `audit_parts` schema. Migration 0010 pre-creates eight
   quarters, counting the current one, and nothing extends that automatically
-  yet. Run this before
-  the runway ends, or writes fall into the default partition — and a quarter
-  with rows in the default partition can no longer be given a real one:
+  yet. Run this before the runway ends, or writes fall into the default
+  partition — and a quarter with rows in the default partition can no longer be
+  given a real one:
 
   ```sql
   SELECT create_audit_log_partition(d::date)

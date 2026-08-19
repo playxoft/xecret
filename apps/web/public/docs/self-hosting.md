@@ -255,6 +255,12 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
   Do it in a maintenance window: `DETACH` takes `ACCESS EXCLUSIVE` on
   `public.audit_logs` and holds it to `COMMIT`, so audit writes block
   throughout, and a blocked audit write fails the request that produced it.
+
+  That covers the case you are likely to meet. Two rarer ones — a partition left
+  detached by an interrupted repair, and a partition attached over the wrong
+  range because it was created from a non-UTC session — need a wider procedure,
+  in `docs/operations/database-setup.md` in the repository. The migration names
+  that file in the error it raises for each.
 - **Mail, monitoring and error reporting.** Yours to wire. The log pipeline
   contains no secret values by construction, but where the logs go is your
   decision.

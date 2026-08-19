@@ -23,7 +23,18 @@ async function main(): Promise<void> {
   // stored in pg_db_role_setting by a true superuser, which none of the managed
   // providers this runs on — Neon, RDS, Cloud SQL, Supabase — hand out. A
   // session-scoped SET has no such restriction.
-  const allowAuditRewrite = process.env.XECRET_ALLOW_AUDIT_REWRITE === 'on';
+  const auditRewriteFlag = process.env.XECRET_ALLOW_AUDIT_REWRITE;
+  const allowAuditRewrite = auditRewriteFlag === 'on';
+
+  // Exactly 'on', because the guard in 0010 compares the same literal. Anything
+  // else has to say so: silently ignoring `=true` or `=1` would abort the
+  // migration with a message telling the operator to set the variable they can
+  // see they already set.
+  if (auditRewriteFlag !== undefined && !allowAuditRewrite) {
+    console.error(
+      `XECRET_ALLOW_AUDIT_REWRITE is "${auditRewriteFlag}", which is not "on" — ignoring it.`,
+    );
+  }
 
   if (!url) {
     console.error(
@@ -35,9 +46,10 @@ async function main(): Promise<void> {
 
   // max: 1 — migrations must run sequentially on a single connection.
   //
-  // NOTICE is dropped: it is drizzle's advisory-lock chatter and the `IF NOT
-  // EXISTS` no-ops, and it is noise. WARNING and above is forwarded, because a
-  // migration that completes only part of its work says so that way. Migration
+  // NOTICE and DEBUG are dropped: they are drizzle's advisory-lock chatter and
+  // the `IF NOT EXISTS` no-ops, and they are noise. Everything else is
+  // forwarded — in practice WARNING and above — because a migration that
+  // completes only part of its work says so that way. Migration
   // 0010 warns when it cannot revoke a default privilege owned by another role;
   // swallowing that would print "Migrations applied." over a step the operator
   // still has to perform, and they would have no way to know.
