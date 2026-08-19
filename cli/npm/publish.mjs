@@ -27,7 +27,9 @@
  *                    the `checksums.txt` beside them before it is opened. This
  *                    is what the release workflow uses, and it is the stronger
  *                    guarantee: what npm serves is byte-for-byte what GitHub
- *                    serves, and cosign signed that checksum file.
+ *                    serves. release.yml verifies cosign's signature over that
+ *                    checksum file before this runs — see the note on
+ *                    `binariesFromArchives`.
  *   --dist DIR       GoReleaser's own `dist/`, read through `artifacts.json`.
  *                    For running this by hand against a local build.
  *
@@ -138,8 +140,12 @@ function binariesFrom(distDirectory) {
  * Every archive is checked against that file before it is opened, so a
  * tampered or truncated download cannot become a published package.
  *
- * The checksum file itself is what cosign signs, so verifying against it
- * inherits that signature's guarantee.
+ * What this does *not* do is authenticate `checksums.txt` itself — a hash file
+ * and the archives it describes come from the same place, so anyone able to
+ * rewrite one could rewrite both. cosign signs that file, and release.yml
+ * verifies the signature against this repository's release identity before
+ * calling this script; run by hand against a directory you assembled yourself,
+ * the guarantee here is only "these archives match this list".
  */
 function binariesFromArchives(directory, version) {
   const checksums = new Map();

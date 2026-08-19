@@ -601,7 +601,7 @@ It is wired into four places, all of them now pointing at the settled name:
 3. **CLI login target** — `xecret login` opens `https://<domain>/cli/authorize`; `internal/buildinfo.DefaultAPIURL` is the compiled-in default. Self-hosters override it with `XECRET_API_URL` or `xecret login --api-url`, which is the whole reason those exist.
 4. **Cloudflare Worker route** — the custom domain in the Worker configuration.
 
-Registered on the same day, because the name is the product and squatters are fast: `github.com/playxoft/xecret`, and on npm the `xecret` package plus the six `xecret-{platform}-{arch}` packages the CLI is distributed as. The npm `@xecret` *scope* was not needed — the wrapper took the unscoped name.
+`github.com/playxoft/xecret` is held. **The npm names are not yet**: `xecret` and the six `xecret-{platform}-{arch}` packages the CLI is distributed as were all unregistered as of 2026-08-19, and the first release is what claims them. That is a release prerequisite, not a completed step — the name is the product and squatters are fast, so publish (or reserve) before announcing anywhere. The npm `@xecret` *scope* is not needed; the wrapper takes the unscoped name.
 
 ---
 
