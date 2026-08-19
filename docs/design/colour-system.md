@@ -26,13 +26,18 @@ Semantic tokens, not raw colours — components speak `bg-surface`,
 
 - **Surfaces:** `canvas`, `canvas-inset`, `surface`, `surface-hover`,
   `surface-active`, `overlay`
-- **Text:** `fg` (18.31:1 light / 16.31:1 dark — AAA), `fg-muted` (6.86:1 /
-  8.83:1 — AA), `fg-subtle` (5.14:1 / 5.40:1 — AA), `fg-disabled`
+- **Text:** `fg` (19.80:1 light on `surface` / 18.97:1 dark on `canvas` —
+  AAA), `fg-muted` (9.59:1 / 8.82:1 — AAA), `fg-subtle` (6.69:1 / 7.21:1 —
+  AA+), `fg-disabled` (3.0:1 / 3.3:1 — below AA by design; SC 1.4.3 exempts
+  disabled controls, and it is used for nothing else)
 - **Lines:** `line-subtle`, `line`, `line-strong`; `ring` for focus
   (4.74:1 light on `surface`, 7.66:1 dark on `canvas` — SC 1.4.11)
 - **Accent** — monochrome, not a hue: `#171717` in light and `#e5e5e5` in
   dark. It used to be a "cipher" cyan, and the mark that justified it went
-  achromatic too, so nothing on the site now carries a brand colour. Three
+  achromatic too, so nothing of *ours* carries a brand colour any more. The
+  one exemption is third-party logos used nominatively — Node's green, Go's
+  cyan, Docker's blue in `components/marketing/brand-logos` — which are those
+  owners' marks reproduced unmodified and are not ours to desaturate. Three
   status families — `success`,
   `warning`, `danger` — each in the same five-part shape:
   base, `-hover`, `-fg` (text on the fill), `-text` (the colour as text),

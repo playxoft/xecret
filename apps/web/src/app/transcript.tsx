@@ -26,8 +26,6 @@ import type { Line } from './transcript-model';
  * email, a version — are illustrative.
  */
 
-export type { Line } from './transcript-model';
-
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
 
 function subscribeReducedMotion(callback: () => void): () => void {

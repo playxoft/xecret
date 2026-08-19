@@ -8,7 +8,7 @@ import {
   transcriptGates,
   transcriptMinHeight,
 } from './transcript-model';
-import type { Line } from './transcript-model';
+import type { Line, TranscriptPlan } from './transcript-model';
 import { DWELL_TICKS, SCRIPT, TICK_MS } from './cli-demo-script';
 
 /**
@@ -59,13 +59,43 @@ describe('transcriptGates', () => {
     expect(transcriptGates('type', true, false).running).toBe(true);
   });
 
-  it('only ever turns enabled on, never off', () => {
-    // `true → false` would fill a transcript mid-type. Across every reachable
-    // transition of the two booleans, enabled must be monotonic per plan.
+  it('answers the whole truth table exactly', () => {
+    // Spelled out rather than asserted as a property: an earlier version of
+    // this test checked `off && !on === false`, which is vacuously true for
+    // the two plans where `off` is false and so said nothing about them.
+    const table: Array<[TranscriptPlan, boolean, boolean, boolean, boolean]> = [
+      // plan,      interacted, started, enabled, running
+      ['print', false, false, false, false],
+      ['print', false, true, false, false],
+      ['print', true, false, false, false],
+      ['print', true, true, false, false],
+      ['type', false, false, true, false],
+      ['type', false, true, true, true],
+      ['type', true, false, true, true],
+      ['type', true, true, true, true],
+      ['settled', false, false, false, false],
+      ['settled', false, true, false, false],
+      ['settled', true, false, true, true],
+      ['settled', true, true, true, true],
+    ];
+
+    for (const [plan, interacted, started, enabled, running] of table) {
+      expect({ plan, ...transcriptGates(plan, interacted, started) }).toEqual({
+        plan,
+        enabled,
+        running,
+      });
+    }
+  });
+
+  it('never runs the clock without being enabled', () => {
     for (const plan of ['print', 'type', 'settled'] as const) {
-      const off = transcriptGates(plan, false, false).enabled;
-      const on = transcriptGates(plan, true, true).enabled;
-      expect(off && !on).toBe(false);
+      for (const interacted of [false, true]) {
+        for (const started of [false, true]) {
+          const { enabled, running } = transcriptGates(plan, interacted, started);
+          expect(running && !enabled).toBe(false);
+        }
+      }
     }
   });
 });

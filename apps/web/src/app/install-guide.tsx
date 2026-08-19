@@ -252,9 +252,13 @@ const DWELL_TICKS = 9;
  * failure mode of leniency is only that a panel with a sliver showing at load
  * never animates, which costs nothing anyone can see.
  *
- * There is no gap between them: a panel that fails the lenient test is
- * entirely off screen, and reaching the reader from there means scrolling
- * through the band.
+ * There is no gap between them for this panel: one that fails the lenient
+ * test is entirely off screen, and reaching the reader from there means
+ * scrolling through the band. That holds because the panel is taller than a
+ * quarter of any plausible viewport and has five sections and a footer below
+ * it. Reuse the pattern for something short at the very end of a document and
+ * check it again — an element under `0.25h` tall with nothing after it can sit
+ * below the fold at rest and never reach the band, and would stay blank.
  */
 const START_MARGIN = { rootMargin: '-25% 0px -25% 0px', threshold: 0 };
 
@@ -343,15 +347,6 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
     enabled,
     running,
   });
-
-  /**
-   * Does the panel currently contain anything focusable? Its footer action, if
-   * this channel has one, plus a copy button for every command line that has
-   * finished typing.
-   */
-  const panelHasFocusable =
-    Boolean(channel.copy ?? channel.link) ||
-    channel.script.slice(0, typeOut.visibleCount).some((line) => line.kind === 'command');
 
   /** The longest of the four, so the panel does not resize as lines arrive. */
   const longestScript = useMemo(
@@ -468,14 +463,15 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
         role="tabpanel"
         id="install-panel"
         aria-labelledby={`install-tab-${channel.id}`}
-        // The APG asks for a tab stop only on a panel with nothing focusable
-        // in it — otherwise it is a stop that does nothing on the way to the
-        // control the reader actually wanted. Which case this is changes as
-        // the transcript types: a command's copy button only exists once its
-        // line has finished, so macOS and Linux genuinely have nothing
-        // focusable for the first second or so, and without this the panel is
-        // skipped entirely during exactly that window.
-        tabIndex={panelHasFocusable ? undefined : 0}
+        // Unconditional, which the APG allows and which this panel needs.
+        // The strict reading — a tab stop only when there is nothing focusable
+        // inside — cannot be applied to content that changes: a command's copy
+        // button appears only once its line has finished typing, so the
+        // condition flips about a second in, and removing `tabindex` from an
+        // element that currently holds focus drops that focus to `<body>` and
+        // sends the reader's next Tab back to the top of the document. A
+        // redundant stop is a smaller cost than that, and than the window
+        // where the panel is skipped entirely.
       >
         <Transcript script={channel.script} typeOut={typeOut} minLines={longestScript} copyable />
 

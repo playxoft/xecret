@@ -149,16 +149,21 @@ export function PinInput({
             // it sits on, so the border is the only thing that says there is a
             // box at all — six of them, and you have to count along the row.
             'border-line-control bg-surface text-fg h-12 w-11 rounded-lg border text-center font-mono text-lg',
-            // No `outline-none` and no ring of its own. This used to carry
-            // `outline-none focus:ring-accent/30`, which deleted the
-            // application's focus treatment — globals.css says in terms that a
-            // component must not do that — and replaced it with roughly 1.96:1
-            // on `--surface`, under SC 1.4.11's 3:1. `focus-visible`, not
-            // `focus`, for the same reason the base rule pairs them: pointer
-            // users get no ring, keyboard users always do.
-            'focus-visible:border-accent',
+            // No focus styling of its own at all, which is what `Input` also
+            // settled on: the 2px outline from globals.css carries focus, and
+            // an accent border under it reads as two rings. This used to carry
+            // `outline-none focus:ring-accent/30`, which deleted that outline
+            // — globals.css says in terms that a component must not — and
+            // replaced it with roughly 1.96:1 on `--surface`, under SC
+            // 1.4.11's 3:1.
             'disabled:cursor-not-allowed disabled:opacity-60',
-            invalid && 'border-danger focus:border-danger focus:ring-danger/30',
+            // The error tone has to survive focus, which is why nothing above
+            // sets a border on focus any more: an equal-specificity
+            // `focus-visible:border-accent` sorted after this rule and took the
+            // red off the one box being corrected. The `focus:ring-danger/30`
+            // that used to trail it is gone too — the only `ring-2` in the file
+            // went with the outline-none, so it had been painting nothing.
+            invalid && 'border-danger',
             // The box the caret is in gets a resting highlight, so it is obvious
             // where a keystroke will land before you press one. It has to be a
             // step *above* the resting border, which `--line-strong` no longer
