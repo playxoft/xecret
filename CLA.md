@@ -1,10 +1,14 @@
 # Contributor Licence Agreement
 
-**Version 1.0-draft.** Two placeholders below — the legal entity and the
-governing law — must be filled before this takes effect, and a solicitor should
-read the result. Until then no outside pull request should be merged. A
-signature binds only the version in force when it was given; if this document
-changes version, you will be asked again.
+**Version 1.0 — effective 19 August 2026.** A signature binds only the version
+in force when it was given; if this document changes version, you will be asked
+again.
+
+The agreement below is the Harmony template used as published, with its blanks
+filled — it has not been reworded. It has not been read by a solicitor, and for
+a document this standard that is a smaller gap than it would be for bespoke
+drafting, but it is a gap: if you are contributing on behalf of an employer, or
+anything here matters to you, take your own advice before signing.
 
 ---
 
@@ -45,9 +49,8 @@ Everything else in the agreement is as published.
 
 ## Harmony Individual Contributor License Agreement
 
-Thank you for your interest in contributing to xecret, a project of **Playxoft**
-(`<legal entity — name, jurisdiction of incorporation and company number to be filled before this agreement takes effect>`)
-("We" or "Us").
+Thank you for your interest in contributing to xecret, a project of **Playxoft
+Studios Private Limited**, a company incorporated in India ("We" or "Us").
 
 This contributor agreement ("Agreement") documents the rights granted by
 contributors to Us. To make this document effective, please sign it and send it
@@ -185,9 +188,7 @@ OTHERWISE) UPON WHICH THE CLAIM IS BASED.
 ### 6. Miscellaneous
 
 6.1 This Agreement will be governed by and construed in accordance with the laws
-of
-`<governing law — jurisdiction to be filled before this agreement takes effect>`
-excluding its conflicts of law provisions. Under certain circumstances, the
+of India excluding its conflicts of law provisions. Under certain circumstances, the
 governing law in this section might be superseded by the United Nations
 Convention on Contracts for the International Sale of Goods ("UN Convention")
 and the parties intend to avoid the application of the UN Convention to this

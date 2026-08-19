@@ -5,7 +5,7 @@ secrets, injects them into your process, and exits with whatever your command
 exited with — the values never touch disk, argv or stdout.
 
 ```bash
-npm install -g xecret
+npm install -g @playxoft/xecret
 
 xecret login
 xecret init

@@ -8,8 +8,8 @@ const test = require('node:test');
 const { SUPPORTED, packageName, binaryName, isSupported, resolveBinary } = require('./resolve.js');
 
 test('names the package npm installed for this platform', () => {
-  assert.equal(packageName('darwin', 'arm64'), 'xecret-darwin-arm64');
-  assert.equal(packageName('win32', 'x64'), 'xecret-win32-x64');
+  assert.equal(packageName('darwin', 'arm64'), '@playxoft/xecret-darwin-arm64');
+  assert.equal(packageName('win32', 'x64'), '@playxoft/xecret-win32-x64');
 });
 
 test('only Windows carries the extension', () => {
@@ -62,7 +62,7 @@ test('a missing platform package explains itself without blaming a script', () =
   assert.throws(
     () => resolveBinary('linux', 'arm64'),
     (error) => {
-      assert.match(error.message, /xecret-linux-arm64/);
+      assert.match(error.message, /@playxoft\/xecret-linux-arm64/);
       assert.match(error.message, /--omit=optional|--no-optional/);
       assert.doesNotMatch(error.message, /ignore-scripts/);
       return true;

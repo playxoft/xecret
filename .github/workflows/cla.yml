@@ -72,7 +72,9 @@ jobs:
           # This exempts the account, not the work: a human operating a service
           # account, or an agent submitting substantive code, is a signer. If
           # that starts happening, this line is the wrong tool for it.
-          allowlist: "*[bot]"
+          # Bots, and the copyright holder - who does not license their own
+          # work to themselves.
+          allowlist: "nitheeshkr,rnithin133,*[bot]"
           custom-notsigned-prcomment: >-
             Thanks for this. Before it can be merged, please read
             [the CLA](https://github.com/playxoft/xecret/blob/main/CLA.md) and

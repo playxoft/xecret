@@ -45,7 +45,7 @@ const SUPPORTED = {
 
 /** The package holding the binary for one platform. */
 function packageName(platform = process.platform, arch = process.arch) {
-  return `xecret-${platform}-${arch}`;
+  return `@playxoft/xecret-${platform}-${arch}`;
 }
 
 /** Windows wants the extension; nothing else does. */

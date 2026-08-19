@@ -28,7 +28,7 @@ brew install playxoft/tap/xecret
 curl -fsSL https://xecret.playxoft.com/install.sh | sh
 
 # anywhere you already have Node
-npm install -g xecret
+npm install -g @playxoft/xecret
 ```
 
 Or download a signed archive from the

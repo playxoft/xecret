@@ -59,7 +59,7 @@ the newest release makes your pipeline depend on our release schedule.
 ## npm
 
 ```bash
-npm install -g xecret
+npm install -g @playxoft/xecret
 ```
 
 Or as a dev dependency, so everyone on the project gets the same version from
@@ -67,7 +67,7 @@ the lockfile:
 
 ```bash
 npm install --save-dev xecret
-npx xecret run -- npm run dev
+npx @playxoft/xecret run -- npm run dev
 ```
 
 `xecret` is a small wrapper whose `optionalDependencies` are six packages
@@ -99,7 +99,7 @@ else.
 Download the `windows_amd64` or `windows_arm64` archive from the releases page,
 unzip it, and put `xecret.exe` somewhere on your `PATH`.
 
-`npm install -g xecret` works on Windows too, and is usually the shortest route
+`npm install -g @playxoft/xecret` works on Windows too, and is usually the shortest route
 if you already have Node.
 
 The CLI stores its credential in **Windows Credential Manager**. PowerShell,

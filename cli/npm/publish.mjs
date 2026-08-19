@@ -6,12 +6,12 @@
  * Seven packages come out of one release:
  *
  *   xecret                 the wrapper everybody installs; no binary of its own
- *   xecret-darwin-arm64    ┐
- *   xecret-darwin-x64      │ one executable each, `os` and `cpu` set so npm
- *   xecret-linux-arm64     │ installs exactly one of them and skips the rest
- *   xecret-linux-x64       │
- *   xecret-win32-arm64     │
- *   xecret-win32-x64       ┘
+ *   @playxoft/xecret-darwin-arm64    ┐
+ *   @playxoft/xecret-darwin-x64      │ one executable each, `os` and `cpu` set so npm
+ *   @playxoft/xecret-linux-arm64     │ installs exactly one of them and skips the rest
+ *   @playxoft/xecret-linux-x64       │
+ *   @playxoft/xecret-win32-arm64     │
+ *   @playxoft/xecret-win32-x64       ┘
  *
  * The binaries are the *same artefacts* the GitHub release publishes — read out
  * of `dist/artifacts.json`, never rebuilt here. A second compilation would mean
@@ -200,7 +200,7 @@ const SHARED = {
 };
 
 function buildPlatformPackage(staging, version, binary) {
-  const name = `xecret-${binary.platform}-${binary.arch}`;
+  const name = `@playxoft/xecret-${binary.platform}-${binary.arch}`;
   const directory = join(staging, name);
   const executable = binary.platform === 'win32' ? 'xecret.exe' : 'xecret';
 
@@ -266,7 +266,7 @@ function buildWrapperPackage(staging, version, platforms) {
   delete manifest.scripts;
 
   writeFileSync(join(directory, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-  return { name: 'xecret', directory };
+  return { name: '@playxoft/xecret', directory };
 }
 
 function publish(pkg, { version, dryRun }) {

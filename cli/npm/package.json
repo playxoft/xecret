@@ -1,5 +1,5 @@
 {
-  "name": "xecret",
+  "name": "@playxoft/xecret",
   "version": "0.0.0-dev",
   "description": "Open-source, developer-first secret management. Injects secrets into your process — they never touch disk.",
   "keywords": [
