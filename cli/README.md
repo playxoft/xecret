@@ -175,6 +175,9 @@ Secrets to set once, before the first release:
 | `HOMEBREW_TAP_GITHUB_TOKEN` | A fine-grained PAT with `contents:write` on `playxoft/homebrew-tap`. |
 | `NPM_TOKEN` | An npm automation token for the account that owns `xecret`. |
 
-> **Do not distribute binaries until the permanent domain is locked** — the
-> API origin is compiled into every copy (`internal/buildinfo`), and changing
-> it later breaks every installed CLI. See §7 of the plan.
+> **The origin is settled: `https://xecret.playxoft.com`.** It is compiled into
+> every distributed binary (`internal/buildinfo`), which is why it had to be
+> decided before the first release rather than after — changing it later breaks
+> every installed CLI, including ones nobody can reach to update. There is no
+> planned move; a self-hoster overrides it per-machine with `XECRET_API_URL` or
+> `xecret login --api-url`, which is what that flag is for.
