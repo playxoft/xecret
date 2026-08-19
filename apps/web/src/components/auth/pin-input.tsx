@@ -149,20 +149,23 @@ export function PinInput({
             // it sits on, so the border is the only thing that says there is a
             // box at all — six of them, and you have to count along the row.
             'border-line-control bg-surface text-fg h-12 w-11 rounded-lg border text-center font-mono text-lg',
-            // No focus styling of its own at all, which is what `Input` also
-            // settled on: the 2px outline from globals.css carries focus, and
-            // an accent border under it reads as two rings. This used to carry
-            // `outline-none focus:ring-accent/30`, which deleted that outline
-            // — globals.css says in terms that a component must not — and
-            // replaced it with roughly 1.96:1 on `--surface`, under SC
-            // 1.4.11's 3:1.
+            // No border change on focus, for the reason `Input` gives where it
+            // drops the accent from its own: the 2px outline in globals.css is
+            // what carries focus, and a second, tighter border under it reads
+            // as two rings. (`Input` does still tint its border on focus, just
+            // to the same subtle grey as hover — it is the accent it turns
+            // down, not the styling.)
+            //
+            // This used to disable the outline outright and substitute a ring
+            // at roughly 1.96:1 on `--surface`, under SC 1.4.11's 3:1 — which
+            // globals.css says in terms a component must never do.
             'disabled:cursor-not-allowed disabled:opacity-60',
             // The error tone has to survive focus, which is why nothing above
-            // sets a border on focus any more: an equal-specificity
-            // `focus-visible:border-accent` sorted after this rule and took the
-            // red off the one box being corrected. The `focus:ring-danger/30`
-            // that used to trail it is gone too — the only `ring-2` in the file
-            // went with the outline-none, so it had been painting nothing.
+            // sets a border on focus any more: an accent border scoped to
+            // focus-visible sorted after this rule at equal specificity and
+            // took the red off the one box being corrected. The danger ring
+            // that used to trail it is gone too — the file's only ring width
+            // left with the outline-none, so it had been painting nothing.
             invalid && 'border-danger',
             // The box the caret is in gets a resting highlight, so it is obvious
             // where a keystroke will land before you press one. It has to be a
