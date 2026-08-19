@@ -139,7 +139,7 @@ postgresql://xecret_app_login:THAT_PASSWORD@ep-cool-name-12345.us-east-2.aws.neo
 npx wrangler hyperdrive create xecret-db --connection-string="$DATABASE_URL"
 ```
 
-Put the returned id into `apps/web/wrangler.jsonc` and uncomment the `hyperdrive` binding. In a
+Put the returned id into `apps/web/wrangler.toml` and uncomment the `hyperdrive` binding. In a
 deployed Worker, `DATABASE_URL` is then unused — the binding supplies the connection string, and
 `connectionString()` in `apps/web/src/server/bindings.ts` prefers it.
 

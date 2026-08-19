@@ -7,7 +7,7 @@
  * context — keeping that to one file is what makes "where does runtime
  * configuration enter the system?" answerable by grep.
  *
- * `wrangler types` regenerates `src/cloudflare-env.d.ts` from `wrangler.jsonc`,
+ * `wrangler types` regenerates `src/cloudflare-env.d.ts` from `wrangler.toml`,
  * but only for bindings that are actually declared there. xecret's bindings stay
  * commented out until the underlying Cloudflare resources exist, because wrangler
  * fails a deploy on a binding that points at nothing. This declaration merge
@@ -15,7 +15,7 @@
  * optional so the code must decide what to do when a binding is absent rather
  * than assuming it is there.
  *
- * When a resource is created and uncommented in `wrangler.jsonc`, the generated
+ * When a resource is created and uncommented in `wrangler.toml`, the generated
  * type takes over and this block can shed that entry.
  */
 declare global {
@@ -196,7 +196,7 @@ const PROCESS_SUPPLIED = [
 /**
  * Fills gaps in the Worker's `env` from the process environment.
  *
- * `next dev` under the OpenNext adapter builds `env` from `wrangler.jsonc` and
+ * `next dev` under the OpenNext adapter builds `env` from `wrangler.toml` and
  * `.dev.vars` — faithfully, since that is exactly what a deployed Worker sees.
  * It therefore does **not** include the shell, so `phase run -- npm run dev`
  * supplies values the application cannot see, and every route answers 503 while
@@ -208,7 +208,7 @@ const PROCESS_SUPPLIED = [
  * fix guarantees a per-value bug.
  *
  * **A binding always wins.** In production the values below arrive from
- * Hyperdrive, the Secrets Store, and `wrangler.jsonc`; this only fills what is
+ * Hyperdrive, the Secrets Store, and `wrangler.toml`; this only fills what is
  * absent, so it cannot override a deployed configuration with a stray variable
  * on an operator's machine.
  *

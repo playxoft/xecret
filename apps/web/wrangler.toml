@@ -1,0 +1,153 @@
+name = "xecret"
+main = ".open-next/worker.js"
+
+# nodejs_compat is required by the OpenNext adapter and by postgres.js (ADR 0006).
+compatibility_date = "2026-08-05"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = ".open-next/assets"
+binding = "ASSETS"
+
+# Cloudflare's own log tail. Kept on even though lines are also shipped to
+# Better Stack: this is what `wrangler tail` reads, and it is the only thing
+# that still works when the shipping pipeline is itself the outage.
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+# Non-secret configuration only. Anything sensitive lives in Phase.dev and is
+# pushed to Cloudflare at deploy time — never in this file, which is committed.
+[vars]
+XECRET_ENV = "development"
+XECRET_PUBLIC_URL = "http://localhost:3030"
+# The root key version new wrapping operations use. Bumped as step 4 of the
+# rotation runbook in docs/security/key-recovery.md, only after the new key
+# is present in XECRET_ROOT_KEYS.
+XECRET_ROOT_KEY_VERSION = "1"
+
+# ── production ──────────────────────────────────────────────────────────────
+#
+# Named environments inherit `main`, `assets` and compatibility settings, but
+# NOT `vars` and NOT bindings — everything below is therefore stated in full,
+# even where it repeats the top level.
+#
+# TOML is order-sensitive in a way the JSON this replaced was not: every key
+# written bare below belongs to the table most recently opened. So the scalar
+# keys and inline arrays of `[env.production]` come first, and the sub-tables
+# (`vars`, and the array-of-tables blocks) come after. Adding a bare key beneath
+# one of those blocks silently attaches it to the wrong table.
+[env.production]
+name = "xecret-production"
+routes = [{ pattern = "xecret.playxoft.com", custom_domain = true }]
+
+# ADR 0006 — pooled path to Neon, created by scripts/deploy-bootstrap.sh
+# against the DIRECT endpoint (Hyperdrive pools; pgbouncer must not).
+hyperdrive = [{ binding = "HYPERDRIVE", id = "c9733ac7b6104546ac59ec53df58a948" }]
+
+# ADR 0003 — Google's JWKS, cached so verification costs no fetch.
+kv_namespaces = [{ binding = "JWKS_CACHE", id = "de8e11e521b8491a97e8d4f0d4557c0f" }]
+
+[env.production.vars]
+XECRET_ENV = "production"
+XECRET_PUBLIC_URL = "https://xecret.playxoft.com"
+XECRET_ROOT_KEY_VERSION = "1"
+# Not a secret — it is the `aud` claim an ID token must carry, and is
+# embedded in every client bundle anyway (see bindings.ts).
+FIREBASE_PROJECT_ID = "xecret-management"
+
+# ADR 0002 — the Root KEK map. Sourced from Phase.dev, pushed to the
+# account's default Secrets Store by scripts/deploy-bootstrap.sh.
+[[env.production.secrets_store_secrets]]
+binding = "XECRET_ROOT_KEYS"
+store_id = "73e054dfa82f45ddb60cd4781d8e64e3"
+secret_name = "XECRET_ROOT_KEYS"
+
+# Abuse control, per-colo (see docs/architecture/api.md §6).
+[[env.production.ratelimits]]
+name = "RL_LOGIN"
+namespace_id = "1001"
+simple = { limit = 10, period = 60 }
+
+[[env.production.ratelimits]]
+name = "RL_CLI_TOKEN"
+namespace_id = "1002"
+simple = { limit = 10, period = 60 }
+
+[[env.production.ratelimits]]
+name = "RL_INVITE"
+namespace_id = "1003"
+simple = { limit = 20, period = 60 }
+
+[[env.production.ratelimits]]
+name = "RL_SECRET_READ"
+namespace_id = "1004"
+simple = { limit = 120, period = 60 }
+
+[[env.production.ratelimits]]
+name = "RL_SERVICE"
+namespace_id = "1005"
+simple = { limit = 600, period = 60 }
+
+[[env.production.ratelimits]]
+name = "RL_MUTATION"
+namespace_id = "1006"
+simple = { limit = 60, period = 60 }
+
+# Generous: a debounced form issues one of these per pause in typing, and each
+# is a single indexed lookup. Tight enough that it is not a free
+# namespace-enumeration tool.
+[[env.production.ratelimits]]
+name = "RL_SLUG_CHECK"
+namespace_id = "1007"
+simple = { limit = 120, period = 60 }
+
+# ── staging ─────────────────────────────────────────────────────────────────
+#
+# A stub: no routes and no bindings, so a deploy of it produces a Worker with no
+# database, no root key and no JWKS cache. `lib/site.ts` names
+# `scripts/deploy-web.sh <env>` in its error message, and `staging` is the only
+# other <env> — fill this in before pointing anyone at it.
+[env.staging]
+name = "xecret-staging"
+
+[env.staging.vars]
+XECRET_ENV = "staging"
+XECRET_PUBLIC_URL = "https://xecret-staging.playxoft.com"
+
+# ────────────────────────────────────────────────────────────────────────────
+# NOT IN THIS FILE — log shipping (docs/operations/logging.md)
+#
+#   BETTERSTACK_SOURCE_TOKEN  a credential; set with `wrangler secret put`
+#   BETTERSTACK_INGEST_URL    the source's own https://<id>.betterstackdata.com
+#   XECRET_LOG_LEVEL          debug | info | warn | error, for an incident
+#
+# All three are plain strings the Worker reads from `process.env`, so they can
+# be set per environment without a code change. The token is deliberately not
+# a `var` here: this file is committed.
+# ────────────────────────────────────────────────────────────────────────────
+
+# ────────────────────────────────────────────────────────────────────────────
+# Creating the resources these bindings point at. wrangler fails a deploy on a
+# binding naming a resource that does not exist, so a new environment is filled
+# in only once each has been created.
+#
+#   database (ADR 0006)
+#     npx wrangler hyperdrive create xecret-db --connection-string="$DATABASE_URL"
+#
+#   root key (ADR 0002)
+#     The value originates in Phase.dev and is pushed at deploy time. It is
+#     NEVER read from Phase.dev at runtime — see docs/adr/0002. The binding name
+#     must match the one read in apps/web/src/server/bindings.ts, and the value
+#     is the JSON version→key map documented in
+#     packages/core/src/crypto/key-provider.ts, produced by `npm run keygen`.
+#
+#   Firebase JWKS cache (ADR 0003)
+#     npx wrangler kv namespace create JWKS_CACHE
+#
+#   rate limiting (GA binding, no Redis — see system-architecture.md §6)
+#     No resource to create; the namespace_id values are chosen here.
+#
+# Copy the corresponding block out of [env.production] above rather than from a
+# comment — a commented example is the copy that goes stale.
+# ────────────────────────────────────────────────────────────────────────────

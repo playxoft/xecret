@@ -187,7 +187,7 @@ Developer laptop                 CI / deploy                              Runtim
 ────────────────                 ───────────                              ───────
 phase run -- npm run dev         phase run -- sh scripts/deploy-web.sh    env bindings
    │                                │                                        │
-   └─ secrets in process env        └─ reads wrangler.jsonc for that env,     └─ no network
+   └─ secrets in process env        └─ reads wrangler.toml for that env,     └─ no network
       never on disk                    builds with its origin, uploads the
                                        Worker and binds what it names
 ```
@@ -196,7 +196,7 @@ No `.env` file exists on any developer machine. `.env.example` documents variabl
 only and holds no values.
 
 The deploy is a script rather than a bare `wrangler deploy` for one reason worth stating here:
-a deployment is a *build* and an *upload*, and only the upload can read `wrangler.jsonc`. The
+a deployment is a *build* and an *upload*, and only the upload can read `wrangler.toml`. The
 documentation and marketing pages are prerendered, so each one's canonical URL, its sitemap
 entry and the `Host` line in `robots.txt` are decided while `next build` runs — before any
 binding exists. The script closes that gap by resolving the environment's `vars` itself and

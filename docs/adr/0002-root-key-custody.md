@@ -63,7 +63,7 @@ Phase.dev  ──── deploy time, once per release ────▶  Cloudflar
 > `wrangler deploy` *binds* a Secrets Store entry, it does not create one, so the arrow above
 > was never a single command's work. And a deployment turned out to be a build plus an upload
 > that have to agree about which environment they are — the prerendered pages bake the
-> deployment's origin in, and only the script reads it out of `wrangler.jsonc` and hands it to
+> deployment's origin in, and only the script reads it out of `wrangler.toml` and hands it to
 > the build. Neither touches what this ADR decided: Phase.dev is still the system of record,
 > the runtime is still a binding, and the Worker still never contacts Phase.dev. The bullets
 > above are left as written because they are the record of what was decided; the current

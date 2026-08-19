@@ -14,7 +14,7 @@
 #      costs no outgoing fetch.
 #
 # Idempotent: anything that already exists is reported, not recreated. Output
-# is the three ids to paste into apps/web/wrangler.jsonc — ids are plain
+# is the three ids to paste into apps/web/wrangler.toml — ids are plain
 # configuration, not secrets. No credential is ever printed.
 
 set -eu
@@ -74,7 +74,7 @@ else
   say "kv: JWKS_CACHE already exists"
 fi
 
-# ── Result — paste these into apps/web/wrangler.jsonc ───────────────────────
+# ── Result — paste these into apps/web/wrangler.toml ───────────────────────
 echo "HYPERDRIVE_ID=$HYPERDRIVE_ID"
 echo "STORE_ID=$STORE_ID"
 echo "KV_ID=$KV_ID"

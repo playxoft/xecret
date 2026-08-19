@@ -67,7 +67,7 @@ describe('an environment that names its origin', () => {
     expect(SITE_ORIGIN).toBe(EXAMPLE_ORIGIN);
   });
 
-  // The value is copied out of `wrangler.jsonc` by a shell script, and a URL
+  // The value is copied out of `wrangler.toml` by a shell script, and a URL
   // written by a human in a config file has a trailing slash about half the
   // time. Left in, every canonical would carry a double slash.
   it('strips trailing slashes, however many', async () => {
@@ -149,7 +149,7 @@ describe('a deployment build that cannot name its origin', () => {
 
     expect(message).toContain('XECRET_PUBLIC_URL is not set');
     expect(message).toContain('scripts/deploy-web.sh');
-    expect(message).toContain('wrangler.jsonc');
+    expect(message).toContain('wrangler.toml');
   });
 
   // The same throw fires on import for a developer who merely has XECRET_ENV

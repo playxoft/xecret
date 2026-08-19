@@ -211,7 +211,7 @@ xecret/
 │       │   ├── components/         # shadcn/ui + app components
 │       │   ├── server/             # route logic — never imported by client
 │       │   └── lib/
-│       ├── wrangler.jsonc
+│       ├── wrangler.toml
 │       ├── open-next.config.ts
 │       └── package.json
 │

@@ -13,7 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
-    "// deploy": "Delegates to the repository script rather than calling opennextjs-cloudflare directly. `lib/site.ts` reads the deployment's origin from the build environment, and only the script puts it there — reading it from wrangler.jsonc for the environment being deployed. A bare `opennextjs-cloudflare build && deploy` here still built and still succeeded, and shipped http://localhost:3030 as the canonical of every prerendered page.",
+    "// deploy": "Delegates to the repository script rather than calling opennextjs-cloudflare directly. `lib/site.ts` reads the deployment's origin from the build environment, and only the script puts it there — reading it from wrangler.toml for the environment being deployed. A bare `opennextjs-cloudflare build && deploy` here still built and still succeeded, and shipped http://localhost:3030 as the canonical of every prerendered page.",
     "deploy": "sh ../../scripts/deploy-web.sh",
     "cf-typegen": "wrangler types --env-interface CloudflareEnv src/cloudflare-env.d.ts"
   },
