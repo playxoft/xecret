@@ -141,8 +141,7 @@ jobs:
             --dir "${RUNNER_TEMP}/release" \
             --pattern 'xecret_*' \
             --pattern 'checksums.txt' \
-            --pattern 'checksums.txt.sig' \
-            --pattern 'checksums.txt.pem'
+            --pattern 'checksums.txt.bundle'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.release.tag_name }}
@@ -155,8 +154,7 @@ jobs:
         working-directory: ${{ runner.temp }}/release
         run: |
           cosign verify-blob checksums.txt \
-            --signature checksums.txt.sig \
-            --certificate checksums.txt.pem \
+            --bundle checksums.txt.bundle \
             --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${TAG}" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
         env:

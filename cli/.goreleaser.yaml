@@ -108,14 +108,25 @@ docker_manifests:
 
 # Users are being asked to trust this binary with production credentials.
 # Releases are signed so the download can be verified, not merely checksummed.
+# A Sigstore bundle, not the older detached `.sig` + `.pem` pair.
+#
+# cosign v3 signs into the new bundle format by default, and in that mode it
+# ignores `--output-signature` and `--output-certificate` and then fails trying
+# to write a bundle to a path nobody gave it: `create bundle file: open : no
+# such file or directory`. The pair could be kept alive with
+# `--new-bundle-format=false`, but that is asking a signing tool to keep
+# producing the format it is moving away from, in the one part of this
+# repository whose whole job is to still verify in five years.
+#
+# One file instead of two. The bundle carries the signature, the Fulcio
+# certificate and the Rekor inclusion proof together, which is also what
+# `cosign verify-blob --bundle` in release.yml now reads.
 signs:
   - cmd: cosign
-    signature: '${artifact}.sig'
-    certificate: '${artifact}.pem'
+    signature: '${artifact}.bundle'
     args:
       - sign-blob
-      - '--output-signature=${signature}'
-      - '--output-certificate=${certificate}'
+      - '--bundle=${signature}'
       - '${artifact}'
       - '--yes'
     artifacts: checksum
