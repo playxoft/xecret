@@ -96,6 +96,21 @@ jobs:
               && echo "  ok  $target" || exit 1
           done
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # As everywhere else in this file: .nvmrc is the single source of
+          # truth, so CI, contributors and the engines field cannot drift apart.
+          node-version-file: .nvmrc
+
+      # The npm distribution's platform table is written out three times — in
+      # .goreleaser.yaml, in lib/resolve.js and in publish.mjs — and these tests
+      # assert the three agree. A target added to the matrix above and forgotten
+      # in one of them is a machine that installs xecret and is told there is no
+      # build for it, discovered by a user rather than here.
+      - name: Test the npm distribution
+        working-directory: cli/npm
+        run: node --test
+
   bundle:
     name: Worker bundle size
     runs-on: ubuntu-latest

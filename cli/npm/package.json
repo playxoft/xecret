@@ -1,0 +1,40 @@
+{
+  "name": "xecret",
+  "version": "0.0.0-dev",
+  "description": "Open-source, developer-first secret management. Injects secrets into your process — they never touch disk.",
+  "keywords": [
+    "secrets",
+    "secret-management",
+    "dotenv",
+    "env",
+    "environment-variables",
+    "cli",
+    "devops",
+    "security"
+  ],
+  "homepage": "https://xecret.playxoft.com",
+  "bugs": "https://github.com/playxoft/xecret/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/playxoft/xecret.git",
+    "directory": "cli"
+  },
+  "license": "MIT",
+  "author": "Playxoft",
+  "type": "commonjs",
+  "bin": {
+    "xecret": "bin/xecret.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {},
+  "scripts": {
+    "test": "node --test"
+  }
+}

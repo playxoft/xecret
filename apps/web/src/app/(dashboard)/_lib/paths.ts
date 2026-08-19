@@ -35,15 +35,17 @@
 const segment = encodeURIComponent;
 
 /**
- * The host the dashboard is being served from — `xecret.playxoft.com` today,
- * `xecret.dev` once that move happens.
+ * The host the dashboard is being served from — `xecret.playxoft.com` in
+ * production, and something else in every other place this runs.
  *
  * Read from the browser rather than pinned to a constant, so the one place a
  * URL is *shown* to a person rather than navigated to stays true in every
- * environment — localhost, staging, production — and survives the domain change
- * without a code edit. `XECRET_PUBLIC_URL` is the server's answer to the same
- * question, but it is a Cloudflare binding and so unreachable from a client
- * component, which is where the question actually gets asked.
+ * environment — localhost, staging, a self-hosted deployment on somebody else's
+ * domain. That last one is the reason this stays dynamic now that the canonical
+ * host is settled: a self-hoster's dashboard must not print ours.
+ * `XECRET_PUBLIC_URL` is the server's answer to the same question, but it is a
+ * Cloudflare binding and so unreachable from a client component, which is where
+ * the question actually gets asked.
  *
  * Returns an empty string during server rendering, so callers must be mounted
  * client-side only. Today's sole caller sits inside a Radix dialog, whose

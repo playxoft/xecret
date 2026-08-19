@@ -8,8 +8,10 @@ export const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /**
  * 63 is the DNS label limit, and that is not a coincidence: it keeps
- * `acme.xecret.dev` available as a future routing choice without a migration
- * that some tenants could not complete. Do not raise it.
+ * `acme.xecret.playxoft.com` available as a future routing choice without a
+ * migration that some tenants could not complete. Do not raise it — a slug
+ * longer than a DNS label is a tenant who could never be given a subdomain,
+ * and that is a decision made permanent by the first row that uses it.
  */
 export const SLUG_MAX_LENGTH = 63;
 

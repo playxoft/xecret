@@ -119,6 +119,7 @@ From the repository root: `npm run cli:build`, `npm run cli:test`.
 ```
 cli/
 ├── cmd/xecret/          entry point + one file per command
+├── npm/                 the npm distribution — wrapper, resolver, publisher
 └── internal/
     ├── api/             HTTP client, typed endpoints, error mapping, retries
     ├── auth/            PKCE, loopback listener, browser open
@@ -133,11 +134,50 @@ cli/
 
 ## Release
 
-GoReleaser builds darwin/linux/windows × amd64/arm64, publishes archives with
-SHA-256 checksums and cosign signatures, and pushes a Homebrew formula to
-`playxoft/homebrew-tap`. `scripts/install-cli.sh` is the `curl | sh` installer
-(it verifies the checksum before unpacking).
+Two stages, because the registry half cannot be undone.
 
-> **Do not distribute binaries until the permanent domain is locked** — the
-> API origin is compiled into every copy (`internal/buildinfo`), and changing
-> it later breaks every installed CLI. See §7 of the plan.
+**On a `v*` tag.** GoReleaser builds darwin/linux/windows × amd64/arm64,
+publishes archives with SHA-256 checksums and cosign signatures, pushes the
+Docker image, and pushes a Homebrew formula to `playxoft/homebrew-tap`. The
+GitHub release is left as a **draft** for a human to read.
+
+**On publishing that draft.** The `npm` job downloads the release's own
+archives, verifies each against the signed `checksums.txt`, and publishes seven
+packages: `xecret` plus one per platform. npm has no draft state and no
+meaningful undo, so it waits for the same gate everything else does.
+
+`scripts/install-cli.sh` is the `curl | sh` installer (it verifies the checksum
+before unpacking).
+
+### The npm distribution
+
+`cli/npm/` holds a wrapper package with six platform packages as
+`optionalDependencies` — the esbuild shape. No postinstall, nothing downloaded
+at install time: `npm ci --ignore-scripts` is a reasonable thing to run, and the
+binary belongs under npm's own integrity hash rather than behind a fetch we
+would have to verify ourselves. The reasoning is written out at the top of
+`cli/npm/lib/resolve.js`.
+
+```bash
+cd cli/npm && node --test            # the resolver, and its drift checks
+node publish.mjs --version v1.2.3 --archives /tmp/release --dry-run
+```
+
+`lib/resolve.test.js` reads `.goreleaser.yaml` and `publish.mjs` and asserts all
+three agree on the platform list — a target added to the build matrix and
+forgotten in one of them is a machine that installs xecret and is told it has no
+build.
+
+Secrets to set once, before the first release:
+
+| Secret | For |
+|---|---|
+| `HOMEBREW_TAP_GITHUB_TOKEN` | A fine-grained PAT with `contents:write` on `playxoft/homebrew-tap`. |
+| `NPM_TOKEN` | An npm automation token for the account that owns `xecret`. |
+
+> **The origin is settled: `https://xecret.playxoft.com`.** It is compiled into
+> every distributed binary (`internal/buildinfo`), which is why it had to be
+> decided before the first release rather than after — changing it later breaks
+> every installed CLI, including ones nobody can reach to update. There is no
+> planned move; a self-hoster overrides it per-machine with `XECRET_API_URL` or
+> `xecret login --api-url`, which is what that flag is for.

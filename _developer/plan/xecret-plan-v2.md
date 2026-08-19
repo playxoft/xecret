@@ -586,22 +586,22 @@ Next phase           — and what I need from you
 | ✅ | Database access | Hyperdrive (D12) |
 | ✅ | Firebase edge library | `firebase-auth-cloudflare-workers` (D6/D11) |
 | ✅ | Licence | AGPL-3.0 server + MIT CLI + CLA (D13) — confirmed |
-| 🔶 | **Domain name** | `xecret.playxoft.com` for now. A permanent name is still needed before the CLI ships. See below. |
+| ✅ | **Domain name** | `xecret.playxoft.com` — settled 2026-08-19. No separate apex domain. See below. |
 
-### The domain question
+### The domain question — decided
 
-`xecret.playxoft.com` is wired in as the interim origin, which unblocks everything through Phase 5. It is **not** yet safe to ship a CLI binary, because the domain is compiled into every distributed copy.
+**`xecret.playxoft.com` is the permanent origin.** A separate apex (`xecret.dev` and the rest) was considered and deliberately not bought: the name would have to be defended across registrars and namespaces to be worth anything, and a subdomain of a domain we already own costs nothing, renews with the parent, and cannot lapse on its own. Nothing about the product's shape depends on the hostname.
 
-A permanent domain is needed in four places:
+That decision is what unblocked shipping a CLI binary, because the origin is compiled into every distributed copy and changing it afterwards breaks every installation — including the ones nobody can reach to update.
+
+It is wired into four places, all of them now pointing at the settled name:
 
 1. **Firebase authorised domains** — Google sign-in only works on pre-registered domains.
 2. **Google OAuth redirect URI** — must match exactly, character for character.
-3. **CLI login target** — `xecret login` opens `https://<domain>/cli/authorize`; this becomes the compiled-in default in every distributed binary. Changing it later means every installed CLI breaks.
-4. **Cloudflare Worker route.**
+3. **CLI login target** — `xecret login` opens `https://<domain>/cli/authorize`; `internal/buildinfo.DefaultAPIURL` is the compiled-in default. Self-hosters override it with `XECRET_API_URL` or `xecret login --api-url`, which is the whole reason those exist.
+4. **Cloudflare Worker route** — the custom domain in the Worker configuration.
 
-Lock the real name before Phase 6 (the CLI), and register the **GitHub org and npm `@xecret` scope on the same day** — the name is the product, and squatters are fast.
-
-To check: `xecret.dev` / `xecret.com` / `xecret.io`, `github.com/xecret`, npm `@xecret`.
+`github.com/playxoft/xecret` is held. **The npm names are not yet**: `xecret` and the six `xecret-{platform}-{arch}` packages the CLI is distributed as were all unregistered as of 2026-08-19, and the first release is what claims them. That is a release prerequisite, not a completed step — the name is the product and squatters are fast, so publish (or reserve) before announcing anywhere. The npm `@xecret` *scope* is not needed; the wrapper takes the unscoped name.
 
 ---
 
