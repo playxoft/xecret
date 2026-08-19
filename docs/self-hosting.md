@@ -138,8 +138,29 @@ is permanently unrecoverable — there is no support ticket that fixes this.**
   [key recovery](security/key-recovery.md) exists to be run, quarterly.
 - **Migrations:** generated SQL, committed and reviewed, applied with
   `npm run db:migrate`. Never auto-applied on deploy.
-- **The audit log** is append-only and partitioned by month; partitions are
-  pre-created a year ahead by migration 0001. Revisit before the runway ends.
+- **The audit log** is append-only and partitioned by quarter, with the child
+  tables in the `audit_parts` schema. Migration 0010 pre-creates eight
+  quarters, counting the current one, and nothing extends that automatically
+  yet. Run this before the runway ends, or writes fall into the default
+  partition — and a quarter with rows in the default partition can no longer be
+  given a real one:
+
+  ```sql
+  SELECT create_audit_log_partition(d::date)
+  FROM generate_series(
+      date_trunc('quarter', now() AT TIME ZONE 'UTC'),
+      date_trunc('quarter', (now() + interval '21 months') AT TIME ZONE 'UTC'),
+      interval '3 months'
+  ) AS d;
+  ```
+
+  Run it as the owner of the audit tables — it issues `CREATE TABLE` and
+  `GRANT`, and the application role holds neither. It fills every quarter to the
+  end of the runway, not just the last one, so it is idempotent and any cadence
+  shorter than 21 months is safe. Extending only the far quarter would leave the
+  ones in between permanently uncoverable. The procedure, and the recovery for a
+  quarter whose rows reached the default partition first, are in
+  [database setup](operations/database-setup.md).
 - **Mail, monitoring, error reporting** are yours to wire; the log pipeline
   never contains secret values by construction, but where the logs go is your
   decision.

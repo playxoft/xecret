@@ -11,13 +11,14 @@ import type { Executor } from './shared';
  *
  * **There is no update function and no delete function in this file, and their
  * absence is the point.** `audit_logs` is append-only, enforced by migration
- * 0009: the application role holds `INSERT` and `SELECT` on this table and
+ * 0002 for the table and by `create_audit_log_partition()` in 0010 for each
+ * child partition: the application role holds `INSERT` and `SELECT` here and
  * nothing else. Adding a mutation helper here would not merely be poor taste, it
  * would be dead code that fails at runtime — and worse, it would advertise that
  * editing history is a thing the system contemplates. A log an operator can
  * quietly amend is not evidence of anything.
  *
- * The table is range-partitioned by month, which shapes both functions below:
+ * The table is range-partitioned by quarter, which shapes both functions below:
  * inserts go to the current partition and are cheap, while any read that is not
  * bounded in time visits every partition that has ever existed.
  */
@@ -29,8 +30,9 @@ export type AuditLogRecord = typeof auditLogs.$inferSelect;
  *
  * Retention outlives this by design — partitions are kept far longer — but one
  * request must not be able to ask for all of it. Ninety days covers every
- * ordinary investigation and roughly three partitions; anything broader is an
- * export, which is a background job with its own budget, not a page in a UI.
+ * ordinary investigation, and is one quarter, so a clamped query opens one or
+ * two partitions. Anything broader is an export, which is a background job with
+ * its own budget, not a page in a UI.
  */
 export const MAX_AUDIT_RANGE_DAYS = 90;
 
@@ -117,7 +119,7 @@ export async function appendAuditEvents(
       metadata: event.metadata,
       // `created_at` is left to the column default so the partition key comes
       // from the database's clock. A Worker clock that drifts backwards would
-      // otherwise be able to file a record into the previous month's partition.
+      // otherwise be able to file a record into the previous quarter's partition.
     })),
   );
 }

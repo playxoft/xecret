@@ -336,7 +336,7 @@ GET …/secrets?limit=50&cursor=<opaque>
 ```
 
 Offset pagination re-scans on every page and shifts under concurrent inserts, so a row can
-be skipped or repeated between pages. On the append-only, month-partitioned audit table
+be skipped or repeated between pages. On the append-only, quarter-partitioned audit table
 that degradation is severe. `limit` is clamped to 200.
 
 ---

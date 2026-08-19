@@ -401,9 +401,20 @@ CREATE INDEX audit_logs_environment_idx ON audit_logs (environment_id, created_a
 
 **Design notes**
 
-- **Monthly range partitions.** `secret.read` is the highest-volume event in the system (every
+- **Quarterly range partitions.** `secret.read` is the highest-volume event in the system (every
   `xecret run`, every CI build). Partitioning keeps queries fast and makes retention a
-  `DROP TABLE` rather than a mass `DELETE`.
+  `DROP TABLE` rather than a mass `DELETE`. Quarterly rather than monthly because reads are
+  clamped to 90 days by `MAX_AUDIT_RANGE_DAYS` — exactly one quarter — so a bounded query opens
+  one or two partitions instead of three or four, and 3–5 years of retention is 12–20 child
+  tables rather than 36–60.
+- **Partitions live in the `audit_parts` schema**, not `public`. Purely an ergonomic decision, and
+  a real one. Left in `public`, 12–20 quarterly children would sit beside the 18 real tables and
+  roughly double what `\dt` prints; under the monthly scheme this replaces, 36–60 of them would
+  have outnumbered the real tables three to one. A `public` listing an operator cannot scan is one
+  they stop reading — and this is the schema where the append-only guarantee lives. PostgreSQL
+  allows a partition in a different schema from its parent, and nothing about it is visible to
+  queries; the application only ever names `public.audit_logs`. Migration 0010 made both changes,
+  while the table was small enough that they were free.
 - `created_at` is in the primary key because PostgreSQL requires the partition key there.
 - **No foreign keys.** Audit records must outlive the rows they reference. A deleted project
   must not erase the record that it existed and who deleted it.
@@ -438,19 +449,24 @@ audit_logs — no FKs by design; references are soft
 ## 10. Migration order
 
 ```
-0000  extensions (citext), enums
-0001  users, sessions
-0002  organizations, org_members, invitations
-0003  projects, environments
-0004  org_keys, env_keys
-0005  secrets, secret_versions
-0006  access_grants
-0007  cli_tokens, service_tokens
-0008  audit_logs + partition management function
-0009  grants: least-privilege application role
+0000  initial schema: extensions (citext), enums, and the 15 tables above
+0001  audit_logs partitioning + partition management function
+0002  grants: least-privilege application role
+0003  rename the application role to xecret_app_permissions
+0004  PIN lock state, secret value types (user_pins, pin_reset_tokens)
+0005  CLI authorization codes (cli_auth_codes)
+0006  service-token write attribution
+0007  invitation initial grants
+0008  PIN auto-lock
+0009  organization creator index
+0010  audit partitions: quarterly, and into the audit_parts schema
 ```
 
-Migration `0009` is not optional. The application role gets `SELECT`/`INSERT`/`UPDATE`/
+The 15 tables catalogued above are the ones 0000 creates. `user_pins`, `pin_reset_tokens` and
+`cli_auth_codes` arrive in 0004 and 0005 and are not catalogued in this document — which is why §8
+counts 18 tables in `public` and this list counts 15.
+
+Migration `0002` is not optional. The application role gets `SELECT`/`INSERT`/`UPDATE`/
 `DELETE` on tenant tables, `SELECT`/`INSERT` only on `audit_logs`, and no DDL rights
 anywhere. Migrations run as a separate, more privileged role.
 

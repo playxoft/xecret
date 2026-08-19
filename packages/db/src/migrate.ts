@@ -14,6 +14,28 @@ import postgres from 'postgres';
 async function main(): Promise<void> {
   const url = process.env.MIGRATION_DATABASE_URL ?? process.env.DATABASE_URL;
 
+  // Migration 0010 rewrites the whole of audit_logs and refuses to do it to a
+  // large table, because the rewrite holds ACCESS EXCLUSIVE throughout. This is
+  // the deliberate override, for an operator with a maintenance window.
+  //
+  // It is set here, on the migration's own session, rather than with
+  // ALTER DATABASE ... SET. Custom placeholder GUCs like xecret.* can only be
+  // stored in pg_db_role_setting by a true superuser, which none of the managed
+  // providers this runs on — Neon, RDS, Cloud SQL, Supabase — hand out. A
+  // session-scoped SET has no such restriction.
+  const auditRewriteFlag = process.env.XECRET_ALLOW_AUDIT_REWRITE;
+  const allowAuditRewrite = auditRewriteFlag === 'on';
+
+  // Exactly 'on', because the guard in 0010 compares the same literal. Anything
+  // else has to say so: silently ignoring `=true` or `=1` would abort the
+  // migration with a message telling the operator to set the variable they can
+  // see they already set.
+  if (auditRewriteFlag !== undefined && !allowAuditRewrite) {
+    console.error(
+      `XECRET_ALLOW_AUDIT_REWRITE is "${auditRewriteFlag}", which is not "on" — ignoring it.`,
+    );
+  }
+
   if (!url) {
     console.error(
       'No database URL. Set DATABASE_URL (or MIGRATION_DATABASE_URL).\n' +
@@ -23,9 +45,31 @@ async function main(): Promise<void> {
   }
 
   // max: 1 — migrations must run sequentially on a single connection.
-  const client = postgres(url, { max: 1, onnotice: () => {} });
+  //
+  // NOTICE and DEBUG are dropped: they are drizzle's advisory-lock chatter and
+  // the `IF NOT EXISTS` no-ops, and they are noise. Everything else is
+  // forwarded — in practice WARNING and above — because a migration that
+  // completes only part of its work says so that way. Migration
+  // 0010 warns when it cannot revoke a default privilege owned by another role;
+  // swallowing that would print "Migrations applied." over a step the operator
+  // still has to perform, and they would have no way to know.
+  const client = postgres(url, {
+    max: 1,
+    onnotice: (notice) => {
+      if (notice.severity !== 'NOTICE' && notice.severity !== 'DEBUG') {
+        console.warn(`${notice.severity}: ${notice.message}`);
+      }
+    },
+  });
 
   try {
+    if (allowAuditRewrite) {
+      // Session scope, not SET LOCAL: drizzle opens its own transaction for the
+      // migrations, and a LOCAL setting would not survive into it.
+      await client.unsafe("SET xecret.allow_audit_rewrite = 'on'");
+      console.warn('xecret.allow_audit_rewrite=on — audit table rewrites are permitted.');
+    }
+
     console.warn('Applying migrations…');
     await migrate(drizzle(client), { migrationsFolder: './migrations' });
     console.warn('Migrations applied.');

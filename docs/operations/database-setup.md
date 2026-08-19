@@ -55,8 +55,8 @@ project to one vendor for no gain.
 The script prefers `MIGRATION_DATABASE_URL` and falls back to `DATABASE_URL`. If neither is set it
 exits with a message naming both.
 
-This creates the 15 tables, partitions `audit_logs` by month, and creates the **`xecret_app_permissions`
-role** with its grants.
+This creates the 18 tables, partitions `audit_logs` by quarter into the `audit_parts` schema, and
+creates the **`xecret_app_permissions` role** with its grants.
 
 `xecret_app_permissions` is deliberately **`NOLOGIN`**. It is a *group* role: it holds privileges and nothing
 else. You cannot connect as it, and that is the point — see step 3.
@@ -181,14 +181,220 @@ people will rely on.
 
 ---
 
+## 6. Audit partition maintenance
+
+`audit_logs` is partitioned by quarter, with the child tables in the `audit_parts` schema.
+Migration 0010 pre-creates eight quarters. **Nothing extends that automatically.** When the runway
+runs out, audit writes land in `audit_parts.audit_logs_default`, and a quarter with rows sitting in
+the default partition can no longer be given a real partition — the `CREATE TABLE ... PARTITION OF`
+fails, because the rows would violate the default partition's constraint.
+
+Run this before the runway ends, **as the owner of the audit tables** — it issues `CREATE TABLE`
+and `GRANT`, and the application role holds neither:
+
+```sql
+SELECT create_audit_log_partition(d::date)
+FROM generate_series(
+    date_trunc('quarter', now() AT TIME ZONE 'UTC'),
+    date_trunc('quarter', (now() + interval '21 months') AT TIME ZONE 'UTC'),
+    interval '3 months'
+) AS d;
+```
+
+It fills every quarter from the current one to the end of the runway, not only the last one, and it
+is idempotent — so the cadence does not matter as long as it is **shorter than 21 months**. The
+statement always creates eight quarters, which reach between 21 and 24 months out depending on
+where in the current quarter you run it; 21 is the bound you can rely on. Extending only the far
+quarter — `create_audit_log_partition((now() + interval '21 months')::date)` on its own — is correct
+only at an exactly quarterly cadence, and leaves permanently uncoverable gaps at any other.
+
+`AT TIME ZONE 'UTC'` is not decoration. Partition bounds are UTC, and `date_trunc` on a
+`timestamptz` resolves in the session's time zone, so without it a run near a quarter boundary picks
+the wrong quarter.
+
+If **any** quarter in that range already has rows in the default partition, the statement aborts as
+a whole and no quarter is created — it is one statement, so it is one transaction. Repair the
+partitions first, with the procedure below, which extends the runway on its way through.
+
+### Repairing the partitions
+
+Three states need repair, and one procedure recovers all of them. `create_audit_log_partition()`
+raises on the second and third rather than papering over them; the first is refused by PostgreSQL
+itself, when the default partition's constraint check rejects the `CREATE TABLE`:
+
+- a quarter whose rows are already in `audit_parts.audit_logs_default`, so its real partition can no
+  longer be created;
+- a partition left detached by an interrupted repair;
+- a partition attached under the right name over the wrong range, because it was created from a
+  session in a non-UTC time zone.
+
+They share a cause, and it dictates the order. `CREATE TABLE ... PARTITION OF` and
+`ATTACH PARTITION` both scan the default partition to prove the incoming range is free, and both
+fail if it holds a single row belonging to that range. So the default partition comes out **first**,
+before anything is created, and goes back **last**. Repairing one quarter at a time with the default
+still attached is what fails, and it fails in exactly the case you are trying to repair.
+
+First find out what needs repairing. The procedure needs the **complete** set up front — parking
+one partition and discovering a second mid-transaction wastes the whole maintenance window:
+
+```sql
+-- Partitions sitting in audit_parts that are not attached to the parent.
+SELECT c.relname
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'audit_parts'
+  AND c.relkind = 'r'
+  AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid);
+
+-- Attached partitions and their bounds. Anything not starting and ending at
+-- 00:00:00+00 on a quarter boundary is mis-bounded. The default partition is
+-- excluded: its bound reads DEFAULT, which is not a range and is not wrong.
+SELECT c.relname, pg_get_expr(c.relpartbound, c.oid) AS bounds
+FROM pg_inherits i
+JOIN pg_class c ON c.oid = i.inhrelid
+JOIN pg_class p ON p.oid = i.inhparent
+JOIN pg_namespace pn ON pn.oid = p.relnamespace
+WHERE p.relname = 'audit_logs' AND pn.nspname = 'public'
+  AND c.relname <> 'audit_logs_default'
+ORDER BY c.relname;
+
+-- Quarters with rows stranded in the default partition.
+SELECT DISTINCT date_trunc('quarter', created_at AT TIME ZONE 'UTC')::date AS quarter
+FROM audit_parts.audit_logs_default
+ORDER BY quarter;
+```
+
+Then, as the table owner, in one transaction. **Steps 2 and 4a and the second `UNION` arm exist only
+if something needs parking** — in the common case, rows stranded in the default partition with every
+partition attached and correctly bounded, omit those three and run the rest as printed:
+
+```sql
+BEGIN;
+
+-- 1. The net comes out first. Skip if it is already detached.
+ALTER TABLE public.audit_logs DETACH PARTITION audit_parts.audit_logs_default;
+
+-- 2. Park every partition the queries above listed as detached or mis-bounded,
+--    one pair of statements each. Omit this step if there were none. For a
+--    partition that is ALREADY detached, omit its DETACH and keep the rename —
+--    detaching it again errors and poisons the transaction.
+ALTER TABLE public.audit_logs DETACH PARTITION audit_parts.audit_logs_2028q3;
+ALTER TABLE audit_parts.audit_logs_2028q3 RENAME TO audit_logs_2028q3_old;
+
+-- 3. Create the runway, then a partition for every quarter with rows waiting.
+SELECT create_audit_log_partition(d::date)
+FROM generate_series(
+    date_trunc('quarter', now() AT TIME ZONE 'UTC'),
+    date_trunc('quarter', (now() + interval '21 months') AT TIME ZONE 'UTC'),
+    interval '3 months'
+) AS d;
+
+--    Drop the second UNION arm, and add one per parked table, to match step 2.
+SELECT create_audit_log_partition(q)
+FROM (
+    SELECT DISTINCT date_trunc('quarter', created_at AT TIME ZONE 'UTC')::date AS q
+    FROM audit_parts.audit_logs_default
+    UNION
+    SELECT DISTINCT date_trunc('quarter', created_at AT TIME ZONE 'UTC')::date
+    FROM audit_parts.audit_logs_2028q3_old
+) s;
+
+-- 4a. Replay each parked table through the parent, which routes every row to
+--     its quarter. Omit if step 2 was omitted.
+INSERT INTO public.audit_logs SELECT * FROM audit_parts.audit_logs_2028q3_old;
+DROP TABLE audit_parts.audit_logs_2028q3_old;
+
+-- 4b. Then the default partition, the same way.
+INSERT INTO public.audit_logs SELECT * FROM audit_parts.audit_logs_default;
+TRUNCATE audit_parts.audit_logs_default;
+
+-- 5. Put the net back. It is empty now, so the validating scan is free.
+ALTER TABLE public.audit_logs ATTACH PARTITION audit_parts.audit_logs_default DEFAULT;
+
+COMMIT;
+```
+
+No audit record is destroyed: every row is written back through `public.audit_logs` before the table
+holding it is dropped or truncated. That is the only form of this operation consistent with an
+append-only log, and it is why the whole thing is one transaction rather than a sequence you could
+stop halfway.
+
+If a parked table's rows had already reached the parent before an earlier attempt was interrupted,
+step 4 does not duplicate them — the primary key is `(id, created_at)`, so the replay fails on a
+unique violation and the transaction rolls back. Confirm with a `count(*)` against the same range in
+`public.audit_logs`, then drop the parked table instead of replaying it.
+
+**This is a maintenance-window operation.** `DETACH PARTITION` cannot be `CONCURRENTLY` inside a
+transaction block, so it takes `ACCESS EXCLUSIVE` on `public.audit_logs` and holds it to `COMMIT`.
+Audit writes block throughout, and a blocked audit write fails the request that produced it. Size it
+by how many rows are parked and in the default partition.
+
+### If the migration refuses: too many rows to rewrite
+
+Migration 0010 rewrites the whole of `audit_logs` — it detaches every partition, re-inserts every
+row through the parent, and rebuilds the primary key and four indexes. That is free on a small table
+and an outage on a large one, so it measures first — before taking any lock that blocks writers —
+and refuses above about a million rows. It checks the planner's row estimate before that, and
+refuses outright above four million, so the message you see may say "estimated at N rows"; the
+estimate is deliberately the looser of the two, because `reltuples` is stale by nature.
+
+The refusal aborts the migration transaction, and drizzle runs all pending migrations in one
+transaction, so nothing else applies either.
+
+**Take the rewrite deliberately**, in a maintenance window, accepting that audit writes block for
+its duration:
+
+```bash
+XECRET_ALLOW_AUDIT_REWRITE=on npm run db:migrate
+```
+
+`migrate.ts` turns that into a session-scoped `SET xecret.allow_audit_rewrite = 'on'` on its own
+connection, and it applies to that run only — there is nothing to reset afterwards.
+
+Point `MIGRATION_DATABASE_URL` at the **direct** endpoint, not a pooled one, as step 1 already says.
+Under transaction pooling the `SET` is its own transaction and the backend can be handed to someone
+else before the migration's own transaction begins, which would leave the override unset and the
+guard armed. It fails closed — you get the refusal, not a surprise rewrite — but it fails.
+
+It is deliberately not `ALTER DATABASE ... SET xecret.allow_audit_rewrite`. That would be the
+obvious way to do it, and it does not work here: `xecret.*` is a *custom placeholder* parameter, and
+PostgreSQL only lets a true superuser store one in `pg_db_role_setting`. Neon, RDS, Cloud SQL and
+Supabase all withhold superuser, so the `ALTER` fails with `permission denied to set parameter`, and
+`ALTER ROLE ... SET` fails identically. Setting it in a session has no such restriction.
+
+There is no alternative that consists of skipping it. Nothing in the application names a partition,
+so 0001's monthly layout would serve perfectly well — but drizzle applies pending migrations in one
+transaction, so a 0010 that keeps aborting keeps every later migration from applying too. Declining
+it is not "stay on monthly"; it is "no migrations from here on". 0010 is currently the last one, so
+that cost is invisible until the next release.
+
+---
+
 ## Known sharp edges
 
 **A new table in a future migration needs an explicit grant.** Migration 0002 lists the tenant
-tables by name. The `ALTER DEFAULT PRIVILEGES` line at the end grants only `SELECT, INSERT` on
-future tables, because it exists to cover the monthly `audit_logs` partitions. So a migration that
-adds an ordinary table will give the application read-and-insert but *not* update-or-delete, and
-the failure will surface at runtime as a permission error rather than at migration time. Any
-migration adding a table must add its own `GRANT`.
+tables by name, and nothing grants anything on a table added later. Migration 0010 revokes the
+`ALTER DEFAULT PRIVILEGES` rule in `public` that used to paper over this — it existed only to cover
+audit partitions, which now live in `audit_parts` and are granted explicitly by
+`create_audit_log_partition()`. With that rule gone, a migration that adds an ordinary table and
+forgets its `GRANT` fails loudly on first use rather than half-working with read-and-insert but no
+update-or-delete.
+
+That revoke is best-effort, and there is one case where it does not happen. A default-privilege rule
+belongs to the role that created it, and removing it means being that role or a member of it. If you
+applied migration 0002 as one role — `postgres` during bootstrap, say — and later migrations under a
+dedicated migration role, 0010 cannot remove it. It does not fail; it warns, naming the role and the
+statement to run:
+
+```
+WARNING: could not revoke the public default-privilege rule owned by postgres. Run this as
+that role before adding any new table: ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE
+SELECT, INSERT ON TABLES FROM xecret_app_permissions;
+```
+
+`npm run db:migrate` forwards warnings, so this appears in the migration output. **If you see it,
+the sharp edge is still open until you run the statement it names.** Either way, any migration
+adding a table must add its own `GRANT`.
 
 **`CREATE ROLE` may need the account owner.** On some managed providers role creation is
 restricted. If migration 0002 fails on `CREATE ROLE`, create `xecret_app_permissions` through the provider's

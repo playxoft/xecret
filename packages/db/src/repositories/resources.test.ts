@@ -348,9 +348,10 @@ describe('the bulk read path stays within its query budget', () => {
 
 describe('the audit log is append-only', () => {
   it('exports no function that could mutate history', () => {
-    // Migration 0009 grants the application role INSERT and SELECT on
-    // `audit_logs` and nothing else. This asserts the module cannot drift away
-    // from that grant without someone noticing.
+    // Migration 0002 grants the application role INSERT and SELECT on
+    // `audit_logs` and nothing else, and `create_audit_log_partition()` in 0010
+    // does the same for each child partition. This asserts the module cannot
+    // drift away from that grant without someone noticing.
     const mutators = Object.keys(auditRepository).filter((name) => /update|delete/i.test(name));
     expect(mutators).toEqual([]);
   });
@@ -394,7 +395,7 @@ describe('the audit log is append-only', () => {
     const sql = statements[0]!.sql;
     expect(sql).not.toMatch(/offset/);
     expect(sql).toMatch(/\("audit_logs"\."created_at", "audit_logs"\."id"\) </);
-    // Always bounded in time, so the planner can prune monthly partitions.
+    // Always bounded in time, so the planner can prune quarterly partitions.
     expect(sql).toMatch(/"created_at" >= /);
     expect(sql).toMatch(/"created_at" <= /);
   });

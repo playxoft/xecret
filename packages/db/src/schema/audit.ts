@@ -4,7 +4,7 @@ import { inet } from './columns';
 import { actorTypeEnum, auditOutcomeEnum } from './enums';
 
 /**
- * Append-only audit log, range-partitioned by month.
+ * Append-only audit log, range-partitioned by quarter.
  *
  * Design notes (full rationale in docs/architecture/database-schema.md §8):
  *
@@ -14,7 +14,10 @@ import { actorTypeEnum, auditOutcomeEnum } from './enums';
  *   "nitheesh@playxoft.com deleted DATABASE_URL" after that user is gone.
  * - **Partitioning** is applied by hand-written SQL in the migration; Drizzle
  *   cannot express `PARTITION BY RANGE`. `created_at` is therefore part of the
- *   primary key, as PostgreSQL requires the partition key there.
+ *   primary key, as PostgreSQL requires the partition key there. The child
+ *   partitions live in the `audit_parts` schema so that years of them do not
+ *   bury the eighteen real tables in `public`; nothing here needs to know that,
+ *   because queries only ever name the parent.
  * - **Append-only is enforced by database grants**, not convention: the
  *   application role has INSERT and SELECT here, and no UPDATE or DELETE.
  * - **`metadata` can never hold a secret value** — its type is `AuditMetadata`
