@@ -46,9 +46,7 @@ For an orchestrator that cannot forward a long list of variables, put the CLI
 in the image and make it the entrypoint:
 
 ```dockerfile
-FROM alpine:3 AS xecret
-RUN apk add --no-cache curl \
- && curl -fsSL https://xecret.playxoft.com/install.sh | sh
+FROM ghcr.io/playxoft/xecret:1.2.0 AS xecret
 
 FROM node:22-slim
 COPY --from=xecret /usr/local/bin/xecret /usr/local/bin/xecret

@@ -204,6 +204,13 @@
      the same left edge as they move between them. See the `.x-container` rule
      near the bottom of this file. */
   --site-width: 80rem;
+
+  /* What the public header costs in normal flow: `pt-4` above an `h-14` pill —
+     see components/layout/site-header. It is sticky, not fixed, so those 72px
+     sit between the top of the document and the first section. A section that
+     wants to be exactly one screen tall has to subtract them; see
+     `.x-first-screen`. */
+  --site-header-flow: 4.5rem;
 }
 
 :root[data-theme='dark'] {
@@ -646,6 +653,17 @@
   }
 }
 
+/* A section that is exactly the first screen and no taller.
+   `min-h-svh` overshoots by whatever the sticky header already took in flow
+   above it — invisible while a hero holds nothing but centred type, and
+   obvious the moment it has something anchored to its foot, which then hangs
+   below the fold by exactly the header's height. `min-height`, not `height`,
+   so a four-line headline or a short window grows the section instead of
+   being clipped by it. */
+.x-first-screen {
+  min-height: calc(100svh - var(--site-header-flow));
+}
+
 /* ── Scroll reveal ────────────────────────────────────────────────────────
    Content lifts in as it enters the viewport. The `Reveal` component (see
    components/marketing/reveal.tsx) does nothing but observe intersection and
@@ -738,11 +756,20 @@
 }
 
 /* ── Ambient hero wash ────────────────────────────────────────────────────
-   A single soft radial bloom behind the hero, drawn from the brand gradient's
-   own cyan rather than from a palette token — it is the one place on the site
-   where the mark's colour is allowed to bleed onto the page. Very low alpha:
-   the point is that you notice the page has depth, not that you notice a
-   gradient. `pointer-events: none` because it sits over the canvas and under
+   A single soft radial bloom behind the hero. White, not the cyan-into-indigo
+   it used to be: that colour was borrowed from the mark, and the mark is
+   achromatic now — a blue halo behind a black chip is the old palette
+   outliving the logo that justified it. It is also the same bloom the social
+   card draws (see `scripts/generate-og.ts`), so the two must desaturate
+   together or the card stops matching the page it previews.
+
+   Achromatic in both themes, but not the same colour in both: dark blooms
+   white and light blooms black, because a wash has to move *away* from the
+   canvas it sits on and white on white is nothing at all. Very low alpha
+   either way — the point is that you notice the page has depth, not that you
+   notice a gradient — and neither spends the one thing the palette reserves:
+   colour here means production, destructive or failed, and nothing else may
+   borrow it. `pointer-events: none` because it sits over the canvas and under
    the copy, and it must never eat a click. */
 .x-hero-glow {
   position: absolute;
@@ -761,19 +788,23 @@
   aspect-ratio: 1;
   translate: -50% 0;
   border-radius: 50%;
+  /* Light theme blooms *down* into grey rather than up into white: white on
+     a white canvas is nothing at all. */
   background: radial-gradient(
     circle,
-    color-mix(in srgb, #2380e2 14%, transparent) 0%,
-    color-mix(in srgb, #3ad4ec 6%, transparent) 38%,
+    color-mix(in srgb, #0a0a0a 6%, transparent) 0%,
+    color-mix(in srgb, #0a0a0a 2.5%, transparent) 38%,
     transparent 68%
   );
 }
 
+/* The same white-at-7% the OG card uses, so the card and the page it
+   previews carry one wash rather than two. */
 :root[data-theme='dark'] .x-hero-glow::before {
   background: radial-gradient(
     circle,
-    color-mix(in srgb, #2380e2 20%, transparent) 0%,
-    color-mix(in srgb, #2a3fd0 10%, transparent) 40%,
+    color-mix(in srgb, #ffffff 7%, transparent) 0%,
+    color-mix(in srgb, #ffffff 2.5%, transparent) 40%,
     transparent 70%
   );
 }

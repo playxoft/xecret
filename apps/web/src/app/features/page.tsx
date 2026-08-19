@@ -741,7 +741,7 @@ function FeatureCard({
               tax on the one reader who cannot see the layout. */}
           <span
             aria-hidden="true"
-            className="text-fg-disabled group-hover:text-fg-subtle font-mono text-xs tabular-nums transition-colors"
+            className="text-fg-subtle group-hover:text-fg-muted font-mono text-xs tabular-nums transition-colors"
           >
             {String(index + 1).padStart(2, '0')}
           </span>
@@ -855,7 +855,7 @@ function AuditVisual() {
       <div className="border-line-subtle bg-canvas-inset text-fg-subtle flex items-center gap-2 border-b px-3 py-2 text-sm">
         <HistoryIcon className="size-3.5" />
         Audit log · storefront
-        <span className="text-fg-disabled ml-auto">append-only</span>
+        <span className="text-fg-subtle ml-auto">append-only</span>
       </div>
       <ul className="divide-line-subtle divide-y">
         {AUDIT_ROWS.map((row) => (
@@ -945,7 +945,7 @@ function KeyHierarchyVisual() {
       <div className="border-line-subtle bg-canvas-inset text-fg-subtle flex items-center gap-2 border-b px-3 py-2 text-sm">
         <KeyIcon className="size-3.5" />
         Key hierarchy
-        <span className="text-fg-disabled ml-auto font-mono text-xs">AES-256-GCM</span>
+        <span className="text-fg-subtle ml-auto font-mono text-xs">AES-256-GCM</span>
       </div>
       <ol className="px-4 py-4">
         {KEY_HIERARCHY.map((layer) => (

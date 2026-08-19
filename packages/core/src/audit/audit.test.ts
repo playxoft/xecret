@@ -631,7 +631,7 @@ describe('every declared metadata field survives sanitisation', () => {
 
   it('sanitises the attacker-influenced additions like every other string', () => {
     const record = builderWith().success('token.created', null, {
-      deviceName: 'lap\ntop ',
+      deviceName: 'lap\ntop\u0000',
       previousAccessLevel: 'read only',
     });
 

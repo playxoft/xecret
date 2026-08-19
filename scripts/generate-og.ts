@@ -19,11 +19,12 @@
  * Per-page cards are worth having when the per-page content is worth reading in
  * a preview — a chart, a price, a headline. Ours would be the same mark with a
  * different word under it, and forty near-identical PNGs is forty things to
- * regenerate when the gradient changes. One card, and the page's own `og:title`
+ * regenerate when the mark changes. One card, and the page's own `og:title`
  * and `og:description` carry what differs. Every unfurler shows those.
  *
  * The mark below is the same geometry and the same gradient as
- * `generate-icons.ts`. Change one and change the other.
+ * `generate-icons.ts` and `components/layout/logo.tsx`. Change one and change
+ * the others.
  */
 
 import { writeFile } from 'node:fs/promises';
@@ -63,16 +64,18 @@ const FONT = "Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif";
 function svg(): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}">
   <defs>
-    <linearGradient id="mark" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#3ad4ec"/>
-      <stop offset="0.55" stop-color="#2380e2"/>
-      <stop offset="1" stop-color="#2a3fd0"/>
+    <linearGradient id="mark" x1="0" y1="0" x2="0" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1c1c1c"/>
+      <stop offset="1" stop-color="#000000"/>
     </linearGradient>
 
+    <!-- The glow went achromatic with the mark. A blue halo behind a black chip
+         is the old palette outliving the logo that justified it; white at 7%
+         does the same job of lifting the top of the card off flat #0a0a0a. -->
     <radialGradient id="glow" cx="0.5" cy="0" r="0.75">
-      <stop offset="0" stop-color="#2380e2" stop-opacity="0.30"/>
-      <stop offset="0.45" stop-color="#2a3fd0" stop-opacity="0.12"/>
-      <stop offset="1" stop-color="#2a3fd0" stop-opacity="0"/>
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.07"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0.025"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
 
     <pattern id="grid" width="64" height="64" patternUnits="userSpaceOnUse">
@@ -84,10 +87,14 @@ function svg(): string {
   <rect width="${WIDTH}" height="${HEIGHT}" fill="url(#grid)"/>
   <rect width="${WIDTH}" height="${HEIGHT}" fill="url(#glow)"/>
 
-  <!-- The mark, at the same 32-unit geometry as the favicon, scaled ×4. -->
-  <g transform="translate(96 132)">
-    <rect width="128" height="128" rx="32" fill="url(#mark)"/>
-    <path d="M34 34L94 94M94 34L34 94" stroke="#ffffff" stroke-width="12.8" stroke-linecap="round"/>
+  <!-- The mark, drawn in the favicon's own 32-unit box and scaled ×4, so the
+       card and the tab icon are the same file's geometry rather than two
+       transcriptions of it. The hairline is a quarter-unit here: at ×4 a full
+       unit would be a 4px band, which is a border rather than a sheen. -->
+  <g transform="translate(96 132) scale(4)">
+    <rect width="32" height="32" rx="9" fill="url(#mark)"/>
+    <rect x="0.125" y="0.125" width="31.75" height="31.75" rx="8.875" fill="none" stroke="#ffffff" stroke-opacity="0.13" stroke-width="0.25"/>
+    <path fill="#fafafa" d="M25.9 25.9L23.07 26.18L17.98 21.09L17.84 17.84L21.09 17.98L26.18 23.07ZM25.9 6.1L26.18 8.93L21.09 14.02L17.84 14.16L17.98 10.91L23.07 5.82ZM6.1 6.1L8.93 5.82L14.02 10.91L14.16 14.16L10.91 14.02L5.82 8.93ZM6.1 25.9L5.82 23.07L10.91 17.98L14.16 17.84L14.02 21.09L8.93 26.18Z"/>
   </g>
 
   <text x="248" y="222" font-family="${FONT}" font-size="86" font-weight="600"

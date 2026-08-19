@@ -46,8 +46,12 @@ archive, **verifies its checksum**, and installs to `/usr/local/bin` (or
 ### A specific version
 
 ```bash
-curl -fsSL https://xecret.playxoft.com/install.sh | sh -s -- --version v1.2.0
+curl -fsSL https://xecret.playxoft.com/install.sh | XECRET_VERSION=v1.2.0 sh
 ```
+
+The version is an environment variable, not a flag — the installer reads
+`XECRET_VERSION` and parses no arguments at all, so anything after `-s --` is
+silently discarded and you get the latest release instead.
 
 Pinning a version is the right default in CI: an installer that always fetches
 the newest release makes your pipeline depend on our release schedule.
@@ -104,17 +108,22 @@ Linux keyring rules apply.
 
 ## Docker
 
-Copy the binary into your image rather than installing it at build time — one
-fewer network call in every build:
+Copy the binary out of the published image rather than installing it at build
+time — no package manager, no network fetch, and a version you pinned:
 
 ```dockerfile
-FROM alpine:3 AS xecret
-RUN apk add --no-cache curl \
- && curl -fsSL https://xecret.playxoft.com/install.sh | sh
+FROM ghcr.io/playxoft/xecret:1.2.0 AS xecret
 
 FROM node:22-slim
 COPY --from=xecret /usr/local/bin/xecret /usr/local/bin/xecret
 ```
+
+`ghcr.io/playxoft/xecret` is a multi-arch (amd64 and arm64) distroless image
+carrying the same static binary the installer would have fetched. The image
+tags carry the version *without* the leading `v` — `1.2.0`, not `v1.2.0` —
+because that is what GoReleaser templates from, the same way the archive names
+do. Pin it: an unpinned install resolves the latest release at build time, so
+the same Dockerfile would produce a different binary on every rebuild.
 
 Full patterns, including why you should not bake secrets into layers, are in
 [Docker](guides/docker.md).

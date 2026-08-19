@@ -9,10 +9,16 @@ import Link from 'next/link';
 import {
   Container,
   CtaBand,
+  DockerLogo,
   Faq,
+  GoLogo,
   JsonLd,
+  NextjsLogo,
+  NodejsLogo,
+  PipelineLogo,
   PublicPage,
   QUIET_LINK,
+  ReactLogo,
   Reveal,
   RevealGroup,
   Section,
@@ -44,6 +50,7 @@ import {
   softwareApplicationSchema,
 } from '@/lib/site';
 import { CliDemo } from './cli-demo';
+import { InstallGuide } from './install-guide';
 
 const RUN_COMMAND = 'xecret run -- npm run dev';
 
@@ -132,18 +139,45 @@ const FEATURES = [
  * integration is real and the answer to the only question a developer has at
  * this point on the page: *what do I actually have to change?*
  *
- * No third-party logos, deliberately. Borrowed brand marks are the laziest
- * signal of legitimacy there is, half of them are used outside their trademark
- * guidelines, and on a page whose entire argument is "we tell you the truth"
- * they buy nothing.
+ * The marks are the official ones, in the official colours — see the note in
+ * `components/marketing/brand-logos`. They are here to make the row scannable
+ * at a glance, not to imply endorsement, which is why the command stays: a
+ * logo wall alone would be exactly the borrowed legitimacy this page has no
+ * use for. CI/CD is the one cell without a mark to borrow, since its guide
+ * covers four runners rather than one product.
  */
 const WORKS_WITH = [
-  { label: 'Next.js', command: 'xecret run -- next dev', href: '/docs/guides/nextjs' },
-  { label: 'Node.js', command: 'xecret run -- node server.js', href: '/docs/guides/nodejs' },
-  { label: 'React + Vite', command: 'xecret run -- vite', href: '/docs/guides/react-vite' },
-  { label: 'Go', command: 'xecret run -- go run .', href: '/docs/guides/go' },
-  { label: 'Docker', command: 'xecret run -- docker compose up', href: '/docs/guides/docker' },
-  { label: 'CI/CD', command: 'xecret run -- npm test', href: '/docs/guides/ci' },
+  {
+    label: 'Next.js',
+    Logo: NextjsLogo,
+    command: 'xecret run -- next dev',
+    href: '/docs/guides/nextjs',
+  },
+  {
+    label: 'Node.js',
+    Logo: NodejsLogo,
+    command: 'xecret run -- node server.js',
+    href: '/docs/guides/nodejs',
+  },
+  {
+    label: 'React + Vite',
+    Logo: ReactLogo,
+    command: 'xecret run -- vite',
+    href: '/docs/guides/react-vite',
+  },
+  { label: 'Go', Logo: GoLogo, command: 'xecret run -- go run .', href: '/docs/guides/go' },
+  {
+    label: 'Docker',
+    Logo: DockerLogo,
+    command: 'xecret run -- docker compose up',
+    href: '/docs/guides/docker',
+  },
+  {
+    label: 'CI/CD',
+    Logo: PipelineLogo,
+    command: 'xecret run -- npm test',
+    href: '/docs/guides/ci',
+  },
 ] as const;
 
 /* The honest inventory, as two lists rather than as one paragraph of prose.
@@ -220,11 +254,23 @@ export default function LandingPage() {
           action are the two things on the site that must not wait for a
           script, and an entrance animation on content that is already on
           screen at load is a delay dressed up as design. */}
-      {/* `pb-32` is the same optical lift `PageHero` applies — see the note
-          there. It shifts the centred row up by half its value, because a
-          block of type on the geometric centre of a viewport reads as sitting
-          below it, and the floating header weights the top of the screen. */}
-      <section className="relative isolate flex min-h-svh flex-col justify-center overflow-hidden pb-32 sm:pb-40">
+      {/* The first screen is one centred composition — claim, terminal, then
+          the band of what it drops into. The band trails the widgets it
+          belongs to rather than being pushed to the foot of the viewport,
+          where the empty space above it made it read as a separate thing that
+          had drifted down the page.
+
+          `pb-20` is the same optical lift `PageHero` applies — see the note
+          there. It shifts the centred group up by half its value, because a
+          block of content on the geometric centre of a viewport reads as
+          sitting below it, and the floating header weights the top of the
+          screen.
+
+          `x-first-screen` rather than `min-h-svh`: a full `svh` overshoots by
+          the height the sticky header already spent in flow above this
+          section, which is enough on its own to push the foot of the
+          composition under the fold. */}
+      <section className="x-first-screen relative isolate flex flex-col justify-center overflow-hidden pb-20 sm:pb-24">
         <div className="x-hero-glow" aria-hidden="true" />
         <div className="x-grid-lines" aria-hidden="true" />
 
@@ -232,8 +278,10 @@ export default function LandingPage() {
             the terminal and the copy are close enough in height that centring
             reads as deliberate, but stacked on a phone the copy must sit
             directly under the headline rather than floating in the middle of
-            its own row. See `PageHero` for why the section is `min-h-svh`. */}
-        <Container className="relative grid w-full items-start gap-12 py-20 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)] lg:items-center lg:gap-16">
+            its own row. See `PageHero` for why a hero is sized to the first
+            screen at all, and the note above for why this one measures it with
+            `.x-first-screen`. */}
+        <Container className="relative grid w-full items-start gap-12 pt-20 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)] lg:items-center lg:gap-16">
           <div>
             <span className="border-line bg-surface/60 text-fg-muted inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium backdrop-blur">
               <ShieldCheckIcon className="size-3.5" />
@@ -291,31 +339,39 @@ export default function LandingPage() {
             </div>
           </div>
         </Container>
-      </section>
 
-      {/* ── Drops into ────────────────────────────────────────────────────
-          One bordered panel rather than a loose row of links, lifted so it
-          overlaps the foot of the hero. That overlap is the whole point: the
-          band reads as the closing element of the first screen's composition
-          instead of as the first thing you have to scroll to.
+        {/* ── Drops into ──────────────────────────────────────────────────
+            Inside the hero rather than under it: it is the closing element of
+            the first screen's composition, not the first thing you have to
+            scroll to. A reader who has just met the claim has exactly one
+            question — does this touch the stack I actually run? — and nothing
+            else that could hold this space answers it as cheaply.
 
-          The hairlines between cells are drawn by the grid itself — the list
-          carries a `--line-subtle` background and a one-pixel gap, and each
-          cell paints `--surface` back over it. That produces a correct rule at
-          every breakpoint (six across, three, two) with no `nth-child`
-          arithmetic clearing a border on the last item of each row, which is
-          how this pattern normally rots the first time a column is added. */}
-      <section aria-labelledby="works-with" className="relative z-10">
-        {/* Lifted far enough that the top band of the panel sits above the
-            fold. With a full-height hero the reader needs one honest signal
-            that the page continues, and a sliver of real content is a better
-            one than a bouncing chevron nobody has believed since 2014. */}
-        <Container className="-mt-20 pb-20 sm:-mt-24 sm:pb-24">
-          <Reveal>
+            No Reveal on it, for the reason given at the top of the hero: this
+            is on screen at load now, and an entrance animation on content the
+            reader is already looking at is a delay dressed up as design.
+
+            The hairlines between cells are drawn by the grid itself — the list
+            carries a `--line-subtle` background and a one-pixel gap, and each
+            cell paints `--surface` back over it. That produces a correct rule
+            at every breakpoint (six across, three, two) with no `nth-child`
+            arithmetic clearing a border on the last item of each row, which is
+            how this pattern normally rots the first time a column is added. */}
+        <section aria-labelledby="works-with" className="relative mt-14 sm:mt-16">
+          <Container>
             <div className="border-line bg-surface/80 shadow-raised overflow-hidden rounded-2xl border backdrop-blur-xl">
+              {/* Set as written, not shouted. The wide tracking that came with
+                  the caps went too: letterspacing is a repair for the tight fit
+                  of all-caps, and leaving it on lower case just pulls the words
+                  apart.
+
+                  A step above the cell labels below it rather than level with
+                  them — at the same size it read as a seventh item that had
+                  lost its command, and `text-fg-subtle` is what keeps it from
+                  outweighing the row it introduces. */}
               <h2
                 id="works-with"
-                className="border-line-subtle text-fg-subtle border-b px-5 py-3 text-center text-[0.6875rem] font-semibold tracking-[0.16em] uppercase"
+                className="border-line-subtle text-fg-subtle border-b px-5 py-3.5 text-center text-base font-semibold"
               >
                 Drops into what you already run
               </h2>
@@ -327,7 +383,13 @@ export default function LandingPage() {
                       href={entry.href}
                       className="group hover:bg-surface-hover flex h-full flex-col gap-1.5 px-4 py-4 transition-colors sm:px-5"
                     >
-                      <span className="text-fg text-sm font-semibold">{entry.label}</span>
+                      {/* The mark is decorative — the label right beside it is
+                          the accessible name, so a second one here would just
+                          make a screen reader say "Docker Docker". */}
+                      <span className="flex items-center gap-2">
+                        <entry.Logo className="size-[1.125rem] shrink-0" />
+                        <span className="text-fg text-sm font-semibold">{entry.label}</span>
+                      </span>
                       {/* Truncated rather than wrapped: six cells whose commands
                           break at different points give the row a ragged
                           baseline, and the full line is one click away on the
@@ -340,8 +402,8 @@ export default function LandingPage() {
                 ))}
               </ul>
             </div>
-          </Reveal>
-        </Container>
+          </Container>
+        </section>
       </section>
 
       {/* ── How it works ─────────────────────────────────────────────────── */}
@@ -371,6 +433,43 @@ export default function LandingPage() {
             </div>
           ))}
         </RevealGroup>
+      </Section>
+
+      {/* ── Install ───────────────────────────────────────────────────────
+          Directly under the three steps, because the step above it ends at
+          "run your app" and this is the reader's first chance to check that
+          the claim survives contact with their own machine. Four tabs rather
+          than a paragraph of prose per platform: nobody reads the three that
+          are not theirs, and a page that makes you skip three quarters of a
+          section to find your own line has already lost the argument about
+          respecting your time.
+
+          The transcript carries the credential story rather than a bullet
+          list making the same promise — `credential store: OS keychain` is
+          `xecret doctor` speaking, and a reader can run it and get the same
+          line back. See `install-guide.tsx` for where every line comes
+          from. */}
+      <Section id="install" aria-labelledby="install-heading" tone="inset" size="md">
+        <SectionHeading
+          headingId="install-heading"
+          eyebrow="Install"
+          title="Thirty seconds to installed and signed in"
+          description="One static binary — no Node, no Python, nothing to compile, nothing to keep running. Pick your platform, run the line, and the credential you get back is held by your operating system rather than by a file in your home directory."
+          align="center"
+        />
+        <Reveal className="mx-auto mt-10 max-w-3xl">
+          <InstallGuide
+            installUrl={absoluteUrl('/install.sh')}
+            releasesUrl={`${REPO_URL}/releases`}
+          />
+        </Reveal>
+        <p className="text-fg-subtle mt-5 text-center text-sm">
+          Every path, including checksum verification and upgrades, is in{' '}
+          <Link href="/docs/install" className={QUIET_LINK}>
+            installing the CLI
+            <ArrowRightIcon className="size-3.5" />
+          </Link>
+        </p>
       </Section>
 
       {/* ── The statement ─────────────────────────────────────────────────

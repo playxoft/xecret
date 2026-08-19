@@ -10,6 +10,8 @@
  * against.
  */
 
+export { DockerLogo, GoLogo, NextjsLogo, NodejsLogo, PipelineLogo, ReactLogo } from './brand-logos';
+export type { BrandLogoProps } from './brand-logos';
 export { CtaBand } from './cta-band';
 export { Faq, faqSchema } from './faq';
 export type { FaqItem } from './faq';

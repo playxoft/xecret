@@ -52,12 +52,21 @@ export function SiteHeader({
           wide ? 'max-w-[88rem]' : 'max-w-[80rem]',
         )}
       >
-        <Link href="/" aria-label="xecret home" className="shrink-0 rounded-sm">
-          <Wordmark />
+        {/* One size up from the wordmark's default, which the rest of the
+            application uses. This is the only place the mark has to identify
+            the product to somebody who has just arrived, rather than remind
+            somebody already inside it — and the badge that used to sit beside
+            it is gone, so it has the room. */}
+        {/* `flex items-center`, not the bare inline anchor this used to be.
+            `Wordmark` is an inline-flex span, so inside an inline anchor it was
+            laid out on that anchor's text baseline — which reserved a
+            descender's worth of space under it that nothing was using, made
+            the anchor 35px tall inside a 56px bar, and left the whole lockup
+            sitting 3px above the centre the nav links were on. A flex
+            container has no baseline to sit on and no line box to pad. */}
+        <Link href="/" aria-label="xecret home" className="flex shrink-0 items-center rounded-sm">
+          <Wordmark className="text-lg" />
         </Link>
-        <span className="border-line text-fg-subtle ml-1 hidden rounded-full border px-2 py-0.5 text-xs sm:inline">
-          Pre-alpha
-        </span>
 
         {/* The links sit in the middle of the bar on large screens and are
             replaced by the drawer below `lg`. Five items plus a wordmark plus
