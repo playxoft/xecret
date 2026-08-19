@@ -80,6 +80,11 @@ export function PageHero({
         // rather than `h` so a three-line headline on a 13" laptop pushes past
         // the fold instead of being clipped by it.
         //
+        // `.x-first-screen`, not a bare `min-h-svh`: a full `svh` overshoots by
+        // whatever the sticky header already spent in flow above this section,
+        // so the foot of the hero hangs below the fold by exactly the header's
+        // height. The class subtracts `--site-header-flow`; see globals.css.
+        //
         // ── The optical lift, on `screen` only ──
         // `justify-center` puts the copy on the geometric centre, and the
         // geometric centre of a full viewport reads as low: the eye places the
@@ -93,7 +98,7 @@ export function PageHero({
         // no dead space to be centred within and nothing to correct; adding a
         // lift there would just reintroduce the gap that variant exists to
         // avoid.
-        height === 'screen' && 'x-hero-screen min-h-svh pb-24 sm:pb-28',
+        height === 'screen' && 'x-hero-screen x-first-screen pb-24 sm:pb-28',
         height === 'tall' && 'x-hero-screen min-h-[58svh]',
       )}
     >

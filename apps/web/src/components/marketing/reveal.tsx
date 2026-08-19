@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import type { ReactNode, RefObject } from 'react';
 
 import { cn } from '@/lib/cn';
+import { observeOnce } from '@/lib/observe-once';
 
 /**
  * Scroll-triggered entrance, for the public pages only.
@@ -32,21 +33,14 @@ function useReveal(): RefObject<HTMLDivElement | null> {
     const element = ref.current;
     if (!element) return;
 
-    // Older Safari and any headless environment without the API: show the
-    // content immediately rather than leaving it at `opacity: 0` forever.
-    // A missing animation is a missing animation; missing content is a bug.
-    if (typeof IntersectionObserver !== 'function') {
-      element.dataset['shown'] = 'true';
-      return;
-    }
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          (entry.target as HTMLElement).dataset['shown'] = 'true';
-          observer.unobserve(entry.target);
-        }
+    // `observeOnce` handles the missing-API case by calling straight through,
+    // which here means showing the content immediately rather than leaving it
+    // at `opacity: 0` forever on older Safari or in anything headless. A
+    // missing animation is a missing animation; missing content is a bug.
+    return observeOnce(
+      element,
+      () => {
+        element.dataset['shown'] = 'true';
       },
       // Deliberately eager. `threshold: 0` fires the instant one pixel of the
       // element crosses the boundary, and the positive bottom `rootMargin`
@@ -57,9 +51,6 @@ function useReveal(): RefObject<HTMLDivElement | null> {
       // itself only after you have looked straight at it.
       { threshold: 0, rootMargin: '0px 0px 80px 0px' },
     );
-
-    observer.observe(element);
-    return () => observer.disconnect();
   }, []);
 
   return ref;

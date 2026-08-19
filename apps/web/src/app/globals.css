@@ -643,6 +643,16 @@
    the one page it was not needed.
 
    Unlayered, so it beats the `py-*` utility the container already carries. */
+.x-hero-screen + section > .x-container {
+  padding-top: 2.5rem;
+}
+
+@media (min-width: 640px) {
+  .x-hero-screen + section > .x-container {
+    padding-top: 3rem;
+  }
+}
+
 /* A section that is exactly the first screen and no taller.
    `min-h-svh` overshoots by whatever the sticky header already took in flow
    above it — invisible while a hero holds nothing but centred type, and
@@ -652,16 +662,6 @@
    being clipped by it. */
 .x-first-screen {
   min-height: calc(100svh - var(--site-header-flow));
-}
-
-.x-hero-screen + section > .x-container {
-  padding-top: 2.5rem;
-}
-
-@media (min-width: 640px) {
-  .x-hero-screen + section > .x-container {
-    padding-top: 3rem;
-  }
 }
 
 /* ── Scroll reveal ────────────────────────────────────────────────────────
@@ -756,12 +756,19 @@
 }
 
 /* ── Ambient hero wash ────────────────────────────────────────────────────
-   A single soft radial bloom behind the hero, drawn from the brand gradient's
-   own cyan rather than from a palette token — it is the one place on the site
-   where the mark's colour is allowed to bleed onto the page. Very low alpha:
-   the point is that you notice the page has depth, not that you notice a
-   gradient. `pointer-events: none` because it sits over the canvas and under
-   the copy, and it must never eat a click. */
+   A single soft radial bloom behind the hero. White, not the cyan-into-indigo
+   it used to be: that colour was borrowed from the mark, and the mark is
+   achromatic now — a blue halo behind a black chip is the old palette
+   outliving the logo that justified it. It is also the same bloom the social
+   card draws (see `scripts/generate-og.ts`), so the two must desaturate
+   together or the card stops matching the page it previews.
+
+   Very low alpha: the point is that you notice the page has depth, not that
+   you notice a gradient. White lifts the top of the hero off the canvas in
+   both themes without spending the one thing the palette reserves — colour
+   here means production, destructive or failed, and nothing else may borrow
+   it. `pointer-events: none` because it sits over the canvas and under the
+   copy, and it must never eat a click. */
 .x-hero-glow {
   position: absolute;
   inset: 0;
@@ -779,19 +786,23 @@
   aspect-ratio: 1;
   translate: -50% 0;
   border-radius: 50%;
+  /* Light theme blooms *down* into grey rather than up into white: white on
+     a white canvas is nothing at all. */
   background: radial-gradient(
     circle,
-    color-mix(in srgb, #2380e2 14%, transparent) 0%,
-    color-mix(in srgb, #3ad4ec 6%, transparent) 38%,
+    color-mix(in srgb, #0a0a0a 6%, transparent) 0%,
+    color-mix(in srgb, #0a0a0a 2.5%, transparent) 38%,
     transparent 68%
   );
 }
 
+/* The same white-at-7% the OG card uses, so the card and the page it
+   previews carry one wash rather than two. */
 :root[data-theme='dark'] .x-hero-glow::before {
   background: radial-gradient(
     circle,
-    color-mix(in srgb, #2380e2 20%, transparent) 0%,
-    color-mix(in srgb, #2a3fd0 10%, transparent) 40%,
+    color-mix(in srgb, #ffffff 7%, transparent) 0%,
+    color-mix(in srgb, #ffffff 2.5%, transparent) 40%,
     transparent 70%
   );
 }

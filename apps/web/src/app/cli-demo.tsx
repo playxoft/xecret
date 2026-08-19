@@ -1,12 +1,15 @@
 'use client';
 
-import { useEffect, useState, useSyncExternalStore } from 'react';
-
 import { cn } from '@/lib/cn';
 import { TerminalIcon } from '@/components/ui/icons';
+import { Transcript, useReducedMotion, useTypeOut } from './transcript';
+import type { Line } from './transcript';
 
 /**
  * The landing page's CLI demo: the golden path, animated.
+ *
+ * The type-out engine and the line renderer are in `transcript.tsx`, shared
+ * with `InstallGuide`. What is here is the script and the window around it.
  *
  * Every non-child line below is the CLI's real output, copied from the
  * format strings in `cli/cmd/xecret` — when those change, this transcript
@@ -23,13 +26,6 @@ import { TerminalIcon } from '@/components/ui/icons';
  * Reduced motion is a first-class path, not a degradation: the full
  * transcript renders immediately, and the type-out never starts.
  */
-
-type Line =
-  | { kind: 'command'; text: string }
-  | { kind: 'success'; text: string }
-  | { kind: 'info'; text: string }
-  | { kind: 'child'; text: string }
-  | { kind: 'blank' };
 
 const SCRIPT: readonly Line[] = [
   { kind: 'command', text: 'xecret login' },
@@ -49,64 +45,13 @@ const TICK_MS = 45;
 /** Ticks a finished command or an output line stays current before the next. */
 const DWELL_TICKS = 8;
 
-interface Progress {
-  /** Lines fully shown. */
-  line: number;
-  /** Ticks spent on the current line — characters typed, then dwell. */
-  ticks: number;
-}
-
-const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
-
-function subscribeReducedMotion(callback: () => void): () => void {
-  const query = window.matchMedia(REDUCED_MOTION_QUERY);
-  query.addEventListener('change', callback);
-  return () => query.removeEventListener('change', callback);
-}
-
 export function CliDemo({ className }: { className?: string }) {
-  // The server snapshot says "reduced", so prerendering — and any visitor
-  // without JavaScript — gets the complete transcript rather than an empty
-  // terminal waiting for an animation that will never run.
-  const reducedMotion = useSyncExternalStore(
-    subscribeReducedMotion,
-    () => window.matchMedia(REDUCED_MOTION_QUERY).matches,
-    () => true,
-  );
-  const [progress, setProgress] = useState<Progress>({ line: 0, ticks: 0 });
-
-  const animating = !reducedMotion;
-  const finished = progress.line >= SCRIPT.length;
-
-  useEffect(() => {
-    if (!animating || finished) return;
-
-    const timer = setInterval(() => {
-      setProgress((current) => {
-        const line = SCRIPT[current.line];
-        if (line === undefined) return current;
-
-        const lifetime =
-          line.kind === 'command'
-            ? line.text.length + DWELL_TICKS
-            : line.kind === 'blank'
-              ? 1
-              : DWELL_TICKS;
-
-        if (current.ticks < lifetime) {
-          return { line: current.line, ticks: current.ticks + 1 };
-        }
-        return { line: current.line + 1, ticks: 0 };
-      });
-    }, TICK_MS);
-
-    return () => clearInterval(timer);
-  }, [animating, finished]);
-
-  // Until the media query has answered, and whenever motion is reduced, the
-  // whole transcript is shown — the animated version is the optional extra.
-  const visibleCount = animating ? progress.line : SCRIPT.length;
-  const done = visibleCount >= SCRIPT.length;
+  const reducedMotion = useReducedMotion();
+  const typeOut = useTypeOut(SCRIPT, {
+    tickMs: TICK_MS,
+    dwellTicks: DWELL_TICKS,
+    enabled: !reducedMotion,
+  });
 
   return (
     // Placement is the caller's: this sits under the copy on a narrow screen
@@ -124,54 +69,17 @@ export function CliDemo({ className }: { className?: string }) {
         <span className="text-fg-disabled ml-auto">typed from the CLI&apos;s real output</span>
       </div>
 
-      <div
+      <Transcript
+        script={SCRIPT}
+        typeOut={typeOut}
+        // Held at its own full height, so the window does not grow line by line
+        // and push the fold down as it types.
+        minLines={SCRIPT.length}
+        // `role="group"` so the label is actually announced: `aria-label` on a
+        // plain `div` has no role to hang off and screen readers may drop it.
+        role="group"
         aria-label="Terminal transcript: xecret login, xecret init, then xecret run"
-        className="flex min-h-[16.5rem] flex-col gap-0.5 px-4 py-3.5 font-mono text-sm leading-6"
-      >
-        {SCRIPT.slice(0, visibleCount).map((line, index) => (
-          <TranscriptLine key={index} line={line} partial={null} />
-        ))}
-        {animating && !done && SCRIPT[progress.line] !== undefined ? (
-          <TranscriptLine line={SCRIPT[progress.line] as Line} partial={progress.ticks} />
-        ) : null}
-      </div>
+      />
     </div>
   );
-}
-
-function TranscriptLine({ line, partial }: { line: Line; partial: number | null }) {
-  if (line.kind === 'blank') return <span aria-hidden="true">&nbsp;</span>;
-
-  if (line.kind === 'command') {
-    const text = partial === null ? line.text : line.text.slice(0, partial);
-    return (
-      <span className="text-fg break-all">
-        <span className="text-fg-subtle select-none">$ </span>
-        {text}
-        {partial !== null ? (
-          <span
-            aria-hidden="true"
-            className="bg-fg-muted ml-px inline-block h-[1.1em] w-[0.55em] translate-y-[0.2em]"
-          />
-        ) : null}
-      </span>
-    );
-  }
-
-  // Non-command lines appear whole once their dwell begins; a cursor mid-word
-  // would claim they were typed by the user, which they were not.
-  if (partial === 0) return null;
-
-  if (line.kind === 'success') {
-    return (
-      <span className="text-fg-muted">
-        <span className="text-success-text">✓ </span>
-        {line.text}
-      </span>
-    );
-  }
-  if (line.kind === 'child') {
-    return <span className="text-fg-subtle">{line.text}</span>;
-  }
-  return <span className="text-fg-muted">{line.text}</span>;
 }

@@ -278,7 +278,9 @@ export default function LandingPage() {
             the terminal and the copy are close enough in height that centring
             reads as deliberate, but stacked on a phone the copy must sit
             directly under the headline rather than floating in the middle of
-            its own row. See `PageHero` for why the section is `min-h-svh`. */}
+            its own row. See `PageHero` for why a hero is sized to the first
+            screen at all, and the note above for why this one measures it with
+            `.x-first-screen`. */}
         <Container className="relative grid w-full items-start gap-12 pt-20 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)] lg:items-center lg:gap-16">
           <div>
             <span className="border-line bg-surface/60 text-fg-muted inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium backdrop-blur">

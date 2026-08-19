@@ -1,17 +1,25 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import { cn } from '@/lib/cn';
+import { isInViewport, observeOnce } from '@/lib/observe-once';
 import { CopyButton } from '@/components/ui/copy-button';
 import { ArrowRightIcon, TerminalIcon } from '@/components/ui/icons';
+import { Transcript, useReducedMotion, useTypeOut } from './transcript';
+import type { Line } from './transcript';
 
 /**
  * The install guide: four ways onto the machine, each typed out.
  *
- * Same rule as the hero's `CliDemo`, and for the same reason — every line that
- * is not a command is real output, copied from the source that prints it:
+ * The transcript engine, the line renderer and the reduced-motion store live
+ * in `transcript.tsx`, shared with the hero's `CliDemo`. What is here is what
+ * is particular to this panel: the four channels, the tab set, and the rule
+ * about when a type-out may start.
+ *
+ * Same standing rule as the hero — every line that is not a command is real
+ * output, copied from the source that prints it:
  *
  *   - `downloading…` / `verifying checksum…` / `installed …` are the `say`
  *     calls in `scripts/install-cli.sh`;
@@ -34,15 +42,6 @@ import { ArrowRightIcon, TerminalIcon } from '@/components/ui/icons';
  * Reduced motion is a first-class path, not a degradation: the transcript
  * renders whole and the type-out never starts.
  */
-
-type Line =
-  | { kind: 'command'; text: string }
-  | { kind: 'success'; text: string }
-  | { kind: 'info'; text: string }
-  | { kind: 'comment'; text: string }
-  /** A file being shown rather than a session — the Dockerfile. */
-  | { kind: 'file'; text: string }
-  | { kind: 'blank' };
 
 interface Channel {
   id: string;
@@ -86,16 +85,27 @@ const VERSION = 'v1.2.0';
 const COMMIT = '9f3c1ab';
 const BUILT = '2026-08-16';
 
-function buildChannels(installUrl: string, releasesUrl: string): readonly Channel[] {
-  const DOCKERFILE = [
-    'FROM alpine:3 AS xecret',
-    'RUN apk add --no-cache curl \\',
-    ` && curl -fsSL ${installUrl} | sh`,
-    '',
-    'FROM node:22-slim',
-    'COPY --from=xecret /usr/local/bin/xecret /usr/local/bin/xecret',
-  ];
+/**
+ * The container image, not `curl | sh` inside a builder stage.
+ *
+ * GoReleaser already publishes a multi-arch `ghcr.io/playxoft/xecret` manifest
+ * (`cli/.goreleaser.yaml`) carrying the same static binary the installer would
+ * have fetched, so copying from it is two lines instead of six, spends no
+ * `apk add` and no network fetch per build, and — the part that matters for a
+ * tool selling reproducible installs — pins a version. The builder-stage form
+ * passed no `XECRET_VERSION`, so `install-cli.sh` resolved "latest" at build
+ * time and the same Dockerfile produced a different binary on every rebuild.
+ *
+ * Kept in step with the same snippet in `public/docs/install.md`.
+ */
+const DOCKERFILE = [
+  `FROM ghcr.io/playxoft/xecret:${VERSION} AS xecret`,
+  '',
+  'FROM node:22-slim',
+  'COPY --from=xecret /usr/local/bin/xecret /usr/local/bin/xecret',
+];
 
+function buildChannels(installUrl: string, releasesUrl: string): readonly Channel[] {
   return [
     {
       id: 'macos',
@@ -186,22 +196,17 @@ const TICK_MS = 20;
  */
 const DWELL_TICKS = 9;
 
-const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
-
-function hasIntersectionObserver(): boolean {
-  return typeof IntersectionObserver === 'function';
-}
-
-function subscribeReducedMotion(callback: () => void): () => void {
-  const query = window.matchMedia(REDUCED_MOTION_QUERY);
-  query.addEventListener('change', callback);
-  return () => query.removeEventListener('change', callback);
-}
-
-interface Progress {
-  line: number;
-  ticks: number;
-}
+/**
+ * Far enough in to count as "the reader is looking at it".
+ *
+ * A band inset a quarter of the viewport from the top and bottom edges, rather
+ * than a ratio of the panel. A ratio is a trap here: `visible / total` for an
+ * element taller than the window can never reach a threshold like 0.33, so at
+ * the WCAG reflow target — 320px wide at 400% zoom, where every command line
+ * wraps three ways — a `threshold` gate would simply never fire and the panel
+ * would stay blank forever. See `observeOnce`.
+ */
+const START_MARGIN = { rootMargin: '-25% 0px -25% 0px', threshold: 0 };
 
 export interface InstallGuideProps {
   /** `/install.sh` on this deployment — the page passes it so that the origin
@@ -214,91 +219,68 @@ export interface InstallGuideProps {
 
 export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuideProps) {
   const channels = useMemo(() => buildChannels(installUrl, releasesUrl), [installUrl, releasesUrl]);
-
-  // The server snapshot says "reduced", so prerendering — and any visitor
-  // without JavaScript — gets the complete transcript rather than an empty
-  // terminal waiting for an animation that will never run.
-  const reducedMotion = useSyncExternalStore(
-    subscribeReducedMotion,
-    () => window.matchMedia(REDUCED_MOTION_QUERY).matches,
-    () => true,
-  );
+  const reducedMotion = useReducedMotion();
 
   const [active, setActive] = useState(0);
-  const [progress, setProgress] = useState<Progress>({ line: 0, ticks: 0 });
-  const [seen, setSeen] = useState(false);
+  const [started, setStarted] = useState(false);
+  /**
+   * Was this panel already on the reader's screen when the page hydrated?
+   *
+   * `null` until the first effect answers it. It decides whether there is an
+   * animation at all, and it cannot be answered by the observer: the
+   * observer's first callback reports the current state either way, so
+   * "already here" and "just scrolled to" look identical to it.
+   *
+   * Why it matters: the server renders the transcript whole — that is what
+   * makes the panel correct without JavaScript. If the reader can already see
+   * that transcript when hydration lands, switching into type-out mode empties
+   * a panel they are looking at and retypes it in front of them. So a panel
+   * that arrives on screen keeps what the server drew, and only a panel that
+   * is still below the fold — where blanking it costs the reader nothing — is
+   * allowed to type.
+   */
+  const [visibleAtMount, setVisibleAtMount] = useState<boolean | null>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // The hero's demo can start on mount because it is on screen at load. This
-  // one is four sections down, so a timer that starts on mount plays to nobody
-  // and the reader arrives at the last frame of an animation they never saw.
-  // It waits to be looked at.
   useEffect(() => {
     const element = panelRef.current;
-    if (!element || !hasIntersectionObserver()) return;
+    if (!element) return;
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setSeen(true);
-          observer.disconnect();
-        }
-      },
-      // A third of the panel, so the type-out begins once it is genuinely in
-      // view rather than as its top edge clips the fold.
-      { threshold: 0.33 },
-    );
+    if (isInViewport(element)) {
+      setVisibleAtMount(true);
+      return;
+    }
 
-    observer.observe(element);
-    return () => observer.disconnect();
+    setVisibleAtMount(false);
+    // The hero's demo can start on mount because it is on screen at load. This
+    // one is four sections down, so a timer that starts on mount plays to
+    // nobody and the reader arrives at the last frame of an animation they
+    // never saw. It waits to be looked at.
+    return observeOnce(element, () => setStarted(true), START_MARGIN);
   }, []);
 
   const channel = channels[active] as Channel;
-  const script = channel.script;
 
-  /** This run intends to type the transcript out rather than print it. */
-  const willAnimate = !reducedMotion;
-  // An environment with no observer — older Safari, anything headless — never
-  // gets a "seen" event, so it counts as having seen it. The gate is the
-  // optional part; the transcript is not, and a panel that stayed blank
-  // forever would be the one failure mode worth avoiding here.
-  const observed = seen || !hasIntersectionObserver();
-  /** …and is doing so now, the panel having been scrolled to. */
-  const animating = willAnimate && observed;
-  const finished = progress.line >= script.length;
+  // Settled on the first render after hydration and never flipped again: this
+  // is what is on screen, and changing it mid-life is what a wipe is.
+  // `visibleAtMount === false` is deliberate — `null` means the effect has not
+  // run, and until it has, the whole transcript stays up.
+  const enabled = !reducedMotion && visibleAtMount === false;
 
-  useEffect(() => {
-    if (!animating || finished) return;
+  const typeOut = useTypeOut(channel.script, {
+    tickMs: TICK_MS,
+    dwellTicks: DWELL_TICKS,
+    enabled,
+    // …and the clock only runs once the panel has been scrolled to.
+    running: enabled && started,
+  });
 
-    const timer = setInterval(() => {
-      setProgress((current) => {
-        const line = script[current.line];
-        if (line === undefined) return current;
-
-        const lifetime =
-          line.kind === 'command'
-            ? line.text.length + DWELL_TICKS
-            : line.kind === 'blank'
-              ? 1
-              : DWELL_TICKS;
-
-        if (current.ticks < lifetime) {
-          return { line: current.line, ticks: current.ticks + 1 };
-        }
-        return { line: current.line + 1, ticks: 0 };
-      });
-    }, TICK_MS);
-
-    return () => clearInterval(timer);
-  }, [animating, finished, script]);
-
-  function selectTab(index: number) {
-    setActive(index);
-    // Replaying from the top is the point of switching: the reader picked this
-    // tab to watch *this* install happen, not to arrive at its last frame.
-    setProgress({ line: 0, ticks: 0 });
-  }
+  /** The longest of the four, so switching tabs never resizes the panel. */
+  const longestScript = useMemo(
+    () => Math.max(...channels.map((entry) => entry.script.length)),
+    [channels],
+  );
 
   /** Arrow keys move between tabs and activate as they go, which is the
    *  expected behaviour for a tab set whose panels are already loaded. */
@@ -321,20 +303,9 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
 
     if (next === null) return;
     event.preventDefault();
-    selectTab(next);
+    setActive(next);
     tabRefs.current[next]?.focus();
   }
-
-  // Until the media query has answered, and whenever motion is reduced, the
-  // whole transcript is shown — the animated version is the optional extra.
-  //
-  // Note this asks `willAnimate`, not `animating`: between hydration and the
-  // panel being scrolled to, the run *intends* to animate and is simply
-  // waiting, so the transcript is empty rather than complete. Asking
-  // `animating` here would print the whole thing and then wipe it the moment
-  // the observer fired.
-  const visibleCount = willAnimate ? progress.line : script.length;
-  const done = visibleCount >= script.length;
 
   return (
     <div
@@ -346,37 +317,41 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
     >
       {/* The tab row doubles as the terminal's title bar — one strip rather
           than a row of pills above a separate window, which would read as two
-          controls for one thing. */}
-      <div
-        role="tablist"
-        aria-label="Platform"
-        className="border-line-subtle bg-canvas-inset flex flex-wrap items-center gap-1 border-b px-2 py-2"
-      >
-        {channels.map((entry, index) => (
-          <button
-            key={entry.id}
-            ref={(node) => {
-              tabRefs.current[index] = node;
-            }}
-            type="button"
-            role="tab"
-            id={`install-tab-${entry.id}`}
-            aria-selected={index === active}
-            aria-controls="install-panel"
-            // Roving tabindex: one stop for the whole row, then arrow keys.
-            tabIndex={index === active ? 0 : -1}
-            onClick={() => selectTab(index)}
-            onKeyDown={(event) => onTabKeyDown(event, index)}
-            className={cn(
-              'focus-visible:ring-accent-line rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:outline-none',
-              index === active
-                ? 'bg-surface text-fg shadow-raised'
-                : 'text-fg-subtle hover:text-fg-muted',
-            )}
-          >
-            {entry.label}
-          </button>
-        ))}
+          controls for one thing.
+
+          The strip is the flex container and the tablist sits inside it, not
+          the other way round: `role="tablist"` may only own elements with
+          `role="tab"`, and the source label at the right end is neither. With
+          it as a sibling, a screen reader walking the tablist finds four tabs
+          and counts them as four. */}
+      <div className="border-line-subtle bg-canvas-inset flex items-center gap-1 border-b px-2 py-2">
+        <div role="tablist" aria-label="Platform" className="flex flex-wrap items-center gap-1">
+          {channels.map((entry, index) => (
+            <button
+              key={entry.id}
+              ref={(node) => {
+                tabRefs.current[index] = node;
+              }}
+              type="button"
+              role="tab"
+              id={`install-tab-${entry.id}`}
+              aria-selected={index === active}
+              aria-controls="install-panel"
+              // Roving tabindex: one stop for the whole row, then arrow keys.
+              tabIndex={index === active ? 0 : -1}
+              onClick={() => setActive(index)}
+              onKeyDown={(event) => onTabKeyDown(event, index)}
+              className={cn(
+                'focus-visible:ring-accent-line rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:outline-none',
+                index === active
+                  ? 'bg-surface text-fg shadow-raised'
+                  : 'text-fg-subtle hover:text-fg-muted',
+              )}
+            >
+              {entry.label}
+            </button>
+          ))}
+        </div>
 
         <span className="text-fg-disabled ml-auto hidden items-center gap-1.5 pr-1 text-xs sm:flex">
           <TerminalIcon className="size-3.5" />
@@ -384,21 +359,19 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
         </span>
       </div>
 
-      <div
+      <Transcript
+        script={channel.script}
+        typeOut={typeOut}
+        minLines={longestScript}
+        copyable
         role="tabpanel"
         id="install-panel"
         aria-labelledby={`install-tab-${channel.id}`}
-        // The height is held by the longest transcript so that switching tabs
-        // does not resize the panel and shove the rest of the page around.
-        className="flex min-h-[11.5rem] flex-col gap-0.5 px-4 py-3.5 font-mono text-sm leading-6"
-      >
-        {script.slice(0, visibleCount).map((line, index) => (
-          <TranscriptLine key={index} line={line} partial={null} />
-        ))}
-        {animating && !done && script[progress.line] !== undefined ? (
-          <TranscriptLine line={script[progress.line] as Line} partial={progress.ticks} />
-        ) : null}
-      </div>
+        // Docker's panel is built entirely from `file` lines, so it contains no
+        // copy button and no other focusable child — without this, a keyboard
+        // user tabs straight past it and cannot scroll it where it overflows.
+        tabIndex={0}
+      />
 
       {/* The payoff line. It changes with the tab because the answer does:
           the same command puts the credential in three different places, and
@@ -423,65 +396,4 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
       </div>
     </div>
   );
-}
-
-function TranscriptLine({ line, partial }: { line: Line; partial: number | null }) {
-  if (line.kind === 'blank') return <span aria-hidden="true">&nbsp;</span>;
-
-  if (line.kind === 'command') {
-    const text = partial === null ? line.text : line.text.slice(0, partial);
-    return (
-      // The copy control sits in a gutter at the right edge rather than
-      // trailing each command, so the buttons line up in one column instead of
-      // stepping in and out with the length of the line above.
-      //
-      // It appears only once the line has finished typing — a button beside
-      // half a command would copy the whole thing, which is not what it looks
-      // like it does — and it is `size-6` to match `leading-6` exactly, so
-      // arriving costs no reflow.
-      <span className="flex items-start gap-2">
-        <span className="text-fg min-w-0 flex-1 break-all">
-          <span className="text-fg-subtle select-none">$ </span>
-          {text}
-          {partial !== null ? (
-            <span
-              aria-hidden="true"
-              className="bg-fg-muted ml-px inline-block h-[1.1em] w-[0.55em] translate-y-[0.2em]"
-            />
-          ) : null}
-        </span>
-        {partial === null ? (
-          <CopyButton
-            value={line.text}
-            label={line.text}
-            className="text-fg-disabled hover:text-fg-muted size-6 shrink-0"
-          />
-        ) : null}
-      </span>
-    );
-  }
-
-  // Everything else appears whole once its dwell begins; a cursor mid-word
-  // would claim it was typed by the user, which it was not.
-  if (partial === 0) return null;
-
-  if (line.kind === 'success') {
-    return (
-      <span className="text-fg-muted break-all">
-        <span className="text-success-text">✓ </span>
-        {line.text}
-      </span>
-    );
-  }
-  if (line.kind === 'comment') {
-    return <span className="text-fg-subtle break-all">{line.text}</span>;
-  }
-  if (line.kind === 'file') {
-    // `whitespace-pre-wrap` rather than the default: this is the only kind
-    // whose leading space carries meaning — the continuation of a `RUN` is
-    // indented under it — and HTML would otherwise collapse it away and print
-    // a Dockerfile nobody writes.
-    return <span className="text-fg break-all whitespace-pre-wrap">{line.text}</span>;
-  }
-  return <span className="text-fg-muted break-all">{line.text}</span>;
 }
