@@ -11,7 +11,8 @@ import type { Executor } from './shared';
  *
  * **There is no update function and no delete function in this file, and their
  * absence is the point.** `audit_logs` is append-only, enforced by migration
- * 0009: the application role holds `INSERT` and `SELECT` on this table and
+ * 0002 for the table and by `create_audit_log_partition()` in 0010 for each
+ * child partition: the application role holds `INSERT` and `SELECT` here and
  * nothing else. Adding a mutation helper here would not merely be poor taste, it
  * would be dead code that fails at runtime — and worse, it would advertise that
  * editing history is a thing the system contemplates. A log an operator can
@@ -118,7 +119,7 @@ export async function appendAuditEvents(
       metadata: event.metadata,
       // `created_at` is left to the column default so the partition key comes
       // from the database's clock. A Worker clock that drifts backwards would
-      // otherwise be able to file a record into the previous month's partition.
+      // otherwise be able to file a record into the previous quarter's partition.
     })),
   );
 }

@@ -16,7 +16,7 @@ import { actorTypeEnum, auditOutcomeEnum } from './enums';
  *   cannot express `PARTITION BY RANGE`. `created_at` is therefore part of the
  *   primary key, as PostgreSQL requires the partition key there. The child
  *   partitions live in the `audit_parts` schema so that years of them do not
- *   bury the fifteen real tables in `public`; nothing here needs to know that,
+ *   bury the eighteen real tables in `public`; nothing here needs to know that,
  *   because queries only ever name the parent.
  * - **Append-only is enforced by database grants**, not convention: the
  *   application role has INSERT and SELECT here, and no UPDATE or DELETE.

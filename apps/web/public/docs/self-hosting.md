@@ -206,8 +206,21 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
   `npm run db:migrate`. Never auto-applied on deploy.
 - **The audit log.** Append-only and partitioned by quarter, with the child
   tables kept in the `audit_parts` schema and partitions pre-created two years
-  ahead. Nothing extends that automatically yet — revisit before the runway ends
-  or writes fall into the default partition.
+  ahead. Nothing extends that automatically yet, so run this before the runway
+  ends — once a quarter's rows land in the default partition, that quarter can
+  no longer be given a real partition:
+
+  ```sql
+  SELECT create_audit_log_partition(d::date)
+  FROM generate_series(
+      date_trunc('quarter', now()),
+      date_trunc('quarter', now() + interval '21 months'),
+      interval '3 months'
+  ) AS d;
+  ```
+
+  It fills every quarter to the end of the runway, so it is idempotent and any
+  cadence shorter than two years is safe.
 - **Mail, monitoring and error reporting.** Yours to wire. The log pipeline
   contains no secret values by construction, but where the logs go is your
   decision.

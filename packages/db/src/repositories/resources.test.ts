@@ -394,7 +394,7 @@ describe('the audit log is append-only', () => {
     const sql = statements[0]!.sql;
     expect(sql).not.toMatch(/offset/);
     expect(sql).toMatch(/\("audit_logs"\."created_at", "audit_logs"\."id"\) </);
-    // Always bounded in time, so the planner can prune monthly partitions.
+    // Always bounded in time, so the planner can prune quarterly partitions.
     expect(sql).toMatch(/"created_at" >= /);
     expect(sql).toMatch(/"created_at" <= /);
   });

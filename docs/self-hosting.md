@@ -129,9 +129,22 @@ is permanently unrecoverable — there is no support ticket that fixes this.**
   `npm run db:migrate`. Never auto-applied on deploy.
 - **The audit log** is append-only and partitioned by quarter, with the child
   tables in the `audit_parts` schema. Partitions are pre-created two years ahead
-  by migration 0010, and nothing extends that automatically yet — run
-  `SELECT create_audit_log_partition((now() + interval '21 months')::date);`
-  before the runway ends, or writes fall into the default partition.
+  by migration 0010, and nothing extends that automatically yet. Run this before
+  the runway ends, or writes fall into the default partition — and a quarter
+  with rows in the default partition can no longer be given a real one:
+
+  ```sql
+  SELECT create_audit_log_partition(d::date)
+  FROM generate_series(
+      date_trunc('quarter', now()),
+      date_trunc('quarter', now() + interval '21 months'),
+      interval '3 months'
+  ) AS d;
+  ```
+
+  It fills every quarter to the end of the runway, not just the last one, so it
+  is idempotent and any cadence shorter than two years is safe. Extending only
+  the far quarter would leave the ones in between permanently uncoverable.
 - **Mail, monitoring, error reporting** are yours to wire; the log pipeline
   never contains secret values by construction, but where the logs go is your
   decision.

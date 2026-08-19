@@ -55,7 +55,7 @@ project to one vendor for no gain.
 The script prefers `MIGRATION_DATABASE_URL` and falls back to `DATABASE_URL`. If neither is set it
 exits with a message naming both.
 
-This creates the 15 tables, partitions `audit_logs` by quarter into the `audit_parts` schema, and
+This creates the 18 tables, partitions `audit_logs` by quarter into the `audit_parts` schema, and
 creates the **`xecret_app_permissions` role** with its grants.
 
 `xecret_app_permissions` is deliberately **`NOLOGIN`**. It is a *group* role: it holds privileges and nothing
