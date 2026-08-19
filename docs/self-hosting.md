@@ -55,10 +55,21 @@ is permanently unrecoverable — there is no support ticket that fixes this.**
    holding the Root KEK. `apps/web/wrangler.toml` names every binding the
    code expects; `.env.example` names every variable.
 
-4. **Your own origin.** `apps/web/wrangler.toml` is committed and the domain in
-   it is *ours*. Change `env.production.routes[].pattern` and
-   `env.production.vars.XECRET_PUBLIC_URL` to your deployment's origin before
-   deploying anything — nothing below checks it for you.
+4. **Your own origin, and your own resource ids.** `apps/web/wrangler.toml` is
+   committed and everything account-specific in it is *ours*. Before deploying
+   anything, replace:
+
+   - `env.production.routes[].pattern` and `env.production.vars.XECRET_PUBLIC_URL`
+     with your deployment's origin;
+   - the `hyperdrive` binding `id`, the `kv_namespaces` `id`, and the
+     `secrets_store_secrets` `store_id` with the ones step 3 just created;
+   - `env.production.vars.FIREBASE_PROJECT_ID` with your own project.
+
+   None of the ids are credentials — they are useless without an API token for
+   our account — but left as shipped, `wrangler deploy` authenticates as *you*
+   and then addresses resources that are not yours, which fails in ways that
+   read like a permissions problem rather than a copied config. Nothing below
+   checks any of this for you.
 
    `XECRET_PUBLIC_URL` is read twice. `next build` writes it into the canonical
    URL of every prerendered page, the `sitemap.xml`, the `Host` line in

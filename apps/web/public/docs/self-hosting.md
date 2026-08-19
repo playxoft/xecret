@@ -89,25 +89,39 @@ Create:
 The repository's `wrangler.toml` names every binding the code expects, and
 `.env.example` names every variable.
 
-### 4. Tell the deployment its own origin
+### 4. Tell the deployment it is yours
 
-`apps/web/wrangler.toml` is committed to the repository, and the domain in it
-is **ours**. Nothing you have done so far has changed it, and nothing later on
-this page checks it for you — an origin is a fact about your deployment that
-only you know. Edit it now, before the first deploy:
+`apps/web/wrangler.toml` is committed to the repository, and everything
+account-specific in it is **ours** — the domain, and the ids of the resources
+step 3 just told you to create. Nothing you have done so far has changed any of
+it, and nothing later on this page checks it for you. Edit it now, before the
+first deploy:
 
-```jsonc
-"env": {
-  "production": {
-    "routes": [{ "pattern": "secrets.your-company.com", "custom_domain": true }],
-    "vars": {
-      "XECRET_ENV": "production",
-      "XECRET_PUBLIC_URL": "https://secrets.your-company.com",
-      // …the rest as shipped
-    },
-  },
-},
+```toml
+[env.production]
+name = "xecret-production"
+routes = [{ pattern = "secrets.your-company.com", custom_domain = true }]
+
+hyperdrive = [{ binding = "HYPERDRIVE", id = "<your hyperdrive id>" }]
+kv_namespaces = [{ binding = "JWKS_CACHE", id = "<your kv namespace id>" }]
+
+[env.production.vars]
+XECRET_ENV = "production"
+XECRET_PUBLIC_URL = "https://secrets.your-company.com"
+FIREBASE_PROJECT_ID = "<your firebase project>"
+# …the rest as shipped
+
+[[env.production.secrets_store_secrets]]
+binding = "XECRET_ROOT_KEYS"
+store_id = "<your secrets store id>"
+secret_name = "XECRET_ROOT_KEYS"
 ```
+
+The ids are not credentials — they are useless to anyone without an API token
+for the account that owns them, which is why they are committed at all. But
+left as shipped, `wrangler deploy` authenticates as **you** and then addresses
+resources belonging to **us**, and the failure reads like a permissions problem
+rather than a copied config.
 
 `XECRET_PUBLIC_URL` is read twice, and both readings matter:
 

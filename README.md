@@ -25,7 +25,7 @@ disk, no secrets in Slack, no "works on my machine".
 > docs you are reading. What remains before real credentials belong here:
 > integration against a live database (nothing has run against production
 > infrastructure yet) and the Phase 10 security pass. See
-> [the plan](_developer/plan/xecret-plan-v2.md) and [the docs](docs/README.md).
+> [the roadmap](docs/ROADMAP.md) and [the docs](docs/README.md).
 
 ## Why
 

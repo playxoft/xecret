@@ -6,7 +6,9 @@
 **Status:** M0, M1, M2 and **M3's build half** complete — Phases 7 (teams), 8 (CI +
 audit) and 9 (launch material) are built. Phase 10 (security audit, performance,
 production) is what remains, together with the standing integration caveat below.
-**Supersedes:** `plan1.md` (kept for reference — this doc is the source of truth).
+**History:** this supersedes an earlier internal build plan, which was removed
+when the repository went public — it was scaffolding written before the product
+had its name, and nothing in it was still true.
 
 **Progress:** ▓▓▓▓▓▓▓▓▓▓░ 10 of 11 phases done
 
@@ -120,7 +122,7 @@ Answer: **Phase.dev owns it. Cloudflare serves it. The Worker never calls Phase.
 
 **The bootstrap problem, stated plainly:** xecret can never store xecret's own root key — you would need the key to read the key. Every secret manager has this (Doppler uses AWS KMS). Phase.dev is therefore a **permanent** architectural dependency, not a temporary crutch. That is a deliberate, documented choice.
 
-**Escrow — non-negotiable, and the biggest hole in plan1:**
+**Escrow — non-negotiable, and the biggest hole in the original design:**
 
 Phase.dev is the *working* copy, never the *only* copy. If the Phase account is lost, locked, or deleted, every customer's secrets become permanently unrecoverable.
 
@@ -250,7 +252,6 @@ xecret/
 │   ├── architecture/  security/  cli/  self-hosting/  development/
 │
 ├── scripts/                        # keygen, rotate-root-key, bundle-size-check
-├── _developer/                     # your planning space (gitignored? your call)
 │
 ├── .github/workflows/
 ├── package.json                    # npm workspaces
