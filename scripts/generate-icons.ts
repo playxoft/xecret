@@ -34,57 +34,75 @@ import sharp from 'sharp';
 const APP_DIR = join(process.cwd(), 'apps', 'web', 'src', 'app');
 
 /**
- * The gradient.
+ * The chip's gradient.
  *
- * Anchored on the product's accent — `--accent` is `#2ac9e0` in dark — and
- * carried down into a deep blue, so the tab icon reads as part of the same
- * family as the interface rather than as a sticker applied to it. Three stops
- * rather than two: a straight cyan→indigo interpolation passes through a muddy
- * middle, and the extra stop holds it in the blues the whole way.
+ * Achromatic, and shallow: #1c1c1c down to black. The mark used to run cyan
+ * into indigo, which made it the last saturated thing in a product whose
+ * palette is now pure grey. Flat black would be the honest end of that, except
+ * that flat black on our own #0a0a0a canvas is a chip with no edges — so the
+ * sheen and the hairline below stay, and they are the only reason one drawing
+ * works on a white tab strip and on the application's own dark shell.
  */
 const STOPS = [
-  { offset: 0, color: '#3ad4ec' },
-  { offset: 0.55, color: '#2380e2' },
-  { offset: 1, color: '#2a3fd0' },
+  { offset: 0, color: '#1c1c1c' },
+  { offset: 1, color: '#000000' },
 ];
 
 /**
- * The mark: a gradient chip carrying a white X.
+ * The blades: a crosshair turned onto the diagonals.
+ *
+ * Four marks pointed at both ends, stopping 2.6 units short of the centre so
+ * they never touch — the 5.2-unit gap between the tips is the mark. Each blade
+ * is 4.4 wide and reaches 14 units out, and the outer points are shallower than
+ * the inner ones (1.8 against 2.4), because matched points turn a blade into a
+ * leaf and four leaves read as a flower rather than a crosshair.
+ *
+ * Every number here was chosen at 16px rather than at a comfortable preview
+ * size. The gap is the part that decides it: wider and the four blades read as
+ * four separate ticks in a tab strip instead of one X; this is the width where
+ * they cohere and the gap is still visibly a gap.
+ */
+const BLADES =
+  'M25.9 25.9L23.07 26.18L17.98 21.09L17.84 17.84L21.09 17.98L26.18 23.07ZM25.9 6.1L26.18 8.93L21.09 14.02L17.84 14.16L17.98 10.91L23.07 5.82ZM6.1 6.1L8.93 5.82L14.02 10.91L14.16 14.16L10.91 14.02L5.82 8.93ZM6.1 25.9L5.82 23.07L10.91 17.98L14.16 17.84L14.02 21.09L8.93 26.18Z';
+
+/**
+ * The mark: a black chip carrying the blades in white.
  *
  * A filled chip rather than a bare glyph, because 16px is the size that decides
- * this. A two-stroke X floating on transparency disappears into a light tab
- * strip at one end and a dark one at the other; a chip gives the mark its own
- * ground and reads at any tab-bar colour. The X is white for the same reason —
- * it is the only fill that holds against every stop of the gradient beneath it.
- *
- * The arms reach almost to the chip's corners and the stroke is a tenth of the
- * box, and both numbers were settled at 16px rather than at a comfortable
- * preview size. A thicker, shorter X — the obvious first draft — closes its own
- * counters when it lands on a 16-pixel grid and reads as a blob with a dent in
- * it. Long arms and a thin stroke keep the four triangles of negative space
- * open, which is the whole of what makes an X legible that small.
+ * this. Four blades floating on transparency disappear into a light tab strip
+ * at one end and a dark one at the other; a chip gives the mark its own ground
+ * and reads at any tab-bar colour.
  *
  * @param radius Corner rounding. `0` for the Apple icon, which iOS masks with
  *   its own squircle — rounding it here would round it twice and leave a pale
- *   fringe inside the mask.
+ *   fringe inside the mask. That case drops the hairline too: at radius 0 it
+ *   runs square into the corners iOS is about to cut off.
  */
 function mark(radius: number): string {
   const stops = STOPS.map(
     ({ offset, color }) => `<stop offset="${offset}" stop-color="${color}"/>`,
   ).join('');
 
+  // Inset by half its own width so the hairline lands inside the chip rather
+  // than straddling its edge, where a rasteriser would drop half of it.
+  const hairline =
+    radius > 0
+      ? `<rect x="0.5" y="0.5" width="31" height="31" rx="${radius - 0.5}" fill="none" stroke="#ffffff" stroke-opacity="0.13" stroke-width="1"/>`
+      : '';
+
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="xecret">
   <defs>
-    <linearGradient id="xecret-mark" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">${stops}</linearGradient>
+    <linearGradient id="xecret-mark" x1="0" y1="0" x2="0" y2="32" gradientUnits="userSpaceOnUse">${stops}</linearGradient>
   </defs>
   <rect width="32" height="32" rx="${radius}" fill="url(#xecret-mark)"/>
-  <path d="M8.5 8.5L23.5 23.5M23.5 8.5L8.5 23.5" stroke="#ffffff" stroke-width="3.2" stroke-linecap="round"/>
+  ${hairline}
+  <path fill="#fafafa" d="${BLADES}"/>
 </svg>
 `;
 }
 
-/** The chip's corner radius, a quarter of the box — the same proportion as `LogoMark`. */
-const RADIUS = 8;
+/** The chip's corner radius. Matches `LogoMark`. */
+const RADIUS = 9;
 
 async function png(svg: string, size: number): Promise<Buffer> {
   // `density` scales the SVG before rasterising. Without it sharp renders the

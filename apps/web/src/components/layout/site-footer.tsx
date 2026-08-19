@@ -133,10 +133,18 @@ export function SiteFooter({ gradientId }: { gradientId?: string | undefined }) 
         </div>
 
         {/* The sign-off. `select-none` because a reader dragging over the end of
-            the page should not sweep up a 200px word that is not text. */}
+            the page should not sweep up a 200px word that is not text.
+
+            Tracking is -0.02em, not the -0.05em this used to carry. Letter
+            spacing is a fraction of the type size, so at 15vw — 227px on a
+            laptop — that came to eleven pixels pulled out of every gap, which
+            is more than the sidebearings had to give: the stems of `c`, `r`,
+            `e` and `t` ran into each other and the word read as one shape.
+            Display type does want tightening, and this still tightens; it just
+            stops short of where the letters stop being letters. */}
         <p
           aria-hidden="true"
-          className="x-footer-mark mt-10 -mb-3 w-full text-center text-[18vw] leading-none font-semibold tracking-[-0.05em] select-none sm:text-[15vw] lg:-mb-6"
+          className="x-footer-mark mt-10 -mb-3 w-full text-center text-[18vw] leading-none font-semibold tracking-[-0.02em] select-none sm:text-[15vw] lg:-mb-6"
         >
           xecret
         </p>
