@@ -472,6 +472,7 @@ export function InstallGuide({ installUrl, releasesUrl, className }: InstallGuid
         // sends the reader's next Tab back to the top of the document. A
         // redundant stop is a smaller cost than that, and than the window
         // where the panel is skipped entirely.
+        tabIndex={0}
       >
         <Transcript script={channel.script} typeOut={typeOut} minLines={longestScript} copyable />
 
