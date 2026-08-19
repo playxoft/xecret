@@ -165,15 +165,24 @@ describe('open rejects tampering', () => {
     const sealed = await seal(key, randomBytes(64), aad);
     const messages = new Set<string>();
 
+    // Thunks, not promises. Calling `open` here would start all four
+    // rejections at once, and the loop below only attaches a handler to one at
+    // a time - so the other three sit rejected and unhandled for as long as it
+    // takes to get to them. Node reports that as an unhandled rejection and
+    // vitest fails the run, on a schedule set by how loaded the machine is.
+    // This suite passed ten times locally and failed on CI for exactly that
+    // reason. Deferring the call means a rejection never exists before there
+    // is something waiting to catch it.
+    const otherKey = await freshKey();
     const failures = [
-      open(key, sealed, utf8Encode('wrong-aad')),
-      open(await freshKey(), sealed, aad),
-      open(key, { ...sealed, iv: randomBytes(IV_LENGTH) }, aad),
-      open(key, { ...sealed, ciphertext: sealed.ciphertext.slice(0, -1) }, aad),
+      () => open(key, sealed, utf8Encode('wrong-aad')),
+      () => open(otherKey, sealed, aad),
+      () => open(key, { ...sealed, iv: randomBytes(IV_LENGTH) }, aad),
+      () => open(key, { ...sealed, ciphertext: sealed.ciphertext.slice(0, -1) }, aad),
     ];
 
     for (const attempt of failures) {
-      await attempt.catch((error: unknown) => {
+      await attempt().catch((error: unknown) => {
         expect(error).toBeInstanceOf(DecryptionError);
         messages.add((error as Error).message);
       });
