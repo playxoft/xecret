@@ -55,6 +55,16 @@ XECRET_ROOT_KEY_VERSION = "1"
 # Not a secret — it is the `aud` claim an ID token must carry, and is
 # embedded in every client bundle anyway (see bindings.ts).
 FIREBASE_PROJECT_ID = "xecret-management"
+# Transactional mail. Neither of these is a credential: the address is stamped
+# on every message xecret sends and the name sits beside it in the inbox. The
+# token that authorises sending is not here — see the foot of this file.
+#
+# They are declared here rather than set by hand in the dashboard because
+# `wrangler deploy` REPLACES a Worker's plaintext vars with exactly this table.
+# A var added in the dashboard survives until the next deploy and then vanishes,
+# which is a failure that arrives hours later and looks like something else.
+ZEPTOMAIL_FROM_ADDRESS = "no-reply-xecrets@mail.playxoft.com"
+ZEPTOMAIL_FROM_NAME = "Xecret"
 
 # ADR 0002 — the Root KEK map. Sourced from Phase.dev, pushed to the
 # account's default Secrets Store by scripts/deploy-bootstrap.sh.
@@ -116,15 +126,33 @@ XECRET_ENV = "staging"
 XECRET_PUBLIC_URL = "https://xecret-staging.playxoft.com"
 
 # ────────────────────────────────────────────────────────────────────────────
-# NOT IN THIS FILE — log shipping (docs/operations/logging.md)
+# NOT IN THIS FILE — credentials, and the two ways to hold them
 #
-#   BETTERSTACK_SOURCE_TOKEN  a credential; set with `wrangler secret put`
+#   ZEPTOMAIL_TOKEN           authorises sending as your domain
+#   BETTERSTACK_SOURCE_TOKEN  authorises writing into your log stream
 #   BETTERSTACK_INGEST_URL    the source's own https://<id>.betterstackdata.com
 #   XECRET_LOG_LEVEL          debug | info | warn | error, for an incident
 #
-# All three are plain strings the Worker reads from `process.env`, so they can
-# be set per environment without a code change. The token is deliberately not
-# a `var` here: this file is committed.
+# All are plain strings the Worker reads from `process.env`, so they can be set
+# per environment without a code change. They are deliberately not `vars` here:
+# this file is committed, and is on its way to a public repository.
+#
+# Set them with `wrangler secret put <NAME> --env <env>`, which is not merely
+# "more secure" — it is the only form that PERSISTS. The two mechanisms behave
+# differently on deploy, and the difference is the whole reason this note
+# exists:
+#
+#   [vars] in this file      replaced wholesale on every deploy. A var added in
+#                            the dashboard is gone at the next one.
+#   wrangler secret put      stored encrypted, carried forward across deploys,
+#                            never printed by wrangler or the dashboard.
+#
+# So anything that must outlive a deploy belongs in one of those two places —
+# this table if it is not a credential, `secret put` if it is. The dashboard is
+# neither, and a value that lives only there is a value with an expiry date.
+#
+# `npm run check:deploy` compares Phase.dev, this file and the live Worker and
+# names whatever is missing from any of the three.
 # ────────────────────────────────────────────────────────────────────────────
 
 # ────────────────────────────────────────────────────────────────────────────
