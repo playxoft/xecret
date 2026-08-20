@@ -287,7 +287,10 @@ export interface DescribedError {
   message: string;
   /** The top frames only — enough to locate the throw, not a full dump. */
   stack?: string[];
-  /** Present when the thrown value carried a `cause`. */
+  /**
+   * Present when the thrown value carried a `cause`, described the same way the
+   * error itself is — name *and* message.
+   */
   cause?: string;
 }
 
@@ -325,8 +328,16 @@ export function describeError(cause: unknown): DescribedError {
     }
 
     if (cause.cause !== undefined && cause.cause !== null) {
+      // The message, not just the class name. A wrapper's own message is often
+      // the useless half: Drizzle's `DrizzleQueryError` says "Failed query: …"
+      // and puts the reason — `TypeError: The "string" argument must be of type
+      // string … Received an instance of Date` — in the cause. Logging
+      // `cause: 'TypeError'` cost an afternoon of bisecting a 500 that the one
+      // discarded sentence names outright. Scrubbed like every other message.
       described.cause =
-        cause.cause instanceof Error ? cause.cause.name : scrubText(String(cause.cause));
+        cause.cause instanceof Error
+          ? `${cause.cause.name}: ${scrubText(cause.cause.message)}`
+          : scrubText(String(cause.cause));
     }
 
     return described;

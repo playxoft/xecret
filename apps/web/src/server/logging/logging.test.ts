@@ -356,6 +356,31 @@ describe('redaction', () => {
     expect(described.message).not.toContain('hunter2');
   });
 
+  it("keeps the cause's message, which is usually the half worth reading", () => {
+    // The shape a Drizzle query failure arrives in: the wrapper names the query,
+    // the cause names what went wrong. Recording only `TypeError` turned a
+    // one-line diagnosis into an afternoon.
+    const described = describeError(
+      new Error('Failed query: update "pin_reset_tokens" …', {
+        cause: new TypeError(
+          'The "string" argument must be of type string. Received an instance of Date',
+        ),
+      }),
+    );
+
+    expect(described.cause).toBe(
+      'TypeError: The "string" argument must be of type string. Received an instance of Date',
+    );
+  });
+
+  it('scrubs the cause the same way it scrubs the error', () => {
+    const described = describeError(
+      new Error('query failed', { cause: new Error('postgres://app:hunter2@db/xecret refused') }),
+    );
+
+    expect(described.cause).not.toContain('hunter2');
+  });
+
   it('reduces to a bare name where even a message is too much', () => {
     expect(errorName(new Error('mail to alice@example.com bounced'))).toBe('Error');
     expect(errorName('a string')).toBe('unknown');
