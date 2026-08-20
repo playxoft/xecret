@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt, sql } from 'drizzle-orm';
+import { and, eq, gt, isNull, lt, sql } from 'drizzle-orm';
 import { hashToken, pinResetExpiryFrom } from '@xecret/core/auth';
 import type { PinAttemptState } from '@xecret/core/auth';
 import { uuidv7 } from '@xecret/core/ids';
@@ -206,6 +206,19 @@ export async function createPinReset(
  * Returns `null` for unknown, expired and already-used alike. The caller gives
  * one answer for all three, because distinguishing them tells a stranger holding
  * a guessed token which part of their guess was right.
+ *
+ * The expiry comparison is Drizzle's `gt` and not a `sql` template, which is
+ * load-bearing rather than a matter of style. An operator binds its value
+ * through the column, so the `Date` is encoded as the column's type demands. A
+ * `Date` interpolated into a `sql` template has no column to encode it and
+ * arrives at postgres.js as a `Date` — which the driver would ordinarily
+ * serialise itself, except that Drizzle replaces those serialisers with the
+ * identity function in order to do its own date mapping. Nothing is left to
+ * convert it, the raw object reaches the wire protocol, and the query dies with
+ * a `TypeError`. It did exactly that here: every PIN reset returned a 500 until
+ * this line stopped being a template. The same applies anywhere a `Date` would
+ * be interpolated into `sql` — pass it through an operator, or format it
+ * explicitly as `audit.ts` does.
  */
 export async function consumePinReset(
   exec: Executor,
@@ -219,7 +232,7 @@ export async function consumePinReset(
       and(
         eq(pinResetTokens.tokenHash, tokenHash),
         isNull(pinResetTokens.consumedAt),
-        sql`${pinResetTokens.expiresAt} > ${now}`,
+        gt(pinResetTokens.expiresAt, now),
       ),
     )
     .returning({ userId: pinResetTokens.userId });

@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt, sql } from 'drizzle-orm';
+import { and, eq, gt, isNull, lt } from 'drizzle-orm';
 import { cliAuthCodeExpiryFrom, generateToken, hashToken } from '@xecret/core/auth';
 import type { Bytes } from '@xecret/core/crypto';
 import { uuidv7 } from '@xecret/core/ids';
@@ -95,6 +95,10 @@ export async function createCliAuthCode(
  * Returns `null` for unknown, expired and already-used alike — the route gives
  * one answer for all three, because distinguishing them tells a stranger
  * holding a stolen or guessed code which part was right.
+ *
+ * `gt` rather than a `sql` template for the expiry, for the reason spelled out
+ * over the identical comparison in `pins.ts`: an interpolated `Date` has no
+ * column to encode it and reaches the driver unconverted.
  */
 export async function consumeCliAuthCode(
   exec: Executor,
@@ -108,7 +112,7 @@ export async function consumeCliAuthCode(
       and(
         eq(cliAuthCodes.tokenHash, codeHash),
         isNull(cliAuthCodes.consumedAt),
-        sql`${cliAuthCodes.expiresAt} > ${now}`,
+        gt(cliAuthCodes.expiresAt, now),
       ),
     )
     .returning({
