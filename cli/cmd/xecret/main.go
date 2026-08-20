@@ -91,8 +91,21 @@ func dispatch(args []string) int {
 	var err error
 	switch command {
 	case "version", "--version", "-v":
+		// The two commands that parse nothing at all still refuse what they are
+		// given, because "takes no arguments" is a rule about the command and
+		// not about how it happens to be implemented. `xecret version --json`
+		// printed the prose line and exited 0, which is the silent-ignore
+		// failure everything below exists to end.
+		if len(rest) > 0 {
+			err = errors.New(takesNoArguments("version", rest[0]))
+			break
+		}
 		fmt.Fprintln(os.Stdout, buildinfo.String())
 	case "help", "--help", "-h":
+		if len(rest) > 0 {
+			err = unexpectedHelpArgument(rest[0])
+			break
+		}
 		fmt.Fprint(os.Stdout, usage)
 	case "login":
 		err = cmdLogin(rest)
@@ -225,7 +238,15 @@ func parseFlagsOnly(flags *flag.FlagSet, args []string) error {
 	if len(positional) == 0 {
 		return nil
 	}
-	return unexpectedArgument(flags.Name(), positional[0])
+	return unexpectedArgument(flags, positional[0])
+}
+
+// takesNoArguments is the refusal itself, shared by every command that has
+// nothing to do with the word it was handed. One rule reads as one rule only if
+// it is worded the same wherever it is applied; the callers below add the "and
+// here is what to type instead" tail that differs.
+func takesNoArguments(command, argument string) string {
+	return fmt.Sprintf("'xecret %s' takes no arguments, got %q", command, argument)
 }
 
 // unexpectedArgument says what was refused and, where the word is one this
@@ -233,13 +254,35 @@ func parseFlagsOnly(flags *flag.FlagSet, args []string) error {
 // the mistake worth spelling out: it reads like a subcommand, every one of the
 // five formats is a plausible thing to type there, and the correction is
 // exactly one word longer than what was typed.
-func unexpectedArgument(command, argument string) error {
-	if (command == "pull" || command == "export") && knownFormat(argument) {
+//
+// Which flag was meant is asked of the FlagSet rather than matched against a
+// list of command names. Naming `pull` and `export` there meant `import`, which
+// defines the same flag, silently missed the correction — and so would the next
+// command to grow a `--format`.
+func unexpectedArgument(flags *flag.FlagSet, argument string) error {
+	command := flags.Name()
+	if flags.Lookup("format") != nil && knownFormat(argument) {
 		return fmt.Errorf("unexpected argument %q — the format is a flag: xecret %s --format %s",
 			argument, command, argument)
 	}
-	return fmt.Errorf("'xecret %s' takes no arguments, got %q — run 'xecret %s --help' for the flags it does take",
-		command, argument, command)
+	return fmt.Errorf("%s — run 'xecret %s --help' for the flags it does take",
+		takesNoArguments(command, argument), command)
+}
+
+// unexpectedHelpArgument answers `xecret help pull`, which this CLI has never
+// answered: it printed the general help, which looks like an answer and is not
+// one. A command's flags come from that command, so where the word names a
+// command the reply is the form that works — and where it does not, saying so
+// beats sending somebody off to run a second command that will also fail.
+func unexpectedHelpArgument(argument string) error {
+	for _, name := range topLevelNames() {
+		if name == argument {
+			return fmt.Errorf("%s — run 'xecret %s --help' for that command's flags",
+				takesNoArguments("help", argument), argument)
+		}
+	}
+	return fmt.Errorf("%s — run 'xecret help' on its own for the list of commands",
+		takesNoArguments("help", argument))
 }
 
 // hintFor adds the "what to do next" line for the errors that have one.

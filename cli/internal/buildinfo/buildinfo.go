@@ -62,7 +62,7 @@ type details struct {
 var resolved = sync.OnceValue(resolve)
 
 func resolve() details {
-	found := details{version: Version, commit: Commit, date: Date}
+	found := details{version: Version, commit: commitFor(Commit, "", false), date: Date}
 
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -77,13 +77,11 @@ func resolve() details {
 		found.version = info.Main.Version
 	}
 
-	modified := false
+	revision, modified := "", false
 	for _, setting := range info.Settings {
 		switch setting.Key {
 		case "vcs.revision":
-			if found.commit == "none" && setting.Value != "" {
-				found.commit = abbreviate(setting.Value)
-			}
+			revision = setting.Value
 		case "vcs.time":
 			if found.date == "unknown" && setting.Value != "" {
 				found.date = setting.Value
@@ -92,15 +90,38 @@ func resolve() details {
 			modified = setting.Value == "true"
 		}
 	}
-
-	// An uncommitted tree is not the commit it sits on, and a bug report that
-	// names a commit which does not contain the code that produced it costs
-	// more than the seven characters this adds.
-	if modified && found.commit != "none" && !strings.HasSuffix(found.commit, "-dirty") {
-		found.commit += "-dirty"
-	}
+	found.commit = commitFor(Commit, revision, modified)
 
 	return found
+}
+
+// commitFor is the commit field's whole rule, kept apart from the build stamp
+// that feeds it so each case can be checked without linking a binary per case.
+//
+//   - `stamped` is the -ldflags value: what a release says about itself. It
+//     wins, and is abbreviated here rather than only on the other path —
+//     otherwise one field is seven characters for a local build and forty for
+//     a release, and nobody can compare the two by eye.
+//   - `-dirty` belongs only on a commit read out of the binary's own VCS
+//     record. An uncommitted tree is not the commit it sits on, and a bug
+//     report naming a commit that does not contain the code which produced it
+//     costs more than the six characters this adds — but a release is not that
+//     case. GoReleaser refuses to build a dirty tree and *then* runs
+//     `go mod tidy` and `go vet` in its before-hooks, either of which can
+//     rewrite go.sum after that check. Reading `vcs.modified` there reports
+//     GoReleaser's own housekeeping, and an official archive would ship saying
+//     it came from somebody's working copy.
+func commitFor(stamped, revision string, modified bool) string {
+	if stamped != "" && stamped != "none" {
+		return abbreviate(stamped)
+	}
+	if revision == "" {
+		return "none"
+	}
+	if modified {
+		return abbreviate(revision) + "-dirty"
+	}
+	return abbreviate(revision)
 }
 
 func abbreviate(revision string) string {
@@ -114,8 +135,9 @@ func abbreviate(revision string) string {
 // `git describe` for a local build, and "dev" for one with no VCS stamp at all.
 func Release() string { return resolved().version }
 
-// Revision is the commit this binary was built from, suffixed `-dirty` when
-// the tree had uncommitted changes. "none" when the build carries no stamp.
+// Revision is the commit this binary was built from, abbreviated, and suffixed
+// `-dirty` when it was read from an uncommitted tree. "none" when the build
+// carries no stamp. See commitFor for why a release never reports `-dirty`.
 func Revision() string { return resolved().commit }
 
 // BuiltAt is when the source was committed (release builds: when it was

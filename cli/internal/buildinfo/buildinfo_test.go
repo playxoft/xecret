@@ -83,3 +83,38 @@ func TestVersionDetailsAreNeverEmpty(t *testing.T) {
 		t.Errorf("the version line should carry the resolved version, got %q", got)
 	}
 }
+
+// `-dirty` says "this binary was built from a tree that is not the commit it
+// names". A release is not that case: GoReleaser checks the tree is clean and
+// then runs `go mod tidy` and `go vet`, either of which can rewrite go.sum, so
+// `vcs.modified` on a release build reports GoReleaser's own housekeeping. An
+// archive published as 0.1.1 must not say it came from somebody's working copy.
+func TestCommitForNeverCallsAReleaseDirty(t *testing.T) {
+	const release = "183987e0c1de4b7a9f0c2d1e5a6b7c8d9e0f1a2b"
+
+	if got := commitFor(release, "", true); got != "183987e" {
+		t.Errorf("a stamped release commit = %q, want the abbreviated commit and no -dirty", got)
+	}
+	// The same forty characters are what the ldflag actually carries, and one
+	// field that is 7 characters locally and 40 in a release cannot be compared
+	// by eye.
+	if got := commitFor(release, "", false); len(got) != 7 {
+		t.Errorf("a stamped commit should be abbreviated like every other, got %q", got)
+	}
+}
+
+// The other half: a commit read from the binary's own VCS record is exactly the
+// case `-dirty` exists for.
+func TestCommitForMarksAnUncommittedLocalBuild(t *testing.T) {
+	const revision = "abcdef1234567890abcdef1234567890abcdef12"
+
+	if got := commitFor("none", revision, true); got != "abcdef1-dirty" {
+		t.Errorf("an uncommitted local build = %q, want abcdef1-dirty", got)
+	}
+	if got := commitFor("none", revision, false); got != "abcdef1" {
+		t.Errorf("a clean local build = %q, want abcdef1", got)
+	}
+	if got := commitFor("none", "", true); got != "none" {
+		t.Errorf("a build with no VCS record at all = %q, want none", got)
+	}
+}

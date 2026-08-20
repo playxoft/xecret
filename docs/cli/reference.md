@@ -268,7 +268,11 @@ xecret help
   additionally stamps `git describe`, so a build from this repo names the
   release it descends from. A version ending in `-gNNNNNNN` or `-dirty` is a
   development build however numeric it looks, which is how `upgrade` knows not
-  to call a build made from `main` out of date.
+  to call a build made from `main` out of date. `-dirty` on the *commit* is said
+  only of a commit read from the binary's own VCS record: a release stamps its
+  own commit, and GoReleaser's `go mod tidy` can touch `go.sum` after the
+  clean-tree check, so a published archive would otherwise report a commit it
+  was not built from.
 - `upgrade` asks GitHub, not the xecret server, and only when asked: a version
   check describes which machine runs which build of a secret-management client,
   and doing it in the background would ship that from inside every CI job. It
@@ -290,7 +294,11 @@ xecret help
   silence: the format went unread and dotenv was printed. Everything after the
   stray word stopped being parsed with it, so `xecret pull json -o secrets.json`
   wrote no file and printed every secret to the terminal. The format is a flag —
-  `xecret pull --format json` — and the error now says so.
+  `xecret pull --format json` — and the error now says so, for whichever command
+  defines `--format` rather than for a list of command names. `version` and
+  `help` are held to the same rule: `xecret version --json` is refused rather
+  than answered with prose, and `xecret help pull` names `xecret pull --help`
+  instead of printing the general help as though it were an answer.
 - Errors say what to do next; API failures carry a hint line (`Run 'xecret
   login'…`, or under `XECRET_TOKEN`, what to check about the token).
 - `run` propagates the child's exit code untouched; the CLI's own failures

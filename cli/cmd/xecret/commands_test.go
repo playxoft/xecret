@@ -262,6 +262,37 @@ func TestParseFlagsOnlyNamesTheCommandItRefusesFor(t *testing.T) {
 	}
 }
 
+// The correction is owed to whichever command defines the flag, not to the two
+// whose names were once written into the check. `import` takes `--format` and
+// used to fall through to the generic "run --help" message.
+func TestParseFlagsOnlyNamesTheFlagForEveryCommandThatDefinesIt(t *testing.T) {
+	for _, command := range []string{"pull", "export", "import"} {
+		flags := flag.NewFlagSet(command, flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		flags.String("format", "env", "")
+
+		err := parseFlagsOnly(flags, []string{"yaml"})
+		if err == nil {
+			t.Fatalf("%s must refuse a stray format", command)
+		}
+		if want := "--format yaml"; !strings.Contains(err.Error(), want) {
+			t.Errorf("%s should be corrected with %q, got %q", command, want, err)
+		}
+	}
+
+	// And is not owed by a command that has no such flag, where "the format is
+	// a flag" would name one that does not exist.
+	flags := flag.NewFlagSet("whoami", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	err := parseFlagsOnly(flags, []string{"yaml"})
+	if err == nil {
+		t.Fatal("whoami must refuse a stray argument")
+	}
+	if strings.Contains(err.Error(), "--format") {
+		t.Errorf("whoami defines no --format and must not offer it, got %q", err)
+	}
+}
+
 func TestParseFlagsOnlyAcceptsFlagsAlone(t *testing.T) {
 	flags := flag.NewFlagSet("pull", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
