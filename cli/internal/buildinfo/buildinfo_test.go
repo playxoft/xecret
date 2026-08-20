@@ -38,3 +38,48 @@ func TestDefaultAPIURLIsWellFormedHTTPS(t *testing.T) {
 		t.Error("DefaultAPIURL must not have a trailing slash; paths are joined onto it")
 	}
 }
+
+// `upgrade` decides what to tell somebody from this, and the answer it must
+// never get wrong is "you are out of date" said to a build made from a commit
+// ahead of the last release. A `git describe` version is a number, sorts above
+// the tag it descends from, and is still not a release.
+func TestIsDevelopmentRecognisesEveryUnreleasedShape(t *testing.T) {
+	development := []string{
+		"",
+		"dev",
+		"(devel)",
+		"v0.1.1-6-g183987e",
+		"v0.1.1-6-g183987e-dirty",
+		"0.1.1-dirty",
+	}
+	for _, version := range development {
+		if !developmentVersion(version) {
+			t.Errorf("%q is not a released version", version)
+		}
+	}
+
+	released := []string{"0.1.1", "v0.1.1", "v1.2.3", "1.0.0-rc.1", "v2.0.0-beta.2"}
+	for _, version := range released {
+		if developmentVersion(version) {
+			t.Errorf("%q is a release and must not be reported as a development build", version)
+		}
+	}
+}
+
+// The three accessors answer for the unstamped defaults as well as for a
+// stamped build, because a binary that cannot say what it is is the one case
+// where the version line still has to say something.
+func TestVersionDetailsAreNeverEmpty(t *testing.T) {
+	if Release() == "" {
+		t.Error("Release() must always name something")
+	}
+	if Revision() == "" {
+		t.Error("Revision() must always name something")
+	}
+	if BuiltAt() == "" {
+		t.Error("BuiltAt() must always name something")
+	}
+	if got := String(); !strings.Contains(got, Release()) {
+		t.Errorf("the version line should carry the resolved version, got %q", got)
+	}
+}

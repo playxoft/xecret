@@ -54,7 +54,7 @@ func tokensList(args []string) error {
 	flags := flag.NewFlagSet("tokens list", flag.ContinueOnError)
 	jsonMode := flags.Bool("json", false, "machine-readable output")
 	kind := flags.String("kind", "", "cli | service (default: both)")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
 	if err := checkKind(*kind, true); err != nil {

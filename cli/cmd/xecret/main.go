@@ -201,6 +201,47 @@ func parseFlags(flags *flag.FlagSet, args []string) ([]string, error) {
 	return append(positional, literal...), nil
 }
 
+// parseFlagsOnly is parseFlags for the commands that take no positional
+// arguments at all, and its job is the refusal rather than the parse.
+//
+// Go's flag package stops at the first argument that is not a flag and leaves
+// the remainder in Args(), so a command that never reads Args() accepts
+// anything and reports nothing: `xecret pull json` selected no format, printed
+// dotenv, and said not a word about the argument nobody read. Everything after
+// the stray word stops being parsed too, which is the half that matters here —
+// `xecret pull json -o secrets.json` wrote no file and printed every secret to
+// the terminal instead. A command that quietly does something other than what
+// it was asked is bad; one that prints plaintext while doing it is worse.
+//
+// `cache clear` has refused its extra arguments by hand since the day
+// `xecret cache clear --help` erased somebody's cache instead of describing
+// itself. This is that lesson applied to every command with no arguments to
+// take, rather than to the one where it had already been learned.
+func parseFlagsOnly(flags *flag.FlagSet, args []string) error {
+	positional, err := parseFlags(flags, args)
+	if err != nil {
+		return err
+	}
+	if len(positional) == 0 {
+		return nil
+	}
+	return unexpectedArgument(flags.Name(), positional[0])
+}
+
+// unexpectedArgument says what was refused and, where the word is one this
+// command has a flag for, names the flag that was meant. `xecret pull json` is
+// the mistake worth spelling out: it reads like a subcommand, every one of the
+// five formats is a plausible thing to type there, and the correction is
+// exactly one word longer than what was typed.
+func unexpectedArgument(command, argument string) error {
+	if (command == "pull" || command == "export") && knownFormat(argument) {
+		return fmt.Errorf("unexpected argument %q — the format is a flag: xecret %s --format %s",
+			argument, command, argument)
+	}
+	return fmt.Errorf("'xecret %s' takes no arguments, got %q — run 'xecret %s --help' for the flags it does take",
+		command, argument, command)
+}
+
 // hintFor adds the "what to do next" line for the errors that have one.
 func hintFor(err error) string {
 	if errors.Is(err, cred.ErrNotLoggedIn) {

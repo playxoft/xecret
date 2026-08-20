@@ -209,6 +209,73 @@ func TestParseFlagsStillRejectsUnknownFlags(t *testing.T) {
 	}
 }
 
+// `xecret pull json` is the shape of the mistake this refuses. The word reads
+// like a subcommand, flag.Parse stopped at it, and the format it named was
+// read by nobody — so the command printed dotenv and said nothing about the
+// argument it had ignored.
+func TestParseFlagsOnlyRefusesAStrayArgument(t *testing.T) {
+	flags := flag.NewFlagSet("pull", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	format := flags.String("format", "env", "")
+
+	err := parseFlagsOnly(flags, []string{"json"})
+	if err == nil {
+		t.Fatalf("a stray argument must be refused, not ignored (format stayed %q)", *format)
+	}
+	// The correction is one word longer than what was typed, so the error says
+	// it rather than pointing at --help.
+	if !strings.Contains(err.Error(), "--format json") {
+		t.Errorf("the error should name the flag that was meant, got %q", err)
+	}
+}
+
+// The half of this that is not cosmetic: everything after the stray word used
+// to stop being parsed too, so `xecret pull json -o secrets.json` wrote no
+// file and printed every secret to the terminal instead. The flag is parsed
+// now — and the command is still refused, because acting on half a request is
+// what caused the problem.
+func TestParseFlagsOnlyRefusesRatherThanActingOnHalfARequest(t *testing.T) {
+	flags := flag.NewFlagSet("pull", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	outPath := flags.String("o", "", "")
+
+	if err := parseFlagsOnly(flags, []string{"json", "-o", "secrets.json"}); err == nil {
+		t.Fatal("a stray argument must be refused even when the flags after it are valid")
+	}
+	if *outPath != "secrets.json" {
+		t.Errorf("-o after the stray word was dropped: %q", *outPath)
+	}
+}
+
+// A command with no arguments to take says so plainly when the word means
+// nothing to it.
+func TestParseFlagsOnlyNamesTheCommandItRefusesFor(t *testing.T) {
+	flags := flag.NewFlagSet("whoami", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+
+	err := parseFlagsOnly(flags, []string{"nonsense"})
+	if err == nil {
+		t.Fatal("a stray argument must be refused")
+	}
+	if !strings.Contains(err.Error(), "xecret whoami") {
+		t.Errorf("the error should name the command, got %q", err)
+	}
+}
+
+func TestParseFlagsOnlyAcceptsFlagsAlone(t *testing.T) {
+	flags := flag.NewFlagSet("pull", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	format := flags.String("format", "env", "")
+	project := flags.String("project", "", "")
+
+	if err := parseFlagsOnly(flags, []string{"--format", "json", "--project", "web"}); err != nil {
+		t.Fatalf("valid usage must still parse: %v", err)
+	}
+	if *format != "json" || *project != "web" {
+		t.Errorf("format=%q project=%q", *format, *project)
+	}
+}
+
 // Both `doctor` and `upgrade` name the deployment this machine talks to, and
 // `upgrade` turns it into a command the user is told to pipe into a shell. The
 // order the two agree on is the one every other command uses.

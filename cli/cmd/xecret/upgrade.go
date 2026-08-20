@@ -39,7 +39,7 @@ const releasesEndpoint = "https://api.github.com/repos/playxoft/xecret/releases/
 func cmdUpgrade(args []string) error {
 	flags := flag.NewFlagSet("upgrade", flag.ContinueOnError)
 	jsonMode := flags.Bool("json", false, "machine-readable output")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
 
@@ -53,13 +53,17 @@ func cmdUpgrade(args []string) error {
 		return err
 	}
 
-	current := strings.TrimPrefix(buildinfo.Version, "v")
+	current := strings.TrimPrefix(buildinfo.Release(), "v")
 	published := strings.TrimPrefix(latest.TagName, "v")
-	development := current == "dev" || current == ""
+	// Asked of buildinfo rather than of the string, because a local build now
+	// reports a `git describe` version — a number, ahead of the last release,
+	// and still not a release. Comparing it would announce that the build you
+	// just made from main is out of date.
+	development := buildinfo.IsDevelopment()
 
 	if *jsonMode {
 		return a.printer.WriteJSON(map[string]any{
-			"current":     buildinfo.Version,
+			"current":     buildinfo.Release(),
 			"latest":      latest.TagName,
 			"upToDate":    !development && compareVersions(current, published) >= 0,
 			"development": development,
@@ -70,12 +74,12 @@ func cmdUpgrade(args []string) error {
 	switch {
 	case development:
 		a.printer.Infof("This is a development build (%s). The latest release is %s.",
-			buildinfo.Version, latest.TagName)
+			buildinfo.Release(), latest.TagName)
 	case compareVersions(current, published) >= 0:
-		a.printer.Successf("xecret %s is the latest release.", buildinfo.Version)
+		a.printer.Successf("xecret %s is the latest release.", buildinfo.Release())
 		return nil
 	default:
-		a.printer.Warnf("xecret %s is out of date — %s is available.", buildinfo.Version, latest.TagName)
+		a.printer.Warnf("xecret %s is out of date — %s is available.", buildinfo.Release(), latest.TagName)
 	}
 
 	installBase, _ := a.deploymentOrigin()

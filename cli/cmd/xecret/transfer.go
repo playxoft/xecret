@@ -127,7 +127,7 @@ func cmdExport(args []string) error {
 	outPath := flags.String("o", "", "file to write (default: derived from the format)")
 	force := flags.Bool("force", false, "overwrite the file if it already exists")
 	projectFlag, envFlag := scopedFlags(flags)
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
 
@@ -258,7 +258,7 @@ func cmdPull(args []string) error {
 	format := flags.String("format", "env", "env | json | yaml | shell | docker")
 	outPath := flags.String("o", "", "write to a file (0600) instead of stdout")
 	projectFlag, envFlag := scopedFlags(flags)
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
 

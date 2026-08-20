@@ -261,6 +261,14 @@ xecret help
   unreadable cache) are not failures. `--json` carries a `checks` array of
   `{name, status, ok, detail}` plus a top-level `ok`, so the verdicts are
   readable by a machine and not only by a person reading the glyphs.
+- `version` names the release it was built from, the commit and when. A release
+  carries all three from its tag. A local build carries none, so they are read
+  from the binary's own VCS record instead — `xecret dev (commit 183987e-dirty,
+  built …)` rather than `commit none, built unknown` — and `npm run cli:build`
+  additionally stamps `git describe`, so a build from this repo names the
+  release it descends from. A version ending in `-gNNNNNNN` or `-dirty` is a
+  development build however numeric it looks, which is how `upgrade` knows not
+  to call a build made from `main` out of date.
 - `upgrade` asks GitHub, not the xecret server, and only when asked: a version
   check describes which machine runs which build of a secret-management client,
   and doing it in the background would ship that from inside every CI job. It
@@ -277,6 +285,12 @@ xecret help
   package stops at the first non-flag argument, so `parseFlags` in `main.go`
   walks the list instead: parse, take the positional that stopped it, parse the
   rest. A bare `--` still ends the flags.
+- **A command with no arguments to take refuses the ones it is given.**
+  `xecret pull json` reads like a subcommand and used to be discarded in
+  silence: the format went unread and dotenv was printed. Everything after the
+  stray word stopped being parsed with it, so `xecret pull json -o secrets.json`
+  wrote no file and printed every secret to the terminal. The format is a flag —
+  `xecret pull --format json` — and the error now says so.
 - Errors say what to do next; API failures carry a hint line (`Run 'xecret
   login'…`, or under `XECRET_TOKEN`, what to check about the token).
 - `run` propagates the child's exit code untouched; the CLI's own failures

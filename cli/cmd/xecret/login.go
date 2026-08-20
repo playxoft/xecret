@@ -25,7 +25,7 @@ func cmdLogin(args []string) error {
 	flags := flag.NewFlagSet("login", flag.ContinueOnError)
 	apiURL := flags.String("api-url", "", "xecret deployment to log in to (default "+apiBase("")+")")
 	deviceName := flags.String("name", "", "device name shown on the consent screen and in the dashboard (default: hostname)")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
 
@@ -112,7 +112,7 @@ func cmdLogin(args []string) error {
 // credential nobody can see.
 func cmdLogout(args []string) error {
 	flags := flag.NewFlagSet("logout", flag.ContinueOnError)
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
 
@@ -165,7 +165,7 @@ func cmdLogout(args []string) error {
 func cmdWhoami(args []string) error {
 	flags := flag.NewFlagSet("whoami", flag.ContinueOnError)
 	jsonMode := flags.Bool("json", false, "machine-readable output")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
 

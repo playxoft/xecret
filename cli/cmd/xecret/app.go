@@ -60,7 +60,7 @@ func apiBase(flagValue string) string {
 }
 
 func userAgent() string {
-	return fmt.Sprintf("xecret-cli/%s (%s/%s)", buildinfo.Version, runtime.GOOS, runtime.GOARCH)
+	return fmt.Sprintf("xecret-cli/%s (%s/%s)", buildinfo.Release(), runtime.GOOS, runtime.GOARCH)
 }
 
 // client returns an authenticated API client. XECRET_TOKEN, when set, wins

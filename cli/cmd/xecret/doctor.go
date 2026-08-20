@@ -79,7 +79,7 @@ func glyph(status string) string {
 func cmdDoctor(args []string) error {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	jsonMode := flags.Bool("json", false, "machine-readable output")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
 

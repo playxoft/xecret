@@ -27,7 +27,7 @@ func cmdInit(args []string) error {
 	projectFlag := flags.String("project", "", "project slug (skips the prompt)")
 	envFlag := flags.String("environment", "", "environment slug (skips the prompt)")
 	force := flags.Bool("force", false, "overwrite an existing "+config.Filename)
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
 
