@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 
-import { AUTO_LOCK_MINUTES_OPTIONS } from '@xecret/core/auth';
+import { AUTO_LOCK_MINUTES_OPTIONS, PIN_LENGTH } from '@xecret/core/auth';
 import { api, errorMessage } from '@/lib/api';
 import { formatAbsoluteTime, formatRelativeTime, pluralize, toIsoString } from '@/lib/format';
 import { PinInput } from '@/components/auth/pin-input';
@@ -261,7 +261,9 @@ function PinCard() {
               type="submit"
               variant="primary"
               loading={saving}
-              disabled={newPin.length !== 6 || (needsCurrent && currentPin.length !== 6)}
+              disabled={
+                newPin.length !== PIN_LENGTH || (needsCurrent && currentPin.length !== PIN_LENGTH)
+              }
             >
               {needsCurrent ? 'Change PIN' : 'Set PIN'}
             </Button>

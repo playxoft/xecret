@@ -6,7 +6,7 @@ import { useMemo, useState } from 'react';
 import { PIN_LENGTH } from '@xecret/core/auth';
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { useApiResource } from '@/app/(dashboard)/_lib/use-api-resource';
-import { PinSetupForm, PinUnlockForm } from '@/components/auth/pin-forms';
+import { PinChooseForm, PinUnlockForm, storePin } from '@/components/auth/pin-forms';
 import {
   Alert,
   Button,
@@ -37,6 +37,21 @@ interface AuthorizeResponse {
   code: string;
   expiresAt: string;
 }
+
+/**
+ * What this card can offer, which is not always the decision it was opened for.
+ *
+ *  - `loading` — `/auth/me` has not answered yet.
+ *  - `unreadable` — it answered with something other than an account.
+ *  - `setup` / `unlock` — there is a PIN gate in the way. See `PinGate`.
+ *  - `decide` — approve or deny, the thing the page exists for.
+ *
+ * Five states rather than "gate or no gate", because the two that are neither
+ * used to collapse into "no gate": a `null` PIN status meant the Approve button
+ * rendered during the first paint and after a failed read, in the one case
+ * where it cannot possibly work.
+ */
+type Stage = 'loading' | 'unreadable' | 'setup' | 'unlock' | 'decide';
 
 /**
  * The consent decision.
@@ -76,9 +91,10 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
    * needed, and back — so the session that arrives has usually never been
    * unlocked. This screen used to answer that with a link to the dashboard,
    * which meant leaving the page the CLI had just opened, unlocking somewhere
-   * else, and finding the way back. The PIN is asked for here instead, and
-   * nothing else is offered until it is: an organisation switcher and an
-   * Approve button above a locked session are three clicks that end in a 423.
+   * else, and finding the way back. The PIN is asked for here instead, and the
+   * approval is not offered until it is answered: an organisation switcher and
+   * an Approve button above a locked session are three clicks that end in the
+   * 403 `session_locked` returns.
    *
    * The condition is `!configured || !unlocked`, matching the server's gate
    * rather than the word "locked": what `authenticatedRoute` checks is whether
@@ -87,10 +103,24 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
    * not have. That case is reachable only from here, because signing in through
    * this flow never passes the dashboard, which is where a first PIN is
    * otherwise set up.
+   *
+   * Not knowing is its own answer. `me.data` is null before the first response
+   * and after a failed one, and reading that as "no gate needed" showed the
+   * decision UI in both — a flash of Approve on first paint, and a permanent
+   * dead form when `/auth/me` failed with anything the API client does not
+   * redirect on.
    */
   const pin = me.data?.pin ?? null;
-  const gate: 'setup' | 'unlock' | null =
-    pin === null ? null : !pin.configured ? 'setup' : !pin.unlocked || relocked ? 'unlock' : null;
+  const stage: Stage =
+    pin === null
+      ? me.error !== null
+        ? 'unreadable'
+        : 'loading'
+      : !pin.configured
+        ? 'setup'
+        : !pin.unlocked || relocked
+          ? 'unlock'
+          : 'decide';
 
   if (request === null) {
     return (
@@ -137,11 +167,19 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
     }
   };
 
-  /** Re-reads `/auth/me`, which is what actually dismisses the PIN gate. */
-  const unlocked = () => {
+  /**
+   * Re-reads `/auth/me`, which is what actually dismisses the PIN gate.
+   *
+   * Awaited by the form that calls it, so the button stays busy until the new
+   * answer lands and the gate goes with it. A re-read that fails leaves `stage`
+   * at `unreadable` rather than clearing the screen: the PIN was accepted, the
+   * session *is* open, and the page has to say so rather than blank the only
+   * message on it.
+   */
+  const unlocked = async () => {
     setRelocked(false);
     setFailure(null);
-    void me.reload();
+    await me.reload();
   };
 
   const deny = () => {
@@ -176,13 +214,9 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
 
         {failure ? <Alert tone="danger">{failure}</Alert> : null}
 
-        {gate !== null ? (
-          <PinGate mode={gate} onDone={unlocked} />
-        ) : (
+        {stage === 'decide' ? (
           <>
-            {me.loading ? (
-              <Skeleton className="h-9 w-full" />
-            ) : organizations.length > 1 ? (
+            {organizations.length > 1 ? (
               <div className="flex flex-col gap-1.5">
                 <span className="text-fg-muted text-sm">Organisation</span>
                 <Select value={selectedSlug ?? ''} onValueChange={setOrgSlug}>
@@ -229,6 +263,41 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
               </div>
             )}
           </>
+        ) : (
+          /*
+           * Everything that is not the decision still ends in a decision the
+           * user is allowed to make. Approve is absent here — it cannot
+           * succeed — but Deny is the answer to "somebody sent me this link",
+           * and it is the one this screen must never take away: without it the
+           * only way out of a consent page is to abandon the tab and let
+           * `xecret login` sit on its five-minute timeout, which is exactly the
+           * wrong thing to make the cautious answer.
+           */
+          <div className="flex flex-col gap-4">
+            {stage === 'loading' ? (
+              <Skeleton className="h-9 w-full" />
+            ) : stage === 'unreadable' ? (
+              <Alert tone="danger" title="Your account could not be read">
+                {errorMessage(me.error)} Nothing has been approved.
+              </Alert>
+            ) : (
+              <PinGate
+                mode={stage}
+                email={me.data?.user.email ?? null}
+                onUnlocked={unlocked}
+              />
+            )}
+
+            {stage === 'unreadable' ? (
+              <Button variant="secondary" onClick={() => void me.reload()} loading={me.loading}>
+                Try again
+              </Button>
+            ) : null}
+
+            <Button variant="ghost" onClick={deny}>
+              Deny
+            </Button>
+          </div>
         )}
       </div>
     </AuthCard>
@@ -238,17 +307,32 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
 /**
  * The lock, inside the card.
  *
- * Deliberately the only thing offered while it is up. The organisation
- * switcher and the Approve button are not merely disabled but absent, because
- * a screen showing a decision it cannot yet carry out invites the click that
- * fails — and the failure it invites, `session_locked`, is exactly what this
- * asks for the PIN to prevent.
+ * The organisation switcher and the Approve button are not merely disabled but
+ * absent, because a screen showing a decision it cannot yet carry out invites
+ * the click that fails — and the failure it invites, `session_locked`, is
+ * exactly what this asks for the PIN to prevent. Deny stays, above: refusing a
+ * request needs no unlocked session and is the answer somebody who did not
+ * expect this page should be able to give immediately.
  *
  * Unlocking does not approve anything. Consent stays a separate, deliberate
  * act: the buttons appear once the session is open, and the person who came
  * here to approve a device still has to say so.
+ *
+ * `setup` says what happens if the PIN is forgotten, because this is the only
+ * place some accounts will ever be told. Signing in through `xecret login`
+ * never passes the dashboard, where that is otherwise explained — so leaving it
+ * out would mean an account-wide, unrecoverable credential chosen on a page
+ * opened by a command line, with no statement of what recovering it involves.
  */
-function PinGate({ mode, onDone }: { mode: 'setup' | 'unlock'; onDone: () => void }) {
+function PinGate({
+  mode,
+  email,
+  onUnlocked,
+}: {
+  mode: 'setup' | 'unlock';
+  email: string | null;
+  onUnlocked: () => Promise<void>;
+}) {
   return (
     <div className="flex flex-col gap-4">
       <div className="text-center">
@@ -262,7 +346,16 @@ function PinGate({ mode, onDone }: { mode: 'setup' | 'unlock'; onDone: () => voi
         </p>
       </div>
 
-      {mode === 'unlock' ? <PinUnlockForm onDone={onDone} /> : <PinSetupForm onDone={onDone} />}
+      {mode === 'unlock' ? (
+        <PinUnlockForm onDone={onUnlocked} />
+      ) : (
+        <PinChooseForm
+          submit={async (pin) => {
+            await storePin(pin);
+            await onUnlocked();
+          }}
+        />
+      )}
 
       {mode === 'unlock' ? (
         <p className="text-fg-subtle text-center text-sm leading-5">
@@ -272,7 +365,13 @@ function PinGate({ mode, onDone }: { mode: 'setup' | 'unlock'; onDone: () => voi
           </Link>
           , then run <code className="text-fg">xecret login</code> again.
         </p>
-      ) : null}
+      ) : (
+        <Alert tone="info" title="If you forget it">
+          We will email a reset link to {email ?? 'the address on your account'}. There is no way to
+          recover a PIN without access to that mailbox — nobody at xecret can read it, because only
+          a derived hash is stored.
+        </Alert>
+      )}
     </div>
   );
 }

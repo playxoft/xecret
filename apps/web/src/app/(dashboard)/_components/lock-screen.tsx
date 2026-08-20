@@ -4,7 +4,7 @@ import { useState } from 'react';
 
 import { PIN_LENGTH } from '@xecret/core/auth';
 import { api, endSession, errorMessage, SIGN_IN_PATH } from '@/lib/api';
-import { PinSetupForm, PinUnlockForm } from '@/components/auth/pin-forms';
+import { PinChooseForm, PinUnlockForm, storePin } from '@/components/auth/pin-forms';
 import { Wordmark } from '@/components/layout';
 import { Alert, Button, LockIcon, ShieldCheckIcon } from '@/components/ui';
 import type { PinResetResult, PinStatus } from './session';
@@ -133,7 +133,12 @@ function SetupPanel({ email, onDone }: { email: string; onDone: () => void }) {
       description={`You stay signed in as ${email} for 30 days. A ${PIN_LENGTH}-digit PIN keeps your secrets closed if someone else reaches your screen.`}
     >
       <div className="flex flex-col gap-5">
-        <PinSetupForm onDone={onDone} />
+        <PinChooseForm
+          submit={async (pin) => {
+            await storePin(pin);
+            await onDone();
+          }}
+        />
 
         <Alert tone="info" title="If you forget it">
           We will email a reset link to {email}. There is no way to recover a PIN without access to
