@@ -31,7 +31,7 @@ func cmdAudit(args []string) error {
 	since := flags.String("since", "", "where the window starts, e.g. 24h, 7d (or an RFC 3339 timestamp)")
 	until := flags.String("until", "", "where the window ends, same spellings as --since; defaults to now")
 	limit := flags.Int("limit", 50, "how many events to read")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
 

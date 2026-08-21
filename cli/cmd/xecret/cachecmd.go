@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
@@ -22,14 +23,15 @@ func cmdCache(args []string) error {
 		// args[0] and discarding the rest meant `xecret cache clear --help`
 		// erased the cache — the documented "show me what this does" idiom
 		// doing the thing instead of describing it.
-		for _, argument := range args[1:] {
-			switch argument {
-			case "help", "--help", "-h":
-				fmt.Fprint(os.Stdout, cacheUsage)
-				return nil
-			default:
-				return fmt.Errorf("'cache clear' takes no arguments, got %q", argument)
-			}
+		//
+		// That check was hand-written here for as long as it was the only one.
+		// It goes through `parseFlagsOnly` now that every such command has it:
+		// two spellings of one rule drift, and the command they would drift
+		// apart on is the one that deletes something.
+		flags := flag.NewFlagSet("cache clear", flag.ContinueOnError)
+		flags.Usage = func() { fmt.Fprint(os.Stdout, cacheUsage) }
+		if err := parseFlagsOnly(flags, args[1:]); err != nil {
+			return err
 		}
 
 		a := newApp(false)

@@ -93,7 +93,7 @@ func secretsList(args []string) error {
 	flags := flag.NewFlagSet("secrets list", flag.ContinueOnError)
 	jsonMode := flags.Bool("json", false, "machine-readable output")
 	projectFlag, envFlag := scopedFlags(flags)
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
 
