@@ -132,7 +132,7 @@ func listArgs(args []string) []string {
 func projectsList(args []string) error {
 	flags := flag.NewFlagSet("projects list", flag.ContinueOnError)
 	jsonMode := flags.Bool("json", false, "machine-readable output")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
 
@@ -249,7 +249,7 @@ func environmentsList(args []string) error {
 	flags := flag.NewFlagSet("environments list", flag.ContinueOnError)
 	jsonMode := flags.Bool("json", false, "machine-readable output")
 	projectFlag := flags.String("project", "", "project slug (default: .xecret.yaml)")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
 
@@ -376,7 +376,7 @@ func environmentsDelete(args []string) error {
 func orgsList(args []string) error {
 	flags := flag.NewFlagSet("orgs list", flag.ContinueOnError)
 	jsonMode := flags.Bool("json", false, "machine-readable output")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
 
@@ -475,7 +475,7 @@ func orgsUse(args []string) error {
 func cmdMembers(args []string) error {
 	flags := flag.NewFlagSet("members", flag.ContinueOnError)
 	jsonMode := flags.Bool("json", false, "machine-readable output")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
 
