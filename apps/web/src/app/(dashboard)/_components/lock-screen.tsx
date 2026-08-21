@@ -3,8 +3,8 @@
 import { useState } from 'react';
 
 import { PIN_LENGTH } from '@xecret/core/auth';
-import { api, endSession, errorMessage, isApiError, SIGN_IN_PATH } from '@/lib/api';
-import { PinInput } from '@/components/auth/pin-input';
+import { api, endSession, errorMessage, SIGN_IN_PATH } from '@/lib/api';
+import { PinChooseForm, PinUnlockForm, storePin } from '@/components/auth/pin-forms';
 import { Wordmark } from '@/components/layout';
 import { Alert, Button, LockIcon, ShieldCheckIcon } from '@/components/ui';
 import type { PinResetResult, PinStatus } from './session';
@@ -19,6 +19,12 @@ import type { PinResetResult, PinStatus } from './session';
  *  - **No PIN yet.** First sign-in. Choose one, twice.
  *  - **Locked.** A PIN exists; enter it.
  *  - **Resetting.** A link from the account's mailbox has been opened.
+ *
+ * The first two are forms rather than screens, and live in
+ * `components/auth/pin-forms.tsx`: the CLI consent screen asks the same two
+ * questions from inside its own card, because a session arriving there straight
+ * from `xecret login` has never been unlocked either. What stays here is the
+ * framing — full height, an icon, and a way out.
  *
  * ── Why the whole dashboard is behind this ──
  * Not because the server needs it to be — every gated route refuses a locked
@@ -102,63 +108,13 @@ function UnlockPanel({
   onDone: () => void;
   onForgot: () => void;
 }) {
-  const [pin, setPin] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  async function submit(candidate: string) {
-    if (busy || candidate.length !== PIN_LENGTH) return;
-    setBusy(true);
-    setError(null);
-
-    try {
-      await api.post('/auth/pin/unlock', { pin: candidate });
-      onDone();
-    } catch (cause) {
-      // Cleared on failure so the next attempt starts from an empty field
-      // rather than requiring six backspaces.
-      setPin('');
-      setError(errorMessage(cause));
-      setBusy(false);
-    }
-  }
-
   return (
     <PanelFrame
       icon={<LockIcon className="size-5" />}
       title="Enter your PIN"
       description={`Signed in as ${email}. Your PIN unlocks xecret on this device for the next 8 hours.`}
     >
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit(pin);
-        }}
-        className="flex flex-col gap-4"
-      >
-        <PinInput
-          label="PIN"
-          value={pin}
-          onChange={(next) => {
-            setPin(next);
-            setError(null);
-          }}
-          onComplete={(next) => void submit(next)}
-          disabled={busy}
-          invalid={error !== null}
-          autoFocus
-        />
-
-        {error !== null ? (
-          <p role="alert" className="text-danger-text text-center text-sm">
-            {error}
-          </p>
-        ) : null}
-
-        <Button type="submit" variant="primary" loading={busy} disabled={pin.length !== PIN_LENGTH}>
-          Unlock
-        </Button>
-      </form>
+      <PinUnlockForm onDone={onDone} />
 
       <Footer>
         <button type="button" onClick={onForgot} className="hover:text-fg underline">
@@ -170,98 +126,25 @@ function UnlockPanel({
 }
 
 function SetupPanel({ email, onDone }: { email: string; onDone: () => void }) {
-  const [pin, setPin] = useState('');
-  const [confirm, setConfirm] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  // Confirmed in the browser before the request, because "the two PINs do not
-  // match" is not the server's business — it has one PIN and no way to know the
-  // user typed a different one the first time.
-  const mismatch = confirm.length === PIN_LENGTH && confirm !== pin;
-  const ready = pin.length === PIN_LENGTH && confirm === pin;
-
-  async function submit() {
-    if (busy || !ready) return;
-    setBusy(true);
-    setError(null);
-
-    try {
-      await api.post('/auth/pin', { pin });
-      onDone();
-    } catch (cause) {
-      // The weak-PIN rules live on the server and are reported per field, so
-      // the specific reason — too common, six in a row — reaches the user
-      // rather than a generic refusal.
-      const fields = isApiError(cause) ? cause.fieldErrors() : {};
-      setError(fields['pin'] ?? errorMessage(cause));
-      setPin('');
-      setConfirm('');
-      setBusy(false);
-    }
-  }
-
   return (
     <PanelFrame
       icon={<ShieldCheckIcon className="size-5" />}
       title="Choose a PIN"
       description={`You stay signed in as ${email} for 30 days. A ${PIN_LENGTH}-digit PIN keeps your secrets closed if someone else reaches your screen.`}
     >
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit();
-        }}
-        className="flex flex-col gap-5"
-      >
-        <div className="flex flex-col gap-2">
-          <p className="text-fg-muted text-center text-sm font-medium">Choose a PIN</p>
-          <PinInput
-            label="New PIN"
-            value={pin}
-            onChange={(next) => {
-              setPin(next);
-              setError(null);
-            }}
-            disabled={busy}
-            autoFocus
-          />
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <p className="text-fg-muted text-center text-sm font-medium">Enter it again</p>
-          <PinInput
-            label="Confirm PIN"
-            value={confirm}
-            onChange={(next) => {
-              setConfirm(next);
-              setError(null);
-            }}
-            onComplete={() => void submit()}
-            disabled={busy || pin.length !== PIN_LENGTH}
-            invalid={mismatch}
-          />
-        </div>
-
-        {mismatch ? (
-          <p role="alert" className="text-danger-text text-center text-sm">
-            Those two PINs are different.
-          </p>
-        ) : error !== null ? (
-          <p role="alert" className="text-danger-text text-center text-sm">
-            {error}
-          </p>
-        ) : null}
-
-        <Button type="submit" variant="primary" loading={busy} disabled={!ready}>
-          Set my PIN
-        </Button>
+      <div className="flex flex-col gap-5">
+        <PinChooseForm
+          submit={async (pin) => {
+            await storePin(pin);
+            await onDone();
+          }}
+        />
 
         <Alert tone="info" title="If you forget it">
           We will email a reset link to {email}. There is no way to recover a PIN without access to
           that mailbox — nobody at xecret can read it, because only a derived hash is stored.
         </Alert>
-      </form>
+      </div>
     </PanelFrame>
   );
 }

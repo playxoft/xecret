@@ -4,8 +4,8 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
 import { PIN_LENGTH } from '@xecret/core/auth';
-import { api, errorMessage, isApiError, POST_SIGN_IN_PATH, SIGN_IN_PATH } from '@/lib/api';
-import { PinInput } from '@/components/auth/pin-input';
+import { api, isApiError, POST_SIGN_IN_PATH, SIGN_IN_PATH } from '@/lib/api';
+import { PinChooseForm } from '@/components/auth/pin-forms';
 import { Alert, Button } from '@/components/ui';
 import { AuthCard } from '../_components/auth-card';
 
@@ -28,20 +28,15 @@ import { AuthCard } from '../_components/auth-card';
 export function ResetPinForm({ token }: { token: string | null }) {
   const router = useRouter();
 
-  const [pin, setPin] = useState('');
-  const [confirm, setConfirm] = useState('');
-  const [error, setError] = useState<string | null>(null);
   const [needsSignIn, setNeedsSignIn] = useState(false);
-  const [busy, setBusy] = useState(false);
 
-  const mismatch = confirm.length === PIN_LENGTH && confirm !== pin;
-  const ready = token !== null && pin.length === PIN_LENGTH && confirm === pin;
-
-  async function submit() {
-    if (busy || !ready) return;
-    setBusy(true);
-    setError(null);
-
+  /**
+   * The fields, the confirmation and the weak-PIN reason are `PinChooseForm`'s;
+   * only the request is this page's. It was a third copy of that form until the
+   * lock screen and the CLI consent screen needed the second — and a rule about
+   * what makes a PIN acceptable is not a thing to keep in three places.
+   */
+  async function submit(pin: string) {
     try {
       await api.post(
         '/auth/pin/reset/confirm',
@@ -50,20 +45,17 @@ export function ResetPinForm({ token }: { token: string | null }) {
         // sign-in and losing the token from the URL.
         { redirectOnUnauthenticated: false },
       );
-      router.replace(POST_SIGN_IN_PATH);
     } catch (cause) {
       if (isApiError(cause) && cause.code === 'unauthenticated') {
+        // Answered by a different screen rather than by an error under the
+        // fields, so this is not re-thrown: the form is about to unmount.
         setNeedsSignIn(true);
-        setBusy(false);
         return;
       }
-
-      const fields = isApiError(cause) ? cause.fieldErrors() : {};
-      setError(fields['pin'] ?? errorMessage(cause));
-      setPin('');
-      setConfirm('');
-      setBusy(false);
+      throw cause;
     }
+
+    router.replace(POST_SIGN_IN_PATH);
   }
 
   if (token === null) {
@@ -107,56 +99,7 @@ export function ResetPinForm({ token }: { token: string | null }) {
       title="Choose a new PIN"
       description={`${PIN_LENGTH} digits. It unlocks xecret on each of your devices for 8 hours at a time.`}
     >
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit();
-        }}
-        className="flex flex-col gap-5"
-      >
-        <div className="flex flex-col gap-2">
-          <p className="text-fg-muted text-center text-sm font-medium">New PIN</p>
-          <PinInput
-            label="New PIN"
-            value={pin}
-            onChange={(next) => {
-              setPin(next);
-              setError(null);
-            }}
-            disabled={busy}
-            autoFocus
-          />
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <p className="text-fg-muted text-center text-sm font-medium">Enter it again</p>
-          <PinInput
-            label="Confirm PIN"
-            value={confirm}
-            onChange={(next) => {
-              setConfirm(next);
-              setError(null);
-            }}
-            onComplete={() => void submit()}
-            disabled={busy || pin.length !== PIN_LENGTH}
-            invalid={mismatch}
-          />
-        </div>
-
-        {mismatch ? (
-          <p role="alert" className="text-danger-text text-center text-sm">
-            Those two PINs are different.
-          </p>
-        ) : error !== null ? (
-          <p role="alert" className="text-danger-text text-center text-sm">
-            {error}
-          </p>
-        ) : null}
-
-        <Button type="submit" variant="primary" loading={busy} disabled={!ready}>
-          Set my PIN
-        </Button>
-      </form>
+      <PinChooseForm submit={submit} />
     </AuthCard>
   );
 }
