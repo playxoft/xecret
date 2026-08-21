@@ -95,6 +95,27 @@ func TestHelpForOneCommandPointsAtThatCommand(t *testing.T) {
 	}
 }
 
+// An error that tells somebody what to run next is only worth printing if what
+// it names works. `xecret help version` used to answer with `xecret version
+// --help`, which fails in exactly the same way for exactly the same reason —
+// `version` parses no flags — so following the advice landed on a second copy
+// of the first refusal. Whatever this points at must exit 0.
+func TestHelpNeverPointsAtACommandThatWillAlsoFail(t *testing.T) {
+	for _, command := range completionTree {
+		err := unexpectedHelpArgument(command.Name)
+		if err == nil {
+			t.Fatalf("'xecret help %s' must be refused", command.Name)
+		}
+		if !strings.Contains(err.Error(), "--help") {
+			continue // Pointed at the command list instead, which always works.
+		}
+		if code := dispatch([]string{command.Name, "--help"}); code != 0 {
+			t.Errorf("'help %s' advises 'xecret %s --help', which exits %d",
+				command.Name, command.Name, code)
+		}
+	}
+}
+
 // `xecret cache clear --help` erased the cache once. It goes through the shared
 // refusal now, so this pins both halves: --help describes and does not delete,
 // and a stray word is refused rather than discarded.

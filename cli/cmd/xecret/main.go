@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/playxoft/xecret/cli/internal/api"
 	"github.com/playxoft/xecret/cli/internal/buildinfo"
@@ -274,9 +275,16 @@ func unexpectedArgument(flags *flag.FlagSet, argument string) error {
 // one. A command's flags come from that command, so where the word names a
 // command the reply is the form that works — and where it does not, saying so
 // beats sending somebody off to run a second command that will also fail.
+//
+// "The form that works" is checked rather than assumed. `version` and `help`
+// parse no flags at all, so `xecret version --help` is refused exactly as
+// `xecret help version` was — and answering one dead end with another is worse
+// than not pointing anywhere. Whether a command answers --help is read from the
+// completion table, which is already the one list of what each command defines
+// and is already tested against the commands themselves.
 func unexpectedHelpArgument(argument string) error {
-	for _, name := range topLevelNames() {
-		if name == argument {
+	for _, command := range completionTree {
+		if command.Name == argument && slices.Contains(command.Flags, "--help") {
 			return fmt.Errorf("%s — run 'xecret %s --help' for that command's flags",
 				takesNoArguments("help", argument), argument)
 		}
