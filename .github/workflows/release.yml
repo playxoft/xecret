@@ -17,16 +17,31 @@
 # That gate is why this file has two triggers rather than one:
 #
 #   push of a v* tag   →  `goreleaser`, which builds everything and leaves a
-#                         draft release for review. Nothing is public yet:
-#                         `skip_upload: auto` holds the Homebrew formula, and
-#                         a draft's assets need a credential to fetch.
-#   release published  →  `npm`, which publishes the registry packages built
-#                         from that release's own archives.
+#                         draft release for review. Nothing is public yet: a
+#                         draft's assets need a credential to fetch, and the
+#                         Homebrew formula is attached to that draft rather
+#                         than pushed to the tap.
+#   release published  →  `publish`, which commits the Homebrew formula and
+#                         publishes the registry packages, both from that
+#                         release's own archives.
 #
 # npm is on the second trigger because the registry has no draft state and no
 # meaningful undo: publishing at tag time would put an unreviewed build of a
 # secrets tool one `npm install` away, which is exactly what the draft exists
 # to prevent.
+#
+# Homebrew is on the second trigger for a plainer reason. GoReleaser used to
+# push the formula at tag time under `skip_upload: auto`, and `auto` skips
+# prereleases and snapshots — not drafts. So the tap spent every review window
+# holding a formula whose `url` lines pointed inside a draft, and
+# `brew upgrade xecret` answered 404 for as long as the review took. The
+# formula now travels as a release asset and is committed here, where the
+# assets it names are public in the same moment.
+#
+# It arrives unsigned — `checksums.txt` is computed before the formula exists,
+# so the signature cannot cover it. It is therefore not trusted but checked:
+# every hash it asserts must appear in the checksums.txt cosign has already
+# vouched for, or it never reaches the tap.
 name: release
 
 on:
@@ -92,17 +107,39 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Pushing the Homebrew formula crosses into playxoft/homebrew-tap,
-          # which GITHUB_TOKEN cannot do. A fine-grained PAT with contents:write
-          # on that one repository, set as a repo secret before the first
-          # release. Absent, GoReleaser fails the brew step and says why.
+          # Still passed although nothing here pushes to the tap any more:
+          # `.goreleaser.yaml` interpolates it into the brews block, and a
+          # template referring to an environment variable that does not exist is
+          # an error even when the step it configures is skipped. The push it
+          # used to authorise now happens in `publish`, with the same secret.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
-  # ── npm ────────────────────────────────────────────────────────────────
+      # GoReleaser wrote the formula and was told not to push it, so it is
+      # sitting in `cli/dist`. It goes onto the draft, where the publish job
+      # fetches it with the same credential and the same call it already makes
+      # for the archives — and where it stays as invisible as they are until a
+      # human publishes.
+      - name: Attach the generated Homebrew formula to the draft
+        working-directory: cli
+        run: |
+          formula="$(find dist -name 'xecret.rb' -print -quit)"
+          if [ -z "${formula}" ]; then
+            echo "::error::goreleaser produced no Homebrew formula under cli/dist"
+            exit 1
+          fi
+          gh release upload "${TAG}" "${formula}" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+
+  # ── publish ────────────────────────────────────────────────────────────────
   #
-  # Seven packages: the `xecret` wrapper, and one per platform holding nothing
-  # but the executable, so npm installs exactly the one that matches the
-  # machine. No postinstall script, no download at install time — see the note
+  # Everything that reaches a package manager, on the event a human controls:
+  # the Homebrew formula, and the npm packages.
+  #
+  # npm is seven packages: the `xecret` wrapper, and one per platform holding
+  # nothing but the executable, so npm installs exactly the one that matches
+  # the machine. No postinstall script, no download at install time — see the note
   # at the top of cli/npm/lib/resolve.js for why that shape and not the usual
   # one.
   #
@@ -115,12 +152,13 @@ jobs:
   # cosign signature over it is verified here before any hash in it is trusted.
   # Without that step `checksums.txt` is just another asset from the same place
   # as the archives, and an attacker able to rewrite one could rewrite both.
-  npm:
+  publish:
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
-    # Narrower than the workflow default: this job publishes to npm and needs
-    # only to read the release it was triggered by, plus the OIDC token that
-    # `npm publish --provenance` signs with.
+    # Narrower than the workflow default: this job needs only to read the
+    # release it was triggered by, plus the OIDC token that `npm publish
+    # --provenance` signs with. The tap is written with its own PAT, not with
+    # anything granted here.
     permissions:
       contents: read
       id-token: write
@@ -140,6 +178,7 @@ jobs:
           gh release download "${TAG}" \
             --dir "${RUNNER_TEMP}/release" \
             --pattern 'xecret_*' \
+            --pattern 'xecret.rb' \
             --pattern 'checksums.txt' \
             --pattern 'checksums.txt.bundle'
         env:
@@ -160,6 +199,52 @@ jobs:
         env:
           TAG: ${{ github.event.release.tag_name }}
 
+      # The formula came from the same draft as the archives but is not covered
+      # by the signature — `checksums.txt` is computed before the formula
+      # exists. So it is checked rather than trusted: every hash it asserts has
+      # to be one the verified checksums already vouch for. A formula built for
+      # another version, an asset swapped after the fact, or a hash that does
+      # not match the archive actually released all stop here.
+      - name: Check the formula against the verified checksums
+        working-directory: ${{ runner.temp }}/release
+        run: |
+          if [ ! -f xecret.rb ]; then
+            echo "::error::this release carries no xecret.rb — its tag build never attached one"
+            exit 1
+          fi
+
+          want="${TAG#v}"
+          got="$(awk -F'"' '/^  version "/ { print $2; exit }' xecret.rb)"
+          if [ "${got}" != "${want}" ]; then
+            echo "::error::formula is for ${got}, this release is ${want}"
+            exit 1
+          fi
+
+          awk '
+            /url "/    { split($0, u, "\""); file = u[2]; sub(/.*\//, "", file); next }
+            /sha256 "/ { split($0, s, "\""); print s[2] "  " file }
+          ' xecret.rb > formula-claims.txt
+
+          # Homebrew covers macOS and Linux, two architectures each. Fewer than
+          # four pairs means a truncated or malformed formula — which would
+          # otherwise sail through the loop below by asserting nothing at all.
+          claims="$(grep -c . formula-claims.txt || true)"
+          if [ "${claims}" -lt 4 ]; then
+            echo "::error::formula asserts only ${claims} checksums, expected at least 4"
+            exit 1
+          fi
+
+          while read -r claim; do
+            grep -qxF "${claim}" checksums.txt || {
+              echo "::error::formula claims a checksum absent from the signed checksums.txt: ${claim}"
+              exit 1
+            }
+          done < formula-claims.txt
+
+          echo "All ${claims} formula checksums matched the signed checksums.txt."
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+
       - name: Publish to npm
         working-directory: cli/npm
         run: node publish.mjs --version "${TAG}" --archives "${RUNNER_TEMP}/release"
@@ -167,3 +252,33 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
           # An automation token from the npm account that owns `xecret`.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Last, because it is the step that can be undone with one revert. Both
+      # publishes are gated on the checks above, so nothing here is a question
+      # of trust — only of which half is cheaper to repair if the runner dies
+      # between them.
+      #
+      # Not for prereleases. That much `skip_upload: auto` had right: a tap has
+      # one formula and `brew install xecret` reads it, so a release candidate
+      # landing there is handed to everybody who upgrades. Asking for a
+      # prerelease by version stays possible; being given one does not.
+      - name: Commit the formula to the Homebrew tap
+        if: "!github.event.release.prerelease"
+        working-directory: ${{ runner.temp }}/release
+        run: |
+          git clone --depth 1 \
+            "https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/playxoft/homebrew-tap.git" tap
+          install -m 0644 xecret.rb tap/Formula/xecret.rb
+          cd tap
+          if git diff --quiet; then
+            echo "The tap already carries this formula; nothing to commit."
+            exit 0
+          fi
+          git -c user.name='nitheeshkr' -c user.email='nitheesh@playxoft.com' \
+            commit -am "Brew formula update for xecret version ${TAG}"
+          git push
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          # The same fine-grained PAT GoReleaser used to use for this, with
+          # contents:write on playxoft/homebrew-tap and nothing else.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

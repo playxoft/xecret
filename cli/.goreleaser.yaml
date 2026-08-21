@@ -38,9 +38,17 @@ checksum:
   name_template: 'checksums.txt'
   algorithm: sha256
 
-# Homebrew is how most macOS developers will install this. The formula is
-# pushed to the tap repository on release; `skip_upload: auto` keeps
-# prereleases out of it.
+# Homebrew is how most macOS developers will install this. GoReleaser writes
+# the formula but does not push it: `skip_upload: true` leaves it in `dist/`,
+# and release.yml attaches it to the draft and commits it to the tap only once
+# a human has published that draft.
+#
+# It used to push here, under `skip_upload: auto` — and `auto` skips
+# prereleases and snapshots, not drafts. So every release pushed a formula
+# whose `url` lines pointed at assets still locked inside a draft, and
+# `brew upgrade xecret` failed with a 404 for the whole review window. v0.1.2
+# was the release where somebody looked; v0.1.1 had the same gap for the 23
+# minutes between its tag build and its publish.
 brews:
   - repository:
       owner: playxoft
@@ -56,7 +64,7 @@ brews:
     commit_author:
       name: nitheeshkr
       email: nitheesh@playxoft.com
-    skip_upload: auto
+    skip_upload: true
     install: |
       bin.install "xecret"
     test: |
