@@ -58,20 +58,25 @@ export function PinUnlockForm({ onDone }: PinUnlockFormProps) {
     setBusy(true);
     setError(null);
 
+    let accepted = false;
     try {
       await api.post('/auth/pin/unlock', { pin: candidate });
-    } catch (cause) {
-      // Cleared on failure so the next attempt starts from an empty field
-      // rather than requiring six backspaces.
-      setPin('');
-      setError(errorMessage(cause));
-      setBusy(false);
-      return;
-    }
-
-    // Accepted. What the caller does next is still this form's wait.
-    try {
+      accepted = true;
+      // Accepted. What the caller does next is still this form's wait.
       await onDone();
+    } catch (cause) {
+      // Only the unlock request itself is reported here. A failure *after* the
+      // PIN was accepted is not the PIN's fault — "that PIN was not accepted"
+      // under the field would be a lie, and the caller is the one with a screen
+      // to say what actually went wrong. Caught rather than left to escape,
+      // because `submit` is called from an event handler with nothing to catch
+      // it: an unhandled rejection would leave the button spinning for good.
+      if (!accepted) {
+        // Cleared on failure so the next attempt starts from an empty field
+        // rather than requiring six backspaces.
+        setPin('');
+        setError(errorMessage(cause));
+      }
     } finally {
       setBusy(false);
     }
@@ -117,6 +122,12 @@ export interface PinChooseFormProps {
    * navigation. Rejecting shows the reason and empties both fields; a `pin`
    * field error is preferred to the generic message, because the weak-PIN rules
    * live on the server and "too common" is worth more than "invalid".
+   *
+   * Everything that reaches here is reported *as a reason the PIN was not
+   * accepted*, because that is the only thing this form has a place to say. A
+   * caller whose follow-up work can fail for its own reasons should catch that
+   * itself and answer it on its own screen — the two callers that re-read
+   * `/auth/me` do, because a failed re-read is not a rejected PIN.
    */
   submit: (pin: string) => Promise<void>;
 }

@@ -236,7 +236,17 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
               <p className="text-fg-muted text-sm">
                 Organisation: <span className="text-fg font-medium">{organizations[0]?.name}</span>
               </p>
-            ) : null}
+            ) : (
+              // A device is authorized *for* an organisation, so an account
+              // with none cannot approve one. Rare — one is created at first
+              // sign-in — but reachable once every membership is gone, and
+              // Approve is disabled by `selectedSlug === null` whether or not
+              // anything explains why. This is what explains why.
+              <Alert tone="danger" title="No organisation to authorize for">
+                This account is not in any organisation. Create one in the dashboard, then run{' '}
+                <code>xecret login</code> again.
+              </Alert>
+            )}
 
             {phase === 'approved' ? (
               <Alert tone="success">
