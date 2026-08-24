@@ -38,25 +38,39 @@ checksum:
   name_template: 'checksums.txt'
   algorithm: sha256
 
-# Homebrew is how most macOS developers will install this. The formula is
-# pushed to the tap repository on release; `skip_upload: auto` keeps
-# prereleases out of it.
+# Homebrew is how most macOS developers will install this. GoReleaser writes
+# the formula but does not push it: `skip_upload: true` leaves it in `dist/`,
+# and release.yml attaches it to the draft and commits it to the tap only once
+# a human has published that draft.
+#
+# It used to push here, under `skip_upload: auto` — and `auto` skips
+# prereleases and snapshots, not drafts. So every release pushed a formula
+# whose `url` lines pointed at assets still locked inside a draft, and
+# `brew upgrade xecret` failed with a 404 for the whole review window. v0.1.2
+# was the release where somebody looked; v0.1.1 had the same gap for the 23
+# minutes between its tag build and its publish.
 brews:
   - repository:
       owner: playxoft
       name: homebrew-tap
-      # Crossing repositories needs more than the workflow's GITHUB_TOKEN — a
-      # fine-grained PAT with contents:write on the tap, supplied by
-      # release.yml. See the note there.
+      # Never used: under skip_upload: true nothing here authenticates. The
+      # template still has to resolve, though — GoReleaser errors on a missing
+      # .Env key even for a pipe it skips — so release.yml sets the name to a
+      # placeholder rather than handing a tap-write PAT to the build. The real
+      # secret is read by the publish job, which does the push. See the note
+      # there.
       token: '{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}'
     directory: Formula
     homepage: https://xecret.playxoft.com
     description: Open-source, developer-first secret management
     license: MIT
+    # Inert under skip_upload: true — GoReleaser never makes the commit. The
+    # identity that lands it is in release.yml's tap step, which is the one to
+    # change.
     commit_author:
       name: nitheeshkr
       email: nitheesh@playxoft.com
-    skip_upload: auto
+    skip_upload: true
     install: |
       bin.install "xecret"
     test: |

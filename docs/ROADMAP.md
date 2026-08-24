@@ -406,7 +406,7 @@ xecret cache clear
 - `.xecret.yaml`: `project` + `environment` only. Never secrets. Safe to commit.
 - Error messages that say what to do next, not what went wrong internally
 - `--json` for scripting; respects `NO_COLOR`, detects non-TTY
-- GoReleaser: darwin/linux/windows × amd64/arm64, Homebrew tap, `curl | sh` installer, checksums + cosign signatures
+- GoReleaser: darwin/linux/windows × amd64/arm64, `curl | sh` installer, checksums + cosign signatures. The Homebrew formula it generates is published by release.yml after the release is reviewed, not by GoReleaser at tag time.
 
 **Exit:** `xecret run -- npm run dev` works on macOS, Linux, and Windows, online and offline.
 

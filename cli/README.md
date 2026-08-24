@@ -134,17 +134,30 @@ cli/
 
 ## Release
 
-Two stages, because the registry half cannot be undone.
+Two stages, because nothing a package manager serves should exist before a
+human has read the release — npm because publishing there cannot be undone, and
+Homebrew because a formula is only usable once the assets it names are public.
 
 **On a `v*` tag.** GoReleaser builds darwin/linux/windows × amd64/arm64,
-publishes archives with SHA-256 checksums and cosign signatures, pushes the
-Docker image, and pushes a Homebrew formula to `playxoft/homebrew-tap`. The
-GitHub release is left as a **draft** for a human to read.
+publishes archives with SHA-256 checksums and cosign signatures, and pushes the
+Docker image. It also *writes* the Homebrew formula but does not push it
+(`skip_upload: true`): the workflow signs it with cosign and attaches it to the
+release as `xecret.rb`, beside `xecret.rb.bundle`. The GitHub release is left as
+a **draft** for a human to read, and nothing has reached the tap.
 
-**On publishing that draft.** The `npm` job downloads the release's own
-archives, verifies each against the signed `checksums.txt`, and publishes seven
-packages: `xecret` plus one per platform. npm has no draft state and no
-meaningful undo, so it waits for the same gate everything else does.
+**On publishing that draft.** The `publish` job downloads the release's own
+assets and verifies the cosign signatures over both `checksums.txt` and
+`xecret.rb`, pinning the certificate to this workflow, this tag *and* the commit
+the build ran on. It then checks that the formula describes this release — one
+`version` line matching the tag, four platform archives, every URL inside this
+release, every hash present in the signed `checksums.txt` — commits it to
+`playxoft/homebrew-tap`, and publishes seven npm packages: `xecret` plus one per
+platform, each binary verified against the same signed checksums.
+
+The tap commit runs *before* npm on purpose: it is idempotent, and `npm publish`
+is not. If the run dies between them, re-running finds the tap already correct
+and retries npm. Prereleases skip the tap entirely — it holds one formula, and
+`brew install xecret` reads it.
 
 `scripts/install-cli.sh` is the `curl | sh` installer (it verifies the checksum
 before unpacking).
@@ -172,7 +185,7 @@ Secrets to set once, before the first release:
 
 | Secret | For |
 |---|---|
-| `HOMEBREW_TAP_GITHUB_TOKEN` | A fine-grained PAT with `contents:write` on `playxoft/homebrew-tap`. |
+| `HOMEBREW_TAP_GITHUB_TOKEN` | A fine-grained PAT with `contents:write` on `playxoft/homebrew-tap`. Read only by the `publish` job's tap commit; the tag-time build is handed a placeholder, since under `skip_upload: true` it never authenticates. |
 | `NPM_TOKEN` | An npm automation token for the account that owns `xecret`. |
 
 > **The origin is settled: `https://xecret.playxoft.com`.** It is compiled into
