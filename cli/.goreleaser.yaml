@@ -53,14 +53,20 @@ brews:
   - repository:
       owner: playxoft
       name: homebrew-tap
-      # Crossing repositories needs more than the workflow's GITHUB_TOKEN — a
-      # fine-grained PAT with contents:write on the tap, supplied by
-      # release.yml. See the note there.
+      # Never used: under skip_upload: true nothing here authenticates. The
+      # template still has to resolve, though — GoReleaser errors on a missing
+      # .Env key even for a pipe it skips — so release.yml sets the name to a
+      # placeholder rather than handing a tap-write PAT to the build. The real
+      # secret is read by the publish job, which does the push. See the note
+      # there.
       token: '{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}'
     directory: Formula
     homepage: https://xecret.playxoft.com
     description: Open-source, developer-first secret management
     license: MIT
+    # Inert under skip_upload: true — GoReleaser never makes the commit. The
+    # identity that lands it is in release.yml's tap step, which is the one to
+    # change.
     commit_author:
       name: nitheeshkr
       email: nitheesh@playxoft.com
