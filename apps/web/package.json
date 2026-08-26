@@ -34,7 +34,7 @@
     "clsx": "^2.1.1",
     "firebase": "^12.17.1",
     "firebase-auth-cloudflare-workers": "^2.0.6",
-    "marked": "^16.4.2",
+    "marked": "^18.0.10",
     "next": "16.3.2",
     "react": "19.2.8",
     "react-dom": "19.2.8",
