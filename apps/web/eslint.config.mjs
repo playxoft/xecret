@@ -34,6 +34,23 @@ const eslintConfig = defineConfig([
   ...nextTs,
 
   {
+    name: 'xecret/react-version',
+    // eslint-config-next ships `settings.react.version: 'detect'`, and that
+    // setting is the only route into eslint-plugin-react's detectReactVersion(),
+    // which calls context.getFilename() — removed in ESLint 10. The plugin has
+    // no release that supports ESLint 10 yet (jsx-eslint/eslint-plugin-react
+    // #3977), so every react/* rule throws before it lints anything.
+    //
+    // Naming the version skips that branch entirely. It is not a workaround
+    // holding a door shut: react is pinned to this exact version a few lines
+    // into package.json, so 'detect' was only ever going to walk the
+    // filesystem, once per rule, to rediscover a number already written down.
+    // Keep the two in step — a stale value here silently mis-scopes the
+    // version-gated rules rather than failing.
+    settings: { react: { version: '19.2.8' } },
+  },
+
+  {
     name: 'xecret/security',
     rules: {
       'no-restricted-imports': [
