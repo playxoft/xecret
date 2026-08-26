@@ -57,8 +57,59 @@ updates:
     directory: /cli
     schedule:
       interval: weekly
+    groups:
+      # golang.org/x/term is built against a matching golang.org/x/sys, which is
+      # why sys appears here as an indirect dependency at all. Bumping one and
+      # not the other is the mismatched-majors case the header describes.
+      golang-x:
+        patterns:
+          - golang.org/x/*
+        update-types: [major, minor, patch]
+
+      # go-keyring is a front end over per-OS backends: wincred on Windows,
+      # dbus on Linux. They are its implementation, not our choices, and a
+      # go-keyring upgrade normally moves them with it.
+      keyring:
+        patterns:
+          - github.com/zalando/go-keyring
+          - github.com/danieljoos/wincred
+          - github.com/godbus/dbus/*
+        update-types: [major, minor, patch]
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      # Ungrouped, this ecosystem produced exactly the stream the header warns
+      # about: checkout, setup-go and setup-node arrived as three separate PRs
+      # for one upgrade — the runner-runtime bump that every action in a job has
+      # to make together. Majors are included for that reason.
+      actions:
+        patterns:
+          - actions/*
+        update-types: [major, minor, patch]
+
+      # The multi-arch build stack. qemu, buildx and login are used in one job
+      # and only together; a partial bump is a combination nobody has run.
+      docker:
+        patterns:
+          - docker/*
+        update-types: [major, minor, patch]
+
+      # The release-signing chain: goreleaser builds and calls cosign, syft
+      # catalogues what it built, and release.yml verifies the result. What
+      # matters when reviewing any of them is whether the chain still holds
+      # end to end, which is one question, not three.
+      release-signing:
+        patterns:
+          - goreleaser/*
+          - sigstore/*
+          - anchore/*
+        update-types: [major, minor, patch]
+
+      # Deliberately left out of every group: contributor-assistant runs on
+      # `pull_request_target` with `statuses: write` and sees a fork's PR
+      # context, which makes it the one action here whose upgrade should arrive
+      # alone and be read on its own terms rather than batched with routine
+      # SHA bumps. See the note at the top of cla.yml.
