@@ -46,7 +46,7 @@
     "@tailwindcss/postcss": "^4",
     "@types/node": "^26",
     "@types/react": "^19",
-    "@types/react-dom": "^19",
+    "@types/react-dom": "^19.2.5",
     "eslint": "^10",
     "eslint-config-next": "16.3.2",
     "tailwindcss": "^4",
