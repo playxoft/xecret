@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   checkSecretName,
@@ -30,14 +30,33 @@ import type { SecretWriteResponse } from './types';
  * `localStorage` or `sessionStorage` (a draft-restore feature would persist a
  * credential to disk), put in a URL, or passed to `console`.
  *
- * **A stored value is never loaded into this state on its own.** Opening the
- * editor on an existing secret starts it *empty*: the current value is only
- * obtainable through the audited reveal endpoint, and seeding it here would
- * decrypt a secret merely because somebody clicked "edit". The row offers an
- * explicit "load current value" action for people who want to amend rather than
- * retype, and that action goes through the same audited endpoint as any other
- * reveal, so the read is recorded like every other read.
+ * **A stored value reaches this state only through the audited reveal.**
+ * Opening the editor on an existing secret fetches the current value from
+ * `GET .../secrets/{name}` and seeds it here, so amending one character does not
+ * mean retyping a credential out of a password manager. That fetch is a reveal
+ * like any other and writes the same `secret.revealed` record: opening an editor
+ * *is* reading the secret, and the audit log says so. What was seeded is
+ * remembered as `baseline`, which is what keeps "opened it and changed nothing"
+ * from counting as unsaved work or costing a write.
  */
+
+/**
+ * How long a seeded plaintext may sit in this state.
+ *
+ * The same window `SecretValue`, `ValueField` and `useRevealAll` keep, and it
+ * lives here as well as in the row because this is where the plaintext actually
+ * is: a row unmounts the moment the filter stops listing it, taking its timer
+ * with it, and the credential it was seeded with would otherwise stay in this
+ * map for the rest of the page's life.
+ *
+ * Only an editor still holding exactly what was loaded is dropped. Once the user
+ * has typed, the box holds their own work — quite possibly pasted from somewhere
+ * they cannot get it again — and no timer may take that.
+ */
+const SEED_DURATION_MS = 180_000;
+
+/** How often the sweep looks. Coarse: the window is three minutes, not three. */
+const SWEEP_INTERVAL_MS = 15_000;
 
 /** Which input an inline error belongs under. */
 export type DraftField = 'name' | 'value';
@@ -47,9 +66,21 @@ export interface DraftError {
   message: string;
 }
 
+/**
+ * Where a new row goes.
+ *
+ * The button above the table puts one at the top and the one under the last row
+ * puts one at the bottom, because in both cases the row should appear where the
+ * user was already looking. A single list with a single end would send half of
+ * those clicks to the other end of sixty rows.
+ */
+export type DraftPlacement = 'start' | 'end';
+
 /** A secret being composed in the table. Nothing here has reached the server. */
 export interface Draft {
   id: string;
+  /** Which end of the table this row was added at. */
+  placement: DraftPlacement;
   name: string;
   value: string;
   note: string;
@@ -62,6 +93,22 @@ export interface Draft {
 /** A new value staged against a secret that already exists. */
 export interface PendingEdit {
   value: string;
+  /**
+   * The stored value the editor was seeded with, when it was seeded at all.
+   *
+   * Present so a typed value can be compared against the stored one without
+   * asking the server: an editor opened, read and closed again has
+   * `value === baseline` and is not a change. It must not light the save bar,
+   * and it must not produce a write the server would only answer `unchanged`.
+   */
+  baseline?: string | undefined;
+  /**
+   * When the baseline was fetched, as `Date.now()`. Present exactly when
+   * `baseline` is, and read only by the sweep that enforces the window above —
+   * counted from the decryption, so an editor left open cannot extend how long
+   * the plaintext lives by being looked at.
+   */
+  seededAt?: number | undefined;
   /**
    * A type change staged alongside the value, or `undefined` to keep the stored
    * one.
@@ -108,17 +155,36 @@ export interface StagedChanges {
   pendingCount: number;
   saving: boolean;
 
-  addDraft: (seed?: DraftSeed) => void;
-  addDrafts: (seeds: readonly DraftSeed[]) => void;
+  addDraft: (seed?: DraftSeed, placement?: DraftPlacement) => void;
+  addDrafts: (seeds: readonly DraftSeed[], placement?: DraftPlacement) => void;
   patchDraft: (id: string, patch: DraftSeed) => void;
   /** Replaces one draft with several — how a pasted `.env` block expands. */
   expandDraft: (id: string, seeds: readonly DraftSeed[]) => void;
   removeDraft: (id: string) => void;
 
   openEdit: (name: string) => void;
+  /**
+   * Opens the editor on the value the secret already holds: the caller passes
+   * the plaintext it has just revealed. Kept as the baseline, so an editor
+   * opened and closed again leaves nothing staged.
+   */
+  seedEdit: (name: string, value: string) => void;
   setEdit: (name: string, value: string) => void;
+  /**
+   * Drops the staged value and its baseline, keeping a staged rename, note or
+   * type. The row calls it when the value editor is cancelled: closing that box
+   * must not throw away a rename typed into the field beside it.
+   */
+  resetEditValue: (name: string) => void;
   /** Stages a type change, opening the editor if it is not already open. */
   setEditType: (name: string, valueType: SecretValueType) => void;
+  /**
+   * Un-stages a type change. The row calls it when the type picked is the one
+   * already stored: Radix fires `onValueChange` for the item that is already
+   * checked, so re-picking a secret's own type would otherwise stage a change
+   * to nothing and save it as a real write.
+   */
+  clearEditType: (name: string) => void;
   /**
    * Stages a rename or a note change. `null` un-stages that field — the row
    * passes it when the input is back to the stored value, so typing a name and
@@ -134,6 +200,70 @@ export interface StagedChanges {
    * with exactly the work that is still outstanding.
    */
   save: (existingNames: ReadonlySet<string>) => Promise<SaveOutcome>;
+}
+
+/**
+ * Whether this editor holds a value that differs from the stored one.
+ *
+ * The one place that question is answered, because three callers ask it and
+ * they have to agree: the save bar's count, the row's "would closing this lose
+ * work?" check, and the save loop deciding whether to issue a write at all.
+ */
+export function hasNewValue(edit: PendingEdit): boolean {
+  return edit.value.length > 0 && edit.value !== edit.baseline;
+}
+
+/**
+ * Whether the user has typed in this editor at all.
+ *
+ * A wider question than `hasNewValue`, and a different one. Emptying a seeded
+ * box is not something a save would write — an empty value is not a value — but
+ * it is unmistakably the user at work, and the editor must not then behave as
+ * though it were untouched: Escape, a click elsewhere and the reveal window
+ * would all close the box while somebody was reaching for their password
+ * manager to paste the replacement.
+ */
+export function isTouched(edit: PendingEdit): boolean {
+  return edit.baseline === undefined ? edit.value.length > 0 : edit.value !== edit.baseline;
+}
+
+/**
+ * Whether this editor's staged name is a real rename.
+ *
+ * Shared by the save bar's count and by the save loop, because they used to
+ * disagree: the count asked "is a name staged at all", the loop asked "is it
+ * different from the stored one". Typing a trailing space satisfied the first
+ * and not the second, so the bar claimed an unsaved change that Save then
+ * dropped without writing anything, reporting "Nothing to save".
+ *
+ * `storedName` is the key this editor is filed under, which *is* the stored
+ * name — a rename is staged in the entry, never applied to the key.
+ */
+export function wantsRename(storedName: string, edit: PendingEdit): boolean {
+  const next = edit.name?.trim();
+  return next !== undefined && next !== storedName;
+}
+
+/**
+ * The same entry with its value and baseline removed, or `null` where nothing
+ * would be left to keep.
+ *
+ * Shared by cancel, by the type/name/note un-staging paths, and by the sweep,
+ * because all four have to agree about what "no value" leaves behind — an entry
+ * that keeps an empty husk stays in `edits` forever, and one that is deleted
+ * while it still holds a rename throws that rename away.
+ */
+function withoutValue(edit: PendingEdit): PendingEdit | null {
+  if (edit.valueType === undefined && edit.name === undefined && edit.note === undefined) {
+    return null;
+  }
+  return {
+    value: '',
+    ...(edit.valueType === undefined ? {} : { valueType: edit.valueType }),
+    ...(edit.name === undefined ? {} : { name: edit.name }),
+    ...(edit.note === undefined ? {} : { note: edit.note }),
+    error: null,
+  };
 }
 
 export function isBlankDraft(draft: Draft): boolean {
@@ -238,12 +368,13 @@ export function useStagedChanges(
   // of credential fields is how React starts showing one row's value in another.
   const nextId = useRef(1);
 
-  const mint = useCallback((seeds: readonly DraftSeed[]): Draft[] => {
+  const mint = useCallback((seeds: readonly DraftSeed[], placement: DraftPlacement): Draft[] => {
     return seeds.map((seed) => {
       const id = `draft-${nextId.current}`;
       nextId.current += 1;
       return {
         id,
+        placement,
         name: seed.name ?? '',
         value: seed.value ?? '',
         note: seed.note ?? '',
@@ -254,15 +385,23 @@ export function useStagedChanges(
   }, []);
 
   const addDrafts = useCallback(
-    (seeds: readonly DraftSeed[]) => {
+    (seeds: readonly DraftSeed[], placement: DraftPlacement = 'end') => {
       if (seeds.length === 0) return;
-      const rows = mint(seeds);
-      setDrafts((current) => [...current, ...rows]);
+      const rows = mint(seeds, placement);
+      // A row added at the top goes above the ones already there, so pressing
+      // the button twice leaves the newest under the cursor rather than
+      // three rows down.
+      setDrafts((current) =>
+        placement === 'start' ? [...rows, ...current] : [...current, ...rows],
+      );
     },
     [mint],
   );
 
-  const addDraft = useCallback((seed?: DraftSeed) => addDrafts([seed ?? {}]), [addDrafts]);
+  const addDraft = useCallback(
+    (seed?: DraftSeed, placement: DraftPlacement = 'end') => addDrafts([seed ?? {}], placement),
+    [addDrafts],
+  );
 
   const patchDraft = useCallback((id: string, patch: DraftSeed) => {
     setDrafts((current) =>
@@ -279,10 +418,16 @@ export function useStagedChanges(
   const expandDraft = useCallback(
     (id: string, seeds: readonly DraftSeed[]) => {
       if (seeds.length === 0) return;
-      const replacements = mint(seeds);
+      // Minted outside the updater: `mint` advances the id counter, and a state
+      // updater must be pure — React may call it twice.
+      const rows = mint(seeds, 'end');
       setDrafts((current) => {
         const at = current.findIndex((draft) => draft.id === id);
         if (at === -1) return current;
+        // The rows a paste expands into take the place, and the end, of the row
+        // that was pasted into.
+        const placement = current[at]?.placement ?? 'end';
+        const replacements = rows.map((row) => ({ ...row, placement }));
         return [...current.slice(0, at), ...replacements, ...current.slice(at + 1)];
       });
     },
@@ -304,17 +449,56 @@ export function useStagedChanges(
     });
   }, []);
 
+  const seedEdit = useCallback((name: string, value: string) => {
+    setEdits((current) => {
+      const next = new Map(current);
+      const existing = current.get(name);
+      next.set(name, {
+        value,
+        baseline: value,
+        seededAt: Date.now(),
+        ...(existing?.valueType === undefined ? {} : { valueType: existing.valueType }),
+        ...(existing?.name === undefined ? {} : { name: existing.name }),
+        ...(existing?.note === undefined ? {} : { note: existing.note }),
+        error: null,
+      });
+      return next;
+    });
+  }, []);
+
   const setEdit = useCallback((name: string, value: string) => {
     setEdits((current) => {
       const next = new Map(current);
       const existing = current.get(name);
       next.set(name, {
         value,
+        // The baseline survives every keystroke: it is what the editor was
+        // seeded with, and typing the stored value back in has to stay
+        // recognisable as the non-change it is.
+        ...(existing?.baseline === undefined
+          ? {}
+          : { baseline: existing.baseline, seededAt: existing.seededAt }),
         ...(existing?.valueType === undefined ? {} : { valueType: existing.valueType }),
         ...(existing?.name === undefined ? {} : { name: existing.name }),
         ...(existing?.note === undefined ? {} : { note: existing.note }),
         error: null,
       });
+      return next;
+    });
+  }, []);
+
+  const resetEditValue = useCallback((name: string) => {
+    setEdits((current) => {
+      const existing = current.get(name);
+      if (existing === undefined) return current;
+
+      const next = new Map(current);
+      const stripped = withoutValue(existing);
+      // Nothing else staged means there is no reason for the row to stay in the
+      // map; an empty entry left behind would keep it marked as being edited for
+      // the rest of the page's life.
+      if (stripped === null) next.delete(name);
+      else next.set(name, stripped);
       return next;
     });
   }, []);
@@ -328,9 +512,44 @@ export function useStagedChanges(
       const existing = current.get(name);
       next.set(name, {
         value: existing?.value ?? '',
+        ...(existing?.baseline === undefined
+          ? {}
+          : { baseline: existing.baseline, seededAt: existing.seededAt }),
         valueType,
         ...(existing?.name === undefined ? {} : { name: existing.name }),
         ...(existing?.note === undefined ? {} : { note: existing.note }),
+        error: null,
+      });
+      return next;
+    });
+  }, []);
+
+  const clearEditType = useCallback((name: string) => {
+    setEdits((current) => {
+      const existing = current.get(name);
+      if (existing === undefined || existing.valueType === undefined) return current;
+
+      const next = new Map(current);
+      // `baseline` is checked as well as `value`: a seeded editor whose box has
+      // been emptied still has one open, and deleting the entry here would slam
+      // it shut mid-edit and cost a second audited read to get back.
+      if (
+        existing.value.length === 0 &&
+        existing.baseline === undefined &&
+        existing.name === undefined &&
+        existing.note === undefined
+      ) {
+        next.delete(name);
+        return next;
+      }
+
+      next.set(name, {
+        value: existing.value,
+        ...(existing.baseline === undefined
+          ? {}
+          : { baseline: existing.baseline, seededAt: existing.seededAt }),
+        ...(existing.name === undefined ? {} : { name: existing.name }),
+        ...(existing.note === undefined ? {} : { note: existing.note }),
         error: null,
       });
       return next;
@@ -347,8 +566,28 @@ export function useStagedChanges(
         // what keeps `pendingCount` honest about a field typed and then undone.
         const stagedName = patch.name === undefined ? (existing?.name ?? null) : patch.name;
         const stagedNote = patch.note === undefined ? (existing?.note ?? null) : patch.note;
+
+        // A name typed and then restored, on a row holding nothing else, leaves
+        // no reason for the entry to exist. Without this the row stays in the
+        // map forever, which is what makes the "editor already open" no-op path
+        // below reachable on a row nobody is editing.
+        if (
+          stagedName === null &&
+          stagedNote === null &&
+          (existing === undefined ||
+            (existing.value.length === 0 &&
+              existing.baseline === undefined &&
+              existing.valueType === undefined))
+        ) {
+          next.delete(name);
+          return next;
+        }
+
         next.set(name, {
           value: existing?.value ?? '',
+          ...(existing?.baseline === undefined
+            ? {}
+            : { baseline: existing.baseline, seededAt: existing.seededAt }),
           ...(existing?.valueType === undefined ? {} : { valueType: existing.valueType }),
           ...(stagedName === null ? {} : { name: stagedName }),
           ...(stagedNote === null ? {} : { note: stagedNote }),
@@ -374,17 +613,46 @@ export function useStagedChanges(
     setEdits(new Map());
   }, []);
 
+  // The window, enforced where the plaintext actually lives. An interval rather
+  // than a timer per entry: a timer keyed on `edits` would restart every time
+  // anything anywhere in the table was typed, so one row's activity would extend
+  // another row's window indefinitely — which is exactly what counting from the
+  // decryption is supposed to prevent.
+  useEffect(() => {
+    const sweep = setInterval(() => {
+      setEdits((current) => {
+        const now = Date.now();
+        let changed = false;
+        const next = new Map(current);
+
+        for (const [name, edit] of current) {
+          if (edit.seededAt === undefined || hasNewValue(edit)) continue;
+          if (now - edit.seededAt < SEED_DURATION_MS) continue;
+
+          changed = true;
+          const stripped = withoutValue(edit);
+          if (stripped === null) next.delete(name);
+          else next.set(name, stripped);
+        }
+
+        return changed ? next : current;
+      });
+    }, SWEEP_INTERVAL_MS);
+
+    return () => clearInterval(sweep);
+  }, []);
+
   const pendingCount = useMemo(() => {
     const rows = drafts.filter((draft) => !isBlankDraft(draft)).length;
     let values = 0;
     // A staged type, name or note change counts even with no new value: it is a
     // change the user made and the save bar has to admit to holding it, or
     // Discard would silently throw away something they cannot see.
-    for (const edit of edits.values()) {
+    for (const [name, edit] of edits) {
       if (
-        edit.value.length > 0 ||
+        hasNewValue(edit) ||
         edit.valueType !== undefined ||
-        edit.name !== undefined ||
+        wantsRename(name, edit) ||
         edit.note !== undefined
       ) {
         values += 1;
@@ -445,9 +713,9 @@ export function useStagedChanges(
 
         for (const [name, edit] of edits) {
           const rename = edit.name?.trim();
-          const wantsRename = rename !== undefined && rename !== name;
-          const hasValue = edit.value.length > 0;
-          const hasMeta = wantsRename || edit.note !== undefined;
+          const renaming = wantsRename(name, edit);
+          const hasValue = hasNewValue(edit);
+          const hasMeta = renaming || edit.note !== undefined;
 
           // An editor opened and left untouched is not a change. Closing it
           // silently is right: the user opened a row, thought better of it, and
@@ -458,7 +726,7 @@ export function useStagedChanges(
           // of the wrong shape is reported against its own row instead of
           // costing a round trip and coming back as one failure in a batch of
           // thirty.
-          if (wantsRename) {
+          if (renaming && rename !== undefined) {
             const check = checkSecretName(rename);
             const problem = !check.valid
               ? (check.message ?? 'That name cannot be used.')
@@ -505,7 +773,7 @@ export function useStagedChanges(
             if (hasMeta || typeOnly) {
               const note = edit.note?.trim();
               await api.put(apiPath.secret(orgSlug, projectSlug, envSlug, name), {
-                ...(wantsRename ? { name: rename } : {}),
+                ...(renaming ? { name: rename } : {}),
                 ...(note === undefined ? {} : { note: note.length === 0 ? null : note }),
                 ...(typeOnly ? { valueType: edit.valueType } : {}),
               });
@@ -515,7 +783,7 @@ export function useStagedChanges(
             if (changed) outcome.updated += 1;
             else outcome.unchanged += 1;
 
-            if (wantsRename) {
+            if (renaming && rename !== undefined) {
               claimed.delete(name);
               claimed.add(rename);
             }
@@ -549,8 +817,11 @@ export function useStagedChanges(
     expandDraft,
     removeDraft,
     openEdit,
+    seedEdit,
     setEdit,
+    resetEditValue,
     setEditType,
+    clearEditType,
     setEditMeta,
     closeEdit,
     discardAll,

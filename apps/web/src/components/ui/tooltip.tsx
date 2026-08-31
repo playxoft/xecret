@@ -33,6 +33,16 @@ export interface TooltipProps {
   content: ReactNode;
   side?: ComponentProps<typeof TooltipPrimitive.Content>['side'];
   align?: ComponentProps<typeof TooltipPrimitive.Content>['align'];
+  /**
+   * Drives the tooltip from outside.
+   *
+   * Radix opens on focus and closes on pointer-down, click and Escape — but not
+   * on a keystroke, so a tooltip on a *text field* opens when the field is
+   * tabbed into and then sits over the row for as long as the user types. The
+   * one caller that attaches a tooltip to an input closes it on keydown.
+   */
+  open?: boolean | undefined;
+  onOpenChange?: ((open: boolean) => void) | undefined;
 }
 
 /**
@@ -43,9 +53,19 @@ export interface TooltipProps {
  * whose *name* is only in a tooltip is unusable — put that in `aria-label` and
  * use the tooltip for the sighted-user hint alongside it.
  */
-export function Tooltip({ children, content, side = 'top', align = 'center' }: TooltipProps) {
+export function Tooltip({
+  children,
+  content,
+  side = 'top',
+  align = 'center',
+  open,
+  onOpenChange,
+}: TooltipProps) {
   return (
-    <TooltipPrimitive.Root>
+    <TooltipPrimitive.Root
+      {...(open === undefined ? {} : { open })}
+      {...(onOpenChange === undefined ? {} : { onOpenChange })}
+    >
       <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Content

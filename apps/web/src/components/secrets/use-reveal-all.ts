@@ -54,6 +54,18 @@ export interface RevealAll {
   hide: () => void;
   /** Decrypt if needed and show nothing — for a caller that reveals per row. */
   load: () => void;
+  /**
+   * Drops the plaintexts outright, so the next reveal is a fresh audited read.
+   *
+   * Called by every write in the table — a save, a delete, a restore. This
+   * cache is a snapshot of an environment, and a snapshot that outlives the
+   * environment it describes is worse than no snapshot: the row would keep
+   * showing the value that has just been replaced, Copy would put the
+   * superseded credential on the clipboard, and the editor — which seeds itself
+   * from here — would offer the old value as the basis for the next edit and
+   * write it straight back over the new one.
+   */
+  forget: () => void;
 }
 
 export function useRevealAll(orgSlug: string, projectSlug: string, envSlug: string): RevealAll {
@@ -196,5 +208,6 @@ export function useRevealAll(orgSlug: string, projectSlug: string, envSlug: stri
     reveal,
     hide,
     load,
+    forget,
   };
 }
