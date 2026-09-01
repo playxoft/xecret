@@ -19,7 +19,7 @@
     "db:studio": "drizzle-kit studio"
   },
   "devDependencies": {
-    "@types/node": "^26",
+    "@types/node": "^26.4.0",
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.23.12",
     "typescript": "^6",
