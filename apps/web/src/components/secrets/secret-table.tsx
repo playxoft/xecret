@@ -1,7 +1,8 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
+import { toSecretValueType } from '@xecret/core/validation';
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { pluralize } from '@/lib/format';
@@ -12,13 +13,14 @@ import {
   Button,
   Checkbox,
   ChevronUpDownIcon,
+  ColumnsIcon,
   ConfirmDialog,
+  DownloadIcon,
   EmptyState,
   EyeIcon,
   EyeOffIcon,
   Input,
   KeyIcon,
-  LayersIcon,
   PlusIcon,
   PointerIcon,
   SearchIcon,
@@ -30,10 +32,11 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  UploadIcon,
   useToast,
 } from '@/components/ui';
-import { BulkAddPanel } from './bulk-add-panel';
 import type { EnvironmentTarget } from './multi-environment-write';
+import { useComparedSecrets } from './use-compared-secrets';
 import { useRevealAll } from './use-reveal-all';
 import type { RevealAll } from './use-reveal-all';
 import { DraftRow } from './draft-row';
@@ -50,7 +53,26 @@ export interface SecretTableProps {
   isProduction: boolean;
   /** Every environment in this project, so a paste can fan out across them. */
   environments: readonly EnvironmentTarget[];
+  /**
+   * The environments shift-clicked in the switcher, shown beside this one's
+   * values. Empty is the normal case and costs nothing.
+   */
+  comparedEnvironments: readonly EnvironmentTarget[];
+  /** Drops every compared environment — the "stop comparing" button. */
+  onStopComparing: () => void;
   secrets: readonly SecretSummary[];
+  /**
+   * Bumped by every write to this environment that happens outside this
+   * component — an import, today.
+   *
+   * The table holds a decrypted snapshot of the environment behind "Reveal all",
+   * and a write it cannot see makes that snapshot a set of superseded
+   * credentials: displayed, copied to the clipboard, and seeded into the next
+   * edit, which then writes them back over what the import just landed. The
+   * dialogs that do those writes are owned by the screen above, so this is how
+   * they say so.
+   */
+  externalWrites: number;
   /** Present when the environment holds more than one page. */
   onLoadMore: (() => void) | null;
   loadingMore: boolean;
@@ -94,6 +116,9 @@ export function SecretTable({
   envSlug,
   isProduction,
   environments,
+  comparedEnvironments,
+  onStopComparing,
+  externalWrites,
   secrets,
   onLoadMore,
   loadingMore,
@@ -108,18 +133,99 @@ export function SecretTable({
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
-  const [bulkAdding, setBulkAdding] = useState(false);
   const revealAll = useRevealAll(orgSlug, projectSlug, envSlug);
   const [hoverReveal, setHoverReveal] = useState(false);
-  const [hovered, setHovered] = useState<string | null>(null);
-  const [history, setHistory] = useState<SecretSummary | null>(null);
+  /**
+   * The rows hover mode has shown so far.
+   *
+   * A set that only grows, so a value stays on screen once the pointer has
+   * brought it up. Hiding it again the moment the pointer moved on made the mode
+   * useless for the thing it exists for — reading one value while typing it
+   * somewhere else — and turned a table into something that had to be re-hovered
+   * to be re-read. Turning the mode off empties it.
+   */
+  const [hoverRevealed, setHoverRevealed] = useState<ReadonlySet<string>>(new Set());
+  // Which environment's history: a compared row's version chip opens the
+  // history of *that* environment, not of the one the page is about.
+  const [history, setHistory] = useState<{ envSlug: string; secretName: string } | null>(null);
   const [deleting, setDeleting] = useState<SecretSummary | null>(null);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [actionError, setActionError] = useState<unknown>(null);
 
   const staged = useStagedChanges(orgSlug, projectSlug, envSlug);
+  const compared = useComparedSecrets(orgSlug, projectSlug, comparedEnvironments);
+
+  // Compared during render rather than in an effect: an effect runs after paint,
+  // so the superseded value would be on screen for a frame — and could be
+  // clicked into an editor in that frame.
+  const [renderedWrites, setRenderedWrites] = useState(externalWrites);
+  if (renderedWrites !== externalWrites) {
+    setRenderedWrites(externalWrites);
+    revealAll.forget();
+    // The other place this screen holds plaintext for the environment that has
+    // just been written behind its back. An import that overwrites a key whose
+    // editor is open leaves that editor displaying the pre-import value as
+    // though it were the stored one — and amending a character of it and saving
+    // would write it back, silently reverting the import. Nothing here takes
+    // what the user typed; only the seed it was typed over.
+    staged.forgetSeeds();
+  }
+
+  const currentEnvironment = environments.find((entry) => entry.slug === envSlug);
+
+  /** Whether a given environment is the production one, for the dialogs. */
+  function environmentIsProduction(slug: string): boolean {
+    if (slug === envSlug) return isProduction;
+    return environments.find((entry) => entry.slug === slug)?.isProduction ?? false;
+  }
+
+  // Hiding the tab masks the rows hover mode has stuck open, exactly as it
+  // masks everything else on screen. `useRevealAll` cannot do this one: in hover
+  // mode its values arrive through `load()`, which never sets `shown`, so its
+  // own visibility listener is not even registered. Starting a screen share must
+  // not leave three plaintexts rendered because the pointer once passed over
+  // them.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') setHoverRevealed(new Set());
+    };
+
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
 
   const existingNames = useMemo(() => new Set(secrets.map((secret) => secret.name)), [secrets]);
+
+  /**
+   * How many keys each compared environment holds that this one does not.
+   *
+   * Compared values are rendered inside *this* environment's rows, so a key that
+   * exists only in staging has nowhere to appear. Counting them is the
+   * difference between a comparison that is silently partial and one that says
+   * what it cannot show — and "staging has three keys production does not" is
+   * usually the answer somebody opened this screen to find.
+   */
+  const comparedOnly = useMemo(
+    () =>
+      // Only once *this* environment is fully loaded. `existingNames` covers the
+      // pages fetched so far, so with a "Load more" still on screen every key
+      // past the boundary counts as one this environment "does not have" — the
+      // banner asserting an absence that is really just a horizon, and the count
+      // changing when the user pages in the rest without anything being written.
+      // `ComparedEnvironment.truncated` is the same admission from the other
+      // side, and this is a secrets manager: "production does not have this" is
+      // exactly the wrong answer that ends in an outage.
+      onLoadMore !== null
+        ? []
+        : compared.environments
+            .map((environment) => ({
+              name: environment.name,
+              count: [...environment.byName.keys()].filter((name) => !existingNames.has(name))
+                .length,
+            }))
+            .filter((entry) => entry.count > 0),
+    [compared.environments, existingNames, onLoadMore],
+  );
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -191,8 +297,20 @@ export function SecretTable({
    * fetching itself as the pointer crosses it — would decrypt an environment one
    * credential at a time and write an audit record per mouse movement.
    */
+  /**
+   * Masks everything, including the rows hover mode has stuck open.
+   *
+   * "Hide all" used to leave those on screen — and their own eye buttons are
+   * disabled while a value is supplied from here, so there was no control left
+   * that could mask them.
+   */
+  function hideAll() {
+    revealAll.hide();
+    setHoverRevealed(new Set());
+  }
+
   function toggleHoverReveal() {
-    setHovered(null);
+    setHoverRevealed(new Set());
     if (hoverArmed) {
       setHoverReveal(false);
       return;
@@ -206,7 +324,7 @@ export function SecretTable({
     const plaintext = revealAll.values?.[name];
     if (plaintext === undefined) return undefined;
     if (revealAll.revealed) return plaintext;
-    return hoverArmed && hovered === name ? plaintext : undefined;
+    return hoverArmed && hoverRevealed.has(name) ? plaintext : undefined;
   }
 
   function toggleOne(name: string, checked: boolean) {
@@ -221,6 +339,9 @@ export function SecretTable({
   async function deleteOne(name: string) {
     await api.delete(apiPath.secret(orgSlug, projectSlug, envSlug, name));
     setSelected(new Set());
+    // The snapshot "Reveal all" is holding describes an environment that no
+    // longer exists. See `RevealAll.forget` for what a stale one does.
+    revealAll.forget();
     // A staged rewrite of a secret that no longer exists would fail on the next
     // save with a 404 nobody could explain.
     staged.closeEdit(name);
@@ -249,6 +370,7 @@ export function SecretTable({
     }
 
     setSelected(new Set());
+    revealAll.forget();
     onChanged();
 
     if (failed.length === 0) {
@@ -269,9 +391,19 @@ export function SecretTable({
 
     const outcome = await staged.save(existingNames);
     // Always, even on a total failure: a partial batch has already changed the
-    // environment, and leaving the table showing the old versions would make
-    // the next save operate on stale version numbers.
+    // environment, and leaving the table showing the old versions would make the
+    // next save operate on stale version numbers.
     onChanged();
+    // The decrypted snapshot goes with them, but only if something was actually
+    // written — a row that kept showing the value it had before the save would
+    // seed the *next* edit from it and write it back over what was just saved.
+    // A batch that failed validation wrote nothing, and un-revealing the whole
+    // environment over it would cost a fresh decryption for no reason.
+    //
+    // `wrote` rather than `created || updated`: a row writes its value and its
+    // metadata as two requests, so a rename rejected after the value has landed
+    // counts only as `failed` while having changed the environment all the same.
+    if (outcome.wrote) revealAll.forget();
     announce(outcome);
   }
 
@@ -301,6 +433,9 @@ export function SecretTable({
     });
   }
 
+  const startDrafts = staged.drafts.filter((draft) => draft.placement === 'start');
+  const endDrafts = staged.drafts.filter((draft) => draft.placement !== 'start');
+
   const allVisibleSelected = visible.length > 0 && selectedVisible.length === visible.length;
   const someVisibleSelected = selectedVisible.length > 0 && !allVisibleSelected;
   const hasRows = visible.length > 0 || staged.drafts.length > 0;
@@ -310,11 +445,12 @@ export function SecretTable({
       <Toolbar
         query={query}
         onQueryChange={setQuery}
-        bulkAdding={bulkAdding}
-        onToggleBulkAdd={() => setBulkAdding((current) => !current)}
-        onAddDraft={() => staged.addDraft()}
+        // From the top of the table, so the new row lands where the button that
+        // made it is. The one under the last row appends instead.
+        onAddDraft={() => staged.addDraft(undefined, 'start')}
         disabled={staged.saving}
         revealAll={revealAll}
+        onHideAll={hideAll}
         hoverReveal={hoverArmed}
         hoverLoading={hoverReveal && revealAll.loading}
         onToggleHoverReveal={toggleHoverReveal}
@@ -323,16 +459,27 @@ export function SecretTable({
         {...(onExport === undefined ? {} : { onExport })}
       />
 
-      {bulkAdding ? (
-        <BulkAddPanel
-          onAdd={staged.addDrafts}
-          onClose={() => setBulkAdding(false)}
-          currentEnvSlug={envSlug}
-          orgSlug={orgSlug}
-          projectSlug={projectSlug}
-          environments={environments}
-          onWritten={onChanged}
-        />
+      {comparedEnvironments.length > 0 ? (
+        <div className="border-line bg-canvas-inset flex flex-wrap items-center gap-3 rounded-lg border px-3.5 py-2.5">
+          <ColumnsIcon aria-hidden="true" className="text-fg-subtle size-4" />
+          <p role="status" aria-live="polite" className="text-fg text-sm font-medium">
+            Comparing {comparedEnvironments.map((environment) => environment.name).join(', ')}
+          </p>
+          <p className="text-fg-subtle hidden text-sm sm:block">
+            {comparedOnly.length > 0
+              ? comparedOnly
+                  .map(
+                    (entry) =>
+                      `${entry.name} has ${pluralize(entry.count, 'key')} this environment does not, not shown here.`,
+                  )
+                  .join(' ')
+              : 'Their values are masked until you ask for one, exactly like this environment’s. Editing one there saves to that environment on its own.'}
+          </p>
+          <span className="flex-1" />
+          <Button variant="ghost" size="sm" onClick={onStopComparing}>
+            Stop comparing
+          </Button>
+        </div>
       ) : null}
 
       {/* The visible count, and the same fact announced politely. Without this a
@@ -383,19 +530,23 @@ export function SecretTable({
         <EmptyState
           icon={<KeyIcon />}
           title="No secrets in this environment yet"
-          description="Add one here, paste a whole block of them, or import an existing .env file and have every value in it here in a few seconds."
+          description="Add one here, or import an existing .env file and have every value in it here in a few seconds."
           action={
             <Button variant="primary" onClick={() => staged.addDraft()}>
               <PlusIcon className="size-4" />
               Add a secret
             </Button>
           }
-          secondaryAction={
-            <Button variant="secondary" onClick={() => setBulkAdding(true)}>
-              <LayersIcon className="size-4" />
-              Paste several
-            </Button>
-          }
+          {...(onImport === undefined
+            ? {}
+            : {
+                secondaryAction: (
+                  <Button variant="secondary" onClick={onImport}>
+                    <UploadIcon className="size-4" />
+                    Import a file
+                  </Button>
+                ),
+              })}
         />
       ) : !hasRows ? (
         <EmptyState
@@ -428,31 +579,57 @@ export function SecretTable({
                   </TableHead>
 
                   <SortableHead
-                    label="Name"
+                    label="Key"
                     active={sortKey === 'name'}
                     direction={sortDirection}
                     onSort={() => toggleSort('name')}
+                    className="w-[30%] min-w-56"
                   />
 
-                  <TableHead className="w-[34%]">Value</TableHead>
-                  <TableHead className="w-24">Type</TableHead>
-                  <TableHead className="w-20">Version</TableHead>
-
-                  <SortableHead
-                    label="Updated"
-                    active={sortKey === 'updatedAt'}
-                    direction={sortDirection}
-                    onSort={() => toggleSort('updatedAt')}
-                  />
-
-                  <TableHead className="w-24">Author</TableHead>
-                  <TableHead className="w-12">
-                    <span className="sr-only">Actions</span>
+                  {/* Two columns, so the value gets every pixel the table can
+                      give it. Sorting by "updated" lost its column with the
+                      timestamp and keeps its control here: a table you cannot
+                      order by recency is a table you cannot audit. */}
+                  {/* No `aria-sort` here: it belongs to the column it describes,
+                      and this control orders the table by a timestamp that no
+                      longer has a column. Announcing "Value, sorted descending"
+                      would be a plain misstatement, so the button carries its own
+                      state instead. It sits beside the label rather than at the
+                      far end of a very wide header, where it read as belonging to
+                      whatever was underneath it. */}
+                  <TableHead>
+                    <span className="flex items-center gap-3">
+                      Value
+                      <SortButton
+                        label="Recently updated"
+                        active={sortKey === 'updatedAt'}
+                        direction={sortDirection}
+                        onSort={() => toggleSort('updatedAt')}
+                        pressed={sortKey === 'updatedAt'}
+                      />
+                    </span>
                   </TableHead>
                 </TableRow>
               </TableHeader>
 
               <TableBody>
+                {/* Rows added from the toolbar sit above everything, in the
+                    order they were added. A row being typed into must not move,
+                    so drafts never take part in the sort or the filter. */}
+                {startDrafts.map((draft) => (
+                  <DraftRow
+                    key={draft.id}
+                    draft={draft}
+                    drafts={staged.drafts}
+                    existingNames={existingNames}
+                    disabled={staged.saving}
+                    onPatch={(patch) => staged.patchDraft(draft.id, patch)}
+                    onExpand={(seeds) => staged.expandDraft(draft.id, seeds)}
+                    onRemove={() => staged.removeDraft(draft.id)}
+                    onCommit={saveStaged}
+                  />
+                ))}
+
                 {visible.map((secret) => {
                   const plaintext = shownValue(secret.name);
                   return (
@@ -461,37 +638,55 @@ export function SecretTable({
                       orgSlug={orgSlug}
                       projectSlug={projectSlug}
                       envSlug={envSlug}
+                      environment={currentEnvironment}
                       secret={secret}
                       selected={selected.has(secret.name)}
                       edit={staged.edits.get(secret.name)}
                       existingNames={existingNames}
                       disabled={staged.saving}
+                      compare={compared.environments}
                       {...(plaintext === undefined ? {} : { revealed: plaintext })}
                       {...(hoverArmed
                         ? {
-                            onHoverChange: (hovering: boolean) =>
-                              setHovered((current) =>
-                                hovering ? secret.name : current === secret.name ? null : current,
-                              ),
+                            // Only the arrival is interesting. Leaving used to
+                            // hide the value again, which is the behaviour this
+                            // set exists to undo.
+                            onHoverChange: (hovering: boolean) => {
+                              if (!hovering) return;
+                              setHoverRevealed((current) =>
+                                current.has(secret.name)
+                                  ? current
+                                  : new Set(current).add(secret.name),
+                              );
+                            },
                           }
                         : {})}
                       onSelectedChange={(checked) => toggleOne(secret.name, checked)}
                       onEditOpen={() => staged.openEdit(secret.name)}
+                      onEditSeed={(value) => staged.seedEdit(secret.name, value)}
                       onEditChange={(value) => staged.setEdit(secret.name, value)}
+                      onEditCancel={() => staged.resetEditValue(secret.name)}
                       onMetaChange={(patch) => staged.setEditMeta(secret.name, patch)}
-                      onEditClose={() => staged.closeEdit(secret.name)}
-                      onTypeChange={(type) => staged.setEditType(secret.name, type)}
-                      onHistory={() => setHistory(secret)}
+                      // Radix fires this for the item that is already checked,
+                      // so re-picking a secret's own type has to un-stage rather
+                      // than stage a change to nothing — which would otherwise
+                      // save as a real write against a secret nobody altered.
+                      onTypeChange={(type) =>
+                        type === toSecretValueType(secret.valueType)
+                          ? staged.clearEditType(secret.name)
+                          : staged.setEditType(secret.name, type)
+                      }
+                      onHistory={(slug) => setHistory({ envSlug: slug, secretName: secret.name })}
                       onDelete={() => setDeleting(secret)}
                       onCommit={saveStaged}
+                      onComparedSaved={compared.reload}
                     />
                   );
                 })}
 
-                {/* Drafts sit at the bottom, below whatever the sort and filter
-                    are doing, because a row being typed into must not move when
-                    its name crosses an alphabetical boundary mid-keystroke. */}
-                {staged.drafts.map((draft) => (
+                {/* And rows added from the button below the table stay below it,
+                    for the same reason: the row appears where the click was. */}
+                {endDrafts.map((draft) => (
                   <DraftRow
                     key={draft.id}
                     draft={draft}
@@ -506,13 +701,13 @@ export function SecretTable({
                 ))}
 
                 <TableRow className="hover:bg-transparent">
-                  <TableCell colSpan={8} className="py-1.5">
+                  <TableCell colSpan={3} className="py-1.5">
                     <Button
                       variant="ghost"
                       size="sm"
                       className="text-fg-muted w-full justify-start"
                       disabled={staged.saving}
-                      onClick={() => staged.addDraft()}
+                      onClick={() => staged.addDraft(undefined, 'end')}
                     >
                       <PlusIcon className="size-4" />
                       Add a secret
@@ -545,11 +740,20 @@ export function SecretTable({
         <VersionHistoryDialog
           orgSlug={orgSlug}
           projectSlug={projectSlug}
-          envSlug={envSlug}
-          isProduction={isProduction}
-          secretName={history.name}
+          envSlug={history.envSlug}
+          isProduction={environmentIsProduction(history.envSlug)}
+          secretName={history.secretName}
           onOpenChange={(next) => (next ? undefined : setHistory(null))}
-          onRestored={onChanged}
+          // A restore in a compared environment changes that environment's
+          // listing, not this one's.
+          onRestored={() => {
+            if (history.envSlug !== envSlug) {
+              compared.reload();
+              return;
+            }
+            revealAll.forget();
+            onChanged();
+          }}
         />
       ) : null}
 
@@ -587,11 +791,10 @@ export function SecretTable({
 function Toolbar({
   query,
   onQueryChange,
-  bulkAdding,
-  onToggleBulkAdd,
   onAddDraft,
   disabled,
   revealAll,
+  onHideAll,
   hoverReveal,
   hoverLoading,
   onToggleHoverReveal,
@@ -601,11 +804,11 @@ function Toolbar({
 }: {
   query: string;
   onQueryChange: (value: string) => void;
-  bulkAdding: boolean;
-  onToggleBulkAdd: () => void;
   onAddDraft: () => void;
   disabled: boolean;
   revealAll: RevealAll;
+  /** Masks the "Reveal all" set *and* the rows hover mode has stuck open. */
+  onHideAll: () => void;
   hoverReveal: boolean;
   hoverLoading: boolean;
   onToggleHoverReveal: () => void;
@@ -629,60 +832,61 @@ function Toolbar({
 
       <span className="hidden flex-1 sm:block" />
 
-      {hasSecrets ? (
-        <>
-          <Button
-            variant={revealAll.revealed ? 'secondary' : 'ghost'}
-            onClick={revealAll.revealed ? revealAll.hide : revealAll.reveal}
-            loading={revealAll.loading && !hoverLoading}
-            aria-pressed={revealAll.revealed}
-          >
-            {revealAll.revealed ? (
-              <EyeOffIcon className="size-4" />
-            ) : (
-              <EyeIcon className="size-4" />
-            )}
-            {revealAll.revealed ? 'Hide all' : 'Reveal all'}
+      {/* One group, because these four are one subject: what happens to this
+          environment's values as a set. Reveal them, reveal them under the
+          pointer, bring a file in, take a file out. Separately they read as
+          four unrelated buttons competing with "Add secret", which is the only
+          thing on this bar about a single key. */}
+      <div className="border-line bg-canvas-inset flex flex-wrap items-center gap-0.5 rounded-lg border p-0.5">
+        {hasSecrets ? (
+          <>
+            <Button
+              variant={revealAll.revealed ? 'secondary' : 'ghost'}
+              size="sm"
+              onClick={revealAll.revealed ? onHideAll : revealAll.reveal}
+              loading={revealAll.loading && !hoverLoading}
+              aria-pressed={revealAll.revealed}
+            >
+              {revealAll.revealed ? (
+                <EyeOffIcon className="size-4" />
+              ) : (
+                <EyeIcon className="size-4" />
+              )}
+              {revealAll.revealed ? 'Hide all' : 'Reveal all'}
+            </Button>
+
+            {/* Between the two extremes this screen otherwise offers: one value at
+                a time behind a click, or the whole environment on screen at once.
+                Comparing eight rows against a `.env` file wants neither — it wants
+                the value under the pointer and nothing else, which is also the
+                smallest thing a screenshot can catch. */}
+            <Button
+              variant={hoverReveal ? 'secondary' : 'ghost'}
+              size="sm"
+              onClick={onToggleHoverReveal}
+              loading={hoverLoading}
+              aria-pressed={hoverReveal}
+              title="Show each value while the pointer is over its row"
+            >
+              <PointerIcon className="size-4" />
+              Reveal on hover
+            </Button>
+          </>
+        ) : null}
+
+        {onImport ? (
+          <Button variant="ghost" size="sm" onClick={onImport}>
+            <UploadIcon className="size-4" />
+            Import
           </Button>
-
-          {/* Between the two extremes this screen otherwise offers: one value at
-              a time behind a click, or the whole environment on screen at once.
-              Comparing eight rows against a `.env` file wants neither — it wants
-              the value under the pointer and nothing else, which is also the
-              smallest thing a screenshot can catch. */}
-          <Button
-            variant={hoverReveal ? 'secondary' : 'ghost'}
-            onClick={onToggleHoverReveal}
-            loading={hoverLoading}
-            aria-pressed={hoverReveal}
-            title="Show each value while the pointer is over its row"
-          >
-            <PointerIcon className="size-4" />
-            Reveal on hover
+        ) : null}
+        {onExport ? (
+          <Button variant="ghost" size="sm" onClick={onExport}>
+            <DownloadIcon className="size-4" />
+            Export
           </Button>
-        </>
-      ) : null}
-
-      {onImport ? (
-        <Button variant="ghost" onClick={onImport}>
-          Import
-        </Button>
-      ) : null}
-      {onExport ? (
-        <Button variant="ghost" onClick={onExport}>
-          Export
-        </Button>
-      ) : null}
-
-      <Button
-        variant="secondary"
-        onClick={onToggleBulkAdd}
-        aria-expanded={bulkAdding}
-        disabled={disabled}
-      >
-        <LayersIcon className="size-4" />
-        Bulk add
-      </Button>
+        ) : null}
+      </div>
 
       <Button variant="primary" onClick={onAddDraft} disabled={disabled}>
         <PlusIcon className="size-4" />
@@ -760,28 +964,75 @@ function SortableHead({
   active,
   direction,
   onSort,
+  className,
 }: {
   label: string;
   active: boolean;
   direction: SortDirection;
   onSort: () => void;
+  className?: string;
 }) {
   return (
     // `aria-sort` belongs on the header cell, not on the button inside it, and
     // exactly one column may carry a value other than "none".
-    <TableHead aria-sort={active ? (direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
-      <button
-        type="button"
-        onClick={onSort}
-        className="hover:text-fg -mx-1 inline-flex items-center gap-1 rounded px-1 py-0.5 transition-colors"
-      >
-        {label}
-        <ChevronUpDownIcon
-          aria-hidden="true"
-          className={cn('size-3.5', active ? 'text-accent-text' : 'text-fg-subtle')}
-        />
-      </button>
+    <TableHead
+      aria-sort={active ? (direction === 'asc' ? 'ascending' : 'descending') : 'none'}
+      className={className}
+    >
+      <SortButton label={label} active={active} direction={direction} onSort={onSort} />
     </TableHead>
+  );
+}
+
+/**
+ * The control half of a sortable header.
+ *
+ * Separated from the `<th>` because one of the two sorts no longer has a column
+ * of its own: "updated" lost its timestamp column to the value field and its
+ * button now lives inside the value header. `aria-sort` stays on whichever
+ * `<th>` the sort is *about*, which is the part a screen reader reads.
+ */
+function SortButton({
+  label,
+  active,
+  direction,
+  onSort,
+  pressed,
+}: {
+  label: string;
+  active: boolean;
+  direction: SortDirection;
+  onSort: () => void;
+  /**
+   * Set only where the button is not inside the `<th>` it sorts. Where it is,
+   * `aria-sort` on that header is the mechanism a screen reader reads, and a
+   * pressed state beside it would say the same thing twice.
+   */
+  pressed?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSort}
+      aria-pressed={pressed}
+      // The glyph is decorative and `aria-sort` on the `<th>` is what a screen
+      // reader reads; this is the sighted equivalent of the same fact.
+      title={
+        active
+          ? `Sorted by ${label.toLowerCase()}, ${direction === 'asc' ? 'ascending' : 'descending'}. Click to reverse.`
+          : `Sort by ${label.toLowerCase()}`
+      }
+      className={cn(
+        '-mx-1 inline-flex items-center gap-1 rounded px-1 py-0.5 font-medium transition-colors',
+        active ? 'text-fg' : 'hover:text-fg',
+      )}
+    >
+      {label}
+      <ChevronUpDownIcon
+        aria-hidden="true"
+        className={cn('size-3.5', active ? 'text-accent-text' : 'text-fg-subtle')}
+      />
+    </button>
   );
 }
 
@@ -922,14 +1173,16 @@ export function SecretTableSkeleton() {
     <div aria-busy="true" aria-label="Loading secrets" className="flex flex-col gap-4">
       <Skeleton className="h-9 w-full sm:max-w-xs" />
       <div className="border-line bg-surface rounded-xl border">
+        {/* Two blocks, because the table has two columns: a key and a value
+            field that takes the rest of the width. A third block here would
+            promise a column that is not coming. */}
         {Array.from({ length: 6 }, (_, index) => (
           <div
             key={index}
             className="border-line-subtle flex items-center gap-4 border-b px-3 py-3.5 last:border-b-0"
           >
-            <Skeleton className="h-4 w-40 shrink-0" />
-            <Skeleton className="h-8 flex-1" />
-            <Skeleton className="h-4 w-20 shrink-0" />
+            <Skeleton className="h-5 w-40 shrink-0" />
+            <Skeleton className="h-9 flex-1" />
           </div>
         ))}
       </div>

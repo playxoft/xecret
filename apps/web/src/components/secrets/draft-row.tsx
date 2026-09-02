@@ -11,7 +11,8 @@ import {
 } from '@xecret/core/validation';
 import type { SecretValueType } from '@xecret/core/validation';
 import { cn } from '@/lib/cn';
-import { Button, CloseIcon, Input, TableCell, TableRow, Textarea } from '@/components/ui';
+import { pluralize } from '@/lib/format';
+import { Button, CloseIcon, Input, TableCell, TableRow, Textarea, useToast } from '@/components/ui';
 import { ValueTypeMenu } from './value-type-menu';
 import { looksLikeAssignments, parsePastedSecrets } from './paste-secrets';
 import { draftNameProblem } from './staged-changes';
@@ -58,6 +59,8 @@ export function DraftRow({
   onRemove,
   onCommit,
 }: DraftRowProps) {
+  const { toast } = useToast();
+
   // Mount-time only. A row added by the "Add secret" button arrives empty and
   // should take focus; the twenty rows a paste expands into arrive named, and
   // stealing focus to the last of them would scroll the user away from the
@@ -89,11 +92,33 @@ export function DraftRow({
     const text = event.clipboardData.getData('text/plain');
     if (!looksLikeAssignments(text)) return;
 
-    const { seeds } = parsePastedSecrets(text);
+    const { seeds, warnings, renamed } = parsePastedSecrets(text);
     if (seeds.length === 0) return;
 
     event.preventDefault();
     onExpand(seeds);
+
+    // What the paste could not take, said out loud. A line the parser rejected
+    // used to disappear between the clipboard and the table with nothing on
+    // screen to say so — and a `.env` block is exactly the thing somebody pastes
+    // once and assumes arrived whole. Neither the warnings nor the renames carry
+    // a value; see the header of `paste-secrets.ts`.
+    const parts: string[] = [];
+    if (warnings.length > 0) parts.push(`${pluralize(warnings.length, 'line')} skipped`);
+    if (renamed.length > 0) {
+      parts.push(
+        `${pluralize(renamed.length, 'key')} renamed (${renamed
+          .slice(0, 3)
+          .map((entry) => `${entry.from} → ${entry.to}`)
+          .join(', ')}${renamed.length > 3 ? ', …' : ''})`,
+      );
+    }
+
+    toast({
+      variant: parts.length === 0 ? 'success' : 'info',
+      title: `${pluralize(seeds.length, 'row')} added`,
+      ...(parts.length === 0 ? {} : { description: `${parts.join('. ')}.` }),
+    });
   }
 
   function handleKeyDown(event: KeyboardEvent) {
@@ -114,35 +139,57 @@ export function DraftRow({
   return (
     <TableRow
       className={cn(
-        // New rows read as new at a glance, without relying on colour alone:
-        // they are also the only rows in the table whose name is an input.
+        // New rows read as new at a glance. Not by colour alone: the marker in
+        // the first cell is an accent dot rather than a checkbox, the value is
+        // unmasked because the user is its source, and the row carries a
+        // discard button where the others carry a rail.
         'bg-accent-tint/30 hover:bg-accent-tint/40',
         'border-accent/60 [&>td:first-child]:border-l-accent [&>td:first-child]:border-l-2',
       )}
     >
       <TableCell className="pr-0 align-top">
         <span className="sr-only">New secret, not yet saved</span>
-        <span aria-hidden="true" className="bg-accent mt-2.5 ml-1 block size-1.5 rounded-full" />
+        {/* The same 36px box a saved row's checkbox sits in, so the two markers
+            share an optical line down the left edge of the table. */}
+        <span aria-hidden="true" className="flex h-9 items-center">
+          <span className="bg-accent ml-1 block size-1.5 rounded-full" />
+        </span>
       </TableCell>
 
       <TableCell className="align-top">
-        <Input
-          value={draft.name}
-          onChange={(event) => onPatch({ name: event.target.value })}
-          onPaste={handlePaste}
-          onKeyDown={handleKeyDown}
-          disabled={disabled}
-          placeholder="DATABASE_URL"
-          aria-label="Secret name"
-          aria-invalid={nameError !== null ? true : undefined}
-          maxLength={SECRET_NAME_MAX_LENGTH}
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="off"
-          spellCheck={false}
-          className="h-8 font-mono text-sm"
-          autoFocus={focusOnMount}
-        />
+        <div className="flex min-w-0 items-center gap-1.5">
+          <Input
+            value={draft.name}
+            onChange={(event) => onPatch({ name: event.target.value })}
+            onPaste={handlePaste}
+            onKeyDown={handleKeyDown}
+            disabled={disabled}
+            placeholder="DATABASE_URL"
+            aria-label="Secret name"
+            aria-invalid={nameError !== null ? true : undefined}
+            maxLength={SECRET_NAME_MAX_LENGTH}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            className="h-9 font-mono text-sm"
+            autoFocus={focusOnMount}
+          />
+
+          {/* Beside the name, exactly where the saved row keeps it, so nothing
+              moves sideways the moment this row becomes one. */}
+          <ValueTypeMenu
+            value={draft.valueType}
+            onChange={(next: SecretValueType) => onPatch({ valueType: next })}
+            disabled={disabled}
+            secretName={draft.name.trim() || 'this new secret'}
+            // The width a saved row gives it, so the two columns of type labels
+            // are one column. `w-32`, not `w-20`: see the note on the saved
+            // row, where "Date and time" truncated to "Date an…" directly
+            // beneath a distinct "Date".
+            className="w-32 shrink-0 justify-between"
+          />
+        </div>
 
         {nameError !== null ? (
           <p className="text-danger-text mt-1 text-sm leading-5">{nameError}</p>
@@ -177,67 +224,60 @@ export function DraftRow({
       </TableCell>
 
       <TableCell className="align-top">
-        {/* No live byte counter: measuring the value on every keystroke would
-            copy the plaintext into a fresh buffer each time, and the server's
-            64 KB refusal already says exactly what is wrong. */}
-        <Textarea
-          value={draft.value}
-          onChange={(event) => onPatch({ value: event.target.value })}
-          onKeyDown={handleKeyDown}
-          disabled={disabled}
-          rows={1}
-          placeholder="Paste the value"
-          aria-label="Secret value"
-          aria-invalid={valueError !== null ? true : undefined}
-          // Every assistant that could copy this value somewhere else is turned
-          // off: autocomplete would offer it back on another form, and a spell
-          // checker on some platforms sends its input to a remote service.
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="off"
-          spellCheck={false}
-          className={cn(
-            'min-h-8 py-1.5 font-mono text-sm leading-5',
-            valueError !== null && 'border-danger focus:border-danger focus:ring-danger/30',
-          )}
-        />
+        <div className="flex min-w-0 items-start gap-1.5">
+          {/* No live byte counter: measuring the value on every keystroke would
+              copy the plaintext into a fresh buffer each time, and the server's
+              64 KB refusal already says exactly what is wrong. */}
+          <Textarea
+            value={draft.value}
+            onChange={(event) => onPatch({ value: event.target.value })}
+            onKeyDown={handleKeyDown}
+            disabled={disabled}
+            rows={1}
+            placeholder="Paste the value"
+            aria-label="Secret value"
+            aria-invalid={valueError !== null ? true : undefined}
+            // Every assistant that could copy this value somewhere else is turned
+            // off: autocomplete would offer it back on another form, and a spell
+            // checker on some platforms sends its input to a remote service.
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            className={cn(
+              'min-h-9 py-1.5 font-mono text-sm leading-5',
+              // `aria-invalid` is what paints the border — see `INPUT_BASE`.
+              // A `focus:ring-*` colour here would tint a ring no utility in
+              // this file gives a width to, and render nothing at all.
+              valueError !== null && 'border-danger',
+            )}
+          />
+
+          <span className="flex shrink-0">
+            {/* Always visible, unlike the floating bar on a saved row: a draft is
+                not yet anything, so there is no value to read and no hover state
+                worth waiting for — and the way out of a row you just created has
+                to be findable without hunting for it. */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-9"
+              disabled={disabled}
+              onClick={onRemove}
+              aria-label={
+                draft.name.trim().length === 0
+                  ? 'Discard this new secret'
+                  : `Discard ${draft.name.trim()}`
+              }
+            >
+              <CloseIcon className="size-4" />
+            </Button>
+          </span>
+        </div>
+
         {valueError !== null ? (
           <p className="text-danger-text mt-1 text-sm leading-5">{valueError}</p>
         ) : null}
-      </TableCell>
-
-      <TableCell className="align-top">
-        <ValueTypeMenu
-          value={draft.valueType}
-          onChange={(next: SecretValueType) => onPatch({ valueType: next })}
-          disabled={disabled}
-          secretName={draft.name.trim() || 'this new secret'}
-          className="mt-1"
-        />
-      </TableCell>
-
-      {/* Version, updated and author: a draft has none yet, but the cells are
-          kept so this row lands on exactly the columns of the row it becomes —
-          nothing shifts sideways the moment a save succeeds. */}
-      <TableCell className="align-top" />
-      <TableCell className="align-top" />
-      <TableCell className="align-top" />
-
-      <TableCell className="align-top">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-8"
-          disabled={disabled}
-          onClick={onRemove}
-          aria-label={
-            draft.name.trim().length === 0
-              ? 'Discard this new secret'
-              : `Discard ${draft.name.trim()}`
-          }
-        >
-          <CloseIcon className="size-4" />
-        </Button>
       </TableCell>
     </TableRow>
   );

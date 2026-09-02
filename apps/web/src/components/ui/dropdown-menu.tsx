@@ -84,6 +84,34 @@ export function DropdownMenuRadioItem({
   );
 }
 
+/**
+ * A menu entry that is on or off, rather than one that does something.
+ *
+ * `role="menuitemcheckbox"` with `aria-checked`, which is the only way the state
+ * reaches a screen reader: the tick beside it is `aria-hidden` like every icon
+ * in this kit, so a menu that showed one and nothing else would announce every
+ * entry identically whether it was on or off.
+ */
+export function DropdownMenuCheckboxItem({
+  className,
+  children,
+  ...props
+}: ComponentProps<typeof DropdownMenuPrimitive.CheckboxItem>) {
+  return (
+    <DropdownMenuPrimitive.CheckboxItem
+      className={cn(ITEM_BASE, 'text-fg-muted data-[highlighted]:text-fg pl-8', className)}
+      {...props}
+    >
+      <span className="absolute left-2 flex size-4 items-center justify-center">
+        <DropdownMenuPrimitive.ItemIndicator>
+          <CheckIcon className="text-accent-text size-4" />
+        </DropdownMenuPrimitive.ItemIndicator>
+      </span>
+      {children}
+    </DropdownMenuPrimitive.CheckboxItem>
+  );
+}
+
 export function DropdownMenuLabel({
   className,
   ...props

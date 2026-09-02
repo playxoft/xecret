@@ -1,10 +1,12 @@
 'use client';
 
 import Link from 'next/link';
+import type { MouseEvent } from 'react';
 
 import { cn } from '@/lib/cn';
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -36,6 +38,23 @@ import type { Environment } from './types';
  * Each capsule is an `<a>` to that environment's URL. Middle-click opens
  * production in a new tab; the browser's back button works; the address bar is
  * the truth. A button calling `router.push` would break all three for no gain.
+ *
+ * ── Shift-click compares instead of navigating ──
+ * "Is this the same value as staging?" is the question this switcher was built
+ * for, and clicking through to find out answers it from memory: you read
+ * staging's value on staging's page, then go back and hope. Shift-clicking a
+ * capsule brings that environment *here* instead — its values appear under this
+ * environment's, key by key, on the one screen where they can be compared side
+ * by side. Nothing is decrypted by the act: the compared listing is masked like
+ * any other, and each value is revealed on request through the audited endpoint.
+ *
+ * Shift-click is the modifier every file manager and every editor already uses
+ * for "and also this one", and a plain click still navigates — the common act
+ * keeps the cheapest gesture. It is not the *only* way in, though: a modifier on
+ * a pointer gesture is unreachable from a keyboard and undiscoverable on a
+ * touchscreen, so the overflow menu lists every environment as an ordinary
+ * command. That list is also the only route to an environment past the fourth,
+ * which never gets a capsule to shift-click.
  */
 
 export interface EnvironmentSwitcherProps {
@@ -45,6 +64,13 @@ export interface EnvironmentSwitcherProps {
   href: (slug: string) => string;
   /** Shown as the last item in the overflow menu, when the viewer may create one. */
   onCreate?: (() => void) | undefined;
+  /**
+   * Turns shift-click into "compare this environment here" instead of a
+   * navigation. Absent on screens that have nowhere to show a comparison.
+   */
+  onCompare?: ((slug: string) => void) | undefined;
+  /** Which environments are currently being compared, so their capsules say so. */
+  comparing?: ReadonlySet<string> | undefined;
   className?: string;
 }
 
@@ -62,6 +88,8 @@ export function EnvironmentSwitcher({
   currentSlug,
   href,
   onCreate,
+  onCompare,
+  comparing,
   className,
 }: EnvironmentSwitcherProps) {
   if (environments.length === 0) return null;
@@ -82,11 +110,35 @@ export function EnvironmentSwitcher({
     >
       {visible.map((environment) => {
         const active = environment.slug === currentSlug;
+        const compared = comparing?.has(environment.slug) ?? false;
         return (
           <Link
             key={environment.slug}
             href={href(environment.slug)}
             aria-current={active ? 'page' : undefined}
+            {...(onCompare === undefined || active
+              ? {}
+              : {
+                  // The `href` survives: middle-click, ctrl-click and the
+                  // keyboard all still navigate, and only the shifted click is
+                  // taken. `aria-keyshortcuts` is not used here because this is
+                  // a modifier on a pointer act, not a shortcut.
+                  onClick: (event: MouseEvent<HTMLAnchorElement>) => {
+                    // Shift *alone*. Ctrl+Shift+click and Cmd+Shift+click are the
+                    // browser's "open in a new foreground tab", and taking them
+                    // here swallowed the gesture: no tab, and an environment
+                    // silently added to the comparison instead.
+                    if (!event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+                    event.preventDefault();
+                    onCompare(environment.slug);
+                  },
+                  'aria-description': compared
+                    ? 'Being compared here. Shift-click to stop.'
+                    : 'Shift-click to compare it on this page.',
+                  title: compared
+                    ? `${environment.name} is being compared here — shift-click to stop`
+                    : `Open ${environment.name}, or shift-click to compare it here`,
+                })}
             className={cn(
               'relative rounded-md px-2.5 py-1 text-sm whitespace-nowrap transition-colors',
               active
@@ -97,6 +149,14 @@ export function EnvironmentSwitcher({
               // different in kind, so it must be identifiable at a glance
               // rather than by reading the label.
               environment.isProduction && active && 'text-production-text',
+              // A compared environment is neither here nor elsewhere: it is on
+              // this page without being what the page is about, and the outline
+              // says exactly that much without competing with the active fill.
+              // `--accent-line` is a chip edge, ~1.2:1, and is documented as
+              // exempt from contrast because it is normally decoration. Here the
+              // outline is the *only* thing saying an environment is being
+              // compared, so it has to be a colour that can actually be seen.
+              compared && 'ring-fg-subtle text-fg ring-1 ring-inset',
             )}
           >
             {environment.isProduction ? (
@@ -113,7 +173,7 @@ export function EnvironmentSwitcher({
         );
       })}
 
-      {overflow.length > 0 || onCreate ? (
+      {overflow.length > 0 || onCreate || onCompare ? (
         <DropdownMenu>
           {/* `⋯` alone tells a screen reader user nothing; the count tells
               them whether the menu is worth opening. */}
@@ -127,7 +187,7 @@ export function EnvironmentSwitcher({
           >
             <MoreHorizontalIcon className="size-4" />
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52">
+          <DropdownMenuContent align="end" className="w-56">
             {overflow.length > 0 ? (
               <>
                 <DropdownMenuLabel>More environments</DropdownMenuLabel>
@@ -147,9 +207,34 @@ export function EnvironmentSwitcher({
               </>
             ) : null}
 
-            {onCreate ? (
+            {onCompare ? (
               <>
                 {overflow.length > 0 ? <DropdownMenuSeparator /> : null}
+                <DropdownMenuLabel>Compare on this page</DropdownMenuLabel>
+                {environments
+                  .filter((environment) => environment.slug !== currentSlug)
+                  .map((environment) => (
+                    <DropdownMenuCheckboxItem
+                      key={`compare-${environment.slug}`}
+                      // Checkboxes, not radio items: several environments can be
+                      // compared at once, so each entry is on or off rather than
+                      // one of them being the choice.
+                      checked={comparing?.has(environment.slug) ?? false}
+                      onCheckedChange={() => onCompare(environment.slug)}
+                      // Kept open, because the point of the list is to turn on
+                      // more than one. Radix closes a menu on select by default,
+                      // which would mean reopening it once per environment.
+                      onSelect={(event) => event.preventDefault()}
+                    >
+                      {environment.name}
+                    </DropdownMenuCheckboxItem>
+                  ))}
+              </>
+            ) : null}
+
+            {onCreate ? (
+              <>
+                {overflow.length > 0 || onCompare ? <DropdownMenuSeparator /> : null}
                 <DropdownMenuItem onSelect={onCreate}>
                   <PlusIcon className="size-4" />
                   New environment

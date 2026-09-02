@@ -41,6 +41,7 @@ export type { DialogContentProps } from './dialog';
 
 export {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
@@ -68,6 +69,8 @@ export type { KbdProps, ShortcutProps } from './kbd';
 
 export { Label } from './label';
 export type { LabelProps } from './label';
+
+export { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from './popover';
 
 export { SecretValue } from './secret-value';
 export type { SecretValueProps } from './secret-value';
