@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+import { armLeaveGuard } from './leave-guard';
+
 import { ConfirmDialog } from './confirm-dialog';
 
 /**
@@ -69,12 +71,24 @@ export interface UnsavedChangesGuardProps {
   when: boolean;
   /** What the dialog calls the work — "3 unsaved changes". */
   description: string;
+  /**
+   * Whether the batch is going out right now.
+   *
+   * `when` stays true for the whole of a save — the rows are still pending
+   * until each one lands — so without this the dialog told a user watching
+   * eight of twenty writes succeed that nothing had been written yet.
+   */
+  writing?: boolean | undefined;
 }
 
 /** Where the user was going when they were stopped. */
 type Departure = { kind: 'link'; href: string } | { kind: 'back' };
 
-export function UnsavedChangesGuard({ when, description }: UnsavedChangesGuardProps) {
+export function UnsavedChangesGuard({
+  when,
+  description,
+  writing = false,
+}: UnsavedChangesGuardProps) {
   const router = useRouter();
   const [pending, setPending] = useState<Departure | null>(null);
 
@@ -131,19 +145,14 @@ export function UnsavedChangesGuard({ when, description }: UnsavedChangesGuardPr
     if (!when || considered.current) return;
     considered.current = true;
 
-    window.history.pushState(window.history.state, '', window.location.href);
+    // Asked *before* pushing. `history.back()` moves the pointer, it does not
+    // remove the entry, so pushing a decoy and then retracting it left a
+    // duplicate-URL entry sitting forward of the user with the Forward button
+    // newly lit — pressing it landed on the decoy and appeared to do nothing.
+    // `length` counts the current entry, so nothing behind means exactly one.
+    if (window.history.length < 2) return;
 
-    // `pushState` drops any forward entries, so the stack is now exactly
-    // [ …anything behind…, this page, decoy ] and its length says how much is
-    // behind: fewer than three entries means nothing is. Back was already a
-    // no-op there — or a departure from the site, which `beforeunload` covers —
-    // and a decoy would only invent a Back button with nowhere to go and a
-    // dialog offering to take the user there.
-    if (window.history.length < 3) {
-      unwinding.current = true;
-      window.history.back();
-      return;
-    }
+    window.history.pushState(window.history.state, '', window.location.href);
 
     decoy.current = true;
   }, [when]);
@@ -216,12 +225,15 @@ export function UnsavedChangesGuard({ when, description }: UnsavedChangesGuardPr
 
       const href = `${url.pathname}${url.search}${url.hash}`;
 
-      // `stopPropagation` as well as `preventDefault`: `Link` listens on the
-      // anchor itself, so preventing the default alone would leave its handler
-      // free to push the route anyway.
+      // `preventDefault` alone. `Link` checks `defaultPrevented` before routing
+      // (verified in next@16.3.3, `client/app-dir/link.js`), so stopping the
+      // event as well bought nothing and cost a great deal: this listener is on
+      // `document` in the capture phase, so `stopPropagation` keeps the click
+      // from ever reaching React’s root. Radix menu items select on a
+      // React `onClick`, so an environment chosen from the switcher’s overflow
+      // menu never selected and the menu stayed open — modal, focus-trapped, and
+      // `pointer-events: none` on the body — behind the dialog asking about it.
       event.preventDefault();
-      event.stopPropagation();
-
       if (armed.current) {
         setPending({ kind: 'link', href });
         return;
@@ -259,6 +271,11 @@ export function UnsavedChangesGuard({ when, description }: UnsavedChangesGuardPr
 
   const asking = when && pending !== null;
 
+  useEffect(() => {
+    if (!when) return;
+    return armLeaveGuard((href) => setPending({ kind: 'link', href }));
+  }, [when]);
+
   function leave() {
     const destination = pending;
     setPending(null);
@@ -288,7 +305,11 @@ export function UnsavedChangesGuard({ when, description }: UnsavedChangesGuardPr
       open={asking}
       onOpenChange={(open) => (open ? undefined : setPending(null))}
       title="You have unsaved changes"
-      description={`${description} Leaving this page now throws them away — nothing has been written yet.`}
+      description={
+        writing
+          ? `${description} Some of them are being written right now — leaving does not stop the rest, and you will not see how it ended.`
+          : `${description} Leaving this page now throws them away — nothing has been written yet.`
+      }
       confirmLabel="Leave and lose them"
       cancelLabel="Stay on this page"
       onConfirm={leave}

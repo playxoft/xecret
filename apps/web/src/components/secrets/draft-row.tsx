@@ -169,6 +169,9 @@ export function DraftRow({
 
   /** The name and the note. See the header for where Enter goes from each. */
   function handleKeyDown(event: KeyboardEvent) {
+    // A note is prose, and Enter is how an IME accepts a candidate. Reading that
+    // Enter as a command swallows the candidate and jumps the caret elsewhere.
+    if (event.nativeEvent.isComposing) return;
     if (event.key === 'Enter') {
       event.preventDefault();
       if (event.metaKey || event.ctrlKey) onCommit();
@@ -190,6 +193,9 @@ export function DraftRow({
   }
 
   function handleValueKeyDown(event: KeyboardEvent) {
+    // A note is prose, and Enter is how an IME accepts a candidate. Reading that
+    // Enter as a command swallows the candidate and jumps the caret elsewhere.
+    if (event.nativeEvent.isComposing) return;
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       // Ctrl/Cmd+Enter writes the batch; Enter on its own asks for one more row

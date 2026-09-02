@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { toSecretValueType } from '@xecret/core/validation';
 import { api, errorMessage, isApiError } from '@/lib/api';
@@ -155,6 +155,29 @@ export function SecretTable({
    * to be re-read. Turning the mode off empties it.
    */
   const [hoverRevealed, setHoverRevealed] = useState<ReadonlySet<string>>(new Set());
+  /**
+   * Which compared editors are holding unsaved work, as `slug\u0000name`.
+   *
+   * Those editors live inside the rows below and would go with them: a filter
+   * keystroke unmounts a row, and a credential typed into a compared field and
+   * not yet saved went with it silently. Kept here so the row can be held on
+   * screen and the guard can speak for it.
+   */
+  /** Bumped by `forgetDecrypted`; see the prop of the same name on `ValueField`. */
+  const [forgetToken, setForgetToken] = useState(0);
+
+  const [comparedDirty, setComparedDirty] = useState<ReadonlySet<string>>(new Set());
+
+  const markComparedDirty = useCallback((slug: string, name: string, dirty: boolean) => {
+    setComparedDirty((current) => {
+      const key = `${slug}\u0000${name}`;
+      if (current.has(key) === dirty) return current;
+      const next = new Set(current);
+      if (dirty) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
   // Which environment's history: a compared row's version chip opens the
   // history of *that* environment, not of the one the page is about.
   const [history, setHistory] = useState<{ envSlug: string; secretName: string } | null>(null);
@@ -199,6 +222,9 @@ export function SecretTable({
     // is armed those same rows un-mask on their own without the pointer going
     // anywhere near them.
     setHoverRevealed(new Set());
+    // Each row holds its own reveal as well, and only a refreshed listing
+    // invalidates that one. This says so now.
+    setForgetToken((token) => token + 1);
   }
 
   const currentEnvironment = environments.find((entry) => entry.slug === envSlug);
@@ -246,6 +272,13 @@ export function SecretTable({
 
   const existingNames = useMemo(() => new Set(secrets.map((secret) => secret.name)), [secrets]);
 
+  // What each secret is already declared as, for the save-time shape check: a
+  // row that stages only a value has no type of its own to be checked against.
+  const storedTypes = useMemo(
+    () => new Map(secrets.map((secret) => [secret.name, secret.valueType])),
+    [secrets],
+  );
+
   /**
    * How many keys each compared environment holds that this one does not.
    *
@@ -277,12 +310,25 @@ export function SecretTable({
     [compared.environments, existingNames, onLoadMore],
   );
 
+  // The rows those editors are in, so the filter cannot take them off screen.
+  const comparedDirtyNames = useMemo(
+    () => new Set([...comparedDirty].map((key) => key.slice(key.indexOf('\u0000') + 1))),
+    [comparedDirty],
+  );
+
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     const filtered =
       needle.length === 0
         ? [...secrets]
-        : secrets.filter((secret) => secret.name.toLowerCase().includes(needle));
+        : secrets.filter(
+            (secret) =>
+              secret.name.toLowerCase().includes(needle) ||
+              // A compared editor on this row is holding a credential that has
+              // not been written. Filtering the row away unmounts it and the
+              // work goes with it, so the filter does not get to.
+              comparedDirtyNames.has(secret.name),
+          );
 
     // By code unit rather than `localeCompare`: secret names are ASCII
     // identifiers, and a locale-aware collation would order `API_KEY` and
@@ -304,7 +350,7 @@ export function SecretTable({
     });
 
     return filtered;
-  }, [secrets, query, sortKey, sortDirection]);
+  }, [secrets, query, sortKey, sortDirection, comparedDirtyNames]);
 
   // Selection is tracked by name and intersected with what is on screen, so a
   // row that is filtered out or deleted cannot stay silently selected and be
@@ -443,7 +489,7 @@ export function SecretTable({
     if (staged.pendingCount === 0 || staged.saving) return;
     setActionError(null);
 
-    const outcome = await staged.save(existingNames);
+    const outcome = await staged.save(existingNames, storedTypes);
     // Always, even on a total failure: a partial batch has already changed the
     // environment, and leaving the table showing the old versions would make the
     // next save operate on stale version numbers.
@@ -505,6 +551,7 @@ export function SecretTable({
         disabled={staged.saving}
         revealAll={revealAll}
         onHideAll={hideAll}
+        anythingShown={revealAll.revealed || hoverRevealed.size > 0}
         hoverReveal={hoverArmed}
         hoverLoading={hoverReveal && revealAll.loading}
         onToggleHoverReveal={toggleHoverReveal}
@@ -729,6 +776,8 @@ export function SecretTable({
                           }
                         : {})}
                       onSelectedChange={(checked) => toggleOne(secret.name, checked)}
+                      forgetToken={forgetToken}
+                      onComparedDirtyChange={(slug, dirty) => markComparedDirty(slug, secret.name, dirty)}
                       onEditOpen={() => staged.openEdit(secret.name)}
                       onEditSeed={(value) => staged.seedEdit(secret.name, value)}
                       onEditChange={(value) => staged.setEdit(secret.name, value)}
@@ -810,7 +859,8 @@ export function SecretTable({
           the one mistake this screen makes easy, and it is not recoverable —
           there is nothing on the server to go back to. */}
       <UnsavedChangesGuard
-        when={staged.pendingCount > 0}
+        when={staged.pendingCount > 0 || comparedDirty.size > 0}
+        writing={staged.saving}
         description={`${pluralize(staged.pendingCount, 'change')} to ${envSlug} ${
           staged.pendingCount === 1 ? 'has' : 'have'
         } not been saved.`}
@@ -875,6 +925,7 @@ function Toolbar({
   disabled,
   revealAll,
   onHideAll,
+  anythingShown,
   hoverReveal,
   hoverLoading,
   onToggleHoverReveal,
@@ -889,6 +940,16 @@ function Toolbar({
   revealAll: RevealAll;
   /** Masks the "Reveal all" set *and* the rows hover mode has stuck open. */
   onHideAll: () => void;
+  /**
+   * Whether anything is on screen, by either route.
+   *
+   * Hover mode reveals through `load()`, which never sets `shown`, so the
+   * button went on offering "Reveal all" while three plaintexts were rendered
+   * beneath it — and their own eye buttons are disabled while a value is
+   * supplied from here, so there was no control left anywhere that could mask
+   * them short of disarming the mode.
+   */
+  anythingShown: boolean;
   hoverReveal: boolean;
   hoverLoading: boolean;
   onToggleHoverReveal: () => void;
@@ -921,18 +982,18 @@ function Toolbar({
         {hasSecrets ? (
           <>
             <Button
-              variant={revealAll.revealed ? 'secondary' : 'ghost'}
+              variant={anythingShown ? 'secondary' : 'ghost'}
               size="sm"
-              onClick={revealAll.revealed ? onHideAll : revealAll.reveal}
+              onClick={anythingShown ? onHideAll : revealAll.reveal}
               loading={revealAll.loading && !hoverLoading}
-              aria-pressed={revealAll.revealed}
+              aria-pressed={anythingShown}
             >
-              {revealAll.revealed ? (
+              {anythingShown ? (
                 <EyeOffIcon className="size-4" />
               ) : (
                 <EyeIcon className="size-4" />
               )}
-              {revealAll.revealed ? 'Hide all' : 'Reveal all'}
+              {anythingShown ? 'Hide all' : 'Reveal all'}
             </Button>
 
             {/* Between the two extremes this screen otherwise offers: one value at

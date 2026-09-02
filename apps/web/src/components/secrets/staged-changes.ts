@@ -103,6 +103,17 @@ export interface PendingEdit {
    */
   baseline?: string | undefined;
   /**
+   * Whether an editor was deliberately opened on this row.
+   *
+   * An entry exists for two different reasons: somebody opened the value editor,
+   * or somebody staged a name or a note without opening anything. Only the
+   * second kind is rubbish once the metadata is put back, and `setEditMeta` used
+   * to delete both — so typing a character into the name of a row whose editor
+   * was still loading, and deleting it again, closed that editor and threw away
+   * the audited reveal on its way back.
+   */
+  opened?: boolean | undefined;
+  /**
    * When the baseline was fetched, as `Date.now()`. Present exactly when
    * `baseline` is, and read only by the sweep that enforces the window above —
    * counted from the decryption, so an editor left open cannot extend how long
@@ -211,7 +222,16 @@ export interface StagedChanges {
    * staged carrying the reason, so a batch that half-succeeds leaves the user
    * with exactly the work that is still outstanding.
    */
-  save: (existingNames: ReadonlySet<string>) => Promise<SaveOutcome>;
+  /**
+   * `storedTypes` names the type each secret already carries, so a row that
+   * stages only a value is still checked against it. Without it the check ran
+   * only where a type was staged too, and the batch happily sent `abc` for a
+   * secret declared `integer` — under a field already showing that in red.
+   */
+  save: (
+    existingNames: ReadonlySet<string>,
+    storedTypes: ReadonlyMap<string, string>,
+  ) => Promise<SaveOutcome>;
   /**
    * Drops every seeded plaintext, keeping whatever the user typed over it.
    *
@@ -329,6 +349,7 @@ export function dropSeeds(
         ...(edit.valueType === undefined ? {} : { valueType: edit.valueType }),
         ...(edit.name === undefined ? {} : { name: edit.name }),
         ...(edit.note === undefined ? {} : { note: edit.note }),
+        ...(edit.opened === true ? { opened: true } : {}),
         error: edit.error,
       });
       continue;
@@ -521,7 +542,7 @@ export function useStagedChanges(
       const next = new Map(current);
       // Empty, always. See the note at the top of this file about why a stored
       // value is never seeded into the editor.
-      next.set(name, { value: '', error: null });
+      next.set(name, { value: '', error: null, opened: true });
       return next;
     });
   }, []);
@@ -537,6 +558,7 @@ export function useStagedChanges(
         ...(existing?.valueType === undefined ? {} : { valueType: existing.valueType }),
         ...(existing?.name === undefined ? {} : { name: existing.name }),
         ...(existing?.note === undefined ? {} : { note: existing.note }),
+        ...(existing?.opened === true ? { opened: true } : {}),
         error: null,
       });
       return next;
@@ -558,6 +580,7 @@ export function useStagedChanges(
         ...(existing?.valueType === undefined ? {} : { valueType: existing.valueType }),
         ...(existing?.name === undefined ? {} : { name: existing.name }),
         ...(existing?.note === undefined ? {} : { note: existing.note }),
+        ...(existing?.opened === true ? { opened: true } : {}),
         error: null,
       });
       return next;
@@ -595,6 +618,7 @@ export function useStagedChanges(
         valueType,
         ...(existing?.name === undefined ? {} : { name: existing.name }),
         ...(existing?.note === undefined ? {} : { note: existing.note }),
+        ...(existing?.opened === true ? { opened: true } : {}),
         error: null,
       });
       return next;
@@ -627,6 +651,7 @@ export function useStagedChanges(
           : { baseline: existing.baseline, seededAt: existing.seededAt }),
         ...(existing.name === undefined ? {} : { name: existing.name }),
         ...(existing.note === undefined ? {} : { note: existing.note }),
+        ...(existing?.opened === true ? { opened: true } : {}),
         error: null,
       });
       return next;
@@ -654,7 +679,11 @@ export function useStagedChanges(
           (existing === undefined ||
             (existing.value.length === 0 &&
               existing.baseline === undefined &&
-              existing.valueType === undefined))
+              existing.valueType === undefined &&
+              // An editor open on this row owns the entry, even while it is
+              // still empty and waiting for its seed. Deleting it here closed
+              // that editor and abandoned the reveal in flight.
+              existing.opened !== true))
         ) {
           next.delete(name);
           return next;
@@ -668,6 +697,7 @@ export function useStagedChanges(
           ...(existing?.valueType === undefined ? {} : { valueType: existing.valueType }),
           ...(stagedName === null ? {} : { name: stagedName }),
           ...(stagedNote === null ? {} : { note: stagedNote }),
+          ...(existing?.opened === true ? { opened: true } : {}),
           error: null,
         });
         return next;
@@ -730,7 +760,10 @@ export function useStagedChanges(
   }, [drafts, edits]);
 
   const save = useCallback(
-    async (existingNames: ReadonlySet<string>): Promise<SaveOutcome> => {
+    async (
+      existingNames: ReadonlySet<string>,
+      storedTypes: ReadonlyMap<string, string>,
+    ): Promise<SaveOutcome> => {
       setSaving(true);
 
       const outcome: SaveOutcome = {
@@ -824,8 +857,12 @@ export function useStagedChanges(
           // is no value here to check, and the server tolerates the mismatch on
           // purpose.
           const effectiveValue = hasValue ? edit.value : edit.baseline;
-          if (edit.valueType !== undefined && effectiveValue !== undefined) {
-            const shape = checkSecretValue(effectiveValue, edit.valueType);
+          // The staged type where one was staged, and otherwise the type the
+          // secret already has: a row that changes only its value is declared
+          // just as firmly as one that changes both.
+          const effectiveType = edit.valueType ?? toSecretValueType(storedTypes.get(name) ?? 'string');
+          if (effectiveValue !== undefined) {
+            const shape = checkSecretValue(effectiveValue, effectiveType);
             if (!shape.valid) {
               survivingEdits.set(name, {
                 ...edit,

@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo } from 'react';
 
+import { askBeforeLeaving } from '@/components/ui/leave-guard';
 import type { NavItem, NavSection } from './sidebar';
 
 /**
@@ -206,6 +207,10 @@ export function useNavShortcuts(nav: readonly NavSection[], enabled = true): voi
       if (href === undefined) return;
 
       event.preventDefault();
+      // A shortcut leaves through a door `UnsavedChangesGuard` cannot watch: no
+      // anchor, no popstate, just a call. Unasked, one keypress unmounted a
+      // table holding a screen full of staged credentials.
+      if (askBeforeLeaving(href)) return;
       router.push(href);
     }
 

@@ -124,6 +124,16 @@ export interface ValueFieldProps {
    */
   dirty: boolean;
   /** True while the seed is in flight. */
+  /**
+   * Bumped whenever the table drops every decrypted value it is holding.
+   *
+   * This field keeps its own plaintext, and `secret.version` — the other thing
+   * that invalidates it — only catches up once the refreshed listing lands. In
+   * the window between the write and that response the row still held the
+   * superseded credential: Copy put it on the clipboard, and clicking the value
+   * seeded the editor with it to be written back over what had just been saved.
+   */
+  forgetToken: number;
   prefilling: boolean;
   /** From the last write attempt, or from a failed seed. */
   error: string | null;
@@ -171,6 +181,7 @@ export function ValueField({
   editing,
   draft,
   dirty,
+  forgetToken,
   prefilling,
   error,
   onEditOpen,
@@ -235,6 +246,13 @@ export function ValueField({
     if (value !== null) forget();
   }
 
+  // And the same, on the table’s word rather than the listing’s.
+  const [renderedForget, setRenderedForget] = useState(forgetToken);
+  if (renderedForget !== forgetToken) {
+    setRenderedForget(forgetToken);
+    if (value !== null) forget();
+  }
+
   const reveal = useCallback(async () => {
     setRevealError(null);
 
@@ -284,9 +302,10 @@ export function ValueField({
   // plaintext until something makes it *wrong*. Revealing again after the window
   // lapses is therefore free and writes no second audit record.
   //
-  // Counted from the decryption rather than from the last time the value was on
-  // screen: masking and unmasking must not extend how long a plaintext is
-  // rendered.
+  // Counted from the moment it went on screen, and restarted whenever it goes
+  // back on: `shown` is in the deps below because this window governs what can
+  // be read off an unattended screen, not how long the plaintext is held. What
+  // bounds the holding is `forget`, which a write to this secret triggers.
   useEffect(() => {
     if (value === null || !shown) return;
 
@@ -438,6 +457,10 @@ export function ValueField({
   }
 
   function handleKeyDown(event: KeyboardEvent) {
+    // An Enter that is accepting an IME candidate is not an Enter the user aimed
+    // at this form. Reading it as one swallows the candidate and acts on a value
+    // the composition had not finished writing.
+    if (event.nativeEvent.isComposing) return;
     if (event.key === 'Enter' && !event.shiftKey) {
       // Enter saves. The value is the end of the row — there is nothing after it
       // to move on to — so the key that means "done" everywhere else in a form
@@ -452,6 +475,14 @@ export function ValueField({
       // and could fire before the seed had landed, saving the empty box over the
       // value it was still loading.
       if (disabled || prefilling || shapeProblem !== null) return;
+      // And what the button is *rendered* on. It appears only once the editor is
+      // dirty, so without this Enter committed from a box that showed no Save at
+      // all — an editor opened to read a value, Enter pressed to dismiss it, and
+      // the whole staged batch written, every other row included.
+      if (!dirty) {
+        cancel();
+        return;
+      }
       onCommit();
       return;
     }
@@ -1011,7 +1042,18 @@ function FieldDetails({
   }
 
   return (
-    <Popover onOpenChange={(open) => (open ? undefined : setEditingNote(false))}>
+    <Popover
+      onOpenChange={(open) => {
+        if (open) return;
+        // Escape and outside clicks dismiss a Radix popover, and closing the
+        // editor with them re-seeds `beginNote` from the *stored* note — the
+        // same loss `saveNote` refuses to accept on a rejected write, for the
+        // same reason: this box is the only copy of what was typed. An editor
+        // that holds nothing of the user’s own still closes.
+        if (draft.trim() !== (note ?? '').trim()) return;
+        setEditingNote(false);
+      }}
+    >
       <PopoverTrigger asChild>
         <Button
           size="icon"
@@ -1075,6 +1117,10 @@ function FieldDetails({
                 size="sm"
                 className="h-7"
                 onClick={() => void saveNote()}
+                // The compared environment writes this with a `PUT`, so without
+                // a loading state there was nothing on screen saying so and a
+                // second click fired a second write.
+                loading={noteSaving}
                 disabled={disabled}
               >
                 Save note

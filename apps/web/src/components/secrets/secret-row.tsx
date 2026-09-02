@@ -97,6 +97,10 @@ export interface SecretRowProps {
   onTypeChange: (type: SecretValueType) => void;
   /** Opens the history drawer for one environment — this one, or a compared one. */
   onHistory: (envSlug: string) => void;
+  /** Raised when a compared environment’s editor gains or loses unsaved work. */
+  onComparedDirtyChange?: ((slug: string, dirty: boolean) => void) | undefined;
+  /** Passed to `ValueField`; see the prop there. */
+  forgetToken: number;
   onDelete: () => void;
   /** Ctrl/Cmd+Enter anywhere in the editor commits the whole batch. */
   onCommit: () => void;
@@ -165,6 +169,8 @@ export function SecretRow({
   onMetaChange,
   onTypeChange,
   onHistory,
+  onComparedDirtyChange,
+  forgetToken,
   onDelete,
   onCommit,
   onComparedSaved,
@@ -413,6 +419,7 @@ export function SecretRow({
             onEditOpen={beginEdit}
             onDraftChange={onEditChange}
             onEditCancel={cancelEdit}
+            forgetToken={forgetToken}
             onCommit={onCommit}
             note={note}
             onNoteChange={changeNote}
@@ -428,6 +435,7 @@ export function SecretRow({
               environment={compared}
               secretName={secret.name}
               secret={compared.byName.get(secret.name) ?? null}
+              onDirtyChange={(dirty) => onComparedDirtyChange?.(compared.slug, dirty)}
               // Not `disabled` — that is this environment's save in flight, and
               // it has nothing to do with a field that writes to another one.
               // Several compared values can be open and saved at once.
@@ -570,10 +578,17 @@ function NameCell({
    * value, so the long way round arrives at the same place.
    */
   function handleKeyDown(event: KeyboardEvent) {
+    // An Enter accepting an IME candidate is not aimed at this form.
+    if (event.nativeEvent.isComposing) return;
     if (event.key !== 'Enter') return;
 
     if (event.metaKey || event.ctrlKey) {
       event.preventDefault();
+      // The same thing the value editor asks before committing. This field had
+      // no guard at all, so Ctrl+Enter here wrote the batch while the rename
+      // under the cursor was showing its error in red — a wasted round trip that
+      // the server rejects, with every other staged row written on the way.
+      if (nameProblem !== null) return;
       onCommit();
       return;
     }
@@ -655,7 +670,6 @@ function NameCell({
               >
                 <span
                   className="text-warning-text flex size-6 shrink-0 items-center justify-center"
-                  tabIndex={0}
                   onPointerEnter={() => setRenameTip(true)}
                   onPointerLeave={() => setRenameTip(false)}
                 >
@@ -722,9 +736,13 @@ function NameCell({
           value={note ?? ''}
           onChange={(event) => onNoteChange(event.target.value)}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
             if (event.key === 'Enter') {
               event.preventDefault();
-              if (event.metaKey || event.ctrlKey) onCommit();
+              if (event.metaKey || event.ctrlKey) {
+                if (nameProblem !== null) return;
+                onCommit();
+              }
               // Onwards to the value, which is where Enter in the key would have
               // gone. Taking the detour through the note must not cost the trip.
               else onGoToValue();

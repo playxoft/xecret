@@ -215,8 +215,10 @@ export function useRevealAll(orgSlug: string, projectSlug: string, envSlug: stri
   // window lapses is then instant and writes no second `secret.read` record,
   // while everything that makes this snapshot *wrong* still calls `forget`.
   //
-  // Counted from the decryption rather than from the last time the values
-  // happened to be on screen.
+  // Counted from the moment they went on screen, and restarted whenever they go
+  // back on it: `shown` is in the deps because the window now governs what can
+  // be read off an unattended screen rather than how long the decryption lives.
+  // What bounds the decryption is `forget`, which every write calls.
   useEffect(() => {
     if (values === null || !shown) return;
 
