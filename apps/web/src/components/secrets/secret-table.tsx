@@ -32,12 +32,14 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  UnsavedChangesGuard,
   UploadIcon,
   useToast,
 } from '@/components/ui';
 import type { EnvironmentTarget } from './multi-environment-write';
 import { useComparedSecrets } from './use-compared-secrets';
-import { useRevealAll } from './use-reveal-all';
+import { usePlaintextCache } from './use-plaintext-cache';
+import { REVEAL_DURATION_MS, useRevealAll } from './use-reveal-all';
 import type { RevealAll } from './use-reveal-all';
 import { DraftRow } from './draft-row';
 import { SecretRow } from './secret-row';
@@ -134,6 +136,11 @@ export function SecretTable({
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const revealAll = useRevealAll(orgSlug, projectSlug, envSlug);
+  /**
+   * The per-row decryptions, held above the rows so they survive a row
+   * unmounting — which is what a filter keystroke does to fifty of them.
+   */
+  const plaintexts = usePlaintextCache(`${orgSlug}/${projectSlug}/${envSlug}`);
   const [hoverReveal, setHoverReveal] = useState(false);
   /**
    * The rows hover mode has shown so far.
@@ -161,7 +168,22 @@ export function SecretTable({
   const [renderedWrites, setRenderedWrites] = useState(externalWrites);
   if (renderedWrites !== externalWrites) {
     setRenderedWrites(externalWrites);
+    forgetDecrypted();
+  }
+
+  /**
+   * Drops every decrypted value the page is holding — the whole-environment
+   * snapshot behind "Reveal all" and the per-row cache alike.
+   *
+   * The two are one fact and are forgotten together: a write that left either
+   * behind would leave the table showing a credential that has just been
+   * replaced, put it on the clipboard, and seed it into the next edit — which
+   * would write it back over what was saved. A function declaration rather than
+   * a `const`, because the render-phase call above runs before this line.
+   */
+  function forgetDecrypted() {
     revealAll.forget();
+    plaintexts.forget();
   }
 
   const currentEnvironment = environments.find((entry) => entry.slug === envSlug);
@@ -186,6 +208,18 @@ export function SecretTable({
     document.addEventListener('visibilitychange', onVisibility);
     return () => document.removeEventListener('visibilitychange', onVisibility);
   }, []);
+
+  // And the window masks them, on the same clock as everything else — counted
+  // from the decryption, exactly as it is counted there. `useRevealAll` used to
+  // do this by dropping its values outright when the window ended; now that it
+  // keeps them — masking and forgetting being different acts — a row the pointer
+  // once crossed would otherwise stay on screen for the rest of the session.
+  useEffect(() => {
+    if (revealAll.values === null) return;
+
+    const maskAt = setTimeout(() => setHoverRevealed(new Set()), REVEAL_DURATION_MS);
+    return () => clearTimeout(maskAt);
+  }, [revealAll.values]);
 
   const existingNames = useMemo(() => new Set(secrets.map((secret) => secret.name)), [secrets]);
 
@@ -323,7 +357,7 @@ export function SecretTable({
     setSelected(new Set());
     // The snapshot "Reveal all" is holding describes an environment that no
     // longer exists. See `RevealAll.forget` for what a stale one does.
-    revealAll.forget();
+    forgetDecrypted();
     // A staged rewrite of a secret that no longer exists would fail on the next
     // save with a 404 nobody could explain.
     staged.closeEdit(name);
@@ -352,7 +386,7 @@ export function SecretTable({
     }
 
     setSelected(new Set());
-    revealAll.forget();
+    forgetDecrypted();
     onChanged();
 
     if (failed.length === 0) {
@@ -381,7 +415,7 @@ export function SecretTable({
     // seed the *next* edit from it and write it back over what was just saved.
     // A batch that failed validation wrote nothing, and un-revealing the whole
     // environment over it would cost a fresh decryption for no reason.
-    if (outcome.created > 0 || outcome.updated > 0) revealAll.forget();
+    if (outcome.created > 0 || outcome.updated > 0) forgetDecrypted();
     announce(outcome);
   }
 
@@ -540,7 +574,18 @@ export function SecretTable({
       ) : (
         <>
           <TableContainer aria-label={`Secrets in ${envSlug}`}>
-            <Table>
+            {/* `table-fixed`, so the columns are the widths declared in the
+                header and nothing in a cell can argue with them.
+
+                Under the browser's automatic layout every column is as wide as
+                its widest cell wants to be — which meant that revealing a value
+                re-measured the whole table. "Reveal all" on an environment
+                holding one long connection string squeezed the key column to
+                make room for it and moved every key on screen sideways; masking
+                put it all back. The value field can only be a constant width if
+                the column it sits in is, and that is decided here rather than in
+                the field. */}
+            <Table className="table-fixed">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-10 pr-0">
@@ -604,6 +649,7 @@ export function SecretTable({
                     onPatch={(patch) => staged.patchDraft(draft.id, patch)}
                     onExpand={(seeds) => staged.expandDraft(draft.id, seeds)}
                     onRemove={() => staged.removeDraft(draft.id)}
+                    onAddNext={() => staged.addDraft(undefined, draft.placement)}
                     onCommit={saveStaged}
                   />
                 ))}
@@ -622,6 +668,7 @@ export function SecretTable({
                       edit={staged.edits.get(secret.name)}
                       existingNames={existingNames}
                       disabled={staged.saving}
+                      plaintexts={plaintexts}
                       compare={compared.environments}
                       {...(plaintext === undefined ? {} : { revealed: plaintext })}
                       {...(hoverArmed
@@ -674,6 +721,7 @@ export function SecretTable({
                     onPatch={(patch) => staged.patchDraft(draft.id, patch)}
                     onExpand={(seeds) => staged.expandDraft(draft.id, seeds)}
                     onRemove={() => staged.removeDraft(draft.id)}
+                    onAddNext={() => staged.addDraft(undefined, draft.placement)}
                     onCommit={saveStaged}
                   />
                 ))}
@@ -714,6 +762,18 @@ export function SecretTable({
         onSave={saveStaged}
       />
 
+      {/* Nothing in this table is written until Save is pressed, and the table
+          is reached by clicking through a sidebar full of other environments.
+          Losing an afternoon's worth of staged rotations to a misplaced click is
+          the one mistake this screen makes easy, and it is not recoverable —
+          there is nothing on the server to go back to. */}
+      <UnsavedChangesGuard
+        when={staged.pendingCount > 0}
+        description={`${pluralize(staged.pendingCount, 'change')} to ${envSlug} ${
+          staged.pendingCount === 1 ? 'has' : 'have'
+        } not been saved.`}
+      />
+
       {history !== null ? (
         <VersionHistoryDialog
           orgSlug={orgSlug}
@@ -729,7 +789,7 @@ export function SecretTable({
               compared.reload();
               return;
             }
-            revealAll.forget();
+            forgetDecrypted();
             onChanged();
           }}
         />

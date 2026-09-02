@@ -22,6 +22,8 @@ export type { CheckboxProps } from './checkbox';
 
 export { ConfirmDialog } from './confirm-dialog';
 export type { ConfirmDialogProps } from './confirm-dialog';
+export { UnsavedChangesGuard } from './unsaved-changes-guard';
+export type { UnsavedChangesGuardProps } from './unsaved-changes-guard';
 
 export { CopyButton } from './copy-button';
 export type { CopyButtonProps } from './copy-button';

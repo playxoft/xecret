@@ -83,7 +83,7 @@ import type { SecretSummary } from './types';
  */
 const MASK = '•'.repeat(18);
 
-/** Matches `SecretValue` and `useRevealAll`, so everything forgets at one pace. */
+/** Matches `SecretValue` and `useRevealAll`, so everything masks at one pace. */
 const REVEAL_DURATION_MS = 180_000;
 
 const NOTE_MAX_LENGTH = 1024;
@@ -212,7 +212,11 @@ export function ValueField({
   /** Hide it, keep it: reversible for the rest of the window without a request. */
   const mask = useCallback(() => setShown(false), []);
 
-  /** Hide it and drop it, so no plaintext survives in a fibre past its window. */
+  /**
+   * Hide it and drop it. Only for a value that has become *wrong* — a write
+   * landed and this copy describes the version before it. Time no longer calls
+   * this; see the masking window below.
+   */
   const forget = useCallback(() => {
     setShown(false);
     setValue(null);
@@ -269,14 +273,21 @@ export function ValueField({
     }
   }, [external, onReveal, value]);
 
+  // The window takes the value off the screen; it does not throw the decryption
+  // away. Those are two different acts and only the first is about what somebody
+  // walking past a desk can read — see `usePlaintextCache`, which holds the
+  // plaintext until something makes it *wrong*. Revealing again after the window
+  // lapses is therefore free and writes no second audit record.
+  //
   // Counted from the decryption rather than from the last time the value was on
-  // screen: masking and unmasking must not extend how long a plaintext lives.
+  // screen: masking and unmasking must not extend how long a plaintext is
+  // rendered.
   useEffect(() => {
-    if (value === null) return;
+    if (value === null || !shown) return;
 
-    const forgetAt = setTimeout(forget, REVEAL_DURATION_MS);
-    return () => clearTimeout(forgetAt);
-  }, [value, forget]);
+    const maskAt = setTimeout(mask, REVEAL_DURATION_MS);
+    return () => clearTimeout(maskAt);
+  }, [value, shown, mask]);
 
   // The latest-ref pattern, so the effects below can depend on *what* happened
   // rather than on a callback whose identity changes every render — which would
@@ -369,6 +380,15 @@ export function ValueField({
   // row at once rather than leaving behind the ones also revealed individually.
   const displayed = external ?? (shown ? value : null);
   const isRevealed = displayed !== null;
+  /**
+   * The plaintext this field is holding, whether or not it is on screen.
+   *
+   * What the editor is seeded from. It used to be seeded from `displayed`, which
+   * is null while the value is masked — so revealing a secret, hiding it again
+   * and then clicking it to edit issued a fresh decryption for a value sitting
+   * two lines up in this very component. Masked is not the same as unknown.
+   */
+  const held = external ?? value;
 
   // Checked as you type, against the same module the server checks against on
   // write. This copy exists so the failure arrives while the value is still on
@@ -385,7 +405,14 @@ export function ValueField({
   }
 
   function handleKeyDown(event: KeyboardEvent) {
-    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      // Enter saves. The value is the end of the row — there is nothing after it
+      // to move on to — so the key that means "done" everywhere else in a form
+      // means it here too. Ctrl/Cmd+Enter still does, from anywhere.
+      //
+      // Which leaves Shift+Enter to type an actual newline. Values that contain
+      // one are real — a PEM block, a JSON document — but they are the small
+      // minority, and they are pasted far more often than they are typed.
       event.preventDefault();
       onCommit();
       return;
@@ -450,7 +477,7 @@ export function ValueField({
         // goes under the pointer; one that stays would hide a value being
         // compared against for as long as the edit lasts. Not needed where the
         // bar is in the flow already — see the coarse-pointer note below.
-        dirty && 'pointer-fine:pt-9',
+        dirty && 'pointer-fine:pt-10',
       )}
     >
       <div className="flex min-w-0 items-center gap-2">
@@ -507,7 +534,16 @@ export function ValueField({
             >
               {/* `--line-strong`, not `--line`: this is a surface floating over
                   another surface of the same colour, and its edge is the only
-                  thing saying where one ends and the other begins. */}
+                  thing saying where one ends and the other begins.
+
+                  32px targets rather than 28px. The bar is transient — it
+                  appears under the pointer and goes away again — so every pixel
+                  of a control here is a pixel the pointer does not have to
+                  travel back for, and Reveal, Copy and Delete sitting a few
+                  pixels apart at 28px is how the wrong one gets pressed. Still
+                  under the 36px the rest of the row uses: this floats over the
+                  field above it and has to stay smaller than the thing it
+                  covers. */}
               <div className="border-line-strong bg-surface shadow-overlay flex items-center gap-0.5 rounded-lg border p-0.5">
                 {secret === null ? null : (
                   <>
@@ -515,7 +551,7 @@ export function ValueField({
                       <Button
                         size="icon"
                         variant="ghost"
-                        className="size-7"
+                        className="size-8"
                         onClick={isRevealed ? mask : reveal}
                         // An externally-supplied value is cleared by the control that
                         // supplied it, so this row's own toggle has nothing to do.
@@ -530,11 +566,11 @@ export function ValueField({
                         }
                       >
                         {loading ? (
-                          <Spinner className="size-4" label={null} />
+                          <Spinner className="size-4.5" label={null} />
                         ) : isRevealed ? (
-                          <EyeOffIcon className="size-4" />
+                          <EyeOffIcon className="size-4.5" />
                         ) : (
-                          <EyeIcon className="size-4" />
+                          <EyeIcon className="size-4.5" />
                         )}
                       </Button>
                     </Tooltip>
@@ -543,17 +579,17 @@ export function ValueField({
                       <Button
                         size="icon"
                         variant="ghost"
-                        className="size-7"
+                        className="size-8"
                         onClick={copy}
                         disabled={copyState === 'copying'}
                         aria-label={`Copy the value of ${secretName} to the clipboard`}
                       >
                         {copyState === 'copied' ? (
-                          <CheckIcon className="text-success-text size-4" />
+                          <CheckIcon className="text-success-text size-4.5" />
                         ) : copyState === 'copying' ? (
-                          <Spinner className="size-4" label={null} />
+                          <Spinner className="size-4.5" label={null} />
                         ) : (
-                          <CopyIcon className="size-4" />
+                          <CopyIcon className="size-4.5" />
                         )}
                       </Button>
                     </Tooltip>
@@ -563,12 +599,12 @@ export function ValueField({
                         <Button
                           size="icon"
                           variant="ghost"
-                          className="size-7"
-                          onClick={() => onEditOpen(displayed ?? undefined)}
+                          className="size-8"
+                          onClick={() => onEditOpen(held ?? undefined)}
                           disabled={disabled}
                           aria-label={`Edit the value of ${secretName}`}
                         >
-                          <PencilIcon className="size-4" />
+                          <PencilIcon className="size-4.5" />
                         </Button>
                       </Tooltip>
                     )}
@@ -583,7 +619,7 @@ export function ValueField({
                         onClick={onHistory}
                         aria-label={`v${secret.version} — version history of ${secretName}`}
                         className={cn(
-                          'border-line bg-canvas-inset text-fg-muted inline-flex h-6 cursor-pointer items-center rounded-full border px-2 text-sm font-medium transition-colors',
+                          'border-line bg-canvas-inset text-fg-muted inline-flex h-7 cursor-pointer items-center rounded-full border px-2.5 text-sm font-medium transition-colors',
                           'hover:border-accent-line hover:bg-accent-tint hover:text-accent-text',
                         )}
                       >
@@ -600,12 +636,12 @@ export function ValueField({
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="text-fg-muted hover:text-danger-text size-7"
+                          className="text-fg-muted hover:text-danger-text size-8"
                           disabled={disabled}
                           onClick={onDelete}
                           aria-label={`Delete ${secretName}`}
                         >
-                          <TrashIcon className="size-4" />
+                          <TrashIcon className="size-4.5" />
                         </Button>
                       </Tooltip>
                     ) : null}
@@ -626,7 +662,7 @@ export function ValueField({
                       <Button
                         variant="primary"
                         size="sm"
-                        className="h-7"
+                        className="h-8"
                         onClick={onCommit}
                         loading={saving}
                         disabled={disabled || prefilling || shapeProblem !== null}
@@ -637,7 +673,7 @@ export function ValueField({
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-7"
+                      className="h-8"
                       onClick={cancel}
                       disabled={disabled || saving}
                       aria-label={`Discard the change to ${secretName}`}
@@ -652,10 +688,14 @@ export function ValueField({
 
           {editing ? (
             <div className="relative">
-              {/* `field-sizing-content` where the browser has it, so a long value
-                  is not read through a one-line slot; capped, because a 40-line
-                  JSON blob must not push the rest of the table off the screen.
-                  This is the one thing allowed to make a row taller. */}
+              {/* Grows downwards to fit what is in it — `field-sizing-content`
+                  where the browser has it — and never sideways. Capped, because
+                  a 40-line JSON blob must not push the rest of the table off the
+                  screen; past the cap it scrolls. The cap is also how far the
+                  grabber in the corner can be dragged — `max-height` clamps a
+                  dragged height as surely as a grown one — so it is set at about
+                  a dozen lines rather than four: far enough to be worth
+                  dragging, short enough to leave the table underneath. */}
               <Textarea
                 value={draft}
                 onChange={(event) => onDraftChange(event.target.value)}
@@ -671,6 +711,9 @@ export function ValueField({
                 rows={1}
                 placeholder={prefilling ? 'Loading the current value…' : `Value for ${secretName}`}
                 aria-label={`Value of ${secretName}`}
+                // What the key beside this hands focus to when Enter is
+                // pressed in it. See `goToValue` in `SecretRow`.
+                data-value-editor=""
                 aria-busy={prefilling || undefined}
                 aria-invalid={problem !== null ? true : undefined}
                 aria-describedby={problem !== null ? messageId : undefined}
@@ -682,18 +725,49 @@ export function ValueField({
                 autoCapitalize="off"
                 spellCheck={false}
                 className={cn(
-                  // `resize-none` against `Textarea`'s base: a drag handle here
-                  // sets an inline height that then fights `field-sizing-content`,
-                  // and a one-line box with a grabber in the corner reads as a
-                  // mistake.
-                  'field-sizing-content max-h-40 min-h-9 w-full resize-none px-2.5 py-1.5 font-mono text-sm leading-5',
+                  // `resize-y` is `Textarea`'s own default and is kept: the
+                  // grabber in the bottom-right corner is how a value taller
+                  // than the cap gets looked at all at once. Vertical only —
+                  // dragging this wider would drag it over the key column.
+                  //
+                  // `w-full` and `break-all` together hold the width still: the
+                  // box is as wide as the column and a long token wraps inside
+                  // it rather than scrolling sideways under the cursor.
+                  //
+                  // `block` is load-bearing. A textarea is inline-block by
+                  // default, so it sits on its parent's text baseline and the
+                  // line box keeps room for descenders *under* it — four or five
+                  // pixels of empty space that belong to no element and cannot
+                  // be seen. The row is `h-14` against a 36px field and 20px of
+                  // cell padding, exactly full, so those few pixels were enough
+                  // to push every row taller the moment its value was clicked.
+                  // The masked box never did it because `flex` is block-level.
+                  //
+                  // `py-[7px]`, not `py-1.5`: 20px of line in a 36px box with 1px
+                  // borders leaves 14px to split, and 6px each would leave the
+                  // box 34px and let `min-h-9` make up the difference at the
+                  // bottom — a textarea top-aligns its text, so that lands as
+                  // two pixels of text sat too high. Seven each is exact, and it
+                  // keeps this box and the one it replaces the same height at
+                  // every line count rather than only at one.
+                  'block field-sizing-content max-h-64 min-h-9 w-full px-2.5 py-[7px] font-mono text-sm leading-5 break-all',
+                  // Focus lands on the border this box already has, rather than
+                  // on a ring drawn outside it. The app-wide `:focus-visible`
+                  // outline is 2px with a 2px offset, which around a field sat
+                  // directly under the pointer reads as the box jumping four
+                  // pixels bigger on every side the instant it is clicked — and
+                  // it draws a second line around a control whose own line is
+                  // the only thing saying it is a control. `--accent` against
+                  // `--line-control` is a large enough step to be unmistakable
+                  // without adding anything to the layout.
+                  'focus-visible:border-accent focus-visible:outline-none',
                   problem !== null && 'border-danger',
                 )}
                 autoFocus
               />
               {prefilling ? (
                 <span className="absolute top-2 right-2.5">
-                  <Spinner className="size-4" label={null} />
+                  <Spinner className="size-4.5" label={null} />
                 </span>
               ) : null}
             </div>
@@ -715,21 +789,32 @@ export function ValueField({
             <button
               ref={displayRef}
               type="button"
-              onClick={() => onEditOpen(displayed ?? undefined)}
+              onClick={() => onEditOpen(held ?? undefined)}
               disabled={disabled}
               className={cn(
                 // `--line-control`, matching every other field on this screen:
-                // the border is the only thing saying a box is here. Exactly the
-                // height of the editor that replaces it, and truncating rather
-                // than wrapping, so a row is one line until somebody opens it.
-                'border-line-control bg-canvas-inset hover:border-fg-subtle flex h-9 w-full cursor-text items-center rounded-md border px-2.5 text-left transition-colors',
+                // the border is the only thing saying a box is here.
+                //
+                // `min-h-9`: a value too long for one line costs *height*. The
+                // width is the column's, it is the same on every row, and no
+                // state this field can be in changes it — see the `table-fixed`
+                // note in `SecretTable` for the other half of that.
+                'border-line-control bg-canvas-inset hover:border-fg-subtle flex min-h-9 w-full cursor-text items-center rounded-md border px-2.5 py-[7px] text-left transition-colors',
                 'disabled:cursor-not-allowed disabled:opacity-60',
               )}
             >
               {isRevealed ? (
                 <>
                   <span className="sr-only">Value of {secretName}, revealed. Click to edit: </span>
-                  <code className="text-fg min-w-0 flex-1 truncate font-mono text-sm leading-5">
+                  {/* `break-all`, because the thing being wrapped is a token:
+                      there is no word boundary in a 64-character key, and
+                      `break-word` would leave the whole of it on a line of its
+                      own — overflowing sideways, which is the one thing this
+                      field may never do. Capped at three lines; past that it is
+                      not being read, and the editor is where a value that long
+                      gets looked at properly. Newlines are kept, so a PEM block
+                      reads as a PEM block and not as one run-on line. */}
+                  <code className="text-fg line-clamp-3 min-w-0 flex-1 font-mono text-sm leading-5 break-all whitespace-pre-wrap">
                     {displayed}
                   </code>
                 </>
@@ -866,7 +951,7 @@ function FieldDetails({
         <Button
           size="icon"
           variant="ghost"
-          className={cn('size-7 shrink-0', hasNote && 'text-accent-text')}
+          className={cn('size-8 shrink-0', hasNote && 'text-accent-text')}
           title={hasNote ? note : 'Details'}
           aria-label={
             environmentName === undefined
@@ -874,7 +959,7 @@ function FieldDetails({
               : `Details and note for ${secret.name} in ${environmentName}`
           }
         >
-          <InfoIcon className="size-4" />
+          <InfoIcon className="size-4.5" />
         </Button>
       </PopoverTrigger>
 
@@ -915,7 +1000,6 @@ function FieldDetails({
               className="text-sm"
               autoFocus
             />
-            <p className="text-fg-subtle text-sm leading-5">Never put part of the value here.</p>
             <div className="flex items-center gap-1.5">
               {/* Disabled with everything else while a batch save is in flight:
                   the save writes the staged map back from a snapshot taken
