@@ -25,7 +25,7 @@ import {
 } from '@/components/ui';
 import { ValueTypeMenu } from './value-type-menu';
 import { looksLikeAssignments, parsePastedSecrets } from './paste-secrets';
-import { draftNameProblem } from './staged-changes';
+import { draftNameProblem, isBlankDraft } from './staged-changes';
 import type { Draft, DraftSeed } from './staged-changes';
 
 const NOTE_MAX_LENGTH = 1024;
@@ -179,7 +179,11 @@ export function DraftRow({
     // Escape removes a row the user has not committed to. Only while it is
     // still blank: discarding a half-typed credential on a stray keypress is a
     // retype, and Escape is pressed by accident constantly.
-    if (event.key === 'Escape' && draft.name === '' && draft.value === '') {
+    // `isBlankDraft` rather than name-and-value: this handler is on the note
+    // field too, and asking the narrower question removed the whole row — note
+    // included — when Escape was pressed to close a note that had just been
+    // typed into.
+    if (event.key === 'Escape' && isBlankDraft(draft)) {
       event.preventDefault();
       onRemove();
     }

@@ -144,8 +144,9 @@ export function EnvironmentScreen({
           projectSlug={projectSlug}
           envSlug={envSlug}
           isProduction={isProduction}
-          // Empty until the project resolves, which disables the fan-out picker
-          // rather than offering a partial list of environments to write to.
+          // Empty until the project resolves. The table reads these only for
+          // `isProduction` — which decides what gets confirmed — so an empty list
+          // is the safe premise to start from.
           environments={project.data?.environments ?? []}
           comparedEnvironments={comparedEnvironments}
           onStopComparing={() => setCompared([])}

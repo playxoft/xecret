@@ -194,6 +194,11 @@ export function SecretTable({
     // what the user typed; only the seed it was typed over.
     staged.forgetSeeds();
     plaintexts.forget();
+    // The hover set is a set of *names into* the snapshot above. Left behind, it
+    // survives the write that just invalidated it, and the next time hover mode
+    // is armed those same rows un-mask on their own without the pointer going
+    // anywhere near them.
+    setHoverRevealed(new Set());
   }
 
   const currentEnvironment = environments.find((entry) => entry.slug === envSlug);
@@ -219,17 +224,25 @@ export function SecretTable({
     return () => document.removeEventListener('visibilitychange', onVisibility);
   }, []);
 
-  // And the window masks them, on the same clock as everything else — counted
-  // from the decryption, exactly as it is counted there. `useRevealAll` used to
-  // do this by dropping its values outright when the window ended; now that it
-  // keeps them — masking and forgetting being different acts — a row the pointer
-  // once crossed would otherwise stay on screen for the rest of the session.
+  // And the window masks them, on the same clock as everything else.
+  //
+  // Keyed on the reveal set, not on `revealAll.values`. The window no longer
+  // drops the decryption — it masks — so `values` keeps its identity across the
+  // end of a window, and an effect watching it would arm exactly one timer per
+  // decryption. Every row the pointer crossed after that timer fired would then
+  // stay in plaintext for the rest of the session, which is the thing this
+  // timer exists to prevent.
+  //
+  // One clock for the set rather than one per row: revealing a further row
+  // restarts it, so the last arrival is always the one counted from. Re-crossing
+  // a row already in the set does not — the setter returns `current` unchanged —
+  // so a pointer resting on one value cannot hold it open.
   useEffect(() => {
-    if (revealAll.values === null) return;
+    if (hoverRevealed.size === 0) return;
 
     const maskAt = setTimeout(() => setHoverRevealed(new Set()), REVEAL_DURATION_MS);
     return () => clearTimeout(maskAt);
-  }, [revealAll.values]);
+  }, [hoverRevealed]);
 
   const existingNames = useMemo(() => new Set(secrets.map((secret) => secret.name)), [secrets]);
 
@@ -319,8 +332,12 @@ export function SecretTable({
   /**
    * Whether hover mode can actually show anything.
    *
-   * Derived rather than stored, so the window ending, a failed decryption and a
-   * change of environment all put the toggle out on their own — a button that
+   * Derived rather than stored, so a failed decryption and a change of
+   * environment put the toggle out on their own — a button that stays lit while
+   * doing nothing is the worse of the two failures. The window ending no longer
+   * does: it masks rather than forgets, so the decryption is still there and
+   * hover mode stays armed against it. What the window ends is what is *on
+   * screen*, which the timer above clears.
    * stays lit while doing nothing is the worse of the two failures. Re-arming it
    * is one click and is the user's decision to make: renewing the decryption
    * every three minutes on its own would hold an environment in memory for as

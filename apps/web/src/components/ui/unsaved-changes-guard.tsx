@@ -113,7 +113,10 @@ export function UnsavedChangesGuard({ when, description }: UnsavedChangesGuardPr
       // question twice, and the second one is the one nobody can act on.
       if (unwinding.current) return;
       event.preventDefault();
-      event.returnValue = '';
+      // Non-empty deliberately: the legacy path is specified to fire only when
+      // `returnValue` is *not* the empty string, so assigning one asks the older
+      // engines this line exists for precisely nothing. The text is never shown.
+      event.returnValue = 'unsaved';
     };
 
     window.addEventListener('beforeunload', onBeforeUnload);
@@ -239,8 +242,21 @@ export function UnsavedChangesGuard({ when, description }: UnsavedChangesGuardPr
   // Derived rather than stored: saving or discarding while the dialog is open
   // answers the question it was asking, and leaving it up over a table with
   // nothing pending would ask the user to decide about work that no longer
-  // exists. The stale destination behind it cannot be acted on — the only thing
-  // that reads it is the confirm button of a dialog that is now closed.
+  // exists.
+  //
+  // The destination has to go with it. Radix is not told when a controlled
+  // `open` falls to false, so `onOpenChange` does not fire and nothing else
+  // clears it — and a kept destination is not inert, it is waiting. The save
+  // that closed this dialog leaves it armed; the next character typed turns
+  // `when` back on, and the dialog returns unbidden over a fresh edit offering
+  // to throw it away and follow a link clicked minutes ago. For a `back` it is
+  // worse: `go(-2)` against history nobody remembers.
+  const [guarding, setGuarding] = useState(when);
+  if (guarding !== when) {
+    setGuarding(when);
+    if (!when) setPending(null);
+  }
+
   const asking = when && pending !== null;
 
   function leave() {
