@@ -860,7 +860,8 @@ export function useStagedChanges(
           // The staged type where one was staged, and otherwise the type the
           // secret already has: a row that changes only its value is declared
           // just as firmly as one that changes both.
-          const effectiveType = edit.valueType ?? toSecretValueType(storedTypes.get(name) ?? 'string');
+          const effectiveType =
+            edit.valueType ?? toSecretValueType(storedTypes.get(name) ?? 'string');
           if (effectiveValue !== undefined) {
             const shape = checkSecretValue(effectiveValue, effectiveType);
             if (!shape.valid) {

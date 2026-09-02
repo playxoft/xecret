@@ -777,7 +777,9 @@ export function SecretTable({
                         : {})}
                       onSelectedChange={(checked) => toggleOne(secret.name, checked)}
                       forgetToken={forgetToken}
-                      onComparedDirtyChange={(slug, dirty) => markComparedDirty(slug, secret.name, dirty)}
+                      onComparedDirtyChange={(slug, dirty) =>
+                        markComparedDirty(slug, secret.name, dirty)
+                      }
                       onEditOpen={() => staged.openEdit(secret.name)}
                       onEditSeed={(value) => staged.seedEdit(secret.name, value)}
                       onEditChange={(value) => staged.setEdit(secret.name, value)}
@@ -988,11 +990,7 @@ function Toolbar({
               loading={revealAll.loading && !hoverLoading}
               aria-pressed={anythingShown}
             >
-              {anythingShown ? (
-                <EyeOffIcon className="size-4" />
-              ) : (
-                <EyeIcon className="size-4" />
-              )}
+              {anythingShown ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
               {anythingShown ? 'Hide all' : 'Reveal all'}
             </Button>
 
