@@ -179,7 +179,15 @@ export function ComparedValue({
   // in the same row — would otherwise replace a field holding typed work with a
   // message, leaving the value staged in state with no field, no Save and no
   // Cancel, recoverable only by reloading the page.
-  if ((environment.loading || environment.error !== null) && !editing) {
+  // ...and only while there is nothing to show. A refetch keeps the listing it
+  // already had, so a reload triggered by saving one environment must not blank
+  // every cell of another one the user never touched — nor flash "Reading …"
+  // over values that are still on screen and still correct.
+  if (
+    (environment.loading || environment.error !== null) &&
+    !editing &&
+    environment.byName.size === 0
+  ) {
     return (
       <div className="flex min-w-0 items-center gap-2">
         <EnvironmentLabel
@@ -218,6 +226,10 @@ export function ComparedValue({
       // Reported inside the panel that made the write, not under the value: a
       // note that would not save says nothing about the value beside it.
       setNoteError(errorMessage(cause));
+      // Rethrown so the panel keeps its editor open on what was typed. It is the
+      // only copy — reopening re-seeds from the *stored* note — and the panel
+      // catches this, so nothing escapes as an unhandled rejection.
+      throw cause;
     } finally {
       setNoteSaving(false);
     }
@@ -251,7 +263,7 @@ export function ComparedValue({
         onEditCancel={cancel}
         onCommit={commit}
         note={writtenNote !== undefined ? writtenNote : (secret?.note ?? null)}
-        onNoteChange={(next) => void saveNote(next)}
+        onNoteChange={saveNote}
         noteSaving={noteSaving}
         noteError={noteError}
         saveLabel={environment.isProduction ? `Save to ${environment.name}` : 'Save'}

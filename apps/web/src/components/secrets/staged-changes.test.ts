@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { draftNameProblem, hasNewValue, isBlankDraft, wantsRename } from './staged-changes';
+import {
+  draftNameProblem,
+  dropSeeds,
+  hasNewValue,
+  isBlankDraft,
+  wantsRename,
+} from './staged-changes';
 import type { Draft, PendingEdit } from './staged-changes';
 
 /**
@@ -150,5 +156,58 @@ describe('draftNameProblem', () => {
     expect(draftNameProblem(second, [second], new Set(['API_KEY']))).toMatch(
       /already has a secret/,
     );
+  });
+});
+
+/**
+ * The reveal window, enforced where the plaintext actually is.
+ *
+ * `dropSeeds` backs both the sweep and `forgetSeeds`, so an editor has to come
+ * out of it the same way whichever one ran. What it must never do is take work
+ * the user has not saved.
+ */
+describe('dropSeeds', () => {
+  const ALL = () => true;
+  const SEEDED = { value: 'postgres://old', baseline: 'postgres://old', seededAt: 1_000 };
+
+  it('leaves an editor whose seed has not expired alone', () => {
+    const edits = new Map([['DATABASE_URL', edit(SEEDED)]]);
+    expect(dropSeeds(edits, () => false)).toBeNull();
+  });
+
+  it('drops an expired editor nobody typed into', () => {
+    // Opened to read a value and left open: that is a reveal wearing a different
+    // shape, and it forgets on the same schedule.
+    const edits = new Map([['DATABASE_URL', edit(SEEDED)]]);
+    const next = dropSeeds(edits, ALL);
+    expect(next?.has('DATABASE_URL')).toBe(false);
+  });
+
+  it('keeps a staged rename while dropping the seed under it', () => {
+    const edits = new Map([['DATABASE_URL', edit({ ...SEEDED, name: 'DB_URL' })]]);
+    const kept = dropSeeds(edits, ALL)?.get('DATABASE_URL');
+
+    expect(kept?.name).toBe('DB_URL');
+    expect(kept?.value).toBe('');
+    expect(kept?.baseline).toBeUndefined();
+    expect(kept?.seededAt).toBeUndefined();
+  });
+
+  it('keeps what the user typed and drops only the credential under it', () => {
+    const edits = new Map([['DATABASE_URL', edit({ ...SEEDED, value: 'postgres://new' })]]);
+    const kept = dropSeeds(edits, ALL)?.get('DATABASE_URL');
+
+    expect(kept?.value).toBe('postgres://new');
+    expect(kept?.baseline).toBeUndefined();
+    expect(kept?.seededAt).toBeUndefined();
+  });
+
+  it('does not close an editor the user has emptied', () => {
+    // Selecting all and deleting, on the way to pasting a replacement, is the
+    // user at work — `isTouched`, not `hasNewValue`. Asking the narrower
+    // question here deleted the entry, which closed the box and remasked the
+    // row while somebody was in their password manager fetching the new value.
+    const edits = new Map([['DATABASE_URL', edit({ ...SEEDED, value: '' })]]);
+    expect(dropSeeds(edits, ALL)).toBeNull();
   });
 });

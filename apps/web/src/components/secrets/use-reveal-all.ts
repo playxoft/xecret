@@ -76,15 +76,46 @@ export function useRevealAll(orgSlug: string, projectSlug: string, envSlug: stri
 
   const path = apiPath.pull(orgSlug, projectSlug, envSlug);
 
+  // The request in flight, so a second click cannot start a second decryption
+  // of the same environment, and so a response for the environment the user has
+  // just navigated away from is discarded rather than shown under the new one.
+  // Declared above `forget` because the render-phase guard below calls it.
+  const inFlight = useRef<AbortController | null>(null);
+  const showWhenLoaded = useRef(false);
+
   const hide = useCallback(() => setShown(false), []);
 
-  const forget = useCallback(() => {
-    // Dropping the plaintexts from state is the point: they must not survive in
-    // a React fibre for the rest of the page's life, where the next error
-    // boundary or dev-tools inspection would surface every one of them.
+  /**
+   * The state half on its own, for the render-phase environment guard below.
+   *
+   * That path must not touch a ref — and does not need to: the `[path]` effect
+   * already aborts whatever was in flight for the environment being left.
+   */
+  const dropValues = useCallback(() => {
     setValues(null);
     setShown(false);
   }, []);
+
+  const forget = useCallback(() => {
+    // A decryption still in flight is part of what is being forgotten. It was
+    // issued against the environment as it stood *before* the write that is
+    // calling this, so letting it land would repopulate the cache with the
+    // superseded plaintexts — rendered beside the new version chips, put on the
+    // clipboard by Copy, and handed to the editor as the seed for the next
+    // edit, which would write them straight back over what was just saved.
+    inFlight.current?.abort();
+    inFlight.current = null;
+    // Otherwise a later reveal, upgraded onto this aborted request, would show
+    // whatever the next one loads without being asked to.
+    showWhenLoaded.current = false;
+    // Dropping the plaintexts from state is the point: they must not survive in
+    // a React fibre for the rest of the page's life, where the next error
+    // boundary or dev-tools inspection would surface every one of them.
+    dropValues();
+    // The aborted request's handlers both return early, so nothing else clears
+    // this and the button would spin for the rest of the page's life.
+    setLoading(false);
+  }, [dropValues]);
 
   // Any change of environment forgets immediately. Without this, navigating from
   // dev to production with values on screen would leave dev's plaintexts
@@ -99,14 +130,8 @@ export function useRevealAll(orgSlug: string, projectSlug: string, envSlug: stri
   const [renderedPath, setRenderedPath] = useState(path);
   if (renderedPath !== path) {
     setRenderedPath(path);
-    if (values !== null) forget();
+    if (values !== null) dropValues();
   }
-
-  // The request in flight, so a second click cannot start a second decryption
-  // of the same environment, and so a response for the environment the user has
-  // just navigated away from is discarded rather than shown under the new one.
-  const inFlight = useRef<AbortController | null>(null);
-  const showWhenLoaded = useRef(false);
 
   useEffect(
     () => () => {

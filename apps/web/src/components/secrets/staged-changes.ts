@@ -145,6 +145,18 @@ export interface SaveOutcome {
   /** Submitted a value the server already held, so no version was appended. */
   unchanged: number;
   failed: number;
+  /**
+   * Whether anything at all reached the server, including from a row that then
+   * failed halfway.
+   *
+   * A row writes its value and its metadata as two requests, so a rename that
+   * is rejected after the value has already been PATCHed leaves the environment
+   * changed while the row counts only as `failed`. Callers holding a decrypted
+   * snapshot of the environment have to drop it on that outcome too — asking
+   * `created > 0 || updated > 0` would keep a snapshot of values that no longer
+   * exist, and the next edit would seed itself from it.
+   */
+  wrote: boolean;
 }
 
 export interface StagedChanges {
@@ -200,6 +212,16 @@ export interface StagedChanges {
    * with exactly the work that is still outstanding.
    */
   save: (existingNames: ReadonlySet<string>) => Promise<SaveOutcome>;
+  /**
+   * Drops every seeded plaintext, keeping whatever the user typed over it.
+   *
+   * For a write this table did not make — an import, a restore from another
+   * surface. Every `baseline` here describes the environment as it stood before
+   * that write, so an editor still holding one is offering a superseded
+   * credential as the basis of the next edit, and a save would write it straight
+   * back over what has just landed.
+   */
+  forgetSeeds: () => void;
 }
 
 /**
@@ -264,6 +286,61 @@ function withoutValue(edit: PendingEdit): PendingEdit | null {
     ...(edit.note === undefined ? {} : { note: edit.note }),
     error: null,
   };
+}
+
+/**
+ * Drops the seeded plaintext from every entry `expired` selects, and returns the
+ * new map — or `null` when nothing had to change.
+ *
+ * Shared by the reveal-window sweep and by `forgetSeeds`, because the two have
+ * to treat an editor identically and disagreed when they were written apart. An
+ * untouched editor goes entirely; a touched one keeps the user's own work and
+ * loses only the credential it was seeded with.
+ */
+export function dropSeeds(
+  current: ReadonlyMap<string, PendingEdit>,
+  expired: (edit: PendingEdit & { seededAt: number }) => boolean,
+): Map<string, PendingEdit> | null {
+  let changed = false;
+  const next = new Map(current);
+
+  for (const [name, edit] of current) {
+    if (edit.seededAt === undefined) continue;
+    if (!expired({ ...edit, seededAt: edit.seededAt })) continue;
+
+    // `isTouched`, not `hasNewValue`: emptying a seeded box is not a value a
+    // save would write, but it is unmistakably the user at work, and closing the
+    // editor out from under somebody who cleared it and went to their password
+    // manager for the replacement is the exact case `isTouched` exists to name.
+    if (isTouched(edit)) {
+      // Their work stays; the credential the box was seeded with does not, or an
+      // edit begun and left open would pin the old plaintext here for the rest
+      // of the page's life. Only once the box holds something of its own:
+      // `isTouched` falls back to "not empty" when there is no baseline, so
+      // stripping it from an emptied editor would make that editor read as
+      // untouched and every guard would close it.
+      if (edit.value.length === 0) continue;
+
+      changed = true;
+      // Rebuilt rather than spread-minus-two, so the seed cannot come back by
+      // someone adding a field to `PendingEdit`.
+      next.set(name, {
+        value: edit.value,
+        ...(edit.valueType === undefined ? {} : { valueType: edit.valueType }),
+        ...(edit.name === undefined ? {} : { name: edit.name }),
+        ...(edit.note === undefined ? {} : { note: edit.note }),
+        error: edit.error,
+      });
+      continue;
+    }
+
+    changed = true;
+    const stripped = withoutValue(edit);
+    if (stripped === null) next.delete(name);
+    else next.set(name, stripped);
+  }
+
+  return changed ? next : null;
 }
 
 export function isBlankDraft(draft: Draft): boolean {
@@ -613,6 +690,10 @@ export function useStagedChanges(
     setEdits(new Map());
   }, []);
 
+  const forgetSeeds = useCallback(() => {
+    setEdits((current) => dropSeeds(current, () => true) ?? current);
+  }, []);
+
   // The window, enforced where the plaintext actually lives. An interval rather
   // than a timer per entry: a timer keyed on `edits` would restart every time
   // anything anywhere in the table was typed, so one row's activity would extend
@@ -622,20 +703,7 @@ export function useStagedChanges(
     const sweep = setInterval(() => {
       setEdits((current) => {
         const now = Date.now();
-        let changed = false;
-        const next = new Map(current);
-
-        for (const [name, edit] of current) {
-          if (edit.seededAt === undefined || hasNewValue(edit)) continue;
-          if (now - edit.seededAt < SEED_DURATION_MS) continue;
-
-          changed = true;
-          const stripped = withoutValue(edit);
-          if (stripped === null) next.delete(name);
-          else next.set(name, stripped);
-        }
-
-        return changed ? next : current;
+        return dropSeeds(current, (edit) => now - edit.seededAt >= SEED_DURATION_MS) ?? current;
       });
     }, SWEEP_INTERVAL_MS);
 
@@ -665,7 +733,13 @@ export function useStagedChanges(
     async (existingNames: ReadonlySet<string>): Promise<SaveOutcome> => {
       setSaving(true);
 
-      const outcome: SaveOutcome = { created: 0, updated: 0, unchanged: 0, failed: 0 };
+      const outcome: SaveOutcome = {
+        created: 0,
+        updated: 0,
+        unchanged: 0,
+        failed: 0,
+        wrote: false,
+      };
       const survivingDrafts: Draft[] = [];
       const survivingEdits = new Map<string, PendingEdit>();
 
@@ -704,6 +778,7 @@ export function useStagedChanges(
             });
             claimed.add(name);
             outcome.created += 1;
+            outcome.wrote = true;
             // Not pushed to `survivingDrafts`, which is what drops the plaintext.
           } catch (cause) {
             survivingDrafts.push({ ...draft, error: describeWriteFailure(cause) });
@@ -739,8 +814,18 @@ export function useStagedChanges(
               continue;
             }
           }
-          if (hasValue && edit.valueType !== undefined) {
-            const shape = checkSecretValue(edit.value, edit.valueType);
+          // The value this row will hold once the save lands: the new one where
+          // one was typed, and otherwise the stored one the editor was seeded
+          // with. Asking `hasValue` alone stopped checking the seeded case the
+          // moment `hasNewValue` started excluding "opened and unchanged" — so
+          // opening a value, leaving it alone and changing only the type wrote a
+          // row declared `integer` holding `abc`, under a field that was already
+          // showing that in red. Still skipped where nothing was seeded: there
+          // is no value here to check, and the server tolerates the mismatch on
+          // purpose.
+          const effectiveValue = hasValue ? edit.value : edit.baseline;
+          if (edit.valueType !== undefined && effectiveValue !== undefined) {
+            const shape = checkSecretValue(effectiveValue, edit.valueType);
             if (!shape.valid) {
               survivingEdits.set(name, {
                 ...edit,
@@ -780,8 +865,10 @@ export function useStagedChanges(
               changed = true;
             }
 
-            if (changed) outcome.updated += 1;
-            else outcome.unchanged += 1;
+            if (changed) {
+              outcome.updated += 1;
+              outcome.wrote = true;
+            } else outcome.unchanged += 1;
 
             if (renaming && rename !== undefined) {
               claimed.delete(name);
@@ -793,6 +880,11 @@ export function useStagedChanges(
             // cheaper than a row silently losing half of what it staged.
             survivingEdits.set(name, { ...edit, error: describeWriteFailure(cause).message });
             outcome.failed += 1;
+            // The value write goes first, so a metadata failure lands on a row
+            // whose value is already stored. The row reports only `failed`, and
+            // without this the caller would keep a decrypted snapshot of an
+            // environment it no longer describes.
+            if (changed) outcome.wrote = true;
           }
         }
 
@@ -825,6 +917,7 @@ export function useStagedChanges(
     setEditMeta,
     closeEdit,
     discardAll,
+    forgetSeeds,
     save,
   };
 }

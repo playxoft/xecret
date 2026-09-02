@@ -144,7 +144,7 @@ export interface ValueFieldProps {
   /** The note in effect: the staged one where there is one, the stored one otherwise. */
   note?: string | null | undefined;
   /** Absent where notes cannot be changed from here. `null` clears the note. */
-  onNoteChange?: ((note: string | null) => void) | undefined;
+  onNoteChange?: ((note: string | null) => void | Promise<void>) | undefined;
   noteSaving?: boolean | undefined;
   /**
    * Why the last note write failed. Reported inside the panel that made it,
@@ -258,6 +258,11 @@ export function ValueField({
       const plaintext = external ?? value ?? (await onReveal());
       await navigator.clipboard.writeText(plaintext);
       setCopyState('copied');
+      // The previous one goes first, or an earlier reset fires against a later
+      // copy: two clicks two seconds apart and the second tick flashes for the
+      // remainder of the first's timer, clearing the `role="status"` line before
+      // a screen reader reaches it.
+      if (copyResetTimer.current) clearTimeout(copyResetTimer.current);
       copyResetTimer.current = setTimeout(() => setCopyState('idle'), 2000);
     } catch (cause) {
       setCopyState('idle');
@@ -343,6 +348,17 @@ export function ValueField({
 
     const active = document.activeElement;
     if (active instanceof Node && fieldRef.current?.contains(active)) return;
+    // The same portal exemption `handleBlur` carries, because this is deciding
+    // the same question. Radix renders the details panel at the document root,
+    // so a cursor parked in this field's *own* popover reads as somewhere else
+    // entirely — and closing here would throw away the value that had just
+    // arrived, leaving the panel open over a re-masked field.
+    if (
+      active instanceof Element &&
+      active.closest('[data-radix-popper-content-wrapper]') !== null
+    ) {
+      return;
+    }
     // Not `closeUntouched`: focus is elsewhere by definition, and this must not
     // drag it back.
     cancelRef.current();
@@ -364,6 +380,23 @@ export function ValueField({
     },
     [],
   );
+
+  /**
+   * Whether an editor rendering now is one the user just opened.
+   *
+   * `editing` can be true on a field's very first render: the staged edit lives
+   * in the table and outlives the row, so a row returning to a filtered list
+   * re-opens its editor on what was typed. Autofocusing there would tear the
+   * cursor out of the filter box the user is still typing in — and the next
+   * characters they type would land in a credential instead. Only a box that
+   * *opened* while this field was already on screen takes focus.
+   */
+  const [renderedEditing, setRenderedEditing] = useState(editing);
+  const [justOpened, setJustOpened] = useState(false);
+  if (renderedEditing !== editing) {
+    setRenderedEditing(editing);
+    setJustOpened(editing);
+  }
 
   // A value supplied from outside wins, so clearing "Reveal all" re-masks every
   // row at once rather than leaving behind the ones also revealed individually.
@@ -387,6 +420,11 @@ export function ValueField({
   function handleKeyDown(event: KeyboardEvent) {
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault();
+      // Exactly what the Save button beside it is disabled on. Without this the
+      // keyboard route wrote values the live shape check had already rejected —
+      // and could fire before the seed had landed, saving the empty box over the
+      // value it was still loading.
+      if (disabled || prefilling || shapeProblem !== null) return;
       onCommit();
       return;
     }
@@ -564,7 +602,7 @@ export function ValueField({
                           size="icon"
                           variant="ghost"
                           className="size-7"
-                          onClick={() => onEditOpen(displayed ?? undefined)}
+                          onClick={() => onEditOpen(external ?? value ?? undefined)}
                           disabled={disabled}
                           aria-label={`Edit the value of ${secretName}`}
                         >
@@ -689,7 +727,7 @@ export function ValueField({
                   'field-sizing-content max-h-40 min-h-9 w-full resize-none px-2.5 py-1.5 font-mono text-sm leading-5',
                   problem !== null && 'border-danger',
                 )}
-                autoFocus
+                autoFocus={justOpened}
               />
               {prefilling ? (
                 <span className="absolute top-2 right-2.5">
@@ -715,7 +753,7 @@ export function ValueField({
             <button
               ref={displayRef}
               type="button"
-              onClick={() => onEditOpen(displayed ?? undefined)}
+              onClick={() => onEditOpen(external ?? value ?? undefined)}
               disabled={disabled}
               className={cn(
                 // `--line-control`, matching every other field on this screen:
@@ -839,25 +877,52 @@ function FieldDetails({
   secret: SecretSummary;
   environmentName?: string | undefined;
   note: string | null;
-  onNoteChange: (note: string | null) => void;
+  onNoteChange: (note: string | null) => void | Promise<void>;
   noteSaving: boolean;
   noteError: string | null;
   disabled: boolean;
 }) {
   const [editingNote, setEditingNote] = useState(false);
   const [draft, setDraft] = useState('');
+  /**
+   * Whether `noteError` describes an attempt this panel has actually made.
+   *
+   * It is a prop, so it outlives the editor that produced it: without this a
+   * failure from ten minutes ago greets the next person who opens the panel, as
+   * a `role="alert"` under a note that saved perfectly well.
+   */
+  const [errorVisible, setErrorVisible] = useState(true);
 
   const hasNote = note !== null && note.length > 0;
 
   function beginNote() {
     setDraft(note ?? '');
     setEditingNote(true);
+    setErrorVisible(false);
   }
 
-  function saveNote() {
+  /**
+   * Hands the note off and waits to be told how it went.
+   *
+   * The editor used to close on the same tick as the call. On the compared
+   * environment `onNoteChange` is a `PUT`, so a rejected write — no grant on
+   * that environment, offline, rate limited — left the panel reporting a failure
+   * with the box already gone and the typed note with it. `beginNote` re-seeds
+   * from the *stored* note, so there was no way back to what had been written.
+   */
+  async function saveNote() {
     const next = draft.trim();
-    onNoteChange(next.length === 0 ? null : next);
-    setEditingNote(false);
+    setErrorVisible(true);
+    try {
+      // A caller that stages rather than writes returns nothing and closes the
+      // box on the spot; the compared environment returns its `PUT` and closes
+      // only once it has landed.
+      await onNoteChange(next.length === 0 ? null : next);
+      setEditingNote(false);
+    } catch {
+      // Left open, still holding the note. The reason is already on screen in
+      // `noteError`, and this box is the only copy of what was typed.
+    }
   }
 
   return (
@@ -925,7 +990,7 @@ function FieldDetails({
                 variant="primary"
                 size="sm"
                 className="h-7"
-                onClick={saveNote}
+                onClick={() => void saveNote()}
                 disabled={disabled}
               >
                 Save note
@@ -946,7 +1011,7 @@ function FieldDetails({
           </p>
         )}
 
-        {noteError !== null ? (
+        {noteError !== null && errorVisible ? (
           <p role="alert" className="text-danger-text mt-1.5 text-sm leading-5">
             {noteError}
           </p>

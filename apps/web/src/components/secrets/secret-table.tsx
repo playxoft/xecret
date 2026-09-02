@@ -162,6 +162,13 @@ export function SecretTable({
   if (renderedWrites !== externalWrites) {
     setRenderedWrites(externalWrites);
     revealAll.forget();
+    // The other place this screen holds plaintext for the environment that has
+    // just been written behind its back. An import that overwrites a key whose
+    // editor is open leaves that editor displaying the pre-import value as
+    // though it were the stored one — and amending a character of it and saving
+    // would write it back, silently reverting the import. Nothing here takes
+    // what the user typed; only the seed it was typed over.
+    staged.forgetSeeds();
   }
 
   const currentEnvironment = environments.find((entry) => entry.slug === envSlug);
@@ -200,13 +207,24 @@ export function SecretTable({
    */
   const comparedOnly = useMemo(
     () =>
-      compared.environments
-        .map((environment) => ({
-          name: environment.name,
-          count: [...environment.byName.keys()].filter((name) => !existingNames.has(name)).length,
-        }))
-        .filter((entry) => entry.count > 0),
-    [compared.environments, existingNames],
+      // Only once *this* environment is fully loaded. `existingNames` covers the
+      // pages fetched so far, so with a "Load more" still on screen every key
+      // past the boundary counts as one this environment "does not have" — the
+      // banner asserting an absence that is really just a horizon, and the count
+      // changing when the user pages in the rest without anything being written.
+      // `ComparedEnvironment.truncated` is the same admission from the other
+      // side, and this is a secrets manager: "production does not have this" is
+      // exactly the wrong answer that ends in an outage.
+      onLoadMore !== null
+        ? []
+        : compared.environments
+            .map((environment) => ({
+              name: environment.name,
+              count: [...environment.byName.keys()].filter((name) => !existingNames.has(name))
+                .length,
+            }))
+            .filter((entry) => entry.count > 0),
+    [compared.environments, existingNames, onLoadMore],
   );
 
   const visible = useMemo(() => {
@@ -381,7 +399,11 @@ export function SecretTable({
     // seed the *next* edit from it and write it back over what was just saved.
     // A batch that failed validation wrote nothing, and un-revealing the whole
     // environment over it would cost a fresh decryption for no reason.
-    if (outcome.created > 0 || outcome.updated > 0) revealAll.forget();
+    //
+    // `wrote` rather than `created || updated`: a row writes its value and its
+    // metadata as two requests, so a rename rejected after the value has landed
+    // counts only as `failed` while having changed the environment all the same.
+    if (outcome.wrote) revealAll.forget();
     announce(outcome);
   }
 
