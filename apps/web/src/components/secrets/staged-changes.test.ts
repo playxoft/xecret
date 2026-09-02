@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { draftNameProblem, isBlankDraft } from './staged-changes';
-import type { Draft } from './staged-changes';
+import {
+  draftNameProblem,
+  dropSeeds,
+  hasNewValue,
+  isBlankDraft,
+  wantsRename,
+} from './staged-changes';
+import type { Draft, PendingEdit } from './staged-changes';
 
 /**
  * The validation the inline editor runs as the user types.
@@ -15,6 +21,7 @@ import type { Draft } from './staged-changes';
 function draft(patch: Partial<Draft> = {}): Draft {
   return {
     id: 'draft-1',
+    placement: 'end',
     name: '',
     value: '',
     note: '',
@@ -24,7 +31,36 @@ function draft(patch: Partial<Draft> = {}): Draft {
   };
 }
 
+function edit(patch: Partial<PendingEdit> = {}): PendingEdit {
+  return { value: '', error: null, ...patch };
+}
+
 const NO_NAMES: ReadonlySet<string> = new Set();
+
+describe('hasNewValue', () => {
+  it('treats an editor opened on the stored value as no change', () => {
+    // The editor is seeded by an audited reveal, so a row opened to *read* a
+    // value arrives holding it. That must not light the save bar, and it must
+    // not produce a write the server would only answer `unchanged`.
+    const opened = 'postgres://localhost/app';
+    expect(hasNewValue(edit({ value: opened, baseline: opened }))).toBe(false);
+  });
+
+  it('treats one changed character as a change', () => {
+    expect(hasNewValue(edit({ value: 'b', baseline: 'a' }))).toBe(true);
+  });
+
+  it('treats a value typed into an editor that was never seeded as a change', () => {
+    // The reveal can fail — a permission error in production, a dropped
+    // connection. The editor stays open and empty, and what is typed into it is
+    // still a new value.
+    expect(hasNewValue(edit({ value: 'typed' }))).toBe(true);
+  });
+
+  it('treats an emptied editor as nothing to write', () => {
+    expect(hasNewValue(edit({ value: '', baseline: 'a' }))).toBe(false);
+  });
+});
 
 describe('isBlankDraft', () => {
   it('treats an untouched row as no change at all', () => {
@@ -38,6 +74,35 @@ describe('isBlankDraft', () => {
     expect(isBlankDraft(draft({ name: 'A' }))).toBe(false);
     expect(isBlankDraft(draft({ value: 'x' }))).toBe(false);
     expect(isBlankDraft(draft({ note: 'rotated quarterly' }))).toBe(false);
+  });
+});
+
+describe('wantsRename', () => {
+  it('says no when no name is staged at all', () => {
+    expect(wantsRename('API_KEY', edit())).toBe(false);
+  });
+
+  it('says no when the staged name is the stored one', () => {
+    // The row stages on every keystroke, so a name typed and restored arrives
+    // here as a staged field that changes nothing.
+    expect(wantsRename('API_KEY', edit({ name: 'API_KEY' }))).toBe(false);
+  });
+
+  it('ignores surrounding whitespace, exactly as the save loop does', () => {
+    // The bug this closes: the count said "1 unsaved change", the badge said
+    // "Unsaved", and Save then wrote nothing and reported "Nothing to save".
+    expect(wantsRename('API_KEY', edit({ name: 'API_KEY  ' }))).toBe(false);
+    expect(wantsRename('API_KEY', edit({ name: '  API_KEY' }))).toBe(false);
+  });
+
+  it('says yes to a real rename', () => {
+    expect(wantsRename('API_KEY', edit({ name: 'API_TOKEN' }))).toBe(true);
+  });
+
+  it('treats an emptied name as a rename, so the save reports it as illegal', () => {
+    // Not silently dropped: an empty name is a change the user made, and the
+    // name check is what tells them it cannot be saved.
+    expect(wantsRename('API_KEY', edit({ name: '' }))).toBe(true);
   });
 });
 
@@ -91,5 +156,58 @@ describe('draftNameProblem', () => {
     expect(draftNameProblem(second, [second], new Set(['API_KEY']))).toMatch(
       /already has a secret/,
     );
+  });
+});
+
+/**
+ * The reveal window, enforced where the plaintext actually is.
+ *
+ * `dropSeeds` backs both the sweep and `forgetSeeds`, so an editor has to come
+ * out of it the same way whichever one ran. What it must never do is take work
+ * the user has not saved.
+ */
+describe('dropSeeds', () => {
+  const ALL = () => true;
+  const SEEDED = { value: 'postgres://old', baseline: 'postgres://old', seededAt: 1_000 };
+
+  it('leaves an editor whose seed has not expired alone', () => {
+    const edits = new Map([['DATABASE_URL', edit(SEEDED)]]);
+    expect(dropSeeds(edits, () => false)).toBeNull();
+  });
+
+  it('drops an expired editor nobody typed into', () => {
+    // Opened to read a value and left open: that is a reveal wearing a different
+    // shape, and it forgets on the same schedule.
+    const edits = new Map([['DATABASE_URL', edit(SEEDED)]]);
+    const next = dropSeeds(edits, ALL);
+    expect(next?.has('DATABASE_URL')).toBe(false);
+  });
+
+  it('keeps a staged rename while dropping the seed under it', () => {
+    const edits = new Map([['DATABASE_URL', edit({ ...SEEDED, name: 'DB_URL' })]]);
+    const kept = dropSeeds(edits, ALL)?.get('DATABASE_URL');
+
+    expect(kept?.name).toBe('DB_URL');
+    expect(kept?.value).toBe('');
+    expect(kept?.baseline).toBeUndefined();
+    expect(kept?.seededAt).toBeUndefined();
+  });
+
+  it('keeps what the user typed and drops only the credential under it', () => {
+    const edits = new Map([['DATABASE_URL', edit({ ...SEEDED, value: 'postgres://new' })]]);
+    const kept = dropSeeds(edits, ALL)?.get('DATABASE_URL');
+
+    expect(kept?.value).toBe('postgres://new');
+    expect(kept?.baseline).toBeUndefined();
+    expect(kept?.seededAt).toBeUndefined();
+  });
+
+  it('does not close an editor the user has emptied', () => {
+    // Selecting all and deleting, on the way to pasting a replacement, is the
+    // user at work — `isTouched`, not `hasNewValue`. Asking the narrower
+    // question here deleted the entry, which closed the box and remasked the
+    // row while somebody was in their password manager fetching the new value.
+    const edits = new Map([['DATABASE_URL', edit({ ...SEEDED, value: '' })]]);
+    expect(dropSeeds(edits, ALL)).toBeNull();
   });
 });

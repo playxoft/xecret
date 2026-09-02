@@ -403,3 +403,29 @@ export const GoogleIcon = (props: IconProps) => (
     />
   </svg>
 );
+
+/** Import: a document with an arrow going into it. */
+export const UploadIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M12 3v11" />
+    <path d="m8 7 4-4 4 4" />
+    <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+  </Icon>
+);
+
+/** Export: the same arrow, the other way. */
+export const DownloadIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M12 14V3" />
+    <path d="m8 10 4 4 4-4" />
+    <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+  </Icon>
+);
+
+/** Comparing environments side by side. */
+export const ColumnsIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <rect x="3.5" y="4.5" width="17" height="15" rx="2" />
+    <path d="M12 4.5v15" />
+  </Icon>
+);

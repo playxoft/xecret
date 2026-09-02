@@ -73,8 +73,11 @@ export function ValueTypeMenu({
           className,
         )}
       >
-        {descriptor.label}
-        <ChevronDownIcon aria-hidden="true" className="size-3" />
+        {/* Truncated, because the control is given a fixed width by the row —
+            "Date and time" is twice the length of "URL" and a column that
+            resizes per row is a column nobody can scan. */}
+        <span className="truncate">{descriptor.label}</span>
+        <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0" />
       </DropdownMenuTrigger>
 
       <DropdownMenuContent align="start" className="max-h-80 w-56 overflow-y-auto">

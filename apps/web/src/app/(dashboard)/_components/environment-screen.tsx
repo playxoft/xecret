@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { api } from '@/lib/api';
 import { PageHeader } from '@/components/layout';
@@ -41,6 +41,49 @@ export function EnvironmentScreen({
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
 
+  /**
+   * How many times something outside the table has written to this environment.
+   *
+   * The import dialog lives here rather than in the table, and it can overwrite
+   * existing values. The table needs to hear about that: see `externalWrites` on
+   * `SecretTable` for what a write it cannot see does to the values it is
+   * holding decrypted.
+   */
+  const [externalWrites, setExternalWrites] = useState(0);
+
+  /**
+   * The environments shift-clicked in the switcher, shown beside this one's
+   * values.
+   *
+   * Held by slug rather than by object, so it survives the project reloading
+   * underneath it, and reset on every change of environment: "compare dev with
+   * staging" does not mean "compare production with staging" once you have
+   * navigated to production, and silently carrying the set across would put
+   * staging's values on production's page without anybody asking.
+   */
+  const [compared, setCompared] = useState<readonly string[]>([]);
+  const [comparedFor, setComparedFor] = useState(envSlug);
+  if (comparedFor !== envSlug) {
+    setComparedFor(envSlug);
+    if (compared.length > 0) setCompared([]);
+  }
+
+  const comparedSet = useMemo(() => new Set(compared), [compared]);
+
+  // Ordered by the project's own `sort_order` rather than by the order they
+  // were clicked, so dev sits above staging sits above production however the
+  // comparison was assembled.
+  const comparedEnvironments = useMemo(
+    () => (project.data?.environments ?? []).filter((entry) => comparedSet.has(entry.slug)),
+    [project.data, comparedSet],
+  );
+
+  function toggleCompared(slug: string) {
+    setCompared((current) =>
+      current.includes(slug) ? current.filter((entry) => entry !== slug) : [...current, slug],
+    );
+  }
+
   const isProduction = environment?.isProduction ?? false;
 
   return (
@@ -68,6 +111,8 @@ export function EnvironmentScreen({
                 environments={project.data.environments}
                 currentSlug={envSlug}
                 href={(slug) => appPath.environment(orgSlug, projectSlug, slug)}
+                onCompare={toggleCompared}
+                comparing={comparedSet}
               />
             ) : null}
 
@@ -102,6 +147,9 @@ export function EnvironmentScreen({
           // Empty until the project resolves, which disables the fan-out picker
           // rather than offering a partial list of environments to write to.
           environments={project.data?.environments ?? []}
+          comparedEnvironments={comparedEnvironments}
+          onStopComparing={() => setCompared([])}
+          externalWrites={externalWrites}
           secrets={secrets.data}
           onLoadMore={secrets.loadMore}
           loadingMore={secrets.loadingMore}
@@ -118,7 +166,10 @@ export function EnvironmentScreen({
         isProduction={isProduction}
         open={importing}
         onOpenChange={setImporting}
-        onImported={secrets.reload}
+        onImported={() => {
+          setExternalWrites((current) => current + 1);
+          secrets.reload();
+        }}
       />
 
       <ExportDialog

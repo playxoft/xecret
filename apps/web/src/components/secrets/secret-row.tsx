@@ -1,45 +1,40 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 
 import {
   checkSecretName,
-  checkSecretValue,
   SECRET_NAME_MAX_LENGTH,
   toSecretValueType,
 } from '@xecret/core/validation';
 import type { SecretValueType } from '@xecret/core/validation';
 import { api, errorMessage } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { formatAbsoluteTime, formatRelativeTime, toIsoString } from '@/lib/format';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
-import {
-  Badge,
-  Button,
-  Checkbox,
-  Input,
-  PencilIcon,
-  SecretValue,
-  Spinner,
-  TableCell,
-  TableRow,
-  Textarea,
-  TrashIcon,
-} from '@/components/ui';
-import { Actor } from './actor';
+import { AlertTriangleIcon, Checkbox, Input, TableCell, TableRow, Tooltip } from '@/components/ui';
+import { ComparedValue } from './compared-value';
+import type { EnvironmentTarget } from './multi-environment-write';
+import { hasNewValue, isTouched, wantsRename } from './staged-changes';
 import type { PendingEdit } from './staged-changes';
 import type { RevealedSecret, SecretSummary } from './types';
+import type { ComparedEnvironment } from './use-compared-secrets';
+import { ValueField } from './value-field';
 import { ValueTypeMenu } from './value-type-menu';
 
-const NOTE_MAX_LENGTH = 1024;
-
-/** Whether closing this editor would discard something the user staged. */
-function holdsWork(edit: PendingEdit): boolean {
+/**
+ * Whether this row is holding a change a save would actually write.
+ *
+ * Asks the same questions `pendingCount` asks, in the same way — a row marked
+ * "Unsaved" that Save then skips is a lie the user cannot investigate. In
+ * particular a name typed and restored, or given a trailing space, is not a
+ * rename.
+ */
+function holdsWork(storedName: string, edit: PendingEdit): boolean {
   return (
-    edit.value.length > 0 ||
+    hasNewValue(edit) ||
     edit.valueType !== undefined ||
-    edit.name !== undefined ||
+    wantsRename(storedName, edit) ||
     edit.note !== undefined
   );
 }
@@ -48,15 +43,19 @@ export interface SecretRowProps {
   orgSlug: string;
   projectSlug: string;
   envSlug: string;
+  /** This environment, for the chip a compared row puts beside its value. */
+  environment: EnvironmentTarget | undefined;
   secret: SecretSummary;
   selected: boolean;
-  /** Present while this row is being edited. */
+  /** Present while this row has something staged, or an editor open. */
   edit: PendingEdit | undefined;
   /** Every live name in the environment, so a staged rename can be checked as it is typed. */
   existingNames: ReadonlySet<string>;
   disabled: boolean;
   /** Plaintext held by a "Reveal all", which this row displays instead of a mask. */
   revealed?: string | undefined;
+  /** The other environments shift-clicked into this row. Empty is the normal case. */
+  compare: readonly ComparedEnvironment[];
   /**
    * Reports the pointer entering and leaving this row, for "Reveal on hover".
    *
@@ -66,16 +65,23 @@ export interface SecretRowProps {
    */
   onHoverChange?: ((hovering: boolean) => void) | undefined;
   onSelectedChange: (checked: boolean) => void;
+  /** Opens the value editor with nothing in it yet. */
   onEditOpen: () => void;
+  /** Fills it with the plaintext just revealed, and remembers that as the baseline. */
+  onEditSeed: (value: string) => void;
   onEditChange: (value: string) => void;
+  /** Drops the staged value, keeping a staged rename, note or type. */
+  onEditCancel: () => void;
   /** Stages a rename or a note change; `null` un-stages the field. */
   onMetaChange: (patch: { name?: string | null; note?: string | null }) => void;
-  onEditClose: () => void;
   onTypeChange: (type: SecretValueType) => void;
-  onHistory: () => void;
+  /** Opens the history drawer for one environment — this one, or a compared one. */
+  onHistory: (envSlug: string) => void;
   onDelete: () => void;
   /** Ctrl/Cmd+Enter anywhere in the editor commits the whole batch. */
   onCommit: () => void;
+  /** A compared environment was written to, so its listing needs rereading. */
+  onComparedSaved: () => void;
 }
 
 /**
@@ -90,62 +96,74 @@ export interface SecretRowProps {
  *     brute-forceable offline at this cost".
  *  2. **A decryption always goes through the audited endpoint.** The callback
  *     below issues `GET …/secrets/{name}`, which decrypts and writes a
- *     `secret.revealed` record. `SecretValue` holds the result for its reveal
- *     window and re-shows it without asking again, so the record counts
- *     decryptions rather than glances at the screen — see its header for why
- *     that is the honest thing to count.
+ *     `secret.revealed` record. That one endpoint answers the eye, the copy
+ *     button and the editor alike: opening a value to change one character is a
+ *     read of that value, and the audit log is told so.
  *  3. **Copy never renders.** The copy button fetches its own plaintext and
  *     writes it straight to the clipboard; the common case is pasting into a
  *     terminal, and showing it on the way there is exposure that buys nothing.
  *
- * ── Row geometry ──
- * Every cell is `align-middle` and the row carries a minimum height, so the
- * checkbox, the name, the value field, the version chip, the timestamp and the
- * delete button all sit on one optical line. The name and value cells are the
- * two allowed to grow while editing, and they grow downward from a centred
- * baseline.
+ * ── Two columns, because there are two things here ──
+ * A key and its value. Everything that used to have a column of its own has
+ * moved next to whichever of those two it is about: the declared type sits
+ * beside the name, because it describes the key; the version, the timestamps,
+ * the author and delete sit in the value's hover rail, because they are all
+ * facts about the value. What is left is a value field as wide as the table.
  *
- * ── Editing in place ──
- * The pencil opens the whole row: the name, the note beneath it, and the value.
- * The value editor opens *empty*, and says so. It is not a text box containing
- * the current value with the cursor at the end, because filling it would mean
- * decrypting a secret because somebody clicked a pencil. Amending rather than
- * retyping is still one click away — "Load current value" runs the same audited
- * reveal as the eye button, and is recorded exactly like one.
+ * ── Editing is the default state, not a mode ──
+ * The name is an input at all times: clicking it and typing is how it is
+ * renamed, with no pencil in between. The value cannot be, because it is not on
+ * screen — so clicking the value field fetches it through the audited reveal and
+ * hands it to the editor, already filled in. Amending one character of a
+ * connection string is then one click, and the audit log records exactly what
+ * happened: the value was read.
  *
  * A rename is metadata, not a rotation: the versions follow the secret's id, so
  * the history survives it. What it breaks is every reader addressing the secret
- * by name — `xecret run`, CI — which the editor says out loud while the rename
- * is staged.
- *
- * ── The row's other two controls ──
- * The version chip is the door to the history drawer — a chip that names a
- * version is the thing a person clicks to ask "what were the others?". And
- * delete is a plain button rather than the last item of a menu: it was the only
- * action left in that menu once editing moved to the pencil and history to the
- * chip, and a menu of one is a click tax.
+ * by name — `xecret run`, CI — which the row says out loud while the rename is
+ * staged.
  */
 export function SecretRow({
   orgSlug,
   projectSlug,
   envSlug,
+  environment,
   secret,
   selected,
   edit,
   existingNames,
   disabled,
   revealed,
+  compare,
   onHoverChange,
   onSelectedChange,
   onEditOpen,
+  onEditSeed,
   onEditChange,
+  onEditCancel,
   onMetaChange,
-  onEditClose,
   onTypeChange,
   onHistory,
   onDelete,
   onCommit,
+  onComparedSaved,
 }: SecretRowProps) {
+  const [editingValue, setEditingValue] = useState(false);
+  const [prefilling, setPrefilling] = useState(false);
+  const [seedError, setSeedError] = useState<string | null>(null);
+
+  /**
+   * Which seed request the row is currently waiting for.
+   *
+   * Bumped by every open and by every cancel, and checked before the result is
+   * used. Without it a reveal that was cancelled still lands: `onEditSeed`
+   * re-creates the row's staged entry holding a decrypted credential *after*
+   * the user closed the editor, where nothing on screen mentions it and no
+   * Discard button exists to clear it. And a second open started while the first
+   * is still out would have its typed value overwritten when the first replies.
+   */
+  const seedGeneration = useRef(0);
+
   const reveal = useCallback(async () => {
     const response = await api.get<RevealedSecret>(
       apiPath.secret(orgSlug, projectSlug, envSlug, secret.name),
@@ -153,9 +171,105 @@ export function SecretRow({
     return response.secret.value;
   }, [orgSlug, projectSlug, envSlug, secret.name]);
 
-  const editing = edit !== undefined;
-  const staged = editing && holdsWork(edit);
-  const valueType = toSecretValueType(secret.valueType);
+  // A save that succeeded drops this row's staged work, and the editor it was
+  // typed into goes with it — otherwise the box stays open over a value that is
+  // now simply the stored one. Compared during render rather than in an effect,
+  // which is React's documented way to adjust state when a prop changes: an
+  // effect runs after paint, so the stale editor would be on screen for a frame.
+  if (editingValue && edit === undefined) setEditingValue(false);
+
+  // Anything that empties this row's staged entry from outside — Discard, or a
+  // save that dropped an untouched one — also abandons a seed still in flight.
+  // Without this the reveal lands afterwards and re-creates the entry, and with
+  // it an editor that opens by itself displaying a credential, seconds after the
+  // user discarded everything. In an effect rather than in the render above,
+  // because a ref must not be written during render; the reveal is a round trip
+  // away, so the bump is always in place before it can land.
+  useEffect(() => {
+    if (edit === undefined) seedGeneration.current += 1;
+  }, [edit]);
+
+  /**
+   * Whether the editor is open — asked of the staged work, not only of this
+   * component's own state.
+   *
+   * `editingValue` is local to a row, and a row unmounts whenever the filter or
+   * a reload stops listing it, while the staged value survives in the table. A
+   * row that came back would then show a masked field with an "Unsaved" badge
+   * over a value nobody could see — and clicking it to look would seed the
+   * editor afresh and destroy what had been typed. Anything staged reopens the
+   * editor on it instead.
+   */
+  const editorOpen =
+    editingValue || (edit !== undefined && (edit.baseline !== undefined || edit.value.length > 0));
+
+  /**
+   * Opens the editor on the current value.
+   *
+   * The reveal is the audited one, and it is skipped when the plaintext is
+   * already here — handed over by the field, which holds whatever the eye or a
+   * "Reveal all" fetched. Those reads were audited when they happened, and
+   * issuing a second request for the same value would put two records in the log
+   * for one act.
+   */
+  async function beginEdit(cached?: string) {
+    if (editorOpen) return;
+
+    const generation = seedGeneration.current + 1;
+    seedGeneration.current = generation;
+
+    setSeedError(null);
+    setEditingValue(true);
+    onEditOpen();
+
+    const known = cached ?? revealed;
+    if (known !== undefined) {
+      onEditSeed(known);
+      return;
+    }
+
+    setPrefilling(true);
+    try {
+      const plaintext = await reveal();
+      if (seedGeneration.current !== generation) return;
+      onEditSeed(plaintext);
+    } catch (cause) {
+      if (seedGeneration.current !== generation) return;
+      // The editor stays open and empty: the value could not be read, but
+      // writing a new one does not require having read the old one.
+      setSeedError(errorMessage(cause));
+    } finally {
+      if (seedGeneration.current === generation) setPrefilling(false);
+    }
+  }
+
+  function cancelEdit() {
+    // Abandons any seed still in flight, so its plaintext cannot land in state
+    // after the user has closed the box.
+    seedGeneration.current += 1;
+    setEditingValue(false);
+    setPrefilling(false);
+    setSeedError(null);
+    onEditCancel();
+  }
+
+  const staged = edit !== undefined && holdsWork(secret.name, edit);
+  const valueType = toSecretValueType(edit?.valueType ?? secret.valueType);
+  const comparing = compare.length > 0;
+  /** The staged note where there is one, the stored note otherwise. */
+  const note = edit?.note ?? secret.note;
+
+  /**
+   * Stages a note, or un-stages it when it is back to what is stored.
+   *
+   * `null` from the panel means "clear the note", which is staged as an empty
+   * string — the save turns that into `note: null` on the wire. The two nulls
+   * mean different things and this is where they are told apart.
+   */
+  function changeNote(next: string | null) {
+    const value = next ?? '';
+    onMetaChange({ note: value === (secret.note ?? '') ? null : value });
+  }
 
   return (
     <TableRow
@@ -172,165 +286,156 @@ export function SecretRow({
             onBlur: () => onHoverChange(false),
           })}
       className={cn(
+        // A fixed height, and only one line of content in it. What used to add a
+        // second — the note, the unsaved badge, the rename warning — is a
+        // tooltip or an inline mark now. The one thing allowed to make a row
+        // taller is a value opened for editing.
         'h-14',
         staged && 'bg-warning-tint/40 hover:bg-warning-tint/50',
         staged && '[&>td:first-child]:border-l-warning [&>td:first-child]:border-l-2',
         !staged && selected && 'bg-accent-tint/40',
       )}
     >
-      <TableCell className="pr-0 align-middle">
-        <Checkbox
-          checked={selected}
-          onCheckedChange={(checked) => onSelectedChange(checked === true)}
-          aria-label={`Select ${secret.name}`}
+      <TableCell className="pr-0 align-top">
+        <span className="flex h-9 items-center">
+          <Checkbox
+            checked={selected}
+            onCheckedChange={(checked) => onSelectedChange(checked === true)}
+            aria-label={`Select ${secret.name}`}
+          />
+        </span>
+      </TableCell>
+
+      <TableCell className="align-top">
+        <NameCell
+          secret={secret}
+          edit={edit}
+          existingNames={existingNames}
+          disabled={disabled}
+          valueType={valueType}
+          staged={staged}
+          note={note}
+          onMetaChange={onMetaChange}
+          onTypeChange={onTypeChange}
+          onCommit={onCommit}
         />
       </TableCell>
 
-      <TableCell className="align-middle">
-        {editing ? (
-          <NameEditor
+      <TableCell className="align-top">
+        <div className="flex flex-col gap-1.5">
+          <ValueField
             secret={secret}
-            edit={edit}
-            existingNames={existingNames}
-            disabled={disabled}
-            onMetaChange={onMetaChange}
-            onClose={onEditClose}
-            onCommit={onCommit}
-          />
-        ) : (
-          <>
-            <span className="text-fg block font-mono text-sm font-medium break-all">
-              {secret.name}
-            </span>
-            {secret.note ? (
-              <span className="text-fg-subtle mt-0.5 block text-sm leading-5">{secret.note}</span>
-            ) : null}
-          </>
-        )}
-        {staged ? (
-          <Badge tone="warning" className="mt-1">
-            Unsaved
-          </Badge>
-        ) : null}
-      </TableCell>
-
-      <TableCell className="align-middle">
-        {editing ? (
-          <ValueEditor
-            secret={secret}
+            secretName={secret.name}
             valueType={valueType}
-            edit={edit}
+            // The chip only earns its place once there is more than one value in
+            // the cell; on its own it would repeat the page heading.
+            {...(comparing && environment !== undefined
+              ? {
+                  environment: {
+                    name: environment.name,
+                    isProduction: environment.isProduction,
+                  },
+                }
+              : {})}
             disabled={disabled}
-            onReveal={reveal}
-            onChange={onEditChange}
-            onClose={onEditClose}
-            onCommit={onCommit}
-          />
-        ) : (
-          <SecretValue
-            name={secret.name}
-            onReveal={reveal}
             // Handed the plaintext a "Reveal all" already fetched and audited.
-            // Without this the button would either re-fetch every row — six
+            // Without this the field would either re-fetch every row — sixty
             // audit records for one click — or show nothing.
             {...(revealed === undefined ? {} : { revealed })}
-            trailing={
-              <Button
-                size="icon"
-                variant="ghost"
-                onClick={onEditOpen}
-                disabled={disabled}
-                aria-label={`Edit ${secret.name}`}
-              >
-                <PencilIcon className="size-4" />
-              </Button>
-            }
+            onReveal={reveal}
+            editing={editorOpen}
+            draft={edit?.value ?? ''}
+            // "Touched", not "would write": emptying a seeded box is the user
+            // at work even though a save would skip it, and the editor must
+            // stay open and cancellable while they paste the replacement.
+            dirty={edit !== undefined && isTouched(edit)}
+            prefilling={prefilling}
+            error={seedError ?? edit?.error ?? null}
+            onEditOpen={beginEdit}
+            onDraftChange={onEditChange}
+            onEditCancel={cancelEdit}
+            onCommit={onCommit}
+            note={note}
+            onNoteChange={changeNote}
+            onHistory={() => onHistory(envSlug)}
+            onDelete={onDelete}
           />
-        )}
-      </TableCell>
 
-      <TableCell className="align-middle">
-        <ValueTypeMenu
-          value={secret.valueType}
-          onChange={onTypeChange}
-          disabled={disabled}
-          secretName={secret.name}
-        />
-      </TableCell>
-
-      <TableCell className="align-middle">
-        {/* The badge, made a door: the chip that names the current version is
-            what a person clicks to ask what the previous ones were. */}
-        <button
-          type="button"
-          onClick={onHistory}
-          title={`Version history of ${secret.name}`}
-          aria-label={`Version history of ${secret.name}`}
-          // No focus utilities: the `:focus-visible` rule in globals.css draws
-          // the keyboard ring, same as every button in the product.
-          className={cn(
-            'border-line bg-canvas-inset text-fg-muted inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-sm font-medium transition-colors',
-            'hover:border-accent-line hover:bg-accent-tint hover:text-accent-text',
-          )}
-        >
-          v{secret.version}
-        </button>
-      </TableCell>
-
-      <TableCell className="text-fg-muted align-middle text-sm whitespace-nowrap">
-        <time dateTime={toIsoString(secret.updatedAt)} title={formatAbsoluteTime(secret.updatedAt)}>
-          {formatRelativeTime(secret.updatedAt)}
-        </time>
-      </TableCell>
-
-      <TableCell className="align-middle text-sm whitespace-nowrap">
-        <Actor userId={secret.createdBy} serviceTokenId={secret.createdByServiceTokenId} />
-      </TableCell>
-
-      <TableCell className="align-middle">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="text-fg-muted hover:text-danger-text size-8"
-          disabled={disabled}
-          onClick={onDelete}
-          aria-label={`Delete ${secret.name}`}
-        >
-          <TrashIcon className="size-4" />
-        </Button>
+          {compare.map((compared) => (
+            <ComparedValue
+              key={compared.slug}
+              orgSlug={orgSlug}
+              projectSlug={projectSlug}
+              environment={compared}
+              secretName={secret.name}
+              secret={compared.byName.get(secret.name) ?? null}
+              // Not `disabled` — that is this environment's save in flight, and
+              // it has nothing to do with a field that writes to another one.
+              // Several compared values can be open and saved at once.
+              disabled={compared.loading}
+              onHistory={() => onHistory(compared.slug)}
+              onSaved={onComparedSaved}
+            />
+          ))}
+        </div>
       </TableCell>
     </TableRow>
   );
 }
 
 /**
- * The name and the note, editable, the note directly beneath the title it
- * annotates.
+ * The key: its name and its declared type, on one line.
  *
- * A field typed and then restored to the stored text un-stages itself — the
+ * ── Why the name is always an input ──
+ * Renaming used to be behind a pencil, which is a click spent announcing that
+ * text is text. The field is styled as a label until it is hovered or focused,
+ * so a table of sixty reads as a table and not as a form — and clicking one
+ * puts the cursor in it, which is what everybody tries first.
+ *
+ * A field typed and then restored to the stored text un-stages itself: the
  * comparison happens here, on every keystroke, so `pendingCount` never counts a
  * change that no longer exists.
+ *
+ * ── Why the note is a tooltip ──
+ * It used to be a second input under the name, which cost every row in the table
+ * a second line so that the few rows with a note could show it. Hovering the key
+ * says it instead, and the panel beside the value writes it. A row is one line
+ * high; only a value opened for editing may make it taller.
+ *
+ * ── Why the type sits here, at a fixed width ──
+ * `integer`, `url`, `json` describe the shape of the value, but the thing a
+ * person is looking at when they think about it is the key: `PORT` is an
+ * integer, and that reads as a property of `PORT`. Fixed width because the
+ * labels differ in length and a ragged column of them turns the name beside it
+ * into a ragged column too.
  */
-function NameEditor({
+function NameCell({
   secret,
   edit,
   existingNames,
   disabled,
+  valueType,
+  staged,
+  note,
   onMetaChange,
-  onClose,
+  onTypeChange,
   onCommit,
 }: {
   secret: SecretSummary;
-  edit: PendingEdit;
+  edit: PendingEdit | undefined;
   existingNames: ReadonlySet<string>;
   disabled: boolean;
+  valueType: SecretValueType;
+  /** Whether this row holds work a save would write. */
+  staged: boolean;
+  /** The note in effect, shown on hover over the name. */
+  note: string | null;
   onMetaChange: (patch: { name?: string | null; note?: string | null }) => void;
-  onClose: () => void;
+  onTypeChange: (type: SecretValueType) => void;
   onCommit: () => void;
 }) {
-  const shownName = edit.name ?? secret.name;
-  const shownNote = edit.note ?? secret.note ?? '';
-  const rename = edit.name?.trim();
+  const shownName = edit?.name ?? secret.name;
+  const rename = edit?.name?.trim();
   const wantsRename = rename !== undefined && rename !== secret.name;
 
   // The same module the server checks against; this copy exists so the failure
@@ -346,197 +451,111 @@ function NameEditor({
   }
 
   function handleKeyDown(event: KeyboardEvent) {
+    // Radix closes a tooltip on pointer-down and on Escape, but never on a
+    // keystroke — so one attached to a text field opens when the field is
+    // tabbed into and then hangs over the row for as long as the user types.
+    setNoteTipOpen(false);
+
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault();
       onCommit();
-      return;
-    }
-    // Escape closes an editor holding no work. Once something is staged,
-    // Escape would throw away edits — and possibly a pasted credential in the
-    // value box beside this one.
-    if (event.key === 'Escape' && !holdsWork(edit)) {
-      event.preventDefault();
-      onClose();
     }
   }
 
-  return (
-    <div className="flex flex-col gap-1.5 py-1">
-      <Input
-        value={shownName}
-        onChange={(event) => {
-          const next = event.target.value;
-          onMetaChange({ name: next === secret.name ? null : next });
-        }}
-        onKeyDown={handleKeyDown}
-        disabled={disabled}
-        aria-label={`Name of ${secret.name}`}
-        aria-invalid={nameProblem !== null ? true : undefined}
-        maxLength={SECRET_NAME_MAX_LENGTH}
-        autoComplete="off"
-        autoCorrect="off"
-        autoCapitalize="off"
-        spellCheck={false}
-        className={cn(
-          'h-8 font-mono text-sm',
-          nameProblem !== null && 'border-danger focus:border-danger focus:ring-danger/30',
-        )}
-      />
+  const hasNote = note !== null && note.length > 0;
+  const [noteTipOpen, setNoteTipOpen] = useState(false);
 
-      {nameProblem !== null ? (
-        <p className="text-danger-text text-sm leading-5">{nameProblem}</p>
-      ) : wantsRename ? (
-        // Said while the rename is staged, not after: the history follows the
-        // secret through a rename, but every reader addressing it by name —
-        // `xecret run`, CI — stops finding it the moment this is saved.
-        <p className="text-warning-text text-sm leading-5">
-          Anything reading {secret.name} by name stops finding it.
-        </p>
-      ) : null}
-
-      <Input
-        value={shownNote}
-        onChange={(event) => {
-          const next = event.target.value;
-          onMetaChange({ note: next === (secret.note ?? '') ? null : next });
-        }}
-        onKeyDown={handleKeyDown}
-        disabled={disabled}
-        placeholder="Note (optional)"
-        aria-label={`Note for ${secret.name}`}
-        maxLength={NOTE_MAX_LENGTH}
-        autoComplete="off"
-        className="h-8 text-sm"
-      />
-    </div>
+  const field = (
+    <Input
+      value={shownName}
+      onChange={(event) => {
+        const next = event.target.value;
+        onMetaChange({ name: next === secret.name ? null : next });
+      }}
+      onKeyDown={handleKeyDown}
+      disabled={disabled}
+      // The column is narrow and the input does not wrap, so a long name is
+      // otherwise only readable by scrolling inside a field styled to look like
+      // text. Where there is a note, the tooltip says that instead — it is the
+      // thing worth reading, and two hover hints on one control is one too many.
+      {...(hasNote ? {} : { title: shownName })}
+      aria-label={`Name of ${secret.name}`}
+      aria-invalid={nameProblem !== null ? true : undefined}
+      maxLength={SECRET_NAME_MAX_LENGTH}
+      autoComplete="off"
+      autoCorrect="off"
+      autoCapitalize="off"
+      spellCheck={false}
+      className={cn(
+        'h-9 min-w-0 px-2 font-mono text-sm font-medium',
+        // A label until it is asked to be a field. The border and the well
+        // arrive on hover and on focus, which is the moment they mean
+        // something; at rest the column reads as text.
+        'border-transparent bg-transparent',
+        'hover:enabled:border-line-control hover:enabled:bg-canvas-inset',
+        'focus-visible:border-line-control focus-visible:bg-canvas-inset',
+        nameProblem !== null && 'border-danger bg-canvas-inset',
+      )}
+    />
   );
-}
-
-function ValueEditor({
-  secret,
-  valueType,
-  edit,
-  disabled,
-  onReveal,
-  onChange,
-  onClose,
-  onCommit,
-}: {
-  secret: SecretSummary;
-  valueType: SecretValueType;
-  edit: PendingEdit;
-  disabled: boolean;
-  onReveal: () => Promise<string>;
-  onChange: (value: string) => void;
-  onClose: () => void;
-  onCommit: () => void;
-}) {
-  const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
-
-  // Checked as you type, against the same module the server checks against on
-  // write. This copy exists so the failure arrives while the value is still on
-  // screen and fixable; the server's copy is the one that is load-bearing.
-  const shape = checkSecretValue(edit.value, valueType);
-  const shapeProblem = shape.valid ? null : (shape.message ?? null);
-
-  async function loadCurrent() {
-    setLoadError(null);
-    setLoading(true);
-    try {
-      onChange(await onReveal());
-      setLoaded(true);
-    } catch (cause) {
-      setLoadError(errorMessage(cause));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function handleKeyDown(event: KeyboardEvent) {
-    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-      event.preventDefault();
-      onCommit();
-      return;
-    }
-    // Escape closes an editor the user has not typed into. Once there is
-    // anything staged, Escape would throw away a credential they may have
-    // pasted from somewhere they cannot easily get it again.
-    if (event.key === 'Escape' && !holdsWork(edit)) {
-      event.preventDefault();
-      onClose();
-    }
-  }
 
   return (
-    <div className="flex flex-col gap-1.5 py-1">
-      {/* One line high, the same height as every other input in the table. A
-          value longer than the box scrolls within it; a taller box would drag
-          the row's neighbours out of line for the rare multi-line value. */}
-      <Textarea
-        value={edit.value}
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={handleKeyDown}
-        disabled={disabled || loading}
-        rows={1}
-        placeholder={`New value for ${secret.name}`}
-        aria-label={`New value for ${secret.name}`}
-        aria-invalid={edit.error !== null || shapeProblem !== null ? true : undefined}
-        autoComplete="off"
-        autoCorrect="off"
-        autoCapitalize="off"
-        spellCheck={false}
-        className={cn(
-          'min-h-8 py-1.5 font-mono text-sm leading-5',
-          shapeProblem !== null && 'border-danger focus:border-danger focus:ring-danger/30',
-        )}
-        autoFocus
-      />
+    <div className="flex min-w-0 flex-col gap-1">
+      <div className="flex min-w-0 items-center gap-1.5">
+        {staged ? (
+          // The row is already tinted and carries a left border; this is the
+          // same fact for a screen reader, and a mark for anyone who cannot
+          // rely on the colour. Inline, because a badge on its own line would
+          // give the table a second row height it otherwise never has.
+          <span className="shrink-0" title="Unsaved changes">
+            <span aria-hidden="true" className="bg-warning block size-1.5 rounded-full" />
+            <span className="sr-only">Unsaved changes</span>
+          </span>
+        ) : null}
 
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="text-fg-subtle text-sm">
-          Saving a new value appends v{secret.version + 1}. The current one stays in the history.
-        </span>
+        {/* The note, where the key is — hovering the thing it annotates is where
+            somebody looks for it. Writing it is in the panel beside the value;
+            see `FieldDetails`.
 
-        {loaded ? (
-          <span className="text-fg-subtle text-sm">Current value loaded · read recorded</span>
-        ) : (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 px-1.5 text-sm"
-            disabled={disabled || loading}
-            onClick={loadCurrent}
-          >
-            {loading ? <Spinner className="size-3.5" label={null} /> : null}
-            Load current value
-          </Button>
-        )}
+            Always rendered, open only when there is something to say: swapping
+            between a wrapped and an unwrapped input would change the element
+            type at this position, and React would remount the field — dropping
+            the cursor out of it the moment a note was added or cleared. */}
+        <Tooltip content={note ?? ''} open={hasNote && noteTipOpen} onOpenChange={setNoteTipOpen}>
+          {field}
+        </Tooltip>
 
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-6 px-1.5 text-sm"
+        {wantsRename && nameProblem === null ? (
+          // Said while the rename is staged, not after: the history follows the
+          // secret through a rename, but every reader addressing it by name —
+          // `xecret run`, CI — stops finding it the moment this is saved. As an
+          // icon rather than a line of text, because the line would be the only
+          // thing in the table that changes a row's height.
+          <Tooltip content={`Anything reading ${secret.name} by name stops finding it.`}>
+            <span className="text-warning-text shrink-0" tabIndex={0}>
+              <AlertTriangleIcon aria-hidden="true" className="size-4" />
+              <span className="sr-only">
+                Renaming this: anything reading {secret.name} by name stops finding it.
+              </span>
+            </span>
+          </Tooltip>
+        ) : null}
+
+        <ValueTypeMenu
+          value={valueType}
+          onChange={onTypeChange}
           disabled={disabled}
-          onClick={onClose}
-        >
-          Cancel
-        </Button>
+          secretName={secret.name}
+          // Fixed, so the type labels line up down the column instead of
+          // starting wherever the name beside them happens to end. Wide enough
+          // for the longest label — at `w-20` "Date and time" truncated to
+          // "Date an…" directly beneath a distinct "Date".
+          className="w-32 shrink-0 justify-between"
+        />
       </div>
 
-      {/* The live shape check first: it describes what is in the box now, while
-          `edit.error` describes the last save attempt and may already be stale. */}
-      {shapeProblem !== null ? (
-        <p className="text-danger-text text-sm leading-5">{shapeProblem}</p>
-      ) : edit.error !== null ? (
-        <p className="text-danger-text text-sm leading-5">{edit.error}</p>
-      ) : null}
-
-      {loadError !== null ? (
-        <p role="alert" className="text-danger-text text-sm leading-5">
-          {loadError}
-        </p>
+      {nameProblem !== null ? (
+        <p className="text-danger-text px-2 text-sm leading-5">{nameProblem}</p>
       ) : null}
     </div>
   );
