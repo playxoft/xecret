@@ -124,7 +124,11 @@ export function EnvironmentSwitcher({
                   // taken. `aria-keyshortcuts` is not used here because this is
                   // a modifier on a pointer act, not a shortcut.
                   onClick: (event: MouseEvent<HTMLAnchorElement>) => {
-                    if (!event.shiftKey) return;
+                    // Shift *alone*. Ctrl+Shift+click and Cmd+Shift+click are the
+                    // browser's "open in a new foreground tab", and taking them
+                    // here swallowed the gesture: no tab, and an environment
+                    // silently added to the comparison instead.
+                    if (!event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
                     event.preventDefault();
                     onCompare(environment.slug);
                   },

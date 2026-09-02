@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { api } from '@/lib/api';
 import { apiPath, withQuery } from '@/app/(dashboard)/_lib/paths';
-import type { EnvironmentTarget } from './multi-environment-write';
+import type { EnvironmentTarget } from './environment-target';
 import type { SecretListResponse, SecretSummary } from './types';
 
 /**
@@ -117,15 +117,24 @@ export function useComparedSecrets(
         })
         .catch(() => {
           if (controller.signal.aborted) return;
-          setEntries((current) => ({
-            ...current,
-            [slug]: {
-              loading: false,
-              error: 'Could not read this environment.',
-              byName: new Map(),
-              truncated: false,
-            },
-          }));
+          setEntries((current) => {
+            // A refetch that fails must not take the listing with it. `reload()`
+            // re-reads *every* compared environment after any compared write, so
+            // one transient 5xx on an environment the user never touched used to
+            // replace all of its cells with an error — data that was on screen a
+            // moment ago, with no retry control anywhere to get it back. The
+            // error is reported over the listing that is still good.
+            const previous = current[slug];
+            return {
+              ...current,
+              [slug]: {
+                loading: false,
+                error: 'Could not read this environment.',
+                byName: previous?.byName ?? new Map(),
+                truncated: previous?.truncated ?? false,
+              },
+            };
+          });
         });
     }
 

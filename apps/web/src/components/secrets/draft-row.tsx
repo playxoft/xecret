@@ -279,8 +279,8 @@ export function DraftRow({
             disabled={disabled}
             secretName={draft.name.trim() || 'this new secret'}
             // The width a saved row gives it, so the two columns of type labels
-            // are one column — and wide enough for "Date and time", which at
-            // `w-20` truncated to "Date an…" right above a distinct "Date".
+            // are one column. `w-32`, not `w-20`: see the note on the saved
+            // row, which explains the width.
             className="w-32 shrink-0 justify-between"
           />
         </div>

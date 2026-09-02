@@ -22,7 +22,7 @@ import {
   Tooltip,
 } from '@/components/ui';
 import { ComparedValue } from './compared-value';
-import type { EnvironmentTarget } from './multi-environment-write';
+import type { EnvironmentTarget } from './environment-target';
 import { hasNewValue, isTouched, wantsRename } from './staged-changes';
 import type { PendingEdit } from './staged-changes';
 import type { PlaintextCache } from './use-plaintext-cache';
