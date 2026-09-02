@@ -22,6 +22,8 @@ export type { CheckboxProps } from './checkbox';
 
 export { ConfirmDialog } from './confirm-dialog';
 export type { ConfirmDialogProps } from './confirm-dialog';
+export { UnsavedChangesGuard } from './unsaved-changes-guard';
+export type { UnsavedChangesGuardProps } from './unsaved-changes-guard';
 
 export { CopyButton } from './copy-button';
 export type { CopyButtonProps } from './copy-button';
@@ -70,7 +72,7 @@ export type { KbdProps, ShortcutProps } from './kbd';
 export { Label } from './label';
 export type { LabelProps } from './label';
 
-export { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from './popover';
+export { Popover, PopoverContent, PopoverTrigger } from './popover';
 
 export { SecretValue } from './secret-value';
 export type { SecretValueProps } from './secret-value';

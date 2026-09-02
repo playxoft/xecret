@@ -20,12 +20,20 @@ import {
 /**
  * The type picker on a secret row.
  *
- * ── Why it is this small ──
- * It renders as the type's name in the corner of the value cell, at the size of
- * a caption. The overwhelming majority of secrets are opaque strings and will
- * never be typed at all, so the control has to be invisible until wanted — a
- * full-width `<Select>` on every row would make the table about types, which it
- * is not.
+ * ── Why it looks like a button ──
+ * It used to be bare text with a chevron after it, which reads as a label that
+ * happens to have an arrow — so the thing you can *do* here (change the declared
+ * type) was invisible until somebody clicked it by accident. It carries its own
+ * outline and fill now: a small, quiet, unmistakable button, sized to sit on the
+ * same line as the key beside it. Still not a full-width `<Select>` on every
+ * row, which would make the table about types, which it is not.
+ *
+ * ── Why the colour changes with the type ──
+ * `string` is the default and accepts anything, so it is drawn in the neutral
+ * control colours — an outline saying "this can be changed" and nothing more. A
+ * type somebody deliberately chose is drawn in the accent, because the useful
+ * question down this column is "which of these are actually checked?", and that
+ * has to be answerable by eye rather than by reading sixty labels.
  *
  * ── Why the default reads as "string" rather than as blank ──
  * A blank would suggest the type is unset and might be filled in later. It is
@@ -60,16 +68,26 @@ export function ValueTypeMenu({
         disabled={disabled}
         aria-label={`Value type for ${secretName}: ${descriptor.label}`}
         className={cn(
-          // The open state carries the hover foreground as well as the hover
-          // fill. Opened from the keyboard there is no pointer to supply the
-          // second half, and `--fg-subtle` on `--surface-hover` measures
-          // 4.38:1 in dark — under AA for 14px text, and under it only in the
-          // state where the menu is demanding attention.
-          'text-fg-subtle hover:text-fg hover:bg-surface-hover data-[state=open]:text-fg data-[state=open]:bg-surface-hover -mx-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-sm transition-colors',
+          'inline-flex h-8 cursor-pointer items-center gap-1 rounded-md border px-2 text-sm font-medium transition-colors',
           'disabled:pointer-events-none disabled:opacity-60',
-          // The default is quieter than a chosen one: a row somebody has
-          // deliberately typed should be findable by eye down the column.
-          current !== 'string' && 'text-accent-text font-medium',
+          current === 'string'
+            ? // The neutral control colours, matching the well the key input
+              // gets on hover — the two sit on one line and must read as one
+              // row of controls rather than as two unrelated things.
+              cn(
+                'border-line-control bg-canvas-inset text-fg-muted',
+                'hover:border-fg-subtle hover:text-fg',
+                // The open state carries the hover treatment: opened from the
+                // keyboard there is no pointer to supply it, and the control
+                // demanding attention is the one state where it must not be the
+                // quietest thing on the row.
+                'data-[state=open]:border-fg-subtle data-[state=open]:text-fg',
+              )
+            : cn(
+                'border-accent-line bg-accent-tint text-accent-text',
+                'hover:border-accent hover:bg-accent-tint',
+                'data-[state=open]:border-accent',
+              ),
           className,
         )}
       >

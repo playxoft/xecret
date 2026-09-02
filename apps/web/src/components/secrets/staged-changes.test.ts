@@ -5,6 +5,7 @@ import {
   dropSeeds,
   hasNewValue,
   isBlankDraft,
+  isTouched,
   wantsRename,
 } from './staged-changes';
 import type { Draft, PendingEdit } from './staged-changes';
@@ -166,6 +167,35 @@ describe('draftNameProblem', () => {
  * out of it the same way whichever one ran. What it must never do is take work
  * the user has not saved.
  */
+describe('isTouched', () => {
+  const OPENED = 'postgres://localhost/app';
+
+  it('counts an emptied seeded editor as the user at work', () => {
+    // The distinction the whole function exists for. Selecting all and deleting,
+    // on the way to pasting a replacement, writes nothing — an empty value is not
+    // a value — but the editor must not then behave as though it were untouched
+    // and close while somebody is in their password manager.
+    const emptied = edit({ value: '', baseline: OPENED });
+    expect(isTouched(emptied)).toBe(true);
+    expect(hasNewValue(emptied)).toBe(false);
+  });
+
+  it('leaves an editor opened and not typed in untouched', () => {
+    expect(isTouched(edit({ value: OPENED, baseline: OPENED }))).toBe(false);
+  });
+
+  it('counts a typed value as work whether or not it was seeded', () => {
+    expect(isTouched(edit({ value: 'new', baseline: OPENED }))).toBe(true);
+    // Never seeded: an editor on a row whose value was never revealed.
+    expect(isTouched(edit({ value: 'new' }))).toBe(true);
+  });
+
+  it('leaves an empty editor that was never seeded untouched', () => {
+    // Nothing was put there and nothing was taken away.
+    expect(isTouched(edit({ value: '' }))).toBe(false);
+  });
+});
+
 describe('dropSeeds', () => {
   const ALL = () => true;
   const SEEDED = { value: 'postgres://old', baseline: 'postgres://old', seededAt: 1_000 };

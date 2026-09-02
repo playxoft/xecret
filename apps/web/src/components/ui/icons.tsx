@@ -346,6 +346,28 @@ export const SettingsIcon = (props: IconProps) => (
   </Icon>
 );
 
+/**
+ * A note somebody wrote about something else.
+ *
+ * Not `BookIcon`, which this replaced on the secret rows: a book means
+ * *documentation* everywhere else in the product — the docs page, the FAQ, the
+ * empty state that offers the guide — so a book beside a key read as "read about
+ * this key" rather than "there is a note on it".
+ *
+ * The turned-up corner is what makes it a note rather than a page, and the two
+ * lines are what make it a note with something *written* on it. Both are needed
+ * at 16px: the corner alone is a rounded square with a bite out of it, and the
+ * lines alone are a list.
+ */
+export const NoteIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M20 13.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7.5l6.5-6.5Z" />
+    <path d="M13.5 20v-4.5a2 2 0 0 1 2-2H20" />
+    <path d="M8 9h8" />
+    <path d="M8 12.5h4.5" />
+  </Icon>
+);
+
 export const BookIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M4 5a2 2 0 0 1 2-2h13v15H6a2 2 0 0 0-2 2V5Z" />

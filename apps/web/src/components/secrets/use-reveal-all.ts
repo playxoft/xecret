@@ -32,14 +32,22 @@ import { apiPath, withQuery } from '@/app/(dashboard)/_lib/paths';
  * two, and neither writes a second audit record.
  *
  * ── Masking and forgetting are two different things ──
- * `hide` masks: the plaintexts stay in state and showing them again is free.
- * They are dropped outright when the window ends, when the environment changes,
- * and on unmount. Mirrors `SecretValue`, and the note in its header about what
- * the audit log does and does not claim applies here too.
+ * `hide` masks: the plaintexts stay in state and showing them again is free, and
+ * that is what the reveal window now does when it ends. They are dropped
+ * outright — `forget` — only by the things that make them *wrong*: a write, a
+ * delete, a change of environment, unmount, a reload. See `usePlaintextCache`,
+ * which holds the per-row decryptions on the same terms. The note in
+ * `SecretValue`'s header about what the audit log does and does not claim
+ * applies here too.
  */
 
-/** Matches `SecretValue`'s window, so both controls forget at the same pace. */
-const REVEAL_DURATION_MS = 180_000;
+/**
+ * Matches `SecretValue`'s window, so everything on screen masks at one pace.
+ *
+ * Exported for the table, which masks the rows hover mode stuck open on the same
+ * clock — see the note there.
+ */
+export const REVEAL_DURATION_MS = 180_000;
 
 export interface RevealAll {
   /** Name → plaintext for as long as the window lasts; `null` once dropped. */
@@ -201,14 +209,22 @@ export function useRevealAll(orgSlug: string, projectSlug: string, envSlug: stri
   const reveal = useCallback(() => request(true), [request]);
   const load = useCallback(() => request(false), [request]);
 
-  // The end of the window, counted from the decryption rather than from the last
-  // time the values happened to be on screen.
+  // The end of the window masks; it does not drop the decryption. The two are
+  // different acts — see `usePlaintextCache` — and only masking is about what
+  // can be read off an unattended screen. Pressing "Reveal all" again after the
+  // window lapses is then instant and writes no second `secret.read` record,
+  // while everything that makes this snapshot *wrong* still calls `forget`.
+  //
+  // Counted from the moment they went on screen, and restarted whenever they go
+  // back on it: `shown` is in the deps because the window now governs what can
+  // be read off an unattended screen rather than how long the decryption lives.
+  // What bounds the decryption is `forget`, which every write calls.
   useEffect(() => {
-    if (values === null) return;
+    if (values === null || !shown) return;
 
-    const forgetAt = setTimeout(forget, REVEAL_DURATION_MS);
-    return () => clearTimeout(forgetAt);
-  }, [values, forget]);
+    const maskAt = setTimeout(hide, REVEAL_DURATION_MS);
+    return () => clearTimeout(maskAt);
+  }, [values, shown, hide]);
 
   // Mask the moment the tab is hidden: starting a screen share must not leave an
   // environment's worth of credentials visible in a background tab that gets
