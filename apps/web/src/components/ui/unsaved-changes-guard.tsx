@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-import { armLeaveGuard } from './leave-guard';
+import { armLeaveGuard, interceptedHref, isPlainLeftClick } from './leave-guard';
 
 import { ConfirmDialog } from './confirm-dialog';
 
@@ -197,33 +197,25 @@ export function UnsavedChangesGuard({
   useEffect(() => {
     const onClick = (event: MouseEvent) => {
       if (!armed.current && !decoy.current) return;
-      // Someone nearer the click has already decided what it means.
-      if (event.defaultPrevented) return;
-      // Left button, unmodified. Ctrl/Cmd/Shift-click opens a new tab or window
-      // and leaves this one — and this work — exactly where it is.
-      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
-        return;
-      }
+      // The two rules this decision rests on live in `leave-guard.ts`, pure and
+      // tested; what stays here is the DOM the rules need answers about.
+      if (!isPlainLeftClick(event)) return;
 
       const target = event.target;
       if (!(target instanceof Element)) return;
 
       const anchor = target.closest('a[href]');
       if (!(anchor instanceof HTMLAnchorElement)) return;
-      if (anchor.hasAttribute('download')) return;
-      if (anchor.target !== '' && anchor.target !== '_self') return;
 
-      const url = new URL(anchor.href, window.location.href);
-      // Another origin unloads the document, which is `beforeunload`'s business
-      // and not this one's — and stopping it here would replace the browser's
-      // guarantee with a dialog the user could not act on.
-      if (url.origin !== window.location.origin) return;
-      // Same page. A jump to an anchor on this screen loses nothing.
-      if (url.pathname === window.location.pathname && url.search === window.location.search) {
-        return;
-      }
-
-      const href = `${url.pathname}${url.search}${url.hash}`;
+      const href = interceptedHref(
+        {
+          href: anchor.href,
+          hasDownload: anchor.hasAttribute('download'),
+          target: anchor.target,
+        },
+        window.location.href,
+      );
+      if (href === null) return;
 
       // `preventDefault` alone. `Link` checks `defaultPrevented` before routing
       // (verified in next@16.3.3, `client/app-dir/link.js`), so stopping the
