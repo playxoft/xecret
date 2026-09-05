@@ -168,6 +168,9 @@ export function SecretTable({
 
   const [comparedDirty, setComparedDirty] = useState<ReadonlySet<string>>(new Set());
 
+  /** Raised when "Stop comparing" would take unsaved work down with it. */
+  const [confirmStopComparing, setConfirmStopComparing] = useState(false);
+
   const markComparedDirty = useCallback((slug: string, name: string, dirty: boolean) => {
     setComparedDirty((current) => {
       const key = `${slug}\u0000${name}`;
@@ -577,7 +580,17 @@ export function SecretTable({
               : 'Their values are masked until you ask for one, exactly like this environment’s. Editing one there saves to that environment on its own.'}
           </p>
           <span className="flex-1" />
-          <Button variant="ghost" size="sm" onClick={onStopComparing}>
+          <Button
+            variant="ghost"
+            size="sm"
+            // Every compared editor lives inside a row this button unmounts, so
+            // a value typed into one and not yet saved goes with it. The save
+            // bar cannot speak for them — they are not in this environment’s
+            // batch — so the question is asked here.
+            onClick={() =>
+              comparedDirty.size > 0 ? setConfirmStopComparing(true) : onStopComparing()
+            }
+          >
             Stop comparing
           </Button>
         </div>
@@ -860,6 +873,21 @@ export function SecretTable({
           Losing an afternoon's worth of staged rotations to a misplaced click is
           the one mistake this screen makes easy, and it is not recoverable —
           there is nothing on the server to go back to. */}
+      <ConfirmDialog
+        open={confirmStopComparing}
+        onOpenChange={(open) => (open ? undefined : setConfirmStopComparing(false))}
+        title="Stop comparing?"
+        description={`${pluralize(comparedDirty.size, 'compared value')} you have not saved ${
+          comparedDirty.size === 1 ? 'is' : 'are'
+        } still open. Closing the comparison discards ${comparedDirty.size === 1 ? 'it' : 'them'}.`}
+        confirmLabel="Stop and discard"
+        cancelLabel="Keep comparing"
+        onConfirm={() => {
+          setConfirmStopComparing(false);
+          onStopComparing();
+        }}
+      />
+
       <UnsavedChangesGuard
         when={staged.pendingCount > 0 || comparedDirty.size > 0}
         writing={staged.saving}
