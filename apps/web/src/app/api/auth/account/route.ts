@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/mini';
 import { clearedSessionCookie, csrfCookie, serializeCookie } from '@xecret/core/auth';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
@@ -32,7 +32,7 @@ import { authenticatedRoute } from '@/server/route';
  */
 
 const deleteAccountRequest = z.strictObject({
-  confirm: z.string().max(320),
+  confirm: z.string().check(z.maxLength(320)),
 });
 
 export const DELETE = authenticatedRoute(

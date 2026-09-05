@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/mini';
 import { invitationState } from '@xecret/core/auth';
 import type { AccessLevel, OrgRole } from '@xecret/core/authz';
 import { environmentSlugSchema, slugSchema } from '@xecret/core/validation';
@@ -34,7 +34,7 @@ export const accessLevelSchema = z.enum(['none', 'read', 'write', 'admin']);
  * check is deliberately zod's, not a hand-rolled pattern — the address only has
  * to be deliverable, and the real arbiter of that is the mail provider.
  */
-const emailSchema = z.email('Enter a valid email address.').max(320);
+const emailSchema = z.email('Enter a valid email address.').check(z.maxLength(320));
 
 /**
  * One access selection on an invitation: an environment of a project, or —
@@ -43,7 +43,7 @@ const emailSchema = z.email('Enter a valid email address.').max(320);
 export const invitationGrantSelectionSchema = z.strictObject(
   {
     projectSlug: slugSchema,
-    environmentSlug: environmentSlugSchema.nullable(),
+    environmentSlug: z.nullable(environmentSlugSchema),
   },
   UNEXPECTED_FIELD,
 );
@@ -60,7 +60,7 @@ export const memberInviteSchema = z.strictObject(
      * organisation and stops a hostile body making acceptance write without
      * limit.
      */
-    grants: z.array(invitationGrantSelectionSchema).max(500).optional(),
+    grants: z.optional(z.array(invitationGrantSelectionSchema).check(z.maxLength(500))),
   },
   UNEXPECTED_FIELD,
 );
@@ -73,16 +73,16 @@ export const memberInviteSchema = z.strictObject(
 export const memberPatchSchema = z
   .strictObject(
     {
-      role: orgRoleSchema.optional(),
-      status: z.enum(['active', 'suspended']).optional(),
+      role: z.optional(orgRoleSchema),
+      status: z.optional(z.enum(['active', 'suspended'])),
     },
     UNEXPECTED_FIELD,
   )
-  .refine(
-    (patch) => [patch.role, patch.status].filter((field) => field !== undefined).length === 1,
-    {
-      message: 'Provide either a role or a status, not both.',
-    },
+  .check(
+    z.refine(
+      (patch) => [patch.role, patch.status].filter((field) => field !== undefined).length === 1,
+      { message: 'Provide either a role or a status, not both.' },
+    ),
   );
 
 /**
@@ -92,7 +92,7 @@ export const memberPatchSchema = z
 export const grantWriteSchema = z.strictObject(
   {
     projectSlug: slugSchema,
-    environmentSlug: environmentSlugSchema.nullable().optional(),
+    environmentSlug: z.optional(z.nullable(environmentSlugSchema)),
     accessLevel: accessLevelSchema,
   },
   UNEXPECTED_FIELD,
@@ -101,7 +101,7 @@ export const grantWriteSchema = z.strictObject(
 export const grantRemoveSchema = z.strictObject(
   {
     projectSlug: slugSchema,
-    environmentSlug: environmentSlugSchema.nullable().optional(),
+    environmentSlug: z.optional(z.nullable(environmentSlugSchema)),
   },
   UNEXPECTED_FIELD,
 );
@@ -115,7 +115,7 @@ export const grantRemoveSchema = z.strictObject(
  * costs a database query.
  */
 export const invitationTokenSchema = z.strictObject(
-  { token: z.string().min(1).max(128) },
+  { token: z.string().check(z.minLength(1), z.maxLength(128)) },
   UNEXPECTED_FIELD,
 );
 

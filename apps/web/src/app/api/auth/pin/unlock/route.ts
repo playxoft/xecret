@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/mini';
 import { PIN_LENGTH } from '@xecret/core/auth';
 import { json, parseJsonBody } from '@/server/http';
 import { requireUserPrincipal, unlockSession } from '@/server/pin-service';
@@ -25,8 +25,10 @@ import { authenticatedRoute } from '@/server/route';
 const unlockRequest = z.object({
   pin: z
     .string()
-    .length(PIN_LENGTH, `Your PIN must be exactly ${PIN_LENGTH} digits.`)
-    .regex(/^\d+$/, 'Your PIN must be digits only.'),
+    .check(
+      z.length(PIN_LENGTH, `Your PIN must be exactly ${PIN_LENGTH} digits.`),
+      z.regex(/^\d+$/, 'Your PIN must be digits only.'),
+    ),
 });
 
 export const POST = authenticatedRoute(
