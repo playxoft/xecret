@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ZodType } from 'zod';
+import type { ZodMiniType } from 'zod/mini';
 import { ORGANIZATION_NAME_MAX_LENGTH, truncateName } from '@xecret/core/validation';
 import type {
   EnvironmentRecord,
@@ -61,7 +61,7 @@ import {
  * because a fake database would prove only that the fake agrees with the test.
  */
 
-function rejected<T>(schema: ZodType<T>, value: unknown): ApiError {
+function rejected<T>(schema: ZodMiniType<T>, value: unknown): ApiError {
   let thrown: unknown;
   try {
     parseWith(schema, value);
@@ -73,7 +73,7 @@ function rejected<T>(schema: ZodType<T>, value: unknown): ApiError {
   return thrown as ApiError;
 }
 
-function failingFields<T>(schema: ZodType<T>, value: unknown): string[] {
+function failingFields<T>(schema: ZodMiniType<T>, value: unknown): string[] {
   return (rejected(schema, value).fields ?? []).map((problem) => problem.field);
 }
 

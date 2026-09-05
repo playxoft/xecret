@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/mini';
 
 /**
  * Slugs identify organisations, projects and environments in URLs and in the
@@ -265,11 +265,13 @@ export function checkSlug(slug: string, maxLength: number): SlugCheck {
  * only job is to delegate cannot drift.
  */
 function slugSchemaWithin(maxLength: number) {
-  return z.string().superRefine((slug, ctx) => {
-    const check = checkSlug(slug, maxLength);
-    if (check.valid) return;
-    ctx.addIssue({ code: 'custom', message: check.message });
-  });
+  return z.string().check(
+    z.superRefine((slug, ctx) => {
+      const check = checkSlug(slug, maxLength);
+      if (check.valid) return;
+      ctx.addIssue({ code: 'custom', message: check.message });
+    }),
+  );
 }
 
 export const slugSchema = slugSchemaWithin(SLUG_MAX_LENGTH);
@@ -292,9 +294,11 @@ export const ENVIRONMENT_SLUG_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
 
 export const environmentSlugSchema = z
   .string()
-  .min(1)
-  .max(SLUG_MAX_LENGTH)
-  .regex(ENVIRONMENT_SLUG_PATTERN, 'Use lowercase letters, digits, hyphens or underscores.');
+  .check(
+    z.minLength(1),
+    z.maxLength(SLUG_MAX_LENGTH),
+    z.regex(ENVIRONMENT_SLUG_PATTERN, 'Use lowercase letters, digits, hyphens or underscores.'),
+  );
 
 /** Suggested when a project is created. Users may add, rename, or remove any of them. */
 export const DEFAULT_ENVIRONMENTS = [

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/mini';
 import { lockSessions } from '@xecret/db/repositories';
 import { json, parseJsonBody } from '@/server/http';
 import { primaryOrgId, requireUserPrincipal } from '@/server/pin-service';
@@ -18,13 +18,13 @@ import { authenticatedRoute } from '@/server/route';
  * to get the device back.
  */
 
-const lockRequest = z
-  .object({
-    everywhere: z.boolean().optional(),
-  })
-  // The body is optional: locking this session is the overwhelmingly common
-  // case, and requiring `{}` for it would be ceremony.
-  .optional();
+// The body is optional: locking this session is the overwhelmingly common case,
+// and requiring `{}` for it would be ceremony.
+const lockRequest = z.optional(
+  z.object({
+    everywhere: z.optional(z.boolean()),
+  }),
+);
 
 export const POST = authenticatedRoute(async ({ request, principal, services, audit, record }) => {
   const user = requireUserPrincipal(principal);

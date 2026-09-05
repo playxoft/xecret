@@ -1,5 +1,5 @@
-import { z } from 'zod';
-import type { ZodType } from 'zod';
+import * as z from 'zod/mini';
+import type { ZodMiniType } from 'zod/mini';
 import type { OrgRole } from '@xecret/core/authz';
 import {
   environmentSlugSchema,
@@ -126,9 +126,11 @@ const NON_EMPTY_PATCH = 'Provide at least one field to update.';
 
 const nameSchema = z
   .string()
-  .trim()
-  .min(1, 'A name cannot be empty.')
-  .max(NAME_MAX_LENGTH, `A name must be at most ${NAME_MAX_LENGTH} characters.`);
+  .check(
+    z.trim(),
+    z.minLength(1, 'A name cannot be empty.'),
+    z.maxLength(NAME_MAX_LENGTH, `A name must be at most ${NAME_MAX_LENGTH} characters.`),
+  );
 
 /**
  * The same rule, at the organisation's tighter ceiling.
@@ -141,11 +143,13 @@ const nameSchema = z
  */
 const organizationNameSchema = z
   .string()
-  .trim()
-  .min(1, 'A name cannot be empty.')
-  .max(
-    ORGANIZATION_NAME_MAX_LENGTH,
-    `An organisation name must be at most ${ORGANIZATION_NAME_MAX_LENGTH} characters.`,
+  .check(
+    z.trim(),
+    z.minLength(1, 'A name cannot be empty.'),
+    z.maxLength(
+      ORGANIZATION_NAME_MAX_LENGTH,
+      `An organisation name must be at most ${ORGANIZATION_NAME_MAX_LENGTH} characters.`,
+    ),
   );
 
 /**
@@ -153,14 +157,17 @@ const organizationNameSchema = z
  * `null` means "remove it" — a distinction the repository already understands
  * and one a client cannot otherwise express.
  */
-const descriptionSchema = z
-  .string()
-  .trim()
-  .max(
-    DESCRIPTION_MAX_LENGTH,
-    `A description must be at most ${DESCRIPTION_MAX_LENGTH} characters.`,
-  )
-  .nullable();
+const descriptionSchema = z.nullable(
+  z
+    .string()
+    .check(
+      z.trim(),
+      z.maxLength(
+        DESCRIPTION_MAX_LENGTH,
+        `A description must be at most ${DESCRIPTION_MAX_LENGTH} characters.`,
+      ),
+    ),
+);
 
 /**
  * Accepted so it can be refused.
@@ -170,7 +177,7 @@ const descriptionSchema = z
  * — a 422 that reads as a typo — and stripping it silently would be worse still:
  * the caller would believe the rename succeeded.
  */
-const immutableSlugField = z.unknown().optional();
+const immutableSlugField = z.optional(z.unknown());
 
 /**
  * Creating an organisation: a name, and the permanent identifier that goes with
@@ -188,26 +195,26 @@ const immutableSlugField = z.unknown().optional();
  * cannot see holds `acme`, is the failure this field exists to prevent.
  */
 export const organizationCreateSchema = z.strictObject(
-  { name: organizationNameSchema, slug: organizationSlugSchema.optional() },
+  { name: organizationNameSchema, slug: z.optional(organizationSlugSchema) },
   UNEXPECTED_FIELD,
 );
 
 export const organizationPatchSchema = z
   .strictObject(
-    { name: organizationNameSchema.optional(), slug: immutableSlugField },
+    { name: z.optional(organizationNameSchema), slug: immutableSlugField },
     UNEXPECTED_FIELD,
   )
   // Any recognised key satisfies this, `slug` included, so a body that names
   // only the slug reaches `assertSlugImmutable` and gets the precise refusal
   // instead of a generic "nothing to update".
-  .refine((patch) => Object.keys(patch).length > 0, { message: NON_EMPTY_PATCH });
+  .check(z.refine((patch) => Object.keys(patch).length > 0, { message: NON_EMPTY_PATCH }));
 
 export const projectCreateSchema = z.strictObject(
   {
     name: nameSchema,
     /** Optional: derived from the name when absent. See `resolveProjectSlug`. */
-    slug: slugSchema.optional(),
-    description: descriptionSchema.optional(),
+    slug: z.optional(slugSchema),
+    description: z.optional(descriptionSchema),
   },
   UNEXPECTED_FIELD,
 );
@@ -215,13 +222,13 @@ export const projectCreateSchema = z.strictObject(
 export const projectPatchSchema = z
   .strictObject(
     {
-      name: nameSchema.optional(),
-      description: descriptionSchema.optional(),
+      name: z.optional(nameSchema),
+      description: z.optional(descriptionSchema),
       slug: immutableSlugField,
     },
     UNEXPECTED_FIELD,
   )
-  .refine((patch) => Object.keys(patch).length > 0, { message: NON_EMPTY_PATCH });
+  .check(z.refine((patch) => Object.keys(patch).length > 0, { message: NON_EMPTY_PATCH }));
 
 export const environmentCreateSchema = z.strictObject(
   {
@@ -230,9 +237,9 @@ export const environmentCreateSchema = z.strictObject(
     // permits underscores, because it is typed at a shell prompt
     // (`xecret run --env staging_eu`) rather than placed in a URL path segment
     // that has to be globally unambiguous.
-    slug: environmentSlugSchema.optional(),
-    isProduction: z.boolean().optional(),
-    sortOrder: z.number().int().min(0).max(SORT_ORDER_MAX).optional(),
+    slug: z.optional(environmentSlugSchema),
+    isProduction: z.optional(z.boolean()),
+    sortOrder: z.optional(z.int().check(z.gte(0), z.lte(SORT_ORDER_MAX))),
   },
   UNEXPECTED_FIELD,
 );
@@ -240,14 +247,14 @@ export const environmentCreateSchema = z.strictObject(
 export const environmentPatchSchema = z
   .strictObject(
     {
-      name: nameSchema.optional(),
-      isProduction: z.boolean().optional(),
-      sortOrder: z.number().int().min(0).max(SORT_ORDER_MAX).optional(),
+      name: z.optional(nameSchema),
+      isProduction: z.optional(z.boolean()),
+      sortOrder: z.optional(z.int().check(z.gte(0), z.lte(SORT_ORDER_MAX))),
       slug: immutableSlugField,
     },
     UNEXPECTED_FIELD,
   )
-  .refine((patch) => Object.keys(patch).length > 0, { message: NON_EMPTY_PATCH });
+  .check(z.refine((patch) => Object.keys(patch).length > 0, { message: NON_EMPTY_PATCH }));
 
 /**
  * Offset pagination for the project listing.
@@ -264,13 +271,19 @@ export const environmentPatchSchema = z
  * request. Unknown *body* fields are still rejected — a body is a contract.
  */
 export const pageQuerySchema = z.object({
-  page: z.coerce.number().int().min(1, 'Pages are numbered from 1.').default(1),
-  pageSize: z.coerce
-    .number()
-    .int()
-    .min(1)
-    .max(MAX_PAGE_SIZE, `A page may hold at most ${MAX_PAGE_SIZE} items.`)
-    .default(DEFAULT_PAGE_SIZE),
+  page: z._default(
+    z.pipe(z.coerce.number(), z.int().check(z.gte(1, 'Pages are numbered from 1.'))),
+    1,
+  ),
+  pageSize: z._default(
+    z.pipe(
+      z.coerce.number(),
+      z
+        .int()
+        .check(z.gte(1), z.lte(MAX_PAGE_SIZE, `A page may hold at most ${MAX_PAGE_SIZE} items.`)),
+    ),
+    DEFAULT_PAGE_SIZE,
+  ),
 });
 
 /**
@@ -280,9 +293,13 @@ export const pageQuerySchema = z.object({
  * empty object so a `DELETE` with no body at all is still a well-formed request
  * — only the routes that guard production data require the field to be present.
  */
-export const destructiveRequestSchema = z
-  .strictObject({ confirm: z.string().max(SLUG_MAX_LENGTH).optional() }, UNEXPECTED_FIELD)
-  .default({});
+export const destructiveRequestSchema = z._default(
+  z.strictObject(
+    { confirm: z.optional(z.string().check(z.maxLength(SLUG_MAX_LENGTH))) },
+    UNEXPECTED_FIELD,
+  ),
+  {},
+);
 
 /**
  * Refuses an attempt to change a slug.
@@ -352,7 +369,7 @@ export function resolveEnvironmentSlug(request: {
  * The rejected value is not echoed. It is derived from user input, and this API
  * does not return user input in error messages (`errors.ts`).
  */
-function deriveSlug(name: string, schema: ZodType<string>): string {
+function deriveSlug(name: string, schema: ZodMiniType<string>): string {
   const derived = slugify(name);
   const result = schema.safeParse(derived);
   if (result.success) return result.data;

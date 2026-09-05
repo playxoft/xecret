@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/mini';
 import { evaluateSession } from '@xecret/core/auth';
 import {
   listOrganizationsForUser,
@@ -20,7 +20,7 @@ import { authenticatedRoute } from '@/server/route';
 
 const revokeQuery = z.object({
   /** `current` keeps the calling session alive; anything else signs out all. */
-  except: z.enum(['current']).optional(),
+  except: z.optional(z.enum(['current'])),
 });
 
 export const GET = authenticatedRoute(async ({ principal, services }) => {

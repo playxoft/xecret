@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/mini';
 import { MAX_SECRET_VALUE_BYTES } from '@xecret/core/crypto';
 import {
   DEFAULT_SECRET_VALUE_TYPE,
@@ -41,7 +41,12 @@ import { errors } from '@/server/errors';
  */
 const secretValueSchema = z
   .string()
-  .max(MAX_SECRET_VALUE_BYTES, `Secret value cannot exceed ${MAX_SECRET_VALUE_BYTES} bytes.`);
+  .check(
+    z.maxLength(
+      MAX_SECRET_VALUE_BYTES,
+      `Secret value cannot exceed ${MAX_SECRET_VALUE_BYTES} bytes.`,
+    ),
+  );
 
 /**
  * The human note shown beside a secret in the dashboard.
@@ -50,7 +55,9 @@ const secretValueSchema = z
  * that but the user. It is bounded and nullable; it is not validated further,
  * because a note is free text.
  */
-const noteSchema = z.string().max(1024, 'Note cannot exceed 1024 characters.').nullish();
+const noteSchema = z.nullish(
+  z.string().check(z.maxLength(1024, 'Note cannot exceed 1024 characters.')),
+);
 
 /**
  * The declared shape of the value.
@@ -66,7 +73,7 @@ export const createSecretBody = z.object({
   name: secretNameSchema,
   value: secretValueSchema,
   note: noteSchema,
-  valueType: valueTypeSchema.default(DEFAULT_SECRET_VALUE_TYPE),
+  valueType: z._default(valueTypeSchema, DEFAULT_SECRET_VALUE_TYPE),
 });
 
 /**
@@ -85,7 +92,7 @@ export const createSecretBody = z.object({
  */
 export const updateSecretBody = z.object({
   value: secretValueSchema,
-  valueType: valueTypeSchema.optional(),
+  valueType: z.optional(valueTypeSchema),
 });
 
 /**
@@ -105,13 +112,15 @@ export const patchSecretMetadataBody = z
      * validate the new name exactly like a created one and record the old name
      * in the audit event.
      */
-    name: secretNameSchema.optional(),
+    name: z.optional(secretNameSchema),
     note: noteSchema,
-    valueType: valueTypeSchema.optional(),
+    valueType: z.optional(valueTypeSchema),
   })
-  .refine(
-    (body) => body.name !== undefined || body.note !== undefined || body.valueType !== undefined,
-    'Supply a name, note or value type to change.',
+  .check(
+    z.refine(
+      (body) => body.name !== undefined || body.note !== undefined || body.valueType !== undefined,
+      'Supply a name, note or value type to change.',
+    ),
   );
 
 export const restoreSecretBody = z.object({
@@ -120,7 +129,7 @@ export const restoreSecretBody = z.object({
    * bound is `int4`'s, since that is the column's type — a larger number cannot
    * name a row and is refused before it becomes a query parameter.
    */
-  version: z.number().int().min(1).max(2_147_483_647),
+  version: z.int().check(z.gte(1), z.lte(2_147_483_647)),
 });
 
 /**
@@ -138,8 +147,8 @@ export const restoreSecretBody = z.object({
  * true keyset cursor, which is a change the audit log has already had to make.
  */
 export const listQuery = z.object({
-  limit: z.coerce.number().int().min(1).max(200).optional(),
-  cursor: z.coerce.number().int().min(1).optional(),
+  limit: z.optional(z.pipe(z.coerce.number(), z.int().check(z.gte(1), z.lte(200)))),
+  cursor: z.optional(z.pipe(z.coerce.number(), z.int().check(z.gte(1)))),
 });
 
 export const exportFormatSchema = z.enum(['env', 'json', 'yaml', 'shell', 'docker']);
@@ -149,7 +158,7 @@ export const exportFormatSchema = z.enum(['env', 'json', 'yaml', 'shell', 'docke
  * translation of, and the only one every consumer in the ecosystem reads.
  */
 export const documentQuery = z.object({
-  format: exportFormatSchema.default('env'),
+  format: z._default(exportFormatSchema, 'env'),
 });
 
 export const importBody = z.object({
@@ -159,7 +168,7 @@ export const importBody = z.object({
    * that carries it, and restating the limit here makes the failure a field
    * error the import modal can render rather than a bare 413.
    */
-  content: z.string().max(MAX_REQUEST_BODY_BYTES, 'The uploaded file is too large.'),
+  content: z.string().check(z.maxLength(MAX_REQUEST_BODY_BYTES, 'The uploaded file is too large.')),
   /**
    * Absent means "detect it". Detection is `detectFormat`, which weighs the
    * file name above the content — someone who named a file `config.yaml` knows
@@ -167,8 +176,8 @@ export const importBody = z.object({
    * §4's body list because §4 describes the minimum; omitting it merely makes
    * detection worse.
    */
-  format: z.enum(['dotenv', 'json', 'yaml', 'shell']).optional(),
-  filename: z.string().max(512).optional(),
+  format: z.optional(z.enum(['dotenv', 'json', 'yaml', 'shell'])),
+  filename: z.optional(z.string().check(z.maxLength(512))),
   strategy: z.enum(['skip', 'overwrite', 'rename']),
   /**
    * Required rather than defaulted. A client that forgets this field must not

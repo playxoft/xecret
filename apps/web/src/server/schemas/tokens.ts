@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/mini';
 import type { AuditAction, AuditMetadata } from '@xecret/core/audit';
 import type { AccessLevel } from '@xecret/core/authz';
 import { fromBase64Url, toBase64Url } from '@xecret/core/crypto';
@@ -40,20 +40,28 @@ const serviceAccessSchema = z.enum(['read', 'write']);
  */
 const allowlistEntrySchema = z
   .string()
-  .trim()
-  .min(1)
-  .max(64)
-  .regex(/^[0-9a-fA-F:.]+(?:\/\d{1,3})?$/, 'Enter an IP address or CIDR range.');
+  .check(
+    z.trim(),
+    z.minLength(1),
+    z.maxLength(64),
+    z.regex(/^[0-9a-fA-F:.]+(?:\/\d{1,3})?$/, 'Enter an IP address or CIDR range.'),
+  );
 
 export const serviceTokenCreateSchema = z.strictObject(
   {
-    name: z.string().trim().min(1, 'Give the token a name.').max(TOKEN_NAME_MAX_LENGTH),
+    name: z
+      .string()
+      .check(
+        z.trim(),
+        z.minLength(1, 'Give the token a name.'),
+        z.maxLength(TOKEN_NAME_MAX_LENGTH),
+      ),
     projectSlug: slugSchema,
     environmentSlug: environmentSlugSchema,
-    accessLevel: serviceAccessSchema.optional(),
+    accessLevel: z.optional(serviceAccessSchema),
     /** ISO 8601. Absent means the token does not expire. */
-    expiresAt: z.iso.datetime().optional(),
-    ipAllowlist: z.array(allowlistEntrySchema).max(32).optional(),
+    expiresAt: z.optional(z.iso.datetime()),
+    ipAllowlist: z.optional(z.array(allowlistEntrySchema).check(z.maxLength(32))),
   },
   UNEXPECTED_FIELD,
 );
@@ -138,15 +146,15 @@ export function toCliToken(token: CliTokenSummary, currentTokenId: string | null
  * parameter is ignored, not refused.
  */
 export const auditQuerySchema = z.object({
-  actorId: z.uuid().optional(),
-  action: z.string().max(64).optional(),
-  projectSlug: slugSchema.optional(),
-  environmentSlug: environmentSlugSchema.optional(),
-  outcome: z.enum(['success', 'denied', 'error']).optional(),
-  from: z.iso.datetime().optional(),
-  to: z.iso.datetime().optional(),
-  cursor: z.string().max(200).optional(),
-  limit: z.coerce.number().int().min(1).max(200).optional(),
+  actorId: z.optional(z.uuid()),
+  action: z.optional(z.string().check(z.maxLength(64))),
+  projectSlug: z.optional(slugSchema),
+  environmentSlug: z.optional(environmentSlugSchema),
+  outcome: z.optional(z.enum(['success', 'denied', 'error'])),
+  from: z.optional(z.iso.datetime()),
+  to: z.optional(z.iso.datetime()),
+  cursor: z.optional(z.string().check(z.maxLength(200))),
+  limit: z.optional(z.pipe(z.coerce.number(), z.int().check(z.gte(1), z.lte(200)))),
 });
 
 /**

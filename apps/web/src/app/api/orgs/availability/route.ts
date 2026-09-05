@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/mini';
 import { checkSlug, ORGANIZATION_SLUG_MAX_LENGTH } from '@xecret/core/validation';
 import { isOrgSlugAvailable } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
@@ -51,7 +51,13 @@ import { authenticatedRoute } from '@/server/route';
  */
 
 const availabilityQuery = z.object({
-  slug: z.string().trim().min(1, 'Provide a slug to check.').max(ORGANIZATION_SLUG_MAX_LENGTH),
+  slug: z
+    .string()
+    .check(
+      z.trim(),
+      z.minLength(1, 'Provide a slug to check.'),
+      z.maxLength(ORGANIZATION_SLUG_MAX_LENGTH),
+    ),
 });
 
 /** Why a slug cannot be used. `null` when it can. */
