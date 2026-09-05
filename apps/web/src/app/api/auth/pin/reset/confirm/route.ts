@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/mini';
 import { PIN_LENGTH, checkPin, hashPin, hashToken, isWellFormedToken } from '@xecret/core/auth';
 import { consumePinReset, markSessionUnlocked, upsertPin } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
@@ -20,11 +20,13 @@ import { authenticatedRoute } from '@/server/route';
  */
 
 const confirmRequest = z.object({
-  token: z.string().min(1).max(256),
+  token: z.string().check(z.minLength(1), z.maxLength(256)),
   pin: z
     .string()
-    .length(PIN_LENGTH, `Your PIN must be exactly ${PIN_LENGTH} digits.`)
-    .regex(/^\d+$/, 'Your PIN must be digits only.'),
+    .check(
+      z.length(PIN_LENGTH, `Your PIN must be exactly ${PIN_LENGTH} digits.`),
+      z.regex(/^\d+$/, 'Your PIN must be digits only.'),
+    ),
 });
 
 export const POST = authenticatedRoute(

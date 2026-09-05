@@ -1,4 +1,4 @@
-import type { ZodType } from 'zod';
+import type { ZodMiniType } from 'zod/mini';
 import { uuidv7 } from '@xecret/core/ids';
 import { ApiError, errors } from './errors';
 import type { FieldProblem } from './errors';
@@ -178,7 +178,7 @@ async function readBoundedText(request: Request): Promise<string> {
  * secret value, and echoing it back would place it in the response body, the
  * browser's network log, and any error-reporting pipeline.
  */
-export function parseWith<T>(schema: ZodType<T>, value: unknown): T {
+export function parseWith<T>(schema: ZodMiniType<T>, value: unknown): T {
   const result = schema.safeParse(value);
   if (result.success) return result.data;
 
@@ -190,11 +190,11 @@ export function parseWith<T>(schema: ZodType<T>, value: unknown): T {
   throw errors.validation(fields);
 }
 
-export async function parseJsonBody<T>(request: Request, schema: ZodType<T>): Promise<T> {
+export async function parseJsonBody<T>(request: Request, schema: ZodMiniType<T>): Promise<T> {
   return parseWith(schema, await readJsonBody(request));
 }
 
-export function parseQuery<T>(request: Request, schema: ZodType<T>): T {
+export function parseQuery<T>(request: Request, schema: ZodMiniType<T>): T {
   const params = new URL(request.url).searchParams;
   return parseWith(schema, Object.fromEntries(params.entries()));
 }

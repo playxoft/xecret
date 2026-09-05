@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/mini';
 
 /**
  * Secret names become environment variables in the user's process, so they must
@@ -117,11 +117,11 @@ export function checkSecretName(name: string): SecretNameCheck {
   return { valid: true };
 }
 
-export const secretNameSchema = z
-  .string()
-  .min(1, 'Secret name cannot be empty.')
-  .max(SECRET_NAME_MAX_LENGTH)
-  .regex(SECRET_NAME_PATTERN, 'Secret name may only contain letters, digits and underscores.')
-  .refine((name) => !isReservedSecretName(name), {
+export const secretNameSchema = z.string().check(
+  z.minLength(1, 'Secret name cannot be empty.'),
+  z.maxLength(SECRET_NAME_MAX_LENGTH),
+  z.regex(SECRET_NAME_PATTERN, 'Secret name may only contain letters, digits and underscores.'),
+  z.refine((name) => !isReservedSecretName(name), {
     message: 'This name is reserved by the operating system.',
-  });
+  }),
+);
