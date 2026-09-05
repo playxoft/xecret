@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { toSecretValueType } from '@xecret/core/validation';
 import { api, errorMessage, isApiError } from '@/lib/api';
@@ -32,12 +32,14 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  UnsavedChangesGuard,
   UploadIcon,
   useToast,
 } from '@/components/ui';
-import type { EnvironmentTarget } from './multi-environment-write';
+import type { EnvironmentTarget } from './environment-target';
 import { useComparedSecrets } from './use-compared-secrets';
-import { useRevealAll } from './use-reveal-all';
+import { usePlaintextCache } from './use-plaintext-cache';
+import { REVEAL_DURATION_MS, useRevealAll } from './use-reveal-all';
 import type { RevealAll } from './use-reveal-all';
 import { DraftRow } from './draft-row';
 import { SecretRow } from './secret-row';
@@ -51,7 +53,10 @@ export interface SecretTableProps {
   projectSlug: string;
   envSlug: string;
   isProduction: boolean;
-  /** Every environment in this project, so a paste can fan out across them. */
+  /**
+   * Every environment in this project — read for `isProduction`, which decides
+   * which writes are confirmed, and to name the one on screen.
+   */
   environments: readonly EnvironmentTarget[];
   /**
    * The environments shift-clicked in the switcher, shown beside this one's
@@ -134,6 +139,11 @@ export function SecretTable({
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const revealAll = useRevealAll(orgSlug, projectSlug, envSlug);
+  /**
+   * The per-row decryptions, held above the rows so they survive a row
+   * unmounting — which is what a filter keystroke does to fifty of them.
+   */
+  const plaintexts = usePlaintextCache(`${orgSlug}/${projectSlug}/${envSlug}`);
   const [hoverReveal, setHoverReveal] = useState(false);
   /**
    * The rows hover mode has shown so far.
@@ -145,6 +155,29 @@ export function SecretTable({
    * to be re-read. Turning the mode off empties it.
    */
   const [hoverRevealed, setHoverRevealed] = useState<ReadonlySet<string>>(new Set());
+  /**
+   * Which compared editors are holding unsaved work, as `slug\u0000name`.
+   *
+   * Those editors live inside the rows below and would go with them: a filter
+   * keystroke unmounts a row, and a credential typed into a compared field and
+   * not yet saved went with it silently. Kept here so the row can be held on
+   * screen and the guard can speak for it.
+   */
+  /** Bumped by `forgetDecrypted`; see the prop of the same name on `ValueField`. */
+  const [forgetToken, setForgetToken] = useState(0);
+
+  const [comparedDirty, setComparedDirty] = useState<ReadonlySet<string>>(new Set());
+
+  const markComparedDirty = useCallback((slug: string, name: string, dirty: boolean) => {
+    setComparedDirty((current) => {
+      const key = `${slug}\u0000${name}`;
+      if (current.has(key) === dirty) return current;
+      const next = new Set(current);
+      if (dirty) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
   // Which environment's history: a compared row's version chip opens the
   // history of *that* environment, not of the one the page is about.
   const [history, setHistory] = useState<{ envSlug: string; secretName: string } | null>(null);
@@ -161,6 +194,20 @@ export function SecretTable({
   const [renderedWrites, setRenderedWrites] = useState(externalWrites);
   if (renderedWrites !== externalWrites) {
     setRenderedWrites(externalWrites);
+    forgetDecrypted();
+  }
+
+  /**
+   * Drops every decrypted value the page is holding — the whole-environment
+   * snapshot behind "Reveal all" and the per-row cache alike.
+   *
+   * The two are one fact and are forgotten together: a write that left either
+   * behind would leave the table showing a credential that has just been
+   * replaced, put it on the clipboard, and seed it into the next edit — which
+   * would write it back over what was saved. A function declaration rather than
+   * a `const`, because the render-phase call above runs before this line.
+   */
+  function forgetDecrypted() {
     revealAll.forget();
     // The other place this screen holds plaintext for the environment that has
     // just been written behind its back. An import that overwrites a key whose
@@ -169,6 +216,15 @@ export function SecretTable({
     // would write it back, silently reverting the import. Nothing here takes
     // what the user typed; only the seed it was typed over.
     staged.forgetSeeds();
+    plaintexts.forget();
+    // The hover set is a set of *names into* the snapshot above. Left behind, it
+    // survives the write that just invalidated it, and the next time hover mode
+    // is armed those same rows un-mask on their own without the pointer going
+    // anywhere near them.
+    setHoverRevealed(new Set());
+    // Each row holds its own reveal as well, and only a refreshed listing
+    // invalidates that one. This says so now.
+    setForgetToken((token) => token + 1);
   }
 
   const currentEnvironment = environments.find((entry) => entry.slug === envSlug);
@@ -194,7 +250,34 @@ export function SecretTable({
     return () => document.removeEventListener('visibilitychange', onVisibility);
   }, []);
 
+  // And the window masks them, on the same clock as everything else.
+  //
+  // Keyed on the reveal set, not on `revealAll.values`. The window no longer
+  // drops the decryption — it masks — so `values` keeps its identity across the
+  // end of a window, and an effect watching it would arm exactly one timer per
+  // decryption. Every row the pointer crossed after that timer fired would then
+  // stay in plaintext for the rest of the session, which is the thing this
+  // timer exists to prevent.
+  //
+  // One clock for the set rather than one per row: revealing a further row
+  // restarts it, so the last arrival is always the one counted from. Re-crossing
+  // a row already in the set does not — the setter returns `current` unchanged —
+  // so a pointer resting on one value cannot hold it open.
+  useEffect(() => {
+    if (hoverRevealed.size === 0) return;
+
+    const maskAt = setTimeout(() => setHoverRevealed(new Set()), REVEAL_DURATION_MS);
+    return () => clearTimeout(maskAt);
+  }, [hoverRevealed]);
+
   const existingNames = useMemo(() => new Set(secrets.map((secret) => secret.name)), [secrets]);
+
+  // What each secret is already declared as, for the save-time shape check: a
+  // row that stages only a value has no type of its own to be checked against.
+  const storedTypes = useMemo(
+    () => new Map(secrets.map((secret) => [secret.name, secret.valueType])),
+    [secrets],
+  );
 
   /**
    * How many keys each compared environment holds that this one does not.
@@ -227,12 +310,25 @@ export function SecretTable({
     [compared.environments, existingNames, onLoadMore],
   );
 
+  // The rows those editors are in, so the filter cannot take them off screen.
+  const comparedDirtyNames = useMemo(
+    () => new Set([...comparedDirty].map((key) => key.slice(key.indexOf('\u0000') + 1))),
+    [comparedDirty],
+  );
+
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     const filtered =
       needle.length === 0
         ? [...secrets]
-        : secrets.filter((secret) => secret.name.toLowerCase().includes(needle));
+        : secrets.filter(
+            (secret) =>
+              secret.name.toLowerCase().includes(needle) ||
+              // A compared editor on this row is holding a credential that has
+              // not been written. Filtering the row away unmounts it and the
+              // work goes with it, so the filter does not get to.
+              comparedDirtyNames.has(secret.name),
+          );
 
     // By code unit rather than `localeCompare`: secret names are ASCII
     // identifiers, and a locale-aware collation would order `API_KEY` and
@@ -254,7 +350,7 @@ export function SecretTable({
     });
 
     return filtered;
-  }, [secrets, query, sortKey, sortDirection]);
+  }, [secrets, query, sortKey, sortDirection, comparedDirtyNames]);
 
   // Selection is tracked by name and intersected with what is on screen, so a
   // row that is filtered out or deleted cannot stay silently selected and be
@@ -282,8 +378,12 @@ export function SecretTable({
   /**
    * Whether hover mode can actually show anything.
    *
-   * Derived rather than stored, so the window ending, a failed decryption and a
-   * change of environment all put the toggle out on their own — a button that
+   * Derived rather than stored, so a failed decryption and a change of
+   * environment put the toggle out on their own — a button that stays lit while
+   * doing nothing is the worse of the two failures. The window ending no longer
+   * does: it masks rather than forgets, so the decryption is still there and
+   * hover mode stays armed against it. What the window ends is what is *on
+   * screen*, which the timer above clears.
    * stays lit while doing nothing is the worse of the two failures. Re-arming it
    * is one click and is the user's decision to make: renewing the decryption
    * every three minutes on its own would hold an environment in memory for as
@@ -341,7 +441,7 @@ export function SecretTable({
     setSelected(new Set());
     // The snapshot "Reveal all" is holding describes an environment that no
     // longer exists. See `RevealAll.forget` for what a stale one does.
-    revealAll.forget();
+    forgetDecrypted();
     // A staged rewrite of a secret that no longer exists would fail on the next
     // save with a 404 nobody could explain.
     staged.closeEdit(name);
@@ -370,7 +470,7 @@ export function SecretTable({
     }
 
     setSelected(new Set());
-    revealAll.forget();
+    forgetDecrypted();
     onChanged();
 
     if (failed.length === 0) {
@@ -389,7 +489,7 @@ export function SecretTable({
     if (staged.pendingCount === 0 || staged.saving) return;
     setActionError(null);
 
-    const outcome = await staged.save(existingNames);
+    const outcome = await staged.save(existingNames, storedTypes);
     // Always, even on a total failure: a partial batch has already changed the
     // environment, and leaving the table showing the old versions would make the
     // next save operate on stale version numbers.
@@ -403,7 +503,7 @@ export function SecretTable({
     // `wrote` rather than `created || updated`: a row writes its value and its
     // metadata as two requests, so a rename rejected after the value has landed
     // counts only as `failed` while having changed the environment all the same.
-    if (outcome.wrote) revealAll.forget();
+    if (outcome.wrote) forgetDecrypted();
     announce(outcome);
   }
 
@@ -451,6 +551,7 @@ export function SecretTable({
         disabled={staged.saving}
         revealAll={revealAll}
         onHideAll={hideAll}
+        anythingShown={revealAll.revealed || hoverRevealed.size > 0}
         hoverReveal={hoverArmed}
         hoverLoading={hoverReveal && revealAll.loading}
         onToggleHoverReveal={toggleHoverReveal}
@@ -562,7 +663,18 @@ export function SecretTable({
       ) : (
         <>
           <TableContainer aria-label={`Secrets in ${envSlug}`}>
-            <Table>
+            {/* `table-fixed`, so the columns are the widths declared in the
+                header and nothing in a cell can argue with them.
+
+                Under the browser's automatic layout every column is as wide as
+                its widest cell wants to be — which meant that revealing a value
+                re-measured the whole table. "Reveal all" on an environment
+                holding one long connection string squeezed the key column to
+                make room for it and moved every key on screen sideways; masking
+                put it all back. The value field can only be a constant width if
+                the column it sits in is, and that is decided here rather than in
+                the field. */}
+            <Table className="table-fixed">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-10 pr-0">
@@ -626,6 +738,7 @@ export function SecretTable({
                     onPatch={(patch) => staged.patchDraft(draft.id, patch)}
                     onExpand={(seeds) => staged.expandDraft(draft.id, seeds)}
                     onRemove={() => staged.removeDraft(draft.id)}
+                    onAddNext={() => staged.addDraft(undefined, draft.placement)}
                     onCommit={saveStaged}
                   />
                 ))}
@@ -644,6 +757,7 @@ export function SecretTable({
                       edit={staged.edits.get(secret.name)}
                       existingNames={existingNames}
                       disabled={staged.saving}
+                      plaintexts={plaintexts}
                       compare={compared.environments}
                       {...(plaintext === undefined ? {} : { revealed: plaintext })}
                       {...(hoverArmed
@@ -662,6 +776,10 @@ export function SecretTable({
                           }
                         : {})}
                       onSelectedChange={(checked) => toggleOne(secret.name, checked)}
+                      forgetToken={forgetToken}
+                      onComparedDirtyChange={(slug, dirty) =>
+                        markComparedDirty(slug, secret.name, dirty)
+                      }
                       onEditOpen={() => staged.openEdit(secret.name)}
                       onEditSeed={(value) => staged.seedEdit(secret.name, value)}
                       onEditChange={(value) => staged.setEdit(secret.name, value)}
@@ -696,6 +814,7 @@ export function SecretTable({
                     onPatch={(patch) => staged.patchDraft(draft.id, patch)}
                     onExpand={(seeds) => staged.expandDraft(draft.id, seeds)}
                     onRemove={() => staged.removeDraft(draft.id)}
+                    onAddNext={() => staged.addDraft(undefined, draft.placement)}
                     onCommit={saveStaged}
                   />
                 ))}
@@ -736,6 +855,19 @@ export function SecretTable({
         onSave={saveStaged}
       />
 
+      {/* Nothing in this table is written until Save is pressed, and the table
+          is reached by clicking through a sidebar full of other environments.
+          Losing an afternoon's worth of staged rotations to a misplaced click is
+          the one mistake this screen makes easy, and it is not recoverable —
+          there is nothing on the server to go back to. */}
+      <UnsavedChangesGuard
+        when={staged.pendingCount > 0 || comparedDirty.size > 0}
+        writing={staged.saving}
+        description={`${pluralize(staged.pendingCount, 'change')} to ${envSlug} ${
+          staged.pendingCount === 1 ? 'has' : 'have'
+        } not been saved.`}
+      />
+
       {history !== null ? (
         <VersionHistoryDialog
           orgSlug={orgSlug}
@@ -751,7 +883,7 @@ export function SecretTable({
               compared.reload();
               return;
             }
-            revealAll.forget();
+            forgetDecrypted();
             onChanged();
           }}
         />
@@ -795,6 +927,7 @@ function Toolbar({
   disabled,
   revealAll,
   onHideAll,
+  anythingShown,
   hoverReveal,
   hoverLoading,
   onToggleHoverReveal,
@@ -809,6 +942,16 @@ function Toolbar({
   revealAll: RevealAll;
   /** Masks the "Reveal all" set *and* the rows hover mode has stuck open. */
   onHideAll: () => void;
+  /**
+   * Whether anything is on screen, by either route.
+   *
+   * Hover mode reveals through `load()`, which never sets `shown`, so the
+   * button went on offering "Reveal all" while three plaintexts were rendered
+   * beneath it — and their own eye buttons are disabled while a value is
+   * supplied from here, so there was no control left anywhere that could mask
+   * them short of disarming the mode.
+   */
+  anythingShown: boolean;
   hoverReveal: boolean;
   hoverLoading: boolean;
   onToggleHoverReveal: () => void;
@@ -841,18 +984,14 @@ function Toolbar({
         {hasSecrets ? (
           <>
             <Button
-              variant={revealAll.revealed ? 'secondary' : 'ghost'}
+              variant={anythingShown ? 'secondary' : 'ghost'}
               size="sm"
-              onClick={revealAll.revealed ? onHideAll : revealAll.reveal}
+              onClick={anythingShown ? onHideAll : revealAll.reveal}
               loading={revealAll.loading && !hoverLoading}
-              aria-pressed={revealAll.revealed}
+              aria-pressed={anythingShown}
             >
-              {revealAll.revealed ? (
-                <EyeOffIcon className="size-4" />
-              ) : (
-                <EyeIcon className="size-4" />
-              )}
-              {revealAll.revealed ? 'Hide all' : 'Reveal all'}
+              {anythingShown ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
+              {anythingShown ? 'Hide all' : 'Reveal all'}
             </Button>
 
             {/* Between the two extremes this screen otherwise offers: one value at

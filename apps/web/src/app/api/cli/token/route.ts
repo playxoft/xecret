@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/mini';
 import { isWellFormedToken, PKCE_VERIFIER_PATTERN, verifyPkce } from '@xecret/core/auth';
 import { createAuditBuilder } from '@xecret/core/audit';
 import type { AuditRecord } from '@xecret/core/audit';
@@ -34,10 +34,10 @@ import type { ServiceContext } from '@/server/context';
  */
 
 const exchangeRequest = z.strictObject({
-  code: z.string().min(1).max(256),
+  code: z.string().check(z.minLength(1), z.maxLength(256)),
   codeVerifier: z
     .string()
-    .regex(PKCE_VERIFIER_PATTERN, 'The code verifier is not a valid PKCE value.'),
+    .check(z.regex(PKCE_VERIFIER_PATTERN, 'The code verifier is not a valid PKCE value.')),
 });
 
 export const POST = publicRoute(async ({ request, services }) => {

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/mini';
 import { PKCE_CHALLENGE_PATTERN } from '@xecret/core/auth';
 import { AuthorizationError } from '@xecret/core/authz';
 import { slugSchema } from '@xecret/core/validation';
@@ -45,15 +45,17 @@ const authorizeRequest = z.strictObject({
   orgSlug: slugSchema,
   deviceName: z
     .string()
-    .trim()
-    .min(1, 'A device name is required.')
-    .max(100, 'A device name must be at most 100 characters.')
-    // Control characters are refused: this string lands in the consent UI, the
-    // token listing and the audit log, where a carriage return is a spoof.
-    .regex(/^\P{C}+$/u, 'A device name cannot contain control characters.'),
+    .check(
+      z.trim(),
+      z.minLength(1, 'A device name is required.'),
+      z.maxLength(100, 'A device name must be at most 100 characters.'),
+      // Control characters are refused: this string lands in the consent UI, the
+      // token listing and the audit log, where a carriage return is a spoof.
+      z.regex(/^\P{C}+$/u, 'A device name cannot contain control characters.'),
+    ),
   codeChallenge: z
     .string()
-    .regex(PKCE_CHALLENGE_PATTERN, 'The code challenge is not a valid S256 value.'),
+    .check(z.regex(PKCE_CHALLENGE_PATTERN, 'The code challenge is not a valid S256 value.')),
 });
 
 export const POST = authenticatedRoute(async ({ request, principal, services, audit, record }) => {

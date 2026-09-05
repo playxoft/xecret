@@ -12,15 +12,27 @@ import type { SecretValueType } from '@xecret/core/validation';
 import { api, errorMessage } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
-import { AlertTriangleIcon, Checkbox, Input, TableCell, TableRow, Tooltip } from '@/components/ui';
+import {
+  AlertTriangleIcon,
+  Checkbox,
+  Input,
+  NoteIcon,
+  TableCell,
+  TableRow,
+  Tooltip,
+} from '@/components/ui';
 import { ComparedValue } from './compared-value';
-import type { EnvironmentTarget } from './multi-environment-write';
+import type { EnvironmentTarget } from './environment-target';
 import { hasNewValue, isTouched, wantsRename } from './staged-changes';
 import type { PendingEdit } from './staged-changes';
+import type { PlaintextCache } from './use-plaintext-cache';
 import type { RevealedSecret, SecretSummary } from './types';
 import type { ComparedEnvironment } from './use-compared-secrets';
 import { ValueField } from './value-field';
 import { ValueTypeMenu } from './value-type-menu';
+
+/** Matches the server's column, and the same cap the two other note editors use. */
+const NOTE_MAX_LENGTH = 1024;
 
 /**
  * Whether this row is holding a change a save would actually write.
@@ -54,6 +66,14 @@ export interface SecretRowProps {
   disabled: boolean;
   /** Plaintext held by a "Reveal all", which this row displays instead of a mask. */
   revealed?: string | undefined;
+  /**
+   * Every value this page has already decrypted, held above the rows.
+   *
+   * The reveal below reads it before it reaches for the network, so revealing a
+   * value, masking it, and clicking it into the editor is one decryption and one
+   * audit record rather than three of each.
+   */
+  plaintexts: PlaintextCache;
   /** The other environments shift-clicked into this row. Empty is the normal case. */
   compare: readonly ComparedEnvironment[];
   /**
@@ -77,6 +97,10 @@ export interface SecretRowProps {
   onTypeChange: (type: SecretValueType) => void;
   /** Opens the history drawer for one environment — this one, or a compared one. */
   onHistory: (envSlug: string) => void;
+  /** Raised when a compared environment’s editor gains or loses unsaved work. */
+  onComparedDirtyChange?: ((slug: string, dirty: boolean) => void) | undefined;
+  /** Passed to `ValueField`; see the prop there. */
+  forgetToken: number;
   onDelete: () => void;
   /** Ctrl/Cmd+Enter anywhere in the editor commits the whole batch. */
   onCommit: () => void;
@@ -134,6 +158,7 @@ export function SecretRow({
   existingNames,
   disabled,
   revealed,
+  plaintexts,
   compare,
   onHoverChange,
   onSelectedChange,
@@ -144,6 +169,8 @@ export function SecretRow({
   onMetaChange,
   onTypeChange,
   onHistory,
+  onComparedDirtyChange,
+  forgetToken,
   onDelete,
   onCommit,
   onComparedSaved,
@@ -164,12 +191,30 @@ export function SecretRow({
    */
   const seedGeneration = useRef(0);
 
+  /** The value cell, so the key beside it can hand focus to the field inside. */
+  const valueCell = useRef<HTMLTableCellElement>(null);
+
+  /**
+   * This secret's plaintext — from the cache where the page already has it, and
+   * from the audited endpoint where it does not.
+   *
+   * The cache hit is keyed on the version as well as the name, so a value that
+   * has been written since is a miss and is read again. Everything else about
+   * rule 2 in the header still holds: the first read of a value goes through
+   * `GET …/secrets/{name}` and is recorded. What has stopped is the *second*
+   * one — the same value, unchanged, fetched again because the row masked it or
+   * the filter unmounted it.
+   */
   const reveal = useCallback(async () => {
+    const cached = plaintexts.read(secret.name, secret.version);
+    if (cached !== undefined) return cached;
+
     const response = await api.get<RevealedSecret>(
       apiPath.secret(orgSlug, projectSlug, envSlug, secret.name),
     );
+    plaintexts.write(secret.name, secret.version, response.secret.value);
     return response.secret.value;
-  }, [orgSlug, projectSlug, envSlug, secret.name]);
+  }, [orgSlug, projectSlug, envSlug, secret.name, secret.version, plaintexts]);
 
   // A save that succeeded drops this row's staged work, and the editor it was
   // typed into goes with it — otherwise the box stays open over a value that is
@@ -241,6 +286,24 @@ export function SecretRow({
     } finally {
       if (seedGeneration.current === generation) setPrefilling(false);
     }
+  }
+
+  /**
+   * Enter in the key. Opens this row's value for editing and puts the cursor in
+   * it — the next thing anybody wants after naming a key is to say what it is.
+   *
+   * Opening it *is* how focus gets there: the editor takes focus on mount, and
+   * the only other thing to aim at would be the masked box, which would need a
+   * second Enter to do the same thing. Where the editor is already open the box
+   * is found by the attribute it carries — `querySelector` returns the first
+   * match, and this row's own field is rendered before any compared one.
+   */
+  function goToValue() {
+    if (!editorOpen) {
+      void beginEdit();
+      return;
+    }
+    valueCell.current?.querySelector<HTMLTextAreaElement>('[data-value-editor]')?.focus();
   }
 
   function cancelEdit() {
@@ -316,12 +379,14 @@ export function SecretRow({
           staged={staged}
           note={note}
           onMetaChange={onMetaChange}
+          onNoteChange={changeNote}
           onTypeChange={onTypeChange}
+          onGoToValue={goToValue}
           onCommit={onCommit}
         />
       </TableCell>
 
-      <TableCell className="align-top">
+      <TableCell ref={valueCell} className="align-top">
         <div className="flex flex-col gap-1.5">
           <ValueField
             secret={secret}
@@ -354,6 +419,7 @@ export function SecretRow({
             onEditOpen={beginEdit}
             onDraftChange={onEditChange}
             onEditCancel={cancelEdit}
+            forgetToken={forgetToken}
             onCommit={onCommit}
             note={note}
             onNoteChange={changeNote}
@@ -369,6 +435,7 @@ export function SecretRow({
               environment={compared}
               secretName={secret.name}
               secret={compared.byName.get(secret.name) ?? null}
+              onDirtyChange={(dirty) => onComparedDirtyChange?.(compared.slug, dirty)}
               // Not `disabled` — that is this environment's save in flight, and
               // it has nothing to do with a field that writes to another one.
               // Several compared values can be open and saved at once.
@@ -384,7 +451,7 @@ export function SecretRow({
 }
 
 /**
- * The key: its name and its declared type, on one line.
+ * The key: its name, whatever is said about it, and its declared type.
  *
  * ── Why the name is always an input ──
  * Renaming used to be behind a pencil, which is a click spent announcing that
@@ -396,11 +463,33 @@ export function SecretRow({
  * comparison happens here, on every keystroke, so `pendingCount` never counts a
  * change that no longer exists.
  *
- * ── Why the note is a tooltip ──
- * It used to be a second input under the name, which cost every row in the table
- * a second line so that the few rows with a note could show it. Hovering the key
- * says it instead, and the panel beside the value writes it. A row is one line
- * high; only a value opened for editing may make it taller.
+ * ── Why everything about the key is *inside* the key field ──
+ * Two things used to sit loose beside the input: the warning that a staged
+ * rename breaks every reader addressing this secret by name, and the note's
+ * hover hint. Loose icons in a flex row are paid for by the input, which gives
+ * up width for them on every row including the ones that have neither. So they
+ * live on the field's trailing edge now, in the space a text input keeps for
+ * exactly this, and the field's width no longer depends on what this particular
+ * key happens to have to say about itself.
+ *
+ * ── The note mark is a toggle ──
+ * It is always on the field's trailing edge, and it is the only thing that opens
+ * the description. In the accent where the key has one, quiet where it does not
+ * — so a column of keys still says at a glance which ones were worth explaining,
+ * and the row width does not change when a description is added. Hovering it
+ * says the description; clicking it opens the field below. The hint is *hover
+ * only* — see the note on `descriptionTip`.
+ *
+ * Clicking the *name* used to open it too. That made the description appear
+ * whenever anybody put a cursor in a key to rename it, which is a row growing a
+ * second line in response to a click that had nothing to do with notes. One
+ * control, one meaning: the name field renames, the mark beside it describes.
+ *
+ * The description is not shown at rest — not here and not on a new row either.
+ * A row is one line high, and an input on every row to serve the few that carry
+ * a note would cost the table half its rows. The note is staged, not written: it
+ * goes out with the row's other changes on the next save, and the same note can
+ * equally be written from the panel beside the value.
  *
  * ── Why the type sits here, at a fixed width ──
  * `integer`, `url`, `json` describe the shape of the value, but the thing a
@@ -418,7 +507,9 @@ function NameCell({
   staged,
   note,
   onMetaChange,
+  onNoteChange,
   onTypeChange,
+  onGoToValue,
   onCommit,
 }: {
   secret: SecretSummary;
@@ -428,15 +519,38 @@ function NameCell({
   valueType: SecretValueType;
   /** Whether this row holds work a save would write. */
   staged: boolean;
-  /** The note in effect, shown on hover over the name. */
+  /** The note in effect — the staged one where there is one, the stored one otherwise. */
   note: string | null;
   onMetaChange: (patch: { name?: string | null; note?: string | null }) => void;
+  /** Stages a note, or un-stages it when it is back to what is stored. */
+  onNoteChange: (note: string | null) => void;
   onTypeChange: (type: SecretValueType) => void;
+  /** Opens this row's value and puts the cursor in it — what Enter does here. */
+  onGoToValue: () => void;
   onCommit: () => void;
 }) {
   const shownName = edit?.name ?? secret.name;
   const rename = edit?.name?.trim();
   const wantsRename = rename !== undefined && rename !== secret.name;
+
+  const hasNote = note !== null && note.length > 0;
+
+  /** Whether the description field is open under the name. */
+  const [describing, setDescribing] = useState(false);
+  /**
+   * The two hover hints on the trailing edge of the field.
+   *
+   * Driven by the pointer alone, deliberately. Radix opens a tooltip on focus as
+   * well as on hover, and closes it on pointer-down, on click and on Escape —
+   * but never on a keystroke. Attached to anything sitting *in* a text field
+   * that means the hint appears the moment the field is tabbed into and then
+   * hangs over the row for as long as the user types, covering the rows below
+   * the one being edited. So these open on `pointerenter`, close on
+   * `pointerleave`, and are held shut for as long as the description is open:
+   * the field being worked in is the one place a floating panel must not be.
+   */
+  const [renameTip, setRenameTip] = useState(false);
+  const [descriptionTip, setDescriptionTip] = useState(false);
 
   // The same module the server checks against; this copy exists so the failure
   // arrives while the name is under the cursor.
@@ -450,54 +564,42 @@ function NameCell({
         : null;
   }
 
+  /** Whether the trailing edge is carrying anything, and how much room it needs. */
+  const warns = wantsRename && nameProblem === null;
+
+  /**
+   * Enter moves along the row; Shift+Enter drops down to the note.
+   *
+   * A key and its value are one thought and this is the order they are thought
+   * in, so Enter goes from one to the other without the note in between —
+   * almost no secret has one, and a tab stop nobody wants is a tab stop
+   * everybody has to pass. Shift+Enter is how you ask for it: it opens the note
+   * field and puts the cursor there, and Enter from *there* carries on to the
+   * value, so the long way round arrives at the same place.
+   */
   function handleKeyDown(event: KeyboardEvent) {
-    // Radix closes a tooltip on pointer-down and on Escape, but never on a
-    // keystroke — so one attached to a text field opens when the field is
-    // tabbed into and then hangs over the row for as long as the user types.
-    setNoteTipOpen(false);
+    // An Enter accepting an IME candidate is not aimed at this form.
+    if (event.nativeEvent.isComposing) return;
+    if (event.key !== 'Enter') return;
 
-    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+    if (event.metaKey || event.ctrlKey) {
       event.preventDefault();
+      // The same thing the value editor asks before committing. This field had
+      // no guard at all, so Ctrl+Enter here wrote the batch while the rename
+      // under the cursor was showing its error in red — a wasted round trip that
+      // the server rejects, with every other staged row written on the way.
+      if (nameProblem !== null) return;
       onCommit();
+      return;
     }
+
+    event.preventDefault();
+    if (event.shiftKey && !describing) {
+      setDescribing(true);
+      return;
+    }
+    onGoToValue();
   }
-
-  const hasNote = note !== null && note.length > 0;
-  const [noteTipOpen, setNoteTipOpen] = useState(false);
-
-  const field = (
-    <Input
-      value={shownName}
-      onChange={(event) => {
-        const next = event.target.value;
-        onMetaChange({ name: next === secret.name ? null : next });
-      }}
-      onKeyDown={handleKeyDown}
-      disabled={disabled}
-      // The column is narrow and the input does not wrap, so a long name is
-      // otherwise only readable by scrolling inside a field styled to look like
-      // text. Where there is a note, the tooltip says that instead — it is the
-      // thing worth reading, and two hover hints on one control is one too many.
-      {...(hasNote ? {} : { title: shownName })}
-      aria-label={`Name of ${secret.name}`}
-      aria-invalid={nameProblem !== null ? true : undefined}
-      maxLength={SECRET_NAME_MAX_LENGTH}
-      autoComplete="off"
-      autoCorrect="off"
-      autoCapitalize="off"
-      spellCheck={false}
-      className={cn(
-        'h-9 min-w-0 px-2 font-mono text-sm font-medium',
-        // A label until it is asked to be a field. The border and the well
-        // arrive on hover and on focus, which is the moment they mean
-        // something; at rest the column reads as text.
-        'border-transparent bg-transparent',
-        'hover:enabled:border-line-control hover:enabled:bg-canvas-inset',
-        'focus-visible:border-line-control focus-visible:bg-canvas-inset',
-        nameProblem !== null && 'border-danger bg-canvas-inset',
-      )}
-    />
-  );
 
   return (
     <div className="flex min-w-0 flex-col gap-1">
@@ -513,33 +615,104 @@ function NameCell({
           </span>
         ) : null}
 
-        {/* The note, where the key is — hovering the thing it annotates is where
-            somebody looks for it. Writing it is in the panel beside the value;
-            see `FieldDetails`.
+        <div className="relative flex min-w-0 flex-1 items-center">
+          <Input
+            value={shownName}
+            onChange={(event) => {
+              const next = event.target.value;
+              onMetaChange({ name: next === secret.name ? null : next });
+            }}
+            onKeyDown={handleKeyDown}
+            disabled={disabled}
+            // The column is narrow and the input does not wrap, so a long name
+            // is otherwise only readable by scrolling inside a field styled to
+            // look like text. Safe to leave on now that the description has a
+            // hover hint of its own and the two cannot collide.
+            title={shownName}
+            aria-label={`Name of ${secret.name}`}
+            aria-invalid={nameProblem !== null ? true : undefined}
+            maxLength={SECRET_NAME_MAX_LENGTH}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            className={cn(
+              'h-9 min-w-0 px-2 font-mono text-sm font-medium',
+              // A label until it is asked to be a field. The border and the well
+              // arrive on hover and on focus, which is the moment they mean
+              // something; at rest the column reads as text.
+              'border-transparent bg-transparent',
+              'hover:enabled:border-line-control hover:enabled:bg-canvas-inset',
+              'focus-visible:border-line-control focus-visible:bg-canvas-inset',
+              nameProblem !== null && 'border-danger bg-canvas-inset',
+              // Room for what is riding on the trailing edge, so the name runs
+              // under nothing. The book is always there — reserving its width
+              // unconditionally is what stops the field resizing under the
+              // cursor the moment a description is typed into it.
+              warns ? 'pr-14' : 'pr-8',
+            )}
+          />
 
-            Always rendered, open only when there is something to say: swapping
-            between a wrapped and an unwrapped input would change the element
-            type at this position, and React would remount the field — dropping
-            the cursor out of it the moment a note was added or cleared. */}
-        <Tooltip content={note ?? ''} open={hasNote && noteTipOpen} onOpenChange={setNoteTipOpen}>
-          {field}
-        </Tooltip>
+          {/* Inside the field, on its trailing edge — see the header. Not the
+              `pointer-events-none` slot a decorative glyph would sit in: both of
+              these are things you point at. */}
+          <span className="absolute right-1 flex items-center gap-0.5">
+            {warns ? (
+              // Said while the rename is staged, not after: the history follows
+              // the secret through a rename, but every reader addressing it by
+              // name — `xecret run`, CI — stops finding it the moment this is
+              // saved. As an icon rather than a line of text, because the line
+              // would be the only thing in the table that changes a row's
+              // height.
+              <Tooltip
+                content={`Anything reading ${secret.name} by name stops finding it.`}
+                open={renameTip && !describing}
+              >
+                <span
+                  className="text-warning-text flex size-6 shrink-0 items-center justify-center"
+                  onPointerEnter={() => setRenameTip(true)}
+                  onPointerLeave={() => setRenameTip(false)}
+                >
+                  <AlertTriangleIcon aria-hidden="true" className="size-4" />
+                  <span className="sr-only">
+                    Renaming this: anything reading {secret.name} by name stops finding it.
+                  </span>
+                </span>
+              </Tooltip>
+            ) : null}
 
-        {wantsRename && nameProblem === null ? (
-          // Said while the rename is staged, not after: the history follows the
-          // secret through a rename, but every reader addressing it by name —
-          // `xecret run`, CI — stops finding it the moment this is saved. As an
-          // icon rather than a line of text, because the line would be the only
-          // thing in the table that changes a row's height.
-          <Tooltip content={`Anything reading ${secret.name} by name stops finding it.`}>
-            <span className="text-warning-text shrink-0" tabIndex={0}>
-              <AlertTriangleIcon aria-hidden="true" className="size-4" />
-              <span className="sr-only">
-                Renaming this: anything reading {secret.name} by name stops finding it.
-              </span>
-            </span>
-          </Tooltip>
-        ) : null}
+            <Tooltip content={hasNote ? note : 'Add a note'} open={descriptionTip && !describing}>
+              <button
+                type="button"
+                onClick={() => {
+                  setDescriptionTip(false);
+                  setDescribing((open) => !open);
+                }}
+                onPointerEnter={() => setDescriptionTip(true)}
+                onPointerLeave={() => setDescriptionTip(false)}
+                disabled={disabled}
+                // The description is not in the accessible name: it can be a
+                // paragraph, and a paragraph read out as the name of a button is
+                // a button nobody can identify. It is in the field this opens,
+                // which is where a screen reader user reads it — the tooltip is
+                // the pointer's copy of the same thing.
+                aria-label={
+                  hasNote ? `Note on ${secret.name} — show it` : `Add a note to ${secret.name}`
+                }
+                aria-expanded={describing}
+                className={cn(
+                  'flex size-6 shrink-0 cursor-pointer items-center justify-center rounded transition-colors',
+                  'hover:bg-surface-hover disabled:pointer-events-none disabled:opacity-60',
+                  // Quiet where there is nothing to read, so a row with no note
+                  // is not carrying a mark that says it has one.
+                  hasNote || describing ? 'text-accent-text' : 'text-fg-subtle hover:text-fg',
+                )}
+              >
+                <NoteIcon aria-hidden="true" className="size-4" />
+              </button>
+            </Tooltip>
+          </span>
+        </div>
 
         <ValueTypeMenu
           value={valueType}
@@ -556,6 +729,42 @@ function NameCell({
 
       {nameProblem !== null ? (
         <p className="text-danger-text px-2 text-sm leading-5">{nameProblem}</p>
+      ) : null}
+
+      {describing ? (
+        <Input
+          value={note ?? ''}
+          onChange={(event) => onNoteChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              if (event.metaKey || event.ctrlKey) {
+                if (nameProblem !== null) return;
+                onCommit();
+              }
+              // Onwards to the value, which is where Enter in the key would have
+              // gone. Taking the detour through the note must not cost the trip.
+              else onGoToValue();
+              return;
+            }
+            // Escape closes the field, the same as pressing the mark again. It
+            // discards nothing — what was typed is staged already.
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              setDescribing(false);
+            }
+          }}
+          disabled={disabled}
+          placeholder="What this key is for, who owns it, when it rotates"
+          aria-label={`Description of ${secret.name}`}
+          maxLength={NOTE_MAX_LENGTH}
+          autoComplete="off"
+          className="h-8 px-2 text-sm"
+          // The click that opened it was a request to write a note, so the
+          // cursor belongs here. Nothing else on the row wanted it.
+          autoFocus
+        />
       ) : null}
     </div>
   );

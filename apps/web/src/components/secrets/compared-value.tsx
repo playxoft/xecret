@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { toSecretValueType } from '@xecret/core/validation';
 import { api, errorMessage } from '@/lib/api';
@@ -20,8 +20,7 @@ import { EnvironmentLabel, ValueField } from './value-field';
  * environment has no seat in that batch, and inventing one would mean the save
  * bar quietly writing to production because a value was typed into a row the
  * user opened to *look* at. So this field saves itself, explicitly, with its own
- * Save button — the same rule `multi-environment-write.ts` follows for the same
- * reason.
+ * Save button.
  *
  * ── And why a write to a compared production is confirmed ──
  * The two fields in this cell look identical, and Ctrl+Enter in the top one goes
@@ -44,6 +43,7 @@ export function ComparedValue({
   disabled,
   onHistory,
   onSaved,
+  onDirtyChange,
 }: {
   orgSlug: string;
   projectSlug: string;
@@ -55,6 +55,15 @@ export function ComparedValue({
   onHistory: () => void;
   /** Refetches this environment's listing, so the version chip catches up. */
   onSaved: () => void;
+  /**
+   * Reports whether this field is holding work a save would write.
+   *
+   * This component owns its editor, and it is rendered inside a row the table
+   * unmounts on a filter keystroke — so without telling anybody, a value typed
+   * here and not yet saved was destroyed by typing in the search box, and the
+   * unsaved-changes guard never knew it existed.
+   */
+  onDirtyChange?: ((dirty: boolean) => void) | undefined;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
@@ -65,6 +74,14 @@ export function ComparedValue({
   const [noteSaving, setNoteSaving] = useState(false);
   const [noteError, setNoteError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Bumped when this field writes, so its own reveal is dropped at once.
+   *
+   * The refetched listing invalidates it too, by version — but not until it
+   * lands, and until then the field still holds what was there before the
+   * write. See the prop of the same name on `ValueField`.
+   */
+  const [forgetToken, setForgetToken] = useState(0);
 
   /**
    * The note this component has written but not yet seen come back.
@@ -82,6 +99,19 @@ export function ComparedValue({
 
   /** See the note on the same ref in `SecretRow`: a cancelled seed must not land. */
   const seedGeneration = useRef(0);
+
+  // Latest-ref, because the caller passes a fresh closure every render and this
+  // must not re-fire on each one.
+  const reportDirty = useRef(onDirtyChange);
+  useEffect(() => {
+    reportDirty.current = onDirtyChange;
+  });
+
+  const dirty = editing && draft !== baseline;
+  useEffect(() => {
+    reportDirty.current?.(dirty);
+    return () => reportDirty.current?.(false);
+  }, [dirty]);
 
   const reveal = useCallback(async () => {
     const response = await api.get<RevealedSecret>(
@@ -158,6 +188,7 @@ export function ComparedValue({
       setEditing(false);
       setDraft('');
       setBaseline('');
+      setForgetToken((token) => token + 1);
       onSaved();
     } catch (cause) {
       setError(errorMessage(cause));
@@ -255,6 +286,7 @@ export function ComparedValue({
         onReveal={reveal}
         editing={editing}
         draft={draft}
+        forgetToken={forgetToken}
         dirty={draft !== baseline}
         prefilling={prefilling}
         error={error}

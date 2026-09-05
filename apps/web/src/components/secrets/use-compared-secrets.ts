@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { api } from '@/lib/api';
 import { apiPath, withQuery } from '@/app/(dashboard)/_lib/paths';
-import type { EnvironmentTarget } from './multi-environment-write';
+import type { EnvironmentTarget } from './environment-target';
 import type { SecretListResponse, SecretSummary } from './types';
 
 /**

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/mini';
 import { isAutoLockMinutes, PIN_LENGTH } from '@xecret/core/auth';
 import { setAutoLockMinutes } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
@@ -18,13 +18,15 @@ import { authenticatedRoute } from '@/server/route';
 
 const pin = z
   .string()
-  .length(PIN_LENGTH, `Your PIN must be exactly ${PIN_LENGTH} digits.`)
-  .regex(/^\d+$/, 'Your PIN must be digits only.');
+  .check(
+    z.length(PIN_LENGTH, `Your PIN must be exactly ${PIN_LENGTH} digits.`),
+    z.regex(/^\d+$/, 'Your PIN must be digits only.'),
+  );
 
 const setPinRequest = z.object({
   pin,
   /** Required when the account already has a PIN; ignored when it does not. */
-  currentPin: pin.optional(),
+  currentPin: z.optional(pin),
 });
 
 export const GET = authenticatedRoute(
@@ -76,9 +78,8 @@ export const POST = authenticatedRoute(
 const autoLockRequest = z.object({
   /** One of `AUTO_LOCK_MINUTES_OPTIONS`; `0` disables the idle lock. */
   autoLockMinutes: z
-    .number()
     .int()
-    .refine(isAutoLockMinutes, 'Choose one of the offered auto-lock intervals.'),
+    .check(z.refine(isAutoLockMinutes, 'Choose one of the offered auto-lock intervals.')),
 });
 
 /**

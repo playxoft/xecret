@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/mini';
 import {
   CSRF_COOKIE_NAME,
   SESSION_COOKIE_NAME,
@@ -53,7 +53,7 @@ import type { ServiceContext } from '@/server/context';
  */
 
 const sessionRequest = z.object({
-  idToken: z.string().min(1).max(8192),
+  idToken: z.string().check(z.minLength(1), z.maxLength(8192)),
 });
 
 export const POST = publicRoute(async ({ request, services }) => {
