@@ -58,6 +58,30 @@ interface Entry {
   value: string;
 }
 
+/**
+ * Where an entry is filed: the environment, then the name.
+ *
+ * Exported and pure so the rule can be tested without a DOM — the same shape
+ * `use-nav-shortcuts.ts` uses. The separator is NUL because it cannot occur in
+ * either half: environment keys are slugs and secret names are
+ * `[A-Za-z0-9_]`, so no pair of (environment, name) can spell another pair.
+ */
+export function entryKeyFor(key: string, name: string): string {
+  return `${key}\u0000${name}`;
+}
+
+/**
+ * What an entry is worth at `version`.
+ *
+ * A miss rather than a stale hit when the versions disagree: the value has
+ * moved on and this copy describes the one before it. Returning it would put a
+ * superseded credential on the clipboard and seed the next edit from it — see
+ * the header above.
+ */
+export function readEntry(entry: Entry | undefined, version: number): string | undefined {
+  return entry !== undefined && entry.version === version ? entry.value : undefined;
+}
+
 export function usePlaintextCache(key: string): PlaintextCache {
   const entries = useRef<Map<string, Entry>>(new Map());
 
@@ -66,7 +90,7 @@ export function usePlaintextCache(key: string): PlaintextCache {
   // effect runs after paint, and for that one frame a row under the new
   // environment's heading would otherwise be able to read a plaintext belonging
   // to the previous one — same key name, different secret entirely.
-  const entryKey = useCallback((name: string) => `${key}\u0000${name}`, [key]);
+  const entryKey = useCallback((name: string) => entryKeyFor(key, name), [key]);
 
   useEffect(() => {
     const held = entries.current;
@@ -78,7 +102,7 @@ export function usePlaintextCache(key: string): PlaintextCache {
       const entry = entries.current.get(entryKey(name));
       // A miss rather than a stale hit: the value has moved on, and this copy
       // describes the version before it.
-      return entry !== undefined && entry.version === version ? entry.value : undefined;
+      return readEntry(entry, version);
     },
     [entryKey],
   );
