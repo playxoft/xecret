@@ -41,6 +41,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -170,13 +171,53 @@ const CONTRACT: Contract[] = [
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WEB_DIR = path.join(REPO_ROOT, 'apps', 'web');
 
+/**
+ * Wrangler runs as a script under this same node binary rather than through
+ * `npx`. On Windows `npx` is `npx.cmd`, which `execFile` will not launch: it
+ * does not apply PATHEXT to a bare name, and since the fix for CVE-2024-27980
+ * node refuses to spawn `.cmd` without a shell at all (EINVAL). Both failures
+ * were swallowed by the probe below and reported as "not reachable" — which is
+ * indistinguishable from a Worker that was never deployed. The live-Worker
+ * comparison silently stopped running while the script still printed
+ * "0 failures", the one outcome this check exists to prevent.
+ *
+ * Resolving the bin directly also skips npx's own resolution, which is slow.
+ */
+function wranglerBin(): string {
+  const requireFrom = createRequire(path.join(WEB_DIR, 'package.json'));
+  // wrangler's `exports` does not expose ./bin, but it does expose ./package.json.
+  const root = path.dirname(requireFrom.resolve('wrangler/package.json'));
+  return path.join(root, 'bin', 'wrangler.js');
+}
+
+/** wrangler could not be executed at all — distinct from it running and saying no. */
+class WranglerUnavailable extends Error {}
+
+/** Failures that mean wrangler never ran, rather than ran and reported something. */
+const UNAVAILABLE = new Set(['ENOENT', 'EACCES', 'EINVAL', 'ERR_MODULE_NOT_FOUND']);
+
 function wrangler(args: string[]): string {
-  return execFileSync('npx', ['wrangler', ...args], {
-    cwd: WEB_DIR,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
-    maxBuffer: 32 * 1024 * 1024,
-  });
+  let bin: string;
+  try {
+    bin = wranglerBin();
+  } catch {
+    throw new WranglerUnavailable('wrangler is not installed under apps/web');
+  }
+
+  try {
+    return execFileSync(process.execPath, [bin, ...args], {
+      cwd: WEB_DIR,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (typeof code === 'string' && UNAVAILABLE.has(code)) {
+      throw new WranglerUnavailable(`could not execute wrangler (${code})`);
+    }
+    throw error;
+  }
 }
 
 /** The `vars` and Secrets Store bindings wrangler.toml declares for `env`. */
@@ -205,6 +246,14 @@ interface LiveWorker {
   versionId: string;
 }
 
+/** The outcome of asking Cloudflare what the live Worker has. */
+type LiveProbe =
+  | { status: 'ok'; worker: LiveWorker }
+  /** wrangler ran and reported no active deployment. */
+  | { status: 'absent' }
+  /** wrangler never ran, so nothing below was actually compared. */
+  | { status: 'broken'; reason: string };
+
 /**
  * What the Worker serving traffic right now actually has.
  *
@@ -212,17 +261,20 @@ interface LiveWorker {
  * newer version uploaded and not yet serving, and the question this script
  * answers is about the one taking requests.
  */
-function fromLiveWorker(env: string): LiveWorker | null {
+function fromLiveWorker(env: string): LiveProbe {
   let versionId: string;
   try {
     const status = JSON.parse(wrangler(['deployments', 'status', '--env', env, '--json'])) as {
       versions?: Array<{ version_id?: string }>;
     };
     const id = status.versions?.[0]?.version_id;
-    if (typeof id !== 'string') return null;
+    if (typeof id !== 'string') return { status: 'absent' };
     versionId = id;
-  } catch {
-    return null;
+  } catch (error) {
+    if (error instanceof WranglerUnavailable) {
+      return { status: 'broken', reason: error.message };
+    }
+    return { status: 'absent' };
   }
 
   const version = JSON.parse(wrangler(['versions', 'view', versionId, '--env', env, '--json'])) as {
@@ -256,7 +308,7 @@ function fromLiveWorker(env: string): LiveWorker | null {
     // Leave the version's view in place.
   }
 
-  return live;
+  return { status: 'ok', worker: live };
 }
 
 type Verdict = 'ok' | 'warn' | 'fail';
@@ -405,18 +457,33 @@ async function main(): Promise<void> {
   const env = process.argv[2] ?? 'production';
 
   const config = await fromConfig(env);
-  const live = fromLiveWorker(env);
+  const probe = fromLiveWorker(env);
+  const live = probe.status === 'ok' ? probe.worker : null;
 
   console.log(`\nDeployment check — env.${env}\n`);
   console.log(
-    live === null
-      ? '  live Worker: not reachable (not deployed yet, or wrangler is not logged in)'
-      : `  live Worker: version ${live.versionId}`,
+    probe.status === 'ok'
+      ? `  live Worker: version ${probe.worker.versionId}`
+      : probe.status === 'broken'
+        ? `  live Worker: NOT COMPARED — ${probe.reason}`
+        : '  live Worker: not reachable (not deployed yet, or wrangler is not logged in)',
   );
   console.log(`  wrangler.toml: ${config.vars.size} var(s) declared`);
   console.log('');
 
   const findings = audit(env, config, live);
+
+  // A check that could not see the Worker must not be allowed to report success.
+  // Every "NOT on the Worker" line below is then unverified, and a genuinely
+  // missing secret is indistinguishable from one the probe never asked about.
+  if (probe.status === 'broken') {
+    findings.unshift({
+      verdict: 'fail',
+      name: 'live Worker probe',
+      detail: `${probe.reason} — the live Worker was never compared, so nothing below rules out a missing secret`,
+    });
+  }
+
   const width = Math.max(...findings.map((finding) => finding.name.length));
 
   for (const finding of findings) {
