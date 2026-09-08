@@ -12,7 +12,7 @@ chosen, and what it costs us.
 
 | # | Title | Status |
 |---|---|---|
-| [0001](0001-trust-model.md) | Server-side envelope encryption over end-to-end | Accepted |
+| [0001](0001-trust-model.md) | Server-side envelope encryption over end-to-end | Superseded by [0009](0009-zero-knowledge-encryption.md) |
 | [0002](0002-root-key-custody.md) | Root key custody: Phase.dev → Cloudflare Secrets Store | Accepted |
 | [0003](0003-firebase-as-identity-provider.md) | Firebase Auth as identity provider only | Accepted |
 | [0004](0004-cli-language-go.md) | Go for the CLI | Accepted |
@@ -20,6 +20,7 @@ chosen, and what it costs us.
 | [0006](0006-database-access.md) | Neon + Hyperdrive + Drizzle | Accepted |
 | [0007](0007-licensing.md) | AGPL-3.0 server, MIT CLI, CLA required | Accepted |
 | [0008](0008-no-middleware.md) | No middleware; route protection lives in the API layer | Accepted |
+| [0009](0009-zero-knowledge-encryption.md) | Zero-knowledge encryption: the client holds the keys | Accepted |
 
 ## Template
 

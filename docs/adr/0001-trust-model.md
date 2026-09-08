@@ -1,7 +1,13 @@
 # 0001 — Server-side envelope encryption over end-to-end encryption
 
-**Status:** Accepted
+**Status:** Superseded by [0009](0009-zero-knowledge-encryption.md)
 **Date:** 2026-08-10
+
+> **This decision has been reversed.** [ADR 0009](0009-zero-knowledge-encryption.md) adopts
+> option B below — end-to-end encryption — for the reason this ADR named under *Revisit when*.
+> The text is unchanged and is worth reading: the costs it lists for option B are real, and
+> 0009 pays every one of them. Option A remains in force for existing environments until the
+> migration completes.
 
 ## Context
 
