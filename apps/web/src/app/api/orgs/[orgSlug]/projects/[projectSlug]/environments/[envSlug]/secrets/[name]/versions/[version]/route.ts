@@ -115,6 +115,10 @@ export const GET = authenticatedRoute<Params>(
         ...(sealed === null
           ? {}
           : {
+              // `id` is the AAD's `secretId` (spec §4.2). Without it the
+              // ciphertext beside it cannot be opened at all — the AAD would be
+              // built from the wrong tuple and GCM would reject it.
+              id: sealed.id,
               ciphertext: sealed.ciphertext,
               clientAlgorithm: sealed.clientAlgorithm,
               envDataKeyId: sealed.envDataKeyId,

@@ -103,6 +103,17 @@ export const POST = authenticatedRoute<Params>(
       );
     }
 
+    // The id the grant was sealed against. Required beside `keys` and refused
+    // without it, because the AAD of the creator's grant names the environment
+    // (spec §4.2): a row created under any other id would hold a grant nobody
+    // can open, and unlike every other broken state in this system there is no
+    // repair — the key bytes existed only in the browser that generated them.
+    if (body.id === undefined) {
+      throw errors.badRequest(
+        'A new environment must be created with the id its key grant was sealed against.',
+      );
+    }
+
     // `isProduction` is accepted at creation under the same `environment.create`
     // permission that any other environment needs, and deliberately not raised
     // to the admin-level action that *flipping* it later requires. A new
@@ -114,6 +125,7 @@ export const POST = authenticatedRoute<Params>(
     const environment = await createEnvironment(services.db, {
       orgId,
       projectId: scope.project.id,
+      id: body.id,
       name: body.name,
       slug,
       isProduction: body.isProduction,

@@ -120,6 +120,10 @@ export const GET = authenticatedRoute<Params>(
         ...(sealed === null
           ? {}
           : {
+              // The AAD's `secretId` (spec §4.2). Not bookkeeping: the AAD is
+              // built from it, so a client without it cannot open the ciphertext
+              // it was just handed.
+              id: sealed.id,
               ciphertext: sealed.ciphertext,
               clientAlgorithm: sealed.clientAlgorithm,
               // Which key version this row was sealed against. A value written
@@ -190,6 +194,9 @@ export const PATCH = authenticatedRoute<Params>(
           const result = await writeClientSecretValue(scope, services, {
             writer,
             name: current.name,
+            // An append, so the stored id is the one the ciphertext names. Passed
+            // for the type's sake; `prepareClientWrite` reads `existing` here.
+            secretId: current.secretId,
             value: {
               ...body.value,
               ...(body.encNote === undefined ? {} : { encNote: body.encNote }),

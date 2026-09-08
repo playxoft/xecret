@@ -2,7 +2,10 @@
 
 import { useState } from 'react';
 
+import { errorMessage } from '@/lib/api';
 import { apiPath, withQuery } from '@/app/(dashboard)/_lib/paths';
+import { renderExport } from '@/components/envkeys';
+import type { SecretIo } from '@/components/envkeys';
 import {
   Alert,
   Badge,
@@ -29,9 +32,26 @@ export interface ExportDialogProps {
   projectSlug: string;
   envSlug: string;
   isProduction: boolean;
+  /**
+   * How this environment's values are read. `null` when its key is unavailable.
+   *
+   * In `e2ee` mode the download is built here rather than fetched: the export
+   * endpoint answers `409 client_side_only`, because formatting takes plaintext
+   * and the server has none.
+   */
+  io: SecretIo | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
+
+/** The file extension each format gets, matching what the server names its download. */
+const EXTENSION: Readonly<Record<ExportFormat, string>> = {
+  env: 'env',
+  json: 'json',
+  yaml: 'yaml',
+  shell: 'sh',
+  docker: 'env',
+};
 
 const FORMATS: ReadonlyArray<{ value: ExportFormat; label: string; hint: string }> = [
   { value: 'env', label: '.env', hint: 'KEY=value, one per line. What most tools read.' },
@@ -58,12 +78,22 @@ const FORMATS: ReadonlyArray<{ value: ExportFormat; label: string; hint: string 
  * capability is offered and the trade is stated plainly, with the safer option
  * named rather than implied.
  *
- * ── Why the download is a link and not a fetch ──
+ * ── Why the download is a link, in `server` mode ──
  * `api.get` parses JSON, and an export is a file. More importantly, a real
  * `<a download>` hands the response straight to the browser's download
  * machinery: the plaintext never becomes a JavaScript string, never sits in this
  * page's heap, and never passes through a blob URL that would outlive it. The
  * URL itself carries only slugs and a format — no value has ever gone into one.
+ *
+ * ── And why it cannot be, in `e2ee` mode ──
+ * There is nothing at the other end of that link: the export endpoint answers
+ * `409 client_side_only`, because rendering `.env` or YAML takes plaintext and
+ * the server holds none. So the values are pulled, decrypted here, and formatted
+ * with `@xecret/core/format` — the same module the Worker runs, so the file is
+ * byte-identical. The document does become a JavaScript string and does pass
+ * through a blob URL, which is a real concession; it is bounded by revoking the
+ * URL as soon as the click has been dispatched, and it is the only way to
+ * produce a file from values only this browser can read.
  */
 export function ExportDialog({ open, onOpenChange, ...target }: ExportDialogProps) {
   return (
@@ -83,13 +113,52 @@ function ExportBody({
   projectSlug,
   envSlug,
   isProduction,
+  io,
   onOpenChange,
 }: Omit<ExportDialogProps, 'open'>) {
   const [format, setFormat] = useState<ExportFormat>('env');
   const [acknowledged, setAcknowledged] = useState(false);
+  const [building, setBuilding] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
 
+  const clientSide = io?.mode === 'e2ee';
   const href = withQuery(apiPath.export(orgSlug, projectSlug, envSlug), { format });
   const selected = FORMATS.find((entry) => entry.value === format);
+
+  /**
+   * Builds the file here and hands it to the browser's downloader.
+   *
+   * The blob URL is revoked in the same tick the click is dispatched. The
+   * download itself has already taken a reference by then, so revoking does not
+   * cancel it — what it does is stop a URL that resolves to every secret in the
+   * environment from living for the rest of the page's life, reachable by
+   * anything that can read `document`.
+   */
+  async function downloadLocally() {
+    if (io === null || building) return;
+
+    setBuilding(true);
+    setProblem(null);
+
+    let url: string | null = null;
+    try {
+      const plaintexts = await io.pull();
+      const body = renderExport(plaintexts, format);
+
+      url = URL.createObjectURL(new Blob([body], { type: 'text/plain' }));
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${envSlug}.${EXTENSION[format]}`;
+      anchor.click();
+
+      onOpenChange(false);
+    } catch (cause) {
+      setProblem(errorMessage(cause));
+    } finally {
+      if (url !== null) URL.revokeObjectURL(url);
+      setBuilding(false);
+    }
+  }
 
   return (
     <>
@@ -144,6 +213,12 @@ function ExportBody({
           </Select>
         </Field>
 
+        {problem !== null ? (
+          <Alert tone="danger" title="The export could not be built">
+            <p>{problem}</p>
+          </Alert>
+        ) : null}
+
         <label className="text-fg-muted flex items-start gap-2.5 text-sm leading-5">
           {/* A native checkbox rather than the Radix primitive: this one gates
                 a link, and a link cannot be disabled — only removed. Keeping the
@@ -163,15 +238,19 @@ function ExportBody({
         <Button variant="ghost" onClick={() => onOpenChange(false)}>
           Cancel
         </Button>
-        {acknowledged ? (
+        {!acknowledged ? (
+          <Button variant="primary" disabled>
+            Download {selected?.label}
+          </Button>
+        ) : clientSide ? (
+          <Button variant="primary" onClick={downloadLocally} loading={building}>
+            Download {selected?.label}
+          </Button>
+        ) : (
           <Button variant="primary" asChild>
             <a href={href} download onClick={() => onOpenChange(false)}>
               Download {selected?.label}
             </a>
-          </Button>
-        ) : (
-          <Button variant="primary" disabled>
-            Download {selected?.label}
           </Button>
         )}
       </DialogFooter>

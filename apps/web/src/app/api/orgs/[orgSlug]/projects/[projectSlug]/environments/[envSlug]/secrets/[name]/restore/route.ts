@@ -104,6 +104,9 @@ export const POST = authenticatedRoute<Params>(
         : await writeClientSecretValue(scope, services, {
             writer,
             name: current.name,
+            // A restore always appends to a secret that exists, so this is the
+            // stored id — the one the re-encrypted value was sealed against.
+            secretId: current.secretId,
             value: {
               ...clientBody.value,
               ...(clientBody.encNote === undefined ? {} : { encNote: clientBody.encNote }),

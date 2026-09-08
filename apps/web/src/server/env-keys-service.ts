@@ -7,6 +7,7 @@ import {
   hasVault,
   initializeEnvironmentKeys,
   listGrantsForEnvironment,
+  listMemberSealingKeys,
   listMembers,
   listPendingKeyGrants,
   listSealableServiceTokens,
@@ -18,18 +19,28 @@ import {
   removePendingKeyGrant,
   rotateEnvDataKey,
   RepositoryError,
+  toBytes,
 } from '@xecret/db/repositories';
 import type { EnvKeyGrantRecord } from '@xecret/db/repositories';
 import type { Principal } from './actor';
 import type { ServiceContext } from './context';
 import { errors } from './errors';
-import { toActiveKey, toGrant, toGrantSeed, toPendingGrant } from './schemas/env-keys';
+import {
+  encodePublicKey,
+  toActiveKey,
+  toGrant,
+  toGrantSeed,
+  toPendingGrant,
+} from './schemas/env-keys';
 import type {
   EnvironmentKeyGrantsRequest,
   EnvironmentKeyInitRequest,
   EnvironmentKeyRotateRequest,
   EnvironmentKeysPayload,
   GrantRequest,
+  RecipientPayload,
+  RecipientsPayload,
+  UnsealablePayload,
 } from './schemas/env-keys';
 import { authorize, toGrantContext } from './tenancy';
 import type { EnvironmentScope } from './tenancy';
@@ -185,6 +196,7 @@ export async function environmentKeyState(
 
   return {
     encryptionMode: scope.environment.encryptionMode === 'e2ee' ? 'e2ee' : 'server',
+    environmentId: scope.environment.id,
     activeEdk: state.activeKey === null ? null : toActiveKey(state.activeKey),
     myGrant: grant === null ? null : stripRecipient(toGrant(grant)),
     ehkExists: state.ehkExists,
@@ -463,7 +475,25 @@ async function requiredPrincipals(
   scope: EnvironmentScope,
   services: ServiceContext,
 ): Promise<Set<string>> {
+  const entitled = await entitledPrincipals(scope, services);
+
   const required = new Set<string>();
+  for (const userId of entitled.memberUserIds) required.add(principalKey('member', userId));
+  for (const token of entitled.tokens) required.add(principalKey('token', token.id));
+  return required;
+}
+
+/** The same computation, before it is flattened into comparison keys. */
+interface EntitledPrincipals {
+  memberUserIds: string[];
+  tokens: { id: string; publicKey: Uint8Array }[];
+}
+
+async function entitledPrincipals(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+): Promise<EntitledPrincipals> {
+  const memberUserIds: string[] = [];
 
   // Unpaginated on purpose: a partial roster would produce a "complete" grant
   // set missing everybody past the first page, which is precisely the silent
@@ -492,7 +522,7 @@ async function requiredPrincipals(
       { membership: toGrantContext(context), isProduction: scope.environment.isProduction },
     );
 
-    if (decision.allowed) required.add(principalKey('member', member.userId));
+    if (decision.allowed) memberUserIds.push(member.userId);
   }
 
   const tokens = await listSealableServiceTokens(
@@ -500,9 +530,98 @@ async function requiredPrincipals(
     scope.organization.id,
     scope.environment.id,
   );
-  for (const token of tokens) required.add(principalKey('token', token.id));
 
-  return required;
+  return { memberUserIds, tokens };
+}
+
+/**
+ * Who a client may seal this environment's key to, and who already holds it.
+ *
+ * ── The gap this closes ──
+ * Phase 3a defined every endpoint that *consumes* a grant set and none that can
+ * produce one. Sealing is asymmetric: a grant for somebody is built from **their**
+ * public key, and a browser has no other way to learn one. Without this, rotation
+ * and the pending-share queue are not awkward, they are impossible to attempt.
+ *
+ * ── Why `secret.read` and not `environment.update` ──
+ * The same gate as `POST …/keys/grants`, because this returns exactly the set of
+ * principals that endpoint will accept a grant for. A directory gated more
+ * tightly than the write it feeds would leave the queued shares unfulfillable by
+ * the very people who hold the key — the queue exists precisely because the
+ * person who *changed* the access often does not.
+ *
+ * What it discloses is "who may read this environment", to somebody who already
+ * may read it. `pendingGrants` on `GET …/keys` stays admin-only on its own terms:
+ * it names people who are *waiting*, which is a statement about an act somebody
+ * else performed.
+ */
+export async function sealingRecipients(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+  principal: Principal,
+): Promise<RecipientsPayload> {
+  requireE2ee(scope);
+  authorizeKeyAction(scope, principal, READ_KEYS);
+
+  const state = await loadEnvironmentKeyState(
+    services.db,
+    scope.organization.id,
+    scope.environment.id,
+  );
+
+  const entitled = await entitledPrincipals(scope, services);
+
+  const holders =
+    state.activeKey === null
+      ? []
+      : await listGrantsForEnvironment(services.db, scope.organization.id, scope.environment.id);
+
+  const activeKeyId = state.activeKey?.id ?? null;
+  const held = new Set(
+    holders
+      .filter((grant) => grant.envDataKeyId === activeKeyId)
+      .map((grant) => principalKey(grant.recipientKind, grant.recipientId)),
+  );
+
+  const memberKeys = await listMemberSealingKeys(services.db, entitled.memberUserIds);
+  const byUser = new Map(memberKeys.map((entry) => [entry.userId, entry]));
+
+  const recipients: RecipientPayload[] = [];
+  const unsealable: UnsealablePayload[] = [];
+
+  for (const userId of entitled.memberUserIds) {
+    const keys = byUser.get(userId);
+    // No vault, no public key, nothing to seal to. Named rather than dropped, so
+    // a rotation can say "ask Dana to finish setting up her vault" instead of
+    // being refused later by the completeness check with a bare uuid.
+    if (keys === undefined) {
+      unsealable.push({ kind: 'member', id: userId });
+      continue;
+    }
+
+    recipients.push({
+      kind: 'member',
+      id: userId,
+      publicKey: encodePublicKey(toBytes(keys.encPublicKey)),
+      holdsGrant: held.has(principalKey('member', userId)),
+    });
+  }
+
+  for (const token of entitled.tokens) {
+    recipients.push({
+      kind: 'token',
+      id: token.id,
+      publicKey: encodePublicKey(toBytes(token.publicKey)),
+      holdsGrant: held.has(principalKey('token', token.id)),
+    });
+  }
+
+  return {
+    activeEdk: state.activeKey === null ? null : toActiveKey(state.activeKey),
+    environmentId: scope.environment.id,
+    recipients,
+    unsealable,
+  };
 }
 
 /**

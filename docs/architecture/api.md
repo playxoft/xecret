@@ -305,6 +305,45 @@ the environment in its path.
 | `POST` | `/api/invitations/lookup` | Public — the holder may have no account yet. Body `{ token }`. Returns the organisation's display name, the invited address, role, state and expiry; nothing else. The token travels in the body, never the query string. Rate limited: `RL_INVITE` by IP. |
 | `POST` | `/api/invitations/accept` | Session + CSRF. Body `{ token }`. The session's address must match the invited one — a forwarded email must not let a colleague join as somebody else. State, address, seat count and the membership insert are all settled inside one transaction under the organisation lock. Audited as `member.joined`. Acceptance then reconciles the new member's environment keys, which queues a share for every `e2ee` environment they can now read — including ones the invitation carried sealed grants for, because those are sealed to the invite keypair rather than to the invitee's own, and they hold no member grant until they re-seal. |
 
+The acceptance response carries the invitation's own sealed grants, and **deletes them as they
+leave**:
+
+```jsonc
+{
+  "organization": { "name": "…", "slug": "…" },
+  "role": "developer",
+  "invitationId": "…",
+  "inviteKeyGrants": [
+    { "environmentId": "…", "projectSlug": "…", "environmentSlug": "…",
+      "envDataKeyId": "…", "edkVersion": 3, "edkSealed": "xk2.x25519.…",
+      "ehkSealed": "xk2.x25519.…" }
+  ]
+}
+```
+
+**Why here and nowhere else.** Those grants are sealed to the invitation's one-off keypair, whose
+private half exists only inside the fragment that travelled by a second channel (crypto spec
+§10). No principal the server can authenticate is "the holder of that fragment", so there is no
+endpoint that could safely serve them on demand. Acceptance is the single moment where the token,
+the session and the invited address have all been checked together, so this is the one response
+they can ride out on. `invitationId` travels with them because it is the `recipientId` bound into
+each grant's AAD and the lookup endpoint deliberately returns no ids at all.
+
+**Why they are consumed rather than kept.** A fragment does not expire the way a token does. A
+row left behind is a copy of the environment's keys addressed to a credential now sitting in
+somebody's message history indefinitely, so the read and the delete are one transaction. If the
+client fails between receiving them and uploading the re-sealed member grants, the invitee simply
+holds no key — and the reconciliation performed by the same acceptance has already recorded
+exactly that as a pending share for a teammate to fulfil. That is the designed fallback, not a
+hole: the alternative buys one retry at the cost of leaving a fragment-openable key in the
+database for ever.
+
+The client's part is `openGrant` with the derived invite key, then `POST
+…/environments/{envSlug}/keys/grants` with the same EDK and EHK re-sealed to their own public
+key and signed with their own signing key. It is a **re-seal, never a copy**: the blob's AAD names
+`invite` and the invitation's id, so storing it as a member grant would produce a row nobody can
+open.
+
 ### Organisations
 
 | Method | Path | Notes |
@@ -335,11 +374,18 @@ existed and who removed it.
 
 **Every environment created from Phase 3 onward is end-to-end encrypted.** `POST` therefore
 requires the client-generated key hierarchy alongside the name:
-`{ name, slug?, isProduction?, sortOrder?, keys: { grant } }`, where `grant` is the EDK and the
-EHK sealed to the creator's own public key and signed by their signing key (see *Environment
+`{ id, name, slug?, isProduction?, sortOrder?, keys: { grant } }`, where `grant` is the EDK and
+the EHK sealed to the creator's own public key and signed by their signing key (see *Environment
 keys* below for the shape). There is **no `encryptionMode` field**, and there must not be:
 `server` mode is a migration state, not a choice, and offering it as one would let a client opt
 an environment out of end-to-end encryption for the life of that environment.
+
+**`id` is chosen by the client**, and is required beside `keys`. The creator's grant is sealed in
+a browser *before* this request exists, and the grant's AAD names the environment (crypto spec
+§4.2) — so a row created under a server-minted id would hold a grant nobody could ever open.
+Unlike every other broken state in this system there is no repair: the key bytes existed only in
+that browser. The uniqueness of the id is settled by the primary key, exactly as the uniqueness
+of the slug is settled by its index.
 
 The environment row, the `env_data_keys` row, the `env_hmac_keys` row and the creator's grant
 land in **one transaction**. That mattered before and matters more now: a `server`-mode
@@ -366,6 +412,7 @@ environment exactly once, which is once too many.
 | `GET` | `…/environments/{envSlug}/keys` | The caller's own grant, the active key, and the administrative state. `secret.read`. |
 | `POST` | `…/environments/{envSlug}/keys` | Initialise, for an `e2ee` environment that somehow has none. Body `{ grant }`. `environment.update`. A second call is a **409**. |
 | `POST` | `…/environments/{envSlug}/keys/rotate` | Body `{ newVersion, grants: [...] }` — the **complete** replacement set. `environment.update`. |
+| `GET` | `…/environments/{envSlug}/keys/recipients` | Who a grant may be sealed to, and who already holds one. `secret.read`. |
 | `POST` | `…/environments/{envSlug}/keys/grants` | Body `{ envDataKeyId, grants: [...] }`. Hands the key to principals that did not have it. `secret.read`. |
 | `DELETE` | `…/environments/{envSlug}/keys/grants/{grantId}` | Removes one grant. `environment.update`. |
 
@@ -388,6 +435,7 @@ enabled.
 {
   "keys": {
     "encryptionMode": "e2ee",
+    "environmentId": "…",
     "activeEdk": { "id": "…", "version": 3 },
     "myGrant": { "edkSealed": "xk2.x25519.…", "ehkSealed": "…", "signature": "…",
                  "signedByUserId": "…" },
@@ -398,6 +446,14 @@ enabled.
   }
 }
 ```
+
+**`environmentId`** is published here and nowhere else in the environment payloads, and it is
+not a convenience: **every** AAD a client builds names it (crypto spec §4.2) — the two grant
+purposes, the secret value, the encrypted note. A client that could not learn it could not open
+the grant it was just handed, could not encrypt a value, and could not tell a decryption failure
+from a missing identifier. `EnvironmentPayload` goes on addressing environments by slug, which
+is right for a URL; this is the cryptographic identity of the row, served on the one endpoint
+whose job is handing a client its key material.
 
 **`needsRotation`** is the honest name for "somebody's grant was deleted and the key they held
 has not been replaced". Deleting a grant stops a principal being handed the key *again*; only a
@@ -455,6 +511,49 @@ a rotation racing another would produce grants whose AAD names version 4 stored 
 numbered 5 — every one of which would fail to open, for ever, with no error at write time. A
 mismatch is a `409` the client retries after re-reading.
 
+#### The sealing directory — `GET …/keys/recipients`
+
+Every other route under `…/keys` *consumes* a grant set, and none of them could produce one.
+Sealing is asymmetric: a grant for somebody is built from **their** X25519 public key, and a
+browser had no way to learn one. Rotation, the queued key shares and an admin widening access
+were therefore not merely awkward from a client — they were impossible to attempt. This is the
+missing half.
+
+```jsonc
+{
+  "activeEdk": { "id": "…", "version": 3 },
+  "environmentId": "…",
+  "recipients": [
+    { "kind": "member", "id": "…", "publicKey": "…", "holdsGrant": true },
+    { "kind": "token",  "id": "…", "publicKey": "…", "holdsGrant": false }
+  ],
+  "unsealable": [ { "kind": "member", "id": "…" } ]
+}
+```
+
+`recipients` is exactly the set `POST …/keys/rotate` requires and nothing else — the same
+computation `assertCompleteGrantSet` performs, served forwards instead of checked backwards.
+`holdsGrant` is what turns a list into an instruction: a rotation seals to everybody, a share
+seals only to those with `false`.
+
+`unsealable` names entitled members who have not completed the vault ceremony and therefore have
+no public key. Naming them is the difference between a rotation refused with a sentence somebody
+can act on — *ask Dana to finish setting up her vault* — and one refused later by the
+completeness check with a bare uuid.
+
+The gate is **`secret.read`**, matching `POST …/keys/grants` exactly rather than the
+`environment.update` that guards rotation. A directory gated more tightly than the write it
+feeds would leave every queued share unfulfillable by the people who actually hold the key —
+and that is not hypothetical, because the queue exists precisely for the case where whoever
+*changed* the access does not hold it. What it discloses is "who may read this environment", to
+somebody who may read it, plus public keys that are stored in the clear because they are public:
+holding one lets its holder *give* a key away, never take one. `pendingGrants` on `GET …/keys`
+stays admin-only on its own terms — it names people who are *waiting*, which is a statement
+about an act somebody else performed.
+
+Not audited: it produces no plaintext and changes nothing, and the acts it enables
+(`envkey.granted`, `envkey.rotated`) are each recorded where they happen.
+
 #### The pending key-share queue
 
 Access is decided by people who may not hold the key. An owner can grant a developer access to
@@ -480,15 +579,30 @@ never from a request. `server` behaviour is unchanged, field for field.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `…/environments/{envSlug}/secrets` | **Masked.** Names, versions, timestamps, updater, and `encNote` for `e2ee` rows. No value ciphertext leaves the database. |
-| `POST` | `…/secrets` | Create. `server`: `{ name, value, note?, valueType? }`. `e2ee`: `{ name, value: { ciphertext, clientAlgorithm, envDataKeyId, valueHmac }, encNote?, valueType? }`. |
-| `GET` | `…/secrets/{name}` | **Reveal.** `server` decrypts and returns `value`; `e2ee` returns `value: null` plus `ciphertext`, `clientAlgorithm` and `envDataKeyId`. Audited as `secret.revealed` in both. |
+| `GET` | `…/environments/{envSlug}/secrets` | **Masked.** Ids, names, versions, timestamps, updater, and `encNote` for `e2ee` rows. No value ciphertext leaves the database. |
+| `POST` | `…/secrets` | Create. `server`: `{ name, value, note?, valueType? }`. `e2ee`: `{ id, name, value: { ciphertext, clientAlgorithm, envDataKeyId, valueHmac }, encNote?, valueType? }`. |
+| `GET` | `…/secrets/{name}` | **Reveal.** `server` decrypts and returns `value`; `e2ee` returns `value: null` plus `id`, `ciphertext`, `clientAlgorithm` and `envDataKeyId`. Audited as `secret.revealed` in both. |
 | `PATCH` | `…/secrets/{name}` | Appends a new version, same two body shapes. A value identical to the current one is a no-op in **both** modes, detected via `value_hmac` without decrypting. |
 | `PUT` | `…/secrets/{name}` | Metadata only — `{ name?, note?, encNote?, valueType? }`. Appends **no** version. Sending `note` to an `e2ee` environment, or `encNote` to a `server` one, is refused rather than ignored. |
 | `DELETE` | `…/secrets/{name}` | Soft delete. |
 | `GET` | `…/secrets/{name}/versions/{version}` | **Reveal one historical version.** In `e2ee` mode `envDataKeyId` may name a **retired** key — a version written before a rotation is still encrypted under the key that was active then. |
 | `GET` | `…/secrets/{name}/versions` | History. Metadata only — no ciphertext, no values. |
 | `POST` | `…/secrets/{name}/restore` | `server`: `{ version }`, and the Worker re-encrypts. `e2ee`: `{ version, value: { … }, encNote? }` — the client reads the old version, decrypts it, encrypts the same plaintext for the version about to be written, and posts the result. |
+
+**Why every `e2ee` secret carries an `id`.** `secrets.id` is an AAD component (crypto spec §4.2):
+the ciphertext of a value is bound to it, and so is the encrypted note. A client that did not
+have it could not decrypt a row it was handed, and — on a create — could not encrypt one at all,
+because the identity of the row has to exist before the sealing does. So the **client mints the
+uuid** on the `e2ee` create path and the server stores the row under it, exactly as it stores an
+environment under the id its key grant was sealed against. The masked listing publishes `id` in
+both modes rather than conditionally: a payload whose *shape* depends on the mode is a payload
+two branches of a client have to agree about, and the id names a row the caller is already
+reading.
+
+On an import, every entry carries an `id` that is used **only if that entry turns out to be a
+create**. Whether a name already exists is the planner's answer and the planner runs on the
+server, so the client cannot know which entries are creates; an entry that appends keeps the
+stored id, which the client read from the listing and sealed against.
 
 **Why an `e2ee` restore carries a ciphertext.** A restore is a *re-encryption*, never a copy:
 the AAD binds `version`, so bytes produced for version 3 and stored as version 7 would fail to
@@ -538,7 +652,7 @@ not the problem, and the request succeeds the moment somebody fulfils the queued
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `…/environments/{envSlug}/import` | `server`: `{ content, format?, strategy, dryRun }`. `e2ee`: `{ entries: [{ name, value: { … }, encNote? }], dryRun }`. |
+| `POST` | `…/environments/{envSlug}/import` | `server`: `{ content, format?, strategy, dryRun }`. `e2ee`: `{ entries: [{ id, name, value: { … }, encNote? }], dryRun }`. |
 | `GET` | `…/environments/{envSlug}/export?format=…` | Same data as `pull`, as a file download. **`e2ee` returns 409 `client_side_only`.** |
 
 The dry run and the real import call the **same** planning function, so the preview cannot

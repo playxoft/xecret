@@ -3,11 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { toSecretValueType } from '@xecret/core/validation';
-import { api, errorMessage } from '@/lib/api';
+import { errorMessage } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import { Badge, ConfirmDialog } from '@/components/ui';
-import type { RevealedSecret, SecretSummary, SecretWriteResponse } from './types';
+import type { SecretSummary } from './types';
 import type { ComparedEnvironment } from './use-compared-secrets';
 import { EnvironmentLabel, ValueField } from './value-field';
 
@@ -35,8 +34,6 @@ import { EnvironmentLabel, ValueField } from './value-field';
  * environment you are in is the one you can destroy things in.
  */
 export function ComparedValue({
-  orgSlug,
-  projectSlug,
   environment,
   secretName,
   secret,
@@ -45,8 +42,6 @@ export function ComparedValue({
   onSaved,
   onDirtyChange,
 }: {
-  orgSlug: string;
-  projectSlug: string;
   environment: ComparedEnvironment;
   secretName: string;
   /** `null` when this environment has no secret by that name. */
@@ -113,12 +108,21 @@ export function ComparedValue({
     return () => reportDirty.current?.(false);
   }, [dirty]);
 
+  /**
+   * This row's value **in the compared environment**.
+   *
+   * `environment.io` and not the page's: a row of the same name in another
+   * environment is a different secret with its own id, its own version and its
+   * own key. Using the page's IO would decrypt one environment's ciphertext with
+   * another's AAD, which fails — loudly, and for a reason nobody could read off
+   * the screen.
+   */
   const reveal = useCallback(async () => {
-    const response = await api.get<RevealedSecret>(
-      apiPath.secret(orgSlug, projectSlug, environment.slug, secretName),
-    );
-    return response.secret.value;
-  }, [orgSlug, projectSlug, environment.slug, secretName]);
+    if (environment.io === null || secret === null) {
+      throw new Error('This environment’s key is not available.');
+    }
+    return environment.io.reveal({ id: secret.id, name: secretName, version: secret.version });
+  }, [environment.io, secret, secretName]);
 
   async function beginEdit(cached?: string) {
     if (editing) return;
@@ -180,8 +184,12 @@ export function ComparedValue({
     setSaving(true);
     setError(null);
     try {
-      await api.patch<SecretWriteResponse>(
-        apiPath.secret(orgSlug, projectSlug, environment.slug, secretName),
+      if (environment.io === null || secret === null) {
+        throw new Error('This environment’s key is not available.');
+      }
+
+      await environment.io.update(
+        { id: secret.id, name: secretName, version: secret.version },
         { value: draft },
       );
       seedGeneration.current += 1;
@@ -248,9 +256,14 @@ export function ComparedValue({
     setNoteSaving(true);
     setNoteError(null);
     try {
-      await api.put(apiPath.secret(orgSlug, projectSlug, environment.slug, secretName), {
-        note: next,
-      });
+      if (environment.io === null || secret === null) {
+        throw new Error('This environment’s key is not available.');
+      }
+
+      await environment.io.patchMetadata(
+        { id: secret.id, name: secretName, version: secret.version },
+        { note: next },
+      );
       setWrittenNote(next);
       onSaved();
     } catch (cause) {

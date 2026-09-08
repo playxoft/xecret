@@ -174,6 +174,7 @@ export {
   findPendingInvitationForGrant,
   initializeEnvironmentKeys,
   listGrantsForEnvironment,
+  listMemberSealingKeys,
   listPendingKeyGrants,
   listSealableServiceTokens,
   loadEnvironmentKeyState,
@@ -184,6 +185,7 @@ export {
   removePendingKeyGrant,
   rotateEnvDataKey,
   setInvitationPublicKey,
+  takeInvitationGrants,
 } from './env-keys';
 export type {
   AddEnvKeyGrantsParams,
@@ -192,6 +194,8 @@ export type {
   EnvKeyGrantRecord,
   EnvKeyGrantSeed,
   InitializeEnvironmentKeysParams,
+  InvitationGrantRecord,
+  MemberSealingKeys,
   PendingKeyGrantRecord,
   RotateEnvDataKeyParams,
 } from './env-keys';

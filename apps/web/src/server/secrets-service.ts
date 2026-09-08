@@ -416,6 +416,15 @@ export interface ClientSecretValue {
 
 export interface ClientSecretWrite {
   name: string;
+  /**
+   * The id the row takes if this write **creates** one.
+   *
+   * Chosen by the client and not by this process, because the AAD binds it (spec
+   * §4.2) and the encryption happened in a browser before the request existed.
+   * Ignored when `existing` is present: an append keeps the stored id, which is
+   * the one that ciphertext was sealed against.
+   */
+  secretId: string;
   value: ClientSecretValue;
   valueType?: string | undefined;
   existing?: ExistingSecret | undefined;
@@ -615,7 +624,11 @@ function prepareClientWrite(activeKeyId: string, write: ClientSecretWrite): Prep
 
   return {
     kind: existing ? 'append' : 'create',
-    secretId: existing ? existing.secretId : uuidv7(),
+    // The client's id on a create, the stored one on an append. Never minted
+    // here: a value encrypted against an id this line invented would fail to
+    // authenticate on its first read, for ever, with nothing at write time
+    // saying so.
+    secretId: existing ? existing.secretId : write.secretId,
     name: write.name,
     version: existing ? existing.version + 1 : 1,
     valueType,

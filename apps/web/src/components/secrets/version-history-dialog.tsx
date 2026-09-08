@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 
 import { api, errorMessage, isApiError } from '@/lib/api';
+import type { SecretIo } from '@/components/envkeys';
 import { formatAbsoluteTime, formatRelativeTime, toIsoString } from '@/lib/format';
 import { apiPath, withQuery } from '@/app/(dashboard)/_lib/paths';
 import {
@@ -21,19 +22,26 @@ import {
   useToast,
 } from '@/components/ui';
 import { Actor } from './actor';
-import type {
-  RevealedSecretVersion,
-  SecretRestoreResponse,
-  SecretVersion,
-  SecretVersionListResponse,
-} from './types';
+import type { SecretSummary, SecretVersion, SecretVersionListResponse } from './types';
 
 export interface VersionHistoryDialogProps {
   orgSlug: string;
   projectSlug: string;
   envSlug: string;
   isProduction: boolean;
-  secretName: string;
+  /**
+   * The secret this history is of.
+   *
+   * The whole summary rather than a name, because an `e2ee` reveal and an `e2ee`
+   * restore both need the row's id and its current version: the id is an AAD
+   * component of every version's ciphertext, and the current version is what the
+   * restored value will be encrypted *for*. A restore is a re-encryption, never
+   * a copy — bytes produced for version 3 and stored as version 7 would fail to
+   * open for the rest of their life.
+   */
+  secret: SecretSummary;
+  /** How this environment's values are read. `null` when its key is unavailable. */
+  io: SecretIo | null;
   /**
    * Dismissal. There is no `open` prop: the caller mounts this only while the
    * drawer is showing, which is what gives each open a clean slate.
@@ -75,11 +83,13 @@ export function VersionHistoryDialog({
   projectSlug,
   envSlug,
   isProduction,
-  secretName,
+  secret,
+  io,
   onOpenChange,
   onRestored,
 }: VersionHistoryDialogProps) {
   const { toast } = useToast();
+  const secretName = secret.name;
   const [versions, setVersions] = useState<readonly SecretVersion[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [restoring, setRestoring] = useState<SecretVersion | null>(null);
@@ -119,16 +129,16 @@ export function VersionHistoryDialog({
    * claim to answer.
    */
   async function revealVersion(version: number): Promise<string> {
-    const response = await api.get<RevealedSecretVersion>(
-      apiPath.secretVersion(orgSlug, projectSlug, envSlug, secretName, version),
-    );
-    return response.secret.value;
+    if (io === null) throw new Error('This environment’s key is not available.');
+    return io.revealVersion({ id: secret.id, name: secretName }, version);
   }
 
   async function restore(version: SecretVersion) {
-    const result = await api.post<SecretRestoreResponse>(
-      apiPath.secretRestore(orgSlug, projectSlug, envSlug, secretName),
-      { version: version.version },
+    if (io === null) throw new Error('This environment’s key is not available.');
+
+    const result = await io.restore(
+      { id: secret.id, name: secretName, version: secret.version },
+      version.version,
     );
 
     toast(

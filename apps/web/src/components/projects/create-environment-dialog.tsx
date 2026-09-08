@@ -2,9 +2,13 @@
 
 import { useState } from 'react';
 
+import { uuidv7 } from '@xecret/core/ids';
+import { zeroize } from '@xecret/core/crypto/client';
 import { ENVIRONMENT_SLUG_PATTERN, slugify, SLUG_MAX_LENGTH } from '@xecret/core/validation';
 import { api, isApiError } from '@/lib/api';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
+import { createEnvironmentKeys } from '@/components/envkeys';
+import { useVaultKeys } from '@/components/vault';
 import {
   Alert,
   Button,
@@ -67,6 +71,17 @@ function validateEnvironmentSlug(slug: string): string | null {
  * here: a new environment holds nothing, while reclassifying one that already
  * holds production secrets hands every developer access to them. The server
  * gates the two at different permission levels for exactly that reason.
+ *
+ * ── Why this needs an unlocked vault ──
+ * Every environment created from Phase 3 onward is end-to-end encrypted, and its
+ * two keys are generated **here**, in this browser, then sealed to the creator's
+ * own public key and signed with their signing key. A locked vault has neither,
+ * so the form refuses rather than sending a body the server would reject — the
+ * same gate the CLI authorisation page applies, for the same reason.
+ *
+ * The environment's uuid is minted here too, and that is not bookkeeping: the
+ * grant's AAD names the environment (spec §4.2), so the id has to exist before
+ * the sealing does. The server stores the row under the id it is given.
  */
 export function CreateEnvironmentDialog({
   orgSlug,
@@ -113,6 +128,7 @@ function CreateEnvironmentForm({
   onSubmittingChange: (submitting: boolean) => void;
 }) {
   const { toast } = useToast();
+  const vault = useVaultKeys();
 
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
@@ -144,13 +160,45 @@ function CreateEnvironmentForm({
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
 
+    if (vault === null) {
+      setFormError(
+        'Unlock your vault first. A new environment is end-to-end encrypted, and its keys are generated in this browser and sealed to your own key.',
+      );
+      return;
+    }
+
     setBusy(true);
     setFormError(null);
+
+    // Minted here because the grant is sealed against it. The bytes below exist
+    // in exactly one place until the request commits — the server writes the
+    // environment row and both key rows in one transaction for that reason.
+    const environmentId = uuidv7();
+
+    // Generated before the `try` that owns the zeroization, and guarded on its
+    // own: a failure here has produced nothing to wipe, and letting it fall
+    // through to a `finally` that reads `keys` would be a reference error on top
+    // of whatever actually went wrong.
+    let keys: Awaited<ReturnType<typeof createEnvironmentKeys>>;
+    try {
+      keys = await createEnvironmentKeys({ vault, environmentId });
+    } catch {
+      setBusy(false);
+      setFormError('Could not generate this environment’s keys in your browser.');
+      return;
+    }
 
     try {
       const created = await api.post<CreateEnvironmentResponse>(
         apiPath.environments(orgSlug, projectSlug),
-        { name: trimmedName, slug: effectiveSlug, isProduction, sortOrder: nextSortOrder },
+        {
+          id: environmentId,
+          name: trimmedName,
+          slug: effectiveSlug,
+          isProduction,
+          sortOrder: nextSortOrder,
+          keys: { grant: keys.grant },
+        },
       );
 
       toast({
@@ -177,6 +225,13 @@ function CreateEnvironmentForm({
         }
       }
       setFormError(cause instanceof Error ? cause.message : 'Could not create the environment.');
+    } finally {
+      // The environment is re-opened through the ordinary path — `GET …/keys`,
+      // open the grant — so there is one way key material enters the store and
+      // no second copy of a live data key left in this closure. On the failure
+      // path they are simply gone, which is why the write is one transaction.
+      zeroize(keys.edk);
+      zeroize(keys.ehk);
     }
   }
 
@@ -185,7 +240,9 @@ function CreateEnvironmentForm({
       <DialogHeader>
         <DialogTitle>New environment</DialogTitle>
         <DialogDescription>
-          Each environment holds its own secrets, encrypted under its own data key.
+          Each environment holds its own secrets, end-to-end encrypted under its own data key —
+          generated here, in your browser, and sealed to you. Share it with your team afterwards
+          from the environment itself.
         </DialogDescription>
       </DialogHeader>
 

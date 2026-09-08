@@ -781,6 +781,12 @@ describe('the pending key-share queue', () => {
 });
 
 describe('the client write path', () => {
+  /**
+   * The id a create carries. Chosen by the client, because the AAD binds it and
+   * the ciphertext was sealed against it before the request existed.
+   */
+  const NEW_SECRET_ID = '01930000-0000-7000-8000-0000000000c1';
+
   const value = {
     ciphertext: CIPHERTEXT,
     clientAlgorithm: 'xk2.gcm',
@@ -799,10 +805,15 @@ describe('the client write path', () => {
     const result = await writeClientSecretValue(scope(), services(), {
       writer: { userId: OWNER_ID },
       name: 'DATABASE_URL',
+      secretId: NEW_SECRET_ID,
       value,
     });
 
     expect(result.status).toBe('created');
+    // The row is written under the client's own id, never one minted in the
+    // Worker: a value sealed against an id this process invented would fail to
+    // authenticate on its first read, for ever, with nothing saying so.
+    expect(result.secretId).toBe(NEW_SECRET_ID);
 
     const stored = repository.createSecret.mock.calls[0]?.[1] as {
       payload: { mode: string; ciphertext: Uint8Array; clientAlgorithm: string };
@@ -819,6 +830,7 @@ describe('the client write path', () => {
     const result = await writeClientSecretValue(scope(), services(), {
       writer: { userId: OWNER_ID },
       name: 'DATABASE_URL',
+      secretId: NEW_SECRET_ID,
       value,
       existing: {
         secretId: '01930000-0000-7000-8000-0000000000e1',
@@ -838,6 +850,7 @@ describe('the client write path', () => {
     const result = await writeClientSecretValue(scope(), services(), {
       writer: { userId: OWNER_ID },
       name: 'DATABASE_URL',
+      secretId: NEW_SECRET_ID,
       value: { ...value, valueHmac: HMAC_B },
       existing: {
         secretId: '01930000-0000-7000-8000-0000000000e1',
@@ -859,6 +872,7 @@ describe('the client write path', () => {
       writeClientSecretValue(scope(), services(), {
         writer: { userId: OWNER_ID },
         name: 'DATABASE_URL',
+        secretId: NEW_SECRET_ID,
         value: { ...value, envDataKeyId: '01930000-0000-7000-8000-00000000dead' },
       }),
     );
@@ -878,6 +892,7 @@ describe('the client write path', () => {
       writeClientSecretValue(scope(), services(), {
         writer: { userId: OWNER_ID },
         name: 'DATABASE_URL',
+        secretId: NEW_SECRET_ID,
         value,
       }),
     );
@@ -901,9 +916,10 @@ describe('the client write path', () => {
       writer: { userId: OWNER_ID },
       dryRun: true,
       writes: [
-        { name: 'NEW_ONE', value },
+        { name: 'NEW_ONE', secretId: NEW_SECRET_ID, value },
         {
           name: 'SAME',
+          secretId: '01930000-0000-7000-8000-0000000000c2',
           value,
           existing: {
             secretId: '01930000-0000-7000-8000-0000000000e2',

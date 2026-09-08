@@ -68,6 +68,17 @@ export const GET = authenticatedRoute<Params>(async ({ request, params, principa
 
   return json({
     data: secrets.items.map((secret) => ({
+      /**
+       * The row id, which an `e2ee` client cannot work without.
+       *
+       * It is an AAD component (spec §4.2): the encrypted note carried right
+       * beside it is bound to this id, and so is every value the client will
+       * later write against this secret. Published in both modes rather than
+       * conditionally, because a payload whose *shape* depends on the mode is a
+       * payload two branches of a client have to agree about, and the id
+       * discloses nothing — it names a row the caller is already reading.
+       */
+      id: secret.id,
       name: secret.name,
       note: secret.note,
       // The encrypted note travels with the listing rather than waiting for a
@@ -214,6 +225,10 @@ async function createClientSecret(
   const result = await writeClientSecretValue(scope, services, {
     writer,
     name: body.name,
+    // The client's uuid, not one minted here. It is an AAD component, so the
+    // ciphertext in this body was already sealed against it — see `id` on
+    // `createClientSecretBody`.
+    secretId: body.id,
     value: {
       ...body.value,
       ...(body.encNote === undefined ? {} : { encNote: body.encNote }),

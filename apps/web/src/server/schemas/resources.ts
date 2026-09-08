@@ -233,6 +233,20 @@ export const projectPatchSchema = z
 
 export const environmentCreateSchema = z.strictObject(
   {
+    /**
+     * The id the new environment takes.
+     *
+     * Chosen by the client, and required whenever `keys` is present, for the
+     * reason `createClientSecretBody.id` gives about secrets: the creator's grant
+     * is sealed in a browser before this request exists, and the grant's AAD
+     * names the environment (spec §4.2). A row created under a server-minted id
+     * would hold a grant nobody could ever open — and unlike a secret, there is
+     * no repair, because the key bytes existed only in that browser.
+     *
+     * Optional in the schema because a `server`-mode creation needs no such
+     * agreement; the route requires it alongside `keys`.
+     */
+    id: z.optional(z.string().check(z.length(36, 'An environment is named by a UUID.'))),
     name: nameSchema,
     // `environmentSlugSchema` rather than `slugSchema`: an environment slug also
     // permits underscores, because it is typed at a shell prompt

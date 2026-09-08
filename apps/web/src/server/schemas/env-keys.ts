@@ -3,6 +3,7 @@ import { toBytes } from '@xecret/db/repositories';
 import type {
   EnvDataKeyRecord,
   EnvKeyGrantRecord,
+  InvitationGrantRecord,
   PendingKeyGrantRecord,
 } from '@xecret/db/repositories';
 import { decodeBlob, encodeBlob } from './vault';
@@ -221,6 +222,56 @@ export interface GrantPayload {
   signedByUserId: string;
 }
 
+/**
+ * One principal a client may seal this environment's key to.
+ *
+ * ── Why this exists, and why it is not a leak ──
+ * Sealing is asymmetric. Producing a grant for somebody requires **their**
+ * public key, and a browser has no other way to learn one — so without this
+ * endpoint, rotation, the pending-share queue and an admin widening access are
+ * not merely awkward, they are impossible to attempt. Phase 3a defined every
+ * write that consumes a grant set and no read that could produce one.
+ *
+ * `publicKey` is public by construction: `user_keys.enc_public_key` and
+ * `service_tokens.public_key` are both stored in the clear, and holding one lets
+ * the holder *give* a key away, never take one.
+ *
+ * `holdsGrant` is what turns a list into an instruction. A rotation must seal to
+ * everybody here; a share must seal only to those with `false`.
+ */
+export interface RecipientPayload {
+  kind: 'member' | 'token';
+  /** The user id or the service-token id — the `recipientId` a grant names. */
+  id: string;
+  /** 32 bytes, base64url. Absent principals are reported in `unsealable`. */
+  publicKey: string;
+  /** Whether they already hold a grant on the **active** key. */
+  holdsGrant: boolean;
+}
+
+/**
+ * Somebody the model says should hold this key and who cannot be sealed to.
+ *
+ * A member who has not completed the vault ceremony has no public key, so there
+ * is nothing to seal to and no client can invent one. Naming them is the
+ * difference between a rotation that refuses with a reason a person can act on
+ * — "ask Dana to finish setting up her vault" — and one that is rejected by the
+ * completeness check with an opaque user id.
+ */
+export interface UnsealablePayload {
+  kind: 'member';
+  id: string;
+}
+
+/** Everything `GET …/keys/recipients` answers. */
+export interface RecipientsPayload {
+  /** The active key these grants must be sealed against, or `null`. */
+  activeEdk: ActiveKeyPayload | null;
+  environmentId: string;
+  recipients: RecipientPayload[];
+  unsealable: UnsealablePayload[];
+}
+
 /** One queued key share, for the admin banner. Ids and a timestamp only. */
 export interface PendingGrantPayload {
   id: string;
@@ -245,6 +296,20 @@ export interface PendingGrantPayload {
  */
 export interface EnvironmentKeysPayload {
   encryptionMode: 'server' | 'e2ee';
+  /**
+   * The environment's own id.
+   *
+   * Published here and nowhere else in the environment payloads, and it is not a
+   * convenience: **every** AAD a client builds names it (spec §4.2) — the two
+   * grant purposes, the secret value, the note. A client that could not learn it
+   * could not open the grant it was just handed, could not encrypt a value, and
+   * could not tell a decryption failure from a missing identifier.
+   *
+   * `EnvironmentPayload` keeps addressing environments by slug, which is right
+   * for a URL; this is the cryptographic identity of the row, served on the one
+   * endpoint that exists to hand a client its key material.
+   */
+  environmentId: string;
   activeEdk: ActiveKeyPayload | null;
   myGrant: Omit<GrantPayload, 'id' | 'recipientKind' | 'recipientId'> | null;
   ehkExists: boolean;
@@ -290,6 +355,44 @@ export function toGrant(grant: EnvKeyGrantRecord): GrantPayload {
     ehkSealed: decodeBlob(toBytes(grant.ehkSealed)),
     signature: decodeBlob(toBytes(grant.signature)),
     signedByUserId: grant.signedByUserId,
+  };
+}
+
+/**
+ * One invitation-sealed grant, handed to the invitee at acceptance.
+ *
+ * ── Why acceptance is the only place this is served ──
+ * The grant is sealed to the invitation's one-off keypair, whose private half
+ * exists only inside the fragment that travelled by a second channel. There is
+ * no principal the server can authenticate as "the holder of that fragment", so
+ * there is no endpoint that could safely serve these on demand. Acceptance is
+ * the single moment where the token, the session and the invited address have
+ * all been checked at once — so the grants ride out on that response, and the
+ * rows are deleted as they go.
+ *
+ * The two slugs travel with it because the invitee has no other view of this
+ * organisation yet: they joined a moment ago, and the route they re-upload to
+ * is addressed by slug.
+ */
+export interface InviteKeyGrantPayload {
+  environmentId: string;
+  projectSlug: string;
+  environmentSlug: string;
+  envDataKeyId: string;
+  edkVersion: number;
+  edkSealed: string;
+  ehkSealed: string;
+}
+
+export function toInviteKeyGrant(grant: InvitationGrantRecord): InviteKeyGrantPayload {
+  return {
+    environmentId: grant.environmentId,
+    projectSlug: grant.projectSlug,
+    environmentSlug: grant.environmentSlug,
+    envDataKeyId: grant.envDataKeyId,
+    edkVersion: grant.edkVersion,
+    edkSealed: decodeBlob(toBytes(grant.edkSealed)),
+    ehkSealed: decodeBlob(toBytes(grant.ehkSealed)),
   };
 }
 

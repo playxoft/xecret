@@ -294,6 +294,11 @@ async function importClientEntries(context: {
 
     return {
       name: entry.name,
+      // The entry's own uuid where this turns out to be a create, and the stored
+      // one where it appends. The client sealed against whichever of the two its
+      // own reading of the listing said applied, and a disagreement is caught by
+      // GCM on the first read rather than here.
+      secretId: target ? target.secretId : entry.id,
       value: { ...entry.value, ...(entry.encNote === undefined ? {} : { encNote: entry.encNote }) },
       ...(target
         ? {

@@ -9,9 +9,8 @@ import {
   toSecretValueType,
 } from '@xecret/core/validation';
 import type { SecretValueType } from '@xecret/core/validation';
-import { api, errorMessage } from '@/lib/api';
+import { errorMessage } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import {
   AlertTriangleIcon,
   Checkbox,
@@ -26,7 +25,8 @@ import type { EnvironmentTarget } from './environment-target';
 import { hasNewValue, isTouched, wantsRename } from './staged-changes';
 import type { PendingEdit } from './staged-changes';
 import type { PlaintextCache } from './use-plaintext-cache';
-import type { RevealedSecret, SecretSummary } from './types';
+import type { SecretIo } from '@/components/envkeys';
+import type { SecretSummary } from './types';
 import type { ComparedEnvironment } from './use-compared-secrets';
 import { ValueField } from './value-field';
 import { ValueTypeMenu } from './value-type-menu';
@@ -52,9 +52,15 @@ function holdsWork(storedName: string, edit: PendingEdit): boolean {
 }
 
 export interface SecretRowProps {
-  orgSlug: string;
-  projectSlug: string;
   envSlug: string;
+  /**
+   * How this environment's values are read and written.
+   *
+   * `null` for an `e2ee` environment whose key this browser has not opened. The
+   * row still renders — the name, the version, the timestamp are all plaintext —
+   * and the reveal refuses, which is the truth rather than a spinner.
+   */
+  io: SecretIo | null;
   /** This environment, for the chip a compared row puts beside its value. */
   environment: EnvironmentTarget | undefined;
   secret: SecretSummary;
@@ -148,9 +154,8 @@ export interface SecretRowProps {
  * staged.
  */
 export function SecretRow({
-  orgSlug,
-  projectSlug,
   envSlug,
+  io,
   environment,
   secret,
   selected,
@@ -209,12 +214,16 @@ export function SecretRow({
     const cached = plaintexts.read(secret.name, secret.version);
     if (cached !== undefined) return cached;
 
-    const response = await api.get<RevealedSecret>(
-      apiPath.secret(orgSlug, projectSlug, envSlug, secret.name),
-    );
-    plaintexts.write(secret.name, secret.version, response.secret.value);
-    return response.secret.value;
-  }, [orgSlug, projectSlug, envSlug, secret.name, secret.version, plaintexts]);
+    if (io === null) throw new Error('This environment’s key is not available.');
+
+    const plaintext = await io.reveal({
+      id: secret.id,
+      name: secret.name,
+      version: secret.version,
+    });
+    plaintexts.write(secret.name, secret.version, plaintext);
+    return plaintext;
+  }, [io, secret.id, secret.name, secret.version, plaintexts]);
 
   // A save that succeeded drops this row's staged work, and the editor it was
   // typed into goes with it — otherwise the box stays open over a value that is
@@ -430,8 +439,6 @@ export function SecretRow({
           {compare.map((compared) => (
             <ComparedValue
               key={compared.slug}
-              orgSlug={orgSlug}
-              projectSlug={projectSlug}
               environment={compared}
               secretName={secret.name}
               secret={compared.byName.get(secret.name) ?? null}

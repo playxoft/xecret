@@ -35,6 +35,7 @@ import {
 import { InvitationsSection } from '@/components/members/invitations-section';
 import { InviteDialog } from '@/components/members/invite-dialog';
 import { MemberAccessPanel } from '@/components/members/member-access-panel';
+import { MemberKeyBadge } from '@/components/envkeys';
 import { MemberRowActions } from '@/components/members/member-actions';
 import { ROLE_LABELS, ROLE_TONE, ROLES_DESCENDING } from '@/components/members/types';
 import type { InvitationListResponse, MemberListResponse } from '@/components/members/types';
@@ -285,6 +286,11 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
                       onSort={() => toggleSort('role')}
                     />
                     <TableHead className="w-28">Status</TableHead>
+                    {/* The key this browser has sealed to for this person. Not
+                        an identity check on its own — 40 bits is a comparison
+                        aid, not a commitment — but it is the thing to read out
+                        on a call when a "key changed" warning appears. */}
+                    <TableHead className="w-32">Key</TableHead>
                     <SortableHead
                       label="Joined"
                       className="w-32"
@@ -374,6 +380,10 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
                             )}
                           </TableCell>
 
+                          <TableCell>
+                            <MemberKeyBadge userId={member.userId} />
+                          </TableCell>
+
                           <TableCell className="text-fg-muted text-sm whitespace-nowrap">
                             <time
                               dateTime={toIsoString(member.joinedAt)}
@@ -399,7 +409,7 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
 
                         {isExpanded ? (
                           <TableRow className="hover:bg-transparent">
-                            <TableCell colSpan={5} className="bg-canvas-inset/40 p-0">
+                            <TableCell colSpan={6} className="bg-canvas-inset/40 p-0">
                               <MemberAccessPanel
                                 orgSlug={orgSlug}
                                 member={member}

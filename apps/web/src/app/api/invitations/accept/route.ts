@@ -1,6 +1,7 @@
 import { hashToken, isWellFormedToken } from '@xecret/core/auth';
-import { acceptInvitation } from '@xecret/db/repositories';
+import { acceptInvitation, takeInvitationGrants } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
+import { toInviteKeyGrant } from '@/server/schemas/env-keys';
 import { attemptKey, enforce } from '@/server/rate-limit';
 import { json, parseJsonBody } from '@/server/http';
 import { recordKeyReconciliation, reconcileMemberKeyAccess } from '@/server/member-keys';
@@ -86,11 +87,39 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
     },
   );
 
+  // ── The invitation's sealed grants, read and consumed in one act ──
+  // They are addressed to the invitation's one-off keypair, and its private half
+  // exists only inside the fragment that travelled by a second channel. No
+  // principal the server can authenticate is "the holder of that fragment", so
+  // there is no endpoint that could serve these on demand — acceptance is the
+  // one moment where the token, the session and the invited address have all
+  // been checked together, and this is the one response they can ride out on.
+  //
+  // The rows are deleted as they leave. A fragment does not expire the way the
+  // token does; leaving a row behind is a copy of the environment's keys
+  // addressed to a credential now sitting in somebody's message history for
+  // ever. If the client fails before re-sealing, the invitee holds no key — and
+  // the reconciliation above has already recorded exactly that as a pending
+  // share for a teammate to fulfil, which is the designed fallback rather than a
+  // hole.
+  const inviteKeyGrants = await takeInvitationGrants(services.db, {
+    orgId: accepted.organization.id,
+    invitationId: accepted.invitation.id,
+  });
+
   return json({
     organization: {
       name: accepted.organization.name,
       slug: accepted.organization.slug,
     },
     role: accepted.member.role,
+    /**
+     * The invitation's id, which is the `recipientId` bound into each grant's
+     * AAD (spec §4.2). Returned because the client needs it to open them and
+     * cannot obtain it anywhere else — the lookup endpoint deliberately returns
+     * no ids at all.
+     */
+    invitationId: accepted.invitation.id,
+    inviteKeyGrants: inviteKeyGrants.map(toInviteKeyGrant),
   });
 });

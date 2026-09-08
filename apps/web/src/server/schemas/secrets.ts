@@ -171,7 +171,27 @@ const clientValueSchema = z.object({
   valueHmac: valueHmacSchema,
 });
 
+/**
+ * The id of the `secrets` row a client-encrypted create is for.
+ *
+ * ── Why the client chooses it ──
+ * The AAD binds `secretId` (spec §4.2), so a value cannot be encrypted until the
+ * identity of the row that will hold it exists. On the `server`-mode path the
+ * Worker mints the id and encrypts afterwards, inside one transaction. Here it
+ * cannot: encryption happens in a browser, before any request is sent. So the
+ * browser mints the uuid, seals against it, and states it — and the server
+ * stores the row under the id the ciphertext already names.
+ *
+ * A caller who supplies a colliding id is answered by the primary key, exactly
+ * as a caller who supplies a colliding *name* is answered by the unique index.
+ * Nothing else about the value is trusted, and nothing else can be: a mismatched
+ * id produces a ciphertext that fails to authenticate on the first read, which
+ * is the same failure mode as every other AAD component.
+ */
+const secretIdSchema = z.string().check(z.length(36, 'A secret is named by a UUID.'));
+
 export const createClientSecretBody = z.object({
+  id: secretIdSchema,
   name: secretNameSchema,
   value: clientValueSchema,
   encNote: encNoteSchema,
@@ -235,7 +255,24 @@ export const restoreClientSecretBody = z.object({
  */
 export const importClientBody = z.object({
   entries: z
-    .array(z.object({ name: secretNameSchema, value: clientValueSchema, encNote: encNoteSchema }))
+    .array(
+      z.object({
+        /**
+         * The id this entry takes **if it turns out to be a create**.
+         *
+         * Supplied for every entry rather than only the new ones, because the
+         * client cannot know which is which: whether a name already exists is
+         * the planner's answer, and the planner runs on the server. An entry
+         * that appends to an existing secret ignores this and keeps the stored
+         * id — its ciphertext was sealed against that one, which the client
+         * read from the listing.
+         */
+        id: secretIdSchema,
+        name: secretNameSchema,
+        value: clientValueSchema,
+        encNote: encNoteSchema,
+      }),
+    )
     .check(z.maxLength(1000, 'An import cannot write more than 1000 secrets at once.')),
   dryRun: z.boolean(),
 });
@@ -388,6 +425,15 @@ export type ImportClientBody = z.infer<typeof importClientBody>;
  * all.
  */
 export interface ClientSecretPayload {
+  /**
+   * The `secrets` row id, which is an AAD component (spec §4.2).
+   *
+   * Without it the ciphertext beside it cannot be opened — not "is harder to
+   * open": the AAD would be built from the wrong tuple and GCM would reject it.
+   * It is an opaque identifier and confers nothing, exactly like `envDataKeyId`
+   * below.
+   */
+  id: string;
   name: string;
   ciphertext: string;
   clientAlgorithm: string;
@@ -412,6 +458,7 @@ export function toClientSecret(material: SecretMaterial): ClientSecretPayload {
   }
 
   return {
+    id: material.secretId,
     name: material.name,
     ciphertext: decodeBlob(toBytes(material.clientValue.ciphertext)),
     clientAlgorithm: material.clientValue.clientAlgorithm,

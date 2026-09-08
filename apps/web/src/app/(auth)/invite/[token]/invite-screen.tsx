@@ -6,6 +6,8 @@ import { useEffect, useState } from 'react';
 import type { OrgRole } from '@xecret/core/authz';
 import { api, endSession, errorMessage } from '@/lib/api';
 import { Alert, Button, Card, CardContent, Spinner } from '@/components/ui';
+import { InviteKeyStep } from '@/components/envkeys';
+import type { InviteKeyGrant } from '@/components/envkeys';
 import { ROLE_LABELS } from '@/components/members/types';
 import type { InvitationState } from '@/components/members/types';
 
@@ -21,6 +23,17 @@ import type { InvitationState } from '@/components/members/types';
  *
  * The server re-checks everything at acceptance. This screen exists to make
  * the happy path one click, not to decide anything.
+ *
+ * ── The step after acceptance ──
+ * An invitation may carry sealed environment keys, addressed to a one-off
+ * keypair whose private half exists only in the code the inviter sent by a
+ * second channel. Acceptance hands those grants back once and deletes them, so
+ * this screen holds them and offers the code entry rather than navigating
+ * straight into the dashboard — where they would be gone.
+ *
+ * Skipping is a supported outcome, not a failure: the same acceptance queued a
+ * pending key share for every environment the new member can read, so a teammate
+ * can hand the keys over instead.
  */
 
 interface Lookup {
@@ -41,6 +54,10 @@ interface Me {
 interface AcceptResponse {
   organization: { name: string; slug: string };
   role: OrgRole;
+  /** The `recipientId` bound into each grant's AAD. */
+  invitationId: string;
+  /** Served exactly once, and deleted as they leave. */
+  inviteKeyGrants: readonly InviteKeyGrant[];
 }
 
 type Phase =
@@ -53,6 +70,14 @@ export function InviteScreen({ token }: { token: string }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
   const [accepting, setAccepting] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  /**
+   * What acceptance returned, while the key step is still on screen.
+   *
+   * Held rather than navigated past, because these grants were served once and
+   * the rows behind them are already gone. Navigating first would discard the
+   * only copy.
+   */
+  const [accepted, setAccepted] = useState<AcceptResponse | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,12 +108,44 @@ export function InviteScreen({ token }: { token: string }) {
     setAccepting(true);
     setError(null);
     try {
-      const accepted = await api.post<AcceptResponse>('/api/invitations/accept', { token });
-      router.replace(`/app/${encodeURIComponent(accepted.organization.slug)}`);
+      const result = await api.post<AcceptResponse>('/api/invitations/accept', { token });
+
+      // Straight through when there is nothing to unlock: an organisation whose
+      // environments are all `server`-mode, or an invitation created before the
+      // two-channel flow, carries no grants and has no second step.
+      if (result.inviteKeyGrants.length === 0) {
+        router.replace(`/app/${encodeURIComponent(result.organization.slug)}`);
+        return;
+      }
+
+      setAccepted(result);
+      setAccepting(false);
     } catch (cause) {
       setError(cause);
       setAccepting(false);
     }
+  }
+
+  if (accepted !== null) {
+    return (
+      <Card>
+        <CardContent className="flex flex-col gap-4 py-8">
+          <div className="flex flex-col gap-1.5">
+            <h1 className="text-fg text-lg font-semibold">
+              You have joined {accepted.organization.name}
+            </h1>
+            <p className="text-fg-muted text-sm">One thing left, and it takes a moment.</p>
+          </div>
+
+          <InviteKeyStep
+            orgSlug={accepted.organization.slug}
+            invitationId={accepted.invitationId}
+            grants={accepted.inviteKeyGrants}
+            onDone={() => router.replace(`/app/${encodeURIComponent(accepted.organization.slug)}`)}
+          />
+        </CardContent>
+      </Card>
+    );
   }
 
   if (phase.kind === 'loading') {

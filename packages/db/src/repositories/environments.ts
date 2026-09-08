@@ -48,6 +48,17 @@ export interface EnvironmentKeyInit {
 export interface CreateEnvironmentParams {
   orgId: string;
   projectId: string;
+  /**
+   * The id the row takes, when the caller has to know it in advance.
+   *
+   * Omitted, one is minted here — the ordinary path, and what every `server`-mode
+   * creation does. Supplied on the `e2ee` path, and not as a convenience: the
+   * creator's grant is sealed in a browser *before* this request exists, and the
+   * grant's AAD names the environment (spec §4.2). A row created under any other
+   * id holds a grant nobody can ever open, and there is no repair — the key bytes
+   * existed only in that browser.
+   */
+  id?: string | undefined;
   name: string;
   slug: string;
   isProduction?: boolean | undefined;
@@ -190,7 +201,7 @@ export async function createEnvironment(
     const [environment] = await tx
       .insert(environments)
       .values({
-        id: uuidv7(),
+        id: params.id ?? uuidv7(),
         projectId: params.projectId,
         name: params.name,
         slug: params.slug,

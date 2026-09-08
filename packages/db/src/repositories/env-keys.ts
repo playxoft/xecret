@@ -6,6 +6,7 @@ import { environments, projects } from '../schema/resources';
 import { secrets, secretVersions } from '../schema/secrets';
 import { invitations } from '../schema/tenancy';
 import { serviceTokens } from '../schema/tokens';
+import { userKeys } from '../schema/vault';
 import { isUniqueViolation } from './users';
 import { RepositoryError } from './shared';
 import type { Executor } from './shared';
@@ -812,6 +813,133 @@ export async function setInvitationPublicKey(
     .update(invitations)
     .set({ invitePublicKey: params.publicKey })
     .where(eq(invitations.id, params.invitationId));
+}
+
+/** A member's public halves, as a client needs them in order to seal. */
+export interface MemberSealingKeys {
+  userId: string;
+  /** The 32-byte X25519 key a grant is sealed to. */
+  encPublicKey: Uint8Array;
+  /** The 32-byte Ed25519 key a grant signature will one day verify against. */
+  signPublicKey: Uint8Array;
+}
+
+/**
+ * The public keys of the members a client is about to seal to.
+ *
+ * ── Why the server has to answer this at all ──
+ * Sealing is asymmetric: producing a grant for somebody requires *their* public
+ * key, and a browser has no other way to learn one. Rotation, the pending-share
+ * queue and an admin widening access all fail closed without this — not with an
+ * error, but by being impossible to attempt.
+ *
+ * Nothing secret crosses the boundary. Both columns are stored in the clear
+ * precisely because they are public (`schema/vault.ts` says so on the columns
+ * themselves), and a public key confers no reach: it lets the holder *give* a
+ * key away, never take one.
+ *
+ * A user with no vault has no row and is simply absent from the answer. That is
+ * the honest shape — there is nothing to seal to — and it is what lets the
+ * caller name them in a "these people cannot be given a key yet" message instead
+ * of failing the whole rotation.
+ */
+export async function listMemberSealingKeys(
+  exec: Executor,
+  userIds: readonly string[],
+): Promise<MemberSealingKeys[]> {
+  if (userIds.length === 0) return [];
+
+  return exec
+    .select({
+      userId: userKeys.userId,
+      encPublicKey: userKeys.encPublicKey,
+      signPublicKey: userKeys.signPublicKey,
+    })
+    .from(userKeys)
+    .where(inArray(userKeys.userId, [...userIds]));
+}
+
+/**
+ * One invitation-sealed grant, with everything the invitee needs to open it.
+ *
+ * `edkVersion` and `environmentId` are the AAD components (spec §4.2); the two
+ * slugs are how the client addresses the route it re-uploads to. All four are
+ * carried because the invitee holds no other view of this organisation at the
+ * moment they run this — they have just joined.
+ */
+export interface InvitationGrantRecord {
+  environmentId: string;
+  projectSlug: string;
+  environmentSlug: string;
+  envDataKeyId: string;
+  edkVersion: number;
+  edkSealed: Uint8Array;
+  ehkSealed: Uint8Array;
+}
+
+/**
+ * Reads an invitation's sealed grants and deletes them, in one transaction.
+ *
+ * ── Why read and delete are one act ──
+ * The invitation's private key exists only inside a fragment that travelled over
+ * a chat message, and the fragment does not expire the way the token does. A row
+ * left behind is a copy of the environment's keys addressed to a credential that
+ * is now sitting in somebody's message history for ever. Consuming them at
+ * acceptance is what bounds that window to the acceptance itself.
+ *
+ * ── Why losing them is survivable ──
+ * If the client crashes between this returning and the re-sealed grants being
+ * uploaded, the invitee holds no key — and the pending-share queue, written by
+ * the same acceptance, already says exactly that. A teammate fulfils it. The
+ * alternative, keeping the rows until a re-seal succeeds, buys one retry at the
+ * cost of leaving a fragment-openable key in the database indefinitely.
+ *
+ * Only grants on **active** data keys are returned: one sealed against a
+ * rotated-away key opens a key nothing is written under any more, and handing it
+ * to a client that would faithfully re-seal it produces a grant that looks
+ * exactly like a working one. The stale rows are deleted all the same.
+ */
+export async function takeInvitationGrants(
+  exec: Executor,
+  params: { orgId: string; invitationId: string },
+): Promise<InvitationGrantRecord[]> {
+  return exec.transaction(async (tx) => {
+    const rows = await tx
+      .select({
+        grantId: envKeyGrants.id,
+        environmentId: envDataKeys.environmentId,
+        projectSlug: projects.slug,
+        environmentSlug: environments.slug,
+        envDataKeyId: envDataKeys.id,
+        edkVersion: envDataKeys.version,
+        edkSealed: envKeyGrants.edkSealed,
+        ehkSealed: envKeyGrants.ehkSealed,
+        status: envDataKeys.status,
+      })
+      .from(envKeyGrants)
+      .innerJoin(envDataKeys, eq(envDataKeys.id, envKeyGrants.envDataKeyId))
+      .innerJoin(environments, eq(environments.id, envDataKeys.environmentId))
+      .innerJoin(projects, eq(projects.id, environments.projectId))
+      .where(
+        and(eq(envKeyGrants.invitationId, params.invitationId), eq(projects.orgId, params.orgId)),
+      );
+
+    if (rows.length === 0) return [];
+
+    await tx.delete(envKeyGrants).where(eq(envKeyGrants.invitationId, params.invitationId));
+
+    return rows
+      .filter((row) => row.status === 'active')
+      .map((row) => ({
+        environmentId: row.environmentId,
+        projectSlug: row.projectSlug,
+        environmentSlug: row.environmentSlug,
+        envDataKeyId: row.envDataKeyId,
+        edkVersion: row.edkVersion,
+        edkSealed: row.edkSealed,
+        ehkSealed: row.ehkSealed,
+      }));
+  });
 }
 
 function grantRow(
