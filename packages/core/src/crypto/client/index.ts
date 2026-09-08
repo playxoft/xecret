@@ -151,6 +151,7 @@ export type { Bytes } from '../types';
 /** The v2 AAD builders, which the client is the only writer of. */
 export {
   AAD_PREFIX_V2,
+  cliHandoffAad,
   edkGrantAad,
   ehkGrantAad,
   isAadV2,

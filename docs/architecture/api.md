@@ -221,7 +221,7 @@ Three conventions hold throughout:
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/auth/vault` | `{ vault, material }`. `material` is `null` when no vault exists or the caller is a token; otherwise `{ encAlgorithm, encPublicKey, encPrivateKeyEnc, signAlgorithm, signPublicKey, signPrivateKeyEnc, kdfSalt, kdfParams, passphraseWrap, recoveryCodesRemaining, passkeys[] }`. `recoveryCodesRemaining` is a count — a recovery wrap is only ever returned in exchange for its own lookup hash. Served to a **locked** session on purpose: an unlock is a client-side operation, and a client cannot unwrap a key it has not been given. Exempt from the lock gate. |
+| `GET` | `/api/auth/vault` | `{ vault, material }`. `material` is `null` when no vault exists or the caller is a **service** token; a **CLI** token receives its issuing user's, because it acts as that user and cannot open a single environment grant without their wrapped private key. Otherwise `{ encAlgorithm, encPublicKey, encPrivateKeyEnc, signAlgorithm, signPublicKey, signPrivateKeyEnc, kdfSalt, kdfParams, passphraseWrap, recoveryCodesRemaining, passkeys[] }`. `recoveryCodesRemaining` is a count — a recovery wrap is only ever returned in exchange for its own lookup hash. Served to a **locked** session on purpose: an unlock is a client-side operation, and a client cannot unwrap a key it has not been given. Serving it to a CLI token concedes exactly the same and no more — the wraps are useless without the passphrase, a recovery code, or a passkey, and a token holds none of the three. Exempt from the lock gate. |
 | `POST` | `/api/auth/vault` | The setup ceremony, in one body: `{ encPublicKey, encPrivateKeyEnc, signPublicKey, signPrivateKeyEnc, kdfSalt, kdfParams, unlockVerifier, ukUnlockVerifier, passphraseWrap, recoveryWraps[5] }`, each recovery entry `{ lookupHash, wrap }`. Both verifiers are recorded here and only here, so either unlock path works from the moment a vault exists. Written in one transaction, and unlocks the session that ran it. **409** on a second call — never an overwrite, because the old public key has environment keys sealed to it. Rate limited: `RL_LOGIN`. Audited `vault.created`. Exempt from the lock gate. |
 | `PATCH` | `/api/auth/vault` | Body `{ autoLockMinutes }`, one of the fixed menu; `0` disables the idle lock. Not exempt from the gate — a locked session has no business loosening a protection. Rate limited: `RL_MUTATION`. Audited `auth.autolock_changed`. |
 | `POST` | `/api/auth/vault/unlock` | Body is **exactly one of** `{ unlockVerifier }` or `{ ukUnlockVerifier }` — a union, so a body carrying both or neither is a **422**. Compared in constant time against the matching stored `SHA-256`, sets `vault_unlocked_at` for 8 hours, returns `{ vault, unlockedUntil }`. Rate limited: `RL_LOGIN`, plus a durable per-account lockout (5 free attempts, then 60 s doubling to a 60 min ceiling) that **both** forms share — they attest to the same capability, and separate counters would be two budgets against one gate. Audited `vault.unlocked`, and `vault.unlock_failed` on refusal, each carrying `method: passphrase \| passkey` — with a uniform reason, so the audit log does not become the oracle the API refuses to be. Exempt from the lock gate. |
@@ -255,6 +255,21 @@ RFC 8252-style loopback flow with PKCE (S256 only), against this server — neve
 directly. The CLI opens `/cli/authorize?challenge&port&device&state` in a browser; an
 already-signed-in person approves the named device; the consent screen redirects the
 one-time code to `http://127.0.0.1:{port}/callback`; the CLI exchanges code + verifier.
+
+**The User Key hand-off.** A CLI token acts as its user, and that user's environment grants
+are sealed to a public key whose private half is wrapped under the User Key — so a token
+alone decrypts nothing. The CLI therefore generates an ephemeral X25519 keypair and adds
+`&handoff=<43-char base64url public key>` to the authorize URL. The consent screen, with the
+vault unlocked *in that tab*, seals the User Key to it and appends the resulting
+`xk2.x25519.…` blob to the loopback redirect as `&handoff=…`. The CLI opens it with the
+private half it never wrote down and keeps the User Key in the OS keyring.
+
+**No part of that reaches this server.** `POST /api/cli/authorize` carries the org, the
+device name and the challenge, exactly as before, and returns only the code. The wrap is
+produced in the browser and consumed on `127.0.0.1`; a query parameter rather than a
+fragment because the CLI's listener is an HTTP server and a fragment would never arrive. The
+parameter is optional in both directions — an older CLI omits it and gets the flow it always
+had. Format and rationale: `docs/security/e2ee-crypto-spec.md` §13.2.
 
 | Method | Path | Notes |
 |---|---|---|
@@ -676,7 +691,7 @@ a client can branch on it rather than on prose.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` `POST` | `/api/orgs/{orgSlug}/tokens/service` | Both gated on `token.create` — the listing is a map of every standing credential, which is reconnaissance for anyone who should not hold it. Minting is session + CSRF only (a bearer credential may not mint further credentials). Body `{ name, projectSlug, environmentSlug, accessLevel?: read\|write, expiresAt?, ipAllowlist? }` — `read` by default, `admin` unrepresentable. The token is returned **once**; only its hash is stored. Audited as `token.created`. |
+| `GET` `POST` | `/api/orgs/{orgSlug}/tokens/service` | Both gated on `token.create` — the listing is a map of every standing credential, which is reconnaissance for anyone who should not hold it. Minting is session + CSRF only (a bearer credential may not mint further credentials). Body `{ name, projectSlug, environmentSlug, accessLevel?: read\|write, expiresAt?, ipAllowlist?, publicKey? }` — `read` by default, `admin` unrepresentable. `publicKey` is the token's own X25519 public key, base64url, and is accepted only for an `e2ee` environment (a `server`-mode one refuses it with a 400 rather than storing a key nothing would use). The token is returned **once**; only its hash is stored. Audited as `token.created`. |
 | `GET` | `/api/orgs/{orgSlug}/tokens/cli` | "Your devices" — the caller's **own** CLI tokens only, revoked ones included so a recent revocation is visible. An admin revokes others' tokens without browsing their device names first. |
 | `DELETE` | `/api/orgs/{orgSlug}/tokens/{kind}/{tokenId}` | `kind` is `cli` or `service`. Your own CLI token: always. Someone else's, or any service token: `token.revoke`. Immediate — the hash lookup filters `revoked_at IS NULL` in SQL — and idempotent, with the audit record written only by the call that actually did it. |
 | `GET` | `/api/tokens/self` | Service-token introspection: the pinned organisation, project and environment as names and slugs, plus the token's own name and level. The answer derives from the credential row alone — there is no parameter to lie in. This is how `XECRET_TOKEN=… xecret run` learns its scope without configuration. |
@@ -684,6 +699,31 @@ a client can branch on it rather than on prose.
 A created token's value appears in exactly one response — the creation's — and is never
 retrievable again. No listing function selects `token_hash`. The same rule governs the
 invitation link above.
+
+#### The service token's two halves
+
+A service token for an `e2ee` environment carries its own X25519 private key, because it is
+the only principal that holds an environment's keys with no person behind it and a CI runner
+has no vault to keep one in. Its string is
+`xst_<live|test>_<43 chars>k<43 chars>` — auth half, the literal `k`, key half — specified
+byte for byte in `docs/security/e2ee-crypto-spec.md` §13.1.
+
+**Only the auth half is ever transmitted.** `Authorization: Bearer xst_<env>_<authHalf>` is
+what every endpoint sees, and `service_tokens.token_hash` is the SHA-256 of exactly that.
+The key half never leaves the client: `POST …/tokens/service` uploads the matching *public*
+key and nothing else, and the response's `token` field is still the auth half — the browser
+joins the two and shows the result once. A token presented **with** its key half is refused
+with a 401 rather than split, because receiving the key half means it has already leaked
+into a header, a proxy, and a log.
+
+Parsing is by offset. `k` is in the base64url alphabet and appears inside both halves about
+half the time, so the separator is read at index 43 of the secret segment and never searched
+for. `splitServiceToken` in `@xecret/core/auth` is the only thing that may take one apart.
+
+The single-half shape — `xst_<env>_<43 chars>` — remains valid. Every token minted before
+this and every token for a `server`-mode environment has it, authenticates normally, and
+simply holds no key: nothing can be sealed to it, so rotation excludes it from the required
+set rather than blocking for ever on a credential nobody can re-key.
 
 ### Audit
 

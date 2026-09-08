@@ -244,6 +244,29 @@ export function privateKeySignAad(userId: string): string {
 }
 
 /**
+ * Binds the User Key wrap that carries a vault across to `xecret login`.
+ *
+ * The one blob in this file that is never stored (spec §2.2 type 11, §13.2). It
+ * exists for the length of one loopback redirect: the consent screen seals the
+ * User Key to an ephemeral X25519 key the CLI generated and put in the authorize
+ * URL, and the CLI process opens it on `127.0.0.1`. The server sees neither half.
+ *
+ * The two components are what identify this login and nothing else. The **PKCE
+ * code challenge** names the authorization attempt — only the process holding
+ * the verifier can complete it — so a wrap captured from one login cannot be
+ * replayed into another. The **hand-off public key** names the recipient, so a
+ * page cannot substitute a wrap sealed to a key it chose without also knowing a
+ * challenge it never saw. Neither is a UUID, and both are base64url, which the
+ * component pattern already admits.
+ */
+export function cliHandoffAad(params: { codeChallenge: string; handoffPublicKey: string }): string {
+  assertComponent(params.codeChallenge, 'codeChallenge');
+  assertComponent(params.handoffPublicKey, 'handoffPublicKey');
+
+  return `${AAD_PREFIX_V2}.cli-handoff|${params.codeChallenge}|${params.handoffPublicKey}`;
+}
+
+/**
  * Whether a string is a well-formed v2 AAD.
  *
  * Used by the HKDF layer, where a sealed box passes its AAD as the `info`

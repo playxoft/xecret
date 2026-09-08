@@ -8,6 +8,7 @@ import {
   requireUserPrincipal,
   setAutoLock,
   vaultMaterial,
+  vaultMaterialOwner,
   vaultStatus,
 } from '@/server/vault-service';
 
@@ -35,13 +36,16 @@ export const GET = authenticatedRoute(
   async ({ principal, services }) => {
     const status = await vaultStatus(services, principal);
 
-    // A token principal has no vault and no lock screen; `vaultStatus` already
-    // reports it as configured and unlocked, and there is nothing to serve.
-    if (principal.kind !== 'user' || !status.configured) {
+    // Whose material, if any — see `vaultMaterialOwner`. A session reads its
+    // own; a CLI token reads its issuing user's, because it acts as that user
+    // and cannot open a single grant without their wrapped private key; a
+    // service token reads nothing, having no vault to read.
+    const owner = vaultMaterialOwner(principal);
+    if (owner === null || !status.configured) {
       return json({ vault: status, material: null });
     }
 
-    return json({ vault: status, material: await vaultMaterial(services, principal) });
+    return json({ vault: status, material: await vaultMaterial(services, owner) });
   },
   { allowLocked: true },
 );
@@ -88,7 +92,7 @@ export const POST = authenticatedRoute(
     const now = new Date();
     return json({
       vault: await vaultStatus(services, { ...user, vaultUnlockedAt: now }, now),
-      material: await vaultMaterial(services, user),
+      material: await vaultMaterial(services, user.user.id),
     });
   },
   { allowLocked: true },

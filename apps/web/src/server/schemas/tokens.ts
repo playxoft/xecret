@@ -47,6 +47,21 @@ const allowlistEntrySchema = z
     z.regex(/^[0-9a-fA-F:.]+(?:\/\d{1,3})?$/, 'Enter an IP address or CIDR range.'),
   );
 
+/**
+ * A 32-byte X25519 public key, base64url — 43 characters.
+ *
+ * Shape only, as everywhere else in this file: the server validates the
+ * alphabet and the length and never decodes the meaning. It cannot check that
+ * this key has a private half anybody holds, and a token whose key nobody can
+ * use simply fails to decrypt, loudly, on first use.
+ */
+const tokenPublicKeySchema = z
+  .string()
+  .check(
+    z.regex(/^[A-Za-z0-9_-]+$/, 'A public key is 32 bytes, base64url encoded.'),
+    z.length(43, 'A public key is 32 bytes, base64url encoded.'),
+  );
+
 export const serviceTokenCreateSchema = z.strictObject(
   {
     name: z
@@ -62,11 +77,33 @@ export const serviceTokenCreateSchema = z.strictObject(
     /** ISO 8601. Absent means the token does not expire. */
     expiresAt: z.optional(z.iso.datetime()),
     ipAllowlist: z.optional(z.array(allowlistEntrySchema).check(z.maxLength(32))),
+    /**
+     * The token's own X25519 public key, base64url (spec §13.1).
+     *
+     * Present when the target environment is `e2ee`: the browser minted the
+     * token's key half, kept it, and uploaded only this. The server never sees
+     * the private half and could not seal a grant to this key even if it wanted
+     * to — that is the browser's next request, to `…/keys/grants`.
+     *
+     * Absent for a `server`-mode environment, where a token needs no keypair,
+     * and absent from every token minted before Phase 4.
+     */
+    publicKey: z.optional(tokenPublicKeySchema),
   },
   UNEXPECTED_FIELD,
 );
 
 export type ServiceTokenCreateRequest = z.infer<typeof serviceTokenCreateSchema>;
+
+/**
+ * The transported public key as the 32 raw bytes the `bytea` column holds.
+ *
+ * The schema has already pinned the alphabet and the length, so this cannot
+ * fail on well-formed input; it is a decode, not a second validation.
+ */
+export function decodeTokenPublicKey(value: string): Uint8Array {
+  return fromBase64Url(value);
+}
 
 /** Validates and interprets `expiresAt`, refusing a token born expired. */
 export function resolveExpiry(value: string | undefined, now: Date): Date | null {

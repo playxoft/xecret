@@ -16,7 +16,14 @@ import {
 } from './session';
 import type { SessionRecord } from './session';
 import { INVITATION_TTL_MS, invitationExpiryFrom, invitationState } from './invitation';
-import { generateToken, hashToken, isWellFormedToken, verifyToken } from './tokens';
+import {
+  generateToken,
+  hashToken,
+  isWellFormedToken,
+  joinServiceToken,
+  splitServiceToken,
+  verifyToken,
+} from './tokens';
 
 const NOW = new Date('2026-08-11T12:00:00Z');
 
@@ -146,6 +153,121 @@ describe('token shape validation', () => {
     ['xct_live_not+base64url/at@all', 'invalid encoding'],
   ])('rejects %s (%s)', (token) => {
     expect(isWellFormedToken(token)).toBe(false);
+  });
+});
+
+/**
+ * The service token's two halves (spec §13.1).
+ *
+ * A service token is the only principal that holds an environment's keys with no
+ * person behind it, so it carries its own X25519 private scalar — and the only
+ * place that scalar can live is the token string, because a CI runner has no
+ * vault. Which half goes where is the entire security property: the auth half is
+ * hashed and stored, the key half is never transmitted at all.
+ */
+describe('service token halves', () => {
+  const KEY_HALF = toBase64Url(new Uint8Array(32).fill(7));
+
+  async function twoHalfToken(): Promise<{ authToken: string; token: string }> {
+    const { token: authToken } = await generateToken('service');
+    return { authToken, token: joinServiceToken(authToken, KEY_HALF) };
+  }
+
+  it('joins a server-minted auth half to a browser-minted key half', async () => {
+    const { authToken, token } = await twoHalfToken();
+
+    expect(token.startsWith(authToken)).toBe(true);
+    expect(token).toHaveLength(authToken.length + 1 + 43);
+    expect(token.slice(authToken.length)).toBe(`k${KEY_HALF}`);
+  });
+
+  it('splits back into exactly the two halves it was joined from', async () => {
+    const { authToken, token } = await twoHalfToken();
+
+    expect(splitServiceToken(token)).toEqual({ authToken, keyHalf: KEY_HALF });
+  });
+
+  /**
+   * The regression this format is one `indexOf` away from. `k` is in the
+   * base64url alphabet, so it appears inside both halves about half the time;
+   * searching for the separator instead of reading it at offset 43 splits the
+   * token in the wrong place and produces an auth half that will never
+   * authenticate. 200 iterations makes missing it negligible.
+   */
+  it('splits at a fixed offset, not at the first `k`', async () => {
+    let sawEarlyK = false;
+
+    for (let i = 0; i < 200; i += 1) {
+      const { token: authToken } = await generateToken('service');
+      const keyHalf = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+      const token = joinServiceToken(authToken, keyHalf);
+
+      // An auth half whose own characters contain a `k` is the failing case.
+      if (authToken.slice(9).includes('k')) sawEarlyK = true;
+
+      expect(splitServiceToken(token)).toEqual({ authToken, keyHalf });
+      expect(isWellFormedToken(token, 'service')).toBe(true);
+    }
+
+    expect(sawEarlyK, 'expected at least one auth half containing a `k`').toBe(true);
+  });
+
+  it('reports a legacy single-half token as having no key half', async () => {
+    const { token } = await generateToken('service');
+
+    expect(splitServiceToken(token)).toEqual({ authToken: token, keyHalf: null });
+    expect(isWellFormedToken(token, 'service')).toBe(true);
+  });
+
+  // A token minted before Phase 4 must keep working, and a token minted after it
+  // must not be mistaken for one of another kind.
+  it('does not accept a two-half shape for any other token kind', async () => {
+    const { token: cli } = await generateToken('cli');
+    const impostor = `${cli}k${KEY_HALF}`;
+
+    expect(isWellFormedToken(impostor, 'cli')).toBe(false);
+    expect(isWellFormedToken(impostor)).toBe(false);
+    expect(splitServiceToken(impostor)).toBeNull();
+  });
+
+  it.each([
+    ['xst_live_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8', 'a legacy token — handled above'],
+  ])('accepts %s (%s)', (token) => {
+    expect(splitServiceToken(token)).not.toBeNull();
+  });
+
+  it.each([
+    [`xst_live_${'A'.repeat(43)}x${'B'.repeat(43)}`, 'the wrong separator character'],
+    [`xst_live_${'A'.repeat(42)}k${'B'.repeat(43)}`, 'an auth half one character short'],
+    [`xst_live_${'A'.repeat(43)}k${'B'.repeat(42)}`, 'a key half one character short'],
+    [`xst_live_${'A'.repeat(43)}k${'B'.repeat(43)}k${'C'.repeat(43)}`, 'a third half'],
+    [`xst_live_${'A'.repeat(43)}k${'+'.repeat(43)}`, 'a key half outside the alphabet'],
+    [`xct_live_${'A'.repeat(43)}k${'B'.repeat(43)}`, 'a CLI token wearing the shape'],
+  ])('rejects %s (%s)', (token) => {
+    expect(splitServiceToken(token)).toBeNull();
+    expect(isWellFormedToken(token, 'service')).toBe(false);
+  });
+
+  it('refuses to join anything that is not a single-half service token', async () => {
+    const { token: cli } = await generateToken('cli');
+    const { authToken, token: full } = await twoHalfToken();
+
+    expect(() => joinServiceToken(cli, KEY_HALF)).toThrow(TypeError);
+    expect(() => joinServiceToken(full, KEY_HALF)).toThrow(TypeError);
+    expect(() => joinServiceToken(authToken, 'short')).toThrow(TypeError);
+  });
+
+  /**
+   * The property the whole split exists for. What the server stores is the
+   * digest of the auth half alone, so a full token presented in an
+   * `Authorization` header hashes to something no row holds — which is why
+   * `actor.ts` refuses it outright rather than splitting it helpfully.
+   */
+  it('hashes the auth half to something the full token cannot reproduce', async () => {
+    const { authToken, token } = await twoHalfToken();
+
+    expect(await verifyToken(authToken, await hashToken(authToken))).toBe(true);
+    expect(await verifyToken(token, await hashToken(authToken))).toBe(false);
   });
 });
 

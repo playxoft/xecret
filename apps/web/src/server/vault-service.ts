@@ -142,10 +142,36 @@ function statusFrom(
 /** The wraps and public material a locked client needs to attempt an unlock. */
 export async function vaultMaterial(
   services: ServiceContext,
-  user: Extract<Principal, { kind: 'user' }>,
+  userId: string,
 ): Promise<VaultMaterialPayload | null> {
-  const vault = await loadVault(services.db, user.user.id);
+  const vault = await loadVault(services.db, userId);
   return vault === null ? null : toVaultMaterial(vault);
+}
+
+/**
+ * Whose vault material this principal may read: their own, and nobody else's.
+ *
+ * A **session** reads its own, which is the lock screen's whole job. A **CLI
+ * token** reads its issuing user's, and that is a Phase 4 addition rather than
+ * an oversight corrected: a CLI token acts as its user, its grants are sealed to
+ * that user's X25519 public key, and the private half of that key exists only as
+ * a wrap under the User Key. Without this the headless `xecret login
+ * --passphrase` path could authenticate perfectly and then decrypt nothing,
+ * because it would have no wrap to open.
+ *
+ * It concedes exactly what serving the material to a locked session concedes,
+ * and no more — `VaultMaterialPayload` sets that out. The wraps are useless
+ * without the passphrase, the recovery codes, or a passkey; a CLI token holds
+ * none of those, and this endpoint hands out no verifier and no plaintext key.
+ *
+ * A **service token** reads nothing. It is not a person, has no vault, and its
+ * own key travels in its token string (spec §13.1) rather than under anybody's
+ * User Key — so there is no material that would mean anything to it.
+ */
+export function vaultMaterialOwner(principal: Principal): string | null {
+  if (principal.kind === 'user') return principal.user.id;
+  if (principal.kind === 'cliToken') return principal.userId;
+  return null;
 }
 
 /**

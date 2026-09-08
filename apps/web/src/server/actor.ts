@@ -8,6 +8,7 @@ import {
   isVaultUnlocked,
   isWellFormedToken,
   shouldTouchSession,
+  splitServiceToken,
   verifyCsrf,
 } from '@xecret/core/auth';
 import type { AccessLevel } from '@xecret/core/authz';
@@ -206,6 +207,18 @@ async function principalFromBearer(token: string, services: ServiceContext): Pro
   }
 
   if (isWellFormedToken(token, 'service')) {
+    // Only the auth half is ever presented (spec §13.1). A token arriving with
+    // its key half attached is refused rather than helpfully split: the key half
+    // is the X25519 scalar that opens every secret in the environment, and
+    // accepting it would mean this server — and its access logs, its proxies,
+    // and any error report along the way — had just been handed one. Refusing
+    // makes the mistake loud instead of silent, and the stored hash is of the
+    // auth half alone, so splitting would not even be a shortcut: it would be a
+    // second, worse code path to the same row.
+    if (splitServiceToken(token)?.keyHalf != null) {
+      throw errors.unauthenticated('service token presented with its key half');
+    }
+
     const record = await findServiceTokenByHash(services.db, hash);
     if (!record) throw errors.unauthenticated('unknown service token');
 

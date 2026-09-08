@@ -7,8 +7,9 @@ import { parseAuthorizeRequest } from './authorize-request';
  */
 
 const CHALLENGE = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
+const HANDOFF = '2Vx0Rg1qYy8cE3sJmKpLuA7dNhTfWbZoQi5Xr9SvGtE';
 
-function valid(): Record<string, string> {
+function valid(): Record<string, string | string[] | undefined> {
   return {
     challenge: CHALLENGE,
     port: '52310',
@@ -25,7 +26,34 @@ describe('parseAuthorizeRequest', () => {
       port: 52310,
       device: "Nitheesh's MacBook Pro",
       state: 'opaque-state-value',
+      handoff: null,
     });
+  });
+
+  /**
+   * The hand-off key (spec §13.2), which is optional in one direction only.
+   *
+   * Absent is the old flow and must stay usable: every already-installed CLI
+   * omits it, and refusing those would break `xecret login` everywhere the day
+   * this ships, for a capability those binaries cannot use anyway.
+   *
+   * Malformed is refused, because the page cannot satisfy it. Sealing to 20
+   * bytes of "key" produces a blob the CLI fails to open — after the code has
+   * been minted, the tab has closed, and the login has apparently succeeded.
+   */
+  it('accepts a hand-off key, and treats its absence as the old flow', () => {
+    expect(parseAuthorizeRequest({ ...valid(), handoff: HANDOFF })).toMatchObject({
+      handoff: HANDOFF,
+    });
+    expect(parseAuthorizeRequest(valid())).toMatchObject({ handoff: null });
+  });
+
+  it('rejects a malformed hand-off key rather than sealing to it', () => {
+    expect(parseAuthorizeRequest({ ...valid(), handoff: '' })).toBeNull();
+    expect(parseAuthorizeRequest({ ...valid(), handoff: 'short' })).toBeNull();
+    expect(parseAuthorizeRequest({ ...valid(), handoff: `${HANDOFF}a` })).toBeNull();
+    expect(parseAuthorizeRequest({ ...valid(), handoff: `${HANDOFF.slice(0, 42)}+` })).toBeNull();
+    expect(parseAuthorizeRequest({ ...valid(), handoff: [HANDOFF, HANDOFF] })).toBeNull();
   });
 
   it('rejects a missing or malformed challenge', () => {

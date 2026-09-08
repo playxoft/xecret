@@ -14,8 +14,9 @@ import {
   SelectValue,
   Skeleton,
 } from '@/components/ui';
-import { VaultProvider, VaultSetup, VaultUnlock } from '@/components/vault';
+import { useVaultKeys, VaultProvider, VaultSetup, VaultUnlock } from '@/components/vault';
 import { AuthCard } from '../../_components/auth-card';
+import { sealHandoff } from './handoff';
 
 /** The validated query parameters `xecret login` sent. See `page.tsx`. */
 export interface AuthorizeRequest {
@@ -23,6 +24,15 @@ export interface AuthorizeRequest {
   port: number;
   device: string;
   state: string;
+  /**
+   * A 32-byte X25519 public key the CLI generated for this login, base64url, or
+   * null when it did not ask for one.
+   *
+   * Present, it means the CLI wants the User Key handed across so it can open
+   * member grants for itself (spec §13.2) — which requires this tab to hold the
+   * keys, not merely for the session to be unlocked somewhere.
+   */
+  handoff: string | null;
 }
 
 interface MeResponse {
@@ -74,6 +84,11 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
   // signed out and wonders which problem is theirs.
   const me = useApiResource<MeResponse>('/auth/me');
 
+  // Works outside `VaultProvider`, over the module singleton — see
+  // `useVaultKeys`. What it answers is a question the server cannot: whether
+  // *this tab* holds the User Key, which is what a hand-off needs.
+  const vaultKeys = useVaultKeys();
+
   const [orgSlug, setOrgSlug] = useState<string | null>(null);
   const [phase, setPhase] = useState<'idle' | 'submitting' | 'approved'>('idle');
   const [failure, setFailure] = useState<string | null>(null);
@@ -106,6 +121,18 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
    * redirect on.
    */
   const vault = me.data?.vault ?? null;
+
+  /*
+   * A hand-off needs this tab's keys, not the session's unlocked flag.
+   *
+   * The two come apart routinely: the vault key store is per-page-load, so a
+   * session unlocked twenty minutes ago in another tab reports `unlocked: true`
+   * here while this tab holds nothing. Without this clause the screen would
+   * offer Approve, mint a code, and then have no User Key to seal — leaving the
+   * CLI signed in and unable to decrypt anything, which is the confusing half-
+   * success this whole gate exists to prevent.
+   */
+  const needsKeys = request?.handoff != null;
   const stage: Stage =
     vault === null
       ? me.error !== null
@@ -113,7 +140,7 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
         : 'loading'
       : !vault.configured
         ? 'setup'
-        : !vault.unlocked || relocked
+        : !vault.unlocked || relocked || (needsKeys && vaultKeys === null)
           ? 'unlock'
           : 'decide';
 
@@ -137,6 +164,27 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
     setFailure(null);
 
     try {
+      /*
+       * Sealed *before* the code is minted.
+       *
+       * Both halves have to reach the CLI on one redirect, and only one of them
+       * can be re-obtained: a failure here costs a page the user can retry,
+       * whereas a failure after the mint burns a single-use authorization code
+       * and sends them back to the terminal to start over.
+       *
+       * Nothing about this touches the network. The wrap is produced in this
+       * browser and consumed on `127.0.0.1` — `/cli/authorize` below carries the
+       * org, the device name and the challenge, exactly as it always did.
+       */
+      const handoff =
+        request.handoff === null || vaultKeys === null
+          ? null
+          : await sealHandoff({
+              userKey: vaultKeys.userKey,
+              codeChallenge: request.challenge,
+              handoffPublicKey: request.handoff,
+            });
+
       const result = await api.post<AuthorizeResponse>('/cli/authorize', {
         orgSlug: selectedSlug,
         deviceName: request.device,
@@ -144,7 +192,9 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
       });
 
       setPhase('approved');
-      window.location.replace(callbackUrl(request, { code: result.code }));
+      window.location.replace(
+        callbackUrl(request, handoff === null ? { code: result.code } : { code: result.code, handoff }),
+      );
     } catch (cause) {
       setPhase('idle');
 
@@ -275,7 +325,12 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
                  both are derived from `me.data.vault` — but the compiler does
                  not know that from a narrowing on `stage`, and asserting it
                  would be a claim maintained by hand. */
-              <VaultGate mode={stage} user={me.data.user} onUnlocked={() => void me.reload()} />
+              <VaultGate
+                mode={stage}
+                user={me.data.user}
+                onUnlocked={() => void me.reload()}
+                handsOffKeys={needsKeys}
+              />
             )}
 
             {stage === 'unreadable' ? (
@@ -320,10 +375,17 @@ function VaultGate({
   mode,
   user,
   onUnlocked,
+  handsOffKeys,
 }: {
   mode: 'setup' | 'unlock';
   user: MeResponse['user'];
   onUnlocked: () => void;
+  /**
+   * Whether this unlock exists to produce a key for the CLI rather than to
+   * satisfy the server's gate — which is a different sentence to read when the
+   * session already says it is unlocked and the screen is asking anyway.
+   */
+  handsOffKeys: boolean;
 }) {
   return (
     <div className="flex flex-col gap-4">
@@ -332,9 +394,11 @@ function VaultGate({
           {mode === 'unlock' ? 'Your vault is locked' : 'Set up your vault first'}
         </p>
         <p className="text-fg-muted mt-1 text-sm leading-6">
-          {mode === 'unlock'
-            ? 'The CLI is issued a token that can read your secrets, so this has to be you.'
-            : 'Your account has no vault yet. Creating one takes a minute, and the CLI cannot be authorised without it.'}
+          {mode === 'setup'
+            ? 'Your account has no vault yet. Creating one takes a minute, and the CLI cannot be authorised without it.'
+            : handsOffKeys
+              ? 'The CLI is given the key that decrypts your secrets, and only this browser can hand it over. Unlocking here is what produces it — nothing is sent to the server.'
+              : 'The CLI is issued a token that can read your secrets, so this has to be you.'}
         </p>
       </div>
 

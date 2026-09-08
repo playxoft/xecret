@@ -140,12 +140,16 @@ export async function rotateEnvironment(params: {
     });
 
     params.onProgress?.('writing');
-    const result = await api.post<{ version: number; grantCount: number }>(
+    // The route answers `{ activeEdk: { id, version }, grants }` — the same
+    // `activeEdk` shape every other key endpoint uses. Reading it as a flat
+    // `{ version, grantCount }` produced two `undefined`s that reached the
+    // success toast as "key version undefined".
+    const result = await api.post<{ activeEdk: { id: string; version: number }; grants: number }>(
       rotatePath(params.target),
       { newVersion: params.plan.newVersion, grants },
     );
 
-    return { status: 'rotated', version: result.version, grantCount: result.grantCount };
+    return { status: 'rotated', version: result.activeEdk.version, grantCount: result.grants };
   } catch (cause) {
     const problems = completenessProblems(cause);
     if (problems !== null) return { status: 'incomplete', problems };

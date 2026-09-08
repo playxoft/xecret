@@ -125,6 +125,7 @@ in §4; `HKDF` info strings in §3.
 | 8 | Grant signature | `env_key_grants.signature` | `xk2.ed25519.` | Ed25519 by the creator's signing key | n/a (§6) |
 | 9 | Secret value ciphertext | `secret_versions.ciphertext` | `xk2.gcm.` | `EDK` | `secret-value` |
 | 10 | Secret note ciphertext | `secrets.encNote` | `xk2.gcm.` | `EDK` | `secret-note` |
+| 11 | CLI hand-off UK wrap | **nowhere** — loopback URL only (§13.2) | `xk2.x25519.` | sealed box to the CLI's ephemeral X25519 public key | `cli-handoff` |
 
 Types 6 and 7 are the same construction to the same public key with different AAD and
 different plaintext. They are stored in separate columns rather than as one sealed pair
@@ -133,7 +134,8 @@ because the EHK is re-sealed unchanged across an EDK rotation while the EDK is r
 **Plaintexts.** Types 1–3 encrypt the 32-byte UK. Types 4–5 encrypt the 32-byte private key
 (the X25519 scalar, and the Ed25519 32-byte seed respectively — not the 64-byte expanded
 form). Type 6 encrypts the 32-byte EDK, type 7 the 32-byte EHK. Types 9–10 encrypt the
-NFC-normalised UTF-8 bytes of the value or note.
+NFC-normalised UTF-8 bytes of the value or note. Type 11 encrypts the 32-byte UK, like types
+1–3, but asymmetrically and to a key that exists for one login and is then discarded.
 
 **Size limit.** `MAX_SECRET_VALUE_BYTES` (64 KiB, `crypto/secrets.ts`) applies to the
 *plaintext* on the client and to the *ciphertext* on the server, which can no longer see the
@@ -319,6 +321,7 @@ no separators, and MUST be non-negative.
 | `uk-wrap` (prf) | `xecret.aad.v2.uk-wrap\|<userId>\|prf\|<credentialIdB64Url>` | 3 |
 | `privkey-enc` | `xecret.aad.v2.privkey-enc\|<userId>` | 4 |
 | `privkey-sign` | `xecret.aad.v2.privkey-sign\|<userId>` | 5 |
+| `cli-handoff` | `xecret.aad.v2.cli-handoff\|<codeChallengeB64Url>\|<handoffPublicKeyB64Url>` | 11 |
 
 Notes on the less obvious choices:
 
@@ -851,7 +854,118 @@ server.**
 
 ---
 
-## 13. Review log
+## 13. Credential formats
+
+Two strings that are not blobs, and are specified here because both carry key material
+between an unlocked client and a headless one, and neither may be reconstructed by guessing.
+
+### 13.1 The service token
+
+A service token is the only principal in this system that holds an environment's keys without
+a person behind it. It therefore carries its own X25519 private key, and the only place that
+key can live is in the token string itself — a CI runner has no vault, no passphrase, and
+nowhere to keep a secret that the token string is not already keeping.
+
+```
+xst_<live|test>_<authHalf>k<keyHalf>
+
+authHalf := b64url(random(32))        // exactly 43 characters
+keyHalf  := b64url(random(32))        // exactly 43 characters
+```
+
+Eighty-seven characters after the environment segment: 43, one `k`, 43.
+
+**Parsing is by offset, never by search.** `k` is a member of the base64url alphabet, so both
+halves routinely contain one, and `indexOf('k')` finds the wrong separator roughly half the
+time. A parser MUST take the separator at index 43 of the secret segment, MUST require exactly
+one character there, MUST require it to be `k`, and MUST require the total secret segment to be
+exactly 87 characters. Anything else is not a v2 service token.
+
+The separator is a character rather than a third `_` because `_` is also in the alphabet and the
+existing `isWellFormedToken` splits on the first two underscores; a third would have changed how
+every other token kind parses. A fixed offset with a fixed sentinel is checkable in one
+comparison and cannot be made ambiguous by any value of either half.
+
+**The two halves are independent 32-byte CSPRNG values.** Neither is derived from the other,
+so a server that holds `SHA-256(authHalf)` learns nothing about `keyHalf`, and this is the
+whole design:
+
+| Half | Where it goes | What the server stores |
+|---|---|---|
+| `authHalf` | The `Authorization: Bearer` header, hashed on arrival | `SHA-256("xst_<env>_" + authHalf)` in `service_tokens.token_hash` |
+| `keyHalf` | **Nowhere.** It never leaves the client, is never transmitted, never logged, and never written to disk by the server | nothing |
+
+A client transmits `xst_<env>_<authHalf>` and nothing else. The full string is a credential
+*and* a key; the half that authenticates is the only half any endpoint ever sees. An
+implementation that sends the whole token in an `Authorization` header has handed the server
+every secret in the environment and defeated the entire model — this is the single most
+important sentence in this section.
+
+**The key half is the X25519 private scalar directly**, not a seed run through a KDF. X25519
+clamps internally, so any 32 bytes are a valid scalar; this is exactly what
+`generateEncryptionKeyPair` does with `random(32)`. Deriving instead would require a new
+registered HKDF branch, which §3.3 forbids without a change to that table, and would buy
+nothing: the input is already 32 uniformly random bytes with no other use.
+
+**Token creation.** The creator's browser holds an unlocked vault, so it — not the server —
+mints the token string, derives `publicKey = X25519.publicKeyOf(keyHalf)`, uploads
+`publicKey` and `keyAlgorithm = "X25519"` alongside the token record, and seals and signs an
+EDK+EHK grant to that public key through the ordinary §5/§6 machinery with
+`recipientKind = "token"`. For a `server`-mode environment none of that happens and the token
+carries no key half, which is what keeps the legacy shape working.
+
+**The legacy shape stays valid.** A token minted before this section — `xst_<env>_<43>`, with
+no separator and no key half — is still a well-formed service token and still authenticates. It
+simply has no `public_key`, so no grant can be sealed to it, and it cannot read an e2ee
+environment. Rotation excludes such tokens from its required set deliberately: a credential
+nobody can re-key must not block a rotation for ever.
+
+### 13.2 The CLI hand-off wrap
+
+`xecret login` ends with a CLI process that holds a bearer token and no key material. Under
+this model that is not enough — a CLI token acts as its user, and its user's grants are sealed
+to a public key whose private half is wrapped under the User Key. The UK has to cross from the
+browser, which has just unlocked it, to the CLI process, which cannot.
+
+It crosses sealed, over the loopback redirect that already carries the authorization code, and
+**never through the server**:
+
+1. The CLI generates an ephemeral X25519 keypair and puts the public half in the authorize URL
+   as `handoff=<b64url(32)>`, alongside the existing `challenge`, `port`, `device`, and `state`.
+2. The consent screen, with the vault unlocked, seals the 32-byte UK to that public key —
+   an ordinary §5 sealed box — under
+   `xecret.aad.v2.cli-handoff|<codeChallenge>|<handoffPublicKey>`.
+3. The resulting `xk2.x25519.` blob rides the loopback redirect as a `handoff` query parameter:
+   `http://127.0.0.1:<port>/callback?code=…&state=…&handoff=xk2.x25519.…`
+4. The CLI opens it with the ephemeral private key it never wrote down, stores the UK in the OS
+   keyring, and discards the ephemeral pair.
+
+**A query parameter, not a fragment.** Fragments are not transmitted, which is exactly why the
+browser uses them and exactly why one cannot be used here: the loopback listener is an HTTP
+server, and a fragment would never reach it. The destination is `127.0.0.1`, the request never
+leaves the machine, and the value is a sealed box that is useless without a private key held
+only by the process listening on that port.
+
+**The AAD binds the two things that identify this login.** The PKCE code challenge names the
+authorization attempt — only the process holding the verifier can complete it — and the
+hand-off public key names the recipient. A wrap captured from one login cannot be replayed into
+another, and a hostile page cannot substitute a wrap sealed to a key it chose, because it would
+have to know a challenge it never saw. Neither component is a UUID, so both are carried as
+base64url, which §4.1's component pattern already admits.
+
+**The server never sees the wrap, sealed or otherwise.** It is produced in the browser and
+consumed on `127.0.0.1`. `POST /api/cli/authorize` returns only the authorization code, exactly
+as before, and no request in this flow carries the UK in any form. §8's prohibition is
+unchanged and unweakened: a client MUST NOT send `SK`, the UK, any wrap key, or any private key
+to the server.
+
+**A hand-off is optional.** A CLI that omits `handoff` gets the old behaviour and can still read
+`server`-mode environments; it simply cannot open a member grant. The consent screen omits the
+parameter when the CLI did not ask for one, and never treats its absence as an error.
+
+---
+
+## 14. Review log
 
 | Date | Change |
 |---|---|
@@ -859,3 +973,4 @@ server.**
 | 2026-09-08 | Phase 1 (TypeScript implementation). Three clarifications, all found by writing the code against this text: §2.2 now derives the server's ciphertext bound rather than calling it "slightly larger"; §5.2 separates format failures from key-dependent ones, which the vector schema's `errorClass` already assumed and the prose did not; §12 records the Argon2 parameter carve-out the vector file uses. No format, no derivation, and no byte layout changed. |
 | 2026-09-08 | Phase 2a (server side of the user vault). The two references to `nextPinFailure` in `auth/pin.ts` now name `nextUnlockFailure` in `auth/vault.ts`, which replaced it when the PIN was retired, and §7.5 records that the recovery counter is kept separate from the passphrase one. No format, no derivation, and no byte layout changed. |
 | 2026-09-08 | Phase 2b (passkey unlock). Adds `xecret.v2.uk-unlock-verifier` to §3.3 — the first and only HKDF branch taking the UK as input keying material — and splits §8 into the two verifiers, with one shared attempt counter across both. Closes a gap the client half surfaced: a passkey unlock opens blob type 3 and therefore holds the UK, never `SK`, so it could decrypt everything and still not prove an unlock. No existing format, derivation, or byte layout changed; the new branch is additive. |
+| 2026-09-08 | Phase 4 (Go CLI and service-token E2EE). Adds §13, which specifies two strings the earlier phases had no headless client to need: the service token's `xst_<env>_<43>k<43>` layout, parsed by offset because `k` is in the base64url alphabet, with only the auth half ever transmitted; and the CLI hand-off wrap that carries the User Key from an unlocked browser to a `xecret login` process over the loopback redirect. The hand-off adds blob type 11 to §2.2 and the `cli-handoff` purpose to §4.2, both reusing the §5 sealed box unchanged. No existing format, derivation, or byte layout changed; the additions are additive, the legacy service-token shape stays valid, and no new HKDF branch was introduced — the token's key half is the X25519 scalar directly, precisely so §3.3's closed registry did not have to grow. |

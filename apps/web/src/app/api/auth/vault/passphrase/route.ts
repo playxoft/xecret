@@ -59,6 +59,6 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
   // client still holding it would fail its next unlock against a stale row.
   return json({
     vault: await vaultStatus(services, principal),
-    material: await vaultMaterial(services, user),
+    material: await vaultMaterial(services, user.user.id),
   });
 });

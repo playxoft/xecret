@@ -75,7 +75,7 @@ export const POST = authenticatedRoute(
     const now = new Date();
     return json({
       vault: await vaultStatus(services, { ...user, vaultUnlockedAt: now }, now),
-      material: await vaultMaterial(services, user),
+      material: await vaultMaterial(services, user.user.id),
     });
   },
   { allowLocked: true },

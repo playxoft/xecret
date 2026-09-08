@@ -22,8 +22,16 @@ export {
 } from './session';
 export type { CookieOptions, SessionRecord } from './session';
 
-export { generateToken, hashToken, isWellFormedToken, TOKEN_PREFIXES, verifyToken } from './tokens';
-export type { GeneratedToken, TokenKind } from './tokens';
+export {
+  generateToken,
+  hashToken,
+  isWellFormedToken,
+  joinServiceToken,
+  splitServiceToken,
+  TOKEN_PREFIXES,
+  verifyToken,
+} from './tokens';
+export type { GeneratedToken, ServiceTokenParts, TokenKind } from './tokens';
 
 export { INVITATION_TTL_MS, invitationExpiryFrom, invitationState } from './invitation';
 export type { InvitationLifecycle, InvitationState } from './invitation';
