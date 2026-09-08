@@ -212,7 +212,7 @@ hostile, and in both cases refusing is correct.
 **Upgrade path.** A stored `kdfParams` that differs from the current defaults in **any**
 field marks the record as needing an upgrade. On the next successful unlock the client
 re-derives `SK` at the current parameters with a fresh salt and re-wraps the UK. `!==`, not
-`<`, deliberately — the same reasoning as `pinNeedsRehash` in `auth/pin.ts`: an upgrade must
+`<`, deliberately — the same reasoning the retired `pinNeedsRehash` had: an upgrade must
 also be able to *lower* a cost, if a parameter was ever set to a value some platform cannot
 reach.
 
@@ -609,8 +609,10 @@ attack, so there is nothing a slow KDF would buy, and the lookup stays a single 
 The domain-separation prefix ensures this digest can never collide with another SHA-256 use
 over the same bytes.
 
-Lookups MUST be rate-limited and audited. Reuse the `nextPinFailure` backoff from
-`auth/pin.ts` — five free attempts, then exponential 60 s → 60 min — and emit
+Lookups MUST be rate-limited and audited. Use the `nextUnlockFailure` backoff from
+`auth/vault.ts` — five free attempts, then exponential 60 s → 60 min — against a counter kept
+**separate** from the passphrase one, so a mistyped code cannot spend the budget protecting the
+passphrase. Emit
 `vault.recovery_used` on success.
 
 ### 7.6 RCK derivation
@@ -643,7 +645,7 @@ guarantee is that learning one branch reveals nothing about another.
 **What it is and is not for.** It is not the thing that decrypts anything, and possessing it
 opens no vault. Unlock is fundamentally a client-side question — *can I unwrap the UK?* — and
 the answer never leaves the browser. The verifier exists so the server can maintain
-`vaultUnlockedAt` for API gating, apply the `nextPinFailure` backoff to unlock attempts, and
+`vaultUnlockedAt` for API gating, apply the `nextUnlockFailure` backoff to unlock attempts, and
 record an audit trail. That is defence in depth and audit fidelity, exactly as `isUnlocked()`
 does today, and nothing more.
 
@@ -801,3 +803,4 @@ server.**
 |---|---|
 | 2026-09-08 | Initial version. Phase 0 of the zero-knowledge migration; normative for ADR 0009. |
 | 2026-09-08 | Phase 1 (TypeScript implementation). Three clarifications, all found by writing the code against this text: §2.2 now derives the server's ciphertext bound rather than calling it "slightly larger"; §5.2 separates format failures from key-dependent ones, which the vector schema's `errorClass` already assumed and the prose did not; §12 records the Argon2 parameter carve-out the vector file uses. No format, no derivation, and no byte layout changed. |
+| 2026-09-08 | Phase 2a (server side of the user vault). The two references to `nextPinFailure` in `auth/pin.ts` now name `nextUnlockFailure` in `auth/vault.ts`, which replaced it when the PIN was retired, and §7.5 records that the recovery counter is kept separate from the passphrase one. No format, no derivation, and no byte layout changed. |

@@ -37,14 +37,19 @@ export interface SessionOrganization {
 }
 
 /**
- * Whether this session may currently reach a secret.
+ * Whether this session may currently reach key material.
  *
  * Two booleans rather than one tri-state, because the two questions have
- * different answers and different screens: `configured: false` means "choose a
- * PIN", `unlocked: false` means "enter yours", and a single `locked` flag would
- * make the shell guess which.
+ * different answers and different screens: `configured: false` means "set up
+ * your vault", `unlocked: false` means "unlock it", and a single `locked` flag
+ * would make the shell guess which.
+ *
+ * Phase 2b: the vault's *material* — the wraps, the public keys, the KDF
+ * parameters — is deliberately absent here. It comes from `GET /api/auth/vault`
+ * and belongs in the in-memory key store the unlock UI will own, not in a
+ * context every screen reads.
  */
-export interface PinStatus {
+export interface VaultStatus {
   configured: boolean;
   unlocked: boolean;
   /** ISO 8601. When the current unlock lapses; `null` while locked. */
@@ -53,29 +58,10 @@ export interface PinStatus {
   autoLockMinutes: number;
 }
 
-/**
- * The answer to "email me a PIN reset link".
- *
- * `sent: false` is a **successful** request with an unhappy answer, and it now
- * covers two of them: mail is optional in a self-hosted install and this
- * deployment may have none, or the provider refused the send outright. The
- * route awaits the send precisely so the second case can be answered here
- * rather than discovered by an empty inbox. `reason` says which.
- *
- * Neither is an error status, so callers must read this flag rather than
- * treating a resolved promise as "check your inbox" — the failure mode that
- * flag prevents is somebody watching a mailbox nothing will arrive in.
- */
-export interface PinResetResult {
-  sent: boolean;
-  /** Why nothing was sent, and what to do instead. Present when `sent` is false. */
-  reason?: string;
-}
-
 export interface SessionValue {
   user: SessionUser;
   organizations: readonly SessionOrganization[];
-  pin: PinStatus;
+  vault: VaultStatus;
   /** Locks this session without ending it, then re-reads the session. */
   lock: () => Promise<void>;
   /**
@@ -107,7 +93,7 @@ export interface SessionValue {
 export interface MeResponse {
   user: SessionUser;
   organizations: readonly SessionOrganization[];
-  pin: PinStatus;
+  vault: VaultStatus;
 }
 
 const SessionContext = createContext<SessionValue | null>(null);

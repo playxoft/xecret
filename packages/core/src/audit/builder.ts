@@ -122,6 +122,18 @@ export type AuditDenial = Extract<Decision, { allowed: false }>;
 export type AuditErrorReason =
   | 'internal'
   | 'invalidInput'
+  /**
+   * A presented credential did not verify — a wrong master passphrase, a
+   * recovery code that opens nothing.
+   *
+   * Distinct from `invalidInput`, which says the request was malformed. The
+   * difference matters to whoever reads a burst of these: one is a client with
+   * a bug, the other is somebody guessing. Deliberately the *only* reason the
+   * vault's unlock and recovery paths ever record, so a reader cannot tell a
+   * wrong passphrase from a lockout from an absent vault — the audit log must
+   * not become the oracle the API refuses to be.
+   */
+  | 'invalidCredentials'
   | 'conflict'
   | 'notFound'
   | 'rateLimited'

@@ -189,7 +189,7 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
  * better trade than keeping a second, permanently advisory count on every
  * successful creation — which is exactly the check-then-act this change removed.
  *
- * Nothing is recorded when the account holds none, as `POST /api/auth/pin/reset`
+ * Nothing is recorded when the account holds none, as `POST /api/auth/vault/lock`
  * does with a null organisation: the record has nowhere to live, and inventing
  * somewhere for it is worse than the gap. Reachable only if the last membership
  * disappeared between the transaction's count and this one.

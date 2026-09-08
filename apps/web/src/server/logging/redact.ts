@@ -71,7 +71,6 @@ const SENSITIVE_WORDS = [
   'secret',
   'password',
   'passphrase',
-  'pin',
   'token',
   'credential',
   'authorization',
@@ -88,6 +87,14 @@ const SENSITIVE_WORDS = [
   'private',
   'jwt',
   'seed',
+  /**
+   * The zero-knowledge artifacts. A wrap is an offline attack surface against a
+   * master passphrase, and a verifier is what unlocks a session — neither has
+   * any business in a log line, however well-meant the field that carried it.
+   */
+  'wrap',
+  'verifier',
+  'recovery',
 ];
 
 /**

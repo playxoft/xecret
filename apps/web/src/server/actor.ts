@@ -5,7 +5,7 @@ import {
   evaluateSession,
   hashToken,
   isSafeMethod,
-  isSessionUnlocked,
+  isVaultUnlocked,
   isWellFormedToken,
   shouldTouchSession,
   verifyCsrf,
@@ -46,7 +46,7 @@ export type Principal =
       sessionId: string;
       user: SessionUser;
       /**
-       * When this session last had its PIN accepted, or `null` for never.
+       * When this session last unlocked its owner's vault, or `null` for never.
        *
        * Carried on the principal rather than re-queried by the gate: the session
        * lookup already returned it, and a second query per request to read one
@@ -57,7 +57,7 @@ export type Principal =
        * merely locked. Conflating the two would send a locked user back to
        * Firebase, which is the whole thing this design avoids.
        */
-      pinVerifiedAt: Date | null;
+      vaultUnlockedAt: Date | null;
     }
   | {
       kind: 'cliToken';
@@ -153,7 +153,7 @@ async function principalFromSession(token: string, services: ServiceContext): Pr
     kind: 'user',
     sessionId: session.id,
     user: session.user,
-    pinVerifiedAt: session.pinVerifiedAt,
+    vaultUnlockedAt: session.vaultUnlockedAt,
   };
 }
 
@@ -162,15 +162,23 @@ async function principalFromSession(token: string, services: ServiceContext): Pr
  *
  * Only a browser session can be locked. A CLI or service token carries no
  * ambient credential and belongs to an unattended process — there is nobody
- * present to type a PIN, and demanding one would break `xecret run` in CI while
- * protecting nothing: the threat the lock addresses is a person walking up to an
- * open laptop, which has no analogue in a build agent. Those tokens are bounded
- * instead by being individually revocable, scoped to one environment, and
- * recorded on every use.
+ * present to type a master passphrase, and demanding one would break
+ * `xecret run` in CI while protecting nothing: the threat the lock addresses is
+ * a person walking up to an open laptop, which has no analogue in a build agent.
+ * Those tokens are bounded instead by being individually revocable, scoped to
+ * one environment, and recorded on every use.
+ *
+ * ── What this gate is, under zero knowledge ──
+ * Defence in depth, and nothing more. A locked client cannot decrypt anything
+ * whatever this function returns, because it does not hold the User Key — the
+ * real boundary moved into the browser with ADR 0009. What the gate still buys
+ * is that a stale tab, a replayed `fetch` from the console, or a script holding
+ * a stolen cookie cannot reach a reveal endpoint at all, so those attempts
+ * neither consume a rate limit nor land in the audit log as reads that happened.
  */
 export function isUnlocked(principal: Principal, now: Date): boolean {
   if (principal.kind !== 'user') return true;
-  return isSessionUnlocked(principal.pinVerifiedAt, now);
+  return isVaultUnlocked(principal.vaultUnlockedAt, now);
 }
 
 async function principalFromBearer(token: string, services: ServiceContext): Promise<Principal> {

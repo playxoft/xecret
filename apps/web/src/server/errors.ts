@@ -25,8 +25,8 @@ export type ApiErrorCode =
   | 'rate_limited'
   | 'csrf_failed'
   /**
-   * The credential is valid but the session has not had its PIN entered
-   * recently — see `pin.ts` in `@xecret/core/auth`.
+   * The credential is valid but the session's vault is locked — see `vault.ts`
+   * in `@xecret/core/auth`.
    *
    * Its own code rather than a plain `forbidden`, because it is the one 403 in
    * the product that the *client* can resolve without anybody changing anything:
@@ -163,33 +163,38 @@ export const errors = {
     new ApiError('rate_limited', 'Too many requests. Please slow down and try again.'),
 
   /**
-   * The session is authenticated but locked.
+   * The session is authenticated but its vault is locked.
    *
-   * Carries no detail about *why* beyond the fact — whether the user has a PIN
+   * Carries no detail about *why* beyond the fact — whether the user has a vault
    * at all is answered by `GET /api/auth/me`, which is deliberately outside this
-   * gate so the dashboard can tell "set one up" from "enter yours" without
+   * gate so the dashboard can tell "set one up" from "unlock yours" without
    * needing a failed request to find out.
+   *
+   * The error *code* is unchanged from the PIN it replaced, deliberately. The
+   * Go CLI matches on `session_locked` to tell a lock apart from a permission
+   * failure, and renaming a wire constant to match an internal rename would
+   * break every CLI in the field to no benefit.
    */
   locked: (logDetail?: string): ApiError =>
     new ApiError(
       'session_locked',
-      'Enter your PIN to continue.',
+      'Unlock your vault to continue.',
       logDetail === undefined ? {} : { logDetail },
     ),
 
   /**
-   * Too many wrong PINs.
+   * Too many failed unlock or recovery attempts.
    *
    * The wait is stated because it is the only actionable thing left, and it
    * discloses nothing: the caller already knows they were refused, and the
    * schedule is a published constant. Rounded up to whole seconds so the message
    * never says "wait 0 seconds" for a lockout that has not quite elapsed.
    */
-  pinLocked: (retryAfterMs: number): ApiError =>
+  vaultLocked: (retryAfterMs: number): ApiError =>
     new ApiError(
       'rate_limited',
-      `Too many incorrect PINs. Try again in ${describeWait(retryAfterMs)}.`,
-      { logDetail: 'pin lockout' },
+      `Too many failed attempts. Try again in ${describeWait(retryAfterMs)}.`,
+      { logDetail: 'vault lockout' },
     ),
 
   csrf: (logDetail: string): ApiError =>

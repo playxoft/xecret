@@ -460,11 +460,16 @@ audit_logs — no FKs by design; references are soft
 0008  PIN auto-lock
 0009  organization creator index
 0010  audit partitions: quarterly, and into the audit_parts schema
+0011  user vault (user_keys, user_key_wraps, user_passkeys); retires the PIN
 ```
 
-The 15 tables catalogued above are the ones 0000 creates. `user_pins`, `pin_reset_tokens` and
-`cli_auth_codes` arrive in 0004 and 0005 and are not catalogued in this document — which is why §8
-counts 18 tables in `public` and this list counts 15.
+The 15 tables catalogued above are the ones 0000 creates. `cli_auth_codes` arrives in 0005, and
+`user_keys`, `user_key_wraps` and `user_passkeys` in 0011; none of the four is catalogued in this
+document. `user_pins` and `pin_reset_tokens` existed between 0004 and 0011 and are gone — 0011 is
+the first migration in the project to drop a table, and the reasoning is at the top of the file.
+`sessions.pin_verified_at` became `sessions.vault_unlocked_at` in the same migration, as an
+add-then-drop rather than a rename: the old values are wrong under the new model, because a session
+that entered a PIN has not unlocked a vault.
 
 Migration `0002` is not optional. The application role gets `SELECT`/`INSERT`/`UPDATE`/
 `DELETE` on tenant tables, `SELECT`/`INSERT` only on `audit_logs`, and no DDL rights

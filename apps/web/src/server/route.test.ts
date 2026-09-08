@@ -101,7 +101,7 @@ const principal = {
   kind: 'user' as const,
   // Unlocked. The lock gate lives in `authenticatedRoute`, and these fixtures
   // exercise what happens *past* it.
-  pinVerifiedAt: new Date(),
+  vaultUnlockedAt: new Date(),
   sessionId: uuidv7(),
   user: {
     id: uuidv7(),
@@ -581,7 +581,7 @@ describe('audit builder binding', () => {
 });
 
 /**
- * The PIN gate.
+ * The vault lock gate.
  *
  * These are the tests that make the lock a security control rather than a screen
  * the dashboard chooses to draw. The client's belief about whether it is
@@ -616,13 +616,13 @@ describe('the lock gate', () => {
     const body = (await response.json()) as { error: { code: string; message: string } };
 
     expect(body.error.code).toBe('session_locked');
-    expect(body.error.message).toBe('Enter your PIN to continue.');
+    expect(body.error.message).toBe('Unlock your vault to continue.');
   });
 
   it('lets an explicitly exempt route through', async () => {
-    // `/api/auth/me`, the PIN routes, and nothing else. Without this the lock
-    // screen cannot function and the account is bricked until the session
-    // expires.
+    // `/api/auth/me`, the vault routes that get a session unlocked, and nothing
+    // else. Without this the lock screen cannot function and the account is
+    // bricked until the session expires.
     actor.isUnlocked.mockReturnValue(false);
     const body = vi.fn();
 
@@ -658,8 +658,8 @@ describe('the lock gate', () => {
   });
 
   it('does not gate a public route', async () => {
-    // Sign-out has to work for somebody who cannot remember their PIN, and sign-in
-    // establishes the session the gate is about in the first place.
+    // Sign-out has to work for somebody who cannot remember their passphrase,
+    // and sign-in establishes the session the gate is about in the first place.
     actor.isUnlocked.mockReturnValue(false);
     const handler = publicRoute(async () => new Response(null, { status: 204 }));
 

@@ -31,16 +31,6 @@ export const TOKEN_PREFIXES = {
   service: 'xst',
   invitation: 'xin',
   /**
-   * A PIN reset link, emailed to the account's own address.
-   *
-   * Deliberately the same 256-bit shape as every other token rather than the
-   * six-digit code an "enter the code we sent you" flow would use. A code has to
-   * be short enough to retype, which puts its entire security in an attempt
-   * counter; this arrives as a link nobody types, so it can simply be
-   * unguessable and the counter becomes a formality.
-   */
-  pinReset: 'xpr',
-  /**
    * A CLI authorization code — the one-time value the consent screen hands to
    * the loopback listener during `xecret login`.
    *

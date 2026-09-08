@@ -532,16 +532,16 @@ describe('rate limiting', () => {
     expect(attemptKey(null, 'a@b.test')).toBe('-:a%40b.test');
   });
 
-  // The shape `/api/auth/pin/reset` and its `confirm` use. Both properties are
-  // load-bearing: no address in the key, or every proxy is a fresh allowance to
-  // send mail to somebody else's inbox; and a prefix of its own, or failed
-  // unlock attempts spend the budget the reset needs and the 429 lands on the
-  // emailed link.
+  // The shape `/api/auth/vault/recovery` and its `complete` step use. Both
+  // properties are load-bearing: no address in the key, or every proxy is a
+  // fresh allowance against somebody else's recovery kit; and a prefix of its
+  // own, or failed unlock attempts spend the budget the recovery needs and the
+  // 429 lands on the one flow that gets a locked-out account back in.
   it('gives a per-subject limit a counter that neither follows the address nor shares another', () => {
-    const key = rateLimitKey(['pin_reset', 'user-1']);
-    expect(key).toBe('pin_reset:user-1');
+    const key = rateLimitKey(['vault_recovery', 'user-1']);
+    expect(key).toBe('vault_recovery:user-1');
     expect(key).not.toBe(attemptKey('1.2.3.4', 'user-1'));
     expect(key).not.toBe(attemptKey(null, 'user-1'));
-    expect(key).not.toBe(rateLimitKey(['pin_reset', 'user-2']));
+    expect(key).not.toBe(rateLimitKey(['vault_recovery', 'user-2']));
   });
 });

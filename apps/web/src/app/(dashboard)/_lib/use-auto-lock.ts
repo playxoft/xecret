@@ -8,8 +8,8 @@ import { useEffect, useRef } from 'react';
  * The timer lives in the client because idleness is a fact only the client can
  * observe — the server sees requests, and reading a long secret list makes no
  * requests at all. What the timer *triggers* is the real, server-side lock:
- * the same `POST /api/auth/pin/lock` the menu uses, after which every gated
- * route refuses the session until the PIN is entered again. A client that
+ * the same `POST /api/auth/vault/lock` the menu uses, after which every gated
+ * route refuses the session until the vault is unlocked again. A client that
  * suppressed this hook would gain only a screen that fails at the 8-hour
  * server ceiling; the hook is the courtesy that locks a forgotten laptop in
  * minutes instead.

@@ -27,7 +27,7 @@ import type { OrgScope } from './tenancy';
  *  2. **The session requirement.** Inviting someone mints a credential (the
  *     invitation token), and the standing rule from the CLI authorization flow
  *     applies: a bearer credential may not mint further credentials. Member
- *     mutations therefore require the browser session, where CSRF and the PIN
+ *     mutations therefore require the browser session, where CSRF and the vault
  *     gate also live.
  *
  *  3. **The effective-access computation** behind "what can this member

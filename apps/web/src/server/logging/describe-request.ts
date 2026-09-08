@@ -141,18 +141,28 @@ function describeAuth(verb: string, rest: readonly string[]): RequestAction {
       : action('account.update', 'Updated', 'update', "the signed-in user's profile");
   }
 
-  if (first === 'pin') {
+  if (first === 'vault') {
     switch (second) {
       case 'unlock':
-        return action('auth.pin_unlock', 'Unlocked', 'unlock', 'the session with the account PIN');
+        return action('auth.vault_unlock', 'Unlocked', 'unlock', "the session's vault");
       case 'lock':
-        return action('auth.pin_lock', 'Locked', 'lock', 'the session');
-      case 'reset':
-        return rest[2] === 'confirm'
-          ? action('auth.pin_reset_confirm', 'Set', 'set', 'a new PIN from a reset link')
-          : action('auth.pin_reset', 'Sent', 'send', "a PIN reset link to the account's address");
+        return action('auth.vault_lock', 'Locked', 'lock', 'the session');
+      case 'passphrase':
+        return action('auth.vault_passphrase', 'Changed', 'change', 'the master passphrase');
+      case 'recovery':
+        return rest[2] === 'complete'
+          ? action('auth.vault_recovery', 'Recovered', 'recover', 'the vault with a recovery code')
+          : action('auth.vault_recovery', 'Used', 'use', 'a recovery code');
+      case 'prf':
+        return verb === 'DELETE'
+          ? action('auth.vault_passkey', 'Removed', 'remove', 'a passkey from the vault')
+          : action('auth.vault_passkey', 'Listed', 'list', "the vault's passkeys");
       default:
-        return action('auth.pin_set', 'Set', 'set', "the account's unlock PIN");
+        return verb === 'POST'
+          ? action('auth.vault_create', 'Created', 'create', "the account's vault")
+          : verb === 'PATCH'
+            ? action('auth.vault_autolock', 'Changed', 'change', 'the auto-lock interval')
+            : action('auth.vault_read', 'Read', 'read', "the vault's state");
     }
   }
 

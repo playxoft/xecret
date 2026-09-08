@@ -129,7 +129,7 @@ boundary is and always was.
 | `payload_too_large` | 413 | Body over 1 MB, or a secret over 64 KB |
 | `rate_limited` | 429 | Bucket exhausted |
 | `csrf_failed` | 403 | Double-submit pair missing or mismatched |
-| `session_locked` | 403 | Authenticated, but the session has not had its PIN entered recently |
+| `session_locked` | 403 | Authenticated, but the session's vault is locked — see §4 Auth |
 | `unavailable` | 503 | Misconfigured deployment — a missing binding, an unreachable database |
 | `internal_error` | 500 | Unhandled fault |
 
@@ -185,19 +185,60 @@ is pinned by a test for that reason.
 |---|---|---|
 | `POST` | `/api/auth/session` | Body `{ idToken }`. Verifies with Firebase, upserts the user, bootstraps a personal organisation on first login, sets the session and CSRF cookies. Rate limited: `RL_LOGIN`. |
 | `DELETE` | `/api/auth/session` | Revokes the current session, clears both cookies. Idempotent. |
-| `GET` | `/api/auth/me` | The signed-in user, their organisations, their role in each, and the PIN state. Exempt from the lock gate. |
-| `GET` `POST` | `/api/auth/pin` | Read the PIN state; set or change the PIN. Changing one requires the current PIN. Rate limited: `RL_LOGIN`. Exempt from the lock gate. |
-| `POST` | `/api/auth/pin/unlock` | Body `{ pin }`. Unlocks this session for 8 hours. Rate limited: `RL_LOGIN`, plus the per-account lockout. Exempt from the lock gate. |
-| `POST` | `/api/auth/pin/lock` | Locks this session, or every session with `{ everywhere: true }`. Does **not** revoke — the user stays signed in. |
-| `POST` | `/api/auth/pin/reset` | Emails a single-use reset link to the account's own address. Requires a session, so there is no enumeration oracle. Returns `{ sent, reason? }`; `sent` is false when mail is unconfigured **or** when the provider refused the send — a **200** either way, because the request was handled, so callers read the flag rather than the status. The send is awaited rather than deferred, so a refusal reaches the caller instead of an empty inbox. Rate limited: `RL_LOGIN` under a `pin_reset` key on the user alone, shared with `confirm` and separate from the unlock counter. Exempt from the lock gate. |
-| `POST` | `/api/auth/pin/reset/confirm` | Body `{ token, pin }`. Requires the emailed token **and** a session belonging to the same account. Rate limited: the same `pin_reset` counter as above. Exempt from the lock gate. |
+| `GET` | `/api/auth/me` | The signed-in user, their organisations, their role in each, and the vault state (`{ configured, unlocked, unlockedUntil, autoLockMinutes }`). Never carries key material. Exempt from the lock gate. |
 | `GET` | `/api/auth/sessions` | Active sessions for the "signed-in devices" view. Never returns a token hash. |
 | `DELETE` | `/api/auth/sessions` | Sign out everywhere. Optional `?except=current`. |
-| `DELETE` | `/api/auth/account` | The account deletes itself. Body `{ confirm: <account email> }`. Browser sessions only (never a bearer token), PIN-gated, rate limited `RL_MUTATION`. One transaction: solo organisations are soft-deleted with the account, other memberships removed, every session and CLI token revoked, the user row soft-deleted — terminal, since the identity upsert refuses to revive a deleted row. **409** while the caller is the only active owner of an organisation other people are in: ownership must move first. Audited as `auth.account_deleted`; the response clears both cookies. |
+| `DELETE` | `/api/auth/account` | The account deletes itself. Body `{ confirm: <account email> }`. Browser sessions only (never a bearer token), vault-gated, rate limited `RL_MUTATION`. The vault is deleted outright, so every environment key sealed to that account's public key becomes unopenable. One transaction: solo organisations are soft-deleted with the account, other memberships removed, every session and CLI token revoked, the user row soft-deleted — terminal, since the identity upsert refuses to revive a deleted row. **409** while the caller is the only active owner of an organisation other people are in: ownership must move first. Audited as `auth.account_deleted`; the response clears both cookies. |
 
 `POST /api/auth/session` returns **401 with a fixed message** for every verification
 failure — expired, wrong audience, bad signature, unverified email. The specific reason is
 logged, never returned: telling a caller which part of a forged token to fix is a gift.
+
+### The vault
+
+Every secret is encrypted in the browser under a key hierarchy the server cannot open
+(ADR 0009; byte-level formats in `docs/security/e2ee-crypto-spec.md`). These endpoints
+store and return that hierarchy. **None of them decrypts anything, and none of them could
+be extended to** — the server holds no key to extend them with.
+
+Three conventions hold throughout:
+
+- **Binary values travel as unpadded base64url.** Public keys, the KDF salt, the unlock
+  verifier, lookup hashes and credential ids are raw bytes. Padding is refused, because
+  two spellings of one value would make a `bytea` equality lookup miss one of them.
+- **Wraps and encrypted private keys travel as `xk2.…` blob strings**, verbatim. The
+  server checks the prefix, the alphabet and length bounds — never the contents. Request
+  schemas are in `server/schemas/vault.ts` (`vaultCreateSchema`, `vaultUnlockSchema`,
+  `vaultPassphraseSchema`, `recoveryBeginSchema`, `recoveryCompleteSchema`,
+  `recoveryRegenerateSchema`, `passkeyEnrollSchema`, `autoLockSchema`).
+- **A recovery kit is exactly five codes.** Redeeming one invalidates all five, because
+  all five wrap the same User Key.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/auth/vault` | `{ vault, material }`. `material` is `null` when no vault exists or the caller is a token; otherwise `{ encAlgorithm, encPublicKey, encPrivateKeyEnc, signAlgorithm, signPublicKey, signPrivateKeyEnc, kdfSalt, kdfParams, passphraseWrap, recoveryCodesRemaining, passkeys[] }`. `recoveryCodesRemaining` is a count — a recovery wrap is only ever returned in exchange for its own lookup hash. Served to a **locked** session on purpose: an unlock is a client-side operation, and a client cannot unwrap a key it has not been given. Exempt from the lock gate. |
+| `POST` | `/api/auth/vault` | The setup ceremony, in one body: `{ encPublicKey, encPrivateKeyEnc, signPublicKey, signPrivateKeyEnc, kdfSalt, kdfParams, unlockVerifier, passphraseWrap, recoveryWraps[5] }`, each recovery entry `{ lookupHash, wrap }`. Written in one transaction, and unlocks the session that ran it. **409** on a second call — never an overwrite, because the old public key has environment keys sealed to it. Rate limited: `RL_LOGIN`. Audited `vault.created`. Exempt from the lock gate. |
+| `PATCH` | `/api/auth/vault` | Body `{ autoLockMinutes }`, one of the fixed menu; `0` disables the idle lock. Not exempt from the gate — a locked session has no business loosening a protection. Rate limited: `RL_MUTATION`. Audited `auth.autolock_changed`. |
+| `POST` | `/api/auth/vault/unlock` | Body `{ unlockVerifier }`. Compared in constant time against the stored `SHA-256`, sets `vault_unlocked_at` for 8 hours, returns `{ vault, unlockedUntil }`. Rate limited: `RL_LOGIN`, plus a durable per-account lockout (5 free attempts, then 60 s doubling to a 60 min ceiling). Audited `vault.unlocked`, and `vault.unlock_failed` on refusal — with a uniform reason, so the audit log does not become the oracle the API refuses to be. Exempt from the lock gate. |
+| `POST` | `/api/auth/vault/lock` | Locks this session, or every session with `{ everywhere: true }`. Does **not** revoke — the user stays signed in. Returns `{ locked }`. Audited `auth.locked`. |
+| `POST` | `/api/auth/vault/passphrase` | Body `{ currentUnlockVerifier, unlockVerifier, kdfSalt, kdfParams, passphraseWrap }`. Re-wraps the User Key and swaps the verifier in one transaction; returns `{ vault, material }` so the client can replace the wrap it now holds. Requires an unlocked session **and** the current passphrase: the gate proves this session unlocked at some point in the last 8 hours, the verifier proves the person typing knows it now. The User Key is unchanged, so recovery codes keep working and other devices stay unlocked. Rate limited: `RL_LOGIN`, plus the same lockout as unlock. Audited `vault.passphrase_changed`. |
+| `POST` | `/api/auth/vault/recovery` | Body `{ lookupHash }` — step one. Returns `{ wrap, material }` for the code that hash addresses. An unknown hash, an already-redeemed code and another account's code all get **one** indistinguishable refusal. Rate limited: `RL_LOGIN` under a `vault_recovery` key on the user alone, plus a per-account recovery lockout counted separately from the passphrase one, so a mistyped code cannot spend the budget protecting the passphrase. Exempt from the lock gate. |
+| `POST` | `/api/auth/vault/recovery/complete` | Body `{ lookupHash, unlockVerifier, kdfSalt, kdfParams, passphraseWrap, recoveryWraps[5] }` — step two. Redeems the code, sets the new passphrase and reissues the whole kit in one transaction, then unlocks the session; returns `{ vault, material }`. The reset and the reissue are not optional: somebody here has lost control of their passphrase, and four other codes still open the same key. **409** if the code was redeemed in between. Audited `vault.recovery_used` **and** `vault.recovery_codes_regenerated`. Exempt from the lock gate. |
+| `PUT` | `/api/auth/vault/recovery` | Body `{ unlockVerifier, recoveryWraps[5] }`. Reissues the kit from an unlocked session with the passphrase re-entered (sudo mode). Every live code is revoked in the transaction that writes the new five; redeemed ones keep their tombstones. Returns `{ vault, recoveryCodesRemaining }`. Audited `vault.recovery_codes_regenerated`. |
+| `GET` `POST` | `/api/auth/vault/prf` | List, or enrol, a passkey for one-touch unlock. `POST` body `{ credentialId, label, transports?, wrap }` → **201** `{ passkey }`. A passkey is never the only wrap — the passphrase wrap always exists and has no removal path — so enrolling adds a door rather than replacing one. Rate limited: `RL_MUTATION`. |
+| `DELETE` | `/api/auth/vault/prf/{passkeyId}` | Unenrols a passkey; its wrap goes with it by cascade. **204**. Scoped by user, so another account's id answers the same **404** as one that does not exist. |
+
+**What the server holds.** Public keys, an Argon2id salt and its parameters,
+`SHA-256(unlockVerifier)`, and a set of ciphertexts. The verifier is a *sibling* HKDF
+branch of the wrap key, so holding its digest opens nothing — it exists so the server can
+gate the API, throttle attempts, and keep an audit trail. A client MUST NOT send the
+stretched key, the User Key, any wrap key, or any private key, including in diagnostics.
+
+**The concession, stated plainly.** `GET /api/auth/vault` serves the wraps to a locked
+session, because an unlock cannot happen otherwise. A stolen session cookie therefore
+yields an *offline* Argon2id attack on the master passphrase, unbounded by the lockout.
+That is inherent to a browser-delivered zero-knowledge product, and it is why ADR 0009
+sets the passphrase bar where it does rather than at a composition rule.
 
 ### CLI authorization — how `xecret login` gets its token
 
@@ -208,7 +249,7 @@ one-time code to `http://127.0.0.1:{port}/callback`; the CLI exchanges code + ve
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/api/cli/authorize` | Session + CSRF only — a bearer credential may not mint further credentials, and the PIN lock gate applies. Body `{ orgSlug, deviceName, codeChallenge }`. Mints a single-use code (10 min TTL, hashed at rest, supersedes the user's outstanding codes). Requires active membership (`member.read`) — deliberately **not** `token.create`, which gates *service* tokens: a CLI token acts as its user and adds no authority. Rate limited: `RL_CLI_TOKEN`. Audited as `token.authorized`. |
+| `POST` | `/api/cli/authorize` | Session + CSRF only — a bearer credential may not mint further credentials, and the vault lock gate applies. Body `{ orgSlug, deviceName, codeChallenge }`. Mints a single-use code (10 min TTL, hashed at rest, supersedes the user's outstanding codes). Requires active membership (`member.read`) — deliberately **not** `token.create`, which gates *service* tokens: a CLI token acts as its user and adds no authority. Rate limited: `RL_CLI_TOKEN`. Audited as `token.authorized`. |
 | `POST` | `/api/cli/token` | Public — the caller holds no credential yet. Body `{ code, codeVerifier }`. The code is consumed atomically **before** the PKCE check, so a failed binding kills it rather than leaving it guessable. Membership is re-checked; the minted `xct_` token is returned exactly once. Every failure is the same fixed 401. Rate limited: `RL_CLI_TOKEN` by IP. Audited as `token.created`. |
 | `DELETE` | `/api/cli/token` | The token revokes itself — `xecret logout`. CLI-token bearers only; idempotent; audited as `token.revoked` by the call that actually did it. |
 
@@ -345,7 +386,8 @@ that degradation is severe. `limit` is clamped to 200.
 
 | Bucket | Applies to | Key |
 |---|---|---|
-| `RL_LOGIN` | `POST /api/auth/session` | IP + Firebase subject |
+| `RL_LOGIN` | `POST /api/auth/session`, vault create / unlock / passphrase | IP + subject |
+| `RL_LOGIN`, `vault_recovery` key | Vault recovery, both steps | user id alone |
 | `RL_CLI_TOKEN` | CLI token creation and exchange | user id |
 | `RL_INVITE` | Invitations | org id |
 | `RL_SECRET_READ` | Reveal and pull | actor id |
@@ -364,3 +406,12 @@ succeeded cannot detect an attack in progress.
 
 Audit metadata is typed as an allowlist with no index signature, so a secret value cannot be
 placed in a record — the type system rejects it rather than a reviewer having to notice.
+The zero-knowledge events extend that rather than weakening it: there is no `wrap`, no
+`verifier`, no `lookupHash` and no `recoveryCode` field. A vault event records a *shape* —
+which kind of wrap, how many codes — never the material.
+
+The vault's own events are `vault.created`, `vault.unlocked`, `vault.unlock_failed`,
+`vault.passphrase_changed`, `vault.recovery_used` and
+`vault.recovery_codes_regenerated`. `vault.recovery_used` is the line an incident review
+looks for first: it is the only path that opens a vault with neither the passphrase nor an
+enrolled passkey.

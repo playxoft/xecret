@@ -21,7 +21,7 @@ import { useSession } from './session';
 /**
  * The General tab of settings: who this account is, and how xecret looks.
  *
- * Security controls — password, PIN, devices — live in `security-screen.tsx`,
+ * Security controls — password, vault, devices — live in `security-screen.tsx`,
  * and the irreversible actions in `danger-screen.tsx`. The split mirrors how
  * people arrive: routine personalisation should not share a screen with the
  * controls that end sessions or accounts.

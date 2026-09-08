@@ -95,7 +95,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   // the menu or from an eight-hour timeout.
   const reloadSession = session.reload;
   const lock = useCallback(async () => {
-    await api.post('/auth/pin/lock');
+    await api.post(apiPath.vaultLock());
     // `void`, not awaited: `reload` returns a promise now, and nothing after
     // this line depends on the answer — the re-render it causes is the whole
     // point, and it is what lands on the lock screen. Left bare it was a
@@ -105,10 +105,10 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
 
   // The idle lock. Armed only while there is an unlock to lose; the interval
   // comes from the account's setting on the security page, `0` disarms it.
-  const pinState = session.data?.pin;
+  const vaultState = session.data?.vault;
   useAutoLock(
-    pinState?.autoLockMinutes ?? 0,
-    pinState?.configured === true && pinState.unlocked,
+    vaultState?.autoLockMinutes ?? 0,
+    vaultState?.configured === true && vaultState.unlocked,
     lock,
   );
 
@@ -140,7 +140,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     );
   }
 
-  const { user, organizations, pin } = session.data;
+  const { user, organizations, vault } = session.data;
 
   // ── The lock, before anything else the shell would render ──
   //
@@ -151,8 +151,8 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   //
   // Checked before the "no organisations" case below, because a locked session
   // has not yet earned an explanation of its membership.
-  if (!pin.configured || !pin.unlocked) {
-    return <LockScreen status={pin} email={user.email} onUnlocked={session.reload} />;
+  if (!vault.configured || !vault.unlocked) {
+    return <LockScreen status={vault} email={user.email} onUnlocked={session.reload} />;
   }
 
   if (organizations.length === 0) {
@@ -213,7 +213,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
       value={{
         user,
         organizations,
-        pin,
+        vault,
         lock,
         refresh: reloadSession,
         createOrganization: openCreateOrganization,

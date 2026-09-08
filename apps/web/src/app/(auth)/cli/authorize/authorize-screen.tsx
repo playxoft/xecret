@@ -3,10 +3,8 @@
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
 
-import { PIN_LENGTH } from '@xecret/core/auth';
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { useApiResource } from '@/app/(dashboard)/_lib/use-api-resource';
-import { PinChooseForm, PinUnlockForm, storePin } from '@/components/auth/pin-forms';
 import {
   Alert,
   Button,
@@ -29,7 +27,7 @@ export interface AuthorizeRequest {
 
 interface MeResponse {
   user: { email: string; displayName: string | null };
-  pin: { configured: boolean; unlocked: boolean };
+  vault: { configured: boolean; unlocked: boolean };
   organizations: Array<{ id: string; name: string; slug: string; role: string }>;
 }
 
@@ -43,13 +41,13 @@ interface AuthorizeResponse {
  *
  *  - `loading` — `/auth/me` has not answered yet.
  *  - `unreadable` — it answered with something other than an account.
- *  - `setup` / `unlock` — there is a PIN gate in the way. See `PinGate`.
+ *  - `setup` / `unlock` — the vault is in the way. See `VaultGate`.
  *  - `decide` — approve or deny, the thing the page exists for.
  *
  * Five states rather than "gate or no gate", because the two that are neither
- * used to collapse into "no gate": a `null` PIN status meant the Approve button
- * rendered during the first paint and after a failed read, in the one case
- * where it cannot possibly work.
+ * used to collapse into "no gate": a `null` vault status meant the Approve
+ * button rendered during the first paint and after a failed read, in the one
+ * case where it cannot possibly work.
  */
 type Stage = 'loading' | 'unreadable' | 'setup' | 'unlock' | 'decide';
 
@@ -85,24 +83,20 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
   const selectedSlug = orgSlug ?? organizations[0]?.slug ?? null;
 
   /**
-   * The PIN gate, asked here rather than pointed at.
+   * The vault gate.
    *
    * `xecret login` sends the browser straight to this page — through sign-in if
    * needed, and back — so the session that arrives has usually never been
-   * unlocked. This screen used to answer that with a link to the dashboard,
-   * which meant leaving the page the CLI had just opened, unlocking somewhere
-   * else, and finding the way back. The PIN is asked for here instead, and the
-   * approval is not offered until it is answered: an organisation switcher and
-   * an Approve button above a locked session are three clicks that end in the
-   * 403 `session_locked` returns.
+   * unlocked. The approval is not offered until that is resolved: an
+   * organisation switcher and an Approve button above a locked session are three
+   * clicks that end in the 403 `session_locked` returns.
    *
    * The condition is `!configured || !unlocked`, matching the server's gate
    * rather than the word "locked": what `authenticatedRoute` checks is whether
-   * *this session* has verified a PIN, so a brand-new account with no PIN at
-   * all is refused too — and is asked to choose one, not to enter one it does
-   * not have. That case is reachable only from here, because signing in through
-   * this flow never passes the dashboard, which is where a first PIN is
-   * otherwise set up.
+   * *this session* has unlocked its vault, so an account with no vault at all is
+   * refused too — and is asked to create one, not to unlock one it does not
+   * have. That case is reachable only from here, because signing in through this
+   * flow never passes the dashboard, which is where a vault is otherwise set up.
    *
    * Not knowing is its own answer. `me.data` is null before the first response
    * and after a failed one, and reading that as "no gate needed" showed the
@@ -110,15 +104,15 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
    * dead form when `/auth/me` failed with anything the API client does not
    * redirect on.
    */
-  const pin = me.data?.pin ?? null;
+  const vault = me.data?.vault ?? null;
   const stage: Stage =
-    pin === null
+    vault === null
       ? me.error !== null
         ? 'unreadable'
         : 'loading'
-      : !pin.configured
+      : !vault.configured
         ? 'setup'
-        : !pin.unlocked || relocked
+        : !vault.unlocked || relocked
           ? 'unlock'
           : 'decide';
 
@@ -155,8 +149,8 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
 
       // The session lapsed between the `/auth/me` this page rendered from and
       // the approval — eight hours is long enough for a consent page to be left
-      // open across it. Answered by showing the PIN gate rather than by an
-      // error telling the user to go and unlock somewhere else.
+      // open across it. Answered by showing the vault gate rather than by an
+      // error that does not say what to do about it.
       if (isApiError(cause) && cause.code === 'session_locked') {
         setRelocked(true);
         setFailure('Your session locked while this page was open.');
@@ -165,21 +159,6 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
 
       setFailure(errorMessage(cause));
     }
-  };
-
-  /**
-   * Re-reads `/auth/me`, which is what actually dismisses the PIN gate.
-   *
-   * Awaited by the form that calls it, so the button stays busy until the new
-   * answer lands and the gate goes with it. A re-read that fails leaves `stage`
-   * at `unreadable` rather than clearing the screen: the PIN was accepted, the
-   * session *is* open, and the page has to say so rather than blank the only
-   * message on it.
-   */
-  const unlocked = async () => {
-    setRelocked(false);
-    setFailure(null);
-    await me.reload();
   };
 
   const deny = () => {
@@ -291,11 +270,7 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
                 {errorMessage(me.error)} Nothing has been approved.
               </Alert>
             ) : (
-              <PinGate
-                mode={stage}
-                email={me.data?.user.email ?? null}
-                onUnlocked={unlocked}
-              />
+              <VaultGate mode={stage} />
             )}
 
             {stage === 'unreadable' ? (
@@ -315,73 +290,41 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
 }
 
 /**
- * The lock, inside the card.
+ * Phase 2b: the vault gate that stands between a locked session and the
+ * decision.
  *
- * The organisation switcher and the Approve button are not merely disabled but
- * absent, because a screen showing a decision it cannot yet carry out invites
- * the click that fails — and the failure it invites, `session_locked`, is
- * exactly what this asks for the PIN to prevent. Deny stays, above: refusing a
- * request needs no unlocked session and is the answer somebody who did not
- * expect this page should be able to give immediately.
+ * A session arriving straight from `xecret login` has never been unlocked, and
+ * minting a CLI token from a locked session is refused by the server — so this
+ * page has to offer the unlock, or it is a dead end reachable only from a
+ * command line. The PIN forms it used to render are gone with the PIN (ADR 0009
+ * §4.4), and the passphrase form that replaces them needs the client key store
+ * this build does not have.
  *
- * Unlocking does not approve anything. Consent stays a separate, deliberate
- * act: the buttons appear once the session is open, and the person who came
- * here to approve a device still has to say so.
- *
- * `setup` says what happens if the PIN is forgotten, because this is the only
- * place some accounts will ever be told. Signing in through `xecret login`
- * never passes the dashboard, where that is otherwise explained — so leaving it
- * out would mean an account-wide, unrecoverable credential chosen on a page
- * opened by a command line, with no statement of what recovering it involves.
+ * Until then it says so plainly and points at the dashboard, which is where the
+ * real flow will live: unlocking there and re-running `xecret login` reaches
+ * this page in the `decide` stage.
  */
-function PinGate({
-  mode,
-  email,
-  onUnlocked,
-}: {
-  mode: 'setup' | 'unlock';
-  email: string | null;
-  onUnlocked: () => Promise<void>;
-}) {
+function VaultGate({ mode }: { mode: 'setup' | 'unlock' }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="text-center">
         <p className="text-fg text-sm font-medium">
-          {mode === 'unlock' ? 'Enter your PIN' : 'Choose a PIN'}
+          {mode === 'unlock' ? 'Your vault is locked' : 'Set up your vault first'}
         </p>
         <p className="text-fg-muted mt-1 text-sm leading-6">
           {mode === 'unlock'
-            ? 'Your session is locked. Unlock it here, then approve the device.'
-            : `This account has no PIN yet. ${PIN_LENGTH} digits, and it is what opens xecret on every device you sign in on.`}
+            ? 'Unlock it in the dashboard, then run xecret login again.'
+            : 'Your account has no vault yet. Create one in the dashboard, then run xecret login again.'}
         </p>
       </div>
 
-      {mode === 'unlock' ? (
-        <PinUnlockForm onDone={onUnlocked} />
-      ) : (
-        <PinChooseForm
-          submit={async (pin) => {
-            await storePin(pin);
-            await onUnlocked();
-          }}
-        />
-      )}
-
-      {mode === 'unlock' ? (
-        <p className="text-fg-subtle text-center text-sm leading-5">
-          Forgot it?{' '}
-          <Link href="/app" className="hover:text-fg underline">
-            Reset it in the dashboard
-          </Link>
-          , then run <code className="text-fg">xecret login</code> again.
-        </p>
-      ) : (
-        <Alert tone="info" title="If you forget it">
-          We will email a reset link to {email ?? 'the address on your account'}. There is no way to
-          recover a PIN without access to that mailbox — nobody at xecret can read it, because only
-          a derived hash is stored.
-        </Alert>
-      )}
+      <Alert tone="info" title="This step is being rebuilt">
+        Unlocking from this page is moving to end-to-end encryption.{' '}
+        <Link href="/app" className="hover:text-fg underline">
+          Open the dashboard
+        </Link>
+        , then run <code className="text-fg">xecret login</code> again.
+      </Alert>
     </div>
   );
 }

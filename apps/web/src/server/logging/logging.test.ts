@@ -96,8 +96,9 @@ describe('request descriptions', () => {
     expect(sentence('DELETE', '/api/auth/session', 204)).toBe(
       'Signed the user out and revoked their session',
     );
-    expect(sentence('POST', '/api/auth/pin/unlock', 200)).toBe(
-      'Unlocked the session with the account PIN',
+    expect(sentence('POST', '/api/auth/vault/unlock', 200)).toBe("Unlocked the session's vault");
+    expect(sentence('POST', '/api/auth/vault/recovery/complete', 200)).toBe(
+      'Recovered the vault with a recovery code',
     );
     expect(sentence('POST', '/api/orgs/acme/members', 201)).toBe('Invited a new member to acme');
     expect(sentence('GET', '/api/orgs/acme/audit', 200)).toBe('Read the audit log for acme');
@@ -173,10 +174,14 @@ describe('redaction', () => {
       'value',
       'secretValue',
       'password',
-      'pin',
-      'pinHash',
+      'passphrase',
       'apiToken',
       'cookie',
+      // The zero-knowledge artifacts. A wrap is an offline attack surface
+      // against a master passphrase, and a verifier is what unlocks a session.
+      'passphraseWrap',
+      'unlockVerifier',
+      'recoveryWraps',
     ]) {
       expect(isSensitiveKey(key)).toBe(true);
     }
@@ -361,7 +366,7 @@ describe('redaction', () => {
     // the cause names what went wrong. Recording only `TypeError` turned a
     // one-line diagnosis into an afternoon.
     const described = describeError(
-      new Error('Failed query: update "pin_reset_tokens" …', {
+      new Error('Failed query: update "user_key_wraps" …', {
         cause: new TypeError(
           'The "string" argument must be of type string. Received an instance of Date',
         ),

@@ -15,7 +15,7 @@ import { authenticatedRoute } from '@/server/route';
  *  - **A browser session only.** A CLI token acts as its user for secrets, not
  *    for existence: a stolen laptop credential must not be able to erase the
  *    account it was stolen from.
- *  - **The PIN lock applies** (no `allowLocked`): destroying the account
+ *  - **The vault lock applies** (no `allowLocked`): destroying the account
  *    demands the same proof of presence as reading a secret. A locked session
  *    left on a bench cannot do this.
  *  - **CSRF** via the standard wrapper, as for every cookie mutation.

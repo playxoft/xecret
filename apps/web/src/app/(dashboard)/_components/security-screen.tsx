@@ -2,10 +2,9 @@
 
 import { useState } from 'react';
 
-import { AUTO_LOCK_MINUTES_OPTIONS, PIN_LENGTH } from '@xecret/core/auth';
+import { AUTO_LOCK_MINUTES_OPTIONS } from '@xecret/core/auth';
 import { api, errorMessage } from '@/lib/api';
 import { formatAbsoluteTime, formatRelativeTime, pluralize, toIsoString } from '@/lib/format';
-import { PinInput } from '@/components/auth/pin-input';
 import {
   Alert,
   Badge,
@@ -30,10 +29,9 @@ import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState } from './resource-states';
 import { useSession } from './session';
-import type { PinResetResult } from './session';
 
 /**
- * The Security tab: the password, the PIN, the lock, and every session that
+ * The Security tab: the password, the vault, the lock, and every session that
  * can currently act as this account.
  *
  * The password card talks to Firebase — the identity provider owns passwords
@@ -60,7 +58,7 @@ export function SecurityScreen() {
   return (
     <div className="flex flex-col gap-6">
       <PasswordCard />
-      <PinCard />
+      <VaultCard />
       <LockCard />
       <DevicesCard />
     </div>
@@ -172,219 +170,51 @@ function PasswordCard() {
   );
 }
 
-function PinCard() {
-  const { user, pin, refresh } = useSession();
-  const { toast } = useToast();
-
-  const [currentPin, setCurrentPin] = useState('');
-  const [newPin, setNewPin] = useState('');
-  const [confirmPin, setConfirmPin] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
-
-  const needsCurrent = pin.configured;
-
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault();
-    if (saving) return;
-
-    if (newPin !== confirmPin) {
-      setProblem('The new PINs do not match.');
-      return;
-    }
-
-    setSaving(true);
-    setProblem(null);
-    try {
-      await api.post(apiPath.pin(), {
-        pin: newPin,
-        ...(needsCurrent ? { currentPin } : {}),
-      });
-
-      setCurrentPin('');
-      setNewPin('');
-      setConfirmPin('');
-      toast({
-        variant: 'success',
-        title: needsCurrent ? 'PIN changed' : 'PIN set',
-        description: 'It takes effect the next time any of your sessions locks.',
-      });
-      // Everything this card renders reads from the shell's copy of
-      // `/api/auth/me`, which nothing re-reads on its own. Without this, the
-      // account that just set its first PIN keeps being told it has none: no
-      // "Current PIN" field, no reset section — the one below being exactly
-      // what that person needs next — until a full navigation. `LockCard` does
-      // the same after changing the auto-lock interval.
-      refresh();
-    } catch (cause) {
-      setProblem(errorMessage(cause));
-    } finally {
-      setSaving(false);
-    }
-  }
-
+/**
+ * Phase 2b: the vault card — passphrase change, recovery codes, passkeys.
+ *
+ * The PIN card that stood here is gone with the PIN (ADR 0009 §4.4), and what
+ * replaces it needs the client key store this build does not have: changing a
+ * master passphrase means re-deriving Argon2id in the browser, re-wrapping the
+ * User Key, and uploading the result — none of which can be faked by a form
+ * posting a string. The endpoints are ready underneath
+ * (`POST /api/auth/vault/passphrase`, `PUT /api/auth/vault/recovery`,
+ * `/api/auth/vault/prf`); a follow-up owns the screen.
+ *
+ * Rendered as a notice rather than omitted, so the Security page does not
+ * silently lose the section a user came looking for.
+ */
+function VaultCard() {
   return (
     <Card>
-      <form onSubmit={handleSubmit} noValidate>
-        <CardHeader>
-          <CardTitle>Unlock PIN</CardTitle>
-          <CardDescription>
-            Six digits between a signed-in device and your secrets. Changing it requires the current
-            one; if you cannot remember it, reset it by email below.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          {problem !== null ? (
-            <Alert tone="danger" title="The PIN was not changed">
-              {problem}
-            </Alert>
-          ) : null}
-
-          {needsCurrent ? (
-            <Field label="Current PIN">
-              <PinInput label="Current PIN" value={currentPin} onChange={setCurrentPin} />
-            </Field>
-          ) : (
-            <Alert tone="info" title="No PIN yet">
-              Set one now and every one of your sessions will ask for it after 8 hours idle.
-            </Alert>
-          )}
-          <Field label="New PIN">
-            <PinInput label="New PIN" value={newPin} onChange={setNewPin} />
-          </Field>
-          <Field label="Confirm new PIN">
-            <PinInput label="Confirm new PIN" value={confirmPin} onChange={setConfirmPin} />
-          </Field>
-
-          <div>
-            <Button
-              type="submit"
-              variant="primary"
-              loading={saving}
-              disabled={
-                newPin.length !== PIN_LENGTH || (needsCurrent && currentPin.length !== PIN_LENGTH)
-              }
-            >
-              {needsCurrent ? 'Change PIN' : 'Set PIN'}
-            </Button>
-          </div>
-
-          {/* Only once a PIN exists: there is nothing to reset otherwise, and
-              the form above is already the way to set the first one. */}
-          {needsCurrent ? <PinResetSection email={user.email} /> : null}
-        </CardContent>
-      </form>
+      <CardHeader>
+        <CardTitle>Vault</CardTitle>
+        <CardDescription>
+          Your master passphrase, recovery codes and passkeys — the keys that decrypt your secrets
+          in this browser.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Alert tone="info" title="This section is being rebuilt">
+          Managing your passphrase and recovery codes is moving to end-to-end encryption. It is not
+          available in this build.
+        </Alert>
+      </CardContent>
     </Card>
   );
 }
 
-/**
- * "I have forgotten my PIN", from a signed-in session.
- *
- * ── Why this belongs here and not only on the lock screen ──
- * The lock screen is where somebody discovers they have forgotten it, and it
- * has carried this flow all along. But it is reachable only while locked, and
- * the person who *remembers* they will forget — before a trip, after setting a
- * PIN they are unsure of — comes to their security settings and finds the change
- * form demanding the very thing they cannot supply. A dead end on the one page
- * named "Security" is worse than a redundant button.
- *
- * ── The two factors ──
- * No address is accepted or offered: the link goes to the address on the
- * account. Combined with the session cookie the requester already holds, that
- * is control of the mailbox plus control of the session — two independent
- * factors to replace a PIN, and no account-enumeration oracle, because a
- * stranger cannot reach this endpoint at all.
- */
-function PinResetSection({ email }: { email: string }) {
-  const [state, setState] = useState<'idle' | 'sending' | 'sent'>('idle');
-  const [problem, setProblem] = useState<string | null>(null);
-
-  async function send() {
-    if (state === 'sending') return;
-    setState('sending');
-    setProblem(null);
-
-    try {
-      const result = await api.post<PinResetResult>(apiPath.pinReset());
-      // A resolved promise is not the same as a sent email — mail is optional
-      // in a self-hosted install. See `PinResetResult`.
-      if (!result.sent) {
-        setProblem(result.reason ?? 'A reset link could not be sent.');
-        setState('idle');
-        return;
-      }
-      setState('sent');
-    } catch (cause) {
-      setProblem(errorMessage(cause));
-      setState('idle');
-    }
-  }
-
-  return (
-    <div className="border-line-subtle flex flex-col gap-3 border-t pt-4">
-      {/* The success alert joins this section rather than replacing it, and the
-          button stays. A provider that refuses the send now arrives here as
-          `sent: false` and is shown, but that only covers the failures the
-          server hears about while the request is open: a message accepted and
-          then bounced, or filed as spam, is logged on the server and never
-          reaches this screen — the person it happens to sees "check your email"
-          and then nothing arrives. Replacing the section left them no way to
-          ask again short of navigating away and back. It also matches the rest
-          of this page, where the control stays put and the outcome is announced
-          beside it. */}
-      {state === 'sent' ? (
-        <Alert tone="success" title="Check your email">
-          We sent a link to {email}. It works once and expires in 15 minutes — opening it in this
-          browser lets you choose a new PIN straight away.
-        </Alert>
-      ) : null}
-
-      {problem !== null ? (
-        <Alert tone="danger" title="Could not send the reset link">
-          {problem}
-        </Alert>
-      ) : null}
-
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-        <Button
-          // Explicit, though `Button` already defaults to `type="button"` for
-          // this very reason: the platform default inside a form is `submit`,
-          // and this one sits inside the change-PIN form above. Saying it here
-          // is documentation at the site where it matters, not a fix.
-          type="button"
-          variant="secondary"
-          loading={state === 'sending'}
-          onClick={() => void send()}
-        >
-          {state === 'sent' ? 'Send another link' : 'Forgot your PIN? Email me a reset link'}
-        </Button>
-        {state === 'sent' ? null : (
-          <span className="text-fg-subtle text-sm">
-            Sent to {email} — the only address it can go to.
-          </span>
-        )}
-      </div>
-
-      <p className="text-fg-subtle text-xs leading-5">
-        Nobody at xecret can read your PIN back to you: only a derived hash is stored. Access to
-        that mailbox is the one way to replace it.
-      </p>
-    </div>
-  );
-}
-
 function LockCard() {
-  const { pin, lock, refresh } = useSession();
+  const { vault, lock, refresh } = useSession();
   const { toast } = useToast();
   const [lockingEverywhere, setLockingEverywhere] = useState(false);
   const [savingAutoLock, setSavingAutoLock] = useState(false);
 
   async function changeAutoLock(minutes: number) {
-    if (minutes === pin.autoLockMinutes || savingAutoLock) return;
+    if (minutes === vault.autoLockMinutes || savingAutoLock) return;
     setSavingAutoLock(true);
     try {
-      await api.patch(apiPath.pin(), { autoLockMinutes: minutes });
+      await api.patch(apiPath.vault(), { autoLockMinutes: minutes });
       toast({
         variant: 'success',
         title:
@@ -409,7 +239,7 @@ function LockCard() {
   async function lockEverywhere() {
     setLockingEverywhere(true);
     try {
-      const result = await api.post<{ locked: number }>(apiPath.pinLock(), { everywhere: true });
+      const result = await api.post<{ locked: number }>(apiPath.vaultLock(), { everywhere: true });
       toast({
         variant: 'success',
         title: `Locked ${pluralize(result.locked ?? 1, 'session')}`,
@@ -424,15 +254,15 @@ function LockCard() {
     }
   }
 
-  if (!pin.configured) return null;
+  if (!vault.configured) return null;
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Lock</CardTitle>
         <CardDescription>
-          Locking asks for the PIN again without signing anything out — the control for stepping
-          away from a machine, or for a device you cannot reach right now.
+          Locking asks for your master passphrase again without signing anything out — the control
+          for stepping away from a machine, or for a device you cannot reach right now.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -447,10 +277,10 @@ function LockCard() {
 
         <Field
           label="Auto-lock"
-          hint="Locks the dashboard after this long without activity, on every device you use. The PIN opens it again."
+          hint="Locks the dashboard after this long without activity, on every device you use. Your passphrase opens it again."
         >
           <Select
-            value={String(pin.autoLockMinutes)}
+            value={String(vault.autoLockMinutes)}
             onValueChange={(next) => void changeAutoLock(Number(next))}
             disabled={savingAutoLock}
           >

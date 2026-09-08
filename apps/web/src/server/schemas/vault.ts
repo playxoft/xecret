@@ -1,0 +1,405 @@
+import * as z from 'zod/mini';
+import { isAutoLockMinutes } from '@xecret/core/auth';
+import { toBase64Url } from '@xecret/core/crypto';
+import { toBytes } from '@xecret/db/repositories';
+import type { PasskeyRecord, VaultRecord } from '@xecret/db/repositories';
+
+/**
+ * The request schemas and response shapes of the vault routes.
+ *
+ * ── The rule that governs this file ──
+ * **The server validates shape, never meaning.** Every cryptographic value below
+ * is checked for its prefix, its alphabet and its length, and then stored or
+ * returned verbatim. Nothing here decodes a blob, derives a key, or compares a
+ * plaintext, because the server holds no key with which it could — and a
+ * validator that "helpfully" parsed a wrap would be the first line of the code
+ * path that ADR 0009 exists to make impossible.
+ *
+ * That is not laziness dressed up as principle. A length and a prefix are
+ * exactly the checks a party with no key *can* make, and they are enough for
+ * what they are for: keeping a malformed or oversized body out of the database,
+ * so a column cannot come to hold something no client will ever parse.
+ *
+ * The real validation happens twice, in the two places that can do it. The
+ * client refuses a blob it cannot parse (`parseBlob` rejects unknown versions
+ * loudly), and AES-GCM refuses one whose AAD or key is wrong. Between them, a
+ * value that passes these schemas and is still wrong fails closed at the only
+ * point where failing means anything.
+ *
+ * The same rules as the other schema files otherwise: bodies are `strictObject`
+ * with a fixed unknown-field message, and the serialisers list their fields, so
+ * a column added to `user_keys` later cannot reach a client by accident.
+ */
+
+const UNEXPECTED_FIELD = 'The request contains a field this endpoint does not accept.';
+
+/**
+ * Base64url, unpadded, per RFC 4648 §5 — the encoding every binary value in this
+ * API travels as.
+ *
+ * The character class excludes `=` deliberately: padding is not part of the
+ * encoding the crypto layer emits (`toBase64Url`), and accepting it here would
+ * let two spellings of one value into the database, where a `bytea` equality
+ * lookup would then miss one of them.
+ */
+const BASE64URL = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * The unpadded base64url length of exactly `bytes` bytes.
+ *
+ * Length is checked on the *encoding* rather than by decoding, so a hostile body
+ * is refused before anything allocates a buffer for it. The arithmetic is exact:
+ * unpadded base64url is `ceil(n * 4 / 3)` characters, and no other byte count
+ * produces that length.
+ */
+function base64UrlBytes(bytes: number, message: string) {
+  const length = Math.ceil((bytes * 4) / 3);
+  return z.string().check(z.regex(BASE64URL, message), z.length(length, message));
+}
+
+/** Base64url of a variable-length value, bounded at both ends. */
+function base64UrlBetween(minBytes: number, maxBytes: number, message: string) {
+  return z
+    .string()
+    .check(
+      z.regex(BASE64URL, message),
+      z.minLength(Math.ceil((minBytes * 4) / 3), message),
+      z.maxLength(Math.ceil((maxBytes * 4) / 3), message),
+    );
+}
+
+const MALFORMED_BLOB = 'That value is not a well-formed xk2 blob.';
+
+/**
+ * The shortest and longest `xk2.gcm.` blob this endpoint will accept.
+ *
+ * The floor is the format's own minimum — `iv(12) ‖ tag(16)`, an empty
+ * plaintext — so a truncated blob is refused rather than stored. The ceiling is
+ * generous rather than exact: every wrap this version writes is a 32-byte
+ * plaintext, which is 88 characters, and pinning the bound to that would make a
+ * future construction with a slightly larger payload a server change as well as
+ * a client one. 512 is far above anything the format defines and far below a
+ * size at which this column becomes a place to hide a payload.
+ */
+const MIN_GCM_BLOB_LENGTH = 'xk2.gcm.'.length + Math.ceil((28 * 4) / 3);
+const MAX_GCM_BLOB_LENGTH = 512;
+
+/**
+ * An `xk2.gcm.` blob: a prefix, and base64url after it.
+ *
+ * Checked with a regular expression rather than by calling `parseBlob`, and the
+ * distinction is the whole point of this module. `parseBlob` is the *client's*
+ * parser; it decodes, and decoding a wrap is a step the server must not have a
+ * function for. The two agree on what a well-formed blob looks like because both
+ * follow spec §2, and they disagree about nothing else because this one stops
+ * at the prefix.
+ */
+const gcmBlobSchema = z
+  .string()
+  .check(
+    z.regex(/^xk2\.gcm\.[A-Za-z0-9_-]+$/, MALFORMED_BLOB),
+    z.minLength(MIN_GCM_BLOB_LENGTH, MALFORMED_BLOB),
+    z.maxLength(MAX_GCM_BLOB_LENGTH, MALFORMED_BLOB),
+  );
+
+/** A 32-byte X25519 or Ed25519 public key. */
+const publicKeySchema = base64UrlBytes(32, 'A public key is 32 bytes, base64url encoded.');
+
+/** The 16-byte Argon2id salt (spec §3.1). */
+const kdfSaltSchema = base64UrlBytes(16, 'A KDF salt is 16 bytes, base64url encoded.');
+
+/** `HKDF(SK, "", "xecret.v2.unlock-verifier", 32)` — never `SK`, never a wrap key. */
+const unlockVerifierSchema = base64UrlBytes(
+  32,
+  'An unlock verifier is 32 bytes, base64url encoded.',
+);
+
+/** `SHA-256("xecret.v2.recovery-lookup" ‖ codeBytes)` (spec §7.5). */
+const lookupHashSchema = base64UrlBytes(32, 'A lookup hash is 32 bytes, base64url encoded.');
+
+/**
+ * Argon2id parameters, bounded to the range spec §3.1 defines.
+ *
+ * The specification calls this validation a *client-side* control, because the
+ * attack it names is a hostile server ordering a browser to allocate a gigabyte.
+ * It is enforced here as well, against the mirror image: these values arrive
+ * from a client and are handed back to that same account's future sessions, so
+ * an unbounded `m` written once is a denial of service against the one person
+ * who can never work around it. Neither check makes the other redundant — they
+ * defend against different parties.
+ */
+const kdfParamsSchema = z.strictObject(
+  {
+    alg: z.literal('argon2id'),
+    v: z.literal(19),
+    /** KiB. The floor is the OWASP 2025 minimum; the ceiling is 1 GiB. */
+    m: z.int().check(z.gte(19_456), z.lte(1_048_576)),
+    t: z.int().check(z.gte(1), z.lte(10)),
+    /** Browsers derive on one thread, so this is not a range. */
+    p: z.literal(1),
+    len: z.literal(32),
+  },
+  UNEXPECTED_FIELD,
+);
+
+/**
+ * How many recovery codes a kit holds (spec §7).
+ *
+ * Exactly five, checked rather than merely bounded. A client that uploaded four
+ * would leave its owner one code short of the kit they were shown and printed;
+ * one that uploaded fifty would turn a lookup table into a place to store data.
+ */
+export const RECOVERY_CODE_COUNT = 5;
+
+const recoveryWrapSchema = z.strictObject(
+  { lookupHash: lookupHashSchema, wrap: gcmBlobSchema },
+  UNEXPECTED_FIELD,
+);
+
+const recoveryWrapsSchema = z
+  .array(recoveryWrapSchema)
+  .check(
+    z.length(RECOVERY_CODE_COUNT, `A recovery kit holds exactly ${RECOVERY_CODE_COUNT} codes.`),
+  );
+
+/**
+ * The vault setup ceremony's upload — the complete key hierarchy, generated in
+ * the browser and never derivable from what arrives here.
+ *
+ * One request rather than several, because a vault is not meaningful in pieces:
+ * keys without a passphrase wrap can never be opened, and wraps without keys
+ * open nothing. The repository writes them in one transaction for the same
+ * reason.
+ */
+export const vaultCreateSchema = z.strictObject(
+  {
+    encPublicKey: publicKeySchema,
+    encPrivateKeyEnc: gcmBlobSchema,
+    signPublicKey: publicKeySchema,
+    signPrivateKeyEnc: gcmBlobSchema,
+    kdfSalt: kdfSaltSchema,
+    kdfParams: kdfParamsSchema,
+    unlockVerifier: unlockVerifierSchema,
+    passphraseWrap: gcmBlobSchema,
+    recoveryWraps: recoveryWrapsSchema,
+  },
+  UNEXPECTED_FIELD,
+);
+
+export type VaultCreateRequest = z.infer<typeof vaultCreateSchema>;
+
+export const vaultUnlockSchema = z.strictObject(
+  { unlockVerifier: unlockVerifierSchema },
+  UNEXPECTED_FIELD,
+);
+
+/**
+ * Locking, optionally everywhere.
+ *
+ * The body is optional: locking this session is the overwhelmingly common case,
+ * and requiring `{}` for it would be ceremony.
+ */
+export const vaultLockSchema = z.optional(z.object({ everywhere: z.optional(z.boolean()) }));
+
+/**
+ * Changing the master passphrase.
+ *
+ * `currentUnlockVerifier` is the sudo-mode re-authentication, and it is not
+ * redundant with the unlock gate above it. The gate proves this session was
+ * unlocked at some point in the last eight hours; this proves the person typing
+ * knows the passphrase *now* — which is the difference between a change made by
+ * the account's owner and one made by whoever sat down at their desk.
+ *
+ * A new salt and new parameters travel with it because a passphrase change is
+ * the natural moment to re-derive at the current cost. Sending the old ones back
+ * unchanged is equally valid and equally accepted.
+ */
+export const vaultPassphraseSchema = z.strictObject(
+  {
+    currentUnlockVerifier: unlockVerifierSchema,
+    unlockVerifier: unlockVerifierSchema,
+    kdfSalt: kdfSaltSchema,
+    kdfParams: kdfParamsSchema,
+    passphraseWrap: gcmBlobSchema,
+  },
+  UNEXPECTED_FIELD,
+);
+
+/** Step one of recovery: a lookup hash, and nothing else. */
+export const recoveryBeginSchema = z.strictObject(
+  { lookupHash: lookupHashSchema },
+  UNEXPECTED_FIELD,
+);
+
+/**
+ * Step two: the new passphrase and a whole new kit, in one request.
+ *
+ * They are inseparable by design (ADR 0009). Somebody redeeming a code has lost
+ * control of their passphrase, so recovery that stopped at "you are in" would
+ * leave an account whose only credential is a piece of paper with four codes
+ * left on it. The lookup hash is repeated so the server re-resolves the row
+ * itself rather than trusting a client to name which wrap it opened.
+ */
+export const recoveryCompleteSchema = z.strictObject(
+  {
+    lookupHash: lookupHashSchema,
+    unlockVerifier: unlockVerifierSchema,
+    kdfSalt: kdfSaltSchema,
+    kdfParams: kdfParamsSchema,
+    passphraseWrap: gcmBlobSchema,
+    recoveryWraps: recoveryWrapsSchema,
+  },
+  UNEXPECTED_FIELD,
+);
+
+/**
+ * Reissuing the kit from an unlocked session, with the passphrase re-entered.
+ *
+ * `unlockVerifier` for the same sudo-mode reason as the passphrase change:
+ * printing a fresh set of codes at somebody's unattended desk is precisely the
+ * act a re-entry requirement exists to stop.
+ */
+export const recoveryRegenerateSchema = z.strictObject(
+  { unlockVerifier: unlockVerifierSchema, recoveryWraps: recoveryWrapsSchema },
+  UNEXPECTED_FIELD,
+);
+
+/**
+ * Enrolling a passkey for one-touch unlock.
+ *
+ * `credentialId` is bounded at WebAuthn's own ceiling of 1023 bytes rather than
+ * at whatever today's authenticators emit: the specification permits it, and a
+ * limit tighter than the standard would refuse a conforming device for no
+ * reason. The floor of 16 refuses an obviously fabricated id.
+ */
+export const passkeyEnrollSchema = z.strictObject(
+  {
+    credentialId: base64UrlBetween(16, 1023, 'That is not a WebAuthn credential id.'),
+    label: z.string().check(z.trim(), z.minLength(1, 'Give this passkey a name.'), z.maxLength(64)),
+    /**
+     * The authenticator's advertised transports, if it declared any. A hint for
+     * the browser's prompt, stored verbatim — an absent value is meaningful and
+     * must not be replaced by a guess.
+     */
+    transports: z.optional(
+      z
+        .array(z.string().check(z.regex(/^[a-z-]{1,32}$/, 'Unrecognised transport.')))
+        .check(z.maxLength(8)),
+    ),
+    wrap: gcmBlobSchema,
+  },
+  UNEXPECTED_FIELD,
+);
+
+export const autoLockSchema = z.strictObject(
+  {
+    /** One of `AUTO_LOCK_MINUTES_OPTIONS`; `0` disables the idle lock. */
+    autoLockMinutes: z
+      .int()
+      .check(z.refine(isAutoLockMinutes, 'Choose one of the offered auto-lock intervals.')),
+  },
+  UNEXPECTED_FIELD,
+);
+
+/** What the dashboard needs to choose between setup, lock screen, and dashboard. */
+export interface VaultStatusPayload {
+  /** Whether this account has completed the setup ceremony at all. */
+  configured: boolean;
+  unlocked: boolean;
+  /** When the current unlock lapses. `null` when locked. */
+  unlockedUntil: string | null;
+  /**
+   * Minutes of idleness before the dashboard locks itself; `0` never. The timer
+   * runs in the client — idleness is a fact only the client can observe — but
+   * the lock it triggers is the server-side one.
+   */
+  autoLockMinutes: number;
+}
+
+export interface PasskeyPayload {
+  id: string;
+  credentialId: string;
+  label: string;
+  transports: string[] | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+  /** The `prf` wrap this credential's PRF output opens. */
+  wrap: string;
+}
+
+/**
+ * Everything a locked client needs in order to attempt an unlock.
+ *
+ * ── Why this is served to a session that has not unlocked ──
+ * It has to be: unlocking is a client-side operation, and a client cannot try to
+ * unwrap a User Key it has not been given. Every field here is either public or
+ * useless without the passphrase, so serving it costs nothing the model did not
+ * already concede — the wraps are in a database that a compelled or breached
+ * server can read anyway, which is exactly why they are wrapped.
+ *
+ * What it does concede, stated plainly rather than left implicit: a stolen
+ * session cookie yields the wraps, and therefore an *offline* Argon2id attack
+ * against the master passphrase, unbounded by the lockout above. That is the
+ * standing trade-off of every browser-delivered zero-knowledge product, and it
+ * is why ADR 0009 sets the passphrase bar at zxcvbn score 4 rather than at a
+ * composition rule.
+ */
+export interface VaultMaterialPayload {
+  encAlgorithm: string;
+  encPublicKey: string;
+  encPrivateKeyEnc: string;
+  signAlgorithm: string;
+  signPublicKey: string;
+  signPrivateKeyEnc: string;
+  kdfSalt: string;
+  kdfParams: unknown;
+  passphraseWrap: string;
+  /** A count, never the wraps and never the hashes that address them. */
+  recoveryCodesRemaining: number;
+  passkeys: PasskeyPayload[];
+}
+
+export function toPasskey(passkey: PasskeyRecord): PasskeyPayload {
+  return {
+    id: passkey.id,
+    credentialId: toBase64Url(toBytes(passkey.credentialId)),
+    label: passkey.label,
+    transports: passkey.transports,
+    createdAt: passkey.createdAt.toISOString(),
+    lastUsedAt: passkey.lastUsedAt?.toISOString() ?? null,
+    wrap: decodeBlob(passkey.wrap),
+  };
+}
+
+export function toVaultMaterial(vault: VaultRecord): VaultMaterialPayload {
+  return {
+    encAlgorithm: vault.keys.encAlgorithm,
+    encPublicKey: toBase64Url(toBytes(vault.keys.encPublicKey)),
+    encPrivateKeyEnc: decodeBlob(vault.keys.encPrivateKeyEnc),
+    signAlgorithm: vault.keys.signAlgorithm,
+    signPublicKey: toBase64Url(toBytes(vault.keys.signPublicKey)),
+    signPrivateKeyEnc: decodeBlob(vault.keys.signPrivateKeyEnc),
+    kdfSalt: toBase64Url(toBytes(vault.keys.kdfSalt)),
+    kdfParams: vault.keys.kdfParams,
+    passphraseWrap: decodeBlob(vault.passphraseWrap),
+    recoveryCodesRemaining: vault.recoveryCodesRemaining,
+    passkeys: vault.passkeys.map(toPasskey),
+  };
+}
+
+/**
+ * A blob column back to the ASCII string it holds.
+ *
+ * The `bytea` in these columns is not raw ciphertext: it is the bytes of an
+ * `xk2.…` string, stored that way so every ciphertext column in the schema has
+ * one type (see `columns.ts`). This is the one place that reverses it, and it is
+ * a decode of ASCII, not of a payload.
+ */
+export function decodeBlob(bytes: Uint8Array): string {
+  return new TextDecoder().decode(bytes);
+}
+
+/** The ASCII of a blob string, for storage. The mirror of `decodeBlob`. */
+export function encodeBlob(blob: string): Uint8Array {
+  return new TextEncoder().encode(blob);
+}

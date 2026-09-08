@@ -61,7 +61,7 @@ export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps
 
   /**
    * Locking is the cheap safe action, and it is placed above signing out for
-   * that reason: it costs one PIN to undo, where signing out costs a full trip
+   * that reason: it costs one passphrase to undo, where signing out costs a full trip
    * through the identity provider. Making the safe thing the easy thing is what
    * gets it used when somebody stands up from their desk.
    */

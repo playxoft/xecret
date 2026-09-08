@@ -20,16 +20,48 @@ export type AuditAction =
   | 'auth.login_failed'
   | 'auth.session_revoked'
   /**
-   * The unlock PIN was created, replaced, or reset through an emailed link.
+   * The user vault was created: the moment an account acquires the key
+   * hierarchy that every secret it can read is encrypted under.
    *
-   * Recorded because a PIN change is the one account-level act that alters who
-   * can reach secrets from an already-signed-in device. `auth.pin_reset` in
-   * particular is what an incident review looks for: it means somebody proved
-   * control of the mailbox rather than knowledge of the PIN.
+   * Terminal in one direction — a vault is created once, and re-creating it
+   * would abandon everything sealed to the old public key — so this record is
+   * the origin of the account's whole cryptographic history.
    */
-  | 'auth.pin_set'
-  | 'auth.pin_changed'
-  | 'auth.pin_reset'
+  | 'vault.created'
+  /**
+   * A session was unlocked, or an unlock attempt was refused.
+   *
+   * The retired PIN deliberately did not audit *successful* unlocks, on the
+   * reasoning that they happen twice a day and say nothing the surrounding
+   * events do not. The vault reverses that call, because what an unlock now
+   * marks is the moment key material became reachable on a device. "The vault
+   * was opened at 03:00 from an address this account has never used" is a
+   * sentence a zero-knowledge product has to be able to say, and no other event
+   * says it.
+   */
+  | 'vault.unlocked'
+  | 'vault.unlock_failed'
+  /**
+   * The master passphrase was changed: the User Key was re-wrapped under a new
+   * passphrase-derived key and the unlock verifier replaced.
+   *
+   * Notably *not* a re-encryption of anything else. The User Key itself is
+   * unchanged, so sessions on other devices stay valid and recovery codes keep
+   * working — which is why this is worth dating separately from `vault.created`.
+   */
+  | 'vault.passphrase_changed'
+  /**
+   * A recovery code was redeemed — somebody got back into a vault without the
+   * passphrase.
+   *
+   * The single most important line in this list for an incident review. It is
+   * the only path that opens a vault with something other than the passphrase
+   * or an enrolled passkey, it is single-use, and it forces a new passphrase and
+   * a fresh set of codes in the same act.
+   */
+  | 'vault.recovery_used'
+  /** The recovery-code set was replaced, invalidating every previous code. */
+  | 'vault.recovery_codes_regenerated'
   /** A session was locked without being revoked — the user is still signed in. */
   | 'auth.locked'
   /** The idle auto-lock interval was changed. `reason` carries the new value. */
@@ -117,6 +149,14 @@ export type AuditAction =
  * There is deliberately no `value`, no `plaintext`, and no index signature. A
  * secret value cannot be placed in an audit record because the type system does
  * not allow it.
+ *
+ * The zero-knowledge events extend that guarantee rather than weakening it:
+ * there is no `wrap`, no `verifier`, no `publicKey`, no `lookupHash`, and no
+ * `recoveryCode`. Everything a vault event records is a *shape* — which kind of
+ * wrap, how many codes — never the material itself. A wrap placed in an audit
+ * record would put an offline attack surface into the one table the product is
+ * built to keep readable, and the type system refuses it for the same reason it
+ * refuses a secret value.
  */
 export interface AuditMetadata {
   secretName?: string;
@@ -142,6 +182,17 @@ export interface AuditMetadata {
   /** The device a CLI credential was approved for, e.g. a hostname. */
   deviceName?: string;
   keyVersion?: number;
+  /**
+   * Which wrap of the User Key an unlock or an enrolment used, e.g. `passkey`.
+   *
+   * The kind, never the wrap. Recording it is what lets a review distinguish
+   * "they typed the passphrase" from "a passkey on some device did it" from
+   * "a recovery code was burned" — three quite different stories that would
+   * otherwise share one event.
+   */
+  wrapKind?: 'passphrase' | 'recovery' | 'prf';
+  /** How many recovery codes a regeneration issued. A count, never a code. */
+  recoveryCodeCount?: number;
   /** How many sessions one act affected — "lock everywhere", "sign out everywhere". */
   sessionCount?: number;
   /**

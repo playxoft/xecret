@@ -97,7 +97,7 @@ const ORG_ID = uuidv7();
 
 const userPrincipal = {
   kind: 'user' as const,
-  pinVerifiedAt: new Date(),
+  vaultUnlockedAt: new Date(),
   sessionId: uuidv7(),
   user: {
     id: USER_ID,
@@ -114,7 +114,7 @@ const cliTokenPrincipal = {
   tokenId: uuidv7(),
   userId: USER_ID,
   orgId: ORG_ID,
-  pinVerifiedAt: new Date(),
+  vaultUnlockedAt: new Date(),
 };
 
 /** A credential left on a build machine, scoped to one environment. */
@@ -391,7 +391,7 @@ describe('POST /api/orgs — how many an account may hold', () => {
   /**
    * An account-scoped refusal and an organisation-scoped audit log do not fit,
    * and `audit_logs.org_id` is NOT NULL. With nowhere truthful to file it,
-   * nothing is filed — the same answer `POST /api/auth/pin/reset` gives a user
+   * nothing is filed — the same answer `POST /api/auth/vault/lock` gives a user
    * who belongs to no organisation. The caller is still refused.
    */
   it('records nothing when the account is in no organisation at all', async () => {

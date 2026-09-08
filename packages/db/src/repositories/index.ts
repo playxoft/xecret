@@ -54,18 +54,34 @@ export type {
 } from './sessions';
 
 export {
-  consumePinReset,
-  createPinReset,
-  deleteExpiredPinResets,
-  deletePin,
-  findPinForUser,
-  hasPin,
-  recordPinAttempt,
-  rehashPin,
+  changePassphrase,
+  completeRecovery,
+  createVault,
+  deleteVault,
+  enrollPasskey,
+  findRecoveryWrap,
+  findVaultKeys,
+  hasVault,
+  listPasskeys,
+  loadVault,
+  recordRecoveryAttempt,
+  recordUnlockAttempt,
+  regenerateRecoveryCodes,
+  removePasskey,
   setAutoLockMinutes,
-  upsertPin,
-} from './pins';
-export type { CreatePinResetParams, PinRecord, PinResetRecord } from './pins';
+  touchPasskeyUsage,
+} from './vault';
+export type {
+  ChangePassphraseParams,
+  CompleteRecoveryParams,
+  CreateVaultParams,
+  EnrollPasskeyParams,
+  PasskeyRecord,
+  RecoveryWrapMatch,
+  RecoveryWrapSeed,
+  VaultKeyRecord,
+  VaultRecord,
+} from './vault';
 
 export {
   accountLockQuery,

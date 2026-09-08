@@ -8,8 +8,9 @@ import {
   secrets,
   serviceTokens,
   sessions,
-  pinResetTokens,
-  userPins,
+  userKeyWraps,
+  userKeys,
+  userPasskeys,
 } from './index';
 import { SECRET_VALUE_TYPES } from '@xecret/core/validation';
 
@@ -146,35 +147,128 @@ describe('the secret value type', () => {
   });
 });
 
-describe('the unlock PIN', () => {
-  it('stores a derived hash, never the PIN', () => {
-    const cols = columnsOf(userPins);
-    expect(cols['pin_hash']!.notNull).toBe(true);
-    expect(Object.keys(cols)).not.toContain('pin');
+describe('the user vault', () => {
+  it('holds no column a server could decrypt anything with', () => {
+    // The claim ADR 0009 makes, checked against the column list rather than
+    // against prose. Everything here is a public value or an opaque ciphertext;
+    // a future column named for key material should fail this outright.
+    const cols = Object.keys(columnsOf(userKeys));
+    for (const forbidden of [
+      'user_key',
+      'private_key',
+      'passphrase',
+      'stretched_key',
+      'unlock_verifier',
+    ]) {
+      expect(cols, `user_keys must not carry a ${forbidden} column`).not.toContain(forbidden);
+    }
+    // The verifier is stored only as a digest, and its name says so.
+    expect(cols).toContain('unlock_verifier_hash');
+  });
+
+  it('stores every ciphertext as bytea, never as text', () => {
+    // The schema-wide rule from `columns.ts`: base64 in the database wastes a
+    // third of every row and invites accidental logging of what looks like a
+    // harmless string.
+    const keys = columnsOf(userKeys);
+    for (const column of [
+      'enc_public_key',
+      'enc_private_key_enc',
+      'sign_public_key',
+      'sign_private_key_enc',
+      'kdf_salt',
+      'unlock_verifier_hash',
+    ]) {
+      expect(keys[column]!.getSQLType(), column).toBe('bytea');
+      expect(keys[column]!.notNull, column).toBe(true);
+    }
+    expect(columnsOf(userKeyWraps)['wrap']!.getSQLType()).toBe('bytea');
+    expect(columnsOf(userKeyWraps)['lookup_hash']!.getSQLType()).toBe('bytea');
   });
 
   it('counts failures on the row, so a lockout survives a restart', () => {
     // Held in the database rather than in an isolate: a Worker isolate is
     // recycled constantly, and an attempt counter that lives in one is a
     // counter an attacker resets by waiting.
-    expect(columnsOf(userPins)['failed_attempts']!.notNull).toBe(true);
-    expect(columnsOf(userPins)['failed_attempts']!.default).toBe(0);
-    expect(columnsOf(userPins)['locked_until']).toBeDefined();
+    const cols = columnsOf(userKeys);
+    for (const column of ['failed_attempts', 'recovery_failed_attempts']) {
+      expect(cols[column]!.notNull, column).toBe(true);
+      expect(cols[column]!.default, column).toBe(0);
+    }
+    expect(cols['locked_until']).toBeDefined();
+    expect(cols['recovery_locked_until']).toBeDefined();
+  });
+
+  it('counts the recovery surface separately from the passphrase one', () => {
+    // Sharing one counter would let a mistyped recovery code spend the budget
+    // that protects the passphrase — see `auth/vault.ts`.
+    const cols = columnsOf(userKeys);
+    expect(cols['failed_attempts']).not.toBe(cols['recovery_failed_attempts']);
   });
 
   it('keeps the unlock separate from the session itself', () => {
     // Authentication and unlock are different facts: revoking is not locking,
-    // and a 30-day cookie must not imply 30 days of reach into secrets.
+    // and a 30-day cookie must not imply 30 days of reach into key material.
     const cols = columnsOf(sessions);
-    expect(cols['pin_verified_at']).toBeDefined();
-    expect(cols['pin_verified_at']!.notNull).toBe(false);
+    expect(cols['vault_unlocked_at']).toBeDefined();
+    expect(cols['vault_unlocked_at']!.notNull).toBe(false);
+    // The retired PIN's column must be gone, not merely unused: a stale
+    // timestamp would read as an unlock nobody performed.
+    expect(cols['pin_verified_at']).toBeUndefined();
   });
 
-  it('stores only a hash of a reset link', () => {
-    const cols = columnsOf(pinResetTokens);
-    expect(cols['token_hash']!.getSQLType()).toBe('bytea');
-    expect(cols['token_hash']!.notNull).toBe(true);
-    expect(cols['expires_at']!.notNull).toBe(true);
-    expect(cols['consumed_at']).toBeDefined();
+  it('allows exactly one live passphrase wrap per account', () => {
+    // The load-bearing constraint. Two live wraps would mean two passphrases
+    // open the same vault, and the older would keep working long after its
+    // owner believed they had changed it.
+    const index = getTableConfig(userKeyWraps).indexes.find(
+      (entry) => entry.config.name === 'user_key_wraps_passphrase_unique',
+    );
+
+    expect(index).toBeDefined();
+    expect(index!.config.unique).toBe(true);
+    expect(index!.config.where).toBeDefined();
+  });
+
+  it('ties each kind-specific column to its kind, in both directions', () => {
+    // A recovery wrap without a lookup hash could never be found; a passphrase
+    // wrap carrying a passkey_id would be cascade-deleted by unenrolling a
+    // passkey, taking the account's only way in with it.
+    const checks = new Map(
+      getTableConfig(userKeyWraps).checks.map((entry) => [entry.name, entry.value.queryChunks]),
+    );
+
+    expect([...checks.keys()]).toEqual(
+      expect.arrayContaining([
+        'user_key_wraps_kind_check',
+        'user_key_wraps_lookup_check',
+        'user_key_wraps_passkey_check',
+        'user_key_wraps_used_check',
+      ]),
+    );
+  });
+
+  it('restates the wrap kinds the crypto spec pins, and nothing else', () => {
+    const check = getTableConfig(userKeyWraps).checks.find(
+      (entry) => entry.name === 'user_key_wraps_kind_check',
+    );
+    const sql = check!.value.queryChunks
+      .map((chunk) => (typeof chunk === 'object' && 'value' in chunk ? chunk.value : ''))
+      .join('');
+
+    for (const kind of ['passphrase', 'recovery', 'prf']) {
+      expect(sql, `${kind} must be allowed by the CHECK constraint`).toContain(`'${kind}'`);
+    }
+    // The retired PIN was never a wrap kind and must not become one: ADR 0009
+    // §4.4 records why the device PIN's design did not survive review.
+    expect(sql).not.toContain('pin');
+  });
+
+  it('makes a credential id unique across the installation', () => {
+    // A WebAuthn credential id identifies an authenticator's credential
+    // globally, and the same one under two accounts means something has gone
+    // wrong rather than that two people share a key.
+    expect(columnsOf(userPasskeys)['credential_id']!.isUnique).toBe(true);
+    expect(columnsOf(userPasskeys)['credential_id']!.getSQLType()).toBe('bytea');
   });
 });
