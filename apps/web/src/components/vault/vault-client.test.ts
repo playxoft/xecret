@@ -1,28 +1,43 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DecryptionError,
+  derivePasskeyWrapKey,
   derivePassphraseWrapKey,
   deriveStretchedKey,
+  deriveUkUnlockVerifier,
   fromBase64Url,
+  toBase64Url,
   unwrapUserKey,
+  wrapUserKey,
 } from '@xecret/core/crypto/client';
 import type { Argon2idProvider, Bytes } from '@xecret/core/crypto/client';
 
 import { ApiError } from '@/lib/api';
 import { parseWith } from '@/server/http';
-import { vaultCreateSchema } from '@/server/schemas/vault';
-import { readVaultKeys, releaseVaultKeys } from './key-store';
+import {
+  VAULT_RESET_CONFIRMATION as SERVER_RESET_CONFIRMATION,
+  vaultCreateSchema,
+  vaultUnlockSchema,
+} from '@/server/schemas/vault';
+import { holdVaultKeys, readVaultKeys, releaseVaultKeys } from './key-store';
+import { PasskeyCancelledError, PasskeyUnsupportedError } from './passkey';
 import {
   beginRecovery,
   buildRecoveryKit,
   buildVaultCreate,
   completeRecovery,
+  describePasskeyUnlockFailure,
   describeUnlockFailure,
   openRecoveryWrap,
   readRecoveryCode,
+  resetConfirmationProblem,
+  resetVault,
+  unlockBody,
+  unlockWithPasskey,
   unlockWithPassphrase,
+  VAULT_RESET_CONFIRMATION,
 } from './vault-client';
-import type { VaultMaterial, VaultStatus } from './vault-client';
+import type { VaultMaterial, VaultPasskey, VaultStatus } from './vault-client';
 
 /**
  * The compositions, against real cryptography.
@@ -448,6 +463,286 @@ describe('readRecoveryCode', () => {
   it('rejects something that is not a code at all', () => {
     const parsed = readRecoveryCode('hello');
     expect('problem' in parsed && parsed.problem).toMatch(/not a valid code/i);
+  });
+});
+
+/**
+ * A `prf` wrap, built the way enrolment builds one.
+ *
+ * Real crypto rather than a fixture string: the AAD binds the wrap to this
+ * credential id, and a test that stubbed the wrap could not tell a client that
+ * built the AAD correctly from one that did not — which is the failure that
+ * produces a passkey in the list that never opens anything.
+ */
+async function enrolledPasskey(
+  userId: string,
+  userKey: Bytes,
+  prfOutput: Bytes,
+): Promise<VaultPasskey> {
+  const credentialId = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+  const wrapKey = await derivePasskeyWrapKey(prfOutput);
+
+  return {
+    id: '018f3f6a-0000-7000-8000-0000000000aa',
+    credentialId,
+    label: 'Test authenticator',
+    transports: ['internal'],
+    createdAt: '2026-09-08T10:00:00.000Z',
+    lastUsedAt: null,
+    wrap: await wrapUserKey({
+      wrapKey,
+      userKey,
+      context: { userId, wrapKind: 'prf', credentialIdB64Url: credentialId },
+    }),
+  };
+}
+
+describe('unlockBody', () => {
+  const verifier = new Uint8Array(32).fill(7);
+
+  /**
+   * The two verifiers are both 32 bytes of HKDF output, so nothing about their
+   * *shape* says which is which — the field name is the whole of the protocol.
+   * A builder that put one under the other's name produces a body that parses,
+   * reaches the service, and is compared against the wrong digest.
+   */
+  it('builds a passphrase body the server schema accepts', () => {
+    const body = unlockBody({ kind: 'passphrase', verifier });
+    expect(Object.keys(body)).toEqual(['unlockVerifier']);
+    expect(() => parseWith(vaultUnlockSchema, body)).not.toThrow();
+  });
+
+  it('builds a passkey body the server schema accepts', () => {
+    const body = unlockBody({ kind: 'passkey', verifier });
+    expect(Object.keys(body)).toEqual(['ukUnlockVerifier']);
+    expect(() => parseWith(vaultUnlockSchema, body)).not.toThrow();
+  });
+
+  it('never produces the shapes the union exists to refuse', () => {
+    // Both present asks the server which proof counts; neither claims an unlock
+    // that was never proved. The builder can express only one field, and this
+    // pins that the schema really is what makes the other two impossible.
+    expect(() =>
+      parseWith(vaultUnlockSchema, {
+        ...unlockBody({ kind: 'passphrase', verifier }),
+        ...unlockBody({ kind: 'passkey', verifier }),
+      }),
+    ).toThrow();
+    expect(() => parseWith(vaultUnlockSchema, {})).toThrow();
+  });
+});
+
+describe('unlockWithPasskey', () => {
+  async function setUp() {
+    const built = await buildVaultCreate({
+      userId: USER_ID,
+      passphrase: PASSPHRASE,
+      argon2id: fakeArgon2id,
+    });
+    const prfOutput = crypto.getRandomValues(new Uint8Array(32));
+    const passkey = await enrolledPasskey(USER_ID, built.keys.userKey, prfOutput);
+    const material: VaultMaterial = {
+      ...materialFor(built.body as Record<string, unknown>),
+      passkeys: [passkey],
+    };
+    return { built, material, passkey, prfOutput };
+  }
+
+  it('opens the vault and holds the keys', async () => {
+    const { built, material, passkey, prfOutput } = await setUp();
+    nextResponse = { vault: STATUS };
+
+    const status = await unlockWithPasskey({
+      userId: USER_ID,
+      material,
+      credentialId: passkey.credentialId,
+      prfOutput,
+    });
+
+    expect(status).toEqual(STATUS);
+    // The same User Key the passphrase wrap holds. A passkey adds a door; it
+    // does not lead somewhere else.
+    expect([...(readVaultKeys()?.userKey ?? [])]).toEqual([...built.keys.userKey]);
+  });
+
+  it('sends the UK branch of the verifier, not the passphrase one', async () => {
+    const { built, material, passkey, prfOutput } = await setUp();
+    nextResponse = { vault: STATUS };
+
+    await unlockWithPasskey({
+      userId: USER_ID,
+      material,
+      credentialId: passkey.credentialId,
+      prfOutput,
+    });
+
+    const body = posted[0]?.body as Record<string, string>;
+    expect(posted[0]?.path).toBe('/api/auth/vault/unlock');
+    expect(Object.keys(body)).toEqual(['ukUnlockVerifier']);
+    // Derived from the UK, because a passkey unlock never derives `SK` — there
+    // is no way back from the User Key to the Stretched Key, which is what makes
+    // a passphrase change a single re-wrap.
+    expect(body['ukUnlockVerifier']).toBe(
+      toBase64Url(await deriveUkUnlockVerifier(built.keys.userKey)),
+    );
+  });
+
+  it('zeroizes the PRF output on the way out', async () => {
+    const { material, passkey, prfOutput } = await setUp();
+    nextResponse = { vault: STATUS };
+
+    await unlockWithPasskey({
+      userId: USER_ID,
+      material,
+      credentialId: passkey.credentialId,
+      prfOutput,
+    });
+
+    expect([...prfOutput]).toEqual(Array<number>(32).fill(0));
+  });
+
+  it('fails in the browser before it spends an attempt on the server', async () => {
+    const { material, passkey } = await setUp();
+
+    // A PRF output from a different credential. No `nextResponse`: the unwrap
+    // has to fail first, so a wrong authenticator costs the account nothing from
+    // its lockout budget.
+    await expect(
+      unlockWithPasskey({
+        userId: USER_ID,
+        material,
+        credentialId: passkey.credentialId,
+        prfOutput: crypto.getRandomValues(new Uint8Array(32)),
+      }),
+    ).rejects.toBeInstanceOf(DecryptionError);
+
+    expect(posted).toHaveLength(0);
+    expect(readVaultKeys()).toBeNull();
+  });
+
+  it('refuses a credential this account has not enrolled, indistinguishably', async () => {
+    const { material, prfOutput } = await setUp();
+
+    // The same error a failed unwrap raises. Telling the two apart would be an
+    // oracle for which credential ids belong to this account.
+    await expect(
+      unlockWithPasskey({
+        userId: USER_ID,
+        material,
+        credentialId: toBase64Url(crypto.getRandomValues(new Uint8Array(32))),
+        prfOutput,
+      }),
+    ).rejects.toBeInstanceOf(DecryptionError);
+
+    expect(posted).toHaveLength(0);
+  });
+});
+
+describe('describePasskeyUnlockFailure', () => {
+  it('says nothing when the prompt was dismissed', () => {
+    // WebAuthn reports a dismissal and a timeout identically, on purpose. The
+    // button comes back and the screen stays quiet.
+    const outcome = describePasskeyUnlockFailure(new PasskeyCancelledError());
+    expect(outcome.silent).toBe(true);
+    expect(outcome.permanent).toBe(false);
+  });
+
+  it('withdraws the option permanently when the device cannot do it', () => {
+    const outcome = describePasskeyUnlockFailure(
+      new PasskeyUnsupportedError('This passkey cannot derive an encryption key.'),
+    );
+    expect(outcome).toEqual({
+      silent: false,
+      permanent: true,
+      message: 'This passkey cannot derive an encryption key.',
+    });
+  });
+
+  it('treats a failed unwrap as an ordinary, retryable failure', () => {
+    const outcome = describePasskeyUnlockFailure(new DecryptionError());
+    expect(outcome.silent).toBe(false);
+    expect(outcome.permanent).toBe(false);
+  });
+
+  it('passes the backoff through, still verbatim', () => {
+    const message = 'Too many failed attempts. Try again in 3 minutes.';
+    const outcome = describePasskeyUnlockFailure(
+      new ApiError({ code: 'rate_limited', message, status: 429, requestId: null }),
+    );
+    expect(outcome).toEqual({ silent: false, permanent: false, message });
+  });
+});
+
+describe('the vault reset', () => {
+  function heldKeys() {
+    return {
+      userId: USER_ID,
+      userKey: new Uint8Array(32).fill(1),
+      encPrivateKey: new Uint8Array(32).fill(2),
+      encPublicKey: new Uint8Array(32).fill(3),
+      signPrivateKey: new Uint8Array(32).fill(4),
+      signPublicKey: new Uint8Array(32).fill(5),
+    };
+  }
+
+  it('asks for the phrase the server checks', () => {
+    // The client copy has no authority — the request is checked against the
+    // server's constant — so the two are pinned together here. Drifting apart
+    // would produce a form that cannot be satisfied.
+    expect(VAULT_RESET_CONFIRMATION).toBe(SERVER_RESET_CONFIRMATION);
+  });
+
+  it('names the act rather than the account', () => {
+    // Unlike account deletion's "type your email": what ends here is the ability
+    // to read anything encrypted under this vault, and the account survives.
+    // Somebody typing their own email from muscle memory has confirmed nothing.
+    expect(VAULT_RESET_CONFIRMATION).toBe('reset my vault');
+  });
+
+  it.each([
+    ['nothing typed', ''],
+    ['only whitespace', '   '],
+    ['a near miss', 'reset my vaults'],
+    ['a different phrase entirely', 'delete my account'],
+  ])('refuses %s', (_name, typed) => {
+    expect(resetConfirmationProblem(typed)).not.toBeNull();
+  });
+
+  it.each([
+    ['the phrase exactly', 'reset my vault'],
+    ['surrounding whitespace', '  reset my vault  '],
+    ['different capitals', 'Reset My Vault'],
+  ])('accepts %s, matching the server comparison', (_name, typed) => {
+    expect(resetConfirmationProblem(typed)).toBeNull();
+  });
+
+  it('releases the keys before it asks the server for anything', async () => {
+    holdVaultKeys(heldKeys());
+
+    nextResponse = {
+      vault: { ...STATUS, configured: false, unlocked: false, unlockedUntil: null },
+    };
+    const status = await resetVault(VAULT_RESET_CONFIRMATION);
+
+    expect(readVaultKeys()).toBeNull();
+    expect(posted[0]?.path).toBe('/api/auth/vault/reset');
+    expect(posted[0]?.body).toEqual({ confirm: VAULT_RESET_CONFIRMATION });
+    // `configured: false` is what routes the screen to the setup ceremony.
+    expect(status.configured).toBe(false);
+  });
+
+  it('leaves nothing held when the request fails', async () => {
+    holdVaultKeys(heldKeys());
+
+    const { api } = await import('@/lib/api');
+    vi.mocked(api.post).mockImplementationOnce(() =>
+      Promise.reject(
+        new ApiError({ code: 'bad_request', message: 'nope', status: 400, requestId: null }),
+      ),
+    );
+
+    await expect(resetVault('reset my vault')).rejects.toBeInstanceOf(ApiError);
+    expect(readVaultKeys()).toBeNull();
   });
 });
 

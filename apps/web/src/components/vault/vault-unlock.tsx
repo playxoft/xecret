@@ -1,23 +1,28 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { zeroize } from '@xecret/core/crypto/client';
+import { fromBase64Url, zeroize } from '@xecret/core/crypto/client';
 import type { Bytes, RecoveryCode } from '@xecret/core/crypto/client';
 
 import { errorMessage, SIGN_IN_PATH } from '@/lib/api';
-import { Alert, Button, Field, Input, KeyIcon, Skeleton } from '@/components/ui';
+import { Alert, Button, Field, Input, KeyIcon, Separator, Skeleton } from '@/components/ui';
 import { kitConfirmationProblem, promptedCodeIndex } from './emergency-kit';
+import { assertPasskeyPrf, currentPasskeyAvailability } from './passkey';
 import { PassphraseFields, usePassphraseStrength } from './passphrase-fields';
 import { passphraseProblem } from './passphrase';
 import { RecoveryKitPanel } from './recovery-kit-panel';
 import {
   beginRecovery,
   completeRecovery,
+  describePasskeyUnlockFailure,
   describeUnlockFailure,
   openRecoveryWrap,
-  PASSKEY_UNLOCK_UNAVAILABLE,
   readRecoveryCode,
+  resetConfirmationProblem,
+  resetVault,
+  unlockWithPasskey,
   unlockWithPassphrase,
+  VAULT_RESET_CONFIRMATION,
 } from './vault-client';
 import type { VaultMaterial } from './vault-client';
 import { useVault } from './vault-keys';
@@ -34,14 +39,16 @@ import { useVault } from './vault-keys';
  * below is reachable in one click rather than buried.
  *
  * ── The order of the offers ──
- * Passkey first when one is enrolled, then the passphrase, per plan §4.2. The
- * passkey section is currently an explanation rather than a button, for the
- * reason `PASSKEY_UNLOCK_UNAVAILABLE` sets out: the server now accepts a
- * passkey unlock — it takes `{ ukUnlockVerifier }` and compares it against its
- * own stored digest — but the button, its PRF feature detection and its failure
- * states are not built here yet. It is rendered rather than hidden because
- * somebody who deliberately enrolled a passkey deserves to be told why it is not
- * being offered.
+ * Passkey first when one is enrolled, then the passphrase, per plan §4.2 —
+ * prominence in the order somebody will reach for them, not in the order they
+ * were built. The passphrase form is always rendered underneath, never behind a
+ * "use another method" link: a passkey is an extra door and the authenticator
+ * that opens it can be at home, flat, or reset, and a screen that hid the
+ * passphrase would turn each of those into being locked out.
+ *
+ * The passkey button is withdrawn — not disabled — when this browser or
+ * authenticator turns out not to support the PRF extension, because there is
+ * nothing to retry and a permanently failing button is worse than no button.
  */
 
 export interface VaultUnlockProps {
@@ -55,6 +62,14 @@ type Stage = 'unlock' | 'code' | 'reset' | 'kit' | 'lost';
 export function VaultUnlock({ user, onUnlocked }: VaultUnlockProps) {
   const vault = useVault();
   const [stage, setStage] = useState<Stage>('unlock');
+
+  // Answered before the material is looked at, and the exemption is the point of
+  // it: this is the screen somebody reaches when nothing they hold opens
+  // anything, and it has to stay rendered through the reset that empties
+  // `material` underneath it.
+  if (stage === 'lost') {
+    return <AllCodesLost onBack={() => setStage('code')} onReset={onUnlocked} />;
+  }
 
   if (vault.material === null) {
     // Three states, not two. The wraps arrive from `GET /api/auth/vault` a
@@ -79,21 +94,18 @@ export function VaultUnlock({ user, onUnlocked }: VaultUnlockProps) {
     );
   }
 
-  switch (stage) {
-    case 'unlock':
-      return (
-        <UnlockForm
-          user={user}
-          material={vault.material}
-          onUnlocked={onUnlocked}
-          onForgot={() => setStage('code')}
-        />
-      );
-    case 'lost':
-      return <AllCodesLost onBack={() => setStage('code')} />;
-    default:
-      return <RecoveryFlow user={user} stage={stage} onStage={setStage} onDone={onUnlocked} />;
+  if (stage === 'unlock') {
+    return (
+      <UnlockForm
+        user={user}
+        material={vault.material}
+        onUnlocked={onUnlocked}
+        onForgot={() => setStage('code')}
+      />
+    );
   }
+
+  return <RecoveryFlow user={user} stage={stage} onStage={setStage} onDone={onUnlocked} />;
 }
 
 /* ─────────────────────────────── unlocking ─────────────────────────────── */
@@ -111,7 +123,55 @@ function UnlockForm({
 }) {
   const [passphrase, setPassphrase] = useState('');
   const [busy, setBusy] = useState(false);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+
+  /**
+   * Set when this browser or authenticator turns out not to support PRF.
+   *
+   * Withdrawing the button rather than disabling it: there is nothing to retry,
+   * and the passphrase form below is not a fallback bolted on for this case — it
+   * is the primary credential, and the reason a passkey is never the only wrap.
+   */
+  const [passkeyUnavailable, setPasskeyUnavailable] = useState<string | null>(null);
+
+  // Read once. It cannot change while this screen is mounted, and re-reading it
+  // per render would make the button flicker on a browser that answers slowly.
+  const availability = useMemo(() => currentPasskeyAvailability(), []);
+  const passkeyOffered =
+    material.passkeys.length > 0 && availability === 'available' && passkeyUnavailable === null;
+
+  async function unlockWithPasskeyPrf() {
+    if (passkeyBusy || busy) return;
+
+    setPasskeyBusy(true);
+    setFailure(null);
+    try {
+      // Every enrolled credential is offered, so the browser's own prompt is
+      // what chooses between them — this screen has no idea which authenticator
+      // is to hand, and guessing would be worse than asking.
+      const asserted = await assertPasskeyPrf(
+        material.passkeys.map((passkey) => fromBase64Url(passkey.credentialId)),
+      );
+
+      await unlockWithPasskey({
+        userId: user.id,
+        material,
+        credentialId: asserted.credentialId,
+        prfOutput: asserted.prfOutput,
+      });
+      onUnlocked();
+    } catch (cause) {
+      const outcome = describePasskeyUnlockFailure(cause);
+      // A dismissal is not a failure: the button simply comes back, and saying
+      // anything about it would be telling somebody what they just did.
+      if (outcome.silent) return;
+      if (outcome.permanent) setPasskeyUnavailable(outcome.message);
+      else setFailure(outcome.message);
+    } finally {
+      setPasskeyBusy(false);
+    }
+  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -136,12 +196,41 @@ function UnlockForm({
 
   return (
     <div className="flex flex-col gap-5">
-      {material.passkeys.length > 0 ? (
-        <Alert
-          tone="info"
-          title={`${material.passkeys.length === 1 ? 'A passkey is' : 'Passkeys are'} enrolled`}
-        >
-          {PASSKEY_UNLOCK_UNAVAILABLE}
+      {passkeyOffered ? (
+        <div className="flex flex-col gap-3">
+          <Button
+            variant="primary"
+            size="lg"
+            loading={passkeyBusy}
+            disabled={busy}
+            onClick={() => void unlockWithPasskeyPrf()}
+          >
+            <KeyIcon className="size-4" />
+            Unlock with a passkey
+          </Button>
+
+          <div className="flex items-center gap-3">
+            <Separator className="flex-1" />
+            <span className="text-fg-subtle text-xs uppercase">or</span>
+            <Separator className="flex-1" />
+          </div>
+        </div>
+      ) : null}
+
+      {passkeyUnavailable !== null ? (
+        <Alert tone="warning" title="Your passkey could not be used here">
+          {passkeyUnavailable} Your passphrase still opens your vault — it always does, which is why
+          a passkey is never the only way in.
+        </Alert>
+      ) : null}
+
+      {material.passkeys.length > 0 &&
+      availability !== 'available' &&
+      passkeyUnavailable === null ? (
+        <Alert tone="info" title="Passkey unlock is not available in this browser">
+          {availability === 'insecure-context'
+            ? 'This page is not served over HTTPS, so the browser will not use a passkey. This is expected in local development.'
+            : 'This browser does not support passkeys. Use your passphrase — your enrolled passkeys still work elsewhere and nothing needs re-enrolling.'}
         </Alert>
       ) : null}
 
@@ -165,13 +254,16 @@ function UnlockForm({
 
         <Button
           type="submit"
-          variant="primary"
+          // Secondary only when a passkey is offered above it — two primary
+          // buttons would put the emphasis nowhere. Still a full-width button
+          // and still the first thing in the form: the demotion is about
+          // prominence between two working options, not about hiding one.
+          variant={passkeyOffered ? 'secondary' : 'primary'}
           size="lg"
           loading={busy}
-          disabled={passphrase.length === 0}
+          disabled={passphrase.length === 0 || passkeyBusy}
         >
-          <KeyIcon className="size-4" />
-          Unlock
+          Unlock with my passphrase
         </Button>
       </form>
 
@@ -455,30 +547,84 @@ function RecoveryFlow({
 /* ─────────────────────────── the honest dead end ─────────────────────────── */
 
 /**
- * What to say when the passphrase and all five codes are gone.
+ * What to say when the passphrase and all five codes are gone, and the one
+ * action left.
  *
- * ── Why there is no "reset my vault" button here ──
- * Plan §4.3 asks for one and it does not exist in this build. `deleteVault` is
- * reachable from exactly one place — `DELETE /api/auth/account`, as one step of
- * deleting the whole account — and there is no route that drops key material on
- * its own. Adding one from this screen would mean inventing a destructive
- * endpoint reachable from a locked session, which is not a thing to invent
- * quietly on the page where somebody has just lost everything.
+ * ── The reset is not recovery, and this screen must never imply that it is ──
+ * Nothing is decrypted and nothing is restored, because nothing can be. The data
+ * became unreadable when the last recovery code was lost; the reset does not
+ * change that and arrives too late to. What it changes is only whether the
+ * account can be *used* afterwards — without it, somebody sits at a lock screen
+ * whose every action fails, forever, with a working session.
  *
- * ── And the account deletion is not a way out either ──
- * That route carries no `allowLocked` exemption, deliberately and for a good
- * reason of its own: erasing an account demands the same proof of presence as
- * reading a secret, so a locked session left on a bench cannot do it. The two
- * decisions are individually right and together they close the last door — an
- * account in this state cannot unlock, cannot reset, and cannot delete itself.
- * Only whoever operates the installation can remove the key rows.
+ * So the copy separates the two facts and states them in that order: your data
+ * is gone, and here is how to start again. Running them together — "reset your
+ * vault to regain access" — would be the sentence somebody clicks past and then
+ * accuses us of having deleted their secrets, which is the one accusation this
+ * product cannot afford to have half-deserved.
  *
- * So the copy says that, in those words. It does not offer a button that fails,
- * and it does not apologise its way around the fact: there is no key on our
- * side, and "we may be able to help" would be a lie told at the worst possible
- * moment.
+ * ── The gates ──
+ * A typed phrase, matching what the endpoint checks, because this is the only
+ * action in the product with no undo of any kind — not a recoverable delete, not
+ * a soft delete, not a thirty-day window. And the phrase states the act rather
+ * than naming the account, so it cannot be satisfied by muscle memory.
+ *
+ * The keys are released before the request, inside {@link resetVault}. Nothing
+ * is held in this state, and doing it anyway costs nothing and closes the case
+ * where something was.
  */
-function AllCodesLost({ onBack }: { onBack: () => void }) {
+function AllCodesLost({ onBack, onReset }: { onBack: () => void; onReset: () => void }) {
+  const vault = useVault();
+  const [typed, setTyped] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [showProblem, setShowProblem] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const problem = resetConfirmationProblem(typed);
+
+  async function reset(event: React.FormEvent) {
+    event.preventDefault();
+    if (busy) return;
+
+    if (problem !== null) {
+      setShowProblem(true);
+      return;
+    }
+
+    setBusy(true);
+    setFailure(null);
+    try {
+      const status = await resetVault(typed);
+      // Adopted before anything navigates, so this provider stops describing a
+      // vault that no longer exists. `reload` follows to drop the material with
+      // it — safe here and nowhere else in this file, because the dead end is
+      // the one stage that renders without material.
+      vault.adopt({ vault: status });
+      setDone(true);
+      void vault.reload();
+      // Re-reads `/api/auth/me`, which now reports `configured: false` — and
+      // that is what swaps this screen for the setup ceremony.
+      onReset();
+    } catch (cause) {
+      setFailure(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (done) {
+    return (
+      <div role="status" className="flex flex-col gap-3 text-center">
+        <p className="text-fg text-sm font-medium">Your vault has been reset</p>
+        <p className="text-fg-subtle text-sm leading-6">
+          Setting up a new one now. Nothing encrypted under the old vault is readable, by us or by
+          anyone.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <Alert tone="danger" title="We cannot recover this">
@@ -494,20 +640,42 @@ function AllCodesLost({ onBack }: { onBack: () => void }) {
           this, and teammates who still have their vaults are unaffected.
         </p>
         <p>
-          <span className="text-fg">
-            Ask whoever runs this xecret installation to clear your key material.
-          </span>{' '}
-          Doing so discards your vault permanently — nothing encrypted under it becomes readable
-          again — and lets you start over with a new passphrase and a new set of keys. It is the
-          only action that unsticks this account, and it is not one this page can take: every route
-          that touches key material requires an unlocked vault, which is precisely what you no
-          longer have.
+          <span className="text-fg">You can start again by resetting your vault.</span> That
+          discards your keys, your recovery codes and your passkeys permanently. It does not recover
+          anything and it is not a way back in: everything already encrypted under the old vault
+          stays unreadable, including your access to every team environment you were shared into.
         </p>
         <p>
-          Once you have a new vault, an owner or admin of your organisation can re-share the
-          environments you had access to.
+          Afterwards you choose a new passphrase and get a new Emergency Kit, and an owner or admin
+          of your organisation can share those environments with you again — from that point on, not
+          retroactively. Ask them before you reset, so you know the way back exists.
         </p>
       </div>
+
+      {failure !== null ? (
+        <Alert tone="danger" title="Your vault was not reset">
+          {failure}
+        </Alert>
+      ) : null}
+
+      <form onSubmit={reset} noValidate className="flex flex-col gap-4">
+        <Field
+          label={`Type “${VAULT_RESET_CONFIRMATION}” to confirm`}
+          error={showProblem ? problem : null}
+        >
+          <Input
+            value={typed}
+            onChange={(event) => setTyped(event.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={VAULT_RESET_CONFIRMATION}
+          />
+        </Field>
+
+        <Button type="submit" variant="danger" loading={busy}>
+          Reset my vault
+        </Button>
+      </form>
 
       <Button variant="secondary" onClick={onBack}>
         I have found a code after all

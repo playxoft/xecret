@@ -33,6 +33,7 @@ import type { Argon2idProvider, Bytes, RecoveryCode } from '@xecret/core/crypto/
 import { api, isApiError } from '@/lib/api';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import { argon2idProvider } from './argon2';
+import { PasskeyCancelledError, PasskeyUnsupportedError } from './passkey';
 import { holdVaultKeys, releaseVaultKeys } from './key-store';
 import type { VaultKeyMaterial } from './key-store';
 
@@ -285,61 +286,22 @@ export async function unlockWithPassphrase(params: {
     userId: params.userId,
     userKey,
     material: params.material,
-    unlockVerifier,
+    proof: { kind: 'passphrase', verifier: unlockVerifier },
   });
 }
 
 /**
- * Why the passkey button on the unlock screen is still a notice.
+ * Opens the User Key with a passkey's PRF output, and nothing more.
  *
- * ── What used to be true, and no longer is ──
- * This constant was written when the asymmetry was a **server** one.
- * `POST /api/auth/vault/unlock` accepted only the unlock verifier, which is
- * `HKDF(SK, "xecret.v2.unlock-verifier")` — a branch of the Stretched Key, which
- * exists only when a passphrase has been typed. A passkey unlock derives no
- * `SK`: what its PRF output opens is blob type 3, and blob type 3 holds the User
- * Key, with no derivation back to `SK` by construction. So a browser could
- * genuinely open the vault with a passkey and still hold nothing the endpoint
- * would accept.
- *
- * That gap is now closed. The specification registers a second branch,
- * `xecret.v2.uk-unlock-verifier`, taking the UK as input keying material;
- * `user_keys.uk_unlock_verifier_hash` stores its digest; and the unlock route
- * accepts `{ ukUnlockVerifier }` as an alternative body, compared against that
- * digest and counted against the same lockout. {@link buildVaultCreate} already
- * uploads it, so every vault created by this build can be unlocked either way.
- *
- * ── What is left, and it is client work ──
- * The screen. {@link unlockWithPasskey} opens the User Key and deliberately does
- * not hold it or call the endpoint, because its other caller is enrolment, which
- * needs the unwrap as a proof and nothing more. Turning that into a real unlock
- * needs a caller that derives `deriveUkUnlockVerifier(userKey)`, hands both to
- * {@link finishUnlock}, and a `vault-unlock.tsx` that offers a button with PRF
- * feature detection and its own failure states rather than the notice below.
- *
- * Until that exists this sentence is what the screen says, and it stays accurate
- * about the part that matters to the person reading it: the button is not there
- * yet. It no longer claims the server cannot accept one.
- */
-export const PASSKEY_UNLOCK_UNAVAILABLE =
-  'One-touch unlock with a passkey is not available in this build yet. Your enrolled passkeys ' +
-  'already hold a working copy of your key and nothing needs re-enrolling — use your passphrase ' +
-  'for now.';
-
-/**
- * Opens the User Key with a passkey's PRF output.
- *
- * Used by enrolment to prove the wrap it just uploaded actually opens, and it is
- * the half of one-touch unlock that works today. It deliberately does **not**
- * call the unlock endpoint or hold the keys, because enrolment needs the unwrap
- * as a proof and nothing more. The unlock the server would now accept is
- * `deriveUkUnlockVerifier` of what this returns — see {@link
- * PASSKEY_UNLOCK_UNAVAILABLE} for what is left to build on top of it.
+ * The unwrap on its own, without the endpoint and without touching the key
+ * store, because it has a second caller that wants exactly this: enrolment
+ * proving that the wrap it just uploaded actually opens. {@link
+ * unlockWithPasskey} is the same unwrap with the unlock built on top.
  *
  * The PRF output is zeroized on the way out either way. It is the key to this
  * account's vault and it has no further use once the wrap is open.
  */
-export async function unlockWithPasskey(params: {
+export async function openPasskeyWrap(params: {
   userId: string;
   material: VaultMaterial;
   credentialId: string;
@@ -374,24 +336,88 @@ export async function unlockWithPasskey(params: {
 }
 
 /**
+ * One-touch unlock: a passkey's PRF output all the way to an unlocked session.
+ *
+ * ── Which proof this sends, and why it is a different one ──
+ * Not `unlockVerifier`. That value is `HKDF(SK, "xecret.v2.unlock-verifier")`, a
+ * branch of the Stretched Key, and a passkey unlock never derives `SK` — what
+ * its PRF opens is blob type 3, which holds the **User Key**, and there is no
+ * way back from the UK to `SK`. That one-way relationship is not an obstacle to
+ * work around; it is the property that makes a passphrase change a single
+ * re-wrap instead of a re-encryption of everything.
+ *
+ * So this sends `ukUnlockVerifier = HKDF(UK, "xecret.v2.uk-unlock-verifier")`,
+ * the branch the specification registers for exactly this case, against a digest
+ * the setup ceremony recorded. It concedes nothing to a server that stores it:
+ * whoever can compute this already holds the User Key, so the proof is strictly
+ * weaker than the capability it attests to.
+ *
+ * The unwrap happens first and the request second, for the same reason the
+ * passphrase path does it in that order — a PRF output that opens nothing must
+ * not spend one of the account's rate-limited attempts.
+ */
+export async function unlockWithPasskey(params: {
+  userId: string;
+  material: VaultMaterial;
+  credentialId: string;
+  prfOutput: Bytes;
+}): Promise<VaultStatus> {
+  const userKey = await openPasskeyWrap(params);
+
+  return finishUnlock({
+    userId: params.userId,
+    userKey,
+    material: params.material,
+    proof: { kind: 'passkey', verifier: await deriveUkUnlockVerifier(userKey) },
+  });
+}
+
+/**
+ * Which of the two unlock proofs a flow holds.
+ *
+ * A tagged pair rather than two optional fields, mirroring the union
+ * `vaultUnlockSchema` accepts: the server refuses a body carrying both or
+ * neither, so a client type that could express either state would be one whose
+ * mistakes are only caught by a 422.
+ */
+export type UnlockProof =
+  { kind: 'passphrase'; verifier: Bytes } | { kind: 'passkey'; verifier: Bytes };
+
+/**
+ * The unlock request body: exactly one field, named for the branch it came from.
+ *
+ * Pure and exported so it can be validated against the server's own schema in a
+ * test. The field name is the whole of the protocol here — the two verifiers are
+ * both 32 bytes of HKDF output and are indistinguishable by shape, so a builder
+ * that put one under the other's name would produce a body that parses, reaches
+ * the service, and is compared against the wrong digest.
+ */
+export function unlockBody(proof: UnlockProof): Record<string, string> {
+  return proof.kind === 'passphrase'
+    ? { unlockVerifier: toBase64Url(proof.verifier) }
+    : { ukUnlockVerifier: toBase64Url(proof.verifier) };
+}
+
+/**
  * Unwraps the private keys, holds everything, and marks the session unlocked.
  *
- * Shared by every route into an unlocked vault — passphrase, recovery, and the
- * setup ceremony's implicit unlock — because each of them has to do all three,
- * and the one that forgot the third would leave a browser full of keys against a
- * session the API refuses.
+ * Shared by every route into an unlocked vault — passphrase, passkey, recovery,
+ * and the setup ceremony's implicit unlock — because each of them has to do all
+ * three, and the one that forgot the third would leave a browser full of keys
+ * against a session the API refuses.
  */
 async function finishUnlock(params: {
   userId: string;
   userKey: Bytes;
   material: VaultMaterial;
-  unlockVerifier: Bytes;
+  proof: UnlockProof;
 }): Promise<VaultStatus> {
   const keys = await openPrivateKeys(params.userId, params.userKey, params.material);
 
-  const response = await api.post<{ vault: VaultStatus }>(apiPath.vaultUnlock(), {
-    unlockVerifier: toBase64Url(params.unlockVerifier),
-  });
+  const response = await api.post<{ vault: VaultStatus }>(
+    apiPath.vaultUnlock(),
+    unlockBody(params.proof),
+  );
 
   holdVaultKeys(keys);
   return response.vault;
@@ -435,6 +461,66 @@ export async function lockVault(everywhere = false): Promise<number> {
   } finally {
     releaseVaultKeys();
   }
+}
+
+/* ──────────────────────────────── reset ──────────────────────────────── */
+
+/**
+ * The phrase somebody has to type to destroy their own vault.
+ *
+ * ── Why it is written here as well as on the server ──
+ * The server owns it — `VAULT_RESET_CONFIRMATION` in `server/schemas/vault.ts`
+ * is what the request is actually checked against, and this copy has no
+ * authority. It is repeated because importing that module would pull `zod/mini`
+ * and the repository types into a browser bundle for one string, which is the
+ * same reason every wire shape in this file is declared locally rather than
+ * imported. A test pins the two together, so a change on either side fails
+ * loudly instead of producing a form that cannot be satisfied.
+ *
+ * The phrase states the *act* rather than naming the actor, unlike account
+ * deletion's "type your email". What ends here is the ability to read anything
+ * encrypted under this vault; the account itself survives. Somebody typing their
+ * own email out of muscle memory would have confirmed nothing they read.
+ */
+export const VAULT_RESET_CONFIRMATION = 'reset my vault';
+
+/**
+ * Why the reset cannot be submitted yet, or `null` when it can.
+ *
+ * Trims and lower-cases, matching `confirmationMatches` on the server: this is a
+ * guard against a mistake, not against an attacker — anybody who can reach the
+ * screen can read the phrase off it. What it buys is that the sentence has to be
+ * read and typed rather than clicked past, on the one action in the product with
+ * no undo of any kind.
+ */
+export function resetConfirmationProblem(typed: string): string | null {
+  const trimmed = typed.trim();
+  if (trimmed.length === 0) return `Type “${VAULT_RESET_CONFIRMATION}” to confirm.`;
+  if (trimmed.toLowerCase() !== VAULT_RESET_CONFIRMATION) {
+    return `That does not match. Type “${VAULT_RESET_CONFIRMATION}” exactly.`;
+  }
+  return null;
+}
+
+/**
+ * Destroys this account's vault: the keys, every wrap, every passkey.
+ *
+ * ── This is not recovery, and nothing here may imply that it is ──
+ * Nothing is decrypted and nothing is restored, because nothing can be. The data
+ * became unreadable when the last recovery code was lost; what this changes is
+ * only whether the account can be *used* afterwards, instead of being parked at
+ * a lock screen whose every action fails. The endpoint's own header says the
+ * same thing at greater length.
+ *
+ * The keys are released first rather than in a `finally`. There is nothing held
+ * in this state — every caller arrives from a locked session — but a reset that
+ * left a User Key resident because the request failed would be holding the one
+ * key that no longer opens anything on the server.
+ */
+export async function resetVault(confirm: string): Promise<VaultStatus> {
+  releaseVaultKeys();
+  const response = await api.post<{ vault: VaultStatus }>(apiPath.vaultReset(), { confirm });
+  return response.vault;
 }
 
 /* ────────────────────────── passphrase change ────────────────────────── */
@@ -797,6 +883,47 @@ export function describeUnlockFailure(cause: unknown): string {
   }
 
   return 'Your vault could not be unlocked. Please try again.';
+}
+
+/**
+ * What a failed passkey unlock means, and how loudly to say it.
+ *
+ * Three outcomes, because the screen has to behave differently in each and
+ * getting them confused is what makes an authentication surface feel broken:
+ *
+ *  - **Dismissed.** `silent`, and the button simply comes back. The user said
+ *    no; telling them so is noise, and WebAuthn deliberately reports a dismissal
+ *    and a timeout identically so a site cannot tell "no such credential" from
+ *    "the user declined".
+ *  - **This device cannot.** `permanent` for this browser or authenticator — no
+ *    PRF extension, an insecure origin, a refused request. The passkey option is
+ *    withdrawn for the rest of the session and the passphrase form carries on
+ *    below it, which is the whole reason a passkey is never the only wrap.
+ *  - **Everything else.** A wrap that did not open, a lockout, a network
+ *    failure: {@link describeUnlockFailure} already says the right thing about
+ *    each, including passing the server's backoff wait through verbatim.
+ *
+ * Pure and exported, so the branch a given throw takes is asserted directly
+ * rather than by driving a browser prompt.
+ */
+export function describePasskeyUnlockFailure(cause: unknown): {
+  silent: boolean;
+  permanent: boolean;
+  message: string;
+} {
+  if (cause instanceof PasskeyCancelledError) {
+    return { silent: true, permanent: false, message: cause.message };
+  }
+
+  if (cause instanceof PasskeyUnsupportedError) {
+    // Its message is written for this screen and is safe to show; see
+    // `passkey.ts`. Everything else goes through `describeUnlockFailure`, which
+    // collapses an arbitrary exception rather than reading a `message` that may
+    // have been built from a request payload.
+    return { silent: false, permanent: true, message: cause.message };
+  }
+
+  return { silent: false, permanent: false, message: describeUnlockFailure(cause) };
 }
 
 /* ──────────────────────────────── internals ──────────────────────────────── */
