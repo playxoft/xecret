@@ -124,6 +124,22 @@ export { computeValueHmac, decryptSecret, encryptSecret, MAX_SECRET_BLOB_LENGTH 
 export type { SecretContext, SecretField } from './secret';
 
 /**
+ * The three encoding helpers a client needs and cannot get from `./bytes`.
+ *
+ * They live in `../encoding`, which every module here already imports for
+ * `randomBytes`, and which is plain Web Crypto with no server dependency — so
+ * re-exporting them costs a browser bundle nothing. Naming them here rather than
+ * letting a caller reach for `@xecret/core/crypto` is the point: that barrel
+ * drags `EnvelopeService` and the Secrets Store binding types into the bundle,
+ * which is the entire reason this subpath exists.
+ *
+ * `toBase64Url` and `fromBase64Url` are how every non-blob binary field in the
+ * vault API travels — the salt, the verifier, the recovery lookup hash, a
+ * WebAuthn credential id. `zeroize` is what a lock does to the User Key.
+ */
+export { fromBase64Url, toBase64Url, zeroize } from '../encoding';
+
+/**
  * Re-exported from the shared crypto layer, so a client-only importer does not
  * need a second import path for the error every one of these functions throws.
  */

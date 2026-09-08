@@ -25,6 +25,7 @@ import {
   Skeleton,
   useToast,
 } from '@/components/ui';
+import { VaultCard } from '@/components/vault';
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState } from './resource-states';
@@ -55,10 +56,17 @@ interface SessionsResponse {
 }
 
 export function SecurityScreen() {
+  const { user } = useSession();
+
   return (
     <div className="flex flex-col gap-6">
       <PasswordCard />
-      <VaultCard />
+      {/* The vault card lives with the rest of the vault client, in
+          `components/vault`, because it is the only card on this page that
+          composes cryptography: changing a passphrase re-derives Argon2id in the
+          browser and re-wraps the User Key, and that machinery belongs beside
+          the ceremony and the unlock screen that share it. */}
+      <VaultCard user={user} />
       <LockCard />
       <DevicesCard />
     </div>
@@ -166,40 +174,6 @@ function PasswordCard() {
           </div>
         </CardContent>
       </form>
-    </Card>
-  );
-}
-
-/**
- * Phase 2b: the vault card — passphrase change, recovery codes, passkeys.
- *
- * The PIN card that stood here is gone with the PIN (ADR 0009 §4.4), and what
- * replaces it needs the client key store this build does not have: changing a
- * master passphrase means re-deriving Argon2id in the browser, re-wrapping the
- * User Key, and uploading the result — none of which can be faked by a form
- * posting a string. The endpoints are ready underneath
- * (`POST /api/auth/vault/passphrase`, `PUT /api/auth/vault/recovery`,
- * `/api/auth/vault/prf`); a follow-up owns the screen.
- *
- * Rendered as a notice rather than omitted, so the Security page does not
- * silently lose the section a user came looking for.
- */
-function VaultCard() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Vault</CardTitle>
-        <CardDescription>
-          Your master passphrase, recovery codes and passkeys — the keys that decrypt your secrets
-          in this browser.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <Alert tone="info" title="This section is being rebuilt">
-          Managing your passphrase and recovery codes is moving to end-to-end encryption. It is not
-          available in this build.
-        </Alert>
-      </CardContent>
     </Card>
   );
 }

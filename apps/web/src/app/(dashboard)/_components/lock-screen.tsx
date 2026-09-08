@@ -4,22 +4,20 @@ import { useState } from 'react';
 
 import { endSession, SIGN_IN_PATH } from '@/lib/api';
 import { Wordmark } from '@/components/layout';
-import { Alert, Button, LockIcon, ShieldCheckIcon } from '@/components/ui';
-import type { VaultStatus } from './session';
+import { Button, LockIcon, ShieldCheckIcon } from '@/components/ui';
+import { releaseVaultKeys, VaultSetup, VaultUnlock } from '@/components/vault';
+import type { SessionUser, VaultStatus } from './session';
 
 /**
  * The screen between a signed-in session and the key material it can reach.
  *
- * ── Phase 2b: this is a placeholder, and deliberately inert ──
- * The PIN screen that stood here has been removed with the PIN itself (ADR 0009
- * §4.4). What replaces it is the vault UI — the setup ceremony, the passphrase
- * unlock form, the passkey button, the recovery-code flow and the in-memory key
- * store they all write into — and none of that exists yet. A follow-up owns it.
- *
- * This renders the two honest states and offers the one action that must always
- * work, rather than a half-built form that would appear to do something. The
- * server side is complete underneath it: `/api/auth/vault*` will accept
- * everything the real screen needs to send.
+ * Two states, and they are different screens rather than two modes of one:
+ * an account with no vault is asked to *create* one, through the ceremony in
+ * `components/vault/vault-setup.tsx`; an account with a locked one is asked to
+ * open it. Collapsing them would mean a single form that sometimes creates a
+ * vault and sometimes opens it, which is the shape of the mistake that
+ * overwrites a key hierarchy — `POST /api/auth/vault` answers 409 rather than
+ * overwriting for exactly that reason.
  *
  * ── Why the whole dashboard is behind this ──
  * Not because the server needs it to be — every gated route refuses a locked
@@ -27,22 +25,24 @@ import type { VaultStatus } from './session';
  * page of failed requests. It is here because a dashboard rendering empty tables
  * and error toasts is a worse way to learn you are locked than being told.
  *
- * ── What this screen must never do, once it is real ──
+ * ── What this screen must never do ──
  * It must not offer "remember this device", because a lock you can permanently
  * dismiss is not a lock. It must not show how many attempts remain — that would
  * tell somebody guessing exactly how much room they have left, and the person
  * who knows their own passphrase does not need a countdown. And it must always
- * offer a way out, which is the part implemented below.
+ * offer a way out, which is the `Footer` below.
  */
 
 export interface LockScreenProps {
   status: VaultStatus;
-  email: string;
+  user: SessionUser;
   /** Re-reads `/api/auth/me`, which is what actually dismisses this screen. */
   onUnlocked: () => void;
 }
 
-export function LockScreen({ status, email }: LockScreenProps) {
+export function LockScreen({ status, user, onUnlocked }: LockScreenProps) {
+  const configured = status.configured;
+
   return (
     <div className="bg-canvas flex min-h-dvh flex-col">
       <header className="border-line flex h-[var(--topbar-height)] shrink-0 items-center border-b px-4 sm:px-6">
@@ -52,24 +52,21 @@ export function LockScreen({ status, email }: LockScreenProps) {
       <main className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-4 py-12 sm:px-6">
         <PanelFrame
           icon={
-            status.configured ? (
-              <LockIcon className="size-5" />
-            ) : (
-              <ShieldCheckIcon className="size-5" />
-            )
+            configured ? <LockIcon className="size-5" /> : <ShieldCheckIcon className="size-5" />
           }
-          title={status.configured ? 'Your vault is locked' : 'Set up your vault'}
+          title={configured ? 'Your vault is locked' : 'Set up your vault'}
           description={
-            status.configured
-              ? `Signed in as ${email}. Unlocking decrypts your keys in this browser — xecret never sees your passphrase.`
-              : `Signed in as ${email}. A master passphrase encrypts everything you store, on your device, before it leaves it.`
+            configured
+              ? `Signed in as ${user.email}. Unlocking decrypts your keys in this browser — xecret never sees your passphrase.`
+              : `Signed in as ${user.email}. A master passphrase encrypts everything you store, on your device, before it leaves it.`
           }
         >
-          <div className="flex flex-col gap-5">
-            <Alert tone="info" title="This screen is being rebuilt">
-              The unlock and setup flows are moving to end-to-end encryption. They are not available
-              in this build.
-            </Alert>
+          <div className="flex flex-col gap-6">
+            {configured ? (
+              <VaultUnlock user={user} onUnlocked={onUnlocked} />
+            ) : (
+              <VaultSetup user={user} onComplete={onUnlocked} />
+            )}
 
             <Footer />
           </div>
@@ -123,9 +120,10 @@ function Footer() {
     try {
       await endSession();
     } finally {
-      // Regardless of the outcome. A failed revoke still leaves a browser that
-      // should stop presenting the cookie, and the sign-in page is the one
-      // place from which everything is recoverable.
+      // Before the navigation and regardless of the outcome. A failed revoke
+      // still leaves a browser that should stop presenting the cookie — and one
+      // that must not be carrying a User Key into whatever it renders next.
+      releaseVaultKeys();
       window.location.assign(SIGN_IN_PATH);
     }
   }

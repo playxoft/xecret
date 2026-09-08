@@ -5,6 +5,7 @@ import { useState } from 'react';
 
 import { cn } from '@/lib/cn';
 import { endSession, SIGN_IN_PATH } from '@/lib/api';
+import { releaseVaultKeys } from '@/components/vault';
 import { initials } from '@/lib/format';
 import { THEME_LABELS } from '@/lib/theme';
 import type { ThemePreference } from '@/lib/theme';
@@ -80,6 +81,13 @@ export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps
     try {
       await endSession();
     } finally {
+      // The keys first, and unconditionally. The navigation below throws the
+      // document away, which disposes of them too — but only once it happens,
+      // and this path is also reached when sign-out failed. A browser that has
+      // decided it is signed out must not still be holding a User Key while it
+      // gets there.
+      releaseVaultKeys();
+
       // A full navigation rather than a router push. Every RSC payload cached
       // in this tab was rendered for a session that no longer exists, and the
       // only way to be certain none of it is reused is to throw the document

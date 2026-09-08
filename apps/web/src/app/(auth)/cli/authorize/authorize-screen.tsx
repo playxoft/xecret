@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import { useMemo, useState } from 'react';
 
 import { api, errorMessage, isApiError } from '@/lib/api';
@@ -15,6 +14,7 @@ import {
   SelectValue,
   Skeleton,
 } from '@/components/ui';
+import { VaultProvider, VaultSetup, VaultUnlock } from '@/components/vault';
 import { AuthCard } from '../../_components/auth-card';
 
 /** The validated query parameters `xecret login` sent. See `page.tsx`. */
@@ -26,7 +26,8 @@ export interface AuthorizeRequest {
 }
 
 interface MeResponse {
-  user: { email: string; displayName: string | null };
+  /** `id` is here for the vault gate: every wrap's AAD is bound to it. */
+  user: { id: string; email: string; displayName: string | null };
   vault: { configured: boolean; unlocked: boolean };
   organizations: Array<{ id: string; name: string; slug: string; role: string }>;
 }
@@ -269,8 +270,12 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
               <Alert tone="danger" title="Your account could not be read">
                 {errorMessage(me.error)} Nothing has been approved.
               </Alert>
-            ) : (
-              <VaultGate mode={stage} />
+            ) : me.data === null ? null : (
+              /* `me.data` cannot be null in the `setup` and `unlock` stages —
+                 both are derived from `me.data.vault` — but the compiler does
+                 not know that from a narrowing on `stage`, and asserting it
+                 would be a claim maintained by hand. */
+              <VaultGate mode={stage} user={me.data.user} onUnlocked={() => void me.reload()} />
             )}
 
             {stage === 'unreadable' ? (
@@ -290,21 +295,36 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
 }
 
 /**
- * Phase 2b: the vault gate that stands between a locked session and the
- * decision.
+ * The vault gate that stands between a locked session and the decision.
  *
- * A session arriving straight from `xecret login` has never been unlocked, and
- * minting a CLI token from a locked session is refused by the server — so this
- * page has to offer the unlock, or it is a dead end reachable only from a
- * command line. The PIN forms it used to render are gone with the PIN (ADR 0009
- * §4.4), and the passphrase form that replaces them needs the client key store
- * this build does not have.
+ * ── Why the unlock happens *here* rather than being redirected ──
+ * A session arriving straight from `xecret login` has usually never been
+ * unlocked: the browser was opened by a command, went through sign-in, and came
+ * back. Minting a CLI token from a locked session is refused by the server, so a
+ * page that only said "go and unlock it in the dashboard" would send somebody
+ * away from the consent request and back to a terminal to start again — with the
+ * five-minute PKCE window running the whole time.
  *
- * Until then it says so plainly and points at the dashboard, which is where the
- * real flow will live: unlocking there and re-running `xecret login` reaches
- * this page in the `decide` stage.
+ * It is the same `VaultUnlock` and the same `VaultSetup` the dashboard renders,
+ * mounted under their own `VaultProvider` because this route is outside
+ * `DashboardChrome` and there is no shell above it. Unlocking re-reads
+ * `/auth/me`, which moves the screen to `decide` without a navigation — so the
+ * approval the user came for is still in front of them.
+ *
+ * Setting a vault up from here is offered rather than refused, because this page
+ * is the one route into the product that never passes the dashboard, and it is
+ * therefore the only place a brand-new account signing in through `xecret login`
+ * would ever be asked.
  */
-function VaultGate({ mode }: { mode: 'setup' | 'unlock' }) {
+function VaultGate({
+  mode,
+  user,
+  onUnlocked,
+}: {
+  mode: 'setup' | 'unlock';
+  user: MeResponse['user'];
+  onUnlocked: () => void;
+}) {
   return (
     <div className="flex flex-col gap-4">
       <div className="text-center">
@@ -313,18 +333,18 @@ function VaultGate({ mode }: { mode: 'setup' | 'unlock' }) {
         </p>
         <p className="text-fg-muted mt-1 text-sm leading-6">
           {mode === 'unlock'
-            ? 'Unlock it in the dashboard, then run xecret login again.'
-            : 'Your account has no vault yet. Create one in the dashboard, then run xecret login again.'}
+            ? 'The CLI is issued a token that can read your secrets, so this has to be you.'
+            : 'Your account has no vault yet. Creating one takes a minute, and the CLI cannot be authorised without it.'}
         </p>
       </div>
 
-      <Alert tone="info" title="This step is being rebuilt">
-        Unlocking from this page is moving to end-to-end encryption.{' '}
-        <Link href="/app" className="hover:text-fg underline">
-          Open the dashboard
-        </Link>
-        , then run <code className="text-fg">xecret login</code> again.
-      </Alert>
+      <VaultProvider>
+        {mode === 'unlock' ? (
+          <VaultUnlock user={user} onUnlocked={onUnlocked} />
+        ) : (
+          <VaultSetup user={user} onComplete={onUnlocked} />
+        )}
+      </VaultProvider>
     </div>
   );
 }
