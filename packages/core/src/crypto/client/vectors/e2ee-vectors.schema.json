@@ -53,7 +53,7 @@
             "required": ["kind"],
             "properties": { "kind": { "const": "hkdf" } }
           },
-          "minContains": 6
+          "minContains": 7
         },
         {
           "contains": {
@@ -167,6 +167,7 @@
           "enum": [
             "xecret.v2.uk-wrap",
             "xecret.v2.unlock-verifier",
+            "xecret.v2.uk-unlock-verifier",
             "xecret.v2.recovery-wrap",
             "xecret.v2.prf-wrap",
             "xecret.v2.value-hmac",

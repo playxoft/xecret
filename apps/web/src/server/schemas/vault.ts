@@ -114,6 +114,21 @@ const unlockVerifierSchema = base64UrlBytes(
   'An unlock verifier is 32 bytes, base64url encoded.',
 );
 
+/**
+ * `HKDF(UK, "", "xecret.v2.uk-unlock-verifier", 32)` — the proof an unlock that
+ * never derived `SK` presents instead (spec §8.2).
+ *
+ * Structurally identical to the passphrase verifier and semantically distinct,
+ * which is exactly why the two travel under different field names and are stored
+ * in different columns. The shapes cannot tell them apart; the field name is
+ * what says which branch a value came from, and the server compares it against
+ * the matching digest and no other.
+ */
+const ukUnlockVerifierSchema = base64UrlBytes(
+  32,
+  'An unlock verifier is 32 bytes, base64url encoded.',
+);
+
 /** `SHA-256("xecret.v2.recovery-lookup" ‖ codeBytes)` (spec §7.5). */
 const lookupHashSchema = base64UrlBytes(32, 'A lookup hash is 32 bytes, base64url encoded.');
 
@@ -180,6 +195,13 @@ export const vaultCreateSchema = z.strictObject(
     kdfSalt: kdfSaltSchema,
     kdfParams: kdfParamsSchema,
     unlockVerifier: unlockVerifierSchema,
+    /**
+     * Uploaded by the same ceremony, so both unlock paths work from the moment a
+     * vault exists. Only setup writes it: a passphrase change and a recovery
+     * both re-wrap the User Key rather than replacing it, so the digest of this
+     * branch stays valid across them.
+     */
+    ukUnlockVerifier: ukUnlockVerifierSchema,
     passphraseWrap: gcmBlobSchema,
     recoveryWraps: recoveryWrapsSchema,
   },
@@ -188,8 +210,49 @@ export const vaultCreateSchema = z.strictObject(
 
 export type VaultCreateRequest = z.infer<typeof vaultCreateSchema>;
 
-export const vaultUnlockSchema = z.strictObject(
-  { unlockVerifier: unlockVerifierSchema },
+/**
+ * Unlocking: exactly one verifier, and the field name says which kind.
+ *
+ * ── Why a union rather than one optional-either-way object ──
+ * An unlock does not always involve a passphrase. A passkey opens blob type 3,
+ * which holds the User Key, and there is no derivation from the User Key back to
+ * the Stretched Key — so a passkey unlock cannot produce `unlockVerifier` and
+ * sends `ukUnlockVerifier` instead (spec §8.2).
+ *
+ * Two `strictObject` branches rather than one object with both fields optional,
+ * because the states that shape would additionally admit are both wrong and both
+ * silent. **Neither** present is a body claiming an unlock it never proved, and
+ * an object schema would hand the service two `undefined`s to notice at runtime.
+ * **Both** present is a caller asking the server to decide which proof counts,
+ * and the safe reading — "accept if either matches" — is the one that turns two
+ * independent verifiers into a single weaker one. A union refuses both at the
+ * boundary, so the service receives a body that has already answered the
+ * question.
+ */
+export const vaultUnlockSchema = z.union([
+  z.strictObject({ unlockVerifier: unlockVerifierSchema }, UNEXPECTED_FIELD),
+  z.strictObject({ ukUnlockVerifier: ukUnlockVerifierSchema }, UNEXPECTED_FIELD),
+]);
+
+export type VaultUnlockRequest = z.infer<typeof vaultUnlockSchema>;
+
+/**
+ * The last resort: destroying a vault whose passphrase and every recovery code
+ * are gone.
+ *
+ * The confirmation follows `DELETE /api/auth/account` — a `confirm` field
+ * compared with `confirmationMatches`, which trims and lowercases because this
+ * is a check against a mistake rather than against an attacker. What differs is
+ * *what* is typed. The account route asks for the account's own email, which is
+ * the right prompt when the thing being named is the account; here the account
+ * survives and what ends is the ability to read anything encrypted under it, so
+ * the phrase states the act rather than naming the actor. Somebody typing
+ * their own email out of muscle memory has confirmed nothing they read.
+ */
+export const VAULT_RESET_CONFIRMATION = 'reset my vault';
+
+export const vaultResetSchema = z.strictObject(
+  { confirm: z.string().check(z.maxLength(100)) },
   UNEXPECTED_FIELD,
 );
 

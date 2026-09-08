@@ -90,6 +90,8 @@ export const apiPath = {
   vaultRecoveryComplete: (): string => '/api/auth/vault/recovery/complete',
   /** Passkey wraps for one-touch unlock. `DELETE` takes `/{passkeyId}`. */
   vaultPasskeys: (): string => '/api/auth/vault/prf',
+  /** Destroys the vault when the passphrase and every recovery code are gone. */
+  vaultReset: (): string => '/api/auth/vault/reset',
   orgs: (): string => '/api/orgs',
   /**
    * Whether an organisation slug is free. Takes `?slug=`.

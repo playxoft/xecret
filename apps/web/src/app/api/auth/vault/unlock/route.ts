@@ -14,11 +14,21 @@ import {
  *
  * ── What is actually being proved here ──
  * Not that the caller can decrypt anything. That question was already answered
- * in the browser, where the passphrase became a key and the key opened the User
- * Key wrap; the server never sees any of it. What arrives is the **unlock
- * verifier** — a sibling HKDF branch of the wrap key — and what it buys is the
+ * in the browser, where a key opened the User Key wrap; the server never sees
+ * any of it. What arrives is an **unlock verifier**, and what it buys is the
  * three things a server can still usefully do: gate the API for the next eight
  * hours, count the attempt, and write the audit line.
+ *
+ * ── Two verifiers, because an unlock is not always a passphrase ──
+ * A passphrase unlock derives `SK` and sends `unlockVerifier`. A passkey unlock
+ * opens blob type 3 — which holds the User Key — never derives `SK`, and sends
+ * `ukUnlockVerifier` instead (spec §8.2). Exactly one of the two, enforced by
+ * the schema's union: a body with both would be asking the server to choose
+ * which proof counts, and a body with neither would be claiming an unlock it
+ * never proved.
+ *
+ * They compare against different stored digests, so neither can be replayed for
+ * the other, and they share one lockout, because they attest to the same thing.
  *
  * Two independent limits apply, and both are deliberate:
  *
@@ -38,10 +48,13 @@ export const POST = authenticatedRoute(
     await enforce(services.env, 'RL_LOGIN', attemptKey(services.meta.ipAddress, user.user.id));
 
     const body = await parseJsonBody(request, vaultUnlockSchema);
+    // Which proof arrived is settled by the schema's union, not here: a body
+    // carrying both verifiers or neither never reaches this line.
+    const method = 'unlockVerifier' in body ? 'passphrase' : 'passkey';
 
-    let result: { unlockedUntil: string };
+    let result: Awaited<ReturnType<typeof unlockVault>>;
     try {
-      result = await unlockVault(services, user, body.unlockVerifier);
+      result = await unlockVault(services, user, body);
     } catch (cause) {
       // Recorded here rather than in the service, because only the route holds
       // an audit builder — and recorded before the rethrow, because the route
@@ -61,7 +74,7 @@ export const POST = authenticatedRoute(
             'vault.unlock_failed',
             { type: 'user', id: user.user.id },
             'invalidCredentials',
-            { source: 'dashboard', wrapKind: 'passphrase' },
+            { source: 'dashboard', method },
           ),
         );
       }
@@ -81,7 +94,7 @@ export const POST = authenticatedRoute(
         audit(orgId).success(
           'vault.unlocked',
           { type: 'user', id: user.user.id },
-          { source: 'dashboard', wrapKind: 'passphrase' },
+          { source: 'dashboard', method: result.method },
         ),
       );
     }

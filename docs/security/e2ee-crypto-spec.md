@@ -234,6 +234,7 @@ appear here**, and every string is written exactly as shown, ASCII, no trailing 
 |---|---|---|---|---|
 | `xecret.v2.uk-wrap` | `SK` (32B, §3.1) | empty | 32 | AES-256-GCM key wrapping the UK in the **passphrase** wrap (blob type 1) |
 | `xecret.v2.unlock-verifier` | `SK` (32B, §3.1) | empty | 32 | `unlockVerifier`, sent to the server at setup and at every unlock (§8) |
+| `xecret.v2.uk-unlock-verifier` | `UK` (32B) | empty | 32 | `ukUnlockVerifier`, sent to the server by an unlock that opened the UK without a passphrase (§8.2) |
 | `xecret.v2.recovery-wrap` | `codeBytes` (16B, §7) | empty | 32 | `RCK`, the AES-256-GCM key wrapping the UK in one **recovery** wrap (blob type 2) |
 | `xecret.v2.prf-wrap` | WebAuthn PRF output (32B) | empty | 32 | `PK`, the AES-256-GCM key wrapping the UK in the **passkey** wrap (blob type 3) |
 | `xecret.v2.value-hmac` | `EHK` (32B) | empty | 32 | HMAC-SHA256 key for `valueHmac` (§9) |
@@ -245,9 +246,33 @@ rather than a key. The verifier is handed to the server; if it were the wrap key
 from it by anything invertible, a server holding verifiers would hold wrap keys. It is a
 sibling branch, and HKDF's guarantee is that one branch reveals nothing about another.
 
-The UK, by contrast, is used **only** as an AES-256-GCM key, for blob types 4 and 5, with
-distinct AAD for each. It is never HKDF input and never has a second purpose, so no derivation
-step is needed to separate its uses.
+The UK has two uses: it is an AES-256-GCM key for blob types 4 and 5, with distinct AAD for
+each, and it is the IKM for exactly one HKDF branch — `xecret.v2.uk-unlock-verifier`. That
+branch exists because **an unlock does not always involve a passphrase.** A passkey unlock
+opens blob type 3, and blob type 3 holds the UK; there is no derivation from the UK back to
+`SK`, by construction, because that one-way relationship is what makes a passphrase change a
+single re-wrap. So a client that has genuinely opened the vault with a passkey holds no value
+the `xecret.v2.unlock-verifier` branch could produce, and without a second branch it could
+decrypt everything and still not be able to tell the server it had unlocked.
+
+**Deriving an unlock proof from the UK gives away nothing**, and this is the point worth being
+precise about rather than taking on trust. The server's own gate is not what protects a secret
+under this model — the wraps are. Anyone who can produce `HKDF(UK, "", "xecret.v2.uk-unlock-verifier", 32)`
+already holds the UK, and therefore already holds every private key and every environment key
+the account can reach. The proof is strictly weaker than the capability it attests to, so a
+server storing its digest learns nothing it could use, and a client presenting it claims
+nothing it cannot already do.
+
+The branch is kept **separate from the `SK` one** rather than reusing
+`xecret.v2.unlock-verifier` with different IKM, for the reason the registry exists at all: two
+derivations that produce interchangeable 32-byte blobs are two things a server cannot tell
+apart. Distinct info strings mean the two verifiers hash to distinct stored columns
+(`unlock_verifier_hash` and `uk_unlock_verifier_hash`), so a value captured from one path can
+never be replayed down the other, and an implementation that confuses them fails closed at the
+comparison rather than silently accepting the wrong proof.
+
+The UK is otherwise never HKDF input. Any further use would need a new registered branch and a
+change to this table.
 
 ---
 
@@ -627,24 +652,53 @@ over it would cost the user a second and an attacker nothing.
 
 ---
 
-## 8. The unlock verifier
+## 8. The unlock verifiers
+
+### 8.1 The passphrase verifier
 
 ```
 unlockVerifier = HKDF(ikm = SK, salt = "", info = "xecret.v2.unlock-verifier", L = 32)
 ```
 
-The client sends `unlockVerifier` at vault setup and on every unlock. The server stores
-`SHA-256(unlockVerifier)` and compares in constant time (`timingSafeEqual`).
+The client sends `unlockVerifier` at vault setup and on every unlock that derived `SK`. The
+server stores `SHA-256(unlockVerifier)` and compares in constant time (`timingSafeEqual`).
 
-**Why a plain SHA-256 is enough on the server side.** The input is already a 32-byte Argon2id
-output — uniformly random from the server's point of view, with no structure to attack. An
-attacker holding the stored hashes gains nothing usable against the wraps, because the
-verifier is a *sibling* HKDF branch of the wrap key rather than a parent of it: HKDF's
-guarantee is that learning one branch reveals nothing about another.
+### 8.2 The User Key verifier
 
-**What it is and is not for.** It is not the thing that decrypts anything, and possessing it
-opens no vault. Unlock is fundamentally a client-side question — *can I unwrap the UK?* — and
-the answer never leaves the browser. The verifier exists so the server can maintain
+```
+ukUnlockVerifier = HKDF(ikm = UK, salt = "", info = "xecret.v2.uk-unlock-verifier", L = 32)
+```
+
+Sent by an unlock that opened the User Key **without deriving `SK`** — today, a passkey
+unlock (blob type 3). The client sends it at vault setup as well, alongside the passphrase
+verifier, so both are recorded from the same ceremony; the server stores
+`SHA-256(ukUnlockVerifier)` in its own column and compares it the same way.
+
+Both verifiers attest to the same thing — *this client can open this vault* — so a server
+MUST apply **one** attempt counter and one lockout across both. Counting them separately would
+hand an attacker two budgets against one gate.
+
+The two are **never interchangeable**. A `ukUnlockVerifier` presented where an
+`unlockVerifier` is expected fails the comparison, because the stored digests are of different
+HKDF branches; §3.3 explains why that separation is deliberate rather than incidental.
+
+A `ukUnlockVerifier` survives a passphrase change and a recovery, and this follows from the
+hierarchy rather than being a special case: both re-wrap the UK and neither replaces it, so the
+value the branch derives from is unchanged. A client MUST NOT send a new one on those paths,
+and a server MUST NOT expect one.
+
+### 8.3 What a verifier is, and is not
+
+**Why a plain SHA-256 is enough on the server side.** The input is already a 32-byte KDF
+output — an Argon2id derivation for §8.1, a random 32-byte key for §8.2 — uniformly random from
+the server's point of view, with no structure to attack. An attacker holding the stored hashes
+gains nothing usable against the wraps, because each verifier is a *sibling* HKDF branch of the
+wrap key rather than a parent of it: HKDF's guarantee is that learning one branch reveals
+nothing about another.
+
+**What they are and are not for.** Neither is the thing that decrypts anything, and possessing
+either opens no vault. Unlock is fundamentally a client-side question — *can I unwrap the UK?*
+— and the answer never leaves the browser. A verifier exists so the server can maintain
 `vaultUnlockedAt` for API gating, apply the `nextUnlockFailure` backoff to unlock attempts, and
 record an audit trail. That is defence in depth and audit fidelity, exactly as `isUnlocked()`
 does today, and nothing more.
@@ -804,3 +858,4 @@ server.**
 | 2026-09-08 | Initial version. Phase 0 of the zero-knowledge migration; normative for ADR 0009. |
 | 2026-09-08 | Phase 1 (TypeScript implementation). Three clarifications, all found by writing the code against this text: §2.2 now derives the server's ciphertext bound rather than calling it "slightly larger"; §5.2 separates format failures from key-dependent ones, which the vector schema's `errorClass` already assumed and the prose did not; §12 records the Argon2 parameter carve-out the vector file uses. No format, no derivation, and no byte layout changed. |
 | 2026-09-08 | Phase 2a (server side of the user vault). The two references to `nextPinFailure` in `auth/pin.ts` now name `nextUnlockFailure` in `auth/vault.ts`, which replaced it when the PIN was retired, and §7.5 records that the recovery counter is kept separate from the passphrase one. No format, no derivation, and no byte layout changed. |
+| 2026-09-08 | Phase 2b (passkey unlock). Adds `xecret.v2.uk-unlock-verifier` to §3.3 — the first and only HKDF branch taking the UK as input keying material — and splits §8 into the two verifiers, with one shared attempt counter across both. Closes a gap the client half surfaced: a passkey unlock opens blob type 3 and therefore holds the UK, never `SK`, so it could decrypt everything and still not prove an unlock. No existing format, derivation, or byte layout changed; the new branch is additive. |

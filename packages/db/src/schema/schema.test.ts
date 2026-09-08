@@ -162,8 +162,20 @@ describe('the user vault', () => {
     ]) {
       expect(cols, `user_keys must not carry a ${forbidden} column`).not.toContain(forbidden);
     }
-    // The verifier is stored only as a digest, and its name says so.
+    // Both verifiers are stored only as digests, and their names say so.
     expect(cols).toContain('unlock_verifier_hash');
+    expect(cols).toContain('uk_unlock_verifier_hash');
+  });
+
+  it('keeps the two unlock verifiers in separate columns', () => {
+    // A passkey unlock opens the User Key directly and can never produce the
+    // Stretched Key branch, so it presents its own proof. Two columns rather
+    // than one accepting either value: one column would mean a value captured
+    // from either path satisfies both, which is the confusion the distinct HKDF
+    // info strings exist to prevent.
+    const cols = columnsOf(userKeys);
+    expect(cols['unlock_verifier_hash']).not.toBe(cols['uk_unlock_verifier_hash']);
+    expect(cols['uk_unlock_verifier_hash']!.notNull).toBe(true);
   });
 
   it('stores every ciphertext as bytea, never as text', () => {
@@ -178,6 +190,7 @@ describe('the user vault', () => {
       'sign_private_key_enc',
       'kdf_salt',
       'unlock_verifier_hash',
+      'uk_unlock_verifier_hash',
     ]) {
       expect(keys[column]!.getSQLType(), column).toBe('bytea');
       expect(keys[column]!.notNull, column).toBe(true);

@@ -266,6 +266,9 @@ async function main(): Promise<void> {
       // against prose: what these rows hold is a public key, a salt, a digest
       // and a set of ciphertexts, and nothing here can open any of them.
       const unlockVerifier = randomBytes(32);
+      // The second branch: what a passkey unlock sends, since it opens the User
+      // Key directly and never derives a Stretched Key.
+      const ukUnlockVerifier = randomBytes(32);
       const blob = (label: string) => new TextEncoder().encode(`xk2.gcm.${label}`);
 
       await createVault(tx, {
@@ -279,6 +282,7 @@ async function main(): Promise<void> {
         kdfSalt: randomBytes(16),
         kdfParams: { alg: 'argon2id', v: 19, m: 65536, t: 3, p: 1, len: 32 },
         unlockVerifierHash: await hashUnlockVerifier(unlockVerifier),
+        ukUnlockVerifierHash: await hashUnlockVerifier(ukUnlockVerifier),
         passphraseWrap: blob('passphrase'),
         recoveryWraps: Array.from({ length: 5 }, (_unused, index) => ({
           lookupHash: randomBytes(32),
@@ -295,11 +299,20 @@ async function main(): Promise<void> {
 
       const keys = await findVaultKeys(tx, user.id);
       step(
-        'the unlock verifier is stored only as a digest',
+        'both unlock verifiers are stored, and only as digests',
         keys !== null &&
           keys.unlockVerifierHash.length === 32 &&
-          Buffer.compare(Buffer.from(keys.unlockVerifierHash), Buffer.from(unlockVerifier)) !== 0,
-        'SHA-256 of a sibling HKDF branch — possessing it opens nothing',
+          keys.ukUnlockVerifierHash.length === 32 &&
+          Buffer.compare(Buffer.from(keys.unlockVerifierHash), Buffer.from(unlockVerifier)) !== 0 &&
+          Buffer.compare(Buffer.from(keys.ukUnlockVerifierHash), Buffer.from(ukUnlockVerifier)) !==
+            0 &&
+          // Distinct columns from distinct HKDF branches, so neither can ever
+          // be replayed for the other.
+          Buffer.compare(
+            Buffer.from(keys.unlockVerifierHash),
+            Buffer.from(keys.ukUnlockVerifierHash),
+          ) !== 0,
+        'SHA-256 of two sibling HKDF branches — possessing either opens nothing',
       );
 
       let secondVaultRefused = false;
@@ -316,6 +329,7 @@ async function main(): Promise<void> {
             kdfSalt: randomBytes(16),
             kdfParams: { alg: 'argon2id', v: 19, m: 65536, t: 3, p: 1, len: 32 },
             unlockVerifierHash: randomBytes(32),
+            ukUnlockVerifierHash: randomBytes(32),
             passphraseWrap: blob('passphrase2'),
             recoveryWraps: [],
           });

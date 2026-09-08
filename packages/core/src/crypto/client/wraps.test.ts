@@ -9,6 +9,7 @@ import { deriveRecoveryKey, generateRecoveryCode, recoveryLookupHash } from './r
 import {
   derivePasskeyWrapKey,
   derivePassphraseWrapKey,
+  deriveUkUnlockVerifier,
   deriveUnlockVerifier,
   generateEnvironmentDataKey,
   generateEnvironmentHmacKey,
@@ -63,9 +64,48 @@ describe('wrap-key derivation', () => {
       derivePasskeyWrapKey(material),
       deriveRecoveryKey(material.slice(0, 16)),
       deriveUnlockVerifier(material),
+      deriveUkUnlockVerifier(material),
     ]);
 
-    expect(new Set(derived.map(toHex)).size).toBe(4);
+    expect(new Set(derived.map(toHex)).size).toBe(5);
+  });
+
+  /**
+   * The branch a passkey unlock sends.
+   *
+   * A passkey opens blob type 3, which holds the User Key, and there is no route
+   * from the UK back to the Stretched Key. Without this branch such a client
+   * could decrypt the whole vault and still hold nothing the unlock endpoint
+   * would accept.
+   */
+  it('derives an unlock proof from the User Key that is not the passphrase one', async () => {
+    const userKey = generateUserKey();
+
+    const fromUserKey = await deriveUkUnlockVerifier(userKey);
+    const fromStretched = await deriveUnlockVerifier(stretchedKey);
+
+    expect(fromUserKey).toHaveLength(32);
+    // Never interchangeable: the two hash to different stored columns, so a
+    // value captured from one path cannot be replayed down the other.
+    expect(toHex(fromUserKey)).not.toBe(toHex(fromStretched));
+    // And it is not the User Key itself — a server storing its digest must not
+    // thereby be storing a digest of the key that opens everything.
+    expect(toHex(fromUserKey)).not.toBe(toHex(userKey));
+  });
+
+  it('survives a re-wrap, because the User Key it derives from does', async () => {
+    // The property the passphrase-change and recovery paths depend on: both
+    // re-wrap the UK rather than replacing it, so the stored digest stays valid
+    // and neither path sends a new one.
+    const userKey = generateUserKey();
+    const before = await deriveUkUnlockVerifier(userKey);
+    const after = await deriveUkUnlockVerifier(Uint8Array.from(userKey));
+
+    expect(toHex(after)).toBe(toHex(before));
+  });
+
+  it('refuses input that is not a 32-byte User Key', async () => {
+    await expect(deriveUkUnlockVerifier(randomBytes(16))).rejects.toThrow(TypeError);
   });
 
   it('is deterministic', async () => {

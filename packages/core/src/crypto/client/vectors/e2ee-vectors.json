@@ -2,8 +2,8 @@
   "$schema": "./e2ee-vectors.schema.json",
   "specVersion": "2.0",
   "blobVersion": "xk2",
-  "generatedAt": "2026-09-08T11:23:14.791Z",
-  "generator": "packages/core/scripts/generate-vectors.ts@107551c",
+  "generatedAt": "2026-09-08T14:07:15.400Z",
+  "generator": "packages/core/scripts/generate-vectors.ts@4cdff74",
   "vectors": [
     {
       "id": "argon2id/ascii-passphrase",
@@ -92,6 +92,20 @@
       },
       "expected": {
         "okmHex": "248369bc560d92da66050850a32361970875af6da7c91cd8f4dbe6df00c47ee3"
+      }
+    },
+    {
+      "id": "hkdf/uk-unlock-verifier",
+      "kind": "hkdf",
+      "description": "The User Key to the verifier a passkey unlock sends — the one branch taking the UK as input.",
+      "input": {
+        "ikmHex": "478d477ad012a2e99fb4611e7c2cdcc453afdc55933c12f76b96f1fd18d1019a",
+        "saltHex": "",
+        "info": "xecret.v2.uk-unlock-verifier",
+        "length": 32
+      },
+      "expected": {
+        "okmHex": "f2549a135970859f3e8173d801799c9f2055893a728f169658885cc382d0796d"
       }
     },
     {

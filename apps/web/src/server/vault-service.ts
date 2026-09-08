@@ -27,6 +27,7 @@ import {
   regenerateRecoveryCodes as regenerateRecoveryCodeRows,
   removePasskey as removePasskeyRow,
   RepositoryError,
+  resetVault as resetVaultRows,
   setAutoLockMinutes,
   toBytes,
 } from '@xecret/db/repositories';
@@ -177,6 +178,10 @@ export async function createVault(
       kdfSalt: fromBase64Url(body.kdfSalt),
       kdfParams: body.kdfParams,
       unlockVerifierHash: await hashUnlockVerifier(fromBase64Url(body.unlockVerifier)),
+      // Both digests, and only here. The setup ceremony is the one moment a
+      // User Key comes into existence, so it is the one moment its verifier
+      // branch can be recorded.
+      ukUnlockVerifierHash: await hashUnlockVerifier(fromBase64Url(body.ukUnlockVerifier)),
       passphraseWrap: encodeBlob(body.passphraseWrap),
       recoveryWraps: body.recoveryWraps.map((entry) => ({
         lookupHash: fromBase64Url(entry.lookupHash),
@@ -190,8 +195,23 @@ export async function createVault(
   await markSessionUnlocked(services.db, user.sessionId, new Date());
 }
 
+/** Which proof an unlock presented, and therefore which digest it is compared against. */
+export type UnlockMethod = 'passphrase' | 'passkey';
+
 /**
- * Verifies the unlock verifier and unlocks the session.
+ * Verifies an unlock verifier and unlocks the session.
+ *
+ * ── Two proofs, one gate ──
+ * A passphrase unlock derives `SK` and sends `unlockVerifier`; a passkey unlock
+ * opens the User Key directly, never derives `SK`, and sends `ukUnlockVerifier`
+ * (spec §8.2). Which one arrived is decided by the request schema, not here —
+ * the union has already refused a body carrying both or neither, so this reads a
+ * settled question.
+ *
+ * They are compared against **different stored digests**, so neither can be
+ * replayed for the other, and counted against the **same** lockout, because they
+ * attest to the same thing: this client can open this vault. Giving the passkey
+ * path its own counter would hand an attacker two budgets against one gate.
  *
  * Returns when the unlock lapses, so the client can schedule its own re-lock
  * rather than discovering the expiry through a failed request mid-edit.
@@ -199,16 +219,20 @@ export async function createVault(
 export async function unlockVault(
   services: ServiceContext,
   user: Extract<Principal, { kind: 'user' }>,
-  unlockVerifier: string,
-): Promise<{ unlockedUntil: string }> {
+  body: { unlockVerifier: string } | { ukUnlockVerifier: string },
+): Promise<{ unlockedUntil: string; method: UnlockMethod }> {
   const keys = await requireVault(services, user.user.id);
 
-  await assertVerifierMatches(services, keys, unlockVerifier);
+  const method: UnlockMethod = 'unlockVerifier' in body ? 'passphrase' : 'passkey';
+  const presented = 'unlockVerifier' in body ? body.unlockVerifier : body.ukUnlockVerifier;
+  const expected = method === 'passphrase' ? keys.unlockVerifierHash : keys.ukUnlockVerifierHash;
+
+  await assertVerifierMatches(services, keys, presented, expected, method);
 
   const now = new Date();
   await markSessionUnlocked(services.db, user.sessionId, now);
 
-  return { unlockedUntil: vaultUnlockExpiryFrom(now).toISOString() };
+  return { unlockedUntil: vaultUnlockExpiryFrom(now).toISOString(), method };
 }
 
 /**
@@ -270,6 +294,10 @@ export async function changePassphrase(
       kdfSalt: fromBase64Url(body.kdfSalt),
       kdfParams: body.kdfParams,
       unlockVerifierHash: await hashUnlockVerifier(fromBase64Url(body.unlockVerifier)),
+      // No `ukUnlockVerifierHash`. This re-wraps the User Key rather than
+      // replacing it, so the digest of the branch derived from it is still
+      // correct — and a passkey enrolled before the change keeps working, which
+      // is the property the whole wrap indirection exists to buy.
       passphraseWrap: encodeBlob(body.passphraseWrap),
     });
   } catch (cause) {
@@ -362,6 +390,10 @@ export async function completeRecovery(
       kdfSalt: fromBase64Url(body.kdfSalt),
       kdfParams: body.kdfParams,
       unlockVerifierHash: await hashUnlockVerifier(fromBase64Url(body.unlockVerifier)),
+      // No `ukUnlockVerifierHash`, for the same reason as the passphrase change:
+      // redeeming a recovery code unwraps the User Key and re-wraps it under a
+      // new passphrase. The key itself never moves, so its digest stays correct
+      // and any enrolled passkey keeps working.
       passphraseWrap: encodeBlob(body.passphraseWrap),
       recoveryWraps: body.recoveryWraps.map((entry) => ({
         lookupHash: fromBase64Url(entry.lookupHash),
@@ -459,6 +491,38 @@ export async function removePasskey(
   if (!removed) throw errors.notFound('no such passkey');
 }
 
+/**
+ * Destroys the vault, so an account with no way into it can start again.
+ *
+ * ── The dead end this exists for ──
+ * Somebody who has lost their master passphrase *and* every recovery code holds
+ * nothing that opens their User Key, and no one can produce one for them — not a
+ * teammate, not an operator, not us. No copy of it exists outside the wraps this
+ * destroys. That is the promise the product makes, and it is kept even here.
+ *
+ * So this does not lose their data; the last recovery code did. What it does is
+ * let them out of the room: the row disappears, `vaultStatus` reports
+ * `configured: false`, and the setup ceremony runs again with fresh keys. The
+ * alternative is an account permanently parked at a lock screen with no action
+ * on it, which is not safer — it is the same loss with no way to keep using the
+ * account afterwards.
+ *
+ * ── What it costs, stated where the caller can see it ──
+ * Every environment key ever sealed to the old public key becomes unopenable.
+ * Their historical secrets stay in the database as ciphertext nobody can read,
+ * and a teammate has to re-share each environment before they can work again.
+ * The route says this in the confirmation phrase; this is the code that means it.
+ *
+ * Returns `false` when there was no vault, so the caller can answer "nothing to
+ * reset" rather than reporting a destruction that did not happen.
+ */
+export async function resetVault(
+  services: ServiceContext,
+  user: Extract<Principal, { kind: 'user' }>,
+): Promise<boolean> {
+  return resetVaultRows(services.db, user.user.id);
+}
+
 /** Changes how long the dashboard may sit idle before locking itself. */
 export async function setAutoLock(
   services: ServiceContext,
@@ -499,16 +563,16 @@ async function assertVerifierMatches(
   services: ServiceContext,
   keys: VaultKeyRecord,
   presented: string,
+  /** The stored digest to compare against — never inferred from the value itself. */
+  expectedHash: Uint8Array = keys.unlockVerifierHash,
+  surface: UnlockMethod = 'passphrase',
 ): Promise<void> {
   const now = new Date();
 
   const lockout = evaluateUnlockLockout(keys, now);
   if (lockout.locked) throw errors.vaultLocked(lockout.retryAfterMs);
 
-  const matched = await unlockVerifierMatches(
-    fromBase64Url(presented),
-    toBytes(keys.unlockVerifierHash),
-  );
+  const matched = await unlockVerifierMatches(fromBase64Url(presented), toBytes(expectedHash));
 
   if (!matched) {
     // Awaited, not deferred. A failure recorded in `waitUntil` is one a client
@@ -523,7 +587,7 @@ async function assertVerifierMatches(
       // The count, never the verifier and never the user's email. The user id
       // is on the line already — the route wrapper bound it — which is what
       // makes "this account is being brute-forced" a query rather than a hunch.
-      { failedAttempts: keys.failedAttempts + 1, surface: 'passphrase' },
+      { failedAttempts: keys.failedAttempts + 1, surface },
     );
 
     throw errors.unauthenticated('incorrect unlock verifier');

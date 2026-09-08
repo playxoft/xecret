@@ -461,6 +461,7 @@ audit_logs — no FKs by design; references are soft
 0009  organization creator index
 0010  audit partitions: quarterly, and into the audit_parts schema
 0011  user vault (user_keys, user_key_wraps, user_passkeys); retires the PIN
+0012  user_keys.uk_unlock_verifier_hash — the verifier a passkey unlock sends
 ```
 
 The 15 tables catalogued above are the ones 0000 creates. `cli_auth_codes` arrives in 0005, and

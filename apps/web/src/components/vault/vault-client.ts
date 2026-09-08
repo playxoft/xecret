@@ -8,6 +8,7 @@ import {
   derivePassphraseWrapKey,
   deriveRecoveryKey,
   deriveStretchedKey,
+  deriveUkUnlockVerifier,
   deriveUnlockVerifier,
   encodePublicKey,
   fromBase64Url,
@@ -153,6 +154,13 @@ export async function buildVaultCreate(params: {
       deriveUnlockVerifier(stretched),
     ]);
 
+    // The second unlock proof, recorded by this ceremony and only by this one.
+    // A passkey unlock opens the User Key directly and never derives `SK`, so it
+    // cannot produce `unlockVerifier`; this is the branch it sends instead. It
+    // survives a passphrase change and a recovery untouched, because both
+    // re-wrap the User Key rather than replacing it.
+    const ukUnlockVerifier = await deriveUkUnlockVerifier(userKey);
+
     const [passphraseWrap, encPrivateKeyEnc, signPrivateKeyEnc] = await Promise.all([
       wrapUserKey({ wrapKey, userKey, context: { userId: params.userId, wrapKind: 'passphrase' } }),
       wrapPrivateKey({
@@ -182,6 +190,7 @@ export async function buildVaultCreate(params: {
         kdfSalt: toBase64Url(kdfSalt),
         kdfParams: CURRENT_KDF_PARAMS,
         unlockVerifier: toBase64Url(unlockVerifier),
+        ukUnlockVerifier: toBase64Url(ukUnlockVerifier),
         passphraseWrap,
         recoveryWraps: wraps,
       },
@@ -281,44 +290,51 @@ export async function unlockWithPassphrase(params: {
 }
 
 /**
- * Why a passkey cannot yet dismiss the lock screen on its own.
+ * Why the passkey button on the unlock screen is still a notice.
  *
- * ── The asymmetry, stated exactly ──
- * `POST /api/auth/vault/unlock` proves possession by comparing the **unlock
- * verifier**, and that value is `HKDF(SK, "xecret.v2.unlock-verifier")` — a
- * branch of the *Stretched Key*, which exists only when a passphrase has been
- * typed. A passkey unlock derives no `SK`. What its PRF output opens is blob
- * type 3, and blob type 3 holds the **User Key** (spec §2, table row 3); there
- * is no derivation from the User Key back to `SK`, by construction, because that
- * is the property that makes a passphrase change cheap.
+ * ── What used to be true, and no longer is ──
+ * This constant was written when the asymmetry was a **server** one.
+ * `POST /api/auth/vault/unlock` accepted only the unlock verifier, which is
+ * `HKDF(SK, "xecret.v2.unlock-verifier")` — a branch of the Stretched Key, which
+ * exists only when a passphrase has been typed. A passkey unlock derives no
+ * `SK`: what its PRF output opens is blob type 3, and blob type 3 holds the User
+ * Key, with no derivation back to `SK` by construction. So a browser could
+ * genuinely open the vault with a passkey and still hold nothing the endpoint
+ * would accept.
  *
- * So the browser can genuinely open the vault with a passkey — {@link
- * unlockWithPasskey} below does, and the unwrap is real — and still has nothing
- * the unlock endpoint will accept. `user_passkeys` stores a credential id, a
- * label, transports and the wrap; there is no column holding a hash of anything
- * a PRF output could reproduce, so this is a gap in the stored model rather than
- * something a cleverer client could route around.
+ * That gap is now closed. The specification registers a second branch,
+ * `xecret.v2.uk-unlock-verifier`, taking the UK as input keying material;
+ * `user_keys.uk_unlock_verifier_hash` stores its digest; and the unlock route
+ * accepts `{ ukUnlockVerifier }` as an alternative body, compared against that
+ * digest and counted against the same lockout. {@link buildVaultCreate} already
+ * uploads it, so every vault created by this build can be unlocked either way.
  *
- * Closing it is a server change with a migration behind it — a per-credential
- * verifier hash, a second accepted body shape on the unlock route, and a new
- * registered HKDF branch in the specification — which is Phase 2a's shape of
- * work, not this one's. Until then the honest thing is to say so on the screen
- * rather than to offer a button that cannot succeed, and this constant is the
- * one place that sentence is written.
+ * ── What is left, and it is client work ──
+ * The screen. {@link unlockWithPasskey} opens the User Key and deliberately does
+ * not hold it or call the endpoint, because its other caller is enrolment, which
+ * needs the unwrap as a proof and nothing more. Turning that into a real unlock
+ * needs a caller that derives `deriveUkUnlockVerifier(userKey)`, hands both to
+ * {@link finishUnlock}, and a `vault-unlock.tsx` that offers a button with PRF
+ * feature detection and its own failure states rather than the notice below.
+ *
+ * Until that exists this sentence is what the screen says, and it stays accurate
+ * about the part that matters to the person reading it: the button is not there
+ * yet. It no longer claims the server cannot accept one.
  */
 export const PASSKEY_UNLOCK_UNAVAILABLE =
-  'One-touch unlock with a passkey is not available yet: unlocking a session still requires ' +
-  'the unlock verifier your passphrase derives, and a passkey cannot produce it. Your enrolled ' +
-  'passkeys already hold a working copy of your key — use your passphrase for now.';
+  'One-touch unlock with a passkey is not available in this build yet. Your enrolled passkeys ' +
+  'already hold a working copy of your key and nothing needs re-enrolling — use your passphrase ' +
+  'for now.';
 
 /**
  * Opens the User Key with a passkey's PRF output.
  *
  * Used by enrolment to prove the wrap it just uploaded actually opens, and it is
  * the half of one-touch unlock that works today. It deliberately does **not**
- * call the unlock endpoint or hold the keys: see {@link
- * PASSKEY_UNLOCK_UNAVAILABLE} for why a passkey alone cannot mark a session
- * unlocked, and why fabricating a verifier is not an option.
+ * call the unlock endpoint or hold the keys, because enrolment needs the unwrap
+ * as a proof and nothing more. The unlock the server would now accept is
+ * `deriveUkUnlockVerifier` of what this returns — see {@link
+ * PASSKEY_UNLOCK_UNAVAILABLE} for what is left to build on top of it.
  *
  * The PRF output is zeroized on the way out either way. It is the key to this
  * account's vault and it has no further use once the wrap is open.

@@ -9,6 +9,8 @@ import {
 import type { Argon2idProvider, Bytes } from '@xecret/core/crypto/client';
 
 import { ApiError } from '@/lib/api';
+import { parseWith } from '@/server/http';
+import { vaultCreateSchema } from '@/server/schemas/vault';
 import { readVaultKeys, releaseVaultKeys } from './key-store';
 import {
   beginRecovery,
@@ -128,6 +130,26 @@ afterEach(() => {
 });
 
 describe('buildVaultCreate', () => {
+  /**
+   * The seam between the two halves of the vault, pinned.
+   *
+   * Everything else in this file proves the cryptography composes; this proves
+   * the *body* is one the endpoint will accept. Those are different failures and
+   * only one of them is visible here: a missing field passes every unwrap
+   * assertion in this suite and then 422s on the one request that matters, in
+   * the one flow a user cannot skip. `ukUnlockVerifier` was added to the schema
+   * and not to this builder exactly once, and this is what would have caught it.
+   */
+  it('builds a body the server schema accepts, field for field', async () => {
+    const built = await buildVaultCreate({
+      userId: USER_ID,
+      passphrase: PASSPHRASE,
+      argon2id: fakeArgon2id,
+    });
+
+    expect(() => parseWith(vaultCreateSchema, built.body)).not.toThrow();
+  });
+
   it('produces a passphrase wrap that the same passphrase opens', async () => {
     const built = await buildVaultCreate({
       userId: USER_ID,

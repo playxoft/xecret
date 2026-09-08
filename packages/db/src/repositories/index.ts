@@ -68,6 +68,7 @@ export {
   recordUnlockAttempt,
   regenerateRecoveryCodes,
   removePasskey,
+  resetVault,
   setAutoLockMinutes,
   touchPasskeyUsage,
 } from './vault';

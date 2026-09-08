@@ -32,8 +32,24 @@ import type { Bytes } from '../types';
 export const HKDF_INFO = {
   /** `SK` → the AES-256-GCM key wrapping the UK in the passphrase wrap. */
   ukWrap: 'xecret.v2.uk-wrap',
-  /** `SK` → the value sent to the server at setup and at every unlock. */
+  /** `SK` → the value sent to the server by an unlock that derived `SK`. */
   unlockVerifier: 'xecret.v2.unlock-verifier',
+  /**
+   * `UK` → the value sent to the server by an unlock that did *not* derive `SK`.
+   *
+   * The one branch in this table whose input keying material is the User Key,
+   * and it exists because an unlock does not always involve a passphrase. A
+   * passkey opens blob type 3, which holds the UK; there is no derivation from
+   * the UK back to `SK`, by construction, so such a client can decrypt
+   * everything and still hold nothing the `unlockVerifier` branch could produce.
+   *
+   * Deriving an unlock proof from the UK concedes nothing: anyone who can
+   * compute it already holds the UK, and therefore already holds every key the
+   * account can reach. The proof is strictly weaker than the capability it
+   * attests to. Kept separate from the `SK` branch so the two verifiers hash to
+   * distinct stored columns and can never be replayed for one another.
+   */
+  ukUnlockVerifier: 'xecret.v2.uk-unlock-verifier',
   /** A recovery code's 16 bytes → that code's UK wrap key (`RCK`). */
   recoveryWrap: 'xecret.v2.recovery-wrap',
   /** A WebAuthn PRF output → the passkey wrap key (`PK`). */

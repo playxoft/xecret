@@ -259,6 +259,12 @@ async function hkdfVectors(sealedBoxBranch: {
       HKDF_INFO.unlockVerifier,
     ),
     await hkdfVector(
+      'hkdf/uk-unlock-verifier',
+      'The User Key to the verifier a passkey unlock sends — the one branch taking the UK as input.',
+      KEY.uk,
+      HKDF_INFO.ukUnlockVerifier,
+    ),
+    await hkdfVector(
       'hkdf/recovery-wrap',
       'A recovery code to its RCK.',
       CODE_BYTES.typical,

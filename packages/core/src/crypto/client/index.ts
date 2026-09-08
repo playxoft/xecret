@@ -107,6 +107,7 @@ export type { InviteFragment, RecoveryCode } from './recovery';
 export {
   derivePasskeyWrapKey,
   derivePassphraseWrapKey,
+  deriveUkUnlockVerifier,
   deriveUnlockVerifier,
   generateEnvironmentDataKey,
   generateEnvironmentHmacKey,

@@ -85,6 +85,31 @@ export async function deriveUnlockVerifier(stretchedKey: Bytes): Promise<Bytes> 
   return deriveKey({ ikm: stretchedKey, info: HKDF_INFO.unlockVerifier });
 }
 
+/**
+ * `UK` → the value the server stores the SHA-256 of, for an unlock that never
+ * derived `SK`.
+ *
+ * A passkey unlock opens blob type 3, and blob type 3 holds the User Key. There
+ * is no way back from the UK to `SK` — that one-way relationship is exactly what
+ * makes a passphrase change a single re-wrap — so such a client can decrypt the
+ * whole vault and still be unable to produce {@link deriveUnlockVerifier}'s
+ * output. This is the branch it uses instead.
+ *
+ * It concedes nothing to the server. Whoever can compute this already holds the
+ * UK and therefore every private key and environment key the account can reach;
+ * the proof is strictly weaker than the capability it attests to.
+ *
+ * Stable across a passphrase change and a recovery, because both re-wrap the UK
+ * rather than replacing it. Callers on those paths must not send a new one.
+ */
+export async function deriveUkUnlockVerifier(userKey: Bytes): Promise<Bytes> {
+  if (userKey.length !== KEY_LENGTH) {
+    throw new TypeError(`The User Key is ${KEY_LENGTH} bytes`);
+  }
+
+  return deriveKey({ ikm: userKey, info: HKDF_INFO.ukUnlockVerifier });
+}
+
 /** A WebAuthn PRF output → the passkey wrap key. */
 export async function derivePasskeyWrapKey(prfOutput: Bytes): Promise<Bytes> {
   return deriveKey({ ikm: prfOutput, info: HKDF_INFO.prfWrap });

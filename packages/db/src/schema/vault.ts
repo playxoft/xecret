@@ -123,6 +123,22 @@ export const userKeys = pgTable(
     kdfParams: jsonb('kdf_params').$type<Argon2idParams>().notNull(),
     /** `SHA-256(unlockVerifier)`, 32 bytes. Opens nothing — see the header. */
     unlockVerifierHash: bytea('unlock_verifier_hash').notNull(),
+    /**
+     * `SHA-256(ukUnlockVerifier)`, 32 bytes — the proof an unlock that never
+     * derived `SK` presents instead (spec §8.2).
+     *
+     * A second column rather than a second accepted value in the first, because
+     * the two verifiers are different HKDF branches and must never be
+     * interchangeable: one column would mean a value captured from either path
+     * satisfies both, which is precisely the confusion the separate info strings
+     * exist to prevent.
+     *
+     * It survives a passphrase change and a recovery untouched, and that is a
+     * consequence of the hierarchy rather than an exception in the code: both
+     * re-wrap the User Key, neither replaces it, so the value this digest is of
+     * is unchanged. Only the setup ceremony writes it.
+     */
+    ukUnlockVerifierHash: bytea('uk_unlock_verifier_hash').notNull(),
 
     /**
      * Consecutive failed passphrase unlocks, and the lockout they earned.

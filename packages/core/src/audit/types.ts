@@ -62,6 +62,17 @@ export type AuditAction =
   | 'vault.recovery_used'
   /** The recovery-code set was replaced, invalidating every previous code. */
   | 'vault.recovery_codes_regenerated'
+  /**
+   * The vault was destroyed and the account sent back to the setup ceremony.
+   *
+   * The end of the road for somebody who has lost both their passphrase and
+   * every recovery code: there is no key left that opens their old data, and
+   * nothing — no support ticket, no operator — can produce one. This event is
+   * the only record that the data still sitting in the database became
+   * permanently unreadable at a particular moment, which is what makes an
+   * otherwise inexplicable "I cannot see any of my secrets" answerable.
+   */
+  | 'vault.reset'
   /** A session was locked without being revoked — the user is still signed in. */
   | 'auth.locked'
   /** The idle auto-lock interval was changed. `reason` carries the new value. */
@@ -191,6 +202,17 @@ export interface AuditMetadata {
    * otherwise share one event.
    */
   wrapKind?: 'passphrase' | 'recovery' | 'prf';
+  /**
+   * How a session was unlocked.
+   *
+   * Narrower than `wrapKind` and pointed at a different question. `wrapKind`
+   * names which ciphertext was opened, which matters when reasoning about the
+   * key hierarchy; this names what the person did, which is what somebody
+   * reading an unlock trail is actually asking. "Every unlock on this account
+   * last week was a passkey and then one was not" is the shape of a story, and
+   * it is unreadable if the two paths are only distinguishable by wrap type.
+   */
+  method?: 'passphrase' | 'passkey';
   /** How many recovery codes a regeneration issued. A count, never a code. */
   recoveryCodeCount?: number;
   /** How many sessions one act affected — "lock everywhere", "sign out everywhere". */

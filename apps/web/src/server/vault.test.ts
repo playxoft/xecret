@@ -39,6 +39,7 @@ const repo = vi.hoisted(() => ({
   enrollPasskey: vi.fn(),
   listPasskeys: vi.fn(),
   removePasskey: vi.fn(),
+  resetVault: vi.fn(),
   recordUnlockAttempt: vi.fn(),
   recordRecoveryAttempt: vi.fn(),
   markSessionUnlocked: vi.fn(),
@@ -73,6 +74,8 @@ const {
   toVaultMaterial,
   vaultCreateSchema,
   vaultPassphraseSchema,
+  VAULT_RESET_CONFIRMATION,
+  vaultResetSchema,
   vaultUnlockSchema,
 } = await import('./schemas/vault');
 const { parseWith } = await import('./http');
@@ -104,6 +107,7 @@ function createBody(overrides: Record<string, unknown> = {}) {
     kdfSalt: b64(16),
     kdfParams: KDF_PARAMS,
     unlockVerifier: b64(32),
+    ukUnlockVerifier: b64(32),
     passphraseWrap: gcmBlob(),
     recoveryWraps: recoveryKit(),
     ...overrides,
@@ -220,14 +224,52 @@ describe('the vault setup schema', () => {
 });
 
 describe('the remaining request schemas', () => {
-  it('takes a verifier and nothing else on unlock', () => {
+  it('takes exactly one verifier on unlock, of either kind', () => {
+    // A passphrase unlock derives SK and sends the first; a passkey unlock opens
+    // the User Key directly, never derives SK, and sends the second.
     const verifier = b64(32);
     expect(parseWith(vaultUnlockSchema, { unlockVerifier: verifier })).toEqual({
       unlockVerifier: verifier,
     });
+    expect(parseWith(vaultUnlockSchema, { ukUnlockVerifier: verifier })).toEqual({
+      ukUnlockVerifier: verifier,
+    });
+  });
+
+  it('refuses a body carrying both verifiers, or neither', () => {
+    // The two states an optional-either-way object would have admitted, and both
+    // are wrong in a way that would be silent. Neither present is a body
+    // claiming an unlock it never proved; both present is a caller asking the
+    // server to decide which proof counts, and the obliging reading — "accept if
+    // either matches" — turns two independent verifiers into one weaker one.
+    expect(
+      rejected(vaultUnlockSchema, { unlockVerifier: b64(32), ukUnlockVerifier: b64(32) }).code,
+    ).toBe('validation_failed');
+    expect(rejected(vaultUnlockSchema, {}).code).toBe('validation_failed');
+  });
+
+  it('still refuses an unknown field on either branch', () => {
+    const verifier = b64(32);
     expect(rejected(vaultUnlockSchema, { unlockVerifier: verifier, userKey: b64(32) }).code).toBe(
       'validation_failed',
     );
+    expect(rejected(vaultUnlockSchema, { ukUnlockVerifier: verifier, userKey: b64(32) }).code).toBe(
+      'validation_failed',
+    );
+  });
+
+  it('requires both verifiers at setup, so either path works from the start', () => {
+    const withoutUk: Record<string, unknown> = { ...createBody() };
+    delete withoutUk['ukUnlockVerifier'];
+    expect(rejected(vaultCreateSchema, withoutUk).code).toBe('validation_failed');
+  });
+
+  it('takes a typed confirmation on reset, and nothing else', () => {
+    expect(parseWith(vaultResetSchema, { confirm: VAULT_RESET_CONFIRMATION })).toEqual({
+      confirm: VAULT_RESET_CONFIRMATION,
+    });
+    expect(rejected(vaultResetSchema, {}).code).toBe('validation_failed');
+    expect(rejected(vaultResetSchema, { confirm: 'x'.repeat(200) }).code).toBe('validation_failed');
   });
 
   it('requires the current verifier alongside the new one on a passphrase change', () => {
@@ -303,6 +345,7 @@ describe('the vault material serialiser', () => {
       kdfSalt: randomBytes(16),
       kdfParams: KDF_PARAMS,
       unlockVerifierHash: randomBytes(32),
+      ukUnlockVerifierHash: randomBytes(32),
       failedAttempts: 3,
       lockedUntil: null,
       recoveryFailedAttempts: 1,
@@ -451,7 +494,9 @@ describe('the vault service', () => {
       const verifier = randomBytes(32);
       repo.findVaultKeys.mockResolvedValue(await vaultKeys({ verifier, failedAttempts: 2 }));
 
-      const result = await service.unlockVault(services(), userPrincipal(), toBase64Url(verifier));
+      const result = await service.unlockVault(services(), userPrincipal(), {
+        unlockVerifier: toBase64Url(verifier),
+      });
 
       expect(result.unlockedUntil).toMatch(/^\d{4}-/);
       expect(repo.markSessionUnlocked).toHaveBeenCalledOnce();
@@ -465,7 +510,9 @@ describe('the vault service', () => {
       const verifier = randomBytes(32);
       repo.findVaultKeys.mockResolvedValue(await vaultKeys({ verifier }));
 
-      await service.unlockVault(services(), userPrincipal(), toBase64Url(verifier));
+      await service.unlockVault(services(), userPrincipal(), {
+        unlockVerifier: toBase64Url(verifier),
+      });
 
       expect(repo.recordUnlockAttempt).not.toHaveBeenCalled();
     });
@@ -474,7 +521,9 @@ describe('the vault service', () => {
       repo.findVaultKeys.mockResolvedValue(await vaultKeys({ verifier: randomBytes(32) }));
 
       await expect(
-        service.unlockVault(services(), userPrincipal(), toBase64Url(randomBytes(32))),
+        service.unlockVault(services(), userPrincipal(), {
+          unlockVerifier: toBase64Url(randomBytes(32)),
+        }),
       ).rejects.toMatchObject({ code: 'unauthenticated' });
 
       // Awaited, not deferred: a failure recorded after the response is one a
@@ -493,7 +542,9 @@ describe('the vault service', () => {
       for (let attempt = 0; attempt < VAULT_FREE_ATTEMPTS + 3; attempt += 1) {
         repo.findVaultKeys.mockResolvedValue({ ...stored, failedAttempts: attempt });
         await expect(
-          service.unlockVault(services(), userPrincipal(), toBase64Url(randomBytes(32))),
+          service.unlockVault(services(), userPrincipal(), {
+            unlockVerifier: toBase64Url(randomBytes(32)),
+          }),
         ).rejects.toThrow(ApiErrorClass);
 
         const [, , state] = repo.recordUnlockAttempt.mock.calls.at(-1) as [
@@ -528,7 +579,9 @@ describe('the vault service', () => {
 
       // Even the *correct* verifier is refused while the lockout stands.
       await expect(
-        service.unlockVault(services(), userPrincipal(), toBase64Url(verifier)),
+        service.unlockVault(services(), userPrincipal(), {
+          unlockVerifier: toBase64Url(verifier),
+        }),
       ).rejects.toMatchObject({ code: 'rate_limited' });
 
       expect(repo.markSessionUnlocked).not.toHaveBeenCalled();
@@ -539,8 +592,182 @@ describe('the vault service', () => {
       repo.findVaultKeys.mockResolvedValue(null);
 
       await expect(
-        service.unlockVault(services(), userPrincipal(), toBase64Url(randomBytes(32))),
+        service.unlockVault(services(), userPrincipal(), {
+          unlockVerifier: toBase64Url(randomBytes(32)),
+        }),
       ).rejects.toMatchObject({ code: 'bad_request' });
+    });
+  });
+
+  describe('unlocking with a passkey', () => {
+    // The gap this closes: a passkey opens blob type 3, which holds the User
+    // Key, and there is no derivation from the User Key back to the Stretched
+    // Key. Such a client can decrypt the whole vault and, before this branch
+    // existed, held nothing the unlock endpoint would accept.
+    it('accepts the User Key branch and reports the method it was unlocked by', async () => {
+      const ukVerifier = randomBytes(32);
+      repo.findVaultKeys.mockResolvedValue(
+        await vaultKeys({ verifier: randomBytes(32), ukVerifier }),
+      );
+
+      const result = await service.unlockVault(services(), userPrincipal(), {
+        ukUnlockVerifier: toBase64Url(ukVerifier),
+      });
+
+      expect(result.method).toBe('passkey');
+      expect(repo.markSessionUnlocked).toHaveBeenCalledOnce();
+    });
+
+    it('compares each verifier against its own digest, so neither replays for the other', async () => {
+      // The reason the two branches have separate info strings and separate
+      // columns. A value captured from one path must be worthless on the other.
+      const verifier = randomBytes(32);
+      const ukVerifier = randomBytes(32);
+      const keys = await vaultKeys({ verifier, ukVerifier });
+
+      repo.findVaultKeys.mockResolvedValue(keys);
+      await expect(
+        service.unlockVault(services(), userPrincipal(), {
+          ukUnlockVerifier: toBase64Url(verifier),
+        }),
+      ).rejects.toMatchObject({ code: 'unauthenticated' });
+
+      repo.findVaultKeys.mockResolvedValue(keys);
+      await expect(
+        service.unlockVault(services(), userPrincipal(), {
+          unlockVerifier: toBase64Url(ukVerifier),
+        }),
+      ).rejects.toMatchObject({ code: 'unauthenticated' });
+    });
+
+    it('spends the same lockout budget as a passphrase attempt', async () => {
+      // Both attest to the same thing — this client can open this vault — so one
+      // counter covers both. Separate counters would hand an attacker two
+      // budgets against one gate.
+      repo.findVaultKeys.mockResolvedValue(
+        await vaultKeys({ verifier: randomBytes(32), ukVerifier: randomBytes(32) }),
+      );
+
+      await expect(
+        service.unlockVault(services(), userPrincipal(), {
+          ukUnlockVerifier: toBase64Url(randomBytes(32)),
+        }),
+      ).rejects.toMatchObject({ code: 'unauthenticated' });
+
+      // `recordUnlockAttempt`, not `recordRecoveryAttempt`: the passphrase
+      // counter, which is the one the gate reads.
+      expect(repo.recordUnlockAttempt).toHaveBeenCalledWith(expect.anything(), USER_ID, {
+        failedAttempts: 1,
+        lockedUntil: null,
+      });
+      expect(repo.recordRecoveryAttempt).not.toHaveBeenCalled();
+    });
+
+    it('is refused during a lockout the passphrase path earned', async () => {
+      const ukVerifier = randomBytes(32);
+      repo.findVaultKeys.mockResolvedValue(
+        await vaultKeys({
+          verifier: randomBytes(32),
+          ukVerifier,
+          failedAttempts: 9,
+          lockedUntil: new Date(Date.now() + 60_000),
+        }),
+      );
+
+      // Even the correct UK verifier. One gate, one lockout — a passkey is not a
+      // way around a lockout a passphrase attacker triggered.
+      await expect(
+        service.unlockVault(services(), userPrincipal(), {
+          ukUnlockVerifier: toBase64Url(ukVerifier),
+        }),
+      ).rejects.toMatchObject({ code: 'rate_limited' });
+
+      expect(repo.markSessionUnlocked).not.toHaveBeenCalled();
+    });
+
+    it('records both digests at setup, and only at setup', async () => {
+      repo.createVault.mockResolvedValue(undefined);
+      const body = parseWith(vaultCreateSchema, createBody());
+
+      await service.createVault(services(), userPrincipal(), body);
+
+      const written = repo.createVault.mock.calls[0]?.[1] as {
+        unlockVerifierHash: Uint8Array;
+        ukUnlockVerifierHash: Uint8Array;
+      };
+      expect([...written.ukUnlockVerifierHash]).toEqual([
+        ...(await hashUnlockVerifier(fromB64(body.ukUnlockVerifier))),
+      ]);
+      // Distinct columns from distinct branches, never one value serving both.
+      expect([...written.ukUnlockVerifierHash]).not.toEqual([...written.unlockVerifierHash]);
+    });
+
+    it('leaves the User Key digest alone on a passphrase change and a recovery', async () => {
+      // Both re-wrap the User Key rather than replacing it, so the digest of the
+      // branch derived from it stays correct — which is what keeps an enrolled
+      // passkey working across either.
+      const verifier = randomBytes(32);
+      repo.findVaultKeys.mockResolvedValue(await vaultKeys({ verifier }));
+      repo.changePassphrase.mockResolvedValue(undefined);
+
+      await service.changePassphrase(services(), userPrincipal(), {
+        currentUnlockVerifier: toBase64Url(verifier),
+        unlockVerifier: b64(32),
+        kdfSalt: b64(16),
+        kdfParams: KDF_PARAMS,
+        passphraseWrap: gcmBlob(),
+      });
+
+      expect(repo.changePassphrase.mock.calls[0]?.[1]).not.toHaveProperty('ukUnlockVerifierHash');
+
+      repo.findVaultKeys.mockResolvedValue(await vaultKeys({ verifier }));
+      repo.findRecoveryWrap.mockResolvedValue({
+        wrapId: uuidv7(),
+        userId: USER_ID,
+        wrap: encodeBlob('xk2.gcm.recovery'),
+      });
+      repo.completeRecovery.mockResolvedValue(undefined);
+
+      await service.completeRecovery(services(), userPrincipal(), {
+        lookupHash: b64(32),
+        unlockVerifier: b64(32),
+        kdfSalt: b64(16),
+        kdfParams: KDF_PARAMS,
+        passphraseWrap: gcmBlob(),
+        recoveryWraps: recoveryKit(),
+      });
+
+      expect(repo.completeRecovery.mock.calls[0]?.[1]).not.toHaveProperty('ukUnlockVerifierHash');
+    });
+  });
+
+  describe('resetting the vault', () => {
+    it('destroys it and reports that it did', async () => {
+      repo.resetVault.mockResolvedValue(true);
+
+      await expect(service.resetVault(services(), userPrincipal())).resolves.toBe(true);
+      expect(repo.resetVault).toHaveBeenCalledWith(expect.anything(), USER_ID);
+    });
+
+    it('reports an account with no vault rather than claiming a destruction', async () => {
+      // The route turns this into a 404. A destructive call that reports success
+      // without destroying anything teaches a client the call worked, and the
+      // next screen it draws is wrong.
+      repo.resetVault.mockResolvedValue(false);
+
+      await expect(service.resetVault(services(), userPrincipal())).resolves.toBe(false);
+    });
+
+    it('needs no verifier, which is the entire point', async () => {
+      // Every caller of this path has lost their passphrase and every recovery
+      // code. Requiring a proof of possession would make it unreachable by
+      // exactly the people it exists for.
+      repo.resetVault.mockResolvedValue(true);
+
+      await service.resetVault(services(), userPrincipal());
+
+      expect(repo.findVaultKeys).not.toHaveBeenCalled();
+      expect(repo.recordUnlockAttempt).not.toHaveBeenCalled();
     });
   });
 
@@ -878,6 +1105,8 @@ function fromB64(value: string): Bytes {
 
 async function vaultKeys(overrides: {
   verifier: Bytes;
+  /** The UK branch's preimage. Defaults to 32 zero bytes — a value no test sends. */
+  ukVerifier?: Bytes;
   failedAttempts?: number;
   lockedUntil?: Date | null;
   recoveryFailedAttempts?: number;
@@ -894,6 +1123,9 @@ async function vaultKeys(overrides: {
     kdfSalt: randomBytes(16),
     kdfParams: KDF_PARAMS,
     unlockVerifierHash: await hashUnlockVerifier(overrides.verifier),
+    ukUnlockVerifierHash: await hashUnlockVerifier(
+      overrides.ukVerifier ?? new Uint8Array(new ArrayBuffer(32)),
+    ),
     failedAttempts: overrides.failedAttempts ?? 0,
     lockedUntil: overrides.lockedUntil ?? null,
     recoveryFailedAttempts: overrides.recoveryFailedAttempts ?? 0,

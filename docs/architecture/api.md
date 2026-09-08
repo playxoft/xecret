@@ -213,26 +213,35 @@ Three conventions hold throughout:
   `recoveryRegenerateSchema`, `passkeyEnrollSchema`, `autoLockSchema`).
 - **A recovery kit is exactly five codes.** Redeeming one invalidates all five, because
   all five wrap the same User Key.
+- **There are two unlock verifiers, and they are not interchangeable.**
+  `unlockVerifier` is `HKDF(SK, …)` and only a passphrase can produce it;
+  `ukUnlockVerifier` is `HKDF(UK, …)` and is what a passkey unlock sends, since it opens
+  the User Key directly and never derives `SK`. They are stored as separate digests and
+  compared against the matching one only.
 
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/auth/vault` | `{ vault, material }`. `material` is `null` when no vault exists or the caller is a token; otherwise `{ encAlgorithm, encPublicKey, encPrivateKeyEnc, signAlgorithm, signPublicKey, signPrivateKeyEnc, kdfSalt, kdfParams, passphraseWrap, recoveryCodesRemaining, passkeys[] }`. `recoveryCodesRemaining` is a count — a recovery wrap is only ever returned in exchange for its own lookup hash. Served to a **locked** session on purpose: an unlock is a client-side operation, and a client cannot unwrap a key it has not been given. Exempt from the lock gate. |
-| `POST` | `/api/auth/vault` | The setup ceremony, in one body: `{ encPublicKey, encPrivateKeyEnc, signPublicKey, signPrivateKeyEnc, kdfSalt, kdfParams, unlockVerifier, passphraseWrap, recoveryWraps[5] }`, each recovery entry `{ lookupHash, wrap }`. Written in one transaction, and unlocks the session that ran it. **409** on a second call — never an overwrite, because the old public key has environment keys sealed to it. Rate limited: `RL_LOGIN`. Audited `vault.created`. Exempt from the lock gate. |
+| `POST` | `/api/auth/vault` | The setup ceremony, in one body: `{ encPublicKey, encPrivateKeyEnc, signPublicKey, signPrivateKeyEnc, kdfSalt, kdfParams, unlockVerifier, ukUnlockVerifier, passphraseWrap, recoveryWraps[5] }`, each recovery entry `{ lookupHash, wrap }`. Both verifiers are recorded here and only here, so either unlock path works from the moment a vault exists. Written in one transaction, and unlocks the session that ran it. **409** on a second call — never an overwrite, because the old public key has environment keys sealed to it. Rate limited: `RL_LOGIN`. Audited `vault.created`. Exempt from the lock gate. |
 | `PATCH` | `/api/auth/vault` | Body `{ autoLockMinutes }`, one of the fixed menu; `0` disables the idle lock. Not exempt from the gate — a locked session has no business loosening a protection. Rate limited: `RL_MUTATION`. Audited `auth.autolock_changed`. |
-| `POST` | `/api/auth/vault/unlock` | Body `{ unlockVerifier }`. Compared in constant time against the stored `SHA-256`, sets `vault_unlocked_at` for 8 hours, returns `{ vault, unlockedUntil }`. Rate limited: `RL_LOGIN`, plus a durable per-account lockout (5 free attempts, then 60 s doubling to a 60 min ceiling). Audited `vault.unlocked`, and `vault.unlock_failed` on refusal — with a uniform reason, so the audit log does not become the oracle the API refuses to be. Exempt from the lock gate. |
+| `POST` | `/api/auth/vault/unlock` | Body is **exactly one of** `{ unlockVerifier }` or `{ ukUnlockVerifier }` — a union, so a body carrying both or neither is a **422**. Compared in constant time against the matching stored `SHA-256`, sets `vault_unlocked_at` for 8 hours, returns `{ vault, unlockedUntil }`. Rate limited: `RL_LOGIN`, plus a durable per-account lockout (5 free attempts, then 60 s doubling to a 60 min ceiling) that **both** forms share — they attest to the same capability, and separate counters would be two budgets against one gate. Audited `vault.unlocked`, and `vault.unlock_failed` on refusal, each carrying `method: passphrase \| passkey` — with a uniform reason, so the audit log does not become the oracle the API refuses to be. Exempt from the lock gate. |
 | `POST` | `/api/auth/vault/lock` | Locks this session, or every session with `{ everywhere: true }`. Does **not** revoke — the user stays signed in. Returns `{ locked }`. Audited `auth.locked`. |
-| `POST` | `/api/auth/vault/passphrase` | Body `{ currentUnlockVerifier, unlockVerifier, kdfSalt, kdfParams, passphraseWrap }`. Re-wraps the User Key and swaps the verifier in one transaction; returns `{ vault, material }` so the client can replace the wrap it now holds. Requires an unlocked session **and** the current passphrase: the gate proves this session unlocked at some point in the last 8 hours, the verifier proves the person typing knows it now. The User Key is unchanged, so recovery codes keep working and other devices stay unlocked. Rate limited: `RL_LOGIN`, plus the same lockout as unlock. Audited `vault.passphrase_changed`. |
+| `POST` | `/api/auth/vault/passphrase` | Body `{ currentUnlockVerifier, unlockVerifier, kdfSalt, kdfParams, passphraseWrap }`. Re-wraps the User Key and swaps the verifier in one transaction; returns `{ vault, material }` so the client can replace the wrap it now holds. Requires an unlocked session **and** the current passphrase: the gate proves this session unlocked at some point in the last 8 hours, the verifier proves the person typing knows it now. The User Key is unchanged, so recovery codes keep working, enrolled passkeys keep working, `ukUnlockVerifier` stays valid, and other devices stay unlocked. Rate limited: `RL_LOGIN`, plus the same lockout as unlock. Audited `vault.passphrase_changed`. |
 | `POST` | `/api/auth/vault/recovery` | Body `{ lookupHash }` — step one. Returns `{ wrap, material }` for the code that hash addresses. An unknown hash, an already-redeemed code and another account's code all get **one** indistinguishable refusal. Rate limited: `RL_LOGIN` under a `vault_recovery` key on the user alone, plus a per-account recovery lockout counted separately from the passphrase one, so a mistyped code cannot spend the budget protecting the passphrase. Exempt from the lock gate. |
 | `POST` | `/api/auth/vault/recovery/complete` | Body `{ lookupHash, unlockVerifier, kdfSalt, kdfParams, passphraseWrap, recoveryWraps[5] }` — step two. Redeems the code, sets the new passphrase and reissues the whole kit in one transaction, then unlocks the session; returns `{ vault, material }`. The reset and the reissue are not optional: somebody here has lost control of their passphrase, and four other codes still open the same key. **409** if the code was redeemed in between. Audited `vault.recovery_used` **and** `vault.recovery_codes_regenerated`. Exempt from the lock gate. |
 | `PUT` | `/api/auth/vault/recovery` | Body `{ unlockVerifier, recoveryWraps[5] }`. Reissues the kit from an unlocked session with the passphrase re-entered (sudo mode). Every live code is revoked in the transaction that writes the new five; redeemed ones keep their tombstones. Returns `{ vault, recoveryCodesRemaining }`. Audited `vault.recovery_codes_regenerated`. |
 | `GET` `POST` | `/api/auth/vault/prf` | List, or enrol, a passkey for one-touch unlock. `POST` body `{ credentialId, label, transports?, wrap }` → **201** `{ passkey }`. A passkey is never the only wrap — the passphrase wrap always exists and has no removal path — so enrolling adds a door rather than replacing one. Rate limited: `RL_MUTATION`. |
 | `DELETE` | `/api/auth/vault/prf/{passkeyId}` | Unenrols a passkey; its wrap goes with it by cascade. **204**. Scoped by user, so another account's id answers the same **404** as one that does not exist. |
+| `POST` | `/api/auth/vault/reset` | Body `{ confirm: "reset my vault" }`, compared with the same trimming, case-insensitive helper `DELETE /api/auth/account` uses. Destroys `user_keys` and every wrap and passkey, and clears `vault_unlocked_at` on **all** the account's sessions, in one transaction; returns `{ vault }` reporting `configured: false`, so the client routes straight to the setup ceremony. **404** when there is no vault. **This is not recovery** — nothing is decrypted or restored, because nothing can be. Rate limited: `RL_LOGIN` under a `vault_reset` key of its own, deliberately *not* sharing recovery's counter. Audited `vault.reset`. Exempt from the lock gate, which is the entire point. |
 
-**What the server holds.** Public keys, an Argon2id salt and its parameters,
-`SHA-256(unlockVerifier)`, and a set of ciphertexts. The verifier is a *sibling* HKDF
-branch of the wrap key, so holding its digest opens nothing — it exists so the server can
-gate the API, throttle attempts, and keep an audit trail. A client MUST NOT send the
-stretched key, the User Key, any wrap key, or any private key, including in diagnostics.
+**What the server holds.** Public keys, an Argon2id salt and its parameters, the digests of
+both unlock verifiers, and a set of ciphertexts. Each verifier is a *sibling* HKDF branch of
+a wrap key, so holding a digest opens nothing — they exist so the server can gate the API,
+throttle attempts, and keep an audit trail. `ukUnlockVerifier` concedes nothing further:
+anyone who can compute it already holds the User Key, and therefore already holds every
+private key and environment key the account can reach, so the proof is strictly weaker than
+the capability it attests to. A client MUST NOT send the stretched key, the User Key, any
+wrap key, or any private key, including in diagnostics.
 
 **The concession, stated plainly.** `GET /api/auth/vault` serves the wraps to a locked
 session, because an unlock cannot happen otherwise. A stolen session cookie therefore
@@ -388,6 +397,7 @@ that degradation is severe. `limit` is clamped to 200.
 |---|---|---|
 | `RL_LOGIN` | `POST /api/auth/session`, vault create / unlock / passphrase | IP + subject |
 | `RL_LOGIN`, `vault_recovery` key | Vault recovery, both steps | user id alone |
+| `RL_LOGIN`, `vault_reset` key | Vault reset | user id alone |
 | `RL_CLI_TOKEN` | CLI token creation and exchange | user id |
 | `RL_INVITE` | Invitations | org id |
 | `RL_SECRET_READ` | Reveal and pull | actor id |
@@ -411,7 +421,9 @@ The zero-knowledge events extend that rather than weakening it: there is no `wra
 which kind of wrap, how many codes — never the material.
 
 The vault's own events are `vault.created`, `vault.unlocked`, `vault.unlock_failed`,
-`vault.passphrase_changed`, `vault.recovery_used` and
-`vault.recovery_codes_regenerated`. `vault.recovery_used` is the line an incident review
-looks for first: it is the only path that opens a vault with neither the passphrase nor an
-enrolled passkey.
+`vault.passphrase_changed`, `vault.recovery_used`, `vault.recovery_codes_regenerated` and
+`vault.reset`. `vault.recovery_used` is the line an incident review looks for first: it is
+the only path that opens a vault with neither the passphrase nor an enrolled passkey.
+`vault.reset` is the only record that an account's existing ciphertext became permanently
+unreadable at a particular moment, which is what makes an otherwise inexplicable "I cannot
+see any of my secrets" answerable.

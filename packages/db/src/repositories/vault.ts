@@ -3,6 +3,7 @@ import type { Argon2idParams } from '@xecret/core/crypto/client';
 import type { UnlockAttemptState } from '@xecret/core/auth';
 import { uuidv7 } from '@xecret/core/ids';
 import { userKeys, userKeyWraps, userPasskeys } from '../schema/vault';
+import { lockSessions } from './sessions';
 import { isUniqueViolation } from './users';
 import { RepositoryError } from './shared';
 import type { Executor } from './shared';
@@ -47,6 +48,8 @@ export interface VaultKeyRecord extends UnlockAttemptState {
   kdfSalt: Uint8Array;
   kdfParams: Argon2idParams;
   unlockVerifierHash: Uint8Array;
+  /** The digest an unlock that never derived `SK` presents instead (spec §8.2). */
+  ukUnlockVerifierHash: Uint8Array;
   /** The recovery-code attempt counter, kept apart from the passphrase one. */
   recoveryFailedAttempts: number;
   recoveryLockedUntil: Date | null;
@@ -66,6 +69,7 @@ const KEY_COLUMNS = {
   kdfSalt: userKeys.kdfSalt,
   kdfParams: userKeys.kdfParams,
   unlockVerifierHash: userKeys.unlockVerifierHash,
+  ukUnlockVerifierHash: userKeys.ukUnlockVerifierHash,
   failedAttempts: userKeys.failedAttempts,
   lockedUntil: userKeys.lockedUntil,
   recoveryFailedAttempts: userKeys.recoveryFailedAttempts,
@@ -209,6 +213,7 @@ export interface CreateVaultParams {
   kdfSalt: Uint8Array;
   kdfParams: Argon2idParams;
   unlockVerifierHash: Uint8Array;
+  ukUnlockVerifierHash: Uint8Array;
   passphraseWrap: Uint8Array;
   recoveryWraps: readonly RecoveryWrapSeed[];
 }
@@ -250,6 +255,7 @@ export async function createVault(exec: Executor, params: CreateVaultParams): Pr
         kdfSalt: params.kdfSalt,
         kdfParams: params.kdfParams,
         unlockVerifierHash: params.unlockVerifierHash,
+        ukUnlockVerifierHash: params.ukUnlockVerifierHash,
         createdAt: now,
       });
 
@@ -694,11 +700,10 @@ function asVaultConflict(cause: unknown, message: string): unknown {
 /**
  * Deletes a vault outright. The wraps and passkeys go with it, by cascade.
  *
- * Called from exactly one place — account deletion — and kept here rather than
- * left as a raw `DELETE` because of what it means: every environment key sealed
- * to this account's public key becomes unopenable, and no teammate can restore
- * it without re-sharing. That is the correct outcome when an account is being
- * deleted, and a catastrophe anywhere else, which is why it has no route.
+ * Called by account deletion, and — through {@link resetVault} — by the reset
+ * ceremony. Kept here rather than left as a raw `DELETE` because of what it
+ * means: every environment key sealed to this account's public key becomes
+ * unopenable, and no teammate can restore it without re-sharing.
  *
  * Unlike the soft delete of the `users` row beside it, this is a hard delete.
  * A soft-deleted account is one the identity upsert refuses to revive, so
@@ -712,4 +717,51 @@ export async function deleteVault(exec: Executor, userId: string): Promise<boole
     .returning({ userId: userKeys.userId });
 
   return removed.length > 0;
+}
+
+/**
+ * The dead end, made survivable: destroys the vault and locks every session the
+ * account has, in one transaction.
+ *
+ * ── When this is the right answer ──
+ * A person who has lost their master passphrase *and* every recovery code has
+ * nothing left that opens their User Key. Nobody can produce one — not a
+ * teammate, not an operator, not us — because no copy of it exists outside the
+ * wraps this deletes. Their account is fine and their encrypted rows are still
+ * there; what is gone is the ability to read them, and it went the moment the
+ * last code was lost rather than the moment this runs.
+ *
+ * So this is not what makes the data unreadable. It is what lets somebody who is
+ * already in that position start again: the row disappears, `findVaultKeys`
+ * answers `null`, and the setup ceremony runs from the beginning with fresh
+ * keys. Without it the account is bricked at a lock screen with no path forward,
+ * which is a worse outcome and not a safer one.
+ *
+ * ── Why the sessions are locked in the same transaction ──
+ * Every session that was unlocked was unlocked *into the vault this deletes*. A
+ * session left with a live `vault_unlocked_at` would pass the route gate while
+ * holding keys to a hierarchy that no longer exists — reads that should meet the
+ * setup ceremony would instead meet whatever a half-initialised client does. The
+ * lock is not revocation: the user stays signed in, which is what lets them run
+ * the ceremony immediately.
+ *
+ * Returns whether there was a vault to destroy, so the caller can answer "no
+ * such thing" rather than reporting a success that did nothing.
+ */
+export async function resetVault(exec: Executor, userId: string): Promise<boolean> {
+  return exec.transaction(async (tx) => {
+    const removed = await deleteVault(tx, userId);
+    if (!removed) return false;
+
+    // Phase 3: `env_key_grants` rows for this user must be deleted here too.
+    // Every one of them is an EDK and EHK sealed to the public key this
+    // transaction just destroyed, so they are unopenable ciphertext addressed to
+    // a principal that no longer has a private key — and leaving them would make
+    // a re-invitation look like it had nothing to do, because a grant row would
+    // already exist for the member. The table does not exist yet; when it does,
+    // this is the line that has to change with it.
+
+    await lockSessions(tx, { userId });
+    return true;
+  });
 }

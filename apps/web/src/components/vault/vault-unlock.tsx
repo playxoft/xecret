@@ -36,11 +36,12 @@ import { useVault } from './vault-keys';
  * ── The order of the offers ──
  * Passkey first when one is enrolled, then the passphrase, per plan §4.2. The
  * passkey section is currently an explanation rather than a button, for the
- * reason `PASSKEY_UNLOCK_UNAVAILABLE` sets out at length: a passkey opens the
- * User Key but cannot produce the verifier the unlock endpoint compares, so a
- * button there would be one that always fails. It is rendered rather than hidden
- * because somebody who deliberately enrolled a passkey deserves to be told why
- * it is not being offered.
+ * reason `PASSKEY_UNLOCK_UNAVAILABLE` sets out: the server now accepts a
+ * passkey unlock — it takes `{ ukUnlockVerifier }` and compares it against its
+ * own stored digest — but the button, its PRF feature detection and its failure
+ * states are not built here yet. It is rendered rather than hidden because
+ * somebody who deliberately enrolled a passkey deserves to be told why it is not
+ * being offered.
  */
 
 export interface VaultUnlockProps {

@@ -85,6 +85,13 @@
       "when": 1786925600000,
       "tag": "0011_user_vault",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1786925700000,
+      "tag": "0012_uk_unlock_verifier",
+      "breakpoints": true
     }
   ]
 }

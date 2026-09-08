@@ -10,17 +10,39 @@ const ikm = randomBytes(32);
 describe('the info registry', () => {
   // The table in spec §3.3 is exhaustive. Adding a string is a spec change, and
   // this test is what makes that true rather than aspirational.
-  it('holds exactly the six fixed info strings', () => {
+  it('holds exactly the seven fixed info strings', () => {
     expect(Object.values(HKDF_INFO).sort()).toEqual(
       [
         'xecret.v2.invite-key',
         'xecret.v2.prf-wrap',
         'xecret.v2.recovery-wrap',
+        'xecret.v2.uk-unlock-verifier',
         'xecret.v2.uk-wrap',
         'xecret.v2.unlock-verifier',
         'xecret.v2.value-hmac',
       ].sort(),
     );
+  });
+
+  it('keeps the two unlock verifiers apart', () => {
+    // The separation is the whole point of giving the UK branch its own string:
+    // two derivations producing interchangeable 32-byte blobs are two things a
+    // server cannot tell apart, and a value captured from one path could then
+    // be replayed down the other.
+    expect(HKDF_INFO.ukUnlockVerifier).not.toBe(HKDF_INFO.unlockVerifier);
+  });
+
+  it('derives different verifiers from one input, for the two branches', async () => {
+    // The property HKDF gives and the reason the registry is closed: the same
+    // bytes under two info strings are two independent keys. A typo that landed
+    // on the wrong string would derive something valid-looking that nothing
+    // else ever reproduces.
+    const [passphraseBranch, ukBranch] = await Promise.all([
+      deriveKey({ ikm, info: HKDF_INFO.unlockVerifier }),
+      deriveKey({ ikm, info: HKDF_INFO.ukUnlockVerifier }),
+    ]);
+
+    expect(toHex(passphraseBranch)).not.toBe(toHex(ukBranch));
   });
 
   it('also accepts a v2 AAD, which is what a sealed box derives under', () => {
