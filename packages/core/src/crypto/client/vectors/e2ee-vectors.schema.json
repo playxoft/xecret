@@ -195,6 +195,21 @@
       }
     },
 
+    "testArgon2Params": {
+      "description": "TEST-ONLY carve-out. Argon2 parameters BELOW the OWASP floor that spec section 3.1 requires of production records, permitted only inside an argon2id vector so the suite does not spend a second per derivation. The memory range is deliberately disjoint from argon2Params — strictly below 19456 KiB — so no production parameter set can validate as one of these by accident, and no implementation may accept these bounds from a server. See the README.",
+      "type": "object",
+      "required": ["alg", "v", "m", "t", "p", "len"],
+      "additionalProperties": false,
+      "properties": {
+        "alg": { "const": "argon2id" },
+        "v": { "const": 19 },
+        "m": { "type": "integer", "minimum": 8, "maximum": 19455 },
+        "t": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "p": { "const": 1 },
+        "len": { "const": 32 }
+      }
+    },
+
     "vector": {
       "type": "object",
       "required": ["id", "kind", "description", "input", "expected"],
@@ -254,7 +269,13 @@
                 "$ref": "#/$defs/hex"
               },
               "saltHex": { "$ref": "#/$defs/hex16" },
-              "params": { "$ref": "#/$defs/argon2Params" }
+              "params": {
+                "description": "Production bounds, or the test-only carve-out below them. Nothing else.",
+                "anyOf": [
+                  { "$ref": "#/$defs/argon2Params" },
+                  { "$ref": "#/$defs/testArgon2Params" }
+                ]
+              }
             }
           },
           "expected": {

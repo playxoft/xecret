@@ -140,6 +140,17 @@ NFC-normalised UTF-8 bytes of the value or note.
 plaintext. The server therefore enforces a slightly larger ciphertext bound; a client MUST
 still refuse an oversized plaintext before encrypting it.
 
+That larger bound is derived, not chosen, so the two limits cannot drift apart. The longest
+conforming blob is the prefix plus the base64url of an IV, the maximum plaintext, and the tag:
+
+```
+MAX_SECRET_BLOB_LENGTH = len("xk2.gcm.") + ceil((12 + MAX_SECRET_VALUE_BYTES + 16) / 3) * 4
+                       = 8 + 87_420 = 87_428 characters
+```
+
+Exported as `MAX_SECRET_BLOB_LENGTH` from `crypto/client`. A server validating a request body
+compares against this; a client refuses the oversized plaintext long before it gets there.
+
 ---
 
 ## 3. Key derivation
@@ -352,10 +363,21 @@ open(recipientPriv, blob, aad):
     return AES-256-GCM.decrypt(key, iv, ct, aad)               // uniform failure
 ```
 
-Every failure — wrong recipient, wrong AAD, truncated payload, flipped bit, forged tag —
-MUST surface as one indistinguishable error carrying no detail, exactly as
-`DecryptionError` does in `crypto/types.ts`. Distinguishing them tells an attacker probing the
-API which part of their guess was wrong.
+Every failure that **depends on key material** — wrong recipient, wrong AAD, flipped bit,
+forged tag, an ephemeral key yielding an all-zero shared secret — MUST surface as one
+indistinguishable error carrying no detail, exactly as `DecryptionError` does in
+`crypto/types.ts`. Distinguishing them tells an attacker probing the API which part of their
+guess was wrong.
+
+Failures of **format** are the one exception, and they are a separate class: a string that is
+not a well-formed `xk2.x25519` blob — unknown version, unknown algorithm tag, payload below
+the minimum, invalid base64url — is rejected by the parser of §2 before any key is touched,
+loudly and with a distinct error type. Nothing is learned from that rejection: it is a fact
+about a string the attacker already holds, derivable by reading §2. Collapsing it into the
+uniform decryption error would trade a real diagnostic — the one that tells an operator a
+column holds the wrong kind of value — for no security at all, and would sit badly with §2's
+requirement that a parser reject what it does not recognise *loudly*. The vector schema records
+the distinction as `expected.errorClass`, `format` or `decryption`.
 
 ### 5.3 Rationale, and two requirements that are easy to skip
 
@@ -759,6 +781,18 @@ The vectors are the mechanism by which this document is enforced rather than mer
 Every construction defined above has a corresponding vector kind, and both implementations
 MUST pass all of them before either ships.
 
+**One carve-out, recorded here so the file and this document do not appear to disagree.** The
+`argon2id` vectors run at parameters *below* the §3.1 floor — `m = 8 MiB` and `m = 16 MiB` —
+because a pure-JS derivation at the production parameters costs about a second, and a suite
+that spends several of those is a suite people skip. The parameters are an input to Argon2id,
+not part of its definition, so the vectors still exercise the same function, encoding, and
+normalisation. The floor of §3.1 is a client-side policy control over server-supplied values;
+it is enforced by the parameter validator, tested there, and the vector generator deliberately
+reaches the Argon2id primitive *beneath* that validator. The vector schema marks the exception
+explicitly, with a memory range disjoint from the production one, and the README in that
+directory explains it at length. **No implementation may accept these parameters from a
+server.**
+
 ---
 
 ## 13. Review log
@@ -766,3 +800,4 @@ MUST pass all of them before either ships.
 | Date | Change |
 |---|---|
 | 2026-09-08 | Initial version. Phase 0 of the zero-knowledge migration; normative for ADR 0009. |
+| 2026-09-08 | Phase 1 (TypeScript implementation). Three clarifications, all found by writing the code against this text: §2.2 now derives the server's ciphertext bound rather than calling it "slightly larger"; §5.2 separates format failures from key-dependent ones, which the vector schema's `errorClass` already assumed and the prose did not; §12 records the Argon2 parameter carve-out the vector file uses. No format, no derivation, and no byte layout changed. |

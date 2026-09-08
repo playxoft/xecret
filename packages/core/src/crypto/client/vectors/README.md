@@ -15,7 +15,7 @@ against the same bytes.
 
 ---
 
-## There are no values in here yet, and that is deliberate
+## No value in here was written by hand
 
 **Nothing in this directory fabricates a vector value.** No expected ciphertext, no derived
 key, no signature, and no digest in these files was written by hand or produced by anything
@@ -23,10 +23,11 @@ other than a real implementation.
 
 The order of work is:
 
-1. **Phase 0 (this commit)** — the schema and this README. The *shape* of a vector file is
-   fixed so that Phase 1 has something to generate into and Phase 4 has something to read.
-2. **Phase 1** — the TypeScript implementation lands, and a generator script produces
-   `e2ee-vectors.json` from it. The values are whatever that implementation actually computes.
+1. **Phase 0** — the schema and this README. The *shape* of a vector file was fixed first, so
+   that Phase 1 had something to generate into and Phase 4 has something to read.
+2. **Phase 1 (done)** — the TypeScript implementation landed, and `build.ts` produces
+   `e2ee-vectors.json` from it. The values are whatever that implementation actually computes,
+   and the TypeScript suite checks every one of them back.
 3. **Phase 4** — the Go implementation reads the same file and must reproduce every value
    independently. Any disagreement is a bug in one of them or an ambiguity in the spec, and
    all three get fixed before either ships.
@@ -46,7 +47,13 @@ If a vector and the spec disagree, the spec wins and the vector is regenerated.
 | File | Contents |
 |---|---|
 | `e2ee-vectors.schema.json` | JSON Schema (2020-12) describing a vector file. Normative for the file's shape. |
-| `e2ee-vectors.json` | The vectors themselves. **Generated in Phase 1** — absent until then. |
+| `e2ee-vectors.json` | The vectors themselves. Generated from the TypeScript implementation. |
+| `build.ts` | Builds the vector object from `crypto/client/`. Pure — it writes nothing, so it stays browser-safe and inside the test suite's coverage. The pinned randomness lives here. |
+
+The generator that puts `build.ts`'s output on disk is
+[`packages/core/scripts/generate-vectors.ts`](../../../../scripts/generate-vectors.ts): a shell
+that stamps `generatedAt` and the git sha and calls `writeFileSync`. Everything with
+cryptography in it is in `build.ts`.
 
 The schema is validated in CI against the vector file, so a generator that drifts from the
 documented shape fails a test rather than quietly producing something the Go side cannot read.
@@ -140,7 +147,7 @@ with no vectors of some kind fails schema validation.
 
 | `kind` | Covers | Spec section |
 |---|---|---|
-| `argon2id` | Passphrase → SK, at the current parameters and at least one non-default set | §3.1 |
+| `argon2id` | Passphrase → SK, at two different parameter sets (see the carve-out below) | §3.1 |
 | `hkdf` | Every info string in the derivation table, one vector each | §3.3 |
 | `uk-wrap` | UK wrap and unwrap for all three kinds: `passphrase`, `recovery`, `prf` | §2.2 types 1–3 |
 | `sealed-box` | Seal and open, to a member, a service token, and an invitation public key | §5 |
@@ -180,6 +187,32 @@ and they belong here rather than in a code comment because the Go implementer re
 - **A check-character failure** — a `recovery-code` vector that is a single-character
   substitution away from a valid code, so the Luhn mod-32 implementation is tested for
   rejection and not only for agreement.
+
+---
+
+## The one carve-out: Argon2 parameters
+
+`argon2id` vectors run **below** the OWASP floor the specification requires of production
+records — `m = 8 MiB, t = 1` and `m = 16 MiB, t = 2`, where production is `m = 64 MiB, t = 3`.
+
+That is deliberate, and it is the only place a vector's input is not a value the product would
+write. Pure-JS Argon2id costs around a second per derivation at the production parameters (ADR
+0009's measurement section), and a test suite that spends several seconds proving a library
+computes a specified function is a suite people learn to skip — which costs more than the
+coverage it buys. The parameters are an input to Argon2id, not part of its definition: the
+same function, the same encoding, and the same NFC normalisation are exercised either way.
+
+The floor itself is not thereby untested. It is a *client-side policy control* on
+server-supplied parameters, it lives in `parseKdfParams`, and it has its own unit tests that
+reject `m` below the floor, `t` out of range, `p ≠ 1`, `alg ≠ argon2id`, and unknown fields.
+The vector generator reaches the Argon2id provider directly, beneath that policy, precisely so
+that the two concerns stay separable.
+
+The schema carves this out as `testArgon2Params`, whose memory range is **disjoint** from the
+production `argon2Params` — strictly below 19456 KiB — so a production parameter set can never
+validate as a test one by accident, and the carve-out is visible in the file that would
+otherwise be the thing enforcing the floor. An implementation must never accept these bounds
+from a server.
 
 ---
 

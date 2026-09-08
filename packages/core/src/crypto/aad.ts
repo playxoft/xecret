@@ -31,9 +31,24 @@ import type { Bytes } from './types';
  *
  * The `v1` segment exists so a future format change cannot be confused with this
  * one — an old ciphertext read under a new format simply fails to authenticate.
+ *
+ * ## v2
+ *
+ * The zero-knowledge blobs (`xk2.`, `crypto/client/`) carry `xecret.aad.v2.`
+ * purposes, defined byte-for-byte in `docs/security/e2ee-crypto-spec.md` §4. The
+ * mechanism is identical; only the purpose list and the component sets differ.
+ *
+ * The v2 builders return the AAD as a **string** where the v1 builders return
+ * bytes. That is not an inconsistency for its own sake: a sealed box (spec §5)
+ * uses the same AAD twice — once as HKDF `info` and once as GCM
+ * `additionalData` — and the test vectors record it verbatim. One string, encoded
+ * by whoever needs bytes, is one fewer place for the two encodings to drift.
  */
 
 const PREFIX = 'xecret.aad.v1';
+
+/** Purpose prefix for every client-side (`xk2.`) blob. */
+export const AAD_PREFIX_V2 = 'xecret.aad.v2';
 
 function assertUuid(value: string, label: string): void {
   if (!isUuid(value)) {
@@ -74,4 +89,167 @@ function assertVersion(value: number, label: string): void {
   if (!Number.isInteger(value) || value < 0) {
     throw new TypeError(`AAD component "${label}" must be a non-negative integer`);
   }
+}
+
+/* ────────────────────────────── v2 ────────────────────────────── */
+
+/** Which principal a grant is sealed to. `env_key_grants` holds exactly one. */
+export type RecipientKind = 'member' | 'token' | 'invite';
+
+/** Which key opens a User Key wrap. `user_key_wraps.kind`. */
+export type WrapKind = 'passphrase' | 'recovery' | 'prf';
+
+const RECIPIENT_KINDS: readonly RecipientKind[] = ['member', 'token', 'invite'];
+const WRAP_KINDS: readonly WrapKind[] = ['passphrase', 'recovery', 'prf'];
+
+/**
+ * The delimiter invariant, asserted on every interpolated component.
+ *
+ * `|` cannot appear inside a component, which is the whole reason the encoding
+ * needs no length prefixes. UUIDs satisfy it, as do lowercase-hex digests,
+ * base64url strings, and the fixed enum words above.
+ */
+const COMPONENT_PATTERN = /^[0-9a-zA-Z_-]+$/;
+
+function assertComponent(value: string, label: string): void {
+  if (typeof value !== 'string' || !COMPONENT_PATTERN.test(value)) {
+    // As above: the value never reaches the message. These paths carry secret
+    // identifiers and credential ids, and error messages reach logs.
+    throw new TypeError(`AAD component "${label}" must match [0-9a-zA-Z_-]+`);
+  }
+}
+
+function assertRecipientKind(value: RecipientKind): void {
+  if (!RECIPIENT_KINDS.includes(value)) {
+    throw new TypeError('AAD component "recipientKind" must be member, token, or invite');
+  }
+}
+
+function assertWrapKind(value: WrapKind): void {
+  if (!WRAP_KINDS.includes(value)) {
+    throw new TypeError('AAD component "wrapKind" must be passphrase, recovery, or prf');
+  }
+}
+
+/** Binds a secret value ciphertext to its org, environment, secret, and version. */
+export function secretValueAad(context: EncryptionContext): string {
+  assertUuid(context.orgId, 'orgId');
+  assertUuid(context.environmentId, 'environmentId');
+  assertUuid(context.secretId, 'secretId');
+  assertVersion(context.version, 'version');
+
+  return `${AAD_PREFIX_V2}.secret-value|${context.orgId}|${context.environmentId}|${context.secretId}|${context.version}`;
+}
+
+/**
+ * Binds a secret note ciphertext to its org, environment, and secret.
+ *
+ * No version: notes live on the `secrets` row, not on the append-only
+ * `secret_versions` row, so binding one would fabricate a component that the
+ * TypeScript and Go implementations would eventually disagree about.
+ */
+export function secretNoteAad(context: {
+  orgId: string;
+  environmentId: string;
+  secretId: string;
+}): string {
+  assertUuid(context.orgId, 'orgId');
+  assertUuid(context.environmentId, 'environmentId');
+  assertUuid(context.secretId, 'secretId');
+
+  return `${AAD_PREFIX_V2}.secret-note|${context.orgId}|${context.environmentId}|${context.secretId}`;
+}
+
+/**
+ * Binds a sealed Environment Data Key to the environment, the EDK version, and
+ * the exact principal it was sealed to.
+ *
+ * The version is carried because rotation produces a new `env_data_keys` row: a
+ * grant for version 3 must not open as a grant for version 4.
+ */
+export function edkGrantAad(params: {
+  environmentId: string;
+  edkVersion: number;
+  recipientKind: RecipientKind;
+  recipientId: string;
+}): string {
+  assertUuid(params.environmentId, 'environmentId');
+  assertVersion(params.edkVersion, 'edkVersion');
+  assertRecipientKind(params.recipientKind);
+  assertUuid(params.recipientId, 'recipientId');
+
+  return `${AAD_PREFIX_V2}.edk-grant|${params.environmentId}|${params.edkVersion}|${params.recipientKind}|${params.recipientId}`;
+}
+
+/**
+ * Binds a sealed Environment HMAC Key to the environment and the principal.
+ *
+ * No version: the EHK is created once per environment and is deliberately never
+ * rotated, which is what keeps `valueHmac` stable across EDK rotations.
+ */
+export function ehkGrantAad(params: {
+  environmentId: string;
+  recipientKind: RecipientKind;
+  recipientId: string;
+}): string {
+  assertUuid(params.environmentId, 'environmentId');
+  assertRecipientKind(params.recipientKind);
+  assertUuid(params.recipientId, 'recipientId');
+
+  return `${AAD_PREFIX_V2}.ehk-grant|${params.environmentId}|${params.recipientKind}|${params.recipientId}`;
+}
+
+/**
+ * Binds one User Key wrap to its owner and to the credential that opens it.
+ *
+ * All five recovery wraps hold the same UK, so without `lookupHashHex` a swapped
+ * row would go undetected; with it, a swap fails loudly. `credentialIdB64Url`
+ * plays the same role for passkey wraps. The passphrase wrap needs no such
+ * discriminator — there is only ever one.
+ */
+export function userKeyWrapAad(
+  params:
+    | { userId: string; wrapKind: 'passphrase' }
+    | { userId: string; wrapKind: 'recovery'; lookupHashHex: string }
+    | { userId: string; wrapKind: 'prf'; credentialIdB64Url: string },
+): string {
+  assertUuid(params.userId, 'userId');
+  assertWrapKind(params.wrapKind);
+
+  const head = `${AAD_PREFIX_V2}.uk-wrap|${params.userId}|${params.wrapKind}`;
+
+  if (params.wrapKind === 'recovery') {
+    assertComponent(params.lookupHashHex, 'lookupHashHex');
+    return `${head}|${params.lookupHashHex}`;
+  }
+
+  if (params.wrapKind === 'prf') {
+    assertComponent(params.credentialIdB64Url, 'credentialIdB64Url');
+    return `${head}|${params.credentialIdB64Url}`;
+  }
+
+  return head;
+}
+
+/** Binds a user's encrypted X25519 private key to its owner. */
+export function privateKeyEncAad(userId: string): string {
+  assertUuid(userId, 'userId');
+  return `${AAD_PREFIX_V2}.privkey-enc|${userId}`;
+}
+
+/** Binds a user's encrypted Ed25519 private key to its owner. */
+export function privateKeySignAad(userId: string): string {
+  assertUuid(userId, 'userId');
+  return `${AAD_PREFIX_V2}.privkey-sign|${userId}`;
+}
+
+/**
+ * Whether a string is a well-formed v2 AAD.
+ *
+ * Used by the HKDF layer, where a sealed box passes its AAD as the `info`
+ * string: the info registry is closed, and this is what admits the one entry
+ * that is not a fixed constant.
+ */
+export function isAadV2(value: string): boolean {
+  return /^xecret\.aad\.v2\.[a-z-]+(\|[0-9a-zA-Z_-]+)+$/.test(value);
 }
