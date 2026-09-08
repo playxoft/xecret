@@ -2,7 +2,7 @@ import { findSecretByName, getSecretVersion } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
 import { json } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
-import { secretNameFromPath } from '@/server/schemas/secrets';
+import { secretNameFromPath, toClientSecret } from '@/server/schemas/secrets';
 import {
   auditSource,
   authorizeSecretAction,
@@ -75,7 +75,15 @@ export const GET = authenticatedRoute<Params>(
     );
     if (!material) throw errors.notFound('no such version of that secret');
 
-    const value = await decryptOne(scope, services, material);
+    // In `e2ee` mode the ciphertext is returned and the caller decrypts it. The
+    // key it names may be a **retired** one — a version written before a rotation
+    // is still encrypted under the key that was active then — so `envDataKeyId`
+    // is part of the answer rather than an implementation detail: a client
+    // holding only the active grant learns here that it needs an older one,
+    // instead of meeting an unexplained decryption failure.
+    const e2ee = scope.environment.encryptionMode === 'e2ee';
+    const value = e2ee ? null : await decryptOne(scope, services, material);
+    const sealed = e2ee ? toClientSecret(material) : null;
 
     // Queued before the value leaves this function, and carrying the version.
     // An unaudited reveal is the failure that matters most on this path, and a
@@ -104,6 +112,13 @@ export const GET = authenticatedRoute<Params>(
       secret: {
         name: material.name,
         value,
+        ...(sealed === null
+          ? {}
+          : {
+              ciphertext: sealed.ciphertext,
+              clientAlgorithm: sealed.clientAlgorithm,
+              envDataKeyId: sealed.envDataKeyId,
+            }),
         version: material.version,
         current: material.version === secret.version,
         createdAt: material.createdAt.toISOString(),

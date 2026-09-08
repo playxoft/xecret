@@ -2,6 +2,7 @@ import { parseQuery } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
 import { documentQuery } from '@/server/schemas/secrets';
 import {
+  assertDocumentRenderable,
   auditSource,
   authorizeSecretAction,
   decryptEnvironment,
@@ -46,6 +47,15 @@ export const GET = authenticatedRoute<Params>(
     const scope = await resolveEnvironmentPath(principal, params, services);
     authorizeSecretAction(scope, principal, 'secret.read');
     await enforceSecretRateLimit(services, principal, 'read');
+
+    // An `e2ee` environment cannot be exported by the server, because exporting
+    // is formatting and formatting takes plaintext. The refusal is deliberate
+    // rather than a gap: the client already holds every value it would put in the
+    // file — it decrypted them to show them — so the download is one it can build
+    // itself, with the same `@xecret/core/format` module compiled for the browser.
+    // Phase 3b moves it there; this says so in the meantime, with a stable
+    // `client_side_only` marker a client can branch on.
+    assertDocumentRenderable(scope);
 
     const { format } = parseQuery(request, documentQuery);
 

@@ -28,9 +28,12 @@ import { resolveEnvironmentPath } from '@/server/tenancy';
  * `listSecretVersions` selects no ciphertext column at all — so rendering this
  * page is not a decryption opportunity even for a caller who could reach one.
  *
- * `envKeyId` is included because an operator investigating a rotation needs to
- * know which data key a version was written under. It is an opaque identifier
- * that confers no access; the key itself never leaves `env_keys` unwrapped.
+ * `envKeyId` and `envDataKeyId` are included because an operator investigating a
+ * rotation needs to know which data key a version was written under — and, since
+ * ADR 0009, which *hierarchy*: exactly one of the two is set, and during the
+ * migration one secret's history can contain both. They are opaque identifiers
+ * that confer no access; neither key ever leaves its table unwrapped, and the
+ * `e2ee` one was never wrapped by anything this server holds.
  */
 
 interface Params {
@@ -70,7 +73,13 @@ export const GET = authenticatedRoute<Params>(async ({ request, params, principa
     data: versions.items.map((version) => ({
       version: version.version,
       algorithm: version.algorithm,
+      // Exactly one of the two is set — `secret_versions_key_check`. Both are
+      // published because which one it is *says which hierarchy wrote the row*,
+      // and during the migration an environment's history can contain both: a
+      // reader looking at "why can I not decrypt version 3" needs to see that
+      // version 3 predates the cutover.
       envKeyId: version.envKeyId,
+      envDataKeyId: version.envDataKeyId,
       createdAt: version.createdAt.toISOString(),
       createdBy: version.createdBy,
       createdByServiceTokenId: version.createdByServiceTokenId,

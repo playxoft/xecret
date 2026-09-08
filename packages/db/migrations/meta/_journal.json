@@ -92,6 +92,13 @@
       "when": 1786925700000,
       "tag": "0012_uk_unlock_verifier",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1786925800000,
+      "tag": "0013_environment_data_keys",
+      "breakpoints": true
     }
   ]
 }

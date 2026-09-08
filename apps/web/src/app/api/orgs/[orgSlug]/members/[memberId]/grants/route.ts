@@ -15,6 +15,7 @@ import {
   requireMembership,
   requireSessionPrincipal,
 } from '@/server/members-service';
+import { recordKeyReconciliation, reconcileMemberKeyAccess } from '@/server/member-keys';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 import { grantRemoveSchema, grantWriteSchema } from '@/server/schemas/members';
@@ -117,6 +118,24 @@ export const PUT = authenticatedRoute<Params>(
       ),
     );
 
+    // A grant change is the path the pending queue was built for. The person
+    // making it holds `member.update`, which says nothing about whether they
+    // hold the environment's key — an owner can grant production access having
+    // never opened production — so what lands here is the access, and the key
+    // share is queued for whoever can seal it.
+    //
+    // A *narrowing* travels the same path and comes out the other way: an
+    // explicit `none` on an environment revokes the member's grants there and
+    // leaves the environment owing a rotation.
+    recordKeyReconciliation(
+      await reconcileMemberKeyAccess(services, {
+        orgId,
+        userId: target.userId,
+        actorUserId: actor.user.id,
+      }),
+      { orgId, audit, record, targetEmail: target.user.email },
+    );
+
     return json({
       grant: {
         projectSlug: project.slug,
@@ -145,7 +164,7 @@ export const DELETE = authenticatedRoute<Params>(
       throw cause;
     }
 
-    requireSessionPrincipal(principal);
+    const actor = requireSessionPrincipal(principal);
     const membership = requireMembership(scope);
 
     const target = await findMemberWithUser(services.db, orgId, params.memberId);
@@ -194,6 +213,19 @@ export const DELETE = authenticatedRoute<Params>(
         ),
       );
     }
+
+    // Removing a grant falls back to the member's role default, which may be
+    // *higher* or lower than the grant that was there — so this is a
+    // reconciliation rather than a revocation, and it can just as easily queue a
+    // key share as delete one.
+    recordKeyReconciliation(
+      await reconcileMemberKeyAccess(services, {
+        orgId,
+        userId: target.userId,
+        actorUserId: actor.user.id,
+      }),
+      { orgId, audit, record, targetEmail: target.user.email },
+    );
 
     return noContent();
   },

@@ -152,6 +152,61 @@ export type AuditAction =
   | 'token.revoked'
   | 'token.used'
   | 'key.rotated'
+  /**
+   * An environment acquired the key hierarchy its values are encrypted under:
+   * version 1 of its EDK, its EHK, and the creator's own grant.
+   *
+   * Terminal in one direction, like `vault.created`: an environment is keyed
+   * once, and re-keying it would abandon everything encrypted under the old key.
+   * This record is therefore the origin of that environment's whole
+   * cryptographic history, and the only event that can precede a secret in it.
+   */
+  | 'envkey.created'
+  /**
+   * The Environment Data Key was replaced and re-sealed to every remaining
+   * principal.
+   *
+   * Distinct from `key.rotated`, which belongs to the server envelope and
+   * records an operator rotating material this deployment holds. This one
+   * records something a *member's browser* did with a key the server never saw,
+   * and it is the event that closes a revocation: deleting somebody's grant
+   * stops them being handed the key again, and only a rotation stops the key
+   * they already have from opening what is written next. `keyVersion` carries
+   * the new version and `grantCount` how many principals it reached.
+   */
+  | 'envkey.rotated'
+  /**
+   * A principal was handed an environment's keys — a member gaining access, a
+   * service token at creation, an invitation being prepared.
+   *
+   * Worth its own event rather than folding into `access.granted`, because the
+   * two answer different questions and routinely happen at different times: the
+   * first says somebody is *allowed* to read an environment, this says somebody
+   * *can*. Under a zero-knowledge model those come apart, and the gap between
+   * them is exactly what the pending queue exists to track.
+   */
+  | 'envkey.granted'
+  /**
+   * A principal's grant was deleted — the bookkeeping half of a revocation.
+   *
+   * Deliberately *not* the moment the environment became safe again. The
+   * principal read what they read while they held the grant, and the sealed key
+   * may still be in a browser or a token string. What follows this record is an
+   * `envkey.rotated`, and an environment where the second never arrives is one
+   * where the revocation is on paper only — which is why both are recorded and
+   * why the API reports `needsRotation` until it lands.
+   */
+  | 'envkey.grant_revoked'
+  /**
+   * Somebody was given access to an environment by a person who could not seal
+   * its key, so the key share was queued.
+   *
+   * The honest record of a partial act. Access changed and the member still
+   * cannot read anything, which is a state that looks like a bug from every
+   * screen in the product; without this event, the audit log would show the
+   * access grant and no explanation of the gap that followed it.
+   */
+  | 'envkey.grant_pending'
   | 'access.denied';
 
 /**
@@ -193,6 +248,27 @@ export interface AuditMetadata {
   /** The device a CLI credential was approved for, e.g. a hostname. */
   deviceName?: string;
   keyVersion?: number;
+  /**
+   * Which kind of principal a key grant addressed: `member`, `token` or
+   * `invite`.
+   *
+   * The kind, never the recipient's key and never the sealed blob — the same
+   * rule `wrapKind` follows. It is recorded because the three have very
+   * different implications in a review: a grant to a member is a person gaining
+   * reach, a grant to a token is a credential in a CI provider gaining it, and a
+   * grant to an invitation is a key sitting in a row waiting for somebody who
+   * has not signed in yet.
+   */
+  principalKind?: 'member' | 'token' | 'invite';
+  /**
+   * How many principals a key operation covered. A count, never a list of them.
+   *
+   * On a rotation this is the whole point of the record: "the production key was
+   * rotated and re-sealed to 9 principals" is checkable against the roster, and
+   * a number that drops without a matching removal is the shape of a rotation
+   * that quietly lost somebody.
+   */
+  grantCount?: number;
   /**
    * Which wrap of the User Key an unlock or an enrolment used, e.g. `passkey`.
    *

@@ -17,6 +17,7 @@ import type {
   Organization,
   ProjectRecord,
   SecretMaterial,
+  SecretPayload,
 } from '@xecret/db/repositories';
 import type { Database } from '@xecret/db';
 import { ApiError } from './errors';
@@ -217,7 +218,15 @@ function environmentScope(): EnvironmentScope {
   return {
     organization: { id: ORG_ID, slug: 'acme' } as unknown as Organization,
     project: { id: PROJECT_ID, slug: 'api' } as unknown as ProjectRecord,
-    environment: { id: ENV_A, slug: 'production' } as unknown as EnvironmentRecord,
+    // `server` explicitly, not by omission. Every assertion in this file is
+    // about the envelope path, and a scope that left the mode undefined would
+    // pass only because `!== 'e2ee'` happens to be true — which would stop being
+    // a statement about what is being tested.
+    environment: {
+      id: ENV_A,
+      slug: 'production',
+      encryptionMode: 'server',
+    } as unknown as EnvironmentRecord,
     actor: { kind: 'user', userId: USER_ID, orgId: ORG_ID },
     membership: undefined,
   };
@@ -237,6 +246,12 @@ function stored(
     version: 1,
     envKeyId: ENV_KEY_ID,
     encrypted,
+    // A server-envelope row: it names an `env_keys` row and carries no client
+    // material. `secret_versions_key_check` makes the pairing a database
+    // invariant rather than a convention, and these fixtures state the server
+    // half of it.
+    envDataKeyId: null,
+    clientValue: null,
     valueHmac: null,
     createdBy: USER_ID,
     createdByServiceTokenId: null,
@@ -266,7 +281,23 @@ async function sealed(h: Harness): Promise<EncryptedValue> {
 
   const write = h.created[0];
   if (!write) throw new Error('the write path stored nothing');
-  return write.encrypted;
+  return serverPayload(write.payload);
+}
+
+/**
+ * Narrows a stored payload to the server-envelope arm.
+ *
+ * A throw rather than a cast: `SecretPayload` is a union precisely so the two
+ * modes cannot be confused, and a test that asserted its way past that would be
+ * asserting about a shape the write path never produced. If the server write
+ * path ever hands back a client payload, these tests should fail loudly rather
+ * than read a `ciphertext` field off it and carry on.
+ */
+function serverPayload(payload: SecretPayload): EncryptedValue {
+  if (payload.mode !== 'server') {
+    throw new Error('the server write path produced a client-encrypted payload');
+  }
+  return payload.encrypted;
 }
 
 /**
@@ -295,7 +326,8 @@ describe('encrypt and decrypt', () => {
     // path chooses it precisely because the AAD binds it.
     const write = h.created[0];
     expect(write?.id).toBeTypeOf('string');
-    expect(write?.envKeyId).toBe(ENV_KEY_ID);
+    expect(write?.payload.mode).toBe('server');
+    expect(write?.payload.mode === 'server' ? write.payload.envKeyId : null).toBe(ENV_KEY_ID);
     expect(write?.writer).toEqual({ userId: USER_ID });
 
     const value = await decryptOne(
@@ -440,7 +472,7 @@ describe('the unwrapped environment key', () => {
       const write = h.created[0];
       if (!write) throw new Error('the write path stored nothing');
       materials.push(
-        stored(write.encrypted, {
+        stored(serverPayload(write.payload), {
           secretId: write.id ?? SECRET_S,
           name: `SECRET_${index}`,
         }),
@@ -547,7 +579,7 @@ describe('the unchanged-value short circuit', () => {
     const appended = h.appended[0];
     if (!appended) throw new Error('nothing was appended');
     await expect(
-      decryptOne(h.scope, h.services, stored(appended.encrypted, { version: 2 })),
+      decryptOne(h.scope, h.services, stored(serverPayload(appended.payload), { version: 2 })),
     ).resolves.toBe(PLAINTEXT);
   });
 

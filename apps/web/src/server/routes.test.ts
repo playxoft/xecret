@@ -506,6 +506,7 @@ describe('response shapes', () => {
     name: 'Production',
     slug: 'production',
     isProduction: true,
+    encryptionMode: 'server',
     sortOrder: 2,
     createdAt: new Date('2026-01-03T10:00:00.000Z'),
     updatedAt: new Date('2026-02-03T10:00:00.000Z'),

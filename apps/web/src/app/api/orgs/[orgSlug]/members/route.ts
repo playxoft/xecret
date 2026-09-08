@@ -5,6 +5,7 @@ import {
   listGrantsForOrganization,
   listMembers,
   seatUsage,
+  setInvitationPublicKey,
 } from '@xecret/db/repositories';
 import { publicOrigin } from '@/server/bindings';
 import { json, parseJsonBody, parseQuery } from '@/server/http';
@@ -20,6 +21,7 @@ import {
 } from '@/server/members-service';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
+import { decodePublicKey } from '@/server/schemas/env-keys';
 import { memberInviteSchema, toInvitation, toMember, toSeats } from '@/server/schemas/members';
 import { listQuery } from '@/server/schemas/secrets';
 import { authorize, resolveOrg } from '@/server/tenancy';
@@ -154,6 +156,29 @@ export const POST = authenticatedRoute<Params>(
       invitedBy: inviter.user.id,
       ...(initialGrants === undefined ? {} : { initialGrants }),
     }).catch(mapMembershipError);
+
+    // ── The invitation's own keypair ──
+    // Recorded after the invitation exists, because the grants that will be
+    // sealed to it reference its id, and the AAD of each sealed blob names it
+    // (spec §4.2). The **fragment** the keypair is derived from never reaches
+    // this server: it travels to the invitee over a different channel from the
+    // link below, which is the whole of the two-channel design — a leaked email
+    // decrypts nothing, and a leaked fragment authenticates nothing.
+    //
+    // The grants themselves are uploaded afterwards, one environment at a time,
+    // through `POST …/environments/{envSlug}/keys/grants` with
+    // `recipientKind: "invite"`. They are *not* accepted on this body, and the
+    // reason is not tidiness: a grant names its recipient, never its resource, so
+    // a batch posted here would carry no unambiguous statement of which
+    // environment each belongs to — and filing a key under the wrong environment
+    // produces a row that looks exactly like a working grant until somebody tries
+    // to use it. The per-environment route has the environment in its path.
+    if (body.invitePublicKey !== undefined) {
+      await setInvitationPublicKey(services.db, {
+        invitationId: issued.invitation.id,
+        publicKey: decodePublicKey(body.invitePublicKey),
+      });
+    }
 
     const inviteUrl = `${publicOrigin(services.env)}/invite/${encodeURIComponent(issued.token)}`;
 

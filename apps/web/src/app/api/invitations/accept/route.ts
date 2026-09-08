@@ -3,6 +3,7 @@ import { acceptInvitation } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
 import { attemptKey, enforce } from '@/server/rate-limit';
 import { json, parseJsonBody } from '@/server/http';
+import { recordKeyReconciliation, reconcileMemberKeyAccess } from '@/server/member-keys';
 import { mapMembershipError, requireSessionPrincipal } from '@/server/members-service';
 import { authenticatedRoute } from '@/server/route';
 import { invitationTokenSchema } from '@/server/schemas/members';
@@ -55,6 +56,34 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
             }),
       },
     ),
+  );
+
+  // The membership now exists, so the key reconciliation can decide what this
+  // person is owed.
+  //
+  // ── Why this queues even when the invitation carried sealed grants ──
+  // An invitation's grants are sealed to a **one-off invite keypair** (spec §10),
+  // not to the invitee's own public key — the invitee did not have one when the
+  // invitation was written. Until they open those grants with the fragment and
+  // re-seal them to themselves, they hold no member grant, and the queue says so
+  // honestly. The pending row is deleted by the very request that adds the
+  // re-sealed grant, so the banner lasts exactly as long as the gap it describes.
+  //
+  // `requestedBy` is the invitee themselves: nobody else acted here, and
+  // attributing the debt to the inviter would date it to a request they did not
+  // make.
+  recordKeyReconciliation(
+    await reconcileMemberKeyAccess(services, {
+      orgId: accepted.organization.id,
+      userId: actor.user.id,
+      actorUserId: actor.user.id,
+    }),
+    {
+      orgId: accepted.organization.id,
+      audit,
+      record,
+      targetEmail: actor.user.email,
+    },
   );
 
   return json({

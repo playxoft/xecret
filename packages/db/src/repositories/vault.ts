@@ -3,6 +3,7 @@ import type { Argon2idParams } from '@xecret/core/crypto/client';
 import type { UnlockAttemptState } from '@xecret/core/auth';
 import { uuidv7 } from '@xecret/core/ids';
 import { userKeys, userKeyWraps, userPasskeys } from '../schema/vault';
+import { deleteGrantsForUser } from './env-keys';
 import { lockSessions } from './sessions';
 import { isUniqueViolation } from './users';
 import { RepositoryError } from './shared';
@@ -753,13 +754,23 @@ export async function resetVault(exec: Executor, userId: string): Promise<boolea
     const removed = await deleteVault(tx, userId);
     if (!removed) return false;
 
-    // Phase 3: `env_key_grants` rows for this user must be deleted here too.
-    // Every one of them is an EDK and EHK sealed to the public key this
-    // transaction just destroyed, so they are unopenable ciphertext addressed to
-    // a principal that no longer has a private key — and leaving them would make
-    // a re-invitation look like it had nothing to do, because a grant row would
-    // already exist for the member. The table does not exist yet; when it does,
-    // this is the line that has to change with it.
+    // Every environment key ever sealed to this account goes with the vault.
+    //
+    // Each grant is an EDK and an EHK sealed to the public key this transaction
+    // just destroyed, so what remains after the `user_keys` row is gone is
+    // ciphertext addressed to a principal that no longer has a private key. It is
+    // not merely useless — it is actively misleading: a re-invitation would look
+    // like it had nothing to do, because a grant row already exists for the
+    // member, and they would land in an environment they cannot decrypt with
+    // nothing anywhere explaining why.
+    //
+    // The queued debts go too. A pending row asks somebody to seal a key to a
+    // public key that no longer exists, so leaving it would put an unfulfillable
+    // item in a teammate's "pending key shares" banner for ever.
+    //
+    // In the same transaction as the delete, so the account cannot be left
+    // holding grants for a vault it no longer has.
+    await deleteGrantsForUser(tx, userId);
 
     await lockSessions(tx, { userId });
     return true;

@@ -168,6 +168,35 @@ export type {
 } from './projects';
 
 export {
+  addEnvKeyGrants,
+  deleteGrantsForUser,
+  findGrantForPrincipal,
+  findPendingInvitationForGrant,
+  initializeEnvironmentKeys,
+  listGrantsForEnvironment,
+  listPendingKeyGrants,
+  listSealableServiceTokens,
+  loadEnvironmentKeyState,
+  loadMemberKeyPresence,
+  queuePendingKeyGrant,
+  removeEnvKeyGrant,
+  removeMemberGrantsForEnvironment,
+  removePendingKeyGrant,
+  rotateEnvDataKey,
+  setInvitationPublicKey,
+} from './env-keys';
+export type {
+  AddEnvKeyGrantsParams,
+  EnvDataKeyRecord,
+  EnvironmentKeyState,
+  EnvKeyGrantRecord,
+  EnvKeyGrantSeed,
+  InitializeEnvironmentKeysParams,
+  PendingKeyGrantRecord,
+  RotateEnvDataKeyParams,
+} from './env-keys';
+
+export {
   createEnvironment,
   findEnvironmentById,
   findEnvironmentBySlug,
@@ -184,6 +213,7 @@ export {
 export type {
   CreateEnvironmentParams,
   EnvironmentKeyChain,
+  EnvironmentKeyInit,
   EnvironmentRecord,
   OrganizationEnvironment,
   UpdateEnvironmentParams,
@@ -209,6 +239,7 @@ export type {
   SecretListItem,
   SecretMaterial,
   SecretPage,
+  SecretPayload,
   SecretRecord,
   SecretVersionPage,
   SecretVersionSummary,

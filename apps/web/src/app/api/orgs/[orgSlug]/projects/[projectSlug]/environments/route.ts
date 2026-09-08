@@ -10,6 +10,8 @@ import {
   resolveEnvironmentSlug,
   toEnvironment,
 } from '@/server/schemas/resources';
+import { callerHasVault, requireSealingUser } from '@/server/env-keys-service';
+import { toGrantSeed } from '@/server/schemas/env-keys';
 import { authorize, resolveProjectPath } from '@/server/tenancy';
 
 /**
@@ -69,6 +71,38 @@ export const POST = authenticatedRoute<Params>(
     const body = await parseJsonBody(request, environmentCreateSchema);
     const slug = resolveEnvironmentSlug(body);
 
+    // ── Every new environment is end-to-end encrypted, and the keys come with it ──
+    // `environments.encryption_mode` defaults to `e2ee` from migration 0013
+    // onward, so this is not a branch on a request field — there is no such field
+    // — but on a fact the schema now asserts. What the request supplies is the
+    // material: an EDK and an EHK generated in the caller's browser, and the
+    // creator's own grant sealing both to their public key.
+    //
+    // The environment row and the key rows land in **one transaction**, and here
+    // that is not merely tidy. A `server`-mode environment created without its key
+    // needs an operator holding the Root KEK to repair; an `e2ee` one created
+    // without its keys **cannot be repaired at all**, because the bytes existed
+    // only in a browser that has since navigated away. The transaction is the
+    // difference between an inconvenience and a row nobody can ever use.
+    const creator = requireSealingUser(principal);
+
+    if (body.keys === undefined) {
+      // A precise message rather than a field error, because the caller is not
+      // holding a malformed body — they are holding a credential that cannot
+      // produce one. A service or CLI token has no vault, so it has no public key
+      // to seal to and no signing key to sign with; documented in
+      // docs/architecture/api.md §3.
+      throw errors.badRequest(
+        'A new environment is end-to-end encrypted, so it must be created with client-generated keys from an unlocked browser session.',
+      );
+    }
+
+    if (!(await callerHasVault(services, principal))) {
+      throw errors.badRequest(
+        'Set up your vault before creating an environment: its keys are sealed to your public key.',
+      );
+    }
+
     // `isProduction` is accepted at creation under the same `environment.create`
     // permission that any other environment needs, and deliberately not raised
     // to the admin-level action that *flipping* it later requires. A new
@@ -84,7 +118,8 @@ export const POST = authenticatedRoute<Params>(
       slug,
       isProduction: body.isProduction,
       sortOrder: body.sortOrder,
-      envelope: services.envelope,
+      encryptionMode: 'e2ee',
+      keyInit: { createdBy: creator, grant: toGrantSeed(body.keys.grant) },
     }).catch((cause: unknown) => {
       if (cause instanceof RepositoryError && cause.code === 'conflict') {
         throw errors.conflict(`An environment with the slug "${slug}" already exists.`);
@@ -110,6 +145,27 @@ export const POST = authenticatedRoute<Params>(
           environmentId: environment.id,
         },
         { projectSlug: scope.project.slug, environmentSlug: environment.slug },
+      ),
+      // A second record, for the key hierarchy. The two acts happen in one
+      // transaction but they are not one fact: `environment.created` is the
+      // resource, and this is the origin of everything that will ever be
+      // encrypted in it — the only event that can precede a secret here, and the
+      // one a key-history review starts from.
+      audit(orgId).success(
+        'envkey.created',
+        {
+          type: 'environment',
+          id: environment.id,
+          projectId: scope.project.id,
+          environmentId: environment.id,
+        },
+        {
+          projectSlug: scope.project.slug,
+          environmentSlug: environment.slug,
+          keyVersion: 1,
+          grantCount: 1,
+          source: 'dashboard',
+        },
       ),
     );
 

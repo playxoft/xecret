@@ -3,7 +3,12 @@ import { getTableConfig } from 'drizzle-orm/pg-core';
 import {
   auditLogs,
   cliTokens,
+  envDataKeys,
+  envHmacKeys,
+  envKeyGrants,
+  environments,
   invitations,
+  pendingKeyGrants,
   secretVersions,
   secrets,
   serviceTokens,
@@ -25,6 +30,33 @@ import { SECRET_VALUE_TYPES } from '@xecret/core/validation';
 
 const columnsOf = (table: Parameters<typeof getTableConfig>[0]) =>
   Object.fromEntries(getTableConfig(table).columns.map((c) => [c.name, c]));
+
+/**
+ * The SQL text of one named CHECK constraint, column names included.
+ *
+ * Drizzle keeps a constraint as an array of query chunks: literal fragments
+ * carry `value`, and an interpolated `${t.someColumn}` arrives as a `Column`
+ * carrying `name`. Both are rendered here, because for these constraints the
+ * *columns* are half of what is being asserted — a check that compared the right
+ * operator against the wrong pair of columns would read identically otherwise.
+ *
+ * Written out once because, as the schema takes on modes, more of its invariants
+ * live in CHECKs than in NOT NULL flags: a test that could only read the flags
+ * would quietly stop covering them.
+ */
+function checkSql(table: Parameters<typeof getTableConfig>[0], name: string): string {
+  const constraint = getTableConfig(table).checks.find((entry) => entry.name === name);
+  expect(constraint, `${name} must exist`).toBeDefined();
+
+  return constraint!.value.queryChunks
+    .map((chunk) => {
+      if (typeof chunk !== 'object' || chunk === null) return '';
+      if ('value' in chunk) return String(chunk.value);
+      if ('name' in chunk && typeof chunk.name === 'string') return chunk.name;
+      return '';
+    })
+    .join('');
+}
 
 describe('credentials are never stored in a recoverable form', () => {
   // Threat T6: a database dump must not yield usable sessions or tokens.
@@ -64,13 +96,221 @@ describe('secret ciphertext', () => {
   });
 
   it('always records which key encrypted it, so rotation is possible', () => {
-    const cols = columnsOf(secretVersions);
-    expect(cols['env_key_id']!.notNull).toBe(true);
-    expect(cols['algorithm']!.notNull).toBe(true);
+    // Neither key column is NOT NULL on its own any more — a row names one of
+    // them, never both — so what carries the invariant is the CHECK below rather
+    // than a column flag. `algorithm` still is: every row names a construction.
+    expect(columnsOf(secretVersions)['algorithm']!.notNull).toBe(true);
+    expect(checkSql(secretVersions, 'secret_versions_key_check')).toContain('num_nonnulls');
   });
 
-  it('never allows a null IV — AES-GCM without a unique IV is broken', () => {
-    expect(columnsOf(secretVersions)['iv']!.notNull).toBe(true);
+  it('names exactly one key, so no row is readable two ways or none', () => {
+    // The constraint that makes the dual-mode period safe. A row naming both keys
+    // claims two different sets of bytes decrypt it; a row naming neither is
+    // ciphertext nothing can ever open — and would read as an e2ee row to any
+    // query testing `env_key_id IS NULL`. Both are silent, permanent data loss.
+    const sql = checkSql(secretVersions, 'secret_versions_key_check');
+    expect(sql).toContain('env_key_id');
+    expect(sql).toContain('env_data_key_id');
+    expect(sql).toContain('= 1');
+  });
+
+  it('never allows a null IV on a row the server encrypted', () => {
+    // The original invariant, narrowed to exactly the rows it ever applied to.
+    // AES-GCM without a unique IV is broken, and a server-envelope row still
+    // cannot be written without one. An e2ee row has no IV *column* because the
+    // spec puts the IV inside the blob (§2.1), where it travels with the
+    // ciphertext it belongs to and cannot be paired with the wrong one.
+    //
+    // The CHECK is a biconditional in both directions on purpose: the reverse
+    // half stops a stray IV being written beside a blob that already contains
+    // one, where it could only ever be used by mistake.
+    const sql = checkSql(secretVersions, 'secret_versions_server_iv_check');
+    expect(sql).toContain('env_key_id');
+    expect(sql).toContain('iv');
+  });
+
+  it('ties the client algorithm to the client-encrypted rows, and to no others', () => {
+    const sql = checkSql(secretVersions, 'secret_versions_client_algorithm_check');
+    expect(sql).toContain('env_data_key_id');
+    expect(sql).toContain('client_algorithm');
+  });
+
+  it('stores an encrypted note as bytea beside the plaintext one', () => {
+    // Both columns exist through the migration: `note` serves `server`-mode rows
+    // and `enc_note` serves `e2ee` ones. Nullable in both directions, because
+    // which is written depends on `environments.encryption_mode` — a join away,
+    // and therefore unreachable from a row constraint.
+    const cols = columnsOf(secrets);
+    expect(cols['note']!.getSQLType()).toBe('text');
+    expect(cols['enc_note']!.getSQLType()).toBe('bytea');
+    expect(cols['enc_note']!.notNull).toBe(false);
+  });
+});
+
+describe('environment data keys hold no key material', () => {
+  it('records identity and version only — the bytes live in the grants', () => {
+    // The property that separates this table from `env_keys` beside it, and the
+    // whole of ADR 0009: `env_keys.wrapped_key` is a key this deployment can
+    // unwrap, and its successor deliberately is not. A future column named for
+    // key material should fail this outright.
+    const cols = Object.keys(columnsOf(envDataKeys));
+    for (const forbidden of ['wrapped_key', 'key', 'wrap_iv', 'secret', 'edk']) {
+      expect(cols, `env_data_keys must not carry a ${forbidden} column`).not.toContain(forbidden);
+    }
+    expect(cols).toEqual(
+      expect.arrayContaining(['id', 'environment_id', 'version', 'status', 'created_by']),
+    );
+    expect(Object.keys(columnsOf(envHmacKeys))).not.toContain('key');
+  });
+
+  it('allows exactly one active key per environment', () => {
+    // Two active rows would be two answers to "which key does the next write
+    // use", and a client picking the older one would encrypt under a key a
+    // revoked principal still holds — silently undoing the rotation that retired
+    // it. Partial, so the retired history is unbounded while the present is
+    // unique, exactly like `user_key_wraps_passphrase_unique`.
+    const index = getTableConfig(envDataKeys).indexes.find(
+      (entry) => entry.config.name === 'env_data_keys_active_unique',
+    );
+
+    expect(index).toBeDefined();
+    expect(index!.config.unique).toBe(true);
+    expect(index!.config.where).toBeDefined();
+  });
+
+  it('restates the statuses the ADR pins, and nothing else', () => {
+    const sql = checkSql(envDataKeys, 'env_data_keys_status_check');
+    expect(sql).toContain(`'active'`);
+    expect(sql).toContain(`'retired'`);
+    const quoted = sql.match(/'[a-z]+'/g) ?? [];
+    expect(new Set(quoted.map((entry) => entry.slice(1, -1)))).toEqual(
+      new Set(['active', 'retired']),
+    );
+  });
+});
+
+describe('environment key grants', () => {
+  it('names exactly one principal, in the same shape as every other such rule', () => {
+    // A `kind` column beside three nullable ids would let the two disagree, and
+    // the kind is what goes into the AAD (spec §4.2) — so a disagreement produces
+    // a grant the principal it names cannot open. Deriving the kind from which
+    // column is set makes that unrepresentable.
+    const sql = checkSql(envKeyGrants, 'env_key_grants_principal_check');
+    expect(sql).toContain('num_nonnulls');
+    for (const column of ['member_user_id', 'service_token_id', 'invitation_id']) {
+      expect(sql).toContain(column);
+    }
+    expect(sql).toContain('= 1');
+  });
+
+  it('requires a creator signature on every row', () => {
+    // Verification is deferred past v1; the columns are not. Turning verification
+    // on later has to be a client update rather than a data migration over grants
+    // that never carried a signature — which a nullable column would guarantee.
+    const cols = columnsOf(envKeyGrants);
+    expect(cols['signature']!.notNull).toBe(true);
+    expect(cols['signature']!.getSQLType()).toBe('bytea');
+    expect(cols['signed_by_user_id']!.notNull).toBe(true);
+  });
+
+  it('stores the two sealed keys separately, as bytea', () => {
+    // Separate because the EHK is re-sealed *unchanged* across an EDK rotation
+    // while the EDK is replaced: one column holding a pair would mean re-sealing
+    // a key that did not change, on every rotation, for nothing.
+    const cols = columnsOf(envKeyGrants);
+    expect(cols['edk_sealed']!.getSQLType()).toBe('bytea');
+    expect(cols['ehk_sealed']!.getSQLType()).toBe('bytea');
+    expect(cols['edk_sealed']!.notNull).toBe(true);
+    expect(cols['ehk_sealed']!.notNull).toBe(true);
+  });
+
+  it('permits one grant per principal per key version, NULLs notwithstanding', () => {
+    // Three partial unique indexes rather than one composite: PostgreSQL treats
+    // NULLs as distinct, so a plain UNIQUE over all four columns would admit two
+    // identical member grants because the two NULL columns make the rows
+    // "different". Two grants for one member is two answers to "which sealed blob
+    // do I open".
+    const indexes = new Map(
+      getTableConfig(envKeyGrants).indexes.map((entry) => [entry.config.name, entry.config]),
+    );
+
+    for (const name of [
+      'env_key_grants_member_unique',
+      'env_key_grants_token_unique',
+      'env_key_grants_invitation_unique',
+    ]) {
+      expect(indexes.get(name), `${name} must exist`).toBeDefined();
+      expect(indexes.get(name)!.unique, name).toBe(true);
+      expect(indexes.get(name)!.where, name).toBeDefined();
+    }
+  });
+});
+
+describe('the pending key-grant queue', () => {
+  it('holds ids and timestamps, never key material', () => {
+    // A pending row is a request, not authority: it grants nothing, and the
+    // member it names still cannot decrypt anything until somebody seals a real
+    // grant for them.
+    const cols = Object.keys(columnsOf(pendingKeyGrants));
+    for (const forbidden of ['sealed', 'wrap', 'key', 'signature']) {
+      expect(cols, `pending_key_grants must not carry a ${forbidden} column`).not.toContain(
+        forbidden,
+      );
+    }
+    expect(cols).toEqual(
+      expect.arrayContaining(['environment_id', 'target_user_id', 'requested_by']),
+    );
+  });
+
+  it('records one debt per person per environment', () => {
+    const index = getTableConfig(pendingKeyGrants).indexes.find(
+      (entry) => entry.config.name === 'pending_key_grants_unique',
+    );
+    expect(index).toBeDefined();
+    expect(index!.config.unique).toBe(true);
+  });
+});
+
+describe('the encryption mode', () => {
+  it('defaults new environments to end-to-end encryption', () => {
+    // A migration mechanism, not a product option: nothing in the API lets a
+    // caller choose. Migration 0013 backfills existing rows to `server` through
+    // an ADD COLUMN default and then changes the default to this one, which is
+    // what makes every environment created from that deployment onward e2ee.
+    const cols = columnsOf(environments);
+    expect(cols['encryption_mode']!.notNull).toBe(true);
+    expect(cols['encryption_mode']!.default).toBe('e2ee');
+  });
+
+  it('admits the two modes and nothing else', () => {
+    const sql = checkSql(environments, 'environments_encryption_mode_check');
+    const quoted = sql.match(/'[a-z0-9]+'/g) ?? [];
+    expect(new Set(quoted.map((entry) => entry.slice(1, -1)))).toEqual(new Set(['server', 'e2ee']));
+  });
+});
+
+describe('service tokens as e2ee principals', () => {
+  it('store a public key and never a private one', () => {
+    // The private scalar lives only inside the token string its creator was shown
+    // once. The server holds a hash it can check and a public key it can seal to,
+    // and nothing that opens either — which is what lets a rotation re-seal to
+    // every token without anybody regenerating one.
+    const cols = columnsOf(serviceTokens);
+    expect(cols['public_key']!.getSQLType()).toBe('bytea');
+    // Nullable: Phase 4's creation flow fills it, and a grant to a token without
+    // one is refused rather than sealed to nothing.
+    expect(cols['public_key']!.notNull).toBe(false);
+    expect(Object.keys(cols)).not.toContain('private_key');
+  });
+
+  it('give an invitation a public key and never the fragment that opens it', () => {
+    // The fragment travels to the invitee out of band, over a different channel
+    // from the emailed token, and never reaches the server (spec §10). A column
+    // for it would collapse the two-channel design into one.
+    const cols = columnsOf(invitations);
+    expect(cols['invite_public_key']!.getSQLType()).toBe('bytea');
+    expect(Object.keys(cols)).not.toContain('invite_fragment');
+    expect(Object.keys(cols)).not.toContain('invite_private_key');
   });
 });
 

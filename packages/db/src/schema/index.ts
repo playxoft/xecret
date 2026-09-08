@@ -5,6 +5,7 @@ export * from './vault';
 export * from './tenancy';
 export * from './resources';
 export * from './keys';
+export * from './env-keys';
 export * from './secrets';
 export * from './access';
 export * from './tokens';
