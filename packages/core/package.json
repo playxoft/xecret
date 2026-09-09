@@ -21,7 +21,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "vectors:generate": "tsx scripts/generate-vectors.ts"
+    "vectors:generate": "tsx scripts/generate-vectors.ts",
+    "import-fixtures:generate": "tsx scripts/generate-import-fixtures.ts"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.11",

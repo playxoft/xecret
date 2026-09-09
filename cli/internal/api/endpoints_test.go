@@ -57,7 +57,7 @@ func TestRevealVersionAsksForTheRightVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if revealed.Value != "old-value" || revealed.Current {
+	if revealed.Value == nil || *revealed.Value != "old-value" || revealed.Current {
 		t.Fatalf("revealed = %+v", revealed)
 	}
 	if !strings.HasSuffix(path, "/secrets/API_KEY/versions/3") {

@@ -1,0 +1,809 @@
+{
+  "generatedAt": "2026-09-09T03:06:52.307Z",
+  "generator": "packages/core/scripts/generate-import-fixtures.ts@e480901",
+  "cases": [
+    {
+      "id": "dotenv/plain",
+      "format": "dotenv",
+      "description": "Unquoted values, blank lines, and a whole-line comment.",
+      "source": "# a comment\nAPI_URL=https://example.com\n\nPORT=5432\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "API_URL",
+            "value": "https://example.com",
+            "line": 2
+          },
+          {
+            "key": "PORT",
+            "value": "5432",
+            "line": 4
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "id": "dotenv/inline-comment",
+      "format": "dotenv",
+      "description": "A `#` only starts a comment when whitespace precedes it, which is the difference between a password containing a hash and a two-character one.",
+      "source": "PASSWORD=abc#123\nTOKEN=xyz # the real comment\nEMPTY= # unset for now\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "PASSWORD",
+            "value": "abc#123",
+            "line": 1
+          },
+          {
+            "key": "TOKEN",
+            "value": "xyz",
+            "line": 2
+          },
+          {
+            "key": "EMPTY",
+            "value": "",
+            "line": 3
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "id": "dotenv/quoting",
+      "format": "dotenv",
+      "description": "Single quotes are literal; double quotes carry the five escapes.",
+      "source": "LITERAL='a\\nb $HOME'\nESCAPED=\"line1\\nline2\\ttabbed\"\nWINDOWS=\"C:\\Users\\deploy\"\nSPACED=  \"  padded  \"\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "LITERAL",
+            "value": "a\\nb $HOME",
+            "line": 1
+          },
+          {
+            "key": "ESCAPED",
+            "value": "line1\nline2\ttabbed",
+            "line": 2
+          },
+          {
+            "key": "WINDOWS",
+            "value": "C:\\Users\\deploy",
+            "line": 3
+          },
+          {
+            "key": "SPACED",
+            "value": "  padded  ",
+            "line": 4
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "id": "dotenv/multiline",
+      "format": "dotenv",
+      "description": "A pasted PEM key: the case the whole scanner exists for.",
+      "source": "KEY=\"-----BEGIN KEY-----\nline one\nline two\n-----END KEY-----\"\nAFTER=still-parsed\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "KEY",
+            "value": "-----BEGIN KEY-----\nline one\nline two\n-----END KEY-----",
+            "line": 1
+          },
+          {
+            "key": "AFTER",
+            "value": "still-parsed",
+            "line": 5
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "id": "dotenv/export-prefix",
+      "format": "dotenv",
+      "description": "`export ` is accepted, and a key literally called `export` still parses.",
+      "source": "export A=1\nexport=2\nexports=3\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "A",
+            "value": "1",
+            "line": 1
+          },
+          {
+            "key": "export",
+            "value": "2",
+            "line": 2
+          },
+          {
+            "key": "exports",
+            "value": "3",
+            "line": 3
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "id": "dotenv/duplicates",
+      "format": "dotenv",
+      "description": "Last wins, in first-seen order, and loudly.",
+      "source": "A=first\nB=only\nA=second\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "A",
+            "value": "second",
+            "line": 3
+          },
+          {
+            "key": "B",
+            "value": "only",
+            "line": 2
+          }
+        ],
+        "warnings": [
+          {
+            "line": 3,
+            "message": "\"A\" is defined more than once. The value on line 3 replaces the one on line 1."
+          }
+        ]
+      }
+    },
+    {
+      "id": "dotenv/malformed",
+      "format": "dotenv",
+      "description": "A line with no `=`, a line with no key, and an unterminated quote.",
+      "source": "JUST_A_LINE\n=novalue\nOPEN=\"never closed\nAFTER=recovered\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "OPEN",
+            "value": "never closed",
+            "line": 3
+          },
+          {
+            "key": "AFTER",
+            "value": "recovered",
+            "line": 4
+          }
+        ],
+        "warnings": [
+          {
+            "line": 1,
+            "message": "Line 1 is not KEY=value; skipped."
+          },
+          {
+            "line": 2,
+            "message": "Line 2 has no key; skipped."
+          },
+          {
+            "line": 3,
+            "message": "The quote opened on line 3 is never closed. The rest of that line was used as the value."
+          }
+        ]
+      }
+    },
+    {
+      "id": "dotenv/crlf-and-bom",
+      "format": "dotenv",
+      "description": "A BOM and CRLF endings are encoding artefacts, not data — including inside a quoted value.",
+      "source": "﻿A=1\r\nB=\"two\r\nlines\"\r\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "A",
+            "value": "1",
+            "line": 1
+          },
+          {
+            "key": "B",
+            "value": "two\nlines",
+            "line": 2
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "id": "dotenv/non-ascii",
+      "format": "dotenv",
+      "description": "A value outside ASCII survives byte for byte.",
+      "source": "GREETING=\"café ☕ 秘密\"\nNAME=Zoë\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "GREETING",
+            "value": "café ☕ 秘密",
+            "line": 1
+          },
+          {
+            "key": "NAME",
+            "value": "Zoë",
+            "line": 2
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "id": "dotenv/trailing-text",
+      "format": "dotenv",
+      "description": "Text after a closing quote is ignored, with a warning; a comment is not.",
+      "source": "A=\"one\" leftover\nB=\"two\" # fine\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "A",
+            "value": "one",
+            "line": 1
+          },
+          {
+            "key": "B",
+            "value": "two",
+            "line": 2
+          }
+        ],
+        "warnings": [
+          {
+            "line": 1,
+            "message": "Ignored unexpected text after the closing quote on line 1."
+          }
+        ]
+      }
+    },
+    {
+      "id": "shell/concatenation",
+      "format": "shell",
+      "description": "Adjacent segments concatenate: `'it'\\''s'` is how every shell emits an apostrophe.",
+      "source": "export A='it'\\''s'\nexport B='a'\"b\"c\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "A",
+            "value": "it's",
+            "line": 1
+          },
+          {
+            "key": "B",
+            "value": "abc",
+            "line": 2
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "id": "shell/posix-escapes",
+      "format": "shell",
+      "description": "POSIX gives `\\` meaning before exactly four characters — `\"a\\nb\"` is a literal backslash-n, unlike in .env.",
+      "source": "export A=\"a\\nb\"\nexport B=\"say \\\"hi\\\"\"\nexport C=\"cost \\$5\"\nexport D=a\\ b\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "A",
+            "value": "a\\nb",
+            "line": 1
+          },
+          {
+            "key": "B",
+            "value": "say \"hi\"",
+            "line": 2
+          },
+          {
+            "key": "C",
+            "value": "cost $5",
+            "line": 3
+          },
+          {
+            "key": "D",
+            "value": "a b",
+            "line": 4
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "id": "shell/trailing-comment",
+      "format": "shell",
+      "description": "A comment after the word is fine; anything else is reported.",
+      "source": "export A='x' # a note\nexport B='y' leftover\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "A",
+            "value": "x",
+            "line": 1
+          },
+          {
+            "key": "B",
+            "value": "y",
+            "line": 2
+          }
+        ],
+        "warnings": [
+          {
+            "line": 2,
+            "message": "Ignored unexpected text after the value on line 2."
+          }
+        ]
+      }
+    },
+    {
+      "id": "json/nested",
+      "format": "json",
+      "description": "A tree flattens to `key_subkey`, keeping source order.",
+      "source": "{\"database\":{\"url\":\"postgres://x\",\"pool\":{\"max\":10}},\"debug\":true,\"nothing\":null}",
+      "expected": {
+        "entries": [
+          {
+            "key": "database_url",
+            "value": "postgres://x",
+            "line": 1
+          },
+          {
+            "key": "database_pool_max",
+            "value": "10",
+            "line": 1
+          },
+          {
+            "key": "debug",
+            "value": "true",
+            "line": 1
+          },
+          {
+            "key": "nothing",
+            "value": "",
+            "line": 1
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "id": "json/unsupported",
+      "format": "json",
+      "description": "A list has no environment-variable equivalent; an empty object is skipped.",
+      "source": "{\"hosts\":[\"a\",\"b\"],\"empty\":{},\"ok\":\"kept\"}",
+      "expected": {
+        "entries": [
+          {
+            "key": "ok",
+            "value": "kept",
+            "line": 1
+          }
+        ],
+        "warnings": [
+          {
+            "line": 1,
+            "message": "\"hosts\" is a list, which has no environment variable equivalent. Flatten it into separate keys to import it."
+          },
+          {
+            "line": 1,
+            "message": "\"empty\" is empty and was skipped."
+          }
+        ]
+      }
+    },
+    {
+      "id": "json/not-an-object",
+      "format": "json",
+      "description": "The top level must be an object.",
+      "source": "[\"a\",\"b\"]",
+      "expected": {
+        "entries": [],
+        "warnings": [
+          {
+            "line": 1,
+            "message": "The document is a list. Secrets are imported from key/value pairs, so the top level must be an object."
+          }
+        ]
+      }
+    },
+    {
+      "id": "json/malformed",
+      "format": "json",
+      "description": "Invalid JSON is one warning and no entries.",
+      "source": "{\"a\": }",
+      "expected": {
+        "entries": [],
+        "warnings": [
+          {
+            "line": 1,
+            "message": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "yaml/scalars",
+      "format": "yaml",
+      "description": "YAML 1.2 core schema: `NO` is the string it looks like, not boolean false; a bare key is empty, not \"null\".",
+      "source": "region: NO\nenabled: true\nport: 5432\npassword:\nversion: \"1.10\"\ntime: 08:00\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "region",
+            "value": "NO",
+            "line": 1
+          },
+          {
+            "key": "enabled",
+            "value": "true",
+            "line": 1
+          },
+          {
+            "key": "port",
+            "value": "5432",
+            "line": 1
+          },
+          {
+            "key": "password",
+            "value": "",
+            "line": 1
+          },
+          {
+            "key": "version",
+            "value": "1.10",
+            "line": 1
+          },
+          {
+            "key": "time",
+            "value": "08:00",
+            "line": 1
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "id": "yaml/nested-and-merge",
+      "format": "yaml",
+      "description": "Merge keys resolve, and an explicit key wins over a merged one.",
+      "source": "defaults: &defaults\n  host: localhost\n  port: 5432\ndatabase:\n  <<: *defaults\n  port: 6543\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "defaults_host",
+            "value": "localhost",
+            "line": 1
+          },
+          {
+            "key": "defaults_port",
+            "value": "5432",
+            "line": 1
+          },
+          {
+            "key": "database_host",
+            "value": "localhost",
+            "line": 1
+          },
+          {
+            "key": "database_port",
+            "value": "6543",
+            "line": 1
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "id": "yaml/duplicate-key",
+      "format": "yaml",
+      "description": "A duplicate key is an error, not a last-wins situation: YAML defines no convention, so guessing would silently import the wrong password.",
+      "source": "a: one\nb: two\na: three\n",
+      "expected": {
+        "entries": [],
+        "warnings": [
+          {
+            "line": 3,
+            "message": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "yaml/malformed",
+      "format": "yaml",
+      "description": "Invalid YAML is one warning and no entries.",
+      "source": "a: [1, 2\nb: 3\n",
+      "expected": {
+        "entries": [],
+        "warnings": [
+          {
+            "line": null,
+            "message": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "yaml/empty",
+      "format": "yaml",
+      "description": "A blank file is empty, not malformed.",
+      "source": "   \n\n",
+      "expected": {
+        "entries": [],
+        "warnings": []
+      }
+    },
+    {
+      "id": "plan/normalisation",
+      "format": "dotenv",
+      "description": "Source keys become UPPER_SNAKE_CASE, and the change is reported.",
+      "source": "database.url=a\nmy-api-key=b\nmyAPIKey=c\ns3Bucket=d\n_2fa=e\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "database.url",
+            "value": "a",
+            "line": 1
+          },
+          {
+            "key": "my-api-key",
+            "value": "b",
+            "line": 2
+          },
+          {
+            "key": "myAPIKey",
+            "value": "c",
+            "line": 3
+          },
+          {
+            "key": "s3Bucket",
+            "value": "d",
+            "line": 4
+          },
+          {
+            "key": "_2fa",
+            "value": "e",
+            "line": 5
+          }
+        ],
+        "warnings": []
+      },
+      "plan": {
+        "strategy": "skip",
+        "existingNames": [],
+        "items": [
+          {
+            "sourceKey": "database.url",
+            "targetName": "DATABASE_URL",
+            "status": "create",
+            "note": "\"database.url\" was normalised to \"DATABASE_URL\"."
+          },
+          {
+            "sourceKey": "my-api-key",
+            "targetName": "MY_API_KEY",
+            "status": "create",
+            "note": "\"my-api-key\" was normalised to \"MY_API_KEY\"."
+          },
+          {
+            "sourceKey": "myAPIKey",
+            "targetName": "MY_API_KEY",
+            "status": "skip",
+            "note": "Another key in this file already imports as \"MY_API_KEY\", so \"myAPIKey\" was skipped."
+          },
+          {
+            "sourceKey": "s3Bucket",
+            "targetName": "S3_BUCKET",
+            "status": "create",
+            "note": "\"s3Bucket\" was normalised to \"S3_BUCKET\"."
+          },
+          {
+            "sourceKey": "_2fa",
+            "targetName": "_2FA",
+            "status": "create",
+            "note": "\"_2fa\" was normalised to \"_2FA\"."
+          }
+        ]
+      }
+    },
+    {
+      "id": "plan/conflicts-skip",
+      "format": "dotenv",
+      "description": "An existing name is left alone under `skip`.",
+      "source": "A=1\nB=2\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "A",
+            "value": "1",
+            "line": 1
+          },
+          {
+            "key": "B",
+            "value": "2",
+            "line": 2
+          }
+        ],
+        "warnings": []
+      },
+      "plan": {
+        "strategy": "skip",
+        "existingNames": [
+          "A"
+        ],
+        "items": [
+          {
+            "sourceKey": "A",
+            "targetName": "A",
+            "status": "skip",
+            "note": "\"A\" already exists and was left unchanged."
+          },
+          {
+            "sourceKey": "B",
+            "targetName": "B",
+            "status": "create",
+            "note": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "plan/conflicts-overwrite",
+      "format": "dotenv",
+      "description": "The same file under `overwrite`.",
+      "source": "A=1\nB=2\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "A",
+            "value": "1",
+            "line": 1
+          },
+          {
+            "key": "B",
+            "value": "2",
+            "line": 2
+          }
+        ],
+        "warnings": []
+      },
+      "plan": {
+        "strategy": "overwrite",
+        "existingNames": [
+          "A"
+        ],
+        "items": [
+          {
+            "sourceKey": "A",
+            "targetName": "A",
+            "status": "overwrite",
+            "note": "\"A\" already exists and will be replaced with a new version."
+          },
+          {
+            "sourceKey": "B",
+            "targetName": "B",
+            "status": "create",
+            "note": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "plan/conflicts-rename",
+      "format": "dotenv",
+      "description": "A rename picks the first free numbered variant.",
+      "source": "A=1\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "A",
+            "value": "1",
+            "line": 1
+          }
+        ],
+        "warnings": []
+      },
+      "plan": {
+        "strategy": "rename",
+        "existingNames": [
+          "A",
+          "A_2"
+        ],
+        "items": [
+          {
+            "sourceKey": "A",
+            "targetName": "A_3",
+            "status": "rename",
+            "note": "\"A\" is already taken, so this will be imported as \"A_3\"."
+          }
+        ]
+      }
+    },
+    {
+      "id": "plan/collision",
+      "format": "dotenv",
+      "description": "Two source keys that normalise to one name: first seen wins, loudly.",
+      "source": "my-api-key=first\nMY_API_KEY=second\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "my-api-key",
+            "value": "first",
+            "line": 1
+          },
+          {
+            "key": "MY_API_KEY",
+            "value": "second",
+            "line": 2
+          }
+        ],
+        "warnings": []
+      },
+      "plan": {
+        "strategy": "skip",
+        "existingNames": [],
+        "items": [
+          {
+            "sourceKey": "my-api-key",
+            "targetName": "MY_API_KEY",
+            "status": "create",
+            "note": "\"my-api-key\" was normalised to \"MY_API_KEY\"."
+          },
+          {
+            "sourceKey": "MY_API_KEY",
+            "targetName": "MY_API_KEY",
+            "status": "skip",
+            "note": "Another key in this file already imports as \"MY_API_KEY\", so \"MY_API_KEY\" was skipped."
+          }
+        ]
+      }
+    },
+    {
+      "id": "plan/invalid",
+      "format": "dotenv",
+      "description": "A reserved name and a key with nothing usable in it. `LD_PRELOAD` would turn `xecret run` into arbitrary code execution.",
+      "source": "PATH=/usr/bin\nLD_PRELOAD=/tmp/evil.so\n---=nothing\n",
+      "expected": {
+        "entries": [
+          {
+            "key": "PATH",
+            "value": "/usr/bin",
+            "line": 1
+          },
+          {
+            "key": "LD_PRELOAD",
+            "value": "/tmp/evil.so",
+            "line": 2
+          },
+          {
+            "key": "---",
+            "value": "nothing",
+            "line": 3
+          }
+        ],
+        "warnings": []
+      },
+      "plan": {
+        "strategy": "skip",
+        "existingNames": [],
+        "items": [
+          {
+            "sourceKey": "PATH",
+            "targetName": "",
+            "status": "invalid",
+            "note": "\"PATH\" is reserved by the operating system. Importing it would change how programs launched with these secrets find their executables and libraries."
+          },
+          {
+            "sourceKey": "LD_PRELOAD",
+            "targetName": "",
+            "status": "invalid",
+            "note": "\"LD_PRELOAD\" is reserved by the operating system. Importing it would change how programs launched with these secrets find their executables and libraries."
+          },
+          {
+            "sourceKey": "---",
+            "targetName": "",
+            "status": "invalid",
+            "note": "\"---\" contains no letters, digits or underscores, so it cannot become a secret name."
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -197,6 +197,12 @@ func cmdDoctor(args []string) error {
 
 	// ── Offline cache ──────────────────────────────────────────────────────
 	entries, cacheErr := cachedFiles()
+	// ── Encryption ─────────────────────────────────────────────────────────
+	// After the credential, because two of the three answers depend on which
+	// credential this is, and before the cache, because a cache of ciphertext is
+	// only useful to a machine that holds a key.
+	e2eeChecks(a.store, credentials, serviceToken, say)
+
 	report["cacheDir"] = cache.Dir()
 	report["cachedEnvironments"] = entries
 	switch {

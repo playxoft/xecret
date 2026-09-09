@@ -12,6 +12,9 @@ import (
 // Me is GET /api/auth/me.
 type Me struct {
 	User struct {
+		// ID is read because every wrap and every member grant binds it into an
+		// AAD. Without it the CLI can authenticate and still not name itself.
+		ID          string  `json:"id"`
 		Email       string  `json:"email"`
 		DisplayName *string `json:"displayName"`
 	} `json:"user"`
@@ -23,6 +26,9 @@ type Me struct {
 }
 
 type Organization struct {
+	// ID is a component of every secret ciphertext's AAD, so a client that only
+	// knows the slug cannot decrypt. Slugs are renameable; this is not.
+	ID   string `json:"id"`
 	Name string `json:"name"`
 	Slug string `json:"slug"`
 	Role string `json:"role"`
@@ -42,6 +48,10 @@ type Environment struct {
 }
 
 type SecretListItem struct {
+	// ID is published in both modes deliberately — the listing's shape does not
+	// depend on the encryption mode. Under end-to-end encryption it is the AAD's
+	// secretId, which a write has to bind before it can encrypt anything.
+	ID        string  `json:"id"`
 	Name      string  `json:"name"`
 	Note      *string `json:"note"`
 	ValueType string  `json:"valueType"`
@@ -153,7 +163,12 @@ func (c *Client) FetchMe(ctx context.Context) (*Me, error) {
 }
 
 // NamedSlug is a resource as the introspection endpoint names it.
+//
+// ID is populated only where the server sends one — the organisation, which
+// needs it because `orgId` is a component of every secret's AAD and a slug is
+// renameable while an AAD component is not.
 type NamedSlug struct {
+	ID   string `json:"id"`
 	Name string `json:"name"`
 	Slug string `json:"slug"`
 }
@@ -163,17 +178,26 @@ type NamedSlug struct {
 // to. The answer derives from the credential row alone — there is no
 // parameter in the request for anything to lie in.
 type TokenSelf struct {
-	Token struct {
-		Name        string `json:"name"`
-		AccessLevel string `json:"accessLevel"`
-	} `json:"token"`
-	Organization NamedSlug `json:"organization"`
-	Project      NamedSlug `json:"project"`
-	Environment  struct {
-		Name         string `json:"name"`
-		Slug         string `json:"slug"`
-		IsProduction bool   `json:"isProduction"`
-	} `json:"environment"`
+	Token        TokenPin          `json:"token"`
+	Organization NamedSlug         `json:"organization"`
+	Project      NamedSlug         `json:"project"`
+	Environment  PinnedEnvironment `json:"environment"`
+}
+
+// TokenPin is the credential's own identity.
+type TokenPin struct {
+	// ID is the service_tokens row id, and the recipientId component of every
+	// grant sealed to this token.
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	AccessLevel string `json:"accessLevel"`
+}
+
+// PinnedEnvironment is the one environment a service token can reach.
+type PinnedEnvironment struct {
+	Name         string `json:"name"`
+	Slug         string `json:"slug"`
+	IsProduction bool   `json:"isProduction"`
 }
 
 // TokenSelf is GET /api/tokens/self — service-token introspection. Rejected
@@ -316,11 +340,8 @@ func (c *Client) Import(
 	return &result, nil
 }
 
-// Pull fetches every current secret in one document. The caller decides where
-// the bytes go; this function does not look at them.
-func (c *Client) Pull(ctx context.Context, org, project, env, format string) ([]byte, error) {
-	return c.GetRaw(ctx, envPath(org, project, env)+"/pull?format="+url.QueryEscape(format))
-}
+// Pull lives in e2ee.go: it is the one read whose answer differs by encryption
+// mode, and the branch belongs beside the types it produces.
 
 // Export fetches the same document as Pull, through the endpoint the server
 // audits as a deliberate download rather than as a process's bulk read. The
@@ -350,11 +371,16 @@ type SecretVersion struct {
 // RevealedVersion is one historical value. The second of the two response
 // types in this package that carry a plaintext.
 type RevealedVersion struct {
-	Name      string `json:"name"`
-	Value     string `json:"value"`
-	Version   int    `json:"version"`
-	Current   bool   `json:"current"`
-	CreatedAt string `json:"createdAt"`
+	Name string `json:"name"`
+	// Value is null for an end-to-end encrypted environment, where the four
+	// fields below carry the ciphertext and the context that opens it.
+	Value        *string `json:"value"`
+	ID           string  `json:"id"`
+	Ciphertext   string  `json:"ciphertext"`
+	EnvDataKeyID string  `json:"envDataKeyId"`
+	Version      int     `json:"version"`
+	Current      bool    `json:"current"`
+	CreatedAt    string  `json:"createdAt"`
 }
 
 // RestoreResult reports the new version an old value was re-appended as.
@@ -437,8 +463,14 @@ func (c *Client) RestoreSecret(
 // touching what it holds. A nil field is "leave it alone"; a non-nil Note
 // pointing at "" clears the note.
 type MetadataUpdate struct {
-	Name      *string
-	Note      *string
+	Name *string
+	// Note is the plaintext note, for a server-mode environment.
+	Note *string
+	// EncNote is the same field for an `e2ee` one: an xk2.gcm. blob the caller
+	// sealed under the environment's data key. Exactly one of the two may be
+	// sent — the server refuses the wrong one rather than ignoring it, because
+	// ignoring it would report a change that did not happen.
+	EncNote   *string
 	ValueType *string
 }
 
@@ -453,6 +485,15 @@ func (c *Client) UpdateMetadata(
 	body := map[string]any{}
 	if update.Name != nil {
 		body["name"] = *update.Name
+	}
+	if update.EncNote != nil {
+		// Same three-state distinction as the plaintext field below: null clears
+		// the note, a blob replaces it, absent leaves it alone.
+		if *update.EncNote == "" {
+			body["encNote"] = nil
+		} else {
+			body["encNote"] = *update.EncNote
+		}
 	}
 	if update.Note != nil {
 		// An empty string clears it: the server's schema is nullish, and null

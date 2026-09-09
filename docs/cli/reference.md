@@ -34,7 +34,7 @@ client.
 
 | Variable | Effect |
 |---|---|
-| `XECRET_TOKEN` | Authenticate as a service token (`xst_…`). No login, no keychain, no offline cache. Wins over any stored login. |
+| `XECRET_TOKEN` | Authenticate as a service token (`xst_…`). No login, no keychain, no offline cache. Wins over any stored login. A token for an end-to-end encrypted environment carries its own decryption key in the string — set it whole, and only ever from a secret store. |
 | `XECRET_API_URL` | The deployment to talk to, for `login` and for `XECRET_TOKEN` mode. A stored login remembers its own URL. |
 | `XECRET_KEYRING=file` | Force the `0600` file fallback instead of the OS keyring. |
 | `NO_COLOR` | Disable colour. Output is also uncoloured when stdout is not a TTY. |
@@ -45,6 +45,7 @@ client.
 
 ```
 xecret login [--api-url URL] [--name DEVICE]
+xecret login --passphrase
 ```
 OAuth-style browser consent with PKCE against the xecret server (never
 Firebase directly): a loopback listener on `127.0.0.1:<random port>` receives
@@ -52,11 +53,37 @@ a one-time code, exchanged — together with the PKCE verifier — for an `xct_`
 token stored in the keychain. The device name appears on the consent screen
 and in the dashboard's *Tokens → Your devices*, where it can be revoked.
 
+**The vault key comes back on the same redirect.** A CLI token acts as its
+user, and that user's environment keys are sealed to a public key whose private
+half is wrapped under their User Key — so a token alone authenticates perfectly
+and decrypts nothing. `login` therefore generates an ephemeral X25519 keypair,
+sends the public half in the authorize URL, and the consent screen seals the
+User Key to it. The wrap rides the loopback redirect, is opened here with a
+private key that never left this process, and the User Key goes into the same
+keychain as the token. **The server is not on that path**: it produces neither
+half and sees neither half. Byte formats in
+[`e2ee-crypto-spec.md`](../security/e2ee-crypto-spec.md) §13.2.
+
+A hand-off that does not arrive is a warning, not a failure — the login still
+works for every `server`-mode environment. Run `login` again, or use
+`--passphrase`, to get one.
+
+`--passphrase` is the headless path: no browser, no redirect. It prompts (or
+reads stdin), runs Argon2id locally at the parameters the server stated, and
+opens the same User Key from the passphrase wrap. It **needs an existing
+login** — the wraps it reads are served to that credential — so it replaces the
+hand-off, not the sign-in. Nothing is sent: one `GET` for the wraps, and the
+derivation happens here. The passphrase is never a flag, because a flag lands
+in shell history, in the process table, and in every CI log that echoes its own
+command line.
+
 ```
 xecret logout
 ```
-Revokes this device's credential server-side, clears the keychain entry and
-wipes the encrypted offline cache. Refused while `XECRET_TOKEN` is set: that
+Revokes this device's credential server-side, clears the keychain entry, wipes
+the encrypted offline cache **and forgets the vault key** — which is the
+erasure that matters, since without it the next person at this machine still
+holds the last one's User Key. Refused while `XECRET_TOKEN` is set: that
 credential was not minted by this machine and is not this machine's to sign
 out — `xecret tokens revoke ID --kind service` is.
 
@@ -165,7 +192,11 @@ xecret export [--format env|json|yaml|shell|docker] [-o FILE] [--force]
 
 - `import` auto-detects the format, and `--dry-run` prints the exact plan the
   real import would execute — the same planning code path, so the preview
-  cannot disagree with the outcome.
+  cannot disagree with the outcome. Against an end-to-end encrypted environment
+  the parsing and the planning happen here rather than on the server, and the
+  dry run still makes one request: `unchanged` is an HMAC comparison only the
+  server can perform, and a locally guessed summary would quietly break the one
+  property this design exists to protect.
 - `pull` prints every current secret in the chosen format. Writing secrets to
   disk is a downgrade and the command says so on stderr; `-o` at least creates
   the file `0600`. Prefer `xecret run`.
@@ -173,7 +204,11 @@ xecret export [--format env|json|yaml|shell|docker] [-o FILE] [--force]
   `…/export` endpoint rather than `…/pull`. They stay separate because the
   request path is what tells "a build read its configuration" apart from
   "somebody took a copy" in the audit record. The filename defaults per format,
-  and an existing one is never overwritten without `--force`.
+  and an existing one is never overwritten without `--force`. An end-to-end
+  encrypted environment cannot be rendered server-side at all, so `export` falls
+  back to a pull and renders locally — which means the audit record for that one
+  is a read rather than an export, and the distinction the two endpoints draw
+  survives only where the server can still see the values.
 - Both `export` and `pull -o` leave the file at mode `0600` whether they created
   it or overwrote it. `os.WriteFile` would not: it hands its permission argument
   to `open(2)`, which applies it only on creation, so a `--force` over a `.env`
@@ -216,9 +251,11 @@ xecret tokens revoke ID --kind cli|service [--yes]
 xecret run [--project P] [--environment E] [--offline] [--no-cache] -- COMMAND [ARGS…]
 ```
 
-Fetches the environment (decrypted server-side), injects it into the child
-process, forwards signals, and exits with the child's exit code. Secrets never
-touch disk, argv or stdout.
+Fetches the environment, injects it into the child process, forwards signals,
+and exits with the child's exit code. Secrets never touch disk, argv or stdout.
+Where the decryption happens depends on the environment's mode — see
+[End-to-end encrypted environments](#end-to-end-encrypted-environments) — and
+nothing above this line changes with it.
 
 **Offline behaviour, stated once:** the API is authoritative; the encrypted
 cache answers only when the API *cannot* — network failure or a 5xx — and
@@ -233,7 +270,10 @@ cache's age and secret count are printed to stderr every time.
 The cache lives in `~/.xecret/cache/`, one AES-256-GCM file per
 (host, org, project, environment), key in the OS keychain, AAD bound to that
 exact scope — a cache file cannot be relocated between environments any more
-than a server-side ciphertext can.
+than a server-side ciphertext can. For an end-to-end encrypted environment it
+holds the pull bundle verbatim — ciphertext and the sealed grant, never values —
+so the file is encrypted twice over and the vault key is needed to read it even
+with the cache key in hand.
 
 ### Housekeeping
 
@@ -256,6 +296,16 @@ xecret help
   value of its own. It reports which store is in use, whether the credential is
   still accepted, which deployment resolved and *why*, the `.xecret.yaml` in
   effect, and what is in the cache.
+- `doctor` also self-tests the client encryption: it seals a grant, opens it,
+  round-trips a value through the AAD binding, checks that a relocated
+  ciphertext fails and that the blob parser refuses a future format version, and
+  reproduces one key derivation whose answer the specification fixes. The last
+  one is the point — a build that is internally consistent and derives a
+  different key from a fixed input interoperates with nothing, and a round trip
+  cannot see that. It then says whether this machine holds a key at all: a vault
+  key from a login, or a service token that carries its own. A token minted
+  before end-to-end encryption is a warning here rather than a mystery on first
+  use.
 - `doctor` **exits non-zero when a check fails**, so `xecret doctor || exit 1`
   works as a container start-up guard. Warnings (no `.xecret.yaml` here, an
   unreadable cache) are not failures. `--json` carries a `checks` array of
@@ -278,6 +328,47 @@ xecret help
   and doing it in the background would ship that from inside every CI job. It
   never replaces the binary — the published archives are checksummed and signed,
   and `scripts/install-cli.sh` verifies the checksum before unpacking.
+
+## End-to-end encrypted environments
+
+Every command below reads the same in both modes. What changes is **where the
+decryption happens**, and the CLI decides that from what the API answered — never
+from a flag and never from configuration, so an environment that changes mode
+changes behaviour on the next command with nothing to update.
+
+| | `server` mode | `e2ee` mode |
+|---|---|---|
+| `run`, `pull`, `reveal` | the server decrypts and sends values | the server sends ciphertext and the caller's sealed grant; this process opens both |
+| `export` | the server renders the file | the server refuses — it holds no key — so the CLI pulls and renders the same five formats locally |
+| `set` | the value is sent and the server encrypts it | encrypted here first, bound to the **version it will be stored as**, and posted pre-encrypted |
+| `import` | the file is uploaded and the server parses and plans it | parsed, planned and encrypted here; only sealed entries are posted |
+| offline cache | plaintext values under the cache key | the pull bundle verbatim — ciphertext plus the sealed grant, decrypted at use |
+| what opens it | nothing local | a service token's own key half, or the vault key a login handed over |
+
+Three consequences worth stating plainly:
+
+- **A cache file for an `e2ee` environment is encrypted twice.** Stealing
+  `~/.xecret/cache` *and* the cache key still yields nothing without the vault
+  key, which the plaintext form cannot offer however it is encrypted at rest.
+  Those files carry a distinct AAD and so a distinct name, which means a binary
+  too old to understand a bundle finds no cache and says so — rather than
+  reading an entry whose value map is empty and injecting nothing.
+- **`import` parses locally, which is a second parser.** Uploading a file full
+  of plaintext to an endpoint that must never see one is the thing the model
+  forbids, so there was no alternative. The two parsers are pinned to each other
+  by `packages/core/src/importer/fixtures/import-fixtures.json`, which both test
+  suites read — the same arrangement the crypto vectors use, and for the same
+  reason.
+- **A secret written before a key rotation cannot be read.** Only the active
+  grant is served and the retired key was never stored anywhere, so the CLI says
+  "written under a key that has since been rotated away" rather than failing at
+  a GCM tag with nothing to explain it.
+
+A command that cannot decrypt says which of the two fixable things is wrong: no
+vault key on this machine (`xecret login`), or no grant for this account (a
+teammate shares the environment's key). Everything else is one uniform
+decryption failure, deliberately — distinguishing the rest would tell an
+attacker probing the API which part of their guess was wrong.
 
 ## Conventions
 

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -563,6 +564,16 @@ func TestSubcommandKeepsTheBareListing(t *testing.T) {
 // so `export --force` over a .env already sitting at 0644 wrote every decrypted
 // secret into a world-readable file while reporting "mode 0600".
 func TestWriteSecretDocumentNarrowsAFileItOverwrites(t *testing.T) {
+	// Windows has no POSIX permission bits: os.Chmod there toggles the read-only
+	// attribute and nothing else, so `info.Mode().Perm()` reports 0666 for every
+	// writable file however it was created. The assertion below is meaningful
+	// only where the mode is real, and skipping is honest about that — the
+	// protection it guards still holds on the platforms that have it, and
+	// Windows relies on the directory ACL instead.
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes are not POSIX permission bits on this platform")
+	}
+
 	path := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(path, []byte("OLD=1\n"), 0o644); err != nil {
 		t.Fatal(err)

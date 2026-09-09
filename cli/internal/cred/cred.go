@@ -31,6 +31,16 @@ type Credentials struct {
 	OrgSlug string `json:"orgSlug"`
 	// Email identifies the account for `whoami` and the logout message.
 	Email string `json:"email"`
+	// UserID and OrgID are the two AAD components a member's decryption path
+	// needs and cannot derive from a slug: every private-key wrap binds the user
+	// id, every secret ciphertext binds the org id, and neither is renameable
+	// the way a slug is.
+	//
+	// Recorded at login so the steady state costs no extra request. Empty on a
+	// credential written by an older build, which the commands that need them
+	// fill in on first use rather than refusing.
+	UserID string `json:"userId,omitempty"`
+	OrgID  string `json:"orgId,omitempty"`
 }
 
 // Save stores credentials, replacing any previous login.

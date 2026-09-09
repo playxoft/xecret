@@ -10,6 +10,8 @@ import (
 
 	"github.com/playxoft/xecret/cli/internal/api"
 	"github.com/playxoft/xecret/cli/internal/cache"
+	"github.com/playxoft/xecret/cli/internal/cred"
+	"github.com/playxoft/xecret/cli/internal/envkeys"
 	"github.com/playxoft/xecret/cli/internal/run"
 )
 
@@ -63,7 +65,7 @@ func cmdRun(args []string) error {
 		Environment: resolved.Environment,
 	}
 
-	secrets, err := fetchSecrets(a, client, resolved, scopeKey, *offline, *noCache)
+	secrets, err := fetchSecrets(a, client, credentials, resolved, scopeKey, *offline, *noCache)
 	if err != nil {
 		return err
 	}
@@ -78,33 +80,46 @@ func cmdRun(args []string) error {
 	return nil
 }
 
+// fetchSecrets produces the environment `run` injects, from whichever of the
+// three sources can answer: the API, the API's e2ee bundle opened locally, or
+// the offline cache.
+//
+// The offline scope is not known until the mode is: an end-to-end encrypted
+// environment caches its ciphertext under a different name from a server-mode
+// one, so that the two can never be read as each other. `--offline` therefore
+// tries both, most-secure first.
 func fetchSecrets(
 	a *app,
 	client *api.Client,
+	credentials *cred.Credentials,
 	resolved scope,
 	scopeKey cache.Scope,
 	offline, noCache bool,
 ) (map[string]string, error) {
-	if offline {
-		return readCache(a, scopeKey, errors.New("--offline was passed"))
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	document, err := client.Pull(ctx, resolved.Org, resolved.Project, resolved.Environment, "json")
+	if offline {
+		return readAnyCache(ctx, a, client, credentials, scopeKey, errors.New("--offline was passed"))
+	}
+
+	pulled, err := client.Pull(ctx, resolved.Org, resolved.Project, resolved.Environment, "json")
 	if err != nil {
 		// Only unavailability falls back; see the header comment.
 		if !noCache && api.IsNetworkError(err) {
 			a.printer.Warnf("could not reach the API: %v", err)
-			return readCache(a, scopeKey, err)
+			return readAnyCache(ctx, a, client, credentials, scopeKey, err)
 		}
 		return nil, err
 	}
 
+	if pulled.Bundle != nil {
+		return openBundle(ctx, a, client, credentials, scopeKey, pulled.Bundle, noCache)
+	}
+
 	// The JSON pull document is a flat, sorted name→value object.
 	var secrets map[string]string
-	if err := json.Unmarshal(document, &secrets); err != nil {
+	if err := json.Unmarshal(pulled.Document, &secrets); err != nil {
 		return nil, errors.New("the server's pull response could not be read")
 	}
 
@@ -114,6 +129,103 @@ func fetchSecrets(
 			a.printer.Warnf("could not refresh the offline cache: %v", writeErr)
 		}
 	}
+	return secrets, nil
+}
+
+// openBundle decrypts an e2ee pull and, unless asked not to, caches the
+// ciphertext it came from.
+//
+// The bundle is cached *before* it is decrypted, and re-serialised rather than
+// summarised, because what makes the offline copy useful is that it is the same
+// bytes the server sent — including the sealed grant, without which the
+// ciphertext is unopenable next time too.
+func openBundle(
+	ctx context.Context,
+	a *app,
+	client *api.Client,
+	credentials *cred.Credentials,
+	scopeKey cache.Scope,
+	bundle *api.EnvironmentBundle,
+	noCache bool,
+) (map[string]string, error) {
+	principal, err := a.principal(ctx, client, credentials)
+	if err != nil {
+		return nil, err
+	}
+	defer principal.Close()
+
+	secrets, err := envkeys.DecryptBundle(bundle, principal)
+	if err != nil {
+		return nil, err
+	}
+
+	if !noCache {
+		scopeKey.Encrypted = true
+		if encoded, marshalErr := json.Marshal(bundle); marshalErr == nil {
+			if writeErr := cache.WriteBundle(a.store, scopeKey, encoded, time.Now()); writeErr != nil {
+				a.printer.Warnf("could not refresh the offline cache: %v", writeErr)
+			}
+		}
+	}
+	return secrets, nil
+}
+
+// readAnyCache serves whichever offline copy exists.
+//
+// The encrypted one is tried first because an environment that has ever been
+// end-to-end encrypted should not silently fall back to a stale plaintext copy
+// from before the migration — that copy is exactly the thing the migration
+// removed.
+func readAnyCache(
+	ctx context.Context,
+	a *app,
+	client *api.Client,
+	credentials *cred.Credentials,
+	scopeKey cache.Scope,
+	cause error,
+) (map[string]string, error) {
+	encryptedScope := scopeKey
+	encryptedScope.Encrypted = true
+
+	entry, err := cache.Read(a.store, encryptedScope)
+	if err == nil {
+		return openCachedBundle(ctx, a, client, credentials, entry)
+	}
+	if !errors.Is(err, cache.ErrMiss) {
+		return nil, err
+	}
+	return readCache(a, scopeKey, cause)
+}
+
+// openCachedBundle decrypts a cached bundle, which needs the same key material a
+// live one does — the cache holds none of it.
+func openCachedBundle(
+	ctx context.Context,
+	a *app,
+	client *api.Client,
+	credentials *cred.Credentials,
+	entry *cache.Entry,
+) (map[string]string, error) {
+	var bundle api.EnvironmentBundle
+	if err := json.Unmarshal(entry.Bundle, &bundle); err != nil {
+		return nil, errors.New("the offline copy is corrupt — run 'xecret cache clear'")
+	}
+
+	principal, err := a.principal(ctx, client, credentials)
+	if err != nil {
+		return nil, err
+	}
+	defer principal.Close()
+
+	secrets, err := envkeys.DecryptBundle(&bundle, principal)
+	if err != nil {
+		return nil, err
+	}
+
+	a.printer.Warnf(
+		"using the offline copy from %s (%d secrets), decrypted locally.",
+		entry.FetchedAt.Local().Format("2006-01-02 15:04"), len(secrets),
+	)
 	return secrets, nil
 }
 

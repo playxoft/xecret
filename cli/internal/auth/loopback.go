@@ -25,9 +25,20 @@ type Listener struct {
 	server   *http.Server
 }
 
+// Callback is what the consent screen delivered.
+type Callback struct {
+	// Code is the one-time authorization code, exchanged with the PKCE verifier.
+	Code string
+	// Handoff is the sealed User Key wrap (spec §13.2), or empty when this login
+	// did not ask for one — or when the browser could not produce one. Empty is
+	// not an error here: the login still works, it simply cannot decrypt an
+	// end-to-end encrypted environment afterwards, and `login` says so.
+	Handoff string
+}
+
 type callbackResult struct {
-	code string
-	err  error
+	callback Callback
+	err      error
 }
 
 // Listen binds an ephemeral port on 127.0.0.1 — loopback only, never
@@ -68,14 +79,14 @@ func (l *Listener) Close() {
 }
 
 // Wait blocks until the browser delivers an outcome or ctx expires.
-func (l *Listener) Wait(ctx context.Context) (string, error) {
+func (l *Listener) Wait(ctx context.Context) (Callback, error) {
 	select {
 	case <-ctx.Done():
-		return "", errors.New(
+		return Callback{}, errors.New(
 			"timed out waiting for approval in the browser — run 'xecret login' to try again",
 		)
 	case result := <-l.results:
-		return result.code, result.err
+		return result.callback, result.err
 	}
 }
 
@@ -103,7 +114,13 @@ func (l *Listener) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondPage(w, "You're signed in", "Return to your terminal — you can close this tab.")
-	l.deliver(callbackResult{code: code})
+
+	// The hand-off rides the same redirect, as a query parameter rather than a
+	// fragment: a fragment is never transmitted, which is why browsers use one
+	// and exactly why one is useless against an HTTP listener. It travels to
+	// 127.0.0.1 and no further, and it is a sealed box that opens only with the
+	// ephemeral private key this process holds and never wrote down.
+	l.deliver(callbackResult{callback: Callback{Code: code, Handoff: query.Get("handoff")}})
 }
 
 func (l *Listener) deliver(result callbackResult) {
@@ -131,12 +148,20 @@ func respondPage(w http.ResponseWriter, title, body string) {
 }
 
 // AuthorizeURL builds the consent-screen address the browser opens.
-func AuthorizeURL(base, challenge, device, state string, port int) string {
+//
+// handoff is this login's ephemeral X25519 public key, base64url — what the
+// consent screen seals the User Key to. Empty omits the parameter entirely,
+// which is the old flow and which the screen treats as "no hand-off wanted"
+// rather than as an error.
+func AuthorizeURL(base, challenge, device, state string, port int, handoff string) string {
 	values := url.Values{
 		"challenge": {challenge},
 		"port":      {fmt.Sprint(port)},
 		"device":    {device},
 		"state":     {state},
+	}
+	if handoff != "" {
+		values.Set("handoff", handoff)
 	}
 	return strings.TrimRight(base, "/") + "/cli/authorize?" + values.Encode()
 }
