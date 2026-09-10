@@ -51,6 +51,28 @@ func (a *app) principal(
 	return envkeys.MemberPrincipal(ctx, client, a.store, credentials.UserID, credentials.OrgID)
 }
 
+// offlinePrincipal resolves the same identity from what this machine holds,
+// making no request.
+//
+// For the two paths that have no network by definition: `--offline`, and the
+// fallback a network failure lands on. A service token needs nothing either way
+// — its scalar is in its own token string — but it never reaches here, because
+// `run` refuses `--offline` under one and forces `--no-cache` for it.
+//
+// A login that predates the stored wraps fails here with an error saying one
+// online command fixes it for ever, which is the true statement: the hand-off
+// gave this machine the User Key and nothing else, and the wrap it opens was
+// fetched fresh on every command until now.
+func (a *app) offlinePrincipal(credentials *cred.Credentials) (*envkeys.Principal, error) {
+	if a.usingServiceToken() {
+		if a.tokenScope == nil {
+			return nil, errors.New("the service token has not been introspected")
+		}
+		return envkeys.ServicePrincipal(serviceTokenFromEnv(), a.tokenScope)
+	}
+	return envkeys.OfflineMemberPrincipal(a.store, credentials.UserID, credentials.OrgID)
+}
+
 // backfillIdentity records the ids a pre-Phase-4 login never stored.
 func (a *app) backfillIdentity(
 	ctx context.Context,
@@ -163,14 +185,20 @@ func (a *app) openEnvironment(
 	return envkeys.DecryptBundle(pulled.Bundle, principal)
 }
 
-// openKeys opens an environment's key state on its own, for the write paths and
-// for `secrets get`, which do not pull every value.
-func (a *app) openKeys(
+// keyState reads an environment's key state and pins the mode it reported.
+//
+// Split out from [app.openKeys] for the paths that need to know *which mode* an
+// environment is in without needing to open anything — clearing a note is the
+// case: it sends a null, and which field that null goes in depends on the mode
+// while nothing about it depends on a key. Opening a grant to answer that would
+// refuse the operation for somebody who has access and no grant, over a
+// requirement the operation does not have.
+func (a *app) keyState(
 	ctx context.Context,
 	client *api.Client,
 	credentials *cred.Credentials,
 	resolved scope,
-) (*envkeys.Material, error) {
+) (*api.EnvironmentKeys, error) {
 	keys, err := client.EnvironmentKeyState(ctx, resolved.Org, resolved.Project, resolved.Environment)
 	if err != nil {
 		return nil, err
@@ -179,6 +207,21 @@ func (a *app) openKeys(
 	// plaintext path, which is correct for an environment that is in that mode
 	// and a disclosure for one that is not — see `cache/mode.go`.
 	if err := a.checkMode(credentials, resolved, keys.EncryptionMode); err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
+// openKeys opens an environment's key state on its own, for the write paths and
+// for `secrets get`, which do not pull every value.
+func (a *app) openKeys(
+	ctx context.Context,
+	client *api.Client,
+	credentials *cred.Credentials,
+	resolved scope,
+) (*envkeys.Material, error) {
+	keys, err := a.keyState(ctx, client, credentials, resolved)
+	if err != nil {
 		return nil, err
 	}
 	if keys.EncryptionMode != "e2ee" {
@@ -194,18 +237,37 @@ func (a *app) openKeys(
 	return envkeys.Open(*keys, principal)
 }
 
-// e2eeHint turns the two errors a user can act on into instructions.
+// e2eeHint turns the errors a user can act on into instructions.
 //
 // Everything else keeps its own words: a decryption failure is deliberately
 // uniform (spec §5.2) and inventing a cause for it here would be inventing one.
 func e2eeHint(err error) string {
+	// First, because a bundle whose every failing row names a retired key
+	// satisfies errors.Is for ErrRotatedAway and would otherwise collect a second
+	// sentence beneath the list it already prints — one that answers a narrower
+	// question than the one the user is looking at.
+	var bundleErr *envkeys.BundleError
+	if errors.As(err, &bundleErr) {
+		return ""
+	}
+
 	switch {
 	case errors.Is(err, envkeys.ErrNoUserKey):
 		return "Run 'xecret login' to hand this machine a vault key."
+	case errors.Is(err, envkeys.ErrNoVaultWraps):
+		return "Run any xecret command with the API reachable once; this machine keeps what it needs afterwards."
 	case errors.Is(err, envkeys.ErrNoGrant):
 		return "Ask a teammate to share this environment's key from the dashboard."
 	case errors.Is(err, envkeys.ErrRotatedAway):
-		return "Only the current version of a secret survives a key rotation."
+		// Not "expected and unfixable", which is what this used to imply. A
+		// rotation re-seals the *current* value of every secret to the new key,
+		// so a current row still naming the retired key means the rotation has
+		// not reached it — and writing the value again repairs that row for
+		// everybody. It is only the older versions in the history that are gone
+		// for good, because nothing re-encrypts those and the retired key was
+		// never stored anywhere.
+		return "If this is a secret's current value, run 'xecret secrets set' on it to store it under the " +
+			"environment's current key. Earlier versions written under a retired key cannot be recovered."
 	}
 	return ""
 }

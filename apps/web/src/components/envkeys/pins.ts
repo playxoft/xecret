@@ -37,6 +37,7 @@
 
 import { CROCKFORD_ALPHABET } from '@xecret/core/crypto/client';
 import type { Bytes } from '@xecret/core/crypto/client';
+import type { Recipient } from './types';
 
 /** Bump when the record shape changes. Old pins are then simply not found. */
 const STORAGE_KEY = 'xecret.pins.v1';
@@ -406,4 +407,40 @@ function crockford(bytes: Bytes, chars: number): string {
     out += CROCKFORD_ALPHABET[(accumulator << (5 - bits)) & 31];
   }
   return out.slice(0, chars);
+}
+
+/**
+ * The recipients presenting a key this browser did not record for them.
+ *
+ * Exported because the answer decides whether an act may proceed, not merely
+ * what a banner says. A dialog that warned and left its button enabled had
+ * inverted the enforcement it shares with `pending-shares.tsx`, which refuses
+ * outright — so the safer-looking screen was the permissive one.
+ */
+export function substitutedRecipients(
+  recipients: readonly Recipient[],
+  pins: PinStore = readPins(),
+): readonly Recipient[] {
+  return recipients.filter(
+    (recipient) =>
+      checkPin(pins, recipient.kind, recipient.id, recipient.publicKey).status === 'changed',
+  );
+}
+
+/**
+ * Records a pin for each recipient a completed act sealed to.
+ *
+ * Called *after* the seal, never before it and never on render. A key that has
+ * changed is not re-pinned — `recordPin` refuses — because overwriting it would
+ * erase the only evidence that a substitution happened; the acts that call this
+ * refuse to run against a changed key in the first place.
+ */
+export function recordSealedPins(recipients: readonly Recipient[], storage?: Storage | null): void {
+  const book = storage === undefined ? undefined : storage;
+  const pins = readPins(book);
+  let next = pins;
+  for (const recipient of recipients) {
+    next = recordPin(next, recipient.kind, recipient.id, recipient.publicKey);
+  }
+  if (next !== pins) writePins(next, book);
 }

@@ -16,7 +16,7 @@ import { IV_LENGTH } from '../aead';
 import { utf8Decode } from '../encoding';
 import { MAX_SECRET_VALUE_BYTES, SecretTooLargeError } from '../secrets';
 import type { Bytes, EncryptionContext } from '../types';
-import { formatGcmBlob, parseGcmBlob } from './blob';
+import { BlobFormatError, formatGcmBlob, parseGcmBlob } from './blob';
 import { normalizedUtf8 } from './bytes';
 import { decryptGcm, encryptGcm } from './gcm';
 import { deriveKey, HKDF_INFO } from './hkdf';
@@ -100,6 +100,15 @@ export async function encryptSecret(params: {
  * rotation — or if the context does not match the one used at encryption time.
  * That last case is what stops a ciphertext row being relocated into an
  * environment the caller is allowed to read.
+ *
+ * Throws `BlobFormatError` for the one failure that is neither: a plaintext that
+ * authenticated and is still not UTF-8. That is a `BlobFormatError` and not a
+ * `DecryptionError` because the tag verified, so the key *was* right and the
+ * bytes are exactly what the writer sealed — reporting it as a decryption
+ * failure would send a user to re-enter a passphrase that has nothing wrong with
+ * it. The alternative the platform offers is worse than either: a lenient
+ * `TextDecoder` substitutes U+FFFD and returns mojibake, which the next save
+ * writes back over the real value.
  */
 export async function decryptSecret(params: {
   edk: Bytes;
@@ -114,6 +123,12 @@ export async function decryptSecret(params: {
 
   try {
     return utf8Decode(plaintextBytes);
+  } catch {
+    // `utf8Decode` is already fatal, so this only re-labels what it threw: a
+    // bare `TypeError` says nothing about which layer refused, and the caller
+    // distinguishes the classes rather than the constructors. Nothing about the
+    // plaintext is carried into the message — it is the secret.
+    throw new BlobFormatError('Secret plaintext is not valid UTF-8');
   } finally {
     plaintextBytes.fill(0);
   }

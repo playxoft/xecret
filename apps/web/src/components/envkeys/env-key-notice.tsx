@@ -1,6 +1,7 @@
 'use client';
 
 import { Alert, Button, EmptyState, KeyIcon, LockIcon } from '@/components/ui';
+import { ClaimInviteKeys } from './claim-invite-keys';
 import type { EnvKeyUnavailable } from './env-keys';
 
 /**
@@ -22,9 +23,19 @@ import type { EnvKeyUnavailable } from './env-keys';
 export function EnvKeyUnavailableState({
   reason,
   onRetry,
+  target,
 }: {
   reason: EnvKeyUnavailable;
   onRetry: () => void;
+  /**
+   * Which environment this is, when the caller knows.
+   *
+   * Only the `pending` branch uses it, and only to ask whether this account has
+   * an unclaimed invitation key for this environment — which is the one way out
+   * of that state that does not require another person. Optional so that callers
+   * rendering the other four reasons are not made to supply it.
+   */
+  target?: { orgSlug: string; environmentId: string };
 }) {
   if (reason === 'pending') {
     return (
@@ -40,9 +51,21 @@ export function EnvKeyUnavailableState({
           </>
         }
         action={
-          <Button variant="secondary" onClick={onRetry}>
-            Check again
-          </Button>
+          <div className="flex flex-col items-center gap-3">
+            {/* Renders nothing unless there is genuinely an unclaimed invitation
+                key for this environment, so it is invisible to everybody who
+                joined without a code — which is most people. */}
+            {target === undefined ? null : (
+              <ClaimInviteKeys
+                orgSlug={target.orgSlug}
+                environmentId={target.environmentId}
+                onClaimed={onRetry}
+              />
+            )}
+            <Button variant="secondary" onClick={onRetry}>
+              Check again
+            </Button>
+          </div>
         }
       />
     );

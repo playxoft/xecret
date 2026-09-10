@@ -33,6 +33,26 @@ import type { Bytes } from '@xecret/core/crypto/client';
  * same trade-off is recorded in `packages/core/src/crypto/encoding.ts` and in
  * the plan's threat model, and it is accepted deliberately rather than by
  * omission.
+ *
+ * ── Why zeroization is *leased* rather than immediate ──
+ * The wipe overwrites the very `Uint8Array` a caller is holding, and callers hold
+ * them across `await`. An import encrypting forty entries, a save writing staged
+ * changes one at a time, a rotation sealing to thirty recipients: every one of
+ * those captured the key bytes before its first `await` and uses them after its
+ * last. An idle timer firing in the middle of one used to overwrite the array in
+ * place — and AES-GCM under an all-zero key does not fail. It produces a
+ * perfectly well-formed ciphertext that nothing will ever open, uploads it, and
+ * reports success.
+ *
+ * So the two halves of a lock are separated. The *visible* half — this store
+ * reporting locked, every screen re-rendering, no new operation able to obtain
+ * the material — happens immediately and unconditionally. The *destructive* half
+ * waits for the last in-flight operation to finish, and then runs. Nothing is
+ * kept alive that a new caller can reach: {@link readVaultKeys} answers `null`
+ * from the instant the lock is requested, and {@link acquireCryptoLease} refuses
+ * outright once one is pending, so an operation that has not begun cannot begin.
+ * The bytes survive only for the operations that were already using them, which
+ * is precisely the set that would otherwise have encrypted under zeroes.
  */
 
 /**
@@ -64,6 +84,91 @@ function notify(): void {
   for (const listener of listeners) listener();
 }
 
+/**
+ * A claim on key material for the duration of one multi-step operation.
+ *
+ * Held by the operation, not by a component: it is acquired on the first line of
+ * the work and released in a `finally`, and its whole job is to keep a
+ * concurrently-requested wipe from landing between two `await`s.
+ */
+export interface CryptoLease {
+  /** Idempotent, because it is called from a `finally` that may also throw. */
+  release(): void;
+}
+
+/**
+ * Refused because the material this operation needs is gone, or going.
+ *
+ * Distinct from a decryption failure on purpose. Nothing was corrupt and nothing
+ * was wrong with the request — the vault locked, and the honest thing to tell
+ * somebody is that they need to unlock and try again, not that their data would
+ * not decrypt.
+ */
+export class VaultLockedError extends Error {
+  constructor(message = 'The vault was locked before this finished. Unlock and try again.') {
+    super(message);
+    this.name = 'VaultLockedError';
+  }
+}
+
+let inFlight = 0;
+let lockPending = false;
+const deferredWipes: (() => void)[] = [];
+
+/**
+ * Claims the right to use key material until {@link CryptoLease.release}.
+ *
+ * Throws rather than blocking when a lock is already pending. Waiting would be
+ * the wrong shape: the operation that would start is one somebody requested
+ * *before* the lock and cannot now be authorised, and queueing it behind the wipe
+ * would mean running it against material that no longer exists.
+ */
+export function acquireCryptoLease(): CryptoLease {
+  if (lockPending) throw new VaultLockedError();
+
+  inFlight += 1;
+  let released = false;
+
+  return {
+    release(): void {
+      if (released) return;
+      released = true;
+      inFlight -= 1;
+      if (inFlight === 0) drainDeferredWipes();
+    },
+  };
+}
+
+/** How many multi-step crypto operations hold a lease. Test-facing. */
+export function cryptoOperationsInFlight(): number {
+  return inFlight;
+}
+
+/**
+ * Runs `wipe` now, or after the last in-flight operation releases its lease.
+ *
+ * The store that owns the bytes has already forgotten them by the time this is
+ * called — the deferral is about *when the array is overwritten*, never about
+ * whether it is still reachable. `env-key-store.ts` defers on the same counter,
+ * because an operation typically holds both a vault key and an environment key
+ * and a lock has to mean the same thing to both.
+ */
+export function deferWipe(wipe: () => void): void {
+  if (inFlight === 0) {
+    wipe();
+    return;
+  }
+
+  lockPending = true;
+  deferredWipes.push(wipe);
+}
+
+function drainDeferredWipes(): void {
+  lockPending = false;
+  const pending = deferredWipes.splice(0);
+  for (const wipe of pending) wipe();
+}
+
 /** The keys this session holds, or `null` when it is locked. */
 export function readVaultKeys(): VaultKeyMaterial | null {
   return held;
@@ -84,9 +189,10 @@ export function vaultKeysHeld(): boolean {
  * second tab racing the first) must not leave the superseded copy behind.
  */
 export function holdVaultKeys(keys: VaultKeyMaterial): void {
-  if (held !== null) wipe(held);
+  const superseded = held;
   held = keys;
   notify();
+  if (superseded !== null) deferWipe(() => wipe(superseded));
 }
 
 /**
@@ -99,9 +205,13 @@ export function holdVaultKeys(keys: VaultKeyMaterial): void {
  */
 export function releaseVaultKeys(): void {
   if (held === null) return;
-  wipe(held);
+  const orphaned = held;
+  // Locked *now*, whatever the bytes are doing: every reader sees `null` from
+  // this line onward and `acquireCryptoLease` starts refusing. Only the
+  // overwrite waits, and only for operations that already hold a lease.
   held = null;
   notify();
+  deferWipe(() => wipe(orphaned));
 }
 
 function wipe(keys: VaultKeyMaterial): void {
@@ -111,6 +221,26 @@ function wipe(keys: VaultKeyMaterial): void {
   // The public keys are not secret and are deliberately left intact: they are
   // the values a later error message or fingerprint display may still want, and
   // wiping them would suggest they were sensitive.
+}
+
+/**
+ * Runs one multi-step operation against vault keys that cannot be wiped under it.
+ *
+ * The identity check is the load-bearing line. `keys` reached the caller as a
+ * value — from a React render, from a prop, from a closure built three awaits
+ * ago — and the only way to know it is still *the* material rather than a
+ * superseded copy is to compare it against what the store holds, after the lease
+ * is taken. A lock that landed before the lease fails here, before a single byte
+ * is encrypted; a lock that lands after it is deferred until the `finally`.
+ */
+export async function withVaultKeys<T>(keys: VaultKeyMaterial, run: () => Promise<T>): Promise<T> {
+  const lease = acquireCryptoLease();
+  try {
+    if (held !== keys) throw new VaultLockedError();
+    return await run();
+  } finally {
+    lease.release();
+  }
 }
 
 /**

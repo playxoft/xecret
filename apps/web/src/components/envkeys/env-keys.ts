@@ -12,10 +12,11 @@ import {
   zeroize,
 } from '@xecret/core/crypto/client';
 import type { Bytes } from '@xecret/core/crypto/client';
-import { api } from '@/lib/api';
+import { api, isApiError } from '@/lib/api';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
+import { withVaultKeys } from '@/components/vault/key-store';
 import type { VaultKeyMaterial } from '@/components/vault/key-store';
-import { holdEnvKey, readEnvKey } from './env-key-store';
+import { holdEnvKey, readEnvKey, withEnvKey } from './env-key-store';
 import type { EnvKeyMaterial } from './env-key-store';
 import type {
   EnvironmentKeys,
@@ -259,6 +260,83 @@ export function decodeRecipientKey(value: string): Bytes {
 }
 
 /**
+ * Seals a grant set against the environment's key and posts it — re-sealing once
+ * if the key moved underneath.
+ *
+ * ── The stale snapshot this closes ──
+ * Every caller here seals against key material a screen has been holding: the
+ * banner opened the environment when it rendered, the token dialog opened it
+ * before minting. A rotation landing in the window between those two moments
+ * makes the seal address a version the server no longer accepts. The server
+ * refuses — `requireActiveKey` names both versions in a 409, precisely so this
+ * is machine-readable — and the honest response is not to report failure to a
+ * person who did nothing wrong. It is to re-read the key, seal again, and post.
+ *
+ * ── Why exactly once ──
+ * A second rotation inside the same handful of seconds is not a race this browser
+ * should keep chasing; it is two administrators rotating at the same time, and
+ * the right answer then is to stop and say so. One retry covers the case that
+ * actually happens and cannot loop.
+ *
+ * The re-seal produces *different* grants, not the same bytes re-posted: `seal`
+ * is a function of the material rather than a value, because a grant carries the
+ * key version in its AAD and re-sending the old blobs under a new key id would
+ * store rows nobody can open.
+ */
+export async function submitGrants(params: {
+  target: EnvironmentRef;
+  vault: VaultKeyMaterial;
+  /** What this browser currently believes the environment's key is. */
+  material: EnvKeyMaterial;
+  /** Consumed by this write, when it is an invitee claiming their own keys. */
+  claimInvitationId?: string;
+  seal: (material: EnvKeyMaterial) => Promise<GrantBody[]>;
+}): Promise<{ material: EnvKeyMaterial; granted: number }> {
+  try {
+    const granted = await sealAndPost(params, params.material);
+    return { material: params.material, granted };
+  } catch (cause) {
+    if (!isStaleKeyConflict(cause)) throw cause;
+
+    const keys = await fetchEnvironmentKeys(params.target);
+    const opened = await openEnvironmentKeys(keys, params.vault);
+    // No grant on the new key means this browser cannot seal anything against
+    // it, and the original refusal is the truthful thing to report — a retry
+    // would fail for a second, less comprehensible reason.
+    if (opened.status !== 'open') throw cause;
+
+    const granted = await sealAndPost(params, opened.material);
+    return { material: opened.material, granted };
+  }
+}
+
+async function sealAndPost(
+  params: {
+    target: EnvironmentRef;
+    claimInvitationId?: string;
+    seal: (material: EnvKeyMaterial) => Promise<GrantBody[]>;
+  },
+  material: EnvKeyMaterial,
+): Promise<number> {
+  return withEnvKey(material, async () => {
+    const grants = await params.seal(material);
+    const response = await api.post<{ granted: number }>(grantsPath(params.target), {
+      envDataKeyId: material.envDataKeyId,
+      grants,
+      ...(params.claimInvitationId === undefined
+        ? {}
+        : { claimInvitationId: params.claimInvitationId }),
+    });
+    return response.granted ?? grants.length;
+  });
+}
+
+/** A 409 from the grants endpoint means one thing: the key version moved. */
+function isStaleKeyConflict(cause: unknown): boolean {
+  return isApiError(cause) && cause.code === 'conflict';
+}
+
+/**
  * The creator's own grant for a brand-new environment.
  *
  * ── Why the keys are generated here and not on the server ──
@@ -363,13 +441,34 @@ export async function invitePublicKey(fragmentSeed: Bytes): Promise<string> {
  * was sealed to. So the EDK and EHK are recovered and sealed afresh, with the
  * AAD naming `member` and their user id, signed with their own Ed25519 key.
  *
- * The server has already deleted the invitation's rows by the time this runs:
- * they were served on the acceptance response and consumed as they left, because
- * a fragment does not expire the way a token does. If this fails, the invitee
- * simply holds no key and the pending-share queue — written by the same
- * acceptance — says so for a teammate to fulfil.
+ * ── Why each upload names the invitation it is consuming ──
+ * `claimInvitationId` is what makes "the invitee now holds their own grant" and
+ * "the invitation's copy is gone" a single committed fact. The alternative — the
+ * server destroying the rows when it served them, which is what it used to do —
+ * meant the only reachable copy of an environment's key was deleted before the
+ * person who had just arrived could possibly use it. Consuming per environment
+ * also makes a partial failure resumable: the four that worked stay claimed, the
+ * one that did not keeps its row, and the code can be entered again later.
+ *
+ * If this fails entirely, the invitee simply holds no key and the pending-share
+ * queue — written by the same acceptance — says so for a teammate to fulfil.
+ *
+ * A rotation landing mid-flight fails one environment and is *not* retried: the
+ * EDK these grants carry is the retired one, so there is nothing here to re-seal
+ * against the new key. That environment falls to the pending-share path, which is
+ * the only route to a key this browser has never held.
  */
 export async function reSealInviteGrants(params: {
+  vault: VaultKeyMaterial;
+  fragmentSeed: Bytes;
+  invitationId: string;
+  grants: readonly InviteKeyGrant[];
+  orgSlug: string;
+}): Promise<{ opened: number; failed: InviteKeyGrant[] }> {
+  return withVaultKeys(params.vault, () => reSealAll(params));
+}
+
+async function reSealAll(params: {
   vault: VaultKeyMaterial;
   fragmentSeed: Bytes;
   invitationId: string;
@@ -416,7 +515,13 @@ export async function reSealInviteGrants(params: {
             projectSlug: grant.projectSlug,
             envSlug: grant.environmentSlug,
           }),
-          { envDataKeyId: grant.envDataKeyId, grants: [body] },
+          {
+            envDataKeyId: grant.envDataKeyId,
+            grants: [body],
+            // Consumed by the write that replaces it, never before it. See the
+            // doc comment above, and `AddEnvKeyGrantsParams.claimInvitationId`.
+            claimInvitationId: params.invitationId,
+          },
         );
 
         opened += 1;

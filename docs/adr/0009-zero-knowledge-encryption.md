@@ -352,6 +352,61 @@ read off the response.** The mitigations that actually bear on it are the passph
 sets, token expiry, and revocation — none of which is defeated by the disclosure, all of which
 are weakened by a long-lived token nobody rotates.
 
+**8c. The CLI hand-off trusts a consent screen a local process can also ask for.** The wrap's
+AAD binds the PKCE code challenge and the recipient public key, so a sealed User Key cannot be
+replayed into another login or re-labelled as addressed to a different key. It does not — and
+cannot — bind *which process* generated that key: both values exist before anybody has
+authenticated, and nothing about a locally-generated X25519 key identifies its owner. So an
+unprivileged process running as the same user can begin its own authorization flow, put its own
+hand-off key in the URL, and open a browser at it. Somebody who has just typed `xecret login`
+sees a consent screen that looks exactly right, approves it, and their User Key is sealed to the
+impostor's loopback listener. The cryptography holds; the consent is what was taken.
+
+The mitigation is a comparison rather than a proof: the CLI prints its own hand-off fingerprint
+before opening the browser, and the consent screen renders the fingerprint of the key it is
+about to seal to, in the same `XXXX-XXXX` form used for member keys. They match exactly when the
+page is talking to the process the person started. It is a human check, and it is the same class
+of defence as SSH's host-key prompt — which people do click through. **Residual risk: an
+attacker with local code execution as the user, plus a person who approves without comparing,
+obtains the User Key.** An attacker with local code execution as the user can also read the
+keyring the CLI stores that key in, so this does not widen the boundary so much as offer a
+second door into it; it is recorded because the flow's own documentation implied a binding that
+does not exist.
+
+**8d. The sealed hand-off blob persists in browser history.** It rides the loopback redirect as
+a query parameter — it must, because the CLI's callback is an HTTP listener and a fragment is
+never transmitted — so a copy lands in history and in whatever syncs it. It is ciphertext to an
+ephemeral key that is wiped when the login ends and is never written to disk, so what persists
+is unopenable by anybody who did not already have memory access to a process that has since
+exited. It is recorded because "the User Key never touches disk" is a claim people make about
+this flow, and this is its footnote.
+
+**8e. An unclaimed invite grant outlives the acceptance.** The invitation's sealed grants used
+to be destroyed by the response that served them, which bounded a leaked fragment's usefulness
+to the acceptance itself. It also made the two-channel flow unusable for its primary population:
+somebody arriving on an invitation link has no vault, cannot re-seal anything until they set one
+up, and found the grants deleted by the time they had. Consumption now happens where the
+re-sealed grant is stored — one environment at a time, in the same transaction — and unclaimed
+grants are re-served to the account that accepted the invitation so the code can be entered
+later. **Residual risk: between acceptance and the claim, a grant openable by whoever holds the
+fragment remains in the database.** Bounded by the invitee claiming, by any rotation of the
+environment (which retires the key that grant carries), and by the fact that the fragment was
+always the weaker half of the pair. The alternative bounded a window nobody could use in
+exchange for a feature that did not work.
+
+**8f. An offline cache defers a rotation's revocation by exactly its age.** A rotation only
+takes access away from a principal that reaches this API. `xecret run --offline` reads a bundle
+the CLI stored on an earlier online run, under a grant a rotation may since have replaced — so
+for as long as that file is served, the revocation has not happened on that machine. It is not
+avoidable while offline operation exists at all, so it is bounded: seven days by default,
+overridable with `--max-cache-age` or `XECRET_CACHE_MAX_AGE`, and the override prints a warning
+that names this trade-off in these words. The CLI also stores the wraps that take the User Key
+to a private key in the OS keyring, beside the User Key itself, because a `--offline` flag that
+makes a network request is not offline; nothing about the passphrase is stored, so nothing on
+disk is grindable. **Residual risk: a revoked principal keeps reading a stale environment for up
+to the configured cache age.** The answer for a real revocation has always been to rotate the
+secrets as well as the key, which the rotation dialog says in those words.
+
 **9. A web-delivered E2EE app's trust anchor is the JavaScript we serve.** This is the
 honest asterisk on the entire claim, and stating it plainly is not optional. Every mitigation
 above assumes the client is running the code we published. A server willing to serve one

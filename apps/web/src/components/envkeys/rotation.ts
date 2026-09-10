@@ -6,6 +6,7 @@ import { api, isApiError } from '@/lib/api';
 import type { VaultKeyMaterial } from '@/components/vault/key-store';
 import { decodeRecipientKey, rotatePath, sealGrantFor } from './env-keys';
 import type { EnvironmentRef } from './env-keys';
+import { withEnvKey } from './env-key-store';
 import type { EnvKeyMaterial } from './env-key-store';
 import type { GrantBody, Recipient } from './types';
 
@@ -115,6 +116,14 @@ export type RotationOutcome =
  * `GET …/keys` afterwards and opens the new grant through the ordinary path, so
  * there is exactly one way key material enters the store and no second copy of a
  * live data key sitting in a closure.
+ *
+ * ── Leased for the whole ceremony ──
+ * The **old** EHK is carried forward into every new grant (spec §9), and it is
+ * the store's array, not a copy. Sealing to thirty recipients is thirty awaits;
+ * a lock landing at recipient twelve used to overwrite that array in place, and
+ * the remaining eighteen grants would then have sealed an all-zero HMAC key
+ * without any of them failing. `withEnvKey` makes the whole ceremony one leased
+ * operation, so the wipe waits for it and a lock that got there first refuses it.
  */
 export async function rotateEnvironment(params: {
   target: EnvironmentRef;
@@ -129,27 +138,33 @@ export async function rotateEnvironment(params: {
   const newEdk = generateEnvironmentDataKey();
 
   try {
-    params.onProgress?.('sealing');
-    const grants = await buildRotationGrants({
-      vault: params.vault,
-      environmentId: params.material.environmentId,
-      newVersion: params.plan.newVersion,
-      newEdk,
-      ehk: params.material.ehk,
-      recipients: params.plan.recipients,
+    return await withEnvKey(params.material, async () => {
+      params.onProgress?.('sealing');
+      const grants = await buildRotationGrants({
+        vault: params.vault,
+        environmentId: params.material.environmentId,
+        newVersion: params.plan.newVersion,
+        newEdk,
+        ehk: params.material.ehk,
+        recipients: params.plan.recipients,
+      });
+
+      params.onProgress?.('writing');
+      // The route answers `{ activeEdk: { id, version }, grants }` — the same
+      // `activeEdk` shape every other key endpoint uses. Reading it as a flat
+      // `{ version, grantCount }` produced two `undefined`s that reached the
+      // success toast as "key version undefined".
+      const result = await api.post<{ activeEdk: { id: string; version: number }; grants: number }>(
+        rotatePath(params.target),
+        { newVersion: params.plan.newVersion, grants },
+      );
+
+      return {
+        status: 'rotated' as const,
+        version: result.activeEdk.version,
+        grantCount: result.grants,
+      };
     });
-
-    params.onProgress?.('writing');
-    // The route answers `{ activeEdk: { id, version }, grants }` — the same
-    // `activeEdk` shape every other key endpoint uses. Reading it as a flat
-    // `{ version, grantCount }` produced two `undefined`s that reached the
-    // success toast as "key version undefined".
-    const result = await api.post<{ activeEdk: { id: string; version: number }; grants: number }>(
-      rotatePath(params.target),
-      { newVersion: params.plan.newVersion, grants },
-    );
-
-    return { status: 'rotated', version: result.activeEdk.version, grantCount: result.grants };
   } catch (cause) {
     const problems = completenessProblems(cause);
     if (problems !== null) return { status: 'incomplete', problems };

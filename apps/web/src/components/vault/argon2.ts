@@ -37,10 +37,10 @@ import type { DeriveResponse } from './argon2-worker';
  * up too early is a main thread that freezes for a second on a device that had a
  * perfectly good worker coming. A derivation takes about that long anyway.
  */
-const WORKER_READY_TIMEOUT_MS = 3_000;
+export const WORKER_READY_TIMEOUT_MS = 3_000;
 
 /** How long the derivation itself may take before the worker is written off. */
-const WORKER_DERIVE_TIMEOUT_MS = 60_000;
+export const WORKER_DERIVE_TIMEOUT_MS = 60_000;
 
 /**
  * Whether a worker has already failed us.
@@ -50,6 +50,48 @@ const WORKER_DERIVE_TIMEOUT_MS = 60_000;
  * every derivation would add three seconds to each of them.
  */
 let workersUnavailable = false;
+
+/**
+ * How a worker is constructed.
+ *
+ * ── Why this is a variable and not a `new` expression inline ──
+ * The construction is the one line here that a test cannot exercise: `new
+ * Worker(new URL(…, import.meta.url))` is a *bundler instruction*, and under
+ * Vitest there is no bundler to emit the chunk — the call throws, the provider
+ * falls back, and every decision below it goes unobserved. That is not a small
+ * gap: what this module actually decides is when to give up on a worker, whether
+ * giving up is remembered, and which failures are infrastructural (fall back)
+ * versus the worker's own verdict (rethrow, because this thread would reject the
+ * same input identically). All three are pure logic sitting behind one
+ * untestable expression.
+ *
+ * Naming the seam moves the untestable part to a single default and leaves the
+ * logic reachable. Production never touches the setter.
+ */
+export type Argon2WorkerFactory = () => Worker;
+
+const defaultWorkerFactory: Argon2WorkerFactory = () =>
+  new Worker(new URL('./argon2-worker.ts', import.meta.url), { type: 'module' });
+
+let workerFactory: Argon2WorkerFactory = defaultWorkerFactory;
+
+/**
+ * Replaces how workers are made, and clears the sticky failure. Test-facing.
+ *
+ * `null` restores the real factory. The sticky flag is cleared on every call
+ * because a test that swapped the factory and inherited a previous test's
+ * "workers are unavailable" would be asserting the fallback path while believing
+ * it was asserting the worker one.
+ */
+export function setArgon2WorkerFactory(factory: Argon2WorkerFactory | null): void {
+  workerFactory = factory ?? defaultWorkerFactory;
+  workersUnavailable = false;
+}
+
+/** Whether a worker has been written off for the life of this page. Test-facing. */
+export function argon2WorkersUnavailable(): boolean {
+  return workersUnavailable;
+}
 
 /**
  * Argon2id at the caller's parameters.
@@ -84,7 +126,7 @@ async function deriveInWorker(
 ): Promise<Bytes | null> {
   let worker: Worker;
   try {
-    worker = new Worker(new URL('./argon2-worker.ts', import.meta.url), { type: 'module' });
+    worker = workerFactory();
   } catch {
     // No `Worker` at all, or a bundler that did not emit the chunk.
     return null;

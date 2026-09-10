@@ -196,7 +196,11 @@ export function EnvironmentScreen({
       ) : null}
 
       {keys.state.status === 'unavailable' ? (
-        <EnvKeyUnavailableState reason={keys.state.reason} onRetry={keys.reload} />
+        <EnvKeyUnavailableState
+          reason={keys.state.reason}
+          onRetry={keys.reload}
+          target={{ orgSlug, environmentId: keys.state.keys.environmentId }}
+        />
       ) : null}
 
       {project.error !== null ? (

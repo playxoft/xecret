@@ -26,6 +26,7 @@ import type {
   SecretRestoreResponse,
   SecretWriteResponse,
 } from '@/components/secrets/types';
+import { withEnvKey } from './env-key-store';
 import type { EnvKeyMaterial } from './env-key-store';
 import { decryptValue, encodeNote, encryptValue } from './secret-crypto';
 import type { SecretTarget } from './secret-crypto';
@@ -90,8 +91,15 @@ export interface SecretIo {
   reveal: (secret: SecretRef) => Promise<string>;
   /** One historical version. May need a key that has been rotated away. */
   revealVersion: (secret: Pick<SecretRef, 'id' | 'name'>, version: number) => Promise<string>;
-  /** Every current value, as one audited read. */
-  pull: () => Promise<Record<string, string>>;
+  /**
+   * Every current value, as one audited read.
+   *
+   * Takes a signal because in `e2ee` mode this is not one request: it is a
+   * request followed by a decryption per secret, and "reveal all" on a large
+   * environment can outlive the screen that asked for it. Without a signal the
+   * only thing a caller could cancel was the fetch.
+   */
+  pull: (options?: { signal?: AbortSignal }) => Promise<Record<string, string>>;
   create: (input: {
     name: string;
     value: string;
@@ -144,9 +152,10 @@ export function serverSecretIo(context: SecretIoContext): SecretIo {
       return response.secret.value;
     },
 
-    pull: async () => {
+    pull: async (options) => {
       const document = await api.get<Record<string, unknown>>(
         withQuery(apiPath.pull(orgSlug, projectSlug, envSlug), { format: 'json' }),
+        options,
       );
       return plaintextsOf(document);
     },
@@ -198,6 +207,17 @@ export function serverSecretIo(context: SecretIoContext): SecretIo {
  * mid-batch — a rotation landing between two writes of one save produces a 409
  * from the server, which is a retry, rather than a set of rows sealed against
  * two different keys.
+ *
+ * ── Why every method is wrapped in `withEnvKey` ──
+ * Because capturing the material is exactly what makes a lock dangerous. The
+ * bytes this IO holds are the array the store owns, and a lock used to overwrite
+ * it in place — mid-`pull`, mid-`runImport`, between two of a save's sequential
+ * writes. AES-GCM under an all-zero key does not fail; it produces a ciphertext
+ * nothing will ever open and the upload returns 200. `withEnvKey` makes each
+ * method one leased operation: a lock that arrives first refuses the method
+ * outright, and one that arrives during it is deferred until the method returns.
+ * There is no ordering in which a `zeroize` lands between two `await`s of the
+ * same call.
  */
 export function clientSecretIo(context: SecretIoContext, material: EnvKeyMaterial): SecretIo {
   const { orgSlug, projectSlug, envSlug } = context;
@@ -270,198 +290,227 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
   return {
     mode: 'e2ee',
 
-    reveal: async (secret) => {
-      const response = await api.get<{
-        secret: { id: string; ciphertext: string; envDataKeyId: string; version: number };
-      }>(apiPath.secret(orgSlug, projectSlug, envSlug, secret.name));
-      return open(response.secret);
-    },
+    reveal: (secret) =>
+      withEnvKey(material, async () => {
+        const response = await api.get<{
+          secret: { id: string; ciphertext: string; envDataKeyId: string; version: number };
+        }>(apiPath.secret(orgSlug, projectSlug, envSlug, secret.name));
+        return open(response.secret);
+      }),
 
-    revealVersion: async (secret, version) => {
-      const response = await api.get<{
-        secret: { id: string; ciphertext: string; envDataKeyId: string; version: number };
-      }>(apiPath.secretVersion(orgSlug, projectSlug, envSlug, secret.name, version));
-      return open(response.secret);
-    },
+    revealVersion: (secret, version) =>
+      withEnvKey(material, async () => {
+        const response = await api.get<{
+          secret: { id: string; ciphertext: string; envDataKeyId: string; version: number };
+        }>(apiPath.secretVersion(orgSlug, projectSlug, envSlug, secret.name, version));
+        return open(response.secret);
+      }),
 
-    pull: async () => {
-      // The bundle carries the caller's grant *with* the values, so a rotation
-      // cannot land between reading the key and reading the ciphertext. This IO
-      // was built around one key, and the bundle's own `activeEdk` is checked
-      // per row by `open` — a mismatch means the rotation happened first, and
-      // the caller re-reads.
-      const bundle = await api.get<ClientEnvironmentBundle>(
-        apiPath.pull(orgSlug, projectSlug, envSlug),
-      );
+    pull: (options) =>
+      withEnvKey(material, async () => {
+        // The bundle carries the caller's grant *with* the values, so a rotation
+        // cannot land between reading the key and reading the ciphertext. This IO
+        // was built around one key, and the bundle's own `activeEdk` is checked
+        // per row by `open` — a mismatch means the rotation happened first, and
+        // the caller re-reads.
+        const bundle = await api.get<ClientEnvironmentBundle>(
+          apiPath.pull(orgSlug, projectSlug, envSlug),
+          options,
+        );
 
-      const plaintexts: Record<string, string> = {};
-      for (const secret of bundle.secrets) {
-        plaintexts[secret.name] = await open(secret);
-      }
-      return plaintexts;
-    },
+        const plaintexts: Record<string, string> = {};
+        for (const secret of bundle.secrets) {
+          // Checked between rows, not only before the request. A reveal-all over
+          // a large environment is hundreds of decryptions, and an abort that
+          // only cancelled the fetch would keep opening ciphertexts into a screen
+          // the person has already navigated away from.
+          if (options?.signal?.aborted === true) throw abortedError();
+          plaintexts[secret.name] = await open(secret);
+        }
+        return plaintexts;
+      }),
 
-    create: async (input) => {
-      // The client mints the id, because the AAD binds it and the value is
-      // encrypted before any request exists. See `id` on `createClientSecretBody`.
-      const id = uuidv7();
-      const target = targetFor(id);
-      const value = await encryptValue({ material, target, version: 1, plaintext: input.value });
-      const encNote = await encodeNote({ material, target, note: input.note });
+    create: async (input) =>
+      withEnvKey(material, async () => {
+        // The client mints the id, because the AAD binds it and the value is
+        // encrypted before any request exists. See `id` on `createClientSecretBody`.
+        const id = uuidv7();
+        const target = targetFor(id);
+        const value = await encryptValue({ material, target, version: 1, plaintext: input.value });
+        const encNote = await encodeNote({ material, target, note: input.note });
 
-      return api.post<SecretWriteResponse>(apiPath.secrets(orgSlug, projectSlug, envSlug), {
-        id,
-        name: input.name,
-        value,
-        valueType: input.valueType,
-        ...(encNote === undefined ? {} : { encNote }),
-      });
-    },
-
-    update: async (secret, input) => {
-      // The version this ciphertext will be *stored* as, computed from the
-      // snapshot this screen is holding.
-      const version = secret.version + 1;
-      const value = await encryptValue({
-        material,
-        target: targetFor(secret.id),
-        version,
-        plaintext: input.value,
-      });
-
-      return api.patch<SecretWriteResponse>(
-        apiPath.secret(orgSlug, projectSlug, envSlug, secret.name),
-        {
+        return api.post<SecretWriteResponse>(apiPath.secrets(orgSlug, projectSlug, envSlug), {
+          id,
+          name: input.name,
           value,
-          // Stated, not assumed. The server derives the same number from the
-          // stored row and refuses the write when the two disagree — which is
-          // what a second writer, or a snapshot older than it looks, produces.
-          // Without this the row commits at the server's number carrying a
-          // ciphertext bound to ours: unopenable for ever, behind a 200.
-          expectedVersion: version,
-          ...(input.valueType === undefined ? {} : { valueType: input.valueType }),
-        },
-      );
-    },
+          valueType: input.valueType,
+          ...(encNote === undefined ? {} : { encNote }),
+        });
+      }),
+
+    update: async (secret, input) =>
+      withEnvKey(material, async () => {
+        // The version this ciphertext will be *stored* as, computed from the
+        // snapshot this screen is holding.
+        const version = secret.version + 1;
+        const value = await encryptValue({
+          material,
+          target: targetFor(secret.id),
+          version,
+          plaintext: input.value,
+        });
+
+        return api.patch<SecretWriteResponse>(
+          apiPath.secret(orgSlug, projectSlug, envSlug, secret.name),
+          {
+            value,
+            // Stated, not assumed. The server derives the same number from the
+            // stored row and refuses the write when the two disagree — which is
+            // what a second writer, or a snapshot older than it looks, produces.
+            // Without this the row commits at the server's number carrying a
+            // ciphertext bound to ours: unopenable for ever, behind a 200.
+            expectedVersion: version,
+            ...(input.valueType === undefined ? {} : { valueType: input.valueType }),
+          },
+        );
+      }),
 
     patchMetadata: async (secret, patch) => {
-      const encNote = await encodeNote({
-        material,
-        target: targetFor(secret.id),
-        note: patch.note,
-      });
-
-      await api.put(apiPath.secret(orgSlug, projectSlug, envSlug, secret.name), {
-        ...(patch.name === undefined ? {} : { name: patch.name }),
-        // `encNote` rather than `note`: sending a plaintext note to an `e2ee`
-        // environment is refused rather than ignored, and rightly — a note is
-        // free text people put credentials in.
-        ...(encNote === undefined ? {} : { encNote }),
-        ...(patch.valueType === undefined ? {} : { valueType: patch.valueType }),
-      });
-    },
-
-    restore: async (secret, fromVersion) => {
-      // A restore is a **re-encryption**, never a copy: the AAD binds `version`,
-      // so the old bytes stored as a new version would fail to open for the rest
-      // of their life. So the old version is read, decrypted, and encrypted
-      // again for the version about to be written.
-      const previous = await api.get<{
-        secret: { id: string; ciphertext: string; envDataKeyId: string; version: number };
-      }>(apiPath.secretVersion(orgSlug, projectSlug, envSlug, secret.name, fromVersion));
-
-      const plaintext = await open(previous.secret);
-
-      const version = secret.version + 1;
-      const value = await encryptValue({
-        material,
-        target: targetFor(secret.id),
-        version,
-        plaintext,
-      });
-
-      return api.post<SecretRestoreResponse>(
-        apiPath.secretRestore(orgSlug, projectSlug, envSlug, secret.name),
-        // Two different versions, and the names say which is which:
-        // `version` is the one being restored *from*, `expectedVersion` is the
-        // one these bytes are bound to. A drawer that restored once and kept its
-        // snapshot sends the same `expectedVersion` twice, and the second one is
-        // refused rather than stored under a number its AAD does not name.
-        { version: fromVersion, expectedVersion: version, value },
-      );
-    },
-
-    runImport: async (input) => {
-      // Parsed **here**. A file uploaded to be parsed would be every secret in
-      // it, in plaintext, in a request body — which is the thing this mode
-      // exists to prevent. The same `@xecret/core/importer` the server runs, so
-      // the detection, the naming rules and the conflict strategy are unchanged;
-      // only where they run has moved.
-      const detected =
-        input.format === 'auto'
-          ? detectFormat(input.filename ?? '', input.content).format
-          : input.format;
-
-      const parsed = parseWith(detected, input.content);
-
-      // Read here, and read to exhaustion. The screen's own listing is paged —
-      // it stops at the first page unless somebody scrolls — and a plan built
-      // against a truncated set classifies an existing secret as a *create*: a
-      // fresh uuid, version 1, and a ciphertext sealed against both. The server
-      // resolves the stored row instead and refuses, which is the backstop; a
-      // plan that never gets it wrong is the fix. The CLI has always paginated
-      // fully here, and this is the same rule.
-      const existing = await listAllSecrets();
-      const byName = new Map(existing.map((secret) => [secret.name, secret]));
-
-      const plan = buildImportPlan({
-        parsed,
-        existingNames: existing.map((secret) => secret.name),
-        strategy: input.strategy,
-      });
-
-      const writable = plan.items.filter(
-        (item) =>
-          item.status === 'create' || item.status === 'overwrite' || item.status === 'rename',
-      );
-
-      const entries = [];
-      for (const item of writable) {
-        const target = byName.get(item.targetName);
-        const id = target?.id ?? uuidv7();
-        const version = target === undefined ? 1 : target.version + 1;
-        entries.push({
-          id,
-          name: item.targetName,
-          // Both AAD components this entry was sealed against, stated. The server
-          // re-derives them from the stored rows and refuses a disagreement
-          // rather than committing under an id or a version the ciphertext does
-          // not name.
-          expectedVersion: version,
-          value: await encryptValue({
-            material,
-            target: targetFor(id),
-            version,
-            plaintext: item.value,
-          }),
+      await withEnvKey(material, async () => {
+        const encNote = await encodeNote({
+          material,
+          target: targetFor(secret.id),
+          note: patch.note,
         });
-      }
 
-      const result =
-        entries.length === 0
-          ? { dryRun: input.dryRun, counts: { create: 0, overwrite: 0, unchanged: 0 }, items: [] }
-          : await api.post<{
-              dryRun: boolean;
-              counts: { create: number; overwrite: number; unchanged: number };
-              items: { name: string; status: string }[];
-            }>(apiPath.import(orgSlug, projectSlug, envSlug), {
-              entries,
-              dryRun: input.dryRun,
-            });
-
-      return mergeImportPlan({ detected, strategy: input.strategy, plan, result });
+        await api.put(apiPath.secret(orgSlug, projectSlug, envSlug, secret.name), {
+          ...(patch.name === undefined ? {} : { name: patch.name }),
+          // `encNote` rather than `note`: sending a plaintext note to an `e2ee`
+          // environment is refused rather than ignored, and rightly — a note is
+          // free text people put credentials in.
+          ...(encNote === undefined ? {} : { encNote }),
+          ...(patch.valueType === undefined ? {} : { valueType: patch.valueType }),
+        });
+      });
     },
+
+    restore: async (secret, fromVersion) =>
+      withEnvKey(material, async () => {
+        // A restore is a **re-encryption**, never a copy: the AAD binds `version`,
+        // so the old bytes stored as a new version would fail to open for the rest
+        // of their life. So the old version is read, decrypted, and encrypted
+        // again for the version about to be written.
+        const previous = await api.get<{
+          secret: { id: string; ciphertext: string; envDataKeyId: string; version: number };
+        }>(apiPath.secretVersion(orgSlug, projectSlug, envSlug, secret.name, fromVersion));
+
+        const plaintext = await open(previous.secret);
+
+        const version = secret.version + 1;
+        const value = await encryptValue({
+          material,
+          target: targetFor(secret.id),
+          version,
+          plaintext,
+        });
+
+        return api.post<SecretRestoreResponse>(
+          apiPath.secretRestore(orgSlug, projectSlug, envSlug, secret.name),
+          // Two different versions, and the names say which is which:
+          // `version` is the one being restored *from*, `expectedVersion` is the
+          // one these bytes are bound to. A drawer that restored once and kept its
+          // snapshot sends the same `expectedVersion` twice, and the second one is
+          // refused rather than stored under a number its AAD does not name.
+          { version: fromVersion, expectedVersion: version, value },
+        );
+      }),
+
+    runImport: async (input) =>
+      withEnvKey(material, async () => {
+        // Parsed **here**. A file uploaded to be parsed would be every secret in
+        // it, in plaintext, in a request body — which is the thing this mode
+        // exists to prevent. The same `@xecret/core/importer` the server runs, so
+        // the detection, the naming rules and the conflict strategy are unchanged;
+        // only where they run has moved.
+        const detected =
+          input.format === 'auto'
+            ? detectFormat(input.filename ?? '', input.content).format
+            : input.format;
+
+        const parsed = parseWith(detected, input.content);
+
+        // Read here, and read to exhaustion. The screen's own listing is paged —
+        // it stops at the first page unless somebody scrolls — and a plan built
+        // against a truncated set classifies an existing secret as a *create*: a
+        // fresh uuid, version 1, and a ciphertext sealed against both. The server
+        // resolves the stored row instead and refuses, which is the backstop; a
+        // plan that never gets it wrong is the fix. The CLI has always paginated
+        // fully here, and this is the same rule.
+        const existing = await listAllSecrets();
+        const byName = new Map(existing.map((secret) => [secret.name, secret]));
+
+        const plan = buildImportPlan({
+          parsed,
+          existingNames: existing.map((secret) => secret.name),
+          strategy: input.strategy,
+        });
+
+        const writable = plan.items.filter(
+          (item) =>
+            item.status === 'create' || item.status === 'overwrite' || item.status === 'rename',
+        );
+
+        const entries = [];
+        for (const item of writable) {
+          const target = byName.get(item.targetName);
+          const id = target?.id ?? uuidv7();
+          const version = target === undefined ? 1 : target.version + 1;
+          entries.push({
+            id,
+            name: item.targetName,
+            // Both AAD components this entry was sealed against, stated. The server
+            // re-derives them from the stored rows and refuses a disagreement
+            // rather than committing under an id or a version the ciphertext does
+            // not name.
+            expectedVersion: version,
+            value: await encryptValue({
+              material,
+              target: targetFor(id),
+              version,
+              plaintext: item.value,
+            }),
+          });
+        }
+
+        const result =
+          entries.length === 0
+            ? { dryRun: input.dryRun, counts: { create: 0, overwrite: 0, unchanged: 0 }, items: [] }
+            : await api.post<{
+                dryRun: boolean;
+                counts: { create: number; overwrite: number; unchanged: number };
+                items: { name: string; status: string }[];
+              }>(apiPath.import(orgSlug, projectSlug, envSlug), {
+                entries,
+                dryRun: input.dryRun,
+              });
+
+        return mergeImportPlan({ detected, strategy: input.strategy, plan, result });
+      }),
   };
+}
+
+/**
+ * The rejection an aborted operation produces.
+ *
+ * `DOMException` with the name `AbortError`, which is what `fetch` raises and
+ * therefore what every caller in the dashboard already recognises — a bespoke
+ * class here would make the "did the user navigate away?" check depend on which
+ * line of the operation the abort happened to interrupt.
+ */
+function abortedError(): Error {
+  return typeof DOMException === 'undefined'
+    ? Object.assign(new Error('Aborted.'), { name: 'AbortError' })
+    : new DOMException('Aborted.', 'AbortError');
 }
 
 /**

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math/big"
 	"strings"
+	"unicode"
 )
 
 // Recovery codes: the Crockford base32 codec, the Luhn mod-32 check character,
@@ -51,20 +52,40 @@ func symbolValue(character byte) int {
 	return strings.IndexByte(CrockfordAlphabet, character)
 }
 
+// zeroWidthNoBreakSpace is U+FEFF, the half of "Unicode whitespace" that
+// unicode.IsSpace does not cover.
+//
+// It is not in Unicode's White_Space property, so IsSpace rejects it, but
+// JavaScript's \s matches it — a BOM is whitespace to a JavaScript regular
+// expression and to nothing else. The browser therefore strips it and this side
+// would not, which is the shape of bug that only shows up on the day a user
+// needs their Emergency Kit: a code copied out of an editor that wrote a BOM
+// parses in the web app and is refused by the CLI. The reverse hole is U+0085,
+// which IsSpace matches and \s does not, and which the browser adds explicitly
+// for the same reason.
+//
+// Neither built-in is the set §7.1 names, so each side extends its own to reach
+// it. Mirrored in packages/core/src/crypto/client/recovery.ts.
+const zeroWidthNoBreakSpace = '\ufeff'
+
 // NormalizeCrockford forgives exactly what Crockford specifies and nothing else.
 //
-// In order: strip hyphens and whitespace, upper-case, then map I → 1, L → 1,
-// O → 0. Anything left outside the alphabet — including U, which is excluded
-// because it is confusable with V and which Crockford reserves for a mod-37
-// check-symbol set this specification does not use — is a parse error. U is
-// rejected rather than aliased: it has no meaning here at all.
+// In order: strip all hyphens and Unicode whitespace, upper-case, then map
+// I → 1, L → 1, O → 0. Anything left outside the alphabet — including U, which
+// is excluded because it is confusable with V and which Crockford reserves for a
+// mod-37 check-symbol set this specification does not use — is a parse error. U
+// is rejected rather than aliased: it has no meaning here at all.
+//
+// The whitespace rule is unicode.IsSpace rather than a hand-written list of the
+// characters somebody thought of. The list this replaced held seven, and missed
+// the figure space a typesetter puts between digit groups on a printed kit —
+// which is precisely the character a user pastes without being able to see it.
 func NormalizeCrockford(input string) string {
 	var out strings.Builder
 	out.Grow(len(input))
 	for _, r := range strings.ToUpper(input) {
 		switch {
-		case r == '-' || r == ' ' || r == '\t' || r == '\n' || r == '\r' ||
-			r == '\v' || r == '\f' || r == 0x85 || r == 0xa0:
+		case r == '-' || unicode.IsSpace(r) || r == zeroWidthNoBreakSpace:
 			continue
 		case r == 'I' || r == 'L':
 			out.WriteByte('1')
@@ -127,14 +148,19 @@ func decodeCrockford(dataChars string, byteLength int) ([]byte, error) {
 		value.Lsh(value, 5).Or(value, big.NewInt(int64(symbol)))
 	}
 
-	out := value.FillBytes(make([]byte, byteLength))
-	// FillBytes panics rather than truncating when the value is too large, so
-	// the width is checked first: accepting a truncation would read two
-	// different strings as one code.
+	// Checked before FillBytes, which panics rather than truncating when the
+	// value is too large — so this ordering is what makes the clean error
+	// reachable at all. It sat the other way round and the check was dead code
+	// behind a panic: a caller handing this a wider string than its byteLength
+	// took the process down instead of being told the string is not a code.
+	//
+	// The check itself is not merely defensive. Truncating would read two
+	// different strings as one code, which is the failure that matters: a code
+	// the user did not have would unwrap a wrap belonging to one they did.
 	if value.BitLen() > byteLength*8 {
 		return nil, ErrRecoveryFormat
 	}
-	return out, nil
+	return value.FillBytes(make([]byte, byteLength)), nil
 }
 
 // RecoveryCode is a code in every form the rest of the system needs it.

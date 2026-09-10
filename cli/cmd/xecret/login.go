@@ -95,6 +95,22 @@ func cmdLogin(args []string) error {
 		base, challenge, device, state, listener.Port(), handoff.PublicKeyB64Url,
 	)
 
+	// The hand-off key's fingerprint, printed before the browser opens.
+	//
+	// Nothing in the flow binds the recipient of the sealed User Key to *this*
+	// process — see `e2ee.CLIHandoffAad`. Any program running as this user can
+	// open a consent screen for a hand-off key of its own, and a person who
+	// approves it because they had just typed `xecret login` hands the key to it.
+	// The only thing that separates the two is this string: the consent screen
+	// renders the fingerprint of whatever key it is about to seal to, in the same
+	// format the dashboard uses beside every member key, and it matches what is
+	// on this terminal exactly when the page is sealing to this process.
+	if handoffFingerprint, err := handoff.Fingerprint(); err == nil {
+		a.printer.Infof("This device's hand-off key is %s.", a.printer.Bold(handoffFingerprint))
+		a.printer.Infof("The approval page shows the same eight characters. If they differ, cancel it — " +
+			"something else asked for your vault key.")
+	}
+
 	a.printer.Infof("Opening your browser to approve this device…")
 	a.printer.Infof("If it does not open, visit:\n\n  %s\n", authorizeURL)
 	_ = auth.OpenBrowser(authorizeURL)
@@ -204,6 +220,19 @@ func (a *app) acceptHandoff(
 
 	if err := envkeys.StoreUserKey(a.store, userKey); err != nil {
 		return err
+	}
+
+	// The wrap the User Key opens, kept beside it. One extra GET at login, and
+	// the reason it is worth making here rather than leaving to the first command
+	// is that the first command may be `xecret run --offline` on a train: a
+	// machine that has completed a login has been told it can open encrypted
+	// environments, and it should be true straight away rather than after some
+	// later moment nobody was told about.
+	if vault, vaultErr := client.Vault(ctx); vaultErr != nil {
+		a.printer.Warnf("could not read this account's vault material: %v", vaultErr)
+		a.printer.Warnf("'--offline' will not open encrypted environments until a command reaches the API.")
+	} else if wrapErr := envkeys.StoreVaultWraps(a.store, vault.Material); wrapErr != nil {
+		a.printer.Warnf("could not store this account's vault material: %v", wrapErr)
 	}
 
 	a.printer.Infof("Vault key stored — end-to-end encrypted environments will open on this machine.")
@@ -442,6 +471,12 @@ func (a *app) unlockWithPassphrase() error {
 
 	if err := envkeys.StoreUserKey(a.store, userKey); err != nil {
 		return err
+	}
+	// The material this function already holds, kept for the offline path — see
+	// acceptHandoff. No extra request here: the wraps came back with the ones
+	// this unlock was built from.
+	if wrapErr := envkeys.StoreVaultWraps(a.store, vault.Material); wrapErr != nil {
+		a.printer.Warnf("could not store this account's vault material: %v", wrapErr)
 	}
 
 	a.printer.Successf("Vault key stored for %s.", credentials.Email)

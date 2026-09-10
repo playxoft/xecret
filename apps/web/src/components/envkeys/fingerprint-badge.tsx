@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import { decodePublicKey } from '@xecret/core/crypto/client';
 import { formatAbsoluteTime } from '@/lib/format';
 import { Alert, Badge, Tooltip } from '@/components/ui';
-import { checkPin, fingerprint, readPins, recordPin, writePins } from './pins';
+import { checkPin, fingerprint, readPins, substitutedRecipients } from './pins';
 import type { PinCheck, PinnedKind } from './pins';
 import type { Recipient } from './types';
 
@@ -102,52 +102,32 @@ export function KeyFingerprint({
 /**
  * The recipients of a rotation or a share, with their fingerprints.
  *
- * ── Why the pins are recorded here and not on every render ──
- * They are recorded when this list is *shown as part of an act* — the rotation
- * dialog and the share prompt both mount it — because that is the moment
- * somebody is about to seal to these keys. Pinning on any render would record
- * whatever the server said the first time a page happened to load, which is a
- * pin nobody consented to and a comparison against itself.
+ * ── This component records nothing ──
+ * It used to pin every key it displayed, from an effect, on render. That
+ * contradicted `pins.ts`'s own stated rule — *pin on deliberate acts only* — and
+ * the contradiction was not academic. Rendering is not consent: opening the
+ * rotation dialog to look at it, or landing on a screen that happens to mount
+ * this list, recorded whatever the server said at that moment as the key this
+ * browser trusts for that person, for ever. A substitution that arrived before
+ * any pin existed was therefore pinned *as* the trusted key, and every later
+ * comparison agreed with it. The trust-on-first-use window closed on whichever
+ * answer arrived first rather than on one somebody acted upon.
  *
- * A key that has **changed** is never re-pinned here. Overwriting it would erase
- * the only evidence that a substitution happened, on the render that displays
- * the warning about it.
+ * Pins are now written by the two places a person deliberately seals a key to
+ * somebody — `pending-shares.tsx` after a successful share, `rotation-dialog.tsx`
+ * after a successful rotation. This displays and compares, and does neither.
  */
 export function FingerprintList({ recipients }: { recipients: readonly Recipient[] }) {
-  const [changed, setChanged] = useState<readonly Recipient[]>([]);
-
   /**
-   * Compared during render rather than in an effect.
+   * Computed during render rather than in an effect.
    *
    * The same pattern, and the same reason, as the environment guard in
    * `useRevealAll`: an effect runs after paint, so a substituted key would have
    * its fingerprint on screen — with no warning beside it — for the frame in
-   * which somebody could click "Rotate". React's documented way to adjust state
-   * when a prop changes is to do it during render, and this is that case.
-   *
-   * The *write* stays in an effect below, because writing to `localStorage` is
-   * exactly the "update an external system" an effect is for.
+   * which somebody could click "Rotate". It is a pure read of `localStorage`
+   * with no state to synchronise, so there is nothing here an effect would buy.
    */
-  const [renderedFor, setRenderedFor] = useState<readonly Recipient[] | null>(null);
-  if (renderedFor !== recipients) {
-    setRenderedFor(recipients);
-    setChanged(substitutionsIn(recipients));
-  }
-
-  useEffect(() => {
-    const pins = readPins();
-    let next = pins;
-
-    for (const recipient of recipients) {
-      // A key that has changed is never re-pinned. Overwriting it would erase
-      // the only evidence that a substitution happened, on the very render that
-      // displays the warning about it — `recordPin` already refuses, and this
-      // says so at the call site too.
-      next = recordPin(next, recipient.kind, recipient.id, recipient.publicKey);
-    }
-
-    if (next !== pins) writePins(next);
-  }, [recipients]);
+  const changed = substitutedRecipients(recipients);
 
   if (recipients.length === 0) {
     return <p className="text-fg-muted text-sm">Nobody holds a key for this environment.</p>;
@@ -192,13 +172,4 @@ export function FingerprintList({ recipients }: { recipients: readonly Recipient
 export function pinAge(check: PinCheck): string | null {
   if (check.status === 'new') return null;
   return formatAbsoluteTime(check.firstSeen);
-}
-
-/** The recipients presenting a key this browser did not record for them. */
-function substitutionsIn(recipients: readonly Recipient[]): readonly Recipient[] {
-  const pins = readPins();
-  return recipients.filter(
-    (recipient) =>
-      checkPin(pins, recipient.kind, recipient.id, recipient.publicKey).status === 'changed',
-  );
 }

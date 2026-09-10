@@ -105,6 +105,14 @@ type ClientSecret struct {
 // every current ciphertext, read together so a rotation cannot land between two
 // requests and leave the client holding a key for the wrong version.
 type EnvironmentBundle struct {
+	// Bundle is the marker that says what this response *is*, rather than
+	// leaving a client to work it out from what the response happens to contain.
+	// See [Client.Pull].
+	Bundle bool `json:"bundle"`
+	// BundleVersion is the shape of everything below it. Carried and not yet
+	// acted on: a client that refuses an unknown version cannot be sent a new
+	// one, so the first build to see this field has to accept whatever it says.
+	BundleVersion  int             `json:"bundleVersion"`
 	EncryptionMode string          `json:"encryptionMode"`
 	Keys           EnvironmentKeys `json:"keys"`
 	Secrets        []ClientSecret  `json:"secrets"`
@@ -119,6 +127,12 @@ type EnvironmentBundle struct {
 type Pulled struct {
 	// Bundle is set for an e2ee environment. Its secrets are ciphertext.
 	Bundle *EnvironmentBundle
+	// Raw is the bundle's response body exactly as it arrived, for the offline
+	// cache. Re-marshalling the parsed struct would cache this build's idea of
+	// the shape rather than the server's, which is the one thing a cached
+	// ciphertext cannot afford: a field this build drops is a field the next one
+	// needs, and there is no key anywhere to re-derive it from.
+	Raw []byte
 	// Document is the server-rendered file for a server-mode environment,
 	// verbatim, in the requested format.
 	Document []byte
@@ -126,22 +140,62 @@ type Pulled struct {
 
 // Pull fetches an environment.
 //
-// The mode is read from the response rather than asked for in advance. An e2ee
-// environment answers with a JSON object carrying `encryptionMode: "e2ee"`; a
-// server-mode one answers with a rendered document, which for `format=json` is
-// a flat name→value object that cannot be mistaken for a bundle. One request
-// either way, and no window in which the mode could change between two.
+// The mode is read from the response rather than asked for in advance: one
+// request either way, and no window in which the mode could change between two.
+//
+// ── How a bundle is recognised ──
+//
+// By the response saying it is one. The bundle carries a top-level
+// `"bundle": true`, which is a field the server chose to send and not a
+// coincidence of content, and that is what this branches on.
+//
+// It did not always. The test used to be `encryptionMode == "e2ee"` at the top
+// level — and for `format=json` a server-mode pull is a *flat name→value object
+// of the environment's own secrets*, so an environment containing a secret
+// literally named `encryptionMode` whose value was `e2ee` was read as a bundle,
+// and its secrets were then treated as ciphertext. Nothing about that is exotic:
+// it is a name a person migrating between the two modes would plausibly write
+// down.
+//
+// The old shape is still accepted, because a client that only understands the
+// new marker cannot talk to a deployment that has not shipped it yet — but it is
+// accepted with the ambiguity closed: `secrets` must be a JSON *array*, which in
+// a flat document it can never be, because every value in one is a string. That
+// tolerance can be deleted once no supported deployment predates the marker.
 func (c *Client) Pull(ctx context.Context, org, project, env, format string) (*Pulled, error) {
 	raw, err := c.GetRaw(ctx, envPath(org, project, env)+"/pull?format="+url.QueryEscape(format))
 	if err != nil {
 		return nil, err
 	}
 
-	var bundle EnvironmentBundle
-	if json.Unmarshal(raw, &bundle) == nil && bundle.EncryptionMode == "e2ee" {
-		return &Pulled{Bundle: &bundle}, nil
+	if looksLikeBundle(raw) {
+		var bundle EnvironmentBundle
+		if json.Unmarshal(raw, &bundle) == nil {
+			return &Pulled{Bundle: &bundle, Raw: raw}, nil
+		}
 	}
 	return &Pulled{Document: raw}, nil
+}
+
+// looksLikeBundle answers the question above without decoding the whole body.
+func looksLikeBundle(raw []byte) bool {
+	var probe struct {
+		Bundle         bool            `json:"bundle"`
+		EncryptionMode string          `json:"encryptionMode"`
+		Secrets        json.RawMessage `json:"secrets"`
+	}
+	if json.Unmarshal(raw, &probe) != nil {
+		return false
+	}
+	if probe.Bundle {
+		return true
+	}
+	return probe.EncryptionMode == "e2ee" && isJSONArray(probe.Secrets)
+}
+
+func isJSONArray(raw json.RawMessage) bool {
+	var array []json.RawMessage
+	return len(raw) > 0 && json.Unmarshal(raw, &array) == nil
 }
 
 // EnvironmentKeyState reads GET …/keys on its own, for the paths that need the

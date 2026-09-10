@@ -40,6 +40,15 @@ const MAX_ARRAY_ITEMS = 32;
  * word from the deny list and all of them are safe — they are the fields an
  * investigation is actually conducted with. Without this pass, turning on
  * redaction would blank exactly the columns that make the logs useful.
+ *
+ * Every entry names a *fact about* a credential — which one it is, when it was
+ * made, how long it is, which version of it — and each is safe for precisely
+ * that reason: a fact about a secret is not the secret. `bytes` was on this list
+ * and did not belong, because `…Bytes` names the material itself rather than a
+ * fact about it, so the one suffix that made a field more dangerous was a suffix
+ * that exempted it: `keyBytes`, `seedBytes` and `wrapBytes` were all waved
+ * through by a rule written for `tokenId`. It is deliberately absent now, and
+ * `length` stays because `keyLength` really is a number.
  */
 const IDENTIFIER_SUFFIXES = [
   'id',
@@ -53,7 +62,6 @@ const IDENTIFIER_SUFFIXES = [
   'count',
   'version',
   'length',
-  'bytes',
   'status',
   'level',
   'reason',
@@ -240,6 +248,16 @@ function sanitiseValue(value: unknown, depth: number): unknown {
   }
 
   if (value instanceof Error) return describeError(value);
+
+  // A binary buffer is key material until proven otherwise, and unlike every
+  // other rule in this module that judgement is made on the value's *type* — the
+  // name-based rule cannot help when a field called `payload` or `blob` holds an
+  // unwrapped EDK. It matters because a `Uint8Array` is neither an array nor a
+  // plain object to the branches below: it used to fall through to the object
+  // case, where `Object.entries` renders a key as `{"0":214,"1":9,…}` and writes
+  // every byte of it to the sink. Checked ahead of the depth bound so a buffer
+  // nested past it is still named rather than truncated to `[truncated]`.
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return '[redacted-bytes]';
 
   if (depth >= MAX_DEPTH) return '[truncated]';
 

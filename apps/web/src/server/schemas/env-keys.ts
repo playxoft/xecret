@@ -214,6 +214,19 @@ export const environmentKeyGrantsSchema = z.strictObject(
   {
     envDataKeyId: uuidField('A key is named by a UUID.'),
     grants: grantsSchema,
+    /**
+     * An invitation whose sealed grants for this environment this write consumes.
+     *
+     * Sent only by the invite key step, and only for the invitation this account
+     * accepted — the server checks that rather than trusting it. It exists so
+     * that "the invitee now holds their own grant" and "the invitation's copy is
+     * gone" are one committed fact instead of two requests with a window between
+     * them in which the only reachable copy of an environment key can be lost.
+     *
+     * Optional, and its absence is the ordinary case: every other grant write —
+     * a share, a rotation, a token being minted — consumes nothing.
+     */
+    claimInvitationId: z.optional(uuidField('An invitation is named by a UUID.')),
   },
   UNEXPECTED_FIELD,
 );
@@ -418,16 +431,23 @@ export function toGrant(grant: EnvKeyGrantRecord): GrantPayload {
 }
 
 /**
- * One invitation-sealed grant, handed to the invitee at acceptance.
+ * One invitation-sealed grant, served to the account that accepted the invitation.
  *
- * ── Why acceptance is the only place this is served ──
- * The grant is sealed to the invitation's one-off keypair, whose private half
- * exists only inside the fragment that travelled by a second channel. There is
- * no principal the server can authenticate as "the holder of that fragment", so
- * there is no endpoint that could safely serve these on demand. Acceptance is
- * the single moment where the token, the session and the invited address have
- * all been checked at once — so the grants ride out on that response, and the
- * rows are deleted as they go.
+ * ── Why serving this to a session gives nothing away ──
+ * The blob is sealed to the invitation's one-off X25519 public key. The session
+ * reading it cannot open it; only the fragment can, and the fragment has never
+ * been near this server. So what a session proves here is not possession, it is
+ * *entitlement to attempt* — which is why these are scoped to invitations this
+ * user id accepted and to nothing else. It is the same standard `myGrant` is
+ * served under: ciphertext addressed to a key the server does not hold.
+ *
+ * ── Why it is not served once, at acceptance ──
+ * It was, and the rows were deleted as they left. That made the flow unusable for
+ * the people it exists for: somebody arriving on an invitation link has no vault,
+ * cannot re-seal anything until they set one up, and found the grants destroyed
+ * by the response that had shown them. Consumption now happens where the re-seal
+ * is stored (`claimInvitationId` on the grants endpoint), so the code can be
+ * entered whenever it turns up.
  *
  * The two slugs travel with it because the invitee has no other view of this
  * organisation yet: they joined a moment ago, and the route they re-upload to

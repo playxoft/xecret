@@ -2,7 +2,13 @@
 
 import { zeroize } from '@xecret/core/crypto/client';
 import type { Bytes } from '@xecret/core/crypto/client';
-import { subscribeVaultKeys, vaultKeysHeld } from '@/components/vault/key-store';
+import {
+  acquireCryptoLease,
+  deferWipe,
+  subscribeVaultKeys,
+  VaultLockedError,
+  vaultKeysHeld,
+} from '@/components/vault/key-store';
 
 /**
  * The opened environment keys this session holds.
@@ -39,6 +45,18 @@ import { subscribeVaultKeys, vaultKeysHeld } from '@/components/vault/key-store'
  * Same rule, same reason as the vault's store. This is a `Map` in a module and
  * it dies with the page. `pins.ts` is the one file in this directory that
  * touches `localStorage`, and it holds public keys.
+ *
+ * ── The wipe is leased, on the vault store's counter ──
+ * An EDK is the key an import, a staged save and a rotation encrypt *every* item
+ * with, one `await` at a time, from an array they captured before the first one.
+ * Overwriting that array mid-loop does not fail: AES-GCM under an all-zero key
+ * produces a well-formed ciphertext nobody will ever open, and the upload
+ * succeeds. So every release below forgets its entries immediately — a locked
+ * session can reach nothing — and hands the *overwrite* to
+ * `deferWipe`, which runs it once the last in-flight operation has released its
+ * lease. Deliberately the vault store's counter and not a second one: an
+ * operation holds a vault key and an environment key at the same time, and two
+ * counters would let a lock mean two different things halfway through one save.
  */
 
 /** One environment's opened key material, at one EDK version. */
@@ -103,12 +121,17 @@ export function holdEnvKey(material: EnvKeyMaterial): void {
  */
 export function releaseEnvKeys(): void {
   if (held.size === 0) return;
-  for (const material of held.values()) {
-    zeroize(material.edk);
-    zeroize(material.ehk);
-  }
+  const orphaned = [...held.values()];
   held.clear();
   notify();
+  deferWipe(() => wipeAll(orphaned));
+}
+
+function wipeAll(material: readonly EnvKeyMaterial[]): void {
+  for (const entry of material) {
+    zeroize(entry.edk);
+    zeroize(entry.ehk);
+  }
 }
 
 /**
@@ -119,15 +142,38 @@ export function releaseEnvKeys(): void {
  * tab keep reading an environment it has just been told it may not.
  */
 export function releaseEnvironment(environmentId: string): void {
-  let changed = false;
+  const orphaned: EnvKeyMaterial[] = [];
   for (const [key, material] of held) {
     if (material.environmentId !== environmentId) continue;
-    zeroize(material.edk);
-    zeroize(material.ehk);
     held.delete(key);
-    changed = true;
+    orphaned.push(material);
   }
-  if (changed) notify();
+  if (orphaned.length === 0) return;
+  notify();
+  deferWipe(() => wipeAll(orphaned));
+}
+
+/**
+ * Runs one multi-step operation against environment keys nothing can wipe under
+ * it.
+ *
+ * The identity comparison is what makes this more than a counter. `material`
+ * arrived as a value captured at render time — `clientSecretIo` closes over one
+ * for the life of a screen — so "is this still the material the store holds?" is
+ * a question only the store can answer, and it must be asked *after* the lease is
+ * taken or the answer can go stale between the check and the first encrypt. A
+ * revocation, a lock or a rotation that landed first fails here with nothing
+ * written; one that lands afterwards is deferred to the `finally`.
+ */
+export async function withEnvKey<T>(material: EnvKeyMaterial, run: () => Promise<T>): Promise<T> {
+  const lease = acquireCryptoLease();
+  try {
+    const current = held.get(envKeyCacheKey(material.environmentId, material.envDataKeyId));
+    if (current !== material) throw new VaultLockedError();
+    return await run();
+  } finally {
+    lease.release();
+  }
 }
 
 /** Subscribes to opens and releases, for `useSyncExternalStore`. */

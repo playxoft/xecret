@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { uuidv7 } from '../../ids/uuid-v7';
+import { secretValueAad } from '../aad';
 import { randomBytes, toBase64Url } from '../encoding';
 import { MAX_SECRET_VALUE_BYTES, SecretTooLargeError } from '../secrets';
 import { DecryptionError } from '../types';
-import { BlobFormatError, parseGcmBlob } from './blob';
+import { BlobFormatError, formatGcmBlob, parseGcmBlob } from './blob';
+import { encryptGcm } from './gcm';
 import { toHex } from './bytes';
 import { computeValueHmac, decryptSecret, encryptSecret, MAX_SECRET_BLOB_LENGTH } from './secret';
 import type { SecretContext } from './secret';
@@ -165,6 +167,32 @@ describe('decryption rejects a relocated or tampered ciphertext', () => {
         blob: `xk2.gcm.${toBase64Url(tampered.slice(0, -1))}`,
       }),
     ).rejects.toThrow(DecryptionError);
+  });
+
+  /**
+   * The one failure that is neither a wrong key nor a malformed string: the tag
+   * verified, so the bytes are exactly what the writer sealed, and they are
+   * still not text. A writer that is not this library — a future field type, a
+   * corrupted round trip through a client that stored raw bytes — produces it.
+   *
+   * It is a format error and not a `DecryptionError` because the key *was*
+   * right, and saying otherwise would send a user to re-enter a passphrase that
+   * has nothing wrong with it. Silently substituting U+FFFD is the one outcome
+   * ruled out: mojibake written back on the next save destroys the value.
+   */
+  it('rejects an authenticated plaintext that is not valid UTF-8', async () => {
+    // A lone continuation byte: sealed under the right key and the right AAD,
+    // so everything up to the decode succeeds.
+    const blob = formatGcmBlob(
+      await encryptGcm(edk, new Uint8Array([0x41, 0x80, 0x42]), secretValueAad(valueContext)),
+    );
+
+    const thrown = await decryptSecret({ edk, context: valueContext, blob }).catch(
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBeInstanceOf(BlobFormatError);
+    expect(thrown).not.toBeInstanceOf(DecryptionError);
   });
 
   it('rejects an unknown blob version as a format error', async () => {

@@ -14,6 +14,7 @@ import {
 import type { Bytes } from '@xecret/core/crypto/client';
 import { uuidv7 } from '@xecret/core/ids';
 
+import { ApiError } from '@/lib/api';
 import { parseWith } from '@/server/http';
 import {
   createClientSecretBody,
@@ -22,6 +23,7 @@ import {
   updateClientSecretBody,
 } from '@/server/schemas/secrets';
 import { environmentKeyGrantsSchema, environmentKeyRotateSchema } from '@/server/schemas/env-keys';
+import { holdVaultKeys, releaseVaultKeys } from '@/components/vault/key-store';
 import type { VaultKeyMaterial } from '@/components/vault/key-store';
 
 import {
@@ -30,21 +32,26 @@ import {
   reSealInviteGrants,
   sealGrantFor,
   sealInviteGrant,
+  submitGrants,
 } from './env-keys';
-import { envKeyCount, readEnvKey, releaseEnvKeys } from './env-key-store';
+import { envKeyCount, holdEnvKey, readEnvKey, releaseEnvKeys } from './env-key-store';
+import type { EnvKeyMaterial } from './env-key-store';
 import {
   checkPin,
   fingerprint,
   modeIsAllowed,
   modePinKey,
+  pinKey,
   readModePins,
   readPins,
   recordModePin,
   recordPin,
+  recordSealedPins,
   replacePin,
+  substitutedRecipients,
   writePins,
 } from './pins';
-import { buildRotationGrants, planRotation, shareTargets } from './rotation';
+import { buildRotationGrants, planRotation, rotateEnvironment, shareTargets } from './rotation';
 import { clientSecretIo, renderExport } from './secret-io';
 import { decryptValue, encryptValue } from './secret-crypto';
 import type { EnvironmentKeys, GrantBody, InviteKeyGrant, Recipient } from './types';
@@ -89,12 +96,25 @@ vi.mock('@/lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api')>();
   const record = (path: string, body: unknown) => {
     posted.push({ path, body });
-    return Promise.resolve(responses.get(`POST ${path}`) ?? {});
+    const answer = responses.get(`POST ${path}`);
+    // A registered function may also *throw*, which is how a test stages a
+    // server refusal — the 409 a rotation landing mid-request produces.
+    try {
+      return Promise.resolve(typeof answer === 'function' ? answer() : (answer ?? {}));
+    } catch (cause) {
+      return Promise.reject(cause);
+    }
   };
   return {
     ...actual,
     api: {
-      get: vi.fn((path: string) => Promise.resolve(responses.get(`GET ${path}`) ?? {})),
+      // A registered *function* is called rather than returned, which is what
+      // lets a test fire something — a vault lock, say — from inside an
+      // operation that is halfway through its awaits.
+      get: vi.fn((path: string) => {
+        const answer = responses.get(`GET ${path}`);
+        return Promise.resolve(typeof answer === 'function' ? answer() : (answer ?? {}));
+      }),
       post: vi.fn(record),
       put: vi.fn(record),
       patch: vi.fn(record),
@@ -165,6 +185,11 @@ beforeEach(() => {
   posted.length = 0;
   responses.clear();
   releaseEnvKeys();
+  // Both stores, because both now refuse to let a multi-step operation run
+  // against material they are not holding — see `withVaultKeys` and
+  // `withEnvKey`. A test that leaked an unlock into the next one would make the
+  // guard look satisfied for the wrong reason.
+  releaseVaultKeys();
 });
 
 describe('grants', () => {
@@ -447,6 +472,11 @@ describe('the invite fragment flow', () => {
       ehkSealed: grant.ehkSealed,
     };
 
+    // The invitee's browser is unlocked: `reSealInviteGrants` is a leased
+    // operation, and a lease is only granted against the material the store
+    // holds. That is the guard, not a fixture detail.
+    holdVaultKeys(invitee);
+
     const outcome = await reSealInviteGrants({
       vault: invitee,
       fragmentSeed: typed.seed,
@@ -490,6 +520,8 @@ describe('the invite fragment flow', () => {
       edk: generateEnvironmentDataKey(),
       ehk: generateEnvironmentHmacKey(),
     });
+
+    holdVaultKeys(invitee);
 
     const outcome = await reSealInviteGrants({
       vault: invitee,
@@ -662,13 +694,28 @@ describe('the client secret IO', () => {
     envSlug: 'production',
   };
 
-  const material = {
-    environmentId: ENVIRONMENT_ID,
-    envDataKeyId: EDK_ID,
-    edkVersion: 1,
-    edk: generateEnvironmentDataKey(),
-    ehk: generateEnvironmentHmacKey(),
-  };
+  /**
+   * Held in the store, and rebuilt for every test.
+   *
+   * Both halves matter. `withEnvKey` compares the IO's captured material against
+   * what the store holds, and that identity check is the whole of the in-flight
+   * guard: an IO built over material the store has never seen is exactly the
+   * "encrypting under a key that has been released" case it exists to refuse. The
+   * bytes are regenerated per test because the outer `beforeEach` releases the
+   * store, which overwrites them in place.
+   */
+  let material: EnvKeyMaterial;
+
+  beforeEach(() => {
+    material = {
+      environmentId: ENVIRONMENT_ID,
+      envDataKeyId: EDK_ID,
+      edkVersion: 1,
+      edk: generateEnvironmentDataKey(),
+      ehk: generateEnvironmentHmacKey(),
+    };
+    holdEnvKey(material);
+  });
 
   it('builds a create body the server’s schema accepts, and encrypts it for version 1', async () => {
     const io = clientSecretIo(context, material);
@@ -812,13 +859,28 @@ describe('import and export, client-side', () => {
     envSlug: 'production',
   };
 
-  const material = {
-    environmentId: ENVIRONMENT_ID,
-    envDataKeyId: EDK_ID,
-    edkVersion: 1,
-    edk: generateEnvironmentDataKey(),
-    ehk: generateEnvironmentHmacKey(),
-  };
+  /**
+   * Held in the store, and rebuilt for every test.
+   *
+   * Both halves matter. `withEnvKey` compares the IO's captured material against
+   * what the store holds, and that identity check is the whole of the in-flight
+   * guard: an IO built over material the store has never seen is exactly the
+   * "encrypting under a key that has been released" case it exists to refuse. The
+   * bytes are regenerated per test because the outer `beforeEach` releases the
+   * store, which overwrites them in place.
+   */
+  let material: EnvKeyMaterial;
+
+  beforeEach(() => {
+    material = {
+      environmentId: ENVIRONMENT_ID,
+      envDataKeyId: EDK_ID,
+      edkVersion: 1,
+      edk: generateEnvironmentDataKey(),
+      ehk: generateEnvironmentHmacKey(),
+    };
+    holdEnvKey(material);
+  });
 
   it('parses locally, encrypts each entry, and posts a body the server accepts', async () => {
     const io = clientSecretIo(context, material);
@@ -948,5 +1010,416 @@ describe('import and export, client-side', () => {
     // formatting takes plaintext and the server has none.
     expect(renderExport(plaintexts, 'env')).toBe('ALPHA=one\nBRAVO=two\n');
     expect(JSON.parse(renderExport(plaintexts, 'json'))).toEqual({ ALPHA: 'one', BRAVO: 'two' });
+  });
+});
+
+describe('the in-flight crypto guard', () => {
+  const context = {
+    orgSlug: 'acme',
+    orgId: ORG_ID,
+    projectSlug: 'api',
+    envSlug: 'production',
+  };
+
+  /**
+   * The failure this whole section exists for.
+   *
+   * A lock used to overwrite the environment key **in place**, and the arrays it
+   * overwrote were the ones a multi-step operation had already captured. So an
+   * idle timer firing between two entries of an import did not abort the import;
+   * it changed the key the second entry was encrypted with — to thirty-two
+   * zeroes. AES-GCM under an all-zero key does not fail. It produces a perfectly
+   * well-formed ciphertext that nothing will ever open, the upload returns 200,
+   * and the row sits in the database looking exactly like a working one.
+   *
+   * Every assertion below is therefore an *open*, not a call count: the only
+   * evidence that matters is whether what was uploaded decrypts under the key
+   * the operation started with.
+   */
+  function freshMaterial(): EnvKeyMaterial {
+    return {
+      environmentId: ENVIRONMENT_ID,
+      envDataKeyId: EDK_ID,
+      edkVersion: 1,
+      edk: generateEnvironmentDataKey(),
+      ehk: generateEnvironmentHmacKey(),
+    };
+  }
+
+  /** A detached copy, so the deferred wipe cannot reach the assertion's key. */
+  function snapshot(material: EnvKeyMaterial): EnvKeyMaterial {
+    return { ...material, edk: material.edk.slice(), ehk: material.ehk.slice() };
+  }
+
+  it('finishes a two-item import under the real key when the vault locks mid-flight', async () => {
+    const material = freshMaterial();
+    const before = snapshot(material);
+    holdEnvKey(material);
+
+    const io = clientSecretIo(context, material);
+
+    // The lock lands *inside* the operation: `runImport` has already taken its
+    // lease and is awaiting the listing when the idle timer fires.
+    responses.set(
+      'GET /api/orgs/acme/projects/api/environments/production/secrets?limit=200',
+      () => {
+        releaseEnvKeys();
+        return { data: [], nextCursor: null };
+      },
+    );
+
+    responses.set('POST /api/orgs/acme/projects/api/environments/production/import', {
+      dryRun: false,
+      counts: { create: 2, overwrite: 0, unchanged: 0 },
+      items: [],
+    });
+
+    await io.runImport({
+      content: 'ALPHA=one\nBRAVO=two\n',
+      filename: '.env',
+      format: 'auto',
+      strategy: 'overwrite',
+      dryRun: false,
+    });
+
+    const [upload] = posted;
+    const body = parseWith(importClientBody, upload?.body);
+    expect(body.entries).toHaveLength(2);
+
+    // Both entries, opened with the key the operation began with. A zero-key
+    // ciphertext would parse, would have passed the schema, and would fail here
+    // — which is the only place it could ever have been caught.
+    const opened = await Promise.all(
+      body.entries.map((entry) =>
+        decryptValue({
+          material: before,
+          target: { orgId: ORG_ID, environmentId: ENVIRONMENT_ID, secretId: entry.id },
+          version: entry.expectedVersion,
+          ciphertext: entry.value.ciphertext,
+        }),
+      ),
+    );
+    expect(opened).toEqual(['one', 'two']);
+  });
+
+  it('wipes the key once the operation that was holding it releases', async () => {
+    const material = freshMaterial();
+    holdEnvKey(material);
+
+    const io = clientSecretIo(context, material);
+    responses.set(
+      'GET /api/orgs/acme/projects/api/environments/production/secrets?limit=200',
+      () => {
+        releaseEnvKeys();
+        // The store forgets immediately — a locked session must be able to reach
+        // nothing — while the overwrite waits for the lease.
+        expect(readEnvKey(ENVIRONMENT_ID, EDK_ID)).toBeNull();
+        expect(material.edk.some((byte) => byte !== 0)).toBe(true);
+        return { data: [], nextCursor: null };
+      },
+    );
+
+    responses.set('POST /api/orgs/acme/projects/api/environments/production/import', {
+      dryRun: false,
+      counts: { create: 1, overwrite: 0, unchanged: 0 },
+      items: [],
+    });
+
+    await io.runImport({
+      content: 'ALPHA=one\n',
+      filename: '.env',
+      format: 'auto',
+      strategy: 'overwrite',
+      dryRun: false,
+    });
+
+    // Deferred, not skipped. The bytes are gone the moment nothing is using them.
+    expect([...material.edk]).toEqual([...new Uint8Array(32)]);
+    expect([...material.ehk]).toEqual([...new Uint8Array(material.ehk.length)]);
+  });
+
+  it('refuses to start an operation against material the store no longer holds', async () => {
+    const material = freshMaterial();
+    holdEnvKey(material);
+
+    const io = clientSecretIo(context, material);
+    releaseEnvKeys();
+
+    // Aborts before the first encrypt, and — the part that matters — before the
+    // first request. Nothing half-written, nothing to reconcile.
+    await expect(
+      io.create({ name: 'DATABASE_URL', value: 'postgres://live', valueType: 'string' }),
+    ).rejects.toThrow(/vault was locked/i);
+    expect(posted).toHaveLength(0);
+  });
+
+  it('refuses a rotation whose environment key was released first', async () => {
+    const vault = vaultFor(USER_ID);
+    holdVaultKeys(vault);
+
+    const material = freshMaterial();
+    holdEnvKey(material);
+    releaseEnvKeys();
+
+    const outcome = await rotateEnvironment({
+      target: { orgSlug: 'acme', projectSlug: 'api', envSlug: 'production' },
+      vault,
+      material,
+      plan: planRotation({
+        currentVersion: 1,
+        recipients: [
+          {
+            kind: 'member',
+            id: OTHER_USER_ID,
+            publicKey: encodePublicKey(generateEncryptionKeyPair().publicKey),
+            holdsGrant: false,
+          },
+        ],
+        unsealable: [],
+      }),
+    });
+
+    // A failure, not an `incomplete`: the server never heard about it, because a
+    // rotation sealing the old EHK from a zeroized array would have produced a
+    // complete-looking grant set that revokes everybody.
+    expect(outcome.status).toBe('failed');
+    expect(posted).toHaveLength(0);
+  });
+});
+
+describe('sealing against a key that moved', () => {
+  const target = { orgSlug: 'acme', projectSlug: 'api', envSlug: 'production' };
+
+  it('re-reads, re-seals against the active key, and retries once', async () => {
+    // ── The stale snapshot this closes ──
+    // Every caller seals against material a screen has been holding. A rotation
+    // landing between the render and the click makes the seal address a version
+    // the server refuses — and reporting that to somebody who did nothing wrong
+    // was the old behaviour on both the share banner and the token mint, where
+    // it surfaced as `keyShared: false` on a credential that had already been
+    // created and could never be shown again.
+    const vault = vaultFor(USER_ID);
+    holdVaultKeys(vault);
+
+    const stale: EnvKeyMaterial = {
+      environmentId: ENVIRONMENT_ID,
+      envDataKeyId: EDK_ID,
+      edkVersion: 1,
+      edk: generateEnvironmentDataKey(),
+      ehk: generateEnvironmentHmacKey(),
+    };
+    holdEnvKey(stale);
+
+    // The key the rotation left behind, and the grant on it this browser holds.
+    const rotatedEdkId = '018f3f6a-0000-7000-8000-0000000000c2';
+    const freshEdk = generateEnvironmentDataKey();
+    const freshEhk = generateEnvironmentHmacKey();
+    const myGrant = await sealGrantFor({
+      vault,
+      environmentId: ENVIRONMENT_ID,
+      edkVersion: 2,
+      edk: freshEdk,
+      ehk: freshEhk,
+      recipientKind: 'member',
+      recipientId: USER_ID,
+      recipientPublicKey: vault.encPublicKey,
+    });
+
+    responses.set('GET /api/orgs/acme/projects/api/environments/production/keys', {
+      keys: {
+        ...keyStateWith(myGrant),
+        activeEdk: { id: rotatedEdkId, version: 2 },
+      },
+    });
+
+    let attempts = 0;
+    responses.set('POST /api/orgs/acme/projects/api/environments/production/keys/grants', () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new ApiError({
+          code: 'conflict',
+          message: 'These grants were sealed for version 1; the active key is version 2.',
+          status: 409,
+          requestId: null,
+        });
+      }
+      return { granted: 1 };
+    });
+
+    const recipient = vaultFor(OTHER_USER_ID);
+    const outcome = await submitGrants({
+      target,
+      vault,
+      material: stale,
+      seal: (current) =>
+        sealGrantFor({
+          vault,
+          environmentId: current.environmentId,
+          edkVersion: current.edkVersion,
+          edk: current.edk,
+          ehk: current.ehk,
+          recipientKind: 'member',
+          recipientId: OTHER_USER_ID,
+          recipientPublicKey: recipient.encPublicKey,
+        }).then((grant) => [grant]),
+    });
+
+    expect(attempts).toBe(2);
+    expect(outcome.granted).toBe(1);
+    expect(outcome.material.envDataKeyId).toBe(rotatedEdkId);
+
+    // The retry sealed *different bytes*, against the new key id, and the
+    // recipient can open them. Re-posting the original blobs under a new key id
+    // would have stored a row nobody can ever open, behind a 201.
+    const [, retry] = posted;
+    const body = parseWith(environmentKeyGrantsSchema, retry?.body);
+    expect(body.envDataKeyId).toBe(rotatedEdkId);
+
+    const opened = await openEnvironmentKeys(
+      {
+        ...keyStateWith(body.grants[0] as GrantBody),
+        activeEdk: { id: rotatedEdkId, version: 2 },
+      },
+      recipient,
+    );
+    expect(opened.status).toBe('open');
+    if (opened.status !== 'open') return;
+    expect([...opened.material.edk]).toEqual([...freshEdk]);
+  });
+
+  it('gives up after one retry rather than chasing a second rotation', async () => {
+    const vault = vaultFor(USER_ID);
+    holdVaultKeys(vault);
+
+    const material: EnvKeyMaterial = {
+      environmentId: ENVIRONMENT_ID,
+      envDataKeyId: EDK_ID,
+      edkVersion: 1,
+      edk: generateEnvironmentDataKey(),
+      ehk: generateEnvironmentHmacKey(),
+    };
+    holdEnvKey(material);
+
+    const myGrant = await sealGrantFor({
+      vault,
+      environmentId: ENVIRONMENT_ID,
+      edkVersion: 1,
+      edk: material.edk,
+      ehk: material.ehk,
+      recipientKind: 'member',
+      recipientId: USER_ID,
+      recipientPublicKey: vault.encPublicKey,
+    });
+
+    responses.set('GET /api/orgs/acme/projects/api/environments/production/keys', {
+      keys: keyStateWith(myGrant),
+    });
+
+    let attempts = 0;
+    responses.set('POST /api/orgs/acme/projects/api/environments/production/keys/grants', () => {
+      attempts += 1;
+      throw new ApiError({
+        code: 'conflict',
+        message: 'rotated again',
+        status: 409,
+        requestId: null,
+      });
+    });
+
+    await expect(
+      submitGrants({
+        target,
+        vault,
+        material,
+        seal: () => Promise.resolve([] as GrantBody[]),
+      }),
+    ).rejects.toThrow(/rotated again/);
+
+    // Two administrators rotating at once is not a race this browser should keep
+    // chasing, and a loop here would be one with no exit condition at all.
+    expect(attempts).toBe(2);
+  });
+});
+
+describe('trust on first use, enforced', () => {
+  /** A `Storage`, in a test that runs under Node. See the pinning suite above. */
+  function book(): Storage {
+    const map = new Map<string, string>();
+    return {
+      get length() {
+        return map.size;
+      },
+      clear: () => map.clear(),
+      getItem: (key) => map.get(key) ?? null,
+      key: (index) => [...map.keys()][index] ?? null,
+      removeItem: (key) => map.delete(key),
+      setItem: (key, value) => void map.set(key, value),
+    } as Storage;
+  }
+
+  it('names a substituted recipient and records nothing by looking at it', () => {
+    const storage = book();
+    const stored = encodePublicKey(generateEncryptionKeyPair().publicKey);
+    const substituted = encodePublicKey(generateEncryptionKeyPair().publicKey);
+
+    writePins(recordPin(readPins(storage), 'member', OTHER_USER_ID, stored), storage);
+
+    const recipients: Recipient[] = [
+      { kind: 'member', id: OTHER_USER_ID, publicKey: substituted, holdsGrant: false },
+      { kind: 'member', id: USER_ID, publicKey: stored, holdsGrant: false },
+    ];
+
+    // The one presenting a different key is named; the one nobody has a pin for
+    // is not, because first contact is not a substitution.
+    expect(substitutedRecipients(recipients, readPins(storage)).map((entry) => entry.id)).toEqual([
+      OTHER_USER_ID,
+    ]);
+
+    // And asking the question changed nothing. `FingerprintList` used to pin on
+    // render, which meant a key was trusted for having been *displayed* — so a
+    // substitution arriving before any pin existed was recorded as the trusted
+    // key, and every later comparison agreed with it.
+    expect(readPins(storage)[pinKey('member', USER_ID)]).toBeUndefined();
+  });
+
+  it('records pins only for the recipients a completed act sealed to', () => {
+    const storage = book();
+    const first = encodePublicKey(generateEncryptionKeyPair().publicKey);
+    const second = encodePublicKey(generateEncryptionKeyPair().publicKey);
+
+    recordSealedPins(
+      [
+        { kind: 'member', id: USER_ID, publicKey: first, holdsGrant: false },
+        { kind: 'token', id: TOKEN_ID, publicKey: second, holdsGrant: false },
+      ],
+      storage,
+    );
+
+    expect(readPins(storage)[pinKey('member', USER_ID)]?.publicKey).toBe(first);
+    expect(readPins(storage)[pinKey('token', TOKEN_ID)]?.publicKey).toBe(second);
+
+    // A changed key is never overwritten by this path: the evidence that a
+    // substitution happened is the only thing standing between a person and
+    // sealing to it.
+    const substituted = encodePublicKey(generateEncryptionKeyPair().publicKey);
+    recordSealedPins(
+      [{ kind: 'member', id: USER_ID, publicKey: substituted, holdsGrant: false }],
+      storage,
+    );
+    expect(readPins(storage)[pinKey('member', USER_ID)]?.publicKey).toBe(first);
+  });
+});
+
+describe('the fingerprint the CLI and the browser must agree on', () => {
+  it('renders the shared cross-language vector', async () => {
+    // The consent screen shows this for the CLI's hand-off key and the CLI
+    // prints it for the same bytes; a person compares them by eye. Two
+    // implementations of one format is exactly how they come to disagree, so the
+    // agreement is pinned by a value both suites assert — `KeyFingerprint` in
+    // `cli/internal/e2ee` checks the same input against the same string.
+    const bytes = new Uint8Array(32);
+    for (let index = 0; index < bytes.length; index += 1) bytes[index] = index;
+
+    expect(await fingerprint(bytes)).toBe('CC6W-TAB6');
   });
 });

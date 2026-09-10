@@ -11,7 +11,7 @@ import { api } from '@/lib/api';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import {
   fetchEnvironmentKeys,
-  grantsPath,
+  submitGrants,
   modeIsAllowed,
   modePinKey,
   openEnvironmentKeys,
@@ -173,22 +173,32 @@ export async function mintServiceToken(
     // Past this point the token exists. A failure to seal is reported, never
     // thrown: throwing would discard a value that has already been created and
     // can never be shown again.
+    //
+    // ── A rotation landing mid-mint is retried, not reported ──
+    // The key was opened before the token was created, so a rotation in between
+    // makes this seal address a version the server refuses. Reporting
+    // `keyShared: false` for that was the wrong answer to the one failure that
+    // is trivially fixable: the token is already minted and its public key
+    // already stored, so the only correct next act is to seal the *new* key to
+    // it — which `submitGrants` does, once, without asking somebody to go and
+    // run a rotation for a credential they created ten seconds ago.
     let keyShared = false;
     try {
-      const grant = await sealGrantFor({
+      await submitGrants({
+        target,
         vault,
-        environmentId: material.environmentId,
-        edkVersion: material.edkVersion,
-        edk: material.edk,
-        ehk: material.ehk,
-        recipientKind: 'token',
-        recipientId: issued.serviceToken.id,
-        recipientPublicKey: keypair.publicKey,
-      });
-
-      await api.post(grantsPath(target), {
-        envDataKeyId: material.envDataKeyId,
-        grants: [grant],
+        material,
+        seal: (current) =>
+          sealGrantFor({
+            vault,
+            environmentId: current.environmentId,
+            edkVersion: current.edkVersion,
+            edk: current.edk,
+            ehk: current.ehk,
+            recipientKind: 'token',
+            recipientId: issued.serviceToken.id,
+            recipientPublicKey: keypair.publicKey,
+          }).then((grant) => [grant]),
       });
       keyShared = true;
     } catch {

@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import type { OrgRole } from '@xecret/core/authz';
 import { api, endSession, errorMessage } from '@/lib/api';
@@ -27,9 +27,14 @@ import type { InvitationState } from '@/components/members/types';
  * ── The step after acceptance ──
  * An invitation may carry sealed environment keys, addressed to a one-off
  * keypair whose private half exists only in the code the inviter sent by a
- * second channel. Acceptance hands those grants back once and deletes them, so
- * this screen holds them and offers the code entry rather than navigating
- * straight into the dashboard — where they would be gone.
+ * second channel. This screen holds them and offers the code entry rather than
+ * navigating straight into the dashboard, because the code arriving on the same
+ * device at the same moment is the case worth optimising for.
+ *
+ * The grants are no longer destroyed by the response that carries them — they are
+ * consumed by the write that stores each re-sealed copy — so leaving this screen
+ * is recoverable, and `InviteKeyStep` offers the vault ceremony inline for the
+ * common case of somebody whose account is minutes old.
  *
  * Skipping is a supported outcome, not a failure: the same acceptance queued a
  * pending key share for every environment the new member can read, so a teammate
@@ -48,22 +53,22 @@ interface Lookup {
 }
 
 interface Me {
-  user: { email: string };
+  /** `id` travels because every vault wrap's AAD binds it — see `InviteKeyStep`. */
+  user: { id: string; email: string; displayName: string | null };
+  vault: { configured: boolean };
 }
 
 interface AcceptResponse {
   organization: { name: string; slug: string };
   role: OrgRole;
-  /** The `recipientId` bound into each grant's AAD. */
+  /** The `recipientId` bound into each grant's AAD, and the claim's key. */
   invitationId: string;
-  /** Served exactly once, and deleted as they leave. */
+  /** Read-only. Consumed by the grant write that replaces each one. */
   inviteKeyGrants: readonly InviteKeyGrant[];
 }
 
 type Phase =
-  | { kind: 'loading' }
-  | { kind: 'invalid' }
-  | { kind: 'ready'; lookup: Lookup; viewerEmail: string | null };
+  { kind: 'loading' } | { kind: 'invalid' } | { kind: 'ready'; lookup: Lookup; viewer: Me | null };
 
 export function InviteScreen({ token }: { token: string }) {
   const router = useRouter();
@@ -79,6 +84,8 @@ export function InviteScreen({ token }: { token: string }) {
    */
   const [accepted, setAccepted] = useState<AcceptResponse | null>(null);
 
+  const [reloads, setReloads] = useState(0);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -86,12 +93,9 @@ export function InviteScreen({ token }: { token: string }) {
       try {
         const [lookup, me] = await Promise.all([
           api.post<Lookup>('/api/invitations/lookup', { token }),
-          api
-            .get<Me>('/api/auth/me', { redirectOnUnauthenticated: false })
-            .then((response) => response.user.email)
-            .catch(() => null),
+          api.get<Me>('/api/auth/me', { redirectOnUnauthenticated: false }).catch(() => null),
         ]);
-        if (!cancelled) setPhase({ kind: 'ready', lookup, viewerEmail: me });
+        if (!cancelled) setPhase({ kind: 'ready', lookup, viewer: me });
       } catch {
         if (!cancelled) setPhase({ kind: 'invalid' });
       }
@@ -101,7 +105,12 @@ export function InviteScreen({ token }: { token: string }) {
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, reloads]);
+
+  // Re-read the account after a vault is created or unlocked inside the key
+  // step. The lookup is re-run with it, which costs one request and keeps this
+  // screen to a single source of truth rather than patching `viewer` in place.
+  const reloadViewer = useCallback(() => setReloads((current) => current + 1), []);
 
   async function accept() {
     if (accepting) return;
@@ -126,7 +135,8 @@ export function InviteScreen({ token }: { token: string }) {
     }
   }
 
-  if (accepted !== null) {
+  if (accepted !== null && phase.kind === 'ready' && phase.viewer !== null) {
+    const viewer = phase.viewer;
     return (
       <Card>
         <CardContent className="flex flex-col gap-4 py-8">
@@ -141,6 +151,11 @@ export function InviteScreen({ token }: { token: string }) {
             orgSlug={accepted.organization.slug}
             invitationId={accepted.invitationId}
             grants={accepted.inviteKeyGrants}
+            vaultGate={{
+              user: viewer.user,
+              configured: viewer.vault.configured,
+              onChanged: reloadViewer,
+            }}
             onDone={() => router.replace(`/app/${encodeURIComponent(accepted.organization.slug)}`)}
           />
         </CardContent>
@@ -173,7 +188,8 @@ export function InviteScreen({ token }: { token: string }) {
     );
   }
 
-  const { lookup, viewerEmail } = phase;
+  const { lookup, viewer } = phase;
+  const viewerEmail = viewer?.user.email ?? null;
   const invitation = lookup.invitation;
   const inviter = lookup.invitedBy;
   const nextPath = `/invite/${encodeURIComponent(token)}`;

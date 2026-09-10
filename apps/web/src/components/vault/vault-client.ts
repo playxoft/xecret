@@ -126,6 +126,29 @@ export function fetchVault(): Promise<VaultResponse> {
   return api.get<VaultResponse>(apiPath.vault());
 }
 
+/**
+ * Whether the second material is a *different vault state* from the first.
+ *
+ * ── The wrong error message this exists to stop ──
+ * A tab open since this morning holds the wraps it read this morning. Change the
+ * passphrase on a laptop, or recover on a phone, and the salt and the passphrase
+ * wrap both move — so the correct new passphrase, typed into the old tab,
+ * derives the wrong key and fails to unwrap. What that tab used to say was
+ * "check for a typo": it sent somebody to doubt a passphrase they had just set,
+ * and every retry spent another attempt from a server-side lockout budget that
+ * no correct passphrase could ever satisfy.
+ *
+ * Two fields, and only two. The salt is what the passphrase is stretched with
+ * and the wrap is what the derived key opens; any change to either makes every
+ * previously-valid credential fail against this copy. `recoveryCodesRemaining`
+ * and the passkey list move for reasons that have nothing to do with whether a
+ * passphrase still works, and treating them as supersession would tell somebody
+ * their passphrase had changed because they enrolled a passkey elsewhere.
+ */
+export function materialSupersedes(before: VaultMaterial, after: VaultMaterial): boolean {
+  return before.kdfSalt !== after.kdfSalt || before.passphraseWrap !== after.passphraseWrap;
+}
+
 /* ─────────────────────────── the setup ceremony ─────────────────────────── */
 
 /**
@@ -405,6 +428,16 @@ export function unlockBody(proof: UnlockProof): Record<string, string> {
  * and the setup ceremony's implicit unlock — because each of them has to do all
  * three, and the one that forgot the third would leave a browser full of keys
  * against a session the API refuses.
+ *
+ * ── The failure path zeroizes, matching `setupVault`'s discipline ──
+ * Nothing takes ownership of these bytes until {@link holdVaultKeys} does, and
+ * the request between the two can fail — a lockout, a dropped connection, a
+ * session revoked in the moment between the local unwrap and the POST. Every one
+ * of those used to return a rejected promise while a User Key and two private
+ * keys stayed in a closure with no owner, no wipe, and no way for any later lock
+ * to find them. The `catch` is not defensive tidying: it is the difference
+ * between "the unlock failed" and "the unlock failed and left the keys resident
+ * for the life of the page".
  */
 async function finishUnlock(params: {
   userId: string;
@@ -414,32 +447,66 @@ async function finishUnlock(params: {
 }): Promise<VaultStatus> {
   const keys = await openPrivateKeys(params.userId, params.userKey, params.material);
 
-  const response = await api.post<{ vault: VaultStatus }>(
-    apiPath.vaultUnlock(),
-    unlockBody(params.proof),
-  );
+  let response;
+  try {
+    response = await api.post<{ vault: VaultStatus }>(
+      apiPath.vaultUnlock(),
+      unlockBody(params.proof),
+    );
+  } catch (cause) {
+    zeroize(keys.userKey);
+    zeroize(keys.encPrivateKey);
+    zeroize(keys.signPrivateKey);
+    throw cause;
+  }
 
   holdVaultKeys(keys);
   return response.vault;
 }
 
-/** The User Key plus both private keys, ready for {@link holdVaultKeys}. */
+/**
+ * The User Key plus both private keys, ready for {@link holdVaultKeys}.
+ *
+ * ── Why the two unwraps are settled rather than raced ──
+ * `Promise.all` rejects on the first failure and abandons the other promise,
+ * which still resolves — to a decrypted private key nobody is holding and nobody
+ * will ever wipe. A corrupt signing wrap therefore leaked the encryption key, on
+ * the one path where the caller has just been told the vault did not open and has
+ * every reason to believe nothing was produced. `allSettled` lets both finish so
+ * that whichever succeeded can be overwritten before the failure is re-thrown.
+ *
+ * The User Key goes with them. It is the caller's until this function returns
+ * successfully, and a caller that has just received a rejection has no handle to
+ * wipe it with.
+ */
 export async function openPrivateKeys(
   userId: string,
   userKey: Bytes,
   material: VaultMaterial,
 ): Promise<VaultKeyMaterial> {
-  const [encPrivateKey, signPrivateKey] = await Promise.all([
+  const [enc, sign] = await Promise.allSettled([
     unwrapPrivateKey({ userKey, blob: material.encPrivateKeyEnc, userId, purpose: 'encryption' }),
     unwrapPrivateKey({ userKey, blob: material.signPrivateKeyEnc, userId, purpose: 'signing' }),
   ]);
 
+  if (enc.status === 'rejected' || sign.status === 'rejected') {
+    if (enc.status === 'fulfilled') zeroize(enc.value);
+    if (sign.status === 'fulfilled') zeroize(sign.value);
+    zeroize(userKey);
+    // The encryption wrap's failure is reported when both failed: they fail for
+    // the same reason — a User Key that is not this vault's — and reporting the
+    // second would make the message depend on which promise settled first.
+    throw enc.status === 'rejected'
+      ? (enc.reason as unknown)
+      : (sign as PromiseRejectedResult).reason;
+  }
+
   return {
     userId,
     userKey,
-    encPrivateKey,
+    encPrivateKey: enc.value,
     encPublicKey: decodePublicKey(material.encPublicKey),
-    signPrivateKey,
+    signPrivateKey: sign.value,
     signPublicKey: decodePublicKey(material.signPublicKey),
   };
 }

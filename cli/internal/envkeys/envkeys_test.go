@@ -5,10 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/playxoft/xecret/cli/internal/api"
 	"github.com/playxoft/xecret/cli/internal/e2ee"
+	"github.com/playxoft/xecret/cli/internal/keyring"
 )
 
 // The full decrypt path, from a captured web response.
@@ -243,4 +245,219 @@ func TestALegacyTokenSaysSoBeforeItFails(t *testing.T) {
 	if got := err.Error(); got == "" {
 		t.Error("the refusal says nothing")
 	}
+}
+
+// ── Reporting every row that failed, not the first one ──
+//
+// A pull still fails as a unit. What changed is that it says what is wrong with
+// the environment rather than what is wrong with the first row of it, because
+// the shape of the answer — "these three, all naming the old key" — is what
+// distinguishes a rotation in progress from a damaged record.
+
+// retiredRow copies a row and points it at a key that is not the active one.
+func retiredRow(source api.ClientSecret, name string) api.ClientSecret {
+	row := source
+	row.Name = name
+	row.EnvDataKeyID = "018f3b2c-9c1a-7c3d-8e4f-8a1b2c3d4e5f"
+	return row
+}
+
+func TestDecryptBundleReportsEveryFailingRow(t *testing.T) {
+	principal := fixturePrincipal(t)
+	defer principal.Close()
+
+	bundle := loadBundle(t)
+	source := bundle.Secrets[0]
+	bundle.Secrets = []api.ClientSecret{
+		retiredRow(source, "LEGACY_ONE"),
+		source,
+		retiredRow(source, "LEGACY_TWO"),
+	}
+
+	_, err := DecryptBundle(bundle, principal)
+	if err == nil {
+		t.Fatal("unreadable rows did not stop the pull")
+	}
+
+	var bundleErr *BundleError
+	if !errors.As(err, &bundleErr) {
+		t.Fatalf("err = %T (%v), want a *BundleError", err, err)
+	}
+	if len(bundleErr.Failures) != 2 || bundleErr.Total != 3 {
+		t.Fatalf("failures = %d of %d, want 2 of 3", len(bundleErr.Failures), bundleErr.Total)
+	}
+
+	// Both names, in the order the bundle listed them: a message that stops at
+	// the first is a user running the same command once per broken secret.
+	message := err.Error()
+	for _, name := range []string{"LEGACY_ONE", "LEGACY_TWO"} {
+		if !strings.Contains(message, name) {
+			t.Errorf("the message does not name %s: %s", name, message)
+		}
+	}
+	if strings.Index(message, "LEGACY_ONE") > strings.Index(message, "LEGACY_TWO") {
+		t.Errorf("the failures are not in bundle order: %s", message)
+	}
+	if !strings.Contains(message, ErrRotatedAway.Error()) {
+		t.Errorf("the message does not carry each row's reason: %s", message)
+	}
+
+	// Every failure names a retired key, so the remedy is stated.
+	if !bundleErr.AllRotatedAway() {
+		t.Error("AllRotatedAway is false for a bundle whose every failure is one")
+	}
+	if !strings.Contains(message, "set them again") {
+		t.Errorf("the rewrite instruction is missing: %s", message)
+	}
+	if !errors.Is(err, ErrRotatedAway) {
+		t.Error("errors.Is does not reach the row errors")
+	}
+}
+
+// The hint is only correct when every failure is a retired-key row. Rewriting a
+// secret whose ciphertext failed for some other reason destroys the evidence and
+// fixes nothing, so a mixed bundle does not suggest it.
+func TestAMixedBundleDoesNotSuggestRewritingSecrets(t *testing.T) {
+	principal := fixturePrincipal(t)
+	defer principal.Close()
+
+	bundle := loadBundle(t)
+	source := bundle.Secrets[0]
+	damaged := source
+	damaged.Name = "DAMAGED"
+	damaged.Version = source.Version + 1 // the AAD no longer matches the blob
+
+	bundle.Secrets = []api.ClientSecret{retiredRow(source, "LEGACY_ONE"), damaged}
+
+	_, err := DecryptBundle(bundle, principal)
+	var bundleErr *BundleError
+	if !errors.As(err, &bundleErr) {
+		t.Fatalf("err = %v, want a *BundleError", err)
+	}
+	if len(bundleErr.Failures) != 2 {
+		t.Fatalf("failures = %d, want both rows", len(bundleErr.Failures))
+	}
+	if bundleErr.AllRotatedAway() {
+		t.Fatal("a decryption failure was counted as a rotated-away row")
+	}
+	if strings.Contains(err.Error(), "set them again") {
+		t.Errorf("a mixed bundle suggested a rewrite: %s", err.Error())
+	}
+}
+
+// A bundle that opens completely reports nothing, which is the case that would
+// otherwise be broken by collecting failures in a slice nobody empties.
+func TestACleanBundleStillOpens(t *testing.T) {
+	principal := fixturePrincipal(t)
+	defer principal.Close()
+
+	secrets, err := DecryptBundle(loadBundle(t), principal)
+	if err != nil {
+		t.Fatalf("DecryptBundle: %v", err)
+	}
+	if len(secrets) == 0 {
+		t.Fatal("no secrets came back from a clean bundle")
+	}
+}
+
+// ── The wraps this machine keeps, and the ones it does not ──
+
+func TestVaultWrapsRoundTripAndCarryOnlyTheWraps(t *testing.T) {
+	store := memoryStore{}
+
+	material := &api.VaultMaterial{
+		EncPrivateKeyEnc:  "xk2.gcm.enc",
+		SignPrivateKeyEnc: "xk2.gcm.sign",
+		PassphraseWrap:    "xk2.gcm.passphrase",
+		KdfSalt:           "c2FsdA",
+	}
+	if err := StoreVaultWraps(store, material); err != nil {
+		t.Fatalf("StoreVaultWraps: %v", err)
+	}
+
+	stored := store[VaultWrapsEntry]
+	if !strings.Contains(stored, "xk2.gcm.enc") || !strings.Contains(stored, "xk2.gcm.sign") {
+		t.Fatalf("the private-key wraps did not survive: %s", stored)
+	}
+	// The passphrase wrap and the salt are the User Key under a human secret.
+	// Keeping them here would hand anybody who reads this store an offline
+	// guessing target, and nothing needs them to go from the UK to a private key.
+	if strings.Contains(stored, "passphrase") || strings.Contains(stored, "c2FsdA") {
+		t.Fatalf("the passphrase wrap was stored: %s", stored)
+	}
+
+	wraps, err := readVaultWraps(store)
+	if err != nil {
+		t.Fatalf("readVaultWraps: %v", err)
+	}
+	if wraps.EncPrivateKeyEnc != material.EncPrivateKeyEnc {
+		t.Fatalf("encPrivateKeyEnc = %q", wraps.EncPrivateKeyEnc)
+	}
+}
+
+// Forgetting the User Key forgets the wraps too, so "deleting this entry is
+// cryptographic erasure" stays a sentence without a footnote.
+func TestForgetUserKeyForgetsTheWraps(t *testing.T) {
+	store := memoryStore{}
+	userKey := make([]byte, e2ee.KeyBytes)
+
+	if err := StoreUserKey(store, userKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := StoreVaultWraps(store, &api.VaultMaterial{EncPrivateKeyEnc: "xk2.gcm.enc"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ForgetUserKey(store); err != nil {
+		t.Fatalf("ForgetUserKey: %v", err)
+	}
+
+	if _, ok := store[UserKeyEntry]; ok {
+		t.Error("the vault key survived a logout")
+	}
+	if _, ok := store[VaultWrapsEntry]; ok {
+		t.Error("the private-key wrap survived a logout")
+	}
+	// And it is idempotent: a second logout, or a logout on a machine that never
+	// held one, must not fail.
+	if err := ForgetUserKey(store); err != nil {
+		t.Errorf("a second ForgetUserKey: %v", err)
+	}
+}
+
+// A machine that holds the User Key and no wraps is a login made by an earlier
+// build. It fails with the one instruction that fixes it for ever, rather than
+// with "run login again", which would throw the working credential away too.
+func TestOfflinePrincipalWithoutWrapsNamesTheRemedy(t *testing.T) {
+	store := memoryStore{}
+	if err := StoreUserKey(store, make([]byte, e2ee.KeyBytes)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := OfflineMemberPrincipal(store, "user", "org")
+	if !errors.Is(err, ErrNoVaultWraps) {
+		t.Fatalf("err = %v, want ErrNoVaultWraps", err)
+	}
+	if strings.Contains(err.Error(), "xecret login") {
+		t.Errorf("the message sends the user to re-login unnecessarily: %v", err)
+	}
+}
+
+// memoryStore is an in-memory keyring.Store, so these tests never touch the
+// machine's real keychain.
+type memoryStore map[string]string
+
+func (m memoryStore) Set(key, value string) error { m[key] = value; return nil }
+func (m memoryStore) Get(key string) (string, error) {
+	value, ok := m[key]
+	if !ok {
+		return "", keyring.ErrNotFound
+	}
+	return value, nil
+}
+func (m memoryStore) Delete(key string) error {
+	if _, ok := m[key]; !ok {
+		return keyring.ErrNotFound
+	}
+	delete(m, key)
+	return nil
 }

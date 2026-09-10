@@ -337,8 +337,7 @@ the environment in its path.
 | `POST` | `/api/invitations/lookup` | Public — the holder may have no account yet. Body `{ token }`. Returns the organisation's display name, the invited address, role, state and expiry; nothing else. The token travels in the body, never the query string. Rate limited: `RL_INVITE` by IP. |
 | `POST` | `/api/invitations/accept` | Session + CSRF. Body `{ token }`. The session's address must match the invited one — a forwarded email must not let a colleague join as somebody else. State, address, seat count and the membership insert are all settled inside one transaction under the organisation lock. Audited as `member.joined`. Acceptance then reconciles the new member's environment keys, which queues a share for every `e2ee` environment they can now read — including ones the invitation carried sealed grants for, because those are sealed to the invite keypair rather than to the invitee's own, and they hold no member grant until they re-seal. |
 
-The acceptance response carries the invitation's own sealed grants, and **deletes them as they
-leave**:
+The acceptance response carries the invitation's own sealed grants, **read-only**:
 
 ```jsonc
 {
@@ -353,28 +352,43 @@ leave**:
 }
 ```
 
-**Why here and nowhere else.** Those grants are sealed to the invitation's one-off keypair, whose
-private half exists only inside the fragment that travelled by a second channel (crypto spec
-§10). No principal the server can authenticate is "the holder of that fragment", so there is no
-endpoint that could safely serve them on demand. Acceptance is the single moment where the token,
-the session and the invited address have all been checked together, so this is the one response
-they can ride out on. `invitationId` travels with them because it is the `recipientId` bound into
-each grant's AAD and the lookup endpoint deliberately returns no ids at all.
+**Why serving these to a session discloses nothing.** They are sealed to the invitation's one-off
+X25519 public key, whose private half exists only inside the fragment that travelled by a second
+channel (crypto spec §10). The session reading them cannot open one; only the fragment can, and
+the fragment has never been near this server. What the session establishes is entitlement to
+*attempt*, which is why the rows are scoped to invitations this account accepted and to nothing
+else — the same standard `myGrant` is served under. `invitationId` travels with them because it
+is the `recipientId` bound into each grant's AAD, and the lookup endpoint deliberately returns no
+ids at all.
 
-**Why they are consumed rather than kept.** A fragment does not expire the way a token does. A
-row left behind is a copy of the environment's keys addressed to a credential now sitting in
-somebody's message history indefinitely, so the read and the delete are one transaction. If the
-client fails between receiving them and uploading the re-sealed member grants, the invitee simply
-holds no key — and the reconciliation performed by the same acceptance has already recorded
-exactly that as a pending share for a teammate to fulfil. That is the designed fallback, not a
-hole: the alternative buys one retry at the cost of leaving a fragment-openable key in the
-database for ever.
+**They are not consumed here, and that is a reversal.** Acceptance used to delete them as it
+served them, which bounded the window in which a leaked fragment was useful to the acceptance
+itself. The argument is sound and the implementation destroyed the feature: an invitation link's
+primary population is somebody who has just signed up, has no vault, and cannot re-seal anything
+until they set one up — by which time the grants had been deleted by the response that showed
+them. Consumption moved to the act that makes each row redundant; see `claimInvitationId` below.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/invitations/claimable` | Session. Every invitation **this account accepted** that still has unclaimed sealed grants, as `{ invitations: [{ invitationId, organization: { slug, name }, grants: [ … ] }] }` — the same grant shape as the acceptance response. Read-only; it consumes nothing, and it shrinks as grants are claimed. It exists because the second channel routinely arrives second: the link opens on a phone and the code is in an email on a laptop, and every one of those was a dead end while acceptance was the only moment the grants were served. Rate limited: `RL_INVITE`. |
 
 The client's part is `openGrant` with the derived invite key, then `POST
 …/environments/{envSlug}/keys/grants` with the same EDK and EHK re-sealed to their own public
-key and signed with their own signing key. It is a **re-seal, never a copy**: the blob's AAD names
-`invite` and the invitation's id, so storing it as a member grant would produce a row nobody can
-open.
+key and signed with their own signing key, **naming the invitation in `claimInvitationId`**. It
+is a **re-seal, never a copy**: the blob's AAD names `invite` and the invitation's id, so storing
+it as a member grant would produce a row nobody can open.
+
+`claimInvitationId` is what makes "the invitee holds their own grant" and "the invitation's copy
+is gone" one committed fact. The server checks that the invitation belongs to this organisation
+and was accepted by **this account** — a 403 otherwise, because a member holding an environment's
+key could otherwise name a colleague's invitation and destroy grants they had not claimed yet —
+and then deletes that invitation's grants *for that one environment* in the same transaction as
+the insert. Per environment, so an invitee whose second environment fails to re-seal keeps its
+row and can claim it later; idempotent, so a retry after a successful claim finds nothing to do.
+
+If the re-seal never happens at all, the invitee holds no key — and the reconciliation performed
+by the acceptance has already recorded exactly that as a pending share for a teammate to fulfil.
+Both routes out of that state now stay open instead of one closing itself immediately.
 
 ### Organisations
 
@@ -465,8 +479,14 @@ accepting a genuine migration back is a deliberate manual act (clear site data, 
 | `POST` | `…/environments/{envSlug}/keys` | Initialise, for an `e2ee` environment that somehow has none. Body `{ grant }`. `environment.update`. A second call is a **409**. |
 | `POST` | `…/environments/{envSlug}/keys/rotate` | Body `{ newVersion, grants: [...] }` — the **complete** replacement set. `environment.update`. |
 | `GET` | `…/environments/{envSlug}/keys/recipients` | Who a grant may be sealed to, and who already holds one. `secret.read`. |
-| `POST` | `…/environments/{envSlug}/keys/grants` | Body `{ envDataKeyId, grants: [...] }`. Hands the key to principals that did not have it. `secret.read`. |
+| `POST` | `…/environments/{envSlug}/keys/grants` | Body `{ envDataKeyId, grants: [...], claimInvitationId? }`. Hands the key to principals that did not have it. `secret.read`. A `envDataKeyId` that is not the environment's active key is a **409 naming both versions** — the one the grants were sealed for and the one that is now active — so a client can re-read, re-seal and retry rather than reporting a failure to somebody who did nothing wrong. `claimInvitationId` consumes that invitation's sealed grants for this environment in the same transaction; see the acceptance section. |
 | `DELETE` | `…/environments/{envSlug}/keys/grants/{grantId}` | Removes one grant. `environment.update`. |
+
+**A rotation only takes access away from a principal that reaches this API.** The CLI's offline
+cache holds a bundle sealed under the grant a rotation replaced, so it refuses to serve one older
+than seven days by default (`--max-cache-age`, `XECRET_CACHE_MAX_AGE`); raising that bound defers
+the revocation by exactly as much, and the CLI says so in those words when it does. ADR 0009
+records the residual as trade-off 8f.
 
 A grant is `{ recipientKind: "member" | "token" | "invite", recipientId, recipientPublicKey,
 edkSealed, ehkSealed, signature }`. The blobs are `xk2.x25519.` sealed boxes and an `xk2.ed25519.` signature (crypto
@@ -748,12 +768,23 @@ queries and 0 outgoing fetches**, constant in the number of secrets. Audited onc
 `secret.read` with a count — not once per secret, which would make a 200-secret pull write
 200 audit rows and turn the audit table into a denial-of-service surface against itself.
 
-In `e2ee` mode the bundle is `{ encryptionMode: "e2ee", keys: { … }, secrets: [ { name,
-ciphertext, clientAlgorithm, envDataKeyId, version, … } ] }`. The **caller's grant travels with
-the values**, and that is not a convenience: fetching `…/keys` and then `…/pull` would be two
-round trips on the hottest path in the product and would open a window in which a rotation lands
-between them, leaving the client holding a key for one version and ciphertext for another with
-nothing in either response saying so.
+In `e2ee` mode the bundle is `{ bundle: true, bundleVersion: 1, encryptionMode: "e2ee",
+keys: { … }, secrets: [ { name, ciphertext, clientAlgorithm, envDataKeyId, version, … } ] }`.
+The **caller's grant travels with the values**, and that is not a convenience: fetching
+`…/keys` and then `…/pull` would be two round trips on the hottest path in the product and would
+open a window in which a rotation lands between them, leaving the client holding a key for one
+version and ciphertext for another with nothing in either response saying so.
+
+**The bundle says it is one.** `bundle: true` and `bundleVersion: 1` are what a client branches
+on — not the presence of `encryptionMode`. The distinction is not pedantry: a `server`-mode pull
+at `format=json` is a **flat object of the environment's own secret names**, so an environment
+holding a secret called `encryptionMode` whose value is `e2ee` was read as a bundle by the CLI,
+and every value in that document was then handed to a decryptor. A flat document's values are all
+strings, so `true` closes it. Clients carry `bundleVersion` and do not yet refuse an unknown
+value — the first build to see the field has to accept whatever it says, or the number can never
+be raised. Clients written before the marker fall back to `encryptionMode: "e2ee"` *and*
+`secrets` being a JSON array; that tolerance is removable once no supported deployment predates
+the marker. A `server`-mode pull carries neither field.
 
 **Five statements, not two** — the active key, the HMAC key, the environment's highest secret
 version, the caller's own grant, and the `DISTINCT ON` that resolves the current version of each

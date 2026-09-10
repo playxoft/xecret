@@ -137,6 +137,16 @@ form). Type 6 encrypts the 32-byte EDK, type 7 the 32-byte EHK. Types 9–10 enc
 NFC-normalised UTF-8 bytes of the value or note. Type 11 encrypts the 32-byte UK, like types
 1–3, but asymmetrically and to a key that exists for one login and is then discarded.
 
+**A plaintext that authenticates and is not valid UTF-8 is a format error.** Types 9–10 are
+defined as UTF-8, so a decryptor MUST validate the recovered bytes and MUST NOT substitute
+U+FFFD for what it cannot decode. The failure is classed with the format errors of §5.2 rather
+than the decryption ones, and the distinction is the same one drawn there: the tag verified, so
+the key *was* right and the bytes are exactly what the writer sealed. Reporting it as a
+decryption failure would send a user to re-enter a passphrase that has nothing wrong with it.
+Returning replacement characters is worse than either, because the next save writes the
+mojibake back over a value that was still recoverable. TypeScript: `BlobFormatError`, via a
+`TextDecoder` constructed with `{ fatal: true }`. Go: `ErrFormat`, via `utf8.Valid`.
+
 **Size limit.** `MAX_SECRET_VALUE_BYTES` (64 KiB, `crypto/secrets.ts`) applies to the
 *plaintext* on the client and to the *ciphertext* on the server, which can no longer see the
 plaintext. The server therefore enforces a slightly larger ciphertext bound; a client MUST
@@ -587,6 +597,24 @@ MUST, in this order: strip all hyphens and Unicode whitespace; upper-case; then 
 excluded precisely because it is confusable and is never valid in any position — is a parse
 error.
 
+**"Unicode whitespace" means Unicode's `White_Space` property plus U+FEFF.** Naming the set
+matters because no platform's built-in whitespace class *is* it, and the two this specification
+is implemented on miss opposite halves: JavaScript's `\s` matches U+FEFF (ZERO WIDTH NO-BREAK
+SPACE) but not U+0085 (NEXT LINE), while Go's `unicode.IsSpace` matches U+0085 but not U+FEFF.
+An implementation MUST therefore extend its primitive rather than rely on it. In full, the
+characters a parser MUST strip alongside `-` are:
+
+```
+U+0009–U+000D, U+0020, U+0085, U+00A0, U+1680, U+2000–U+200A,
+U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF
+```
+
+A code is printed by one implementation and typed into whichever the user reaches for on the
+day they need it, so a character one side strips and the other keeps is a code that looks right
+on the printed sheet and is refused by the client in front of them, with nothing on screen to
+explain why. U+2007 (FIGURE SPACE) is the one this rule most plausibly meets — a typesetter
+puts it between digit groups — and it is invisible to whoever copies the code off the page.
+
 `U` is rejected rather than aliased. Crockford reserves it as part of the mod-37 check-symbol
 set, which this specification does not use (§7.4), so it has no meaning here at all.
 
@@ -834,8 +862,28 @@ reject anything else including `U`.
 The inviter uploads `invitePublicKey` with the invitation and seals the relevant EDK and EHK
 grants to it, with `recipientKind = "invite"` and `recipientId = invitationId`. The invitee
 signs in, completes vault setup, derives the same private key from the fragment, opens the
-grants, re-seals each EDK and EHK to their own public key, and uploads; the invite grants are
-then deleted.
+grants, re-seals each EDK and EHK to their own public key, and uploads.
+
+**An invite grant is destroyed by the write that replaces it, and not before.** Acceptance
+served these grants once and deleted them as they left, which bounded the window in which a
+leaked fragment was useful to the acceptance itself. That is the right instinct and it
+destroyed the flow: the primary population of an invitation link is somebody who has no vault
+yet, has no key of their own to re-seal to, and cannot obtain one before the response that
+showed them the grants has already deleted the rows. So consumption moved to the act that makes
+each row redundant — `POST …/keys/grants` carries the invitation it is claiming, and the server
+deletes that invitation's grants **for that one environment** in the same transaction as the
+insert. Per environment, so an invitee whose second environment fails to re-seal keeps its row
+and can claim it later; in one transaction, so a failure after the insert cannot destroy the
+only copy of a key the invitee can reach; and idempotently, so a retry after a successful claim
+finds nothing to do.
+
+The residual is stated rather than argued away: between acceptance and the claim, a grant
+openable by the fragment remains in the database. It is bounded by the invitee claiming
+(normally seconds later), by any rotation of the environment — which retires the key the grant
+carries — and by the fact that the fragment was always the weaker half of a two-channel scheme.
+An unclaimed grant is re-served to the account that accepted the invitation, and to nobody
+else, so the code can be entered from a later session; the blob is sealed to a key the server
+has never held, on the same terms `myGrant` is served under.
 
 **"The relevant grants" is enforced, not assumed.** Every route that writes an `invite` grant —
 `POST …/keys/grants` and `POST …/keys/rotate` alike — refuses one unless the invitation is this
@@ -847,9 +895,12 @@ selection never entitled them to — denied by every route that reads secrets wh
 one thing a route cannot take back. Acceptance is deterministic, so the check runs the same
 `can()` the invitee will meet on their first request rather than a second rule that could drift.
 
-The deletion at acceptance names the grant rows the tenant-scoped read returned, never the
-invitation id: sealing to a foreign invitation id needs nothing more than knowing it, and a
-delete keyed on the id alone would let one organisation's acceptance destroy another's rows.
+Every read and every deletion of these rows is tenant-scoped through `projects`, never keyed on
+the invitation id alone: sealing to a foreign invitation id needs nothing more than knowing it,
+and an unscoped statement would let one organisation's flow reach another's rows. A claim
+carries the further requirement that the invitation was accepted **by the account making the
+request**, so a member holding an environment's key cannot name a colleague's invitation and
+destroy grants they had not claimed yet.
 
 **On 128 bits for a key-exchange key.** This is lower than the 256-bit security level of the
 rest of the system, and it is bounded deliberately rather than accidentally: an invitation
@@ -1036,6 +1087,41 @@ as before, and no request in this flow carries the UK in any form. §8's prohibi
 unchanged and unweakened: a client MUST NOT send `SK`, the UK, any wrap key, or any private key
 to the server.
 
+**What the AAD does not bind, and what is done about it.** The two components name an
+authorization attempt and a recipient key. Neither names *which process* generated that key, and
+neither could — both exist before anybody has authenticated. So an unprivileged process running
+as the same user can start its own flow, put its own hand-off public key in an authorize URL,
+and open a browser at it; a person who approves that consent screen because they had just typed
+`xecret login` seals the UK to the impostor and posts it to the impostor's loopback port. The
+cryptography is not defeated — the consent is. The CLI therefore prints the fingerprint of its
+own hand-off public key before opening the browser, and the consent screen renders the
+fingerprint of the key it is about to seal to; they match exactly when the page is sealing to
+the process the user started.
+
+The fingerprint format is `SHA-256(publicKey) → Crockford base32 → first 8 characters →
+"XXXX-XXXX"`. Those are the first 40 bits of the digest, which is exactly five bytes, so neither
+implementation has a padding decision to get wrong. Forty bits is a comparison aid and not a
+commitment; no implementation makes a decision from it. `KeyFingerprint` in `cli/internal/e2ee`
+and `fingerprint` in `apps/web/src/components/envkeys/pins.ts` are pinned against each other by
+a shared value: the 32 bytes `0x00…0x1f` render as `CC6W-TAB6`.
+
+**The sealed blob outlives the login.** It rides the redirect as a query parameter, so a copy
+lands in the browser's history and in anything that syncs it. It is useless without the
+ephemeral private key, which is wiped when the login ends and never written down — so what
+persists is ciphertext to an attacker who would also have needed memory access to a process that
+has since exited. It is stated because "the User Key never touches disk" is a claim people make
+about this flow, and this is the footnote on it.
+
+**What the CLI keeps afterwards.** Step 4 stores the UK in the OS keyring. It stores
+`encPrivateKeyEnc` and `signPrivateKeyEnc` beside it as well — the wraps from
+`GET /api/auth/vault`, verbatim and already sealed under the UK — because a CLI that fetches
+them on every command is a CLI whose `--offline` flag makes a network request, and that flag's
+entire promise is that it does not. Nothing else from `material` is kept: `passphraseWrap`,
+`kdfSalt` and `kdfParams` are the UK under a *human* secret, and storing them would put an
+offline guessing target on disk for material that is not needed to go from the UK to a private
+key. Deleting the UK entry deletes both, so cryptographic erasure stays a single act. §8's
+prohibition is untouched — nothing is *sent* anywhere.
+
 **A hand-off is optional.** A CLI that omits `handoff` gets the old behaviour and can still read
 `server`-mode environments; it simply cannot open a member grant. The consent screen omits the
 parameter when the CLI did not ask for one, and never treats its absence as an error.
@@ -1051,4 +1137,5 @@ parameter when the CLI did not ask for one, and never treats its absence as an e
 | 2026-09-08 | Phase 2a (server side of the user vault). The two references to `nextPinFailure` in `auth/pin.ts` now name `nextUnlockFailure` in `auth/vault.ts`, which replaced it when the PIN was retired, and §7.5 records that the recovery counter is kept separate from the passphrase one. No format, no derivation, and no byte layout changed. |
 | 2026-09-08 | Phase 2b (passkey unlock). Adds `xecret.v2.uk-unlock-verifier` to §3.3 — the first and only HKDF branch taking the UK as input keying material — and splits §8 into the two verifiers, with one shared attempt counter across both. Closes a gap the client half surfaced: a passkey unlock opens blob type 3 and therefore holds the UK, never `SK`, so it could decrypt everything and still not prove an unlock. No existing format, derivation, or byte layout changed; the new branch is additive. |
 | 2026-09-08 | Phase 4 (Go CLI and service-token E2EE). Adds §13, which specifies two strings the earlier phases had no headless client to need: the service token's `xst_<env>_<43>k<43>` layout, parsed by offset because `k` is in the base64url alphabet, with only the auth half ever transmitted; and the CLI hand-off wrap that carries the User Key from an unlocked browser to a `xecret login` process over the loopback redirect. The hand-off adds blob type 11 to §2.2 and the `cli-handoff` purpose to §4.2, both reusing the §5 sealed box unchanged. No existing format, derivation, or byte layout changed; the additions are additive, the legacy service-token shape stays valid, and no new HKDF branch was introduced — the token's key half is the X25519 scalar directly, precisely so §3.3's closed registry did not have to grow. |
+| 2026-09-10 | Review fixes, second batch — lifecycle. §10 moves invite-grant consumption from acceptance to the write that stores the re-sealed grant, per environment and in one transaction, and states the residual window that buys: deleting the grants on the acceptance response bounded a leaked fragment but destroyed the flow for the people it exists for, who arrive with no vault and therefore no key to re-seal to. §7.1 enumerates the whitespace class a parser must strip, because JavaScript's `\s` and Go's `unicode.IsSpace` miss opposite halves of it (U+FEFF and U+0085) and a recovery code that one side prints and the other refuses has nothing on screen to explain itself. §2.2 assigns authenticated-but-invalid-UTF-8 to the format-error class and forbids U+FFFD substitution. §13.2 states what the hand-off AAD does *not* bind — which process holds the recipient key — specifies the fingerprint both sides display so a person can compare them, records that the sealed blob persists in browser history, and documents the vault material the CLI keeps in the OS keyring so that `--offline` is offline. No format, no derivation, and no byte layout changed; the fingerprint is a display format and everything else is prose about existing bytes. |
 | 2026-09-10 | Review fixes. Adds §4.3, the client-write contract: every client-encrypted write states the `secretId` and version its ciphertext is bound to, and the server refuses rather than substitutes — closing a class of silent, unrepairable data loss reachable from an ordinary double-restore or an import planned against a truncated listing. §6.1 now requires `recipientPublicKey` to be stored on the grant row, because every other source for it is mutable and a deferred verifier reading one would report honest grants as forged. §13.1 states where a service token is split, after a client was found sending both halves in the `Authorization` header. No format, no derivation, and no byte layout changed; the additions are request fields and one column. |

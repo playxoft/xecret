@@ -25,6 +25,8 @@ func cmdRun(args []string) error {
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	offline := flags.Bool("offline", false, "use the encrypted offline cache without calling the API")
 	noCache := flags.Bool("no-cache", false, "neither read nor refresh the offline cache")
+	maxCacheAge := flags.String("max-cache-age", "",
+		"how old an offline copy may be before it is refused (default 7d; 0 for no bound)")
 	projectFlag, envFlag := scopedFlags(flags)
 	if err := flags.Parse(splitBeforeDashDash(args)); err != nil {
 		return err
@@ -38,16 +40,23 @@ func cmdRun(args []string) error {
 		return errors.New("--offline and --no-cache contradict each other")
 	}
 
+	policy := cachePolicy{offline: *offline, noCache: *noCache}
+	age, overridden, err := cache.ResolveMaxAge(*maxCacheAge)
+	if err != nil {
+		return err
+	}
+	policy.maxAge, policy.ageOverridden = age, overridden
+
 	a := newApp(false)
 	if a.usingServiceToken() {
 		// The offline cache exists so a developer's laptop survives an outage.
 		// A CI credential must never leave one behind: a runner is ephemeral,
 		// a shared runner is worse, and a cache that outlives a token's
 		// revocation would be a revocation bypass in a directory nobody audits.
-		if *offline {
+		if policy.offline {
 			return errors.New("--offline needs a cached login session, and XECRET_TOKEN never writes one")
 		}
-		*noCache = true
+		policy.noCache = true
 	}
 	client, credentials, err := a.client()
 	if err != nil {
@@ -65,7 +74,7 @@ func cmdRun(args []string) error {
 		Environment: resolved.Environment,
 	}
 
-	secrets, err := fetchSecrets(a, client, credentials, resolved, scopeKey, *offline, *noCache)
+	secrets, err := fetchSecrets(a, client, credentials, resolved, scopeKey, policy)
 	if err != nil {
 		return err
 	}
@@ -78,6 +87,23 @@ func cmdRun(args []string) error {
 		return exitCodeError{code: code}
 	}
 	return nil
+}
+
+// cachePolicy is everything `run`'s flags say about the offline copy, in one
+// value — because they are read together at every point that consults it, and a
+// run of same-typed positional parameters at a call site is how one of them ends
+// up in the wrong slot.
+type cachePolicy struct {
+	// offline serves from the cache without calling the API at all.
+	offline bool
+	// noCache neither reads nor refreshes it.
+	noCache bool
+	// maxAge is how old a copy may be before it is refused. See
+	// cache.ResolveMaxAge for what the bound is for.
+	maxAge time.Duration
+	// ageOverridden records that the bound came from a flag or the environment,
+	// which is what makes the warning worth printing.
+	ageOverridden bool
 }
 
 // fetchSecrets produces the environment `run` injects, from whichever of the
@@ -94,21 +120,21 @@ func fetchSecrets(
 	credentials *cred.Credentials,
 	resolved scope,
 	scopeKey cache.Scope,
-	offline, noCache bool,
+	policy cachePolicy,
 ) (map[string]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if offline {
-		return readAnyCache(ctx, a, client, credentials, scopeKey, errors.New("--offline was passed"))
+	if policy.offline {
+		return readAnyCache(a, credentials, scopeKey, policy, errors.New("--offline was passed"))
 	}
 
 	pulled, err := client.Pull(ctx, resolved.Org, resolved.Project, resolved.Environment, "json")
 	if err != nil {
 		// Only unavailability falls back; see the header comment.
-		if !noCache && api.IsNetworkError(err) {
+		if !policy.noCache && api.IsNetworkError(err) {
 			a.printer.Warnf("could not reach the API: %v", err)
-			return readAnyCache(ctx, a, client, credentials, scopeKey, err)
+			return readAnyCache(a, credentials, scopeKey, policy, err)
 		}
 		return nil, err
 	}
@@ -117,7 +143,7 @@ func fetchSecrets(
 		if err := a.checkMode(credentials, resolved, "e2ee"); err != nil {
 			return nil, err
 		}
-		return openBundle(ctx, a, client, credentials, scopeKey, pulled.Bundle, noCache)
+		return openBundle(ctx, a, client, credentials, scopeKey, pulled, policy)
 	}
 
 	// A plaintext document means the server says this environment is
@@ -136,7 +162,7 @@ func fetchSecrets(
 		return nil, errors.New("the server's pull response could not be read")
 	}
 
-	if !noCache {
+	if !policy.noCache {
 		if writeErr := cache.Write(a.store, scopeKey, secrets, time.Now()); writeErr != nil {
 			// Cache maintenance must never fail the run it exists to protect.
 			a.printer.Warnf("could not refresh the offline cache: %v", writeErr)
@@ -145,56 +171,73 @@ func fetchSecrets(
 	return secrets, nil
 }
 
-// openBundle decrypts an e2ee pull and, unless asked not to, caches the
-// ciphertext it came from.
+// openBundle caches an e2ee pull and then decrypts it.
 //
-// The bundle is cached *before* it is decrypted, and re-serialised rather than
-// summarised, because what makes the offline copy useful is that it is the same
-// bytes the server sent — including the sealed grant, without which the
-// ciphertext is unopenable next time too.
+// **That order, and those bytes.** The copy written is `pulled.Raw` — the
+// response body as it arrived — rather than a re-marshalling of the parsed
+// struct, and it is written before anything tries to open it. Both halves matter
+// for the same case: an environment in the middle of a rotation, where some row
+// still names the retired key and the decrypt therefore fails. Caching after the
+// decrypt would leave that environment's offline copy frozen at whatever it was
+// before the rotation started, for exactly as long as the rotation takes to
+// finish — which is the window in which somebody is most likely to lose their
+// network and need it. Re-marshalling would silently drop any field this build
+// does not know about, and there is no key anywhere that could put it back.
+//
+// A cache write that fails is a warning, never a failure: the run this exists to
+// protect is the one happening now.
 func openBundle(
 	ctx context.Context,
 	a *app,
 	client *api.Client,
 	credentials *cred.Credentials,
 	scopeKey cache.Scope,
-	bundle *api.EnvironmentBundle,
-	noCache bool,
+	pulled *api.Pulled,
+	policy cachePolicy,
 ) (map[string]string, error) {
+	if !policy.noCache && len(pulled.Raw) > 0 {
+		encryptedScope := scopeKey
+		encryptedScope.Encrypted = true
+		if writeErr := cache.WriteBundle(a.store, encryptedScope, pulled.Raw, time.Now()); writeErr != nil {
+			a.printer.Warnf("could not refresh the offline cache: %v", writeErr)
+		}
+
+		// The pre-migration plaintext copy, if this machine still has one. A
+		// successful e2ee read is the proof that it is obsolete, and leaving it
+		// on disk leaves values from before the migration where an older binary
+		// — or anybody who can read the directory — will still find them.
+		if forgetErr := cache.Forget(scopeKey); forgetErr != nil {
+			a.printer.Warnf("could not remove the pre-migration offline copy: %v", forgetErr)
+		}
+	}
+
 	principal, err := a.principal(ctx, client, credentials)
 	if err != nil {
 		return nil, err
 	}
 	defer principal.Close()
 
-	secrets, err := envkeys.DecryptBundle(bundle, principal)
-	if err != nil {
-		return nil, err
-	}
-
-	if !noCache {
-		scopeKey.Encrypted = true
-		if encoded, marshalErr := json.Marshal(bundle); marshalErr == nil {
-			if writeErr := cache.WriteBundle(a.store, scopeKey, encoded, time.Now()); writeErr != nil {
-				a.printer.Warnf("could not refresh the offline cache: %v", writeErr)
-			}
-		}
-	}
-	return secrets, nil
+	return envkeys.DecryptBundle(pulled.Bundle, principal)
 }
 
 // readAnyCache serves whichever offline copy exists.
 //
-// The encrypted one is tried first because an environment that has ever been
-// end-to-end encrypted should not silently fall back to a stale plaintext copy
-// from before the migration — that copy is exactly the thing the migration
-// removed.
+// The encrypted one is tried first, and once the mode pin says `e2ee` it is the
+// *only* one: an environment that has been migrated has no legitimate plaintext
+// copy, so a plaintext file for it is a leftover from before, and serving it is
+// the disclosure the migration removed the server's ability to commit — see
+// `cache/mode.go`. The refusal names the remedy rather than falling through
+// quietly, because falling through quietly is what this used to do.
+//
+// Nothing here touches the network. That is not incidental: this is the path
+// `--offline` takes and the path a network failure lands on, so a request made
+// from inside it would be a request made in exactly the two situations where
+// there is nobody to answer it.
 func readAnyCache(
-	ctx context.Context,
 	a *app,
-	client *api.Client,
 	credentials *cred.Credentials,
 	scopeKey cache.Scope,
+	policy cachePolicy,
 	cause error,
 ) (map[string]string, error) {
 	encryptedScope := scopeKey
@@ -202,20 +245,60 @@ func readAnyCache(
 
 	entry, err := cache.Read(a.store, encryptedScope)
 	if err == nil {
-		return openCachedBundle(ctx, a, client, credentials, entry)
+		if ageErr := a.checkCacheAge(entry, policy); ageErr != nil {
+			return nil, ageErr
+		}
+		return openCachedBundle(a, credentials, entry)
 	}
 	if !errors.Is(err, cache.ErrMiss) {
 		return nil, err
 	}
-	return readCache(a, scopeKey, cause)
+
+	if cache.PinnedMode(scopeKey) == "e2ee" {
+		return nil, fmt.Errorf(
+			"%w (%v).\n"+
+				"  This machine has read %s/%s as end-to-end encrypted, so the plaintext copy beside it\n"+
+				"  predates that migration and will not be served. Run 'xecret run' once with the API\n"+
+				"  reachable to write an encrypted one",
+			cache.ErrPlaintextRefused, cause, scopeKey.Project, scopeKey.Environment,
+		)
+	}
+	return a.readCache(scopeKey, policy, cause)
+}
+
+// checkCacheAge applies the bound, and says what raising it costs.
+//
+// The warning is printed on the way past rather than at the point the bound was
+// chosen, because the person who set `XECRET_CACHE_MAX_AGE` in a CI image and
+// the person reading this run's output are usually not the same person, and only
+// one of them is present.
+func (a *app) checkCacheAge(entry *cache.Entry, policy cachePolicy) error {
+	if !entry.TooOld(policy.maxAge, time.Now()) {
+		if policy.ageOverridden && entry.TooOld(cache.DefaultMaxAge, time.Now()) {
+			a.printer.Warnf(
+				"serving an offline copy %s old, past the %s default, because the bound was raised.",
+				entry.Age(time.Now()), cache.DefaultMaxAge)
+			a.printer.Warnf(
+				"a key rotation revokes access going forward, and an old cached bundle carries the grant " +
+					"it was rotated away from — so every day of this is a day that revocation is deferred.")
+		}
+		return nil
+	}
+
+	return fmt.Errorf(
+		"%w: this copy is %s old and the bound is %s.\n"+
+			"  The bound exists because a key rotation only takes access away from somebody who reaches\n"+
+			"  the API — a cached bundle carries the grant the rotation replaced, and serving it defers\n"+
+			"  the revocation for as long as the file lasts.\n"+
+			"  Reach the deployment once to refresh it, or raise the bound with --max-cache-age",
+		cache.ErrTooOld, entry.Age(time.Now()), policy.maxAge,
+	)
 }
 
 // openCachedBundle decrypts a cached bundle, which needs the same key material a
-// live one does — the cache holds none of it.
+// live one does — the cache holds none of it, and none of it is fetched here.
 func openCachedBundle(
-	ctx context.Context,
 	a *app,
-	client *api.Client,
 	credentials *cred.Credentials,
 	entry *cache.Entry,
 ) (map[string]string, error) {
@@ -224,7 +307,7 @@ func openCachedBundle(
 		return nil, errors.New("the offline copy is corrupt — run 'xecret cache clear'")
 	}
 
-	principal, err := a.principal(ctx, client, credentials)
+	principal, err := a.offlinePrincipal(credentials)
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +328,7 @@ func openCachedBundle(
 // readCache serves the offline copy, loudly. The warning carries the age
 // because a week-old DATABASE_URL that fails to connect should be a
 // ten-second diagnosis, not an afternoon.
-func readCache(a *app, scopeKey cache.Scope, cause error) (map[string]string, error) {
+func (a *app) readCache(scopeKey cache.Scope, policy cachePolicy, cause error) (map[string]string, error) {
 	entry, err := cache.Read(a.store, scopeKey)
 	if err != nil {
 		if errors.Is(err, cache.ErrMiss) {
@@ -255,6 +338,9 @@ func readCache(a *app, scopeKey cache.Scope, cause error) (map[string]string, er
 			)
 		}
 		return nil, err
+	}
+	if ageErr := a.checkCacheAge(entry, policy); ageErr != nil {
+		return nil, ageErr
 	}
 
 	a.printer.Warnf("using the encrypted offline cache from %s ago (%d secrets).",

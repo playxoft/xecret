@@ -2,16 +2,15 @@
 
 import { useState } from 'react';
 
-import { api, errorMessage } from '@/lib/api';
+import { errorMessage } from '@/lib/api';
 import { pluralize } from '@/lib/format';
 import { Alert, Button, useToast } from '@/components/ui';
 import { useVaultKeys } from '@/components/vault';
-import { decodeRecipientKey, fetchRecipients, grantsPath, sealGrantFor } from './env-keys';
+import { decodeRecipientKey, fetchRecipients, sealGrantFor, submitGrants } from './env-keys';
 import type { EnvironmentRef } from './env-keys';
 import type { EnvKeyMaterial } from './env-key-store';
 import { checkPin, readPins, recordPin, writePins } from './pins';
 import { shareTargets } from './rotation';
-import type { GrantBody } from './types';
 
 /**
  * "N people are waiting for this environment's key", and the button that ends it.
@@ -94,25 +93,28 @@ export function PendingSharesBanner({
         return;
       }
 
-      const grants: GrantBody[] = [];
-      for (const recipient of targets) {
-        grants.push(
-          await sealGrantFor({
-            vault,
-            environmentId: material.environmentId,
-            edkVersion: material.edkVersion,
-            edk: material.edk,
-            ehk: material.ehk,
-            recipientKind: recipient.kind,
-            recipientId: recipient.id,
-            recipientPublicKey: decodeRecipientKey(recipient.publicKey),
-          }),
-        );
-      }
-
-      await api.post(grantsPath(target), {
-        envDataKeyId: material.envDataKeyId,
-        grants,
+      // Sealed against whichever key is live, not against the snapshot this
+      // banner rendered with. A rotation between the render and the click used
+      // to surface as a bare 409; `submitGrants` re-reads and seals again once.
+      const outcome = await submitGrants({
+        target,
+        vault,
+        material,
+        seal: (current) =>
+          Promise.all(
+            targets.map((recipient) =>
+              sealGrantFor({
+                vault,
+                environmentId: current.environmentId,
+                edkVersion: current.edkVersion,
+                edk: current.edk,
+                ehk: current.ehk,
+                recipientKind: recipient.kind,
+                recipientId: recipient.id,
+                recipientPublicKey: decodeRecipientKey(recipient.publicKey),
+              }),
+            ),
+          ),
       });
 
       // Recorded only now — after the seal that a person deliberately performed.
@@ -124,7 +126,7 @@ export function PendingSharesBanner({
 
       toast({
         variant: 'success',
-        title: `Shared this environment's key with ${pluralize(grants.length, 'person')}`,
+        title: `Shared this environment's key with ${pluralize(outcome.granted, 'person')}`,
         description: 'They can read its values from their next page load.',
       });
       onShared();

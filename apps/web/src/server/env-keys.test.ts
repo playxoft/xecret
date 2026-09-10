@@ -98,6 +98,7 @@ const repository = vi.hoisted(() => ({
   removePendingKeyGrant: vi.fn(),
   queuePendingKeyGrant: vi.fn(),
   findPendingInvitationForGrant: vi.fn(),
+  canClaimInvitationGrants: vi.fn(),
   hasVault: vi.fn(),
   listEnvironmentsForOrganization: vi.fn(),
   loadMemberKeyPresence: vi.fn(),
@@ -879,6 +880,73 @@ describe('the authorization matrix around a production key', () => {
     );
 
     expect(error.code).toBe('bad_request');
+  });
+
+  it('refuses to consume an invitation this account did not accept', async () => {
+    // ── The silent denial this closes ──
+    // A claim deletes the invitation's sealed grants. Those grants are the only
+    // copy of an environment key their holder can reach until they re-seal one,
+    // so a member who could name somebody else's invitation could destroy the
+    // keys they had not claimed yet — and nobody would notice, because the
+    // pending-share fallback would quietly cover for it.
+    roster([
+      { userId: OWNER_ID, role: 'owner' },
+      { userId: DEVELOPER_ID, role: 'developer' },
+    ]);
+    repository.canClaimInvitationGrants.mockResolvedValue(false);
+
+    const error = await rejection(() =>
+      addGrants(scope(), services(), ownerPrincipal, {
+        envDataKeyId: KEY_ID,
+        grants: [grant({ id: OWNER_ID })],
+        claimInvitationId: INVITATION_ID,
+      }),
+    );
+
+    expect(error.code).toBe('forbidden');
+    expect(repository.addEnvKeyGrants).not.toHaveBeenCalled();
+  });
+
+  it('passes the claim through to the write that replaces the invitation copy', async () => {
+    // The ordering is the fix, and it only means anything inside one
+    // transaction: the repository deletes the invite grant in the same statement
+    // batch that stores the re-sealed one, so a failure after the insert cannot
+    // destroy the only reachable copy of the key.
+    roster([{ userId: OWNER_ID, role: 'owner' }]);
+    repository.canClaimInvitationGrants.mockResolvedValue(true);
+    repository.addEnvKeyGrants.mockResolvedValue(1);
+
+    await addGrants(scope(), services(), ownerPrincipal, {
+      envDataKeyId: KEY_ID,
+      grants: [grant({ id: OWNER_ID })],
+      claimInvitationId: INVITATION_ID,
+    });
+
+    expect(repository.canClaimInvitationGrants).toHaveBeenCalledWith(expect.anything(), {
+      orgId: ORG_ID,
+      invitationId: INVITATION_ID,
+      userId: OWNER_ID,
+    });
+    expect(repository.addEnvKeyGrants).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ claimInvitationId: INVITATION_ID }),
+    );
+  });
+
+  it('consumes nothing when no invitation is named', async () => {
+    roster([{ userId: OWNER_ID, role: 'owner' }]);
+    repository.addEnvKeyGrants.mockResolvedValue(1);
+
+    await addGrants(scope(), services(), ownerPrincipal, {
+      envDataKeyId: KEY_ID,
+      grants: [grant({ id: OWNER_ID })],
+    });
+
+    expect(repository.canClaimInvitationGrants).not.toHaveBeenCalled();
+    expect(repository.addEnvKeyGrants).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ claimInvitationId: null }),
+    );
   });
 
   it('refuses a grant to an invitation in another organisation', async () => {

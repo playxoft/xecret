@@ -74,6 +74,30 @@ function symbolValue(character: string): number {
 }
 
 /**
+ * What §7.1 means by "all hyphens and Unicode whitespace".
+ *
+ * The `\u0085` looks redundant next to `\s` and is not. Neither platform's
+ * built-in idea of whitespace is the set the specification names, and the two
+ * miss different halves of it: JavaScript's `\s` matches U+FEFF but not U+0085,
+ * while Go's `unicode.IsSpace` — the CLI's primitive — matches U+0085 but not
+ * U+FEFF. So each side adds the one its own primitive drops, and the union is
+ * the same set on both. That matters because a code is printed by one
+ * implementation and typed into whichever the user reaches for on the day they
+ * need it: a character one side strips and the other keeps is a code that looks
+ * right on the printed sheet and is refused by the client in front of them,
+ * with nothing on screen to say why.
+ *
+ * The character this rule most plausibly meets needs no clause of its own —
+ * U+2007 is `Zs`, so `\s` already has it — but it is the one worth knowing
+ * about: a figure space is what a typesetter puts between digit groups, and it
+ * is invisible to whoever copies the code off the page.
+ *
+ * Mirrored in `cli/internal/e2ee/recovery.go`, and pinned on both sides by a
+ * character-for-character list in the tests.
+ */
+const HYPHEN_OR_WHITESPACE = /[-\s\u0085]+/gu;
+
+/**
  * Normalises typed input, forgiving exactly what Crockford specifies.
  *
  * In order: strip hyphens and Unicode whitespace, upper-case, then map `I` → 1,
@@ -84,7 +108,7 @@ function symbolValue(character: string): number {
  */
 export function normalizeCrockford(input: string): string {
   return input
-    .replace(/[-\s]+/gu, '')
+    .replace(HYPHEN_OR_WHITESPACE, '')
     .toUpperCase()
     .replace(/[IL]/g, '1')
     .replace(/O/g, '0');

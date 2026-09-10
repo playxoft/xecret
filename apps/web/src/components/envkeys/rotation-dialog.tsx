@@ -23,9 +23,11 @@ import { useVaultKeys } from '@/components/vault';
 import { fetchRecipients } from './env-keys';
 import type { EnvironmentRef } from './env-keys';
 import type { EnvKeyMaterial } from './env-key-store';
-import { FingerprintList } from './fingerprint-badge';
+import { FingerprintList, KeyFingerprint } from './fingerprint-badge';
+import { readPins, recordSealedPins, replacePin, substitutedRecipients, writePins } from './pins';
 import { planRotation, rotateEnvironment } from './rotation';
 import type { RotationPlan } from './rotation';
+import type { Recipient } from './types';
 
 /**
  * The rotation ceremony.
@@ -51,6 +53,20 @@ import type { RotationPlan } from './rotation';
  * principals. Those messages are shown verbatim: they are the only actionable
  * thing about that refusal, and "your grant set is wrong" against a set of forty
  * gives an operator nothing.
+ *
+ * ── A changed public key stops the rotation, it does not merely annotate it ──
+ * This dialog used to render the substitution warning and leave *Rotate*
+ * enabled, while `pending-shares.tsx` refused outright and told people to come
+ * here — where the fingerprints are shown — to do it. The enforcement was
+ * inverted: the screen that showed more information was the one that let the act
+ * through, and the recommended route was the permissive one. Sealing the
+ * environment's key to a public key this browser did not record for that person
+ * is precisely what pinning exists to catch, and doing it from a dialog whose
+ * warning has already been read once is the easiest thing in the world to click
+ * past. So the button is disabled and each affected recipient is named with its
+ * new fingerprint beside a control that confirms *that one key*, one at a time.
+ * Confirming is a deliberate act with a sentence attached; rotating is not
+ * possible until every one of them has had it.
  */
 export interface RotationDialogProps {
   target: EnvironmentRef;
@@ -130,8 +146,28 @@ function RotationFlow({
 
   const plan = phase.kind === 'loading' ? null : (phase.plan ?? null);
 
+  /**
+   * The pin book, held as state so that confirming one key re-renders the list.
+   *
+   * Read once when this dialog mounts rather than on every render: it is the
+   * book as it stood when the ceremony began, and a rotation is decided against
+   * one consistent view of what this browser trusts. Confirming a key writes to
+   * `localStorage` *and* to this copy, in that order, so the two cannot drift
+   * within the life of the dialog — and the next open re-reads, which is where a
+   * change made in another tab arrives.
+   */
+  const [pinBook, setPinBook] = useState(readPins);
+  const substituted = plan === null ? [] : substitutedRecipients(plan.recipients, pinBook);
+  const blocked = substituted.length > 0;
+
+  function confirmKey(recipient: Recipient) {
+    const next = replacePin(pinBook, recipient.kind, recipient.id, recipient.publicKey);
+    writePins(next);
+    setPinBook(next);
+  }
+
   async function run() {
-    if (vault === null || plan === null) return;
+    if (vault === null || plan === null || blocked) return;
 
     onRunningChange(true);
     setPhase({ kind: 'running', plan, step: 'generating' });
@@ -147,6 +183,11 @@ function RotationFlow({
     onRunningChange(false);
 
     if (outcome.status === 'rotated') {
+      // Recorded here, after the seal a person deliberately performed, and
+      // nowhere else. `FingerprintList` used to pin on render, which meant a key
+      // was trusted for having been *displayed* — see that file's header.
+      recordSealedPins(plan.recipients);
+
       toast({
         variant: 'success',
         title: `Rotated ${environmentName} to key version ${outcome.version}`,
@@ -209,6 +250,43 @@ function RotationFlow({
             </p>
 
             <FingerprintList recipients={plan.recipients} />
+
+            {blocked ? (
+              <Alert tone="danger" title="Rotation is blocked until these keys are confirmed">
+                <p>
+                  Sealing this environment&apos;s key to a public key that has changed is exactly
+                  what a substitution looks like from here, so it is refused rather than warned
+                  about. Confirm each fingerprint with the person themselves — on a call, in the
+                  room, over a channel that is not this one — and then say so below.
+                </p>
+                <ul className="mt-3 flex flex-col gap-2">
+                  {substituted.map((recipient) => (
+                    <li
+                      key={`${recipient.kind}:${recipient.id}`}
+                      className="border-line bg-surface flex flex-wrap items-center gap-2 rounded-md border px-3 py-2"
+                    >
+                      <span className="min-w-0 flex-1 truncate font-mono text-sm">
+                        {recipient.kind === 'token' ? 'Service token ' : ''}
+                        {recipient.id}
+                      </span>
+                      <KeyFingerprint
+                        kind={recipient.kind}
+                        id={recipient.id}
+                        publicKey={recipient.publicKey}
+                      />
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={running}
+                        onClick={() => confirmKey(recipient)}
+                      >
+                        I confirmed this fingerprint
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </Alert>
+            ) : null}
 
             {plan.unsealable.length > 0 ? (
               <Alert tone="warning" title="Some members cannot be given a key">
@@ -294,7 +372,7 @@ function RotationFlow({
           variant="primary"
           onClick={run}
           loading={running}
-          disabled={plan === null || vault === null || phase.kind === 'refused'}
+          disabled={plan === null || vault === null || phase.kind === 'refused' || blocked}
         >
           Rotate the key
         </Button>

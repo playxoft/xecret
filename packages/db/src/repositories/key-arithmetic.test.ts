@@ -3,7 +3,12 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import type { Sql } from 'postgres';
 import * as schema from '../schema';
 import type { Database } from '../client';
-import { listSealableServiceTokens, rotateEnvDataKey, takeInvitationGrants } from './env-keys';
+import {
+  addEnvKeyGrants,
+  listSealableServiceTokens,
+  readInvitationGrants,
+  rotateEnvDataKey,
+} from './env-keys';
 import { loadOrganizationAuthorizationContexts } from './membership';
 
 /**
@@ -187,41 +192,102 @@ describe('rotateEnvDataKey', () => {
   });
 });
 
-describe('takeInvitationGrants', () => {
-  it('deletes the rows its tenant-scoped select returned, never by invitation id', async () => {
-    // ── The cross-tenant delete this closes ──
-    // The select was scoped through `projects.org_id`; the delete was keyed on
-    // `invitation_id` alone. Sealing a grant to a foreign invitation id needs
-    // nothing more than knowing it, so organisation A could attach grants to
-    // organisation B's invitation — and B's acceptance would then destroy A's
-    // rows, from a code path nobody would think to look at (threat T2).
-    const { db, statements } = recorder((sql) =>
-      sql.startsWith('select')
-        ? [
-            [
-              GRANT_ID,
-              ENVIRONMENT_ID,
-              'api',
-              'production',
-              KEY_ID,
-              1,
-              new Uint8Array(),
-              new Uint8Array(),
-              'active',
-            ],
-          ]
-        : [],
-    );
+describe('readInvitationGrants', () => {
+  it('reads without consuming, tenant-scoped, and only on the active key', async () => {
+    // ── The unusable flow this closes ──
+    // This used to read and delete in one transaction, on acceptance. The
+    // argument was sound — a fragment in a chat history never expires — and it
+    // destroyed the feature: an invitation link's primary population is somebody
+    // who has no vault yet, cannot re-seal anything until they set one up, and
+    // found the grants gone by the time they had. Consumption moved to the write
+    // that stores the re-sealed copy; this is a read and must stay one, or the
+    // "enter your code later" path serves keys it has already destroyed.
+    const { db, statements } = recorder(() => []);
 
-    await takeInvitationGrants(db, { orgId: ORG_ID, invitationId: INVITATION_ID });
+    await readInvitationGrants(db, { orgId: ORG_ID, invitationId: INVITATION_ID });
 
-    const deletes = statementsMatching(statements, 'delete from "env_key_grants"');
-    expect(deletes).toHaveLength(1);
+    expect(statementsMatching(statements, 'delete')).toHaveLength(0);
 
-    const [consume] = deletes;
+    const [query] = statements;
+    // Scoped through `projects.org_id`, not by invitation id alone: sealing a
+    // grant to a foreign invitation id needs nothing more than knowing it, so
+    // without the join one organisation's invitation could serve another's blobs
+    // (threat T2).
+    expect(query!.sql).toContain('"projects"."org_id" = $');
+    expect(query!.params).toContain(ORG_ID);
+    // A grant on a rotated-away key opens a key nothing is written under any
+    // more, and re-sealing it produces a grant that looks exactly like a working
+    // one.
+    expect(query!.params).toContain('active');
+  });
+});
+
+describe('addEnvKeyGrants with claimInvitationId', () => {
+  it('destroys the invitation copy only after storing the replacement, in the same transaction', async () => {
+    // ── The permanent key loss this closes ──
+    // The invite grant is the only copy of an environment key the invitee can
+    // reach until their own grant exists. Deleting it before that grant is
+    // committed — which is what acceptance did — turns every failure afterwards
+    // into an unrecoverable one. Ordering is the fix, and it is only meaningful
+    // inside one transaction, so the assertion is on both.
+    const { db, statements } = recorder((sql) => {
+      if (sql.includes('from "environments"')) return [[ENVIRONMENT_ID]];
+      if (sql.includes('from "env_data_keys"')) return [[KEY_ID, 1, 'active']];
+      if (sql.startsWith('insert')) return [[GRANT_ID]];
+      if (sql.includes('from "env_key_grants"')) return [[GRANT_ID]];
+      return [];
+    });
+
+    await addEnvKeyGrants(db, {
+      orgId: ORG_ID,
+      environmentId: ENVIRONMENT_ID,
+      envDataKeyId: KEY_ID,
+      signedByUserId: USER_ID,
+      grants: [grantSeed(USER_ID)],
+      claimInvitationId: INVITATION_ID,
+    });
+
+    const order = statements.map((statement) => statement.sql);
+    const insertAt = order.findIndex((sql) => sql.startsWith('insert into "env_key_grants"'));
+    const deleteAt = order.findIndex((sql) => sql.startsWith('delete from "env_key_grants"'));
+
+    expect(insertAt).toBeGreaterThanOrEqual(0);
+    expect(deleteAt).toBeGreaterThan(insertAt);
+
+    // Deleted by the ids a select returned, and that select is narrowed to this
+    // environment's data keys — so an invitation covering four environments is
+    // consumed four times, once per successful re-seal, and a retry after a
+    // successful claim finds nothing to do.
+    const [consume] = statementsMatching(statements, 'delete from "env_key_grants"');
     expect(consume!.sql).toContain('"env_key_grants"."id" in');
-    expect(consume!.sql).not.toContain('invitation_id');
     expect(consume!.params).toEqual([GRANT_ID]);
+
+    const claimQuery = statements.find(
+      (statement) =>
+        statement.sql.startsWith('select') && statement.sql.includes('from "env_key_grants"'),
+    );
+    expect(claimQuery!.sql).toContain('"invitation_id" = $');
+    expect(claimQuery!.params).toContain(INVITATION_ID);
+    expect(claimQuery!.params).toContain(ENVIRONMENT_ID);
+  });
+
+  it('consumes nothing when no invitation is being claimed', async () => {
+    const { db, statements } = recorder((sql) => {
+      if (sql.includes('from "environments"')) return [[ENVIRONMENT_ID]];
+      if (sql.includes('from "env_data_keys"')) return [[KEY_ID, 1, 'active']];
+      if (sql.startsWith('insert')) return [[GRANT_ID]];
+      return [];
+    });
+
+    await addEnvKeyGrants(db, {
+      orgId: ORG_ID,
+      environmentId: ENVIRONMENT_ID,
+      envDataKeyId: KEY_ID,
+      signedByUserId: USER_ID,
+      grants: [grantSeed(USER_ID)],
+    });
+
+    expect(statementsMatching(statements, 'delete from "env_key_grants"')).toHaveLength(0);
   });
 });
 

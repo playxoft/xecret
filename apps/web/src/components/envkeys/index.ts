@@ -19,6 +19,9 @@
  *   catching a distinction the crypto layer refuses to make.
  */
 
+export { ClaimInviteKeys } from './claim-invite-keys';
+export type { ClaimInviteKeysProps } from './claim-invite-keys';
+
 export { EnvKeyUnavailableState, NeedsRotationBanner } from './env-key-notice';
 
 export { EnvironmentKeyCard } from './environment-key-card';
@@ -38,6 +41,7 @@ export {
   rotatePath,
   sealGrantFor,
   sealInviteGrant,
+  submitGrants,
 } from './env-keys';
 export type { EnvironmentRef, EnvKeyUnavailable, OpenEnvironmentResult } from './env-keys';
 
@@ -62,8 +66,10 @@ export {
   readModePins,
   readPins,
   recordModePin,
+  recordSealedPins,
   recordPin,
   replacePin,
+  substitutedRecipients,
   writePins,
 } from './pins';
 export type {

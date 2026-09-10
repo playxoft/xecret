@@ -21,6 +21,50 @@ import {
   recoveryLookupHash,
 } from './recovery';
 
+/**
+ * Every character both implementations must strip from a typed code.
+ *
+ * The spec says "all hyphens and Unicode whitespace", and the two sides have to
+ * mean the same thing by it or a kit that parses in the browser fails in the
+ * CLI. The set is Unicode's White_Space property plus U+FEFF, and neither
+ * platform's own primitive covers it: JavaScript's `\s` matches U+FEFF but not
+ * U+0085, Go's `unicode.IsSpace` matches U+0085 but not U+FEFF. Each side adds
+ * the one its primitive misses, which is why this list is mirrored character for
+ * character in cli/internal/e2ee/recovery_test.go.
+ *
+ * U+2007 earns its place by being the one a printed kit is likeliest to carry —
+ * a figure space is what a typesetter puts between digit groups — and by being
+ * invisible to whoever pastes it.
+ */
+const UNICODE_SPACES = [
+  '\u0009',
+  '\u000a',
+  '\u000b',
+  '\u000c',
+  '\u000d',
+  '\u0020',
+  '\u0085',
+  '\u00a0',
+  '\u1680',
+  '\u2000',
+  '\u2001',
+  '\u2002',
+  '\u2003',
+  '\u2004',
+  '\u2005',
+  '\u2006',
+  '\u2007',
+  '\u2008',
+  '\u2009',
+  '\u200a',
+  '\u2028',
+  '\u2029',
+  '\u202f',
+  '\u205f',
+  '\u3000',
+  '\ufeff',
+];
+
 describe('the alphabet', () => {
   it('is Crockford base32 without I, L, O, or U', () => {
     expect(CROCKFORD_ALPHABET).toBe('0123456789ABCDEFGHJKMNPQRSTVWXYZ');
@@ -36,6 +80,23 @@ describe('normalisation', () => {
     expect(normalizeCrockford('abc-def')).toBe('ABCDEF');
     expect(normalizeCrockford(' a b\tc\n')).toBe('ABC');
     expect(normalizeCrockford('iIlLoO')).toBe('111100');
+  });
+
+  it('strips every Unicode space a pasted code can carry', () => {
+    for (const space of UNICODE_SPACES) {
+      expect(normalizeCrockford(`AB${space}CD`)).toBe('ABCD');
+      expect(normalizeCrockford(`${space}ab${space}${space}-${space}cd${space}`)).toBe('ABCD');
+    }
+  });
+
+  it('parses a code whose groups are joined by a figure space, a NEL, or a BOM', () => {
+    const code = generateRecoveryCode();
+
+    for (const space of ['\u2007', '\u0085', '\ufeff']) {
+      expect(parseRecoveryCode(code.displayForm.replace(/-/gu, space)).displayForm).toBe(
+        code.displayForm,
+      );
+    }
   });
 
   // U is excluded because it is confusable with V, and Crockford reserves it for

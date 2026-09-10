@@ -182,6 +182,18 @@ func secretsGet(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// The environment's key state, read before any reveal — see decryptRevealed
+	// for why that order is not an optimisation to undo. `material` is nil for a
+	// server-mode environment, which is the same signal it has always been.
+	var material *envkeys.Material
+	if *plain {
+		material, err = a.openKeys(ctx, client, credentials, resolved)
+		if err != nil {
+			return withE2eeHint(err)
+		}
+		defer material.Close()
+	}
+
 	if *plain && *version > 0 {
 		revealed, err := client.RevealVersion(
 			ctx, resolved.Org, resolved.Project, resolved.Environment, name, *version)
@@ -202,7 +214,7 @@ func secretsGet(args []string) error {
 		} else {
 			// End-to-end encrypted: the server returned ciphertext because it
 			// holds no key to do otherwise.
-			value, err = a.decryptRevealed(ctx, client, credentials, resolved, revealedSecret{
+			value, err = decryptRevealed(material, revealedSecret{
 				name:         revealed.Name,
 				id:           revealed.ID,
 				ciphertext:   revealed.Ciphertext,
@@ -233,7 +245,7 @@ func secretsGet(args []string) error {
 		if revealed.Value != nil {
 			value = *revealed.Value
 		} else {
-			value, err = a.decryptRevealed(ctx, client, credentials, resolved, revealedSecret{
+			value, err = decryptRevealed(material, revealedSecret{
 				name:         revealed.Name,
 				id:           revealed.ID,
 				ciphertext:   revealed.Ciphertext,
@@ -825,29 +837,25 @@ type revealedSecret struct {
 	version      int
 }
 
-// decryptRevealed opens a single ciphertext.
+// decryptRevealed opens a single ciphertext against material read **before** the
+// reveal that produced it.
 //
-// The key state is read after the reveal rather than before, because that is the
-// order that fails usefully: a caller with no grant learns so from a cheap key
-// read, and a caller whose secret does not exist learns so from the 404 without
-// having opened a grant it did not need.
-func (a *app) decryptRevealed(
-	ctx context.Context,
-	client *api.Client,
-	credentials *cred.Credentials,
-	resolved scope,
-	secret revealedSecret,
-) (string, error) {
-	material, err := a.openKeys(ctx, client, credentials, resolved)
-	if err != nil {
-		return "", err
-	}
+// The order used to be the other way round, on the reasoning that a caller whose
+// secret does not exist should not pay for a grant it did not need. That saved a
+// request and invented a failure: a rotation landing between the reveal and the
+// key read hands this process the *new* key state and the *old* ciphertext, the
+// row's `envDataKeyId` no longer matches the active one, and the caller is told
+// their secret was rotated away when it was not. `openEnvironment` gets this
+// right for a whole bundle — the grant travels with the values, precisely so
+// nothing can land between the two — and a single secret deserves the same
+// answer. Reading first turns the race the other way: the key is at least as old
+// as the ciphertext, so a mismatch is a real one.
+func decryptRevealed(material *envkeys.Material, secret revealedSecret) (string, error) {
 	if material == nil {
 		// The reveal returned no value and the environment is not e2ee. Nothing
 		// this process can do produces a plaintext from that.
 		return "", errors.New("the server returned no value for this secret")
 	}
-	defer material.Close()
 
 	return material.DecryptSecret(api.ClientSecret{
 		ID:           secret.id,
@@ -1024,9 +1032,14 @@ func withWriteConflictHint(err error) error {
 // version because notes live on the `secrets` row rather than on the append-only
 // `secret_versions` one.
 //
-// Clearing a note stays a plaintext `null` in both modes: there is nothing to
-// encrypt, and sealing the empty string would store a blob that decrypts to
-// nothing rather than removing the row's note.
+// **Clearing one moves too.** It is the same null either way, but the field it
+// goes in is not: an `e2ee` environment has no `note` column the server will
+// accept a write to, so a plaintext `note: null` is refused with a 400 and the
+// note stays where it is. That left the CLI able to write a note onto an
+// encrypted secret and unable to take it off again. Clearing therefore asks the
+// environment which mode it is in — and asks only that, without opening a grant,
+// because removing a note needs no key and requiring one would refuse the
+// operation to somebody who has access but no grant yet.
 func (a *app) sealNote(
 	ctx context.Context,
 	client *api.Client,
@@ -1035,7 +1048,24 @@ func (a *app) sealNote(
 	name string,
 	update *api.MetadataUpdate,
 ) error {
-	if update.Note == nil || *update.Note == "" {
+	if update.Note == nil {
+		return nil
+	}
+
+	if *update.Note == "" {
+		keys, err := a.keyState(ctx, client, credentials, resolved)
+		if err != nil {
+			return err
+		}
+		if keys.EncryptionMode == "e2ee" {
+			// The empty string is what api.UpdateMetadata renders as a null, and
+			// the null is what removes the row's note. Sealing the empty string
+			// instead would store a blob that decrypts to nothing, which is a
+			// note that reads as empty rather than a secret with no note.
+			cleared := ""
+			update.EncNote = &cleared
+			update.Note = nil
+		}
 		return nil
 	}
 

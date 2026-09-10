@@ -28,6 +28,8 @@ import {
   completeRecovery,
   describePasskeyUnlockFailure,
   describeUnlockFailure,
+  materialSupersedes,
+  openPrivateKeys,
   openRecoveryWrap,
   readRecoveryCode,
   resetConfirmationProblem,
@@ -794,5 +796,106 @@ describe('describeUnlockFailure', () => {
     expect(describeUnlockFailure(new Error('postgres://user:hunter2@host'))).not.toContain(
       'hunter2',
     );
+  });
+});
+
+describe('material that moved under a long-lived tab', () => {
+  /**
+   * ── The wrong accusation this closes ──
+   * A dashboard tab reads `/api/auth/vault` once and can stay open for a working
+   * day. A passphrase change, a recovery or a reset on another device moves the
+   * salt and the wrap underneath it, so the *correct* new passphrase fails
+   * against the copy that tab is holding — and what it used to say was "check for
+   * a typo", while every retry spent another attempt from a server-side lockout
+   * budget no correct passphrase could satisfy.
+   */
+  it('reports a changed salt or wrap as supersession', async () => {
+    const built = await buildVaultCreate({
+      userId: USER_ID,
+      passphrase: PASSPHRASE,
+      argon2id: fakeArgon2id,
+    });
+    const before = materialFor(built.body as Record<string, unknown>);
+
+    const rebuilt = await buildVaultCreate({
+      userId: USER_ID,
+      passphrase: 'a completely different passphrase entirely',
+      argon2id: fakeArgon2id,
+    });
+    const after = materialFor(rebuilt.body as Record<string, unknown>);
+
+    expect(materialSupersedes(before, after)).toBe(true);
+    expect(materialSupersedes(before, { ...before, kdfSalt: after.kdfSalt })).toBe(true);
+    expect(materialSupersedes(before, { ...before, passphraseWrap: after.passphraseWrap })).toBe(
+      true,
+    );
+  });
+
+  it('does not call an unrelated change supersession', () => {
+    const material: VaultMaterial = {
+      encAlgorithm: 'X25519',
+      encPublicKey: toBase64Url(new Uint8Array(32).fill(1)),
+      encPrivateKeyEnc: 'xk2.gcm.AAAA',
+      signAlgorithm: 'Ed25519',
+      signPublicKey: toBase64Url(new Uint8Array(32).fill(2)),
+      signPrivateKeyEnc: 'xk2.gcm.BBBB',
+      kdfSalt: toBase64Url(new Uint8Array(16).fill(3)),
+      kdfParams: { alg: 'argon2id', v: 19, m: 19_456, t: 2, p: 1, len: 32 },
+      passphraseWrap: 'xk2.gcm.CCCC',
+      recoveryCodesRemaining: 5,
+      passkeys: [],
+    };
+
+    // Enrolling a passkey elsewhere, or spending a recovery code, changes the
+    // material without changing whether a passphrase still opens it. Treating
+    // either as supersession would tell somebody their passphrase had been
+    // changed because a colleague's device did something unrelated.
+    expect(materialSupersedes(material, { ...material, recoveryCodesRemaining: 4 })).toBe(false);
+    expect(
+      materialSupersedes(material, {
+        ...material,
+        passkeys: [
+          {
+            id: 'passkey-1',
+            credentialId: 'abc',
+            label: 'A laptop',
+            transports: null,
+            createdAt: '2026-09-10T00:00:00.000Z',
+            lastUsedAt: null,
+            wrap: 'xk2.gcm.DDDD',
+          } satisfies VaultPasskey,
+        ],
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('the failure paths that used to leave keys resident', () => {
+  it('zeroizes both halves when one private key will not unwrap', async () => {
+    const built = await buildVaultCreate({
+      userId: USER_ID,
+      passphrase: PASSPHRASE,
+      argon2id: fakeArgon2id,
+    });
+    const material = materialFor(built.body as Record<string, unknown>);
+
+    // A corrupt signing wrap. `Promise.all` used to reject on it and abandon the
+    // *encryption* unwrap, which still resolved — to a decrypted private key
+    // nobody was holding and nothing would ever wipe, on the one path where the
+    // caller has just been told the vault did not open.
+    const wrapKey = await passphraseWrapKey(PASSPHRASE, material);
+    const userKey = await unwrapUserKey({
+      wrapKey,
+      blob: material.passphraseWrap,
+      context: { userId: USER_ID, wrapKind: 'passphrase' },
+    });
+
+    await expect(
+      openPrivateKeys(USER_ID, userKey, { ...material, signPrivateKeyEnc: 'xk2.gcm.AAAAAAAAAAAA' }),
+    ).rejects.toBeInstanceOf(Error);
+
+    // The User Key was the caller's until this returned successfully, and a
+    // caller holding a rejection has no handle left to wipe it with.
+    expect([...userKey]).toEqual([...new Uint8Array(userKey.length)]);
   });
 });

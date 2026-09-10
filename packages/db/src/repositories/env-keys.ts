@@ -6,7 +6,7 @@ import type { GrantRecipientKind } from '../schema/env-keys';
 import type { OrgRole } from '@xecret/core/authz';
 import { environments, projects } from '../schema/resources';
 import { secrets, secretVersions } from '../schema/secrets';
-import { invitations } from '../schema/tenancy';
+import { invitations, organizations } from '../schema/tenancy';
 import type { InvitationGrantSeed } from '../schema/tenancy';
 import { serviceTokens } from '../schema/tokens';
 import { userKeys } from '../schema/vault';
@@ -479,6 +479,21 @@ export interface AddEnvKeyGrantsParams {
   envDataKeyId: string;
   signedByUserId: string;
   grants: readonly EnvKeyGrantSeed[];
+  /**
+   * An invitation whose grants on **this environment** this write consumes.
+   *
+   * Set by the invite key step, which is doing exactly one thing: turning a blob
+   * addressed to a one-off keypair into a blob addressed to the invitee's own.
+   * The caller has already checked that this account accepted that invitation
+   * (`canClaimInvitationGrants`); this parameter is what makes the two halves —
+   * store the new grant, destroy the old one — a single transaction rather than
+   * two requests with a failure mode between them.
+   *
+   * Per environment, not per invitation, and that is the whole reason a retry
+   * works: an invitee whose second environment fails to re-seal keeps its invite
+   * grant and can claim it later, while the first stays claimed.
+   */
+  claimInvitationId?: string | null;
 }
 
 /**
@@ -531,6 +546,41 @@ export async function addEnvKeyGrants(
               inArray(pendingKeyGrants.targetUserId, fulfilled),
             ),
           );
+      }
+
+      // The invitation's copy dies with the write that replaces it.
+      //
+      // Ordering is the point. The invite grant is the *only* copy of this
+      // environment's key the invitee can reach until their own grant exists, so
+      // deleting it before the insert commits — which is what acceptance used to
+      // do — turns any failure after that moment into a permanent loss. Deleting
+      // it inside the same transaction means the row survives exactly as long as
+      // it is still needed, and a retry that arrives after a successful claim
+      // finds nothing to delete and nothing to do, which is what idempotent means
+      // here.
+      //
+      // Scoped to this environment's data keys, so an invitation covering four
+      // environments is consumed four times, once per successful re-seal.
+      if (params.claimInvitationId != null) {
+        const claimed = await tx
+          .select({ id: envKeyGrants.id })
+          .from(envKeyGrants)
+          .innerJoin(envDataKeys, eq(envDataKeys.id, envKeyGrants.envDataKeyId))
+          .where(
+            and(
+              eq(envKeyGrants.invitationId, params.claimInvitationId),
+              eq(envDataKeys.environmentId, params.environmentId),
+            ),
+          );
+
+        if (claimed.length > 0) {
+          await tx.delete(envKeyGrants).where(
+            inArray(
+              envKeyGrants.id,
+              claimed.map((row) => row.id),
+            ),
+          );
+        }
       }
 
       return rows.length;
@@ -990,87 +1040,190 @@ export interface InvitationGrantRecord {
 }
 
 /**
- * Reads an invitation's sealed grants and deletes them, in one transaction.
+ * Reads an invitation's sealed grants. Reads them; does not consume them.
  *
- * ── Why read and delete are one act ──
- * The invitation's private key exists only inside a fragment that travelled over
- * a chat message, and the fragment does not expire the way the token does. A row
- * left behind is a copy of the environment's keys addressed to a credential that
- * is now sitting in somebody's message history for ever. Consuming them at
- * acceptance is what bounds that window to the acceptance itself.
+ * ── Why this stopped being a `take` ──
+ * It used to read and delete in one transaction, on the argument that a fragment
+ * sitting in a chat history never expires, so the window in which the row is
+ * openable should be bounded to the acceptance itself. The argument is sound and
+ * the implementation destroyed the feature: acceptance is the moment a person
+ * *arrives*, and the primary population of an invitation link is somebody who has
+ * no vault yet. They cannot re-seal anything until they have set one up — and by
+ * the time they had, the grants had been deleted by the response that showed them.
+ * The two-channel flow's entire value went to whoever happened to already be
+ * signed in with an unlocked vault in the same tab.
  *
- * ── Why losing them is survivable ──
- * If the client crashes between this returning and the re-sealed grants being
- * uploaded, the invitee holds no key — and the pending-share queue, written by
- * the same acceptance, already says exactly that. A teammate fulfils it. The
- * alternative, keeping the rows until a re-seal succeeds, buys one retry at the
- * cost of leaving a fragment-openable key in the database indefinitely.
+ * So consumption moved to the act that makes the row redundant: `addEnvKeyGrants`
+ * deletes an invitation's grant for an environment in the same transaction that
+ * stores the invitee's own re-sealed grant for it (see `claimInvitationId`). A
+ * grant is destroyed once it has been *used*, per environment, and never before —
+ * which also makes a partial failure resumable rather than final.
  *
- * Only grants on **active** data keys are returned: one sealed against a
+ * ── The window that leaves, stated plainly ──
+ * Between acceptance and the claim, the sealed grant remains in the database and
+ * remains openable by anybody holding the fragment. That is a real residual risk
+ * and it is recorded in ADR 0009 rather than argued away: it is bounded by the
+ * invitee claiming (usually seconds later), by any rotation of the environment —
+ * which retires the key the grant carries — and by the fact that the fragment was
+ * always the weak half of a two-channel scheme. It buys a flow that works for the
+ * people it was designed for.
+ *
+ * Only grants on **active** data keys are returned. One sealed against a
  * rotated-away key opens a key nothing is written under any more, and handing it
  * to a client that would faithfully re-seal it produces a grant that looks
- * exactly like a working one. The stale rows are deleted all the same.
+ * exactly like a working one.
  */
-export async function takeInvitationGrants(
+export async function readInvitationGrants(
   exec: Executor,
   params: { orgId: string; invitationId: string },
 ): Promise<InvitationGrantRecord[]> {
-  return exec.transaction(async (tx) => {
-    const rows = await tx
-      .select({
-        grantId: envKeyGrants.id,
-        environmentId: envDataKeys.environmentId,
-        projectSlug: projects.slug,
-        environmentSlug: environments.slug,
-        envDataKeyId: envDataKeys.id,
-        edkVersion: envDataKeys.version,
-        edkSealed: envKeyGrants.edkSealed,
-        ehkSealed: envKeyGrants.ehkSealed,
-        status: envDataKeys.status,
-      })
-      .from(envKeyGrants)
-      .innerJoin(envDataKeys, eq(envDataKeys.id, envKeyGrants.envDataKeyId))
-      .innerJoin(environments, eq(environments.id, envDataKeys.environmentId))
-      .innerJoin(projects, eq(projects.id, environments.projectId))
-      .where(
-        and(eq(envKeyGrants.invitationId, params.invitationId), eq(projects.orgId, params.orgId)),
-      );
-
-    if (rows.length === 0) return [];
-
-    // Deleted **by the ids the tenant-scoped SELECT returned**, never by
-    // `invitation_id` alone.
-    //
-    // The two look equivalent and are not. The select above is scoped through
-    // `projects.org_id`; a delete keyed only on the invitation would reach every
-    // grant that names it, including one written by another organisation — and
-    // sealing a grant to a foreign invitation id needs nothing more than knowing
-    // it. Accepting an invitation would then quietly destroy another tenant's
-    // rows, from a code path nobody would think to look at (threat T2).
-    //
-    // Naming the ids also means a row inserted between the select and this
-    // statement survives, which is the correct outcome: it was not read, so it
-    // was not handed to anybody, so consuming it would destroy a key nobody
-    // received.
-    await tx.delete(envKeyGrants).where(
-      inArray(
-        envKeyGrants.id,
-        rows.map((row) => row.grantId),
+  const rows = await exec
+    .select({
+      environmentId: envDataKeys.environmentId,
+      projectSlug: projects.slug,
+      environmentSlug: environments.slug,
+      envDataKeyId: envDataKeys.id,
+      edkVersion: envDataKeys.version,
+      edkSealed: envKeyGrants.edkSealed,
+      ehkSealed: envKeyGrants.ehkSealed,
+    })
+    .from(envKeyGrants)
+    .innerJoin(envDataKeys, eq(envDataKeys.id, envKeyGrants.envDataKeyId))
+    .innerJoin(environments, eq(environments.id, envDataKeys.environmentId))
+    .innerJoin(projects, eq(projects.id, environments.projectId))
+    .where(
+      and(
+        eq(envKeyGrants.invitationId, params.invitationId),
+        // Tenant-scoped through `projects`, exactly as every other read here is.
+        // Sealing a grant to a foreign invitation id needs nothing more than
+        // knowing it, so without this join an invitation of one organisation
+        // could serve another's blobs (threat T2).
+        eq(projects.orgId, params.orgId),
+        eq(envDataKeys.status, 'active'),
       ),
     );
 
-    return rows
-      .filter((row) => row.status === 'active')
-      .map((row) => ({
-        environmentId: row.environmentId,
-        projectSlug: row.projectSlug,
-        environmentSlug: row.environmentSlug,
-        envDataKeyId: row.envDataKeyId,
-        edkVersion: row.edkVersion,
-        edkSealed: row.edkSealed,
-        ehkSealed: row.ehkSealed,
-      }));
-  });
+  return rows;
+}
+
+/** An invitation whose sealed grants the accepting member has not claimed yet. */
+export interface ClaimableInvitationRecord {
+  invitationId: string;
+  orgId: string;
+  orgSlug: string;
+  orgName: string;
+  grants: InvitationGrantRecord[];
+}
+
+/**
+ * Every invitation this account accepted that still has grants nobody has claimed.
+ *
+ * ── Why the key code has to be enterable after the fact ──
+ * The two-channel flow assumes the second channel arrives second. It routinely
+ * does not: the link is opened on a phone, the code is in an email on a laptop,
+ * the person sets up their vault first and comes back. Every one of those was a
+ * dead end while acceptance was the only moment the grants were served, and the
+ * dead end was silent — the invitee saw an environment they could list and not
+ * read, with nothing on screen connecting it to the code in their inbox.
+ *
+ * ── Why it is safe to serve these to a session ──
+ * The blobs are sealed to the invitation's one-off X25519 public key. The session
+ * asking cannot open them; only the fragment can, and the fragment has never been
+ * near this server. What the session proves is *entitlement to try*: the rows are
+ * scoped to invitations this user id accepted, so nobody learns of, or can claim,
+ * anybody else's. That is the same standard `myGrant` is served under — ciphertext
+ * addressed to a key the server does not hold.
+ */
+export async function listClaimableInvitationGrants(
+  exec: Executor,
+  userId: string,
+): Promise<ClaimableInvitationRecord[]> {
+  const rows = await exec
+    .select({
+      invitationId: invitations.id,
+      orgId: organizations.id,
+      orgSlug: organizations.slug,
+      orgName: organizations.name,
+      environmentId: envDataKeys.environmentId,
+      projectSlug: projects.slug,
+      environmentSlug: environments.slug,
+      envDataKeyId: envDataKeys.id,
+      edkVersion: envDataKeys.version,
+      edkSealed: envKeyGrants.edkSealed,
+      ehkSealed: envKeyGrants.ehkSealed,
+    })
+    .from(envKeyGrants)
+    .innerJoin(invitations, eq(invitations.id, envKeyGrants.invitationId))
+    .innerJoin(organizations, eq(organizations.id, invitations.orgId))
+    .innerJoin(envDataKeys, eq(envDataKeys.id, envKeyGrants.envDataKeyId))
+    .innerJoin(environments, eq(environments.id, envDataKeys.environmentId))
+    .innerJoin(projects, eq(projects.id, environments.projectId))
+    .where(
+      and(
+        eq(invitations.acceptedBy, userId),
+        // The invitation's own organisation and the environment's must be the
+        // same one. They always are for a grant written by the invite flow; the
+        // predicate is here so that a row that named a foreign invitation could
+        // never be served through it either.
+        eq(projects.orgId, invitations.orgId),
+        eq(envDataKeys.status, 'active'),
+      ),
+    );
+
+  const byInvitation = new Map<string, ClaimableInvitationRecord>();
+  for (const row of rows) {
+    let record = byInvitation.get(row.invitationId);
+    if (record === undefined) {
+      record = {
+        invitationId: row.invitationId,
+        orgId: row.orgId,
+        orgSlug: row.orgSlug,
+        orgName: row.orgName,
+        grants: [],
+      };
+      byInvitation.set(row.invitationId, record);
+    }
+    record.grants.push({
+      environmentId: row.environmentId,
+      projectSlug: row.projectSlug,
+      environmentSlug: row.environmentSlug,
+      envDataKeyId: row.envDataKeyId,
+      edkVersion: row.edkVersion,
+      edkSealed: row.edkSealed,
+      ehkSealed: row.ehkSealed,
+    });
+  }
+
+  return [...byInvitation.values()];
+}
+
+/**
+ * Whether this account may consume that invitation's grants, in this organisation.
+ *
+ * The one authorisation question the claim adds, and it is a narrow one: a grant
+ * write may delete an invitation's rows **only** if the invitation belongs to the
+ * organisation being written to and this user is the person who accepted it.
+ * Without the second half, any member holding a key could name somebody else's
+ * invitation and destroy the grants they had not claimed yet — a denial that
+ * leaves no trace, because the pending-share fallback would quietly cover for it.
+ */
+export async function canClaimInvitationGrants(
+  exec: Executor,
+  params: { orgId: string; invitationId: string; userId: string },
+): Promise<boolean> {
+  const [row] = await exec
+    .select({ id: invitations.id })
+    .from(invitations)
+    .where(
+      and(
+        eq(invitations.id, params.invitationId),
+        eq(invitations.orgId, params.orgId),
+        eq(invitations.acceptedBy, params.userId),
+      ),
+    )
+    .limit(1);
+
+  return row !== undefined;
 }
 
 function grantRow(
@@ -1183,29 +1336,49 @@ async function requireEnvironment(
  * since been rotated away is a blob whose AAD names a key nobody uses, and it
  * would sit in the table looking exactly like a working grant.
  */
+/**
+ * Refuses a write sealed against anything but this environment's live key.
+ *
+ * ── Why the message names both versions ──
+ * The client's only correct response to this is to re-read `GET …/keys`, re-seal
+ * against the key it gets back, and retry — and it can only decide that
+ * automatically if the refusal distinguishes "you sealed against a key that has
+ * been rotated away" from every other 409 this API can produce. Naming the
+ * version the caller sealed for and the version that is now active makes the
+ * conflict self-describing: `token-keys.ts` and `pending-shares.tsx` both branch
+ * on it, and a human reading an audit trail can see how far behind the client was
+ * rather than only that it was behind.
+ *
+ * Neither number is a secret: a caller holding a grant on this environment is
+ * told the active version by the endpoint it just read.
+ */
 async function requireActiveKey(
   exec: Executor,
   environmentId: string,
   envDataKeyId: string,
 ): Promise<void> {
   const [row] = await exec
-    .select({ id: envDataKeys.id })
+    .select({ id: envDataKeys.id, version: envDataKeys.version, status: envDataKeys.status })
     .from(envDataKeys)
-    .where(
-      and(
-        eq(envDataKeys.id, envDataKeyId),
-        eq(envDataKeys.environmentId, environmentId),
-        eq(envDataKeys.status, 'active'),
-      ),
-    )
+    .where(and(eq(envDataKeys.id, envDataKeyId), eq(envDataKeys.environmentId, environmentId)))
     .limit(1);
 
-  if (!row) {
-    throw new RepositoryError(
-      'conflict',
-      'That environment key is no longer the active one. Re-read its keys and try again.',
-    );
-  }
+  if (row?.status === 'active') return;
+
+  const [active] = await exec
+    .select({ version: envDataKeys.version })
+    .from(envDataKeys)
+    .where(and(eq(envDataKeys.environmentId, environmentId), eq(envDataKeys.status, 'active')))
+    .limit(1);
+
+  const sealedFor =
+    row === undefined ? 'a key this environment has never had' : `version ${row.version}`;
+  const nowActive = active === undefined ? 'no key at all' : `version ${active.version}`;
+
+  throw new RepositoryError(
+    'conflict',
+    `These grants were sealed for ${sealedFor}; this environment's active key is ${nowActive}. Re-read its keys, seal against the active version, and retry.`,
+  );
 }
 
 /**

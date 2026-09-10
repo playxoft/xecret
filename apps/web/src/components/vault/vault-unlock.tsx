@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { fromBase64Url, zeroize } from '@xecret/core/crypto/client';
 import type { Bytes, RecoveryCode } from '@xecret/core/crypto/client';
 
@@ -21,6 +21,8 @@ import {
   completeRecovery,
   describePasskeyUnlockFailure,
   describeUnlockFailure,
+  fetchVault,
+  materialSupersedes,
   openRecoveryWrap,
   readRecoveryCode,
   resetConfirmationProblem,
@@ -68,12 +70,65 @@ export function VaultUnlock({ user, onUnlocked }: VaultUnlockProps) {
   const vault = useVault();
   const [stage, setStage] = useState<Stage>('unlock');
 
+  /**
+   * The wraps are re-read whenever this screen appears.
+   *
+   * ── What a stale copy costs ──
+   * A dashboard tab reads `/api/auth/vault` once, when the provider mounts, and
+   * then stays open for a working day. A passphrase change, a recovery or a reset
+   * performed on another device moves the salt and the wrap underneath it — so
+   * the tab that idles out at four o'clock presents a form built from this
+   * morning's material, and the *correct* new passphrase fails against it. Every
+   * attempt then spends from a server-side lockout budget that no correct
+   * passphrase can satisfy, and the screen blames the typing.
+   *
+   * The mount is the right moment because it is the one that costs nothing: the
+   * lock screen appears at a transition, not on every render, and a person about
+   * to type a passphrase is a person about to wait for something anyway.
+   */
+  const reload = vault.reload;
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
   // Answered before the material is looked at, and the exemption is the point of
   // it: this is the screen somebody reaches when nothing they hold opens
   // anything, and it has to stay rendered through the reset that empties
   // `material` underneath it.
   if (stage === 'lost') {
     return <AllCodesLost email={user.email} onBack={() => setStage('code')} onReset={onUnlocked} />;
+  }
+
+  /**
+   * A vault that no longer exists, discovered by the refetch above.
+   *
+   * Somebody reset their vault on another device. This tab's session still says
+   * `configured: true`, so its shell chose the unlock screen — and an unlock
+   * screen for a vault that is gone is a form nothing can satisfy, with a
+   * "forgotten your passphrase?" link whose recovery codes were destroyed along
+   * with everything else. Saying what happened and offering the one act that
+   * remains is the whole of the fix; `onUnlocked` re-reads the account, whose
+   * `configured: false` moves the caller to the setup ceremony.
+   */
+  if (vault.status?.configured === false && stage === 'unlock') {
+    return (
+      <div className="flex flex-col gap-4">
+        <Alert tone="warning" title="Your vault was reset on another device">
+          <p>
+            There is nothing here to unlock any more. A reset destroys the keys, every wrap and
+            every recovery code — deliberately, because nothing else could have replaced a
+            passphrase nobody remembered. Anything encrypted under the old vault stays unreadable.
+          </p>
+          <p className="mt-2">
+            Setting up a new one takes a minute. Your teammates then share each environment&apos;s
+            key with you again, which is a prompt on their side rather than a request on yours.
+          </p>
+        </Alert>
+        <Button variant="primary" onClick={onUnlocked}>
+          Set up a new vault
+        </Button>
+      </div>
+    );
   }
 
   if (vault.material === null) {
@@ -126,6 +181,7 @@ function UnlockForm({
   onUnlocked: () => void;
   onForgot: () => void;
 }) {
+  const vault = useVault();
   const [passphrase, setPassphrase] = useState('');
   const [busy, setBusy] = useState(false);
   const [passkeyBusy, setPasskeyBusy] = useState(false);
@@ -189,14 +245,60 @@ function UnlockForm({
       setPassphrase('');
       onUnlocked();
     } catch (cause) {
-      // One message for a failed unwrap, and the server's own words for
-      // everything it answered — including the lockout, whose wait is computed
-      // from the account's real backoff state and must not be paraphrased. See
-      // `describeUnlockFailure`.
-      setFailure(describeUnlockFailure(cause));
+      setFailure(await explainFailure(cause));
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * What to say about a failed unlock — after checking it was this browser's
+   * fault.
+   *
+   * ── Why a request happens before an error message is chosen ──
+   * "That passphrase did not open your vault" has two causes and they need
+   * opposite responses. One is a typo. The other is that the wraps this form was
+   * built from are no longer the account's: a passphrase changed on a laptop, a
+   * recovery completed on a phone, a reset performed anywhere. In the second case
+   * the passphrase being typed is *correct*, and the typo message sends somebody
+   * to doubt a credential they set ten minutes ago while every retry burns an
+   * attempt from a lockout budget no correct passphrase can satisfy.
+   *
+   * The server cannot tell the difference — the unwrap happens here, and all it
+   * saw was a verifier it never received. So this browser re-reads the material
+   * it just failed against and compares. One extra request on a path that has
+   * already failed, in exchange for the difference between an accusation and an
+   * explanation.
+   *
+   * A refetch that itself fails changes nothing and says nothing: the original
+   * failure is reported as it always was, because "we could not check" is not a
+   * sentence that helps anybody unlock a vault.
+   */
+  async function explainFailure(cause: unknown): Promise<string> {
+    try {
+      const fresh = await fetchVault();
+      vault.adopt(
+        fresh.material === null
+          ? { vault: fresh.vault }
+          : { vault: fresh.vault, material: fresh.material },
+      );
+
+      if (!fresh.vault.configured || fresh.material === null) {
+        return 'Your vault was reset on another device, so there is nothing here to unlock. Reload this page to set up a new one.';
+      }
+
+      if (materialSupersedes(material, fresh.material)) {
+        return 'Your master passphrase was changed on another device. This page was still showing the old one — use the new passphrase, or reload the page and try again.';
+      }
+    } catch {
+      // Fall through to the original failure. See above.
+    }
+
+    // One message for a failed unwrap, and the server's own words for
+    // everything it answered — including the lockout, whose wait is computed
+    // from the account's real backoff state and must not be paraphrased. See
+    // `describeUnlockFailure`.
+    return describeUnlockFailure(cause);
   }
 
   return (

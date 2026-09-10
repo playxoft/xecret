@@ -52,6 +52,10 @@ import (
 // ErrMiss means no usable cache entry exists for this scope.
 var ErrMiss = errors.New("no offline copy of these secrets exists yet")
 
+// ErrTooOld means an offline copy exists and is older than this run is willing
+// to serve. See [ResolveMaxAge] for what the bound is for.
+var ErrTooOld = errors.New("the offline copy is older than the age bound")
+
 // keyStoreEntry is where the cache key lives in the keyring store.
 const keyStoreEntry = "cache-key"
 
@@ -255,6 +259,26 @@ func Read(store keyring.Store, scope Scope) (*Entry, error) {
 		return nil, errors.New("cache file is corrupt — run 'xecret cache clear'")
 	}
 	return &entry, nil
+}
+
+// Forget removes one scope's cache file, leaving every other scope and the
+// cache key alone.
+//
+// Written for the pre-migration plaintext copy an environment leaves behind when
+// it becomes end-to-end encrypted. Refusing to *serve* that file is only half an
+// answer: it stays on disk, holding values from before the migration, for the
+// next binary and for anybody who can read the directory. The e2ee read that
+// establishes there is a better copy is the moment it stops having a reason to
+// exist, so that is where it goes.
+//
+// A file that is already gone is not an error — this is called on a path whose
+// job is something else, and "the thing I was going to delete does not exist"
+// is the outcome that path wanted.
+func Forget(scope Scope) error {
+	if err := os.Remove(path(scope)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // Clear removes every cache file and forgets the cache key. Used by

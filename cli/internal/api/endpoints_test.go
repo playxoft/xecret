@@ -372,3 +372,110 @@ func TestClientImportEntriesCarryTheirExpectedVersion(t *testing.T) {
 		t.Fatalf("entries = %+v", body.Entries)
 	}
 }
+
+// ── Recognising a bundle ──
+//
+// A pull answers in one of two shapes and the client has to tell them apart from
+// the bytes. Getting that wrong in the direction that matters — reading a
+// server-mode document as a bundle — makes every value in it get treated as
+// ciphertext, so the test cases here are mostly about the responses that look
+// like one and are not.
+
+func pullServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+}
+
+func pullOnce(t *testing.T, body string) *Pulled {
+	t.Helper()
+	server := pullServer(t, body)
+	defer server.Close()
+
+	pulled, err := New(server.URL, "xct_live_abc", "test-agent").
+		Pull(context.Background(), "acme", "web", "dev", "json")
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	return pulled
+}
+
+// The marker the server sends is what a bundle is recognised by, and nothing
+// about the content has to agree with it.
+func TestPullPrefersTheBundleMarker(t *testing.T) {
+	pulled := pullOnce(t, `{"bundle":true,"bundleVersion":1,"encryptionMode":"e2ee",
+		"keys":{"encryptionMode":"e2ee","environmentId":"env-1","activeEdk":{"id":"k1","version":1}},
+		"secrets":[{"id":"s1","name":"A","ciphertext":"xk2.gcm.x","version":1}]}`)
+
+	if pulled.Bundle == nil {
+		t.Fatal("a response carrying the marker was not read as a bundle")
+	}
+	if pulled.Bundle.BundleVersion != 1 {
+		t.Errorf("bundleVersion = %d", pulled.Bundle.BundleVersion)
+	}
+	// The bytes are kept as received: the cache stores these, not a re-encoding
+	// of the struct they parsed into.
+	if len(pulled.Raw) == 0 || !strings.Contains(string(pulled.Raw), `"bundle":true`) {
+		t.Errorf("Raw did not carry the response body: %q", pulled.Raw)
+	}
+}
+
+// The transition case: a deployment that has not shipped the marker yet.
+func TestPullStillAcceptsTheOlderBundleShape(t *testing.T) {
+	pulled := pullOnce(t, `{"encryptionMode":"e2ee",
+		"keys":{"encryptionMode":"e2ee","environmentId":"env-1","activeEdk":{"id":"k1","version":1}},
+		"secrets":[{"id":"s1","name":"A","ciphertext":"xk2.gcm.x","version":1}]}`)
+
+	if pulled.Bundle == nil {
+		t.Fatal("a pre-marker bundle was not recognised")
+	}
+}
+
+// The collision the marker exists to close. A `server`-mode pull with
+// `format=json` is a flat object of the environment's own secret names, so an
+// environment containing a secret called `encryptionMode` whose value is `e2ee`
+// used to be read as a bundle — and its values then treated as ciphertext.
+func TestPullDoesNotMistakeASecretNamedEncryptionModeForABundle(t *testing.T) {
+	pulled := pullOnce(t, `{"encryptionMode":"e2ee","DATABASE_URL":"postgres://u:p@h/db","secrets":"3"}`)
+
+	if pulled.Bundle != nil {
+		t.Fatal("a flat document was read as a bundle")
+	}
+	var document map[string]string
+	if err := json.Unmarshal(pulled.Document, &document); err != nil {
+		t.Fatalf("the document did not survive: %v", err)
+	}
+	if document["DATABASE_URL"] != "postgres://u:p@h/db" {
+		t.Errorf("document = %v", document)
+	}
+}
+
+// And the same trick played with the marker itself: a secret named `bundle` is
+// a string, not a boolean, so the probe fails and the response stays a document.
+func TestPullDoesNotMistakeASecretNamedBundleForABundle(t *testing.T) {
+	pulled := pullOnce(t, `{"bundle":"true","encryptionMode":"e2ee","A":"b"}`)
+
+	if pulled.Bundle != nil {
+		t.Fatal("a flat document carrying a secret named 'bundle' was read as a bundle")
+	}
+}
+
+// A rendered document in any other format is not JSON at all.
+func TestPullReadsARenderedDocumentAsItself(t *testing.T) {
+	server := pullServer(t, "DATABASE_URL=postgres://u:p@h/db\n")
+	defer server.Close()
+
+	pulled, err := New(server.URL, "xct_live_abc", "test-agent").
+		Pull(context.Background(), "acme", "web", "dev", "env")
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if pulled.Bundle != nil {
+		t.Fatal("a .env document was read as a bundle")
+	}
+	if !strings.HasPrefix(string(pulled.Document), "DATABASE_URL=") {
+		t.Errorf("document = %q", pulled.Document)
+	}
+}

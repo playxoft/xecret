@@ -93,9 +93,17 @@ export function useRevealAll(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Identifies the environment, not a request. `io` is rebuilt whenever the key
-  // it captured changes, so a rotation is a fresh identity and the guard below
-  // drops a snapshot decrypted under the retired key.
+  // Identifies the environment, and only the environment — it is the slugs and
+  // nothing else, so a rotation does not change it.
+  //
+  // That is worth stating because this comment used to claim the opposite: that
+  // the guard below dropped a snapshot decrypted under a retired key, because
+  // `io` is rebuilt when the key changes. It is not what happens. Nothing here
+  // watches `io`, and a rotation leaves this cache exactly as it was. What
+  // actually drops a stale snapshot is `forget`, called by every write the table
+  // performs and by the `externalWrites` counter the screen threads through it —
+  // and the `[path]` comparison covers the different case it was written for,
+  // which is navigating from dev to production with values on screen.
   const path = `${orgSlug}/${projectSlug}/${envSlug}`;
 
   // The request in flight, so a second click cannot start a second decryption
@@ -192,7 +200,12 @@ export function useRevealAll(
       showWhenLoaded.current = show;
       setLoading(true);
 
-      io.pull()
+      // The signal goes *into* the pull, not merely around it. In `e2ee` mode
+      // this is one request followed by a decryption per secret, and a controller
+      // the IO never saw could only cancel the fetch — leaving hundreds of
+      // AES-GCM opens running into a screen the person has already left, each one
+      // putting another plaintext into a promise chain whose result is discarded.
+      io.pull({ signal: controller.signal })
         .then((plaintexts) => {
           if (controller.signal.aborted) return;
 

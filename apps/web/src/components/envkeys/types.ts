@@ -154,6 +154,9 @@ export interface ClientSecretCiphertext {
 
 /** `GET …/pull` in `e2ee` mode: the grant and the values, read together. */
 export interface ClientEnvironmentBundle {
+  /** Always `true`, and the field a client branches on — see `env-bundle.ts`. */
+  bundle: true;
+  bundleVersion: number;
   encryptionMode: 'e2ee';
   keys: EnvironmentKeys;
   secrets: ClientSecretCiphertext[];

@@ -8,6 +8,19 @@
 // because a headless Linux box has no Secret Service and the CLI must still
 // work there, but it announces itself on every write so nobody mistakes it
 // for the secure path.
+//
+// ── What this store now holds, and what the warning has to say ──
+//
+// It began as a bearer token and a cache key: things a server can revoke. It
+// holds the User Key as well now, and beside it the wrap that turns the User Key
+// into the private key every environment grant is sealed to — see
+// `envkeys.VaultWrapsEntry`. Those are not revocable. Somebody who reads this
+// file can decrypt every end-to-end encrypted environment this account has a
+// grant for, including from a copy of the offline cache taken at the same time,
+// and can keep doing it after the credential beside them has been revoked, until
+// the account's vault is reset and every environment key is rotated. The warning
+// says so in those terms rather than the older "can act as you", because the two
+// are different sentences and only one of them survives a logout.
 package keyring
 
 import (
@@ -35,6 +48,16 @@ type Store interface {
 
 // Warner receives the one-line notice when the file fallback engages.
 type Warner func(format string, args ...any)
+
+// fallbackWarning is the notice, written once and used by both stores so the
+// forced fallback and the degraded one cannot drift apart.
+//
+// Two verbs and two sentences. The first names what is happening; the second
+// names the stakes, in the order they get worse — acting as the account is
+// recoverable by revoking a credential, and reading its environments is not.
+const fallbackWarning = "%s credentials in %s (0600). Anyone who can read that file can act as you — " +
+	"and it holds your vault key, so they can also decrypt every end-to-end encrypted environment " +
+	"you hold a key for, which revoking this login does not undo."
 
 // Open returns the best store this machine offers.
 //
@@ -98,10 +121,7 @@ func (s *systemStore) warnOnce() {
 		return
 	}
 	s.fallback.warned = true
-	s.warn(
-		"no usable system keyring; storing credentials in %s (0600). Anyone with access to this file can act as you.",
-		s.fallback.path,
-	)
+	s.warn(fallbackWarning, "no usable system keyring; storing", s.fallback.path)
 }
 
 // fileStore is the 0600-file fallback: one JSON object of key → value.
@@ -179,10 +199,7 @@ func (f *fileStore) write(entries map[string]string) error {
 func (f *fileStore) Set(key, value string) error {
 	if f.warn != nil && !f.warned {
 		f.warned = true
-		f.warn(
-			"storing credentials in %s (0600). Anyone with access to this file can act as you.",
-			f.path,
-		)
+		f.warn(fallbackWarning, "storing", f.path)
 	}
 	entries, err := f.read()
 	if err != nil {

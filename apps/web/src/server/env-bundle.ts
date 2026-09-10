@@ -47,6 +47,30 @@ import type { EnvironmentScope } from './tenancy';
  * document endpoints give instead.
  */
 export interface ClientEnvironmentBundle {
+  /**
+   * The marker that says this response *is* a bundle.
+   *
+   * ── Why a field exists for something the shape seems to state ──
+   * Because the shape does not state it. A `server`-mode pull at `format=json`
+   * is a **flat object of the environment's own secret names**, so a client
+   * sniffing for `encryptionMode` was asking a question an attacker — or an
+   * unlucky naming convention — could answer: an environment holding a secret
+   * literally called `encryptionMode`, with the value `e2ee`, was read as a
+   * bundle by the CLI, and every value in that document was then handed to a
+   * decryptor. Two fields no secret name can collide with close it, because a
+   * flat document's values are all strings and `true` is not one.
+   *
+   * Present only in `e2ee` mode. A `server`-mode pull carries neither.
+   */
+  bundle: true;
+  /**
+   * The bundle's shape version.
+   *
+   * Carried by clients and not yet refused for an unknown value: the first build
+   * that sees this field has to accept whatever it says, or the number can never
+   * be raised without breaking every client that came before it.
+   */
+  bundleVersion: 1;
   encryptionMode: 'e2ee';
   /** The caller's own key material, so one request answers the whole operation. */
   keys: EnvironmentKeysPayload;
@@ -84,6 +108,8 @@ export async function clientEnvironmentBundle(
   );
 
   return {
+    bundle: true,
+    bundleVersion: 1,
     encryptionMode: 'e2ee',
     keys,
     // Sorted by name, matching the order the dashboard renders and the order the

@@ -1,7 +1,8 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
+import { decodePublicKey } from '@xecret/core/crypto/client';
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { useApiResource } from '@/app/(dashboard)/_lib/use-api-resource';
 import {
@@ -14,6 +15,7 @@ import {
   SelectValue,
   Skeleton,
 } from '@/components/ui';
+import { fingerprint } from '@/components/envkeys';
 import { useVaultKeys, VaultProvider, VaultSetup, VaultUnlock } from '@/components/vault';
 import { AuthCard } from '../../_components/auth-card';
 import { sealHandoff } from './handoff';
@@ -242,6 +244,8 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
           read and change secrets as you, until you revoke it.
         </Alert>
 
+        {request.handoff != null ? <HandoffFingerprint publicKey={request.handoff} /> : null}
+
         {failure ? <Alert tone="danger">{failure}</Alert> : null}
 
         {stage === 'decide' ? (
@@ -346,6 +350,75 @@ export function AuthorizeScreen({ request }: { request: AuthorizeRequest | null 
         )}
       </div>
     </AuthCard>
+  );
+}
+
+/**
+ * The fingerprint of the key this page is about to seal the User Key to.
+ *
+ * ── The attack this closes, and the one it does not ──
+ * The hand-off AAD binds the PKCE challenge and the recipient key, which stops a
+ * sealed wrap being replayed or re-labelled. It cannot bind *which process*
+ * generated that key — nothing about a locally-generated X25519 key identifies
+ * its owner, and both values exist before anybody has authenticated. So any
+ * unprivileged process running as the same user can begin its own flow, put its
+ * own key in an authorize URL, and open a browser at it. Somebody who has just
+ * typed `xecret login` sees a consent screen that looks exactly right, approves
+ * it, and their User Key is sealed to the impostor.
+ *
+ * There is no cryptographic answer to that: the consent is what is being taken,
+ * not the key. What there is, is a comparison. The CLI prints the fingerprint of
+ * its own key before opening the browser; this renders the fingerprint of the key
+ * the page will actually seal to. They match when the page is talking to the
+ * process the person started, and only then.
+ *
+ * ── Why this format ──
+ * `fingerprint` from `components/envkeys/pins.ts`, unchanged and unwrapped: the
+ * same `XXXX-XXXX` Crockford form used for member keys everywhere else in the
+ * product, so there is one thing to learn to read and one alphabet to explain.
+ * The Go side computes the identical string, pinned by a shared test value.
+ *
+ * Rendered only when there is a hand-off. A login that mints a bearer token and
+ * no key material has nothing to compare, and a fingerprint on that screen would
+ * be a ritual with no content.
+ */
+function HandoffFingerprint({ publicKey }: { publicKey: string }) {
+  const [short, setShort] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const value = await fingerprint(decodePublicKey(publicKey));
+        if (!cancelled) setShort(value);
+      } catch {
+        // A key that does not decode cannot be sealed to either, and `approve`
+        // fails loudly on it. Rendering nothing here is better than a placeholder
+        // somebody might read out as though it were the fingerprint.
+        if (!cancelled) setShort(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [publicKey]);
+
+  if (short === null) return null;
+
+  return (
+    <div className="border-line rounded-lg border px-4 py-3">
+      <p className="text-fg-subtle text-sm tracking-wide uppercase">Hand-off fingerprint</p>
+      <p className="text-fg mt-1 font-mono text-base font-medium tracking-wider select-all">
+        {short}
+      </p>
+      <p className="text-fg-muted mt-2 text-sm leading-6">
+        Your terminal printed this same code before it opened this page. If they do not match,
+        something other than your <code>xecret login</code> is asking for your key — deny this, and
+        do not approve anything until you know what.
+      </p>
+    </div>
   );
 }
 

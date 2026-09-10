@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import { parseInviteFragment, RecoveryCodeError, zeroize } from '@xecret/core/crypto/client';
 import { pluralize } from '@/lib/format';
 import { Alert, Button, Field, Input, Spinner } from '@/components/ui';
-import { useVaultKeys } from '@/components/vault';
+import { useVaultKeys, VaultProvider, VaultSetup, VaultUnlock } from '@/components/vault';
 import { reSealInviteGrants } from './env-keys';
 import type { InviteKeyGrant } from './types';
 
@@ -15,18 +15,34 @@ import type { InviteKeyGrant } from './types';
  * ── Where this sits in the flow ──
  * Acceptance has already happened. The membership exists, the person is in the
  * organisation, and the server has handed back the grants that were sealed to
- * the invitation's one-off keypair — and deleted them as they left, because a
- * fragment sitting in somebody's chat history does not expire the way a token
- * does. What is left is a purely client-side act: derive the same private key
- * from the code, open each grant, and re-seal it to their own key.
+ * the invitation's one-off keypair. What is left is a purely client-side act:
+ * derive the same private key from the code, open each grant, and re-seal it to
+ * their own key. The invitation's copies are destroyed by the write that stores
+ * each re-sealed one — per environment, in the same transaction — so nothing is
+ * lost by taking as long as this takes.
+ *
+ * ── Why the vault ceremony is *inside* this screen ──
+ * Because the population this screen exists for is people who have just arrived.
+ * An invitation link is somebody's first contact with the product; they sign up,
+ * they accept, and they land here with no vault at all — no key of their own to
+ * re-seal to, and previously no way to make one without leaving, which discarded
+ * the fragment along with the tab. Offering setup and unlock in place, the way
+ * the CLI consent screen does, is what makes the two-channel flow usable by the
+ * people it was designed for rather than only by an existing member who happened
+ * to have an unlocked tab.
+ *
+ * The code lives in component state across all of that. Not `sessionStorage`,
+ * not a URL, not anywhere a later page load could find it: it is the private half
+ * of a key that opens environment data keys, and the whole argument for carrying
+ * it in a fragment is that it does not get written down.
  *
  * ── Why skipping is offered, and is not a failure ──
  * The code may have been lost, or never sent. That is survivable by design: the
  * same acceptance queued a pending key share for every environment the new
- * member can read, so a teammate who holds the key can hand it over. Making this
- * step mandatory would strand somebody whose colleague forgot to send the second
- * message — for no security gain, because the alternative path is one an
- * administrator was always going to have.
+ * member can read, so a teammate who holds the key can hand it over. And the
+ * grants are no longer consumed by the acceptance, so somebody who skips can come
+ * back — `GET /api/invitations/claimable` re-serves them for as long as they are
+ * unclaimed, which is what the "enter your invite code" affordance reads.
  *
  * ── The fragment from the URL ──
  * Read from `#fragment` if it is there, because a link that carries it is a
@@ -40,6 +56,26 @@ export interface InviteKeyStepProps {
   orgSlug: string;
   invitationId: string;
   grants: readonly InviteKeyGrant[];
+  /**
+   * The inline vault ceremony, when this screen is somewhere that needs to offer
+   * one.
+   *
+   * Present on the invitation page, where the account may be minutes old and
+   * there is no shell above to have gated on a vault. Absent inside the
+   * dashboard, which never renders anything below its own lock screen — offering
+   * a second setup flow there would be a second answer to a question already
+   * answered.
+   *
+   * `user.id` is not decoration: every wrap's AAD binds it, so neither a setup nor
+   * an unlock can happen without it.
+   */
+  vaultGate?: {
+    user: { id: string; email: string; displayName: string | null };
+    /** Whether this account has a vault at all — decides setup versus unlock. */
+    configured: boolean;
+    /** Re-reads the account, after a vault is created or unlocked here. */
+    onChanged: () => void;
+  };
   /** Move on — either because the keys are in, or because the code was lost. */
   onDone: () => void;
 }
@@ -47,7 +83,13 @@ export interface InviteKeyStepProps {
 type Phase =
   { kind: 'entering' } | { kind: 'working' } | { kind: 'done'; opened: number; failed: number };
 
-export function InviteKeyStep({ orgSlug, invitationId, grants, onDone }: InviteKeyStepProps) {
+export function InviteKeyStep({
+  orgSlug,
+  invitationId,
+  grants,
+  vaultGate,
+  onDone,
+}: InviteKeyStepProps) {
   const vault = useVaultKeys();
   const [code, setCode] = useState('');
   const [problem, setProblem] = useState<string | null>(null);
@@ -191,7 +233,8 @@ export function InviteKeyStep({ orgSlug, invitationId, grants, onDone }: InviteK
         </Button>
         {/* Not a hidden escape hatch. Losing the code is an ordinary outcome and
             the product has a designed answer for it — the pending key shares the
-            acceptance already queued. */}
+            acceptance already queued, and the code can still be entered later
+            from the environment that is waiting for it. */}
         <Button type="button" variant="ghost" onClick={onDone} disabled={phase.kind === 'working'}>
           I do not have it
         </Button>
@@ -203,14 +246,45 @@ export function InviteKeyStep({ orgSlug, invitationId, grants, onDone }: InviteK
         ) : null}
       </div>
 
-      {vault === null ? (
+      {/*
+       * The ceremony, in place, with the typed code still in state above it.
+       *
+       * Rendered below the field rather than instead of it, so that somebody who
+       * arrived with the code in the URL can see it is safely captured while they
+       * do the part that takes a minute. `VaultProvider` is mounted here because
+       * this route sits outside the dashboard shell and there is nothing above it
+       * holding the vault material — the same reason the CLI consent screen
+       * mounts its own.
+       */}
+      {vault !== null ? null : vaultGate === undefined ? (
         <Alert tone="warning" title="Set up or unlock your vault first">
           <p>
             The keys are re-sealed to your own key, which only exists once your vault is set up and
             unlocked in this browser.
           </p>
         </Alert>
-      ) : null}
+      ) : (
+        <div className="border-line mt-1 flex flex-col gap-3 rounded-lg border p-4">
+          <div>
+            <p className="text-fg text-sm font-medium">
+              {vaultGate.configured ? 'Unlock your vault to finish' : 'Set up your vault to finish'}
+            </p>
+            <p className="text-fg-muted mt-1 text-sm leading-6">
+              {vaultGate.configured
+                ? 'The keys are re-sealed to your own key, which only exists while your vault is unlocked in this browser. Nothing is sent to the server.'
+                : 'The keys are re-sealed to a key of your own, and your account does not have one yet. Creating it takes a minute and only has to happen once.'}
+            </p>
+          </div>
+
+          <VaultProvider>
+            {vaultGate.configured ? (
+              <VaultUnlock user={vaultGate.user} onUnlocked={vaultGate.onChanged} />
+            ) : (
+              <VaultSetup user={vaultGate.user} onComplete={vaultGate.onChanged} />
+            )}
+          </VaultProvider>
+        </div>
+      )}
     </form>
   );
 }

@@ -2,6 +2,7 @@ import { can, roleDefaultAccessLevel } from '@xecret/core/authz';
 import type { Action, Membership, ResolvedGrant } from '@xecret/core/authz';
 import {
   addEnvKeyGrants,
+  canClaimInvitationGrants,
   findGrantForPrincipal,
   findPendingInvitationForGrant,
   hasVault,
@@ -350,6 +351,15 @@ export async function rotateKeys(
  * could hand it to anybody in the organisation, and the access model — which
  * makes production deny-by-default even for developers — would be enforced only
  * on the routes that read secrets, while the key itself circulated freely.
+ *
+ * ── The third question, asked only when `claimInvitationId` is present ──
+ * A write that consumes an invitation's grants must prove it is entitled to
+ * consume *that* invitation's: it has to belong to this organisation and this
+ * account has to be the person who accepted it. Without that, any member holding
+ * a key could name a colleague's invitation and destroy grants they had not
+ * claimed — a denial nobody would notice, because the pending-share fallback
+ * would silently cover for it. The check is a 403 rather than a silent no-op, so
+ * a client that got it wrong learns it did.
  */
 export async function addGrants(
   scope: EnvironmentScope,
@@ -366,6 +376,20 @@ export async function addGrants(
     await assertRecipientEligible(services.db, scope, grant);
   }
 
+  if (body.claimInvitationId !== undefined) {
+    const permitted = await canClaimInvitationGrants(services.db, {
+      orgId: scope.organization.id,
+      invitationId: body.claimInvitationId,
+      userId,
+    });
+
+    if (!permitted) {
+      throw errors.forbidden(
+        'That invitation was not accepted by this account, so its keys are not yours to claim.',
+      );
+    }
+  }
+
   try {
     const added = await addEnvKeyGrants(services.db, {
       orgId: scope.organization.id,
@@ -373,6 +397,7 @@ export async function addGrants(
       envDataKeyId: body.envDataKeyId,
       signedByUserId: userId,
       grants: body.grants.map(toGrantSeed),
+      claimInvitationId: body.claimInvitationId ?? null,
     });
 
     return { added };

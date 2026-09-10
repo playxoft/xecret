@@ -20,11 +20,41 @@ import (
 
 // CLIHandoffAad binds the wrap to the login it belongs to.
 //
-// The code challenge names the authorization attempt — only the process holding
-// the verifier can complete it — so a wrap captured from one login cannot be
-// replayed into another. The public key names the recipient, so a page cannot
-// substitute a wrap sealed to a key of its own choosing without also knowing a
-// challenge it never saw.
+// ── What is cryptographically bound ──
+//
+// Two components, and they are the two the AAD names. The **code challenge**
+// names one authorization attempt: a wrap sealed under it opens only for a
+// process that presents the same challenge, so a blob captured from one login
+// cannot be replayed into another. The **hand-off public key** names the
+// recipient: the wrap opens only with the private half, which exists in one
+// process's memory and is never written down, so a page cannot substitute a wrap
+// sealed to a key it chose without also knowing a challenge it never saw.
+//
+// ── What is not ──
+//
+// Nothing binds the *recipient's identity*. Neither component says which process
+// on this machine generated that keypair, and neither could: they are both
+// produced before anybody has authenticated. Two consequences follow, and both
+// are residual risk rather than defects in the binding.
+//
+// **An unprivileged local process can be the recipient.** Any program running as
+// this user can start its own PKCE flow, put its own hand-off public key in an
+// authorize URL, and open a browser at it. If the person sitting there approves
+// that consent screen — believing it belongs to the `xecret login` they just
+// typed — the User Key is sealed to the impostor's key and posted to the
+// impostor's loopback port. The cryptography behaves perfectly throughout; what
+// was attacked is the consent, not the seal. That is what the fingerprint
+// printed by `xecret login` is for: the eight characters on the terminal and the
+// eight on the consent screen come from the same public key, and they differ
+// when the page is sealing to somebody else's.
+//
+// **The sealed blob outlives the login.** It rides the redirect as a query
+// parameter, so it lands in the browser's history and in anything that syncs it.
+// The blob is useless without the ephemeral private key, which is wiped when the
+// login ends — so this is a disclosure of ciphertext to a future attacker who
+// must also have had, at the time, memory access to the process that has since
+// exited. It is stated here because "the User Key never touches disk" is a claim
+// people make about this flow, and the honest version has this footnote on it.
 func CLIHandoffAad(codeChallenge, handoffPublicKey string) (string, error) {
 	if err := assertComponent(codeChallenge, "codeChallenge"); err != nil {
 		return "", err
@@ -39,6 +69,7 @@ func CLIHandoffAad(codeChallenge, handoffPublicKey string) (string, error) {
 type HandoffKey struct {
 	// PublicKeyB64Url goes in the authorize URL, for the consent screen to seal to.
 	PublicKeyB64Url string
+	publicKey       []byte
 	privateKey      []byte
 }
 
@@ -53,8 +84,21 @@ func GenerateHandoffKey() (*HandoffKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &HandoffKey{PublicKeyB64Url: encoded, privateKey: pair.PrivateKey}, nil
+	return &HandoffKey{
+		PublicKeyB64Url: encoded,
+		publicKey:       pair.PublicKey,
+		privateKey:      pair.PrivateKey,
+	}, nil
 }
+
+// Fingerprint is the eight characters `xecret login` prints for the user to
+// compare against the consent screen.
+//
+// It is the only defence against the local-impostor case in [CLIHandoffAad]:
+// nothing in the protocol distinguishes this process from another one on the
+// same machine asking for the same thing, so the check has to be made by the
+// person who knows which of them they started.
+func (k *HandoffKey) Fingerprint() (string, error) { return KeyFingerprint(k.publicKey) }
 
 // Open unwraps the User Key from the blob the consent screen produced.
 //

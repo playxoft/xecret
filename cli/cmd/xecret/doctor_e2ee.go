@@ -193,6 +193,16 @@ func e2eeChecks(
 	switch _, err := store.Get(envkeys.UserKeyEntry); {
 	case err == nil && credentials != nil && credentials.UserID != "" && credentials.OrgID != "":
 		say(statusOK, "vaultKey", "vault key: held, and this account is identified")
+		// The wrap the key opens. Its own line because its absence has its own
+		// symptom and its own remedy: everything works until the network does
+		// not, and then `--offline` fails on a machine whose key is perfectly
+		// good. A login made by an earlier build is the usual cause.
+		if _, wrapErr := store.Get(envkeys.VaultWrapsEntry); wrapErr == nil {
+			say(statusOK, "offlineKey", "offline decryption: this machine holds what '--offline' needs")
+		} else {
+			say(statusWarn, "offlineKey",
+				"offline decryption: not available yet — run any command with the API reachable once")
+		}
 	case err == nil:
 		say(statusWarn, "vaultKey",
 			"vault key: held, but this account's ids are missing — the next command that needs them will fetch them")

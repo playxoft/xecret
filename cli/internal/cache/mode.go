@@ -53,6 +53,18 @@ const modeFile = "modes.json"
 // machine has seen as `e2ee`.
 var ErrModeDowngrade = errors.New("this environment is no longer reporting end-to-end encryption")
 
+// ErrPlaintextRefused is the offline half of the same pin: a plaintext cache
+// file left over from before an environment was migrated, for an environment the
+// pin now says is `e2ee`.
+//
+// The live path already refuses a `server` answer for such an environment. The
+// offline path had no equivalent — it tried the encrypted copy, missed, and fell
+// through to whatever plaintext file was still lying there from before the
+// migration. That file is exactly what the migration removed the server's
+// ability to produce, and serving it out of a cache re-creates the disclosure
+// locally, quietly, on a command whose whole purpose is to run unattended.
+var ErrPlaintextRefused = errors.New("this environment is end-to-end encrypted and has no offline copy this machine can read")
+
 // PinnedMode returns the mode this machine last recorded for a scope, or "".
 //
 // Every failure reads as "no pin": an unreadable or corrupt file means this
