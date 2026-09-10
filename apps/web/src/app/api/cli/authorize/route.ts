@@ -1,7 +1,7 @@
 import * as z from 'zod/mini';
 import { PKCE_CHALLENGE_PATTERN } from '@xecret/core/auth';
 import { AuthorizationError } from '@xecret/core/authz';
-import { slugSchema } from '@xecret/core/validation';
+import { slugReferenceSchema } from '@xecret/core/validation';
 import { createCliAuthCode } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
@@ -42,7 +42,22 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  */
 
 const authorizeRequest = z.strictObject({
-  orgSlug: slugSchema,
+  /*
+   * `slugReferenceSchema`, not `slugSchema`.
+   *
+   * This names an organisation the caller already belongs to — it came out of
+   * their own switcher, which is populated from `GET /api/auth/me`. The
+   * reserved-name list is a rule about *claiming* a slug, and applying it here
+   * refused the approval outright for any organisation holding one, with a
+   * `validation_failed` whose message ("The request could not be processed.")
+   * named neither the field nor the reason. `xecret login` was unusable for
+   * those organisations and there was nothing on the screen to say why.
+   *
+   * Nothing is loosened by this: the slug still has to resolve to an
+   * organisation, `resolveOrg` still 404s when it does not, and `member.read`
+   * below still settles whether this person may approve anything in it.
+   */
+  orgSlug: slugReferenceSchema,
   deviceName: z
     .string()
     .check(

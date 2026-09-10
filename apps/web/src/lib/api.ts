@@ -353,7 +353,26 @@ export function endSession(): Promise<void> {
  * Non-`ApiError` values are collapsed to a fixed string rather than having
  * their `message` read: an arbitrary exception's message may have been built
  * from the request payload, which in this product may be a secret value.
+ *
+ * ── Why a validation failure is spelled out here ──
+ * `errors.validation` carries a deliberately contentless sentence — "The
+ * request could not be processed." — because the detail belongs in `fields`,
+ * where a form can attach each problem to the input that caused it. Screens
+ * *without* a form for the offending field then showed that sentence alone,
+ * which is a dead end: it says a request failed and nothing about which part or
+ * what to do. The CLI consent screen sent an organisation slug the user picked
+ * from a dropdown and could not have typed differently, and a rejection of it
+ * read as a generic server fault.
+ *
+ * So when there are field problems, they *are* the message. Each is a fixed
+ * string from a schema (`parseWith` discards zod's `input` precisely so no
+ * rejected value is echoed), so nothing user-supplied can travel this way.
  */
 export function errorMessage(error: unknown): string {
-  return isApiError(error) ? error.message : FALLBACK_MESSAGE;
+  if (!isApiError(error)) return FALLBACK_MESSAGE;
+  if (error.code !== 'validation_failed' || error.fields.length === 0) return error.message;
+
+  // Deduplicated: one message repeated across several fields — a list where
+  // every entry is invalid the same way — reads as noise, not as detail.
+  return [...new Set(error.fields.map((problem) => problem.message))].join(' ');
 }

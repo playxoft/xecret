@@ -2,7 +2,7 @@ import * as z from 'zod/mini';
 import type { AuditAction, AuditMetadata } from '@xecret/core/audit';
 import type { AccessLevel } from '@xecret/core/authz';
 import { fromBase64Url, toBase64Url } from '@xecret/core/crypto';
-import { environmentSlugSchema, slugSchema } from '@xecret/core/validation';
+import { environmentSlugSchema, slugReferenceSchema } from '@xecret/core/validation';
 import type {
   AuditCursor,
   AuditLogRecord,
@@ -71,7 +71,7 @@ export const serviceTokenCreateSchema = z.strictObject(
         z.minLength(1, 'Give the token a name.'),
         z.maxLength(TOKEN_NAME_MAX_LENGTH),
       ),
-    projectSlug: slugSchema,
+    projectSlug: slugReferenceSchema,
     environmentSlug: environmentSlugSchema,
     accessLevel: z.optional(serviceAccessSchema),
     /** ISO 8601. Absent means the token does not expire. */
@@ -238,7 +238,7 @@ export function toCliToken(token: CliTokenSummary, currentTokenId: string | null
 export const auditQuerySchema = z.object({
   actorId: z.optional(z.uuid()),
   action: z.optional(z.string().check(z.maxLength(64))),
-  projectSlug: z.optional(slugSchema),
+  projectSlug: z.optional(slugReferenceSchema),
   environmentSlug: z.optional(environmentSlugSchema),
   outcome: z.optional(z.enum(['success', 'denied', 'error'])),
   from: z.optional(z.iso.datetime()),

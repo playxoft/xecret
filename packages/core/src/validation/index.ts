@@ -31,10 +31,12 @@ export {
   SLUG_MAX_LENGTH,
   SLUG_PATTERN,
   checkSlug,
+  checkSlugShape,
   environmentSlugSchema,
   isReservedSlug,
   normalizeSlugInput,
   organizationSlugSchema,
+  slugReferenceSchema,
   slugSchema,
   slugify,
 } from './slug';
