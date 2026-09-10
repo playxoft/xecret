@@ -16,7 +16,7 @@ import {
   PlusIcon,
   SearchIcon,
 } from '@/components/ui';
-import { askBeforeLeaving } from '@/components/ui/leave-guard';
+import { askBeforeLeaving, isPlainLeftClick } from '@/components/ui/leave-guard';
 import type { ShellOrganization } from './org-switcher';
 
 /**
@@ -154,9 +154,15 @@ function WorkspaceList({
                     focusRow(index + (event.key === 'ArrowDown' ? 1 : -1));
                   }}
                   onClick={(event) => {
-                    // The same guard the nav shortcuts use: leaving a screen
-                    // holding unsaved secrets must ask first, whichever door
-                    // the navigation goes through.
+                    // A modified click opens a new tab and leaves this one — and
+                    // the unsaved work in it — exactly where it is, so there is
+                    // nothing to guard and preventing the default would only
+                    // break open-in-new-tab. The rule is the guard's own, so the
+                    // two cannot disagree about what a plain click is.
+                    if (!isPlainLeftClick(event)) return;
+                    // Otherwise the same guard the nav shortcuts use: leaving a
+                    // screen holding unsaved secrets must ask first, whichever
+                    // door the navigation goes through.
                     if (askBeforeLeaving(organization.href)) {
                       event.preventDefault();
                       return;

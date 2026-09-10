@@ -26,14 +26,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui';
-import { LevelToggle } from '@/components/members/level-toggle';
+import { LevelToggle, SERVICE_TOKEN_LEVELS } from '@/components/members/level-toggle';
 import type { ProjectListResponse, ProjectResponse } from '@/components/projects/types';
 import { useVaultKeys } from '@/components/vault';
 import { mintServiceToken } from './token-keys';
 import type { MintedServiceToken } from './token-keys';
-
-/** See `serviceAccessSchema`: a service token tops out at `write`. */
-const SERVICE_TOKEN_LEVELS = ['read', 'write'] as const;
 
 export interface CreateTokenDialogProps {
   orgSlug: string;
@@ -336,15 +333,17 @@ function CreateTokenFlow({
           {/* The same capsule the member screens grant with, so one vocabulary
               covers every level in the product. Two segments, not three:
               `admin` is not a level a service token can hold — the engine's
-              service-token allowlist tops out at `write` — and clearing the
-              choice is not offered either, because a token with no level is
-              not a credential. */}
+              service-token allowlist tops out at `write` — and `clearable`
+              is off, because a token with no level is not a credential and a
+              gesture whose result this screen would drop is a control that
+              looks broken. */}
           <div>
             <LevelToggle
               level={accessLevel}
               disabled={submitting}
               scopeLabel="this token"
               levels={SERVICE_TOKEN_LEVELS}
+              clearable={false}
               onSelect={(next) => {
                 if (next === 'read' || next === 'write') setAccessLevel(next);
               }}

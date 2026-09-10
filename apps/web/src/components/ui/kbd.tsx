@@ -67,6 +67,18 @@ export function ariaKeyShortcuts(keys: readonly string[]): string {
   return keys.join('+');
 }
 
+/**
+ * The `aria-keyshortcuts` name for the modifier `useModKey` prints.
+ *
+ * The cap and the attribute speak different vocabularies: a cap draws `⌘`,
+ * while the attribute's grammar is written in `KeyboardEvent.key` names, where
+ * that key is `Meta`. Derived from the value the cap is drawn from so the two
+ * can never announce a different key than the one printed beside them.
+ */
+export function ariaModKey(mod: string): string {
+  return mod === '⌘' ? 'Meta' : 'Control';
+}
+
 export interface KbdProps extends HTMLAttributes<HTMLElement> {
   /** Rendered as-is. `Shortcut` maps names to glyphs before it gets here. */
   children?: string;

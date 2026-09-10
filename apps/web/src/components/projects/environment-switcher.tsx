@@ -10,6 +10,7 @@ import { useGlobalShortcuts } from '@/components/layout';
 import type { ShortcutChord } from '@/components/layout';
 import {
   ariaKeyShortcuts,
+  ariaModKey,
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
@@ -368,7 +369,17 @@ export function EnvironmentSwitcher({
                       onSelect={(event) => event.preventDefault()}
                       {...(digit === null || mod === null
                         ? {}
-                        : { 'aria-keyshortcuts': ariaKeyShortcuts(['Control', 'Shift', digit]) })}
+                        : {
+                            // The same modifier the cap beside it draws, named
+                            // as the attribute's grammar wants it. Hardcoding
+                            // `Control` announced a chord a Mac user does not
+                            // have while the cap next to it printed ⌘.
+                            'aria-keyshortcuts': ariaKeyShortcuts([
+                              ariaModKey(mod),
+                              'Shift',
+                              digit,
+                            ]),
+                          })}
                     >
                       <span className="min-w-0 flex-1 truncate">{environment.name}</span>
                       {/* This menu is where comparing is discovered — the

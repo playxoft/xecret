@@ -28,6 +28,17 @@ import { ACCESS_LEVEL_LABELS } from './types';
 
 export const GRANTABLE_LEVELS: readonly AccessLevel[] = ['read', 'write', 'admin'];
 
+/**
+ * The levels a service token can hold, narrowest first.
+ *
+ * `admin` is deliberately absent: the authorization engine's service-token
+ * allowlist tops out at `write`, so an admin token would carry a level nothing
+ * can spend. See `serviceAccessSchema`. Here rather than beside either screen
+ * that draws it, because the token list and the mint dialog disagreeing about
+ * what a token may hold is exactly the drift one definition prevents.
+ */
+export const SERVICE_TOKEN_LEVELS: readonly AccessLevel[] = ['read', 'write'];
+
 /** Cumulative order, for implication: everything below a level is contained in it. */
 export const LEVEL_RANK: Readonly<Record<AccessLevel, number>> = {
   none: 0,
@@ -63,6 +74,15 @@ export interface LevelToggleProps {
    * showing a control that is really an error message.
    */
   levels?: readonly AccessLevel[];
+  /**
+   * Whether clicking the lit level clears the capsule back to `none`.
+   *
+   * Defaults to true — that is the control's clearing gesture everywhere a
+   * level is optional. A caller for whom `none` is not a value passes `false`:
+   * a service token with no level is not a credential, and a gesture whose
+   * result the caller silently drops is a control that looks broken.
+   */
+  clearable?: boolean;
   className?: string;
 }
 
@@ -73,6 +93,7 @@ export function LevelToggle({
   onSelect,
   size = 'md',
   levels = GRANTABLE_LEVELS,
+  clearable = true,
   className,
 }: LevelToggleProps) {
   return (
@@ -87,6 +108,9 @@ export function LevelToggle({
     >
       {levels.map((segment) => {
         const lit = LEVEL_RANK[level] >= LEVEL_RANK[segment];
+        // The lit segment is the clearing gesture, so where clearing is not
+        // offered it is the one segment with nothing left to do.
+        const inert = disabled || (segment === level && !clearable);
 
         return (
           <button
@@ -94,15 +118,14 @@ export function LevelToggle({
             type="button"
             aria-pressed={lit}
             aria-label={`${ACCESS_LEVEL_LABELS[segment]} access to ${scopeLabel}`}
-            disabled={disabled}
+            disabled={inert}
             // The one rule of the control: clicking the current level clears
             // everything; clicking anything else *is* the new level.
-            onClick={() => onSelect(segment === level ? 'none' : segment)}
+            onClick={() => onSelect(segment === level && clearable ? 'none' : segment)}
             className={cn(
               segmentClass(lit, size),
-              !disabled && 'cursor-pointer',
-              !disabled &&
-                (lit ? 'hover:bg-accent-tint/70' : 'hover:bg-surface-hover hover:text-fg'),
+              !inert && 'cursor-pointer',
+              !inert && (lit ? 'hover:bg-accent-tint/70' : 'hover:bg-surface-hover hover:text-fg'),
             )}
           >
             {ACCESS_LEVEL_LABELS[segment]}

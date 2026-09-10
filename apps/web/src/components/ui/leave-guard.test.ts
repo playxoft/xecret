@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { interceptedHref, isPlainLeftClick } from './leave-guard';
+import {
+  armLeaveGuard,
+  askBeforeLeaving,
+  interceptedHref,
+  isLeaveGuardArmed,
+  isPlainLeftClick,
+} from './leave-guard';
 import type { AnchorFacts, ClickFlags } from './leave-guard';
 
 /**
@@ -101,5 +107,49 @@ describe('interceptedHref', () => {
 
   it('lets an unparseable href through rather than guessing', () => {
     expect(interceptedHref(anchor({ href: 'http://[' }), HERE)).toBeNull();
+  });
+});
+
+describe('the armed slot', () => {
+  it('is unarmed until a guard claims it, and again once it lets go', () => {
+    expect(isLeaveGuardArmed()).toBe(false);
+
+    const disarm = armLeaveGuard(() => {});
+    expect(isLeaveGuardArmed()).toBe(true);
+
+    disarm();
+    expect(isLeaveGuardArmed()).toBe(false);
+  });
+
+  it('stays armed when a guard that has already been replaced disarms', () => {
+    // The unmount ordering React gives on a route change: the outgoing guard's
+    // cleanup runs after the incoming one has armed. Reporting "unarmed" there
+    // would let the lock chord fire over a table that has just staged work.
+    const disarmFirst = armLeaveGuard(() => {});
+    armLeaveGuard(() => {});
+
+    disarmFirst();
+
+    expect(isLeaveGuardArmed()).toBe(true);
+  });
+
+  it('tells the lock chord to stand down without answering for it', () => {
+    // ── The finding ──
+    // `⇧L` called `onLock` directly, which zeroizes the vault and unmounts the
+    // secret table — the same loss a navigation causes, through a door the
+    // guard cannot watch. It cannot be handed to `askBeforeLeaving` either:
+    // that path ends in `router.push`, so confirming would navigate instead of
+    // locking. So the chord asks whether anything is at stake and declines.
+    const asked: string[] = [];
+    const disarm = armLeaveGuard((href) => asked.push(href));
+
+    expect(isLeaveGuardArmed()).toBe(true);
+    // Asking does not consume or move the guard: the Lock item in the account
+    // menu is still there, and the next real navigation still gets its dialog.
+    expect(askBeforeLeaving('/acme/projects')).toBe(true);
+    expect(asked).toEqual(['/acme/projects']);
+
+    disarm();
+    expect(askBeforeLeaving('/acme/projects')).toBe(false);
   });
 });

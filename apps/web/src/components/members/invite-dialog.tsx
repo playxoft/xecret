@@ -487,9 +487,8 @@ function InviteFlow({
                       {project.name}
                     </span>
                     <Button
-                      variant="ghost"
+                      variant="danger-outline"
                       size="sm"
-                      className="text-danger-text hover:text-danger-text"
                       aria-label={`Remove ${project.name} from this invitation`}
                       onClick={() => removeProject(project.slug)}
                     >
@@ -581,12 +580,14 @@ function InviteFlow({
 /**
  * Which environments the ticked access actually covers.
  *
- * A whole-project tick means every environment in it; an environment tick means
- * that one. Expanded here rather than sent as-is because a grant is sealed per
- * environment — there is no such thing as a project-level key.
+ * One target per selection, because this form only ever selects environments —
+ * a whole-project tick is not offered, for the reason `handleSubmit` gives.
+ * Still a pass rather than the selection itself: a grant is sealed per
+ * environment against a project that has to still exist in the loaded tree, and
+ * a selection naming one that does not is dropped rather than sealed blind.
  */
 function grantTargets(
-  grants: readonly { projectSlug: string; environmentSlug: string | null }[],
+  grants: readonly { projectSlug: string; environmentSlug: string }[],
   projects: readonly ProjectAccessOption[],
 ): { projectSlug: string; envSlug: string }[] {
   const targets: { projectSlug: string; envSlug: string }[] = [];
@@ -594,13 +595,6 @@ function grantTargets(
   for (const grant of grants) {
     const project = projects.find((entry) => entry.slug === grant.projectSlug);
     if (project === undefined) continue;
-
-    if (grant.environmentSlug === null) {
-      for (const environment of project.environments) {
-        targets.push({ projectSlug: project.slug, envSlug: environment.slug });
-      }
-      continue;
-    }
 
     targets.push({ projectSlug: project.slug, envSlug: grant.environmentSlug });
   }

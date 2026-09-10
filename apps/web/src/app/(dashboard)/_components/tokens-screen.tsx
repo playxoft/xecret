@@ -28,7 +28,7 @@ import {
   TableRow,
   useToast,
 } from '@/components/ui';
-import { LevelPills } from '@/components/members/level-toggle';
+import { LevelPills, SERVICE_TOKEN_LEVELS } from '@/components/members/level-toggle';
 import { CreateTokenDialog } from '@/components/tokens/create-token-dialog';
 import type {
   CliToken,
@@ -55,13 +55,6 @@ import { isOrgAdmin, useOrganization } from './session';
  *    Everyone sees their own, nobody browses anyone else's, and "sign out that
  *    laptop" is one click that takes effect on the laptop's next request.
  */
-
-/**
- * The levels a service token can hold. `admin` is deliberately absent — the
- * authorization engine's service-token allowlist tops out at `write`, so an
- * admin token would carry a level nothing can spend. See `serviceAccessSchema`.
- */
-const SERVICE_TOKEN_LEVELS = ['read', 'write'] as const;
 
 export function TokensScreen({ orgSlug }: { orgSlug: string }) {
   const organization = useOrganization(orgSlug);

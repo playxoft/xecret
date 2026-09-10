@@ -157,8 +157,7 @@ export function InvitationsSection({
                     </Button>
                     <Button
                       size="sm"
-                      variant="secondary"
-                      className="text-danger-text hover:text-danger-text"
+                      variant="danger-outline"
                       aria-label={`Revoke the invitation to ${invitation.email}`}
                       onClick={() => setRevoking(invitation)}
                     >

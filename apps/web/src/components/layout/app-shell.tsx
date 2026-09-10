@@ -6,6 +6,7 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 
 import { MenuIcon } from '@/components/ui';
+import { isLeaveGuardArmed } from '@/components/ui/leave-guard';
 import { Breadcrumbs } from './breadcrumbs';
 import type { BreadcrumbItem } from './breadcrumbs';
 import { Wordmark } from './logo';
@@ -84,6 +85,19 @@ export function AppShell({
   useGlobalShortcut(
     'shift:KeyL',
     () => {
+      // Locking zeroizes the vault and unmounts the secret table, which throws
+      // staged edits away exactly as leaving the page would — so the chord
+      // stands down while anything is unsaved. It cannot be handed to
+      // `askBeforeLeaving`: that guard's confirm path navigates, and a user who
+      // answered "leave and lose them" to lock would be routed somewhere with
+      // the vault still open. The Lock item in the account menu remains, so the
+      // act is never unreachable, only never accidental.
+      //
+      // Asked here rather than through this hook's `enabled` flag because the
+      // flag is an effect dependency: arming the guard re-renders nothing in
+      // this shell, so a value read during render would still be `false` at the
+      // moment the key is pressed.
+      if (isLeaveGuardArmed()) return;
       // Floating deliberately: the re-render onto the lock screen is the whole
       // point, and there is nothing after it to sequence.
       if (onLock !== undefined) void onLock();
