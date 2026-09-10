@@ -1,0 +1,694 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xecret.dev/schemas/e2ee-vectors.schema.json",
+  "title": "xecret E2EE cross-implementation test vectors",
+  "description": "Shape of the vector file consumed by both the TypeScript implementation in packages/core/src/crypto/client and the Go implementation in cli/internal/e2ee. Normative for structure only; the cryptographic definitions live in docs/security/e2ee-crypto-spec.md. No value in a conforming file is hand-written: see the README in this directory.",
+  "type": "object",
+  "required": ["specVersion", "blobVersion", "generatedAt", "generator", "vectors"],
+  "additionalProperties": false,
+
+  "properties": {
+    "$schema": { "type": "string" },
+
+    "specVersion": {
+      "description": "Version of docs/security/e2ee-crypto-spec.md these were generated against.",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+
+    "blobVersion": {
+      "description": "The blob format version every blob in this file carries.",
+      "const": "xk2"
+    },
+
+    "generatedAt": {
+      "description": "ISO 8601 UTC timestamp of generation.",
+      "type": "string",
+      "format": "date-time"
+    },
+
+    "generator": {
+      "description": "Path to the generator script and the git sha it ran at, so a vector can be traced to the code that produced it.",
+      "type": "string",
+      "minLength": 1
+    },
+
+    "vectors": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/vector" },
+
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": { "kind": { "const": "argon2id" } }
+          },
+          "minContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": { "kind": { "const": "hkdf" } }
+          },
+          "minContains": 7
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": { "kind": { "const": "uk-wrap" } }
+          },
+          "minContains": 3
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": { "kind": { "const": "sealed-box" } }
+          },
+          "minContains": 3
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": { "kind": { "const": "grant-signature" } }
+          },
+          "minContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": { "kind": { "const": "secret-value" } }
+          },
+          "minContains": 2
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": { "kind": { "const": "value-hmac" } }
+          },
+          "minContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": { "kind": { "const": "recovery-code" } }
+          },
+          "minContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": { "kind": { "const": "blob-parse" } }
+          },
+          "minContains": 1
+        }
+      ]
+    }
+  },
+
+  "$defs": {
+    "hex": {
+      "description": "Lowercase hexadecimal, no 0x prefix, no separators, even length.",
+      "type": "string",
+      "pattern": "^([0-9a-f]{2})*$"
+    },
+    "hex12": { "$ref": "#/$defs/hex", "type": "string", "minLength": 24, "maxLength": 24 },
+    "hex16": { "$ref": "#/$defs/hex", "type": "string", "minLength": 32, "maxLength": 32 },
+    "hex32": { "$ref": "#/$defs/hex", "type": "string", "minLength": 64, "maxLength": 64 },
+
+    "base64url": {
+      "description": "Unpadded base64url, RFC 4648 section 5.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]*$"
+    },
+
+    "uuid": {
+      "description": "Canonical lowercase 36-character UUID text, as used in AAD strings and signing payloads.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+
+    "gcmBlob": {
+      "description": "An xk2.gcm blob: iv(12) || ciphertext||tag.",
+      "type": "string",
+      "pattern": "^xk2\\.gcm\\.[A-Za-z0-9_-]+$"
+    },
+    "sealedBlob": {
+      "description": "An xk2.x25519 sealed box: ephemeralPub(32) || iv(12) || ciphertext||tag.",
+      "type": "string",
+      "pattern": "^xk2\\.x25519\\.[A-Za-z0-9_-]+$"
+    },
+    "signatureBlob": {
+      "description": "An xk2.ed25519 detached signature: 64 raw bytes.",
+      "type": "string",
+      "pattern": "^xk2\\.ed25519\\.[A-Za-z0-9_-]{86}$"
+    },
+
+    "aadString": {
+      "description": "A full xecret.aad.v2 AAD string. Every pipe-delimited component matches [0-9a-zA-Z_-]+, which is what makes the encoding unambiguous without length prefixes.",
+      "type": "string",
+      "pattern": "^xecret\\.aad\\.v2\\.[a-z-]+(\\|[0-9a-zA-Z_-]+)+$"
+    },
+
+    "infoString": {
+      "description": "An HKDF info string. Either one of the fixed xecret.v2.* domain strings, or — for a sealed box — the blob's full AAD string.",
+      "type": "string",
+      "oneOf": [
+        {
+          "enum": [
+            "xecret.v2.uk-wrap",
+            "xecret.v2.unlock-verifier",
+            "xecret.v2.uk-unlock-verifier",
+            "xecret.v2.recovery-wrap",
+            "xecret.v2.prf-wrap",
+            "xecret.v2.value-hmac",
+            "xecret.v2.invite-key"
+          ]
+        },
+        { "$ref": "#/$defs/aadString" }
+      ]
+    },
+
+    "recipientKind": { "enum": ["member", "token", "invite"] },
+    "wrapKind": { "enum": ["passphrase", "recovery", "prf"] },
+
+    "argon2Params": {
+      "description": "The object stored in user_keys.kdfParams. Bounds here mirror the mandatory client-side validation in spec section 3.1.",
+      "type": "object",
+      "required": ["alg", "v", "m", "t", "p", "len"],
+      "additionalProperties": false,
+      "properties": {
+        "alg": { "const": "argon2id" },
+        "v": { "const": 19 },
+        "m": { "type": "integer", "minimum": 19456, "maximum": 1048576 },
+        "t": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "p": { "const": 1 },
+        "len": { "const": 32 }
+      }
+    },
+
+    "testArgon2Params": {
+      "description": "TEST-ONLY carve-out. Argon2 parameters BELOW the OWASP floor that spec section 3.1 requires of production records, permitted only inside an argon2id vector so the suite does not spend a second per derivation. The memory range is deliberately disjoint from argon2Params — strictly below 19456 KiB — so no production parameter set can validate as one of these by accident, and no implementation may accept these bounds from a server. See the README.",
+      "type": "object",
+      "required": ["alg", "v", "m", "t", "p", "len"],
+      "additionalProperties": false,
+      "properties": {
+        "alg": { "const": "argon2id" },
+        "v": { "const": 19 },
+        "m": { "type": "integer", "minimum": 8, "maximum": 19455 },
+        "t": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "p": { "const": 1 },
+        "len": { "const": 32 }
+      }
+    },
+
+    "vector": {
+      "type": "object",
+      "required": ["id", "kind", "description", "input", "expected"],
+      "properties": {
+        "id": {
+          "description": "Unique and stable across regenerations; test failures are reported by id.",
+          "type": "string",
+          "pattern": "^[a-z0-9-]+/[a-z0-9-]+$"
+        },
+        "kind": {
+          "enum": [
+            "argon2id",
+            "hkdf",
+            "uk-wrap",
+            "sealed-box",
+            "grant-signature",
+            "secret-value",
+            "value-hmac",
+            "recovery-code",
+            "blob-parse"
+          ]
+        },
+        "description": { "type": "string", "minLength": 1 },
+        "input": { "type": "object" },
+        "expected": { "type": "object" }
+      },
+      "oneOf": [
+        { "$ref": "#/$defs/vectors/argon2id" },
+        { "$ref": "#/$defs/vectors/hkdf" },
+        { "$ref": "#/$defs/vectors/ukWrap" },
+        { "$ref": "#/$defs/vectors/sealedBox" },
+        { "$ref": "#/$defs/vectors/grantSignature" },
+        { "$ref": "#/$defs/vectors/secretValue" },
+        { "$ref": "#/$defs/vectors/valueHmac" },
+        { "$ref": "#/$defs/vectors/recoveryCode" },
+        { "$ref": "#/$defs/vectors/blobParse" }
+      ]
+    },
+
+    "vectors": {
+      "argon2id": {
+        "description": "Spec section 3.1. Master passphrase to Stretched Key.",
+        "type": "object",
+        "properties": {
+          "kind": { "const": "argon2id" },
+          "input": {
+            "type": "object",
+            "required": ["passphrase", "saltHex", "params"],
+            "additionalProperties": false,
+            "properties": {
+              "passphrase": {
+                "description": "Already NFC-normalised by the generator. At least one vector must use a string whose NFC form differs from its decomposed form.",
+                "type": "string"
+              },
+              "passphraseRawHex": {
+                "description": "Optional: the pre-normalisation UTF-8 bytes, present on vectors that exist to test NFC normalisation.",
+                "$ref": "#/$defs/hex"
+              },
+              "saltHex": { "$ref": "#/$defs/hex16" },
+              "params": {
+                "description": "Production bounds, or the test-only carve-out below them. Nothing else.",
+                "anyOf": [
+                  { "$ref": "#/$defs/argon2Params" },
+                  { "$ref": "#/$defs/testArgon2Params" }
+                ]
+              }
+            }
+          },
+          "expected": {
+            "type": "object",
+            "required": ["skHex"],
+            "additionalProperties": false,
+            "properties": { "skHex": { "$ref": "#/$defs/hex32" } }
+          }
+        }
+      },
+
+      "hkdf": {
+        "description": "Spec section 3.3. One vector per info string in the derivation table.",
+        "type": "object",
+        "properties": {
+          "kind": { "const": "hkdf" },
+          "input": {
+            "type": "object",
+            "required": ["ikmHex", "saltHex", "info", "length"],
+            "additionalProperties": false,
+            "properties": {
+              "ikmHex": { "$ref": "#/$defs/hex" },
+              "saltHex": {
+                "description": "Empty for every branch except the sealed box, where it is ephemeralPub || recipientPub (64 bytes).",
+                "$ref": "#/$defs/hex"
+              },
+              "info": { "$ref": "#/$defs/infoString" },
+              "length": { "const": 32 }
+            }
+          },
+          "expected": {
+            "type": "object",
+            "required": ["okmHex"],
+            "additionalProperties": false,
+            "properties": { "okmHex": { "$ref": "#/$defs/hex32" } }
+          }
+        }
+      },
+
+      "ukWrap": {
+        "description": "Spec section 2.2, blob types 1-3. Wrapping the User Key under a passphrase, recovery or PRF wrap key.",
+        "type": "object",
+        "properties": {
+          "kind": { "const": "uk-wrap" },
+          "input": {
+            "type": "object",
+            "required": ["wrapKind", "userId", "wrapKeyHex", "ukHex", "ivHex"],
+            "additionalProperties": false,
+            "properties": {
+              "wrapKind": { "$ref": "#/$defs/wrapKind" },
+              "userId": { "$ref": "#/$defs/uuid" },
+              "wrapKeyHex": {
+                "description": "The AES-256-GCM key: HKDF(SK,'xecret.v2.uk-wrap') / RCK / PK depending on wrapKind.",
+                "$ref": "#/$defs/hex32"
+              },
+              "ukHex": { "$ref": "#/$defs/hex32" },
+              "ivHex": {
+                "description": "Pinned randomness. Reachable only from tests, never from the public API.",
+                "$ref": "#/$defs/hex12"
+              },
+              "lookupHashHex": {
+                "description": "Required when wrapKind is 'recovery'; part of that wrap's AAD.",
+                "$ref": "#/$defs/hex32"
+              },
+              "credentialIdB64Url": {
+                "description": "Required when wrapKind is 'prf'; part of that wrap's AAD.",
+                "$ref": "#/$defs/base64url"
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "type": "object",
+                  "properties": { "wrapKind": { "const": "recovery" } },
+                  "required": ["wrapKind"]
+                },
+                "then": { "required": ["lookupHashHex"] }
+              },
+              {
+                "if": {
+                  "type": "object",
+                  "properties": { "wrapKind": { "const": "prf" } },
+                  "required": ["wrapKind"]
+                },
+                "then": { "required": ["credentialIdB64Url"] }
+              }
+            ]
+          },
+          "expected": {
+            "type": "object",
+            "required": ["aad", "blob"],
+            "additionalProperties": false,
+            "properties": {
+              "aad": { "$ref": "#/$defs/aadString" },
+              "blob": { "$ref": "#/$defs/gcmBlob" }
+            }
+          }
+        }
+      },
+
+      "sealedBox": {
+        "description": "Spec section 5. EDK or EHK sealed to a principal's X25519 public key.",
+        "type": "object",
+        "properties": {
+          "kind": { "const": "sealed-box" },
+          "input": {
+            "type": "object",
+            "required": [
+              "purpose",
+              "environmentId",
+              "recipientKind",
+              "recipientId",
+              "recipientPrivateKeyHex",
+              "recipientPublicKeyHex",
+              "ephemeralPrivateKeyHex",
+              "ivHex",
+              "plaintextHex"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "purpose": { "enum": ["edk-grant", "ehk-grant"] },
+              "environmentId": { "$ref": "#/$defs/uuid" },
+              "edkVersion": {
+                "description": "Required when purpose is 'edk-grant'. The EHK is unversioned.",
+                "type": "integer",
+                "minimum": 1
+              },
+              "recipientKind": { "$ref": "#/$defs/recipientKind" },
+              "recipientId": { "$ref": "#/$defs/uuid" },
+              "recipientPrivateKeyHex": {
+                "description": "Present so the vector tests open() as well as seal().",
+                "$ref": "#/$defs/hex32"
+              },
+              "recipientPublicKeyHex": { "$ref": "#/$defs/hex32" },
+              "ephemeralPrivateKeyHex": { "$ref": "#/$defs/hex32" },
+              "ivHex": { "$ref": "#/$defs/hex12" },
+              "plaintextHex": {
+                "description": "The 32-byte EDK or EHK.",
+                "$ref": "#/$defs/hex32"
+              }
+            },
+            "if": {
+              "type": "object",
+              "properties": { "purpose": { "const": "edk-grant" } },
+              "required": ["purpose"]
+            },
+            "then": { "required": ["edkVersion"] }
+          },
+          "expected": {
+            "type": "object",
+            "required": [
+              "aad",
+              "ephemeralPublicKeyHex",
+              "sharedSecretHex",
+              "derivedKeyHex",
+              "blob"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "aad": { "$ref": "#/$defs/aadString" },
+              "ephemeralPublicKeyHex": { "$ref": "#/$defs/hex32" },
+              "sharedSecretHex": {
+                "description": "The raw X25519 output. Present so a mismatch can be localised to the ECDH rather than to the HKDF or the AEAD.",
+                "$ref": "#/$defs/hex32"
+              },
+              "derivedKeyHex": { "$ref": "#/$defs/hex32" },
+              "blob": { "$ref": "#/$defs/sealedBlob" }
+            }
+          }
+        }
+      },
+
+      "grantSignature": {
+        "description": "Spec section 6. Canonical signing payload and the Ed25519 signature over it.",
+        "type": "object",
+        "properties": {
+          "kind": { "const": "grant-signature" },
+          "input": {
+            "type": "object",
+            "required": [
+              "signerPrivateSeedHex",
+              "environmentId",
+              "edkVersion",
+              "recipientKind",
+              "recipientId",
+              "recipientPublicKeyHex",
+              "edkSealedBlob",
+              "ehkSealedBlob"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "signerPrivateSeedHex": {
+                "description": "The 32-byte Ed25519 seed, not the 64-byte expanded form.",
+                "$ref": "#/$defs/hex32"
+              },
+              "environmentId": { "$ref": "#/$defs/uuid" },
+              "edkVersion": { "type": "integer", "minimum": 1 },
+              "recipientKind": { "$ref": "#/$defs/recipientKind" },
+              "recipientId": { "$ref": "#/$defs/uuid" },
+              "recipientPublicKeyHex": { "$ref": "#/$defs/hex32" },
+              "edkSealedBlob": { "$ref": "#/$defs/sealedBlob" },
+              "ehkSealedBlob": { "$ref": "#/$defs/sealedBlob" }
+            }
+          },
+          "expected": {
+            "type": "object",
+            "required": ["signerPublicKeyHex", "signingPayloadHex", "signatureBlob"],
+            "additionalProperties": false,
+            "properties": {
+              "signerPublicKeyHex": { "$ref": "#/$defs/hex32" },
+              "signingPayloadHex": {
+                "description": "The full canonical byte string. Not redundant with the signature: this is what localises a canonicalisation disagreement to a specific field.",
+                "$ref": "#/$defs/hex"
+              },
+              "signatureBlob": { "$ref": "#/$defs/signatureBlob" }
+            }
+          }
+        }
+      },
+
+      "secretValue": {
+        "description": "Spec section 2.2 types 9-10. Secret value and note encryption under the EDK, AAD-bound.",
+        "type": "object",
+        "properties": {
+          "kind": { "const": "secret-value" },
+          "input": {
+            "type": "object",
+            "required": [
+              "field",
+              "edkHex",
+              "orgId",
+              "environmentId",
+              "secretId",
+              "plaintext",
+              "ivHex"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "field": { "enum": ["value", "note"] },
+              "edkHex": { "$ref": "#/$defs/hex32" },
+              "orgId": { "$ref": "#/$defs/uuid" },
+              "environmentId": { "$ref": "#/$defs/uuid" },
+              "secretId": { "$ref": "#/$defs/uuid" },
+              "version": {
+                "description": "Required when field is 'value'. Notes live on the secrets row and carry no version.",
+                "type": "integer",
+                "minimum": 1
+              },
+              "plaintext": {
+                "description": "NFC-normalised by the generator. At least one vector must be empty and one must contain non-ASCII text.",
+                "type": "string"
+              },
+              "ivHex": { "$ref": "#/$defs/hex12" }
+            },
+            "if": {
+              "type": "object",
+              "properties": { "field": { "const": "value" } },
+              "required": ["field"]
+            },
+            "then": { "required": ["version"] }
+          },
+          "expected": {
+            "type": "object",
+            "required": ["aad", "blob"],
+            "additionalProperties": false,
+            "properties": {
+              "aad": { "$ref": "#/$defs/aadString" },
+              "blob": { "$ref": "#/$defs/gcmBlob" }
+            }
+          }
+        }
+      },
+
+      "valueHmac": {
+        "description": "Spec section 9. EHK to HMAC key to valueHmac.",
+        "type": "object",
+        "properties": {
+          "kind": { "const": "value-hmac" },
+          "input": {
+            "type": "object",
+            "required": ["ehkHex", "plaintext"],
+            "additionalProperties": false,
+            "properties": {
+              "ehkHex": { "$ref": "#/$defs/hex32" },
+              "plaintext": { "type": "string" }
+            }
+          },
+          "expected": {
+            "type": "object",
+            "required": ["hmacKeyHex", "valueHmacHex"],
+            "additionalProperties": false,
+            "properties": {
+              "hmacKeyHex": { "$ref": "#/$defs/hex32" },
+              "valueHmacHex": { "$ref": "#/$defs/hex32" }
+            }
+          }
+        }
+      },
+
+      "recoveryCode": {
+        "description": "Spec section 7. Code entropy to display form, check character, lookup hash and RCK.",
+        "type": "object",
+        "properties": {
+          "kind": { "const": "recovery-code" },
+          "input": {
+            "type": "object",
+            "required": ["codeBytesHex"],
+            "additionalProperties": false,
+            "properties": {
+              "codeBytesHex": {
+                "description": "16 bytes with the top 3 bits of byte 0 cleared: a 125-bit value.",
+                "$ref": "#/$defs/hex16"
+              },
+              "typedInput": {
+                "description": "Optional: a user-typed form exercising the normalisation rules — lower case, no hyphens, I/L/O aliasing. Must normalise to the same code.",
+                "type": "string"
+              }
+            }
+          },
+          "expected": {
+            "type": "object",
+            "required": ["dataChars", "checkChar", "displayForm", "lookupHashHex", "rckHex"],
+            "additionalProperties": false,
+            "properties": {
+              "dataChars": {
+                "description": "The 25 Crockford base32 data characters, no hyphens.",
+                "type": "string",
+                "pattern": "^[0-9A-HJKMNP-TV-Z]{25}$"
+              },
+              "checkChar": {
+                "type": "string",
+                "pattern": "^[0-9A-HJKMNP-TV-Z]$"
+              },
+              "displayForm": {
+                "description": "XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-C",
+                "type": "string",
+                "pattern": "^([0-9A-HJKMNP-TV-Z]{5}-){5}[0-9A-HJKMNP-TV-Z]$"
+              },
+              "lookupHashHex": { "$ref": "#/$defs/hex32" },
+              "rckHex": { "$ref": "#/$defs/hex32" },
+              "invalidVariants": {
+                "description": "Display-form strings one character-substitution away from displayForm that the check character must reject.",
+                "type": "array",
+                "items": { "type": "string" },
+                "minItems": 1
+              }
+            }
+          }
+        }
+      },
+
+      "blobParse": {
+        "description": "Negative cases. Every parser must reject what it does not understand rather than guessing.",
+        "type": "object",
+        "properties": {
+          "kind": { "const": "blob-parse" },
+          "input": {
+            "type": "object",
+            "required": ["blob", "reason"],
+            "additionalProperties": false,
+            "properties": {
+              "blob": {
+                "description": "The malformed or unopenable artifact, verbatim.",
+                "type": "string"
+              },
+              "reason": {
+                "enum": [
+                  "unknown-version",
+                  "unknown-algorithm",
+                  "payload-too-short",
+                  "invalid-base64url",
+                  "aad-mismatch",
+                  "tampered-ciphertext",
+                  "wrong-key"
+                ]
+              },
+              "keyHex": {
+                "description": "Present for the reasons that require an attempted decryption rather than a parse.",
+                "$ref": "#/$defs/hex32"
+              },
+              "aad": { "$ref": "#/$defs/aadString" }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "type": "object",
+                  "properties": {
+                    "reason": { "enum": ["aad-mismatch", "tampered-ciphertext", "wrong-key"] }
+                  },
+                  "required": ["reason"]
+                },
+                "then": { "required": ["keyHex", "aad"] }
+              }
+            ]
+          },
+          "expected": {
+            "type": "object",
+            "required": ["rejected"],
+            "additionalProperties": false,
+            "properties": {
+              "rejected": {
+                "description": "Always true. A vector that expects acceptance belongs to another kind.",
+                "const": true
+              },
+              "errorClass": {
+                "description": "Which failure surface the implementation must present. 'decryption' failures must be indistinguishable from one another, carrying no detail — see spec section 5.2.",
+                "enum": ["format", "decryption"]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -4,6 +4,7 @@ import {
   SecretTooLargeError,
   UnknownKeyVersionError,
   computeValueHmac,
+  fromBase64Url,
   timingSafeEqual,
   zeroize,
 } from '@xecret/core/crypto';
@@ -24,11 +25,13 @@ import {
   addSecretVersion,
   createSecret,
   loadEnvironmentKeyChain,
+  loadEnvironmentKeyState,
   loadEnvironmentSecrets,
   toBytes,
   updateSecretMetadata,
 } from '@xecret/db/repositories';
 import type { SecretMaterial, SecretWriterRef } from '@xecret/db/repositories';
+import { encodeBlob } from './schemas/vault';
 import { actorId } from './actor';
 import type { Principal } from './actor';
 import type { ServiceContext } from './context';
@@ -39,16 +42,40 @@ import { authorize } from './tenancy';
 import type { EnvironmentScope } from './tenancy';
 
 /**
- * The only module in xecret where a plaintext secret exists.
+ * The only module in xecret where a plaintext secret can exist — and, for an
+ * `e2ee` environment, the module where one provably cannot.
  *
- * Every secret route goes through this file. That is the point: "where can a
- * secret be decrypted?" is answerable by `grep -rn 'secrets-service' apps/web`,
- * and a route that produced plaintext without going through here would stand out
- * in a diff. The route handlers above it deal in names, versions and HTTP; the
- * repository below it deals in ciphertext. Only this layer holds both a key and
- * a value at the same time.
+ * ── The claim this comment used to make, and what it says now ──
+ * It used to open "the only module in xecret where a plaintext secret exists",
+ * and that was true of every environment. Under ADR 0009 it is true of exactly
+ * half of them, and leaving the sentence unqualified would be the most misleading
+ * line in the codebase: a reader would take the server-envelope guarantees below
+ * as covering environments where the server holds no key at all.
  *
- * Five properties are enforced here rather than left to each handler:
+ * So the file has two halves, and which one runs is decided by
+ * `environments.encryption_mode` — read from the stored row, never from a
+ * request:
+ *
+ *  - **`server`** — the envelope of ADR 0001, unchanged, comment for comment.
+ *    `withEnvironmentKey` unwraps the Env Data Key, this layer holds a key and a
+ *    value at the same time, and the five properties below are what keep that
+ *    safe.
+ *  - **`e2ee`** — the hierarchy of ADR 0009. The functions in the client half
+ *    (`applyClientSecretWrites`, `writeClientSecretValue`) **never call
+ *    `withEnvironmentKey`**, and that is a structural rule rather than an
+ *    oversight: there is no key for this environment anywhere in the process, so
+ *    reaching for one would either fail or — far worse — succeed against a
+ *    leftover `env_keys` row and encrypt a value under a key the server holds.
+ *    Ciphertext arrives, is checked for shape, and is stored verbatim.
+ *
+ * "Where can a secret be decrypted?" is still answerable by
+ * `grep -rn 'secrets-service' apps/web`, and the answer is now narrower than it
+ * was: only the server half, and only for environments that have not migrated.
+ *
+ * Five properties are enforced here rather than left to each handler. **All five
+ * are about the server half**; the client half needs none of them, because it
+ * has no key to unwrap, no context to build, and no plaintext to keep out of a
+ * log — which is the whole point of the migration:
  *
  *  1. **The environment key is unwrapped once per request.** `openEnvKey` walks
  *     root → org → env, which is two AES-GCM opens and two key imports. Doing it
@@ -76,6 +103,15 @@ import type { EnvironmentScope } from './tenancy';
  *     signature. The first two are this module's responsibility, and every
  *     `console` and every `errors.*` call below carries only categories, names
  *     and counts.
+ *
+ * ── What the client half is responsible for instead ──
+ * One thing, and it is the same no-op detection the server half performs:
+ * comparing the submitted `valueHmac` against the stored one, in constant time,
+ * to decide whether a write appends a version. It works identically across an
+ * EDK rotation because the HMAC key is derived from the long-lived EHK rather
+ * than from the data key (spec §9) — which is the entire reason the EHK exists,
+ * and the property that keeps "when did this credential last actually change?"
+ * answerable after a revocation.
  */
 
 /** A secret and its current plaintext. Never logged, never audited. */
@@ -107,7 +143,16 @@ export interface StoredSecretValue {
   secretId: string;
   environmentId: string;
   version: number;
-  encrypted: EncryptedValue;
+  /**
+   * `null` for a row written under a client-held key.
+   *
+   * Nullable so that `SecretMaterial` still satisfies this structurally after
+   * the dual-mode change, and guarded in `openValue` rather than narrowed at
+   * every call site: a row that reached the decryption path with no
+   * server-envelope ciphertext is an `e2ee` row on a `server` code path, which is
+   * a routing fault worth reporting loudly rather than a case to handle.
+   */
+  encrypted: EncryptedValue | null;
 }
 
 /** A secret this write appends to. Absent means the write creates one. */
@@ -347,6 +392,141 @@ export async function restoreSecretVersion(
 }
 
 /**
+ * One client-encrypted value, exactly as it arrived and exactly as it is stored.
+ *
+ * Every field is opaque to this process. `ciphertext` is the ASCII of an
+ * `xk2.gcm.` blob whose IV is inside the payload (spec §2.1); `valueHmac` is a
+ * tag keyed from a key the server has never held. Nothing here is decoded, and
+ * the types say so: they are `string` and `Uint8Array`, never `EncryptedValue`,
+ * because `EncryptedValue` is the shape `EnvelopeService` consumes and no value
+ * in this record may ever reach it.
+ */
+export interface ClientSecretValue {
+  /** `xk2.gcm.` blob (spec §2.2, type 9). Stored verbatim. */
+  ciphertext: string;
+  /** What the client says it used, e.g. `xk2.gcm`. A label, never a decision. */
+  clientAlgorithm: string;
+  /** The `env_data_keys` row the client sealed against. Checked, not trusted. */
+  envDataKeyId: string;
+  /** `HMAC-SHA256(HKDF(EHK), plaintext)`, base64url. The no-op detector. */
+  valueHmac: string;
+  /** `xk2.gcm.` blob (type 10), or `null` to clear. Absent leaves it unchanged. */
+  encNote?: string | null | undefined;
+}
+
+export interface ClientSecretWrite {
+  name: string;
+  /**
+   * The id the ciphertext was sealed against.
+   *
+   * Chosen by the client and not by this process, because the AAD binds it (spec
+   * §4.2) and the encryption happened in a browser before the request existed.
+   *
+   * **Not "the id to use if this creates a row".** It is a statement about bytes
+   * that already exist, and `prepareClientWrite` checks it against the id this
+   * write will actually land on. Where a row already exists and the client sealed
+   * against a different one, the write is refused; substituting the stored id
+   * would store a value nobody can ever read.
+   *
+   * For the single-secret routes the caller resolved the row by name and passes
+   * the stored id here, because the client resolved the same row by the same name
+   * from the same listing — so the check is trivially satisfied and the field
+   * carries its meaning rather than a second, weaker one.
+   */
+  secretId: string;
+  /**
+   * The version number the ciphertext is bound to.
+   *
+   * 1 for a create, `existing.version + 1` for an append — as the *client*
+   * computed it. See `expectedVersionSchema` in `schemas/secrets.ts` for what
+   * goes wrong without it.
+   */
+  expectedVersion: number;
+  value: ClientSecretValue;
+  valueType?: string | undefined;
+  existing?: ExistingSecret | undefined;
+}
+
+export interface ClientSecretWriteBatch {
+  writer: SecretWriterRef;
+  writes: readonly ClientSecretWrite[];
+  dryRun?: boolean | undefined;
+}
+
+/**
+ * Applies client-encrypted writes.
+ *
+ * ── The shape of this function beside `applySecretWrites` ──
+ * It is deliberately the *same* shape — batch in, results out, `dryRun` stopping
+ * before the transaction, `unchanged` decided by an HMAC comparison — and
+ * deliberately *not* a branch inside the other one. Two reasons, and the second
+ * is the important one:
+ *
+ *  1. The server-mode path is a regression surface with its own test suite, and
+ *     threading a mode through it would put an `if` between every existing
+ *     assertion and the code it covers.
+ *  2. **`withEnvironmentKey` is unreachable from here**, and that has to be
+ *     visible rather than argued. A shared function with a mode flag would have
+ *     one call site that unwraps a key and a flag deciding whether to take it;
+ *     a reader would have to trust the flag. Two functions mean the client path
+ *     contains no reference to the key hierarchy at all, and a diff that
+ *     introduced one would be obvious.
+ *
+ * ── What is validated, and by whom ──
+ * The shape of every blob was checked at the API boundary (`schemas/secrets.ts`).
+ * The *key* it was sealed against is checked here, against the environment's
+ * active EDK: a value encrypted under a key that has since been rotated away
+ * would be stored looking exactly like a working row and would open for nobody.
+ * Nothing else can be checked, because nothing else is legible without a key.
+ */
+export async function applyClientSecretWrites(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+  batch: ClientSecretWriteBatch,
+): Promise<SecretWriteResult[]> {
+  if (batch.writes.length === 0) return [];
+
+  const activeKeyId = await requireActiveDataKey(scope, services);
+
+  const prepared: PreparedClientWrite[] = [];
+  for (const write of batch.writes) {
+    prepared.push(prepareClientWrite(activeKeyId, write));
+  }
+
+  const results = prepared.map(toClientWriteResult);
+  if (batch.dryRun === true) return results;
+
+  const pending = prepared.filter((write) => write.kind !== 'unchanged');
+  const noteOnly = prepared.filter(
+    (write) => write.kind === 'unchanged' && write.encNote !== undefined,
+  );
+
+  if (pending.length === 0 && noteOnly.length === 0) return results;
+
+  await commitClientWrites(services, scope, batch.writer, prepared);
+  return results;
+}
+
+/** Writes one client-encrypted secret. See `applyClientSecretWrites`. */
+export async function writeClientSecretValue(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+  params: ClientSecretWrite & { writer: SecretWriterRef },
+): Promise<SecretWriteResult> {
+  const { writer, ...write } = params;
+  const [result] = await applyClientSecretWrites(scope, services, { writer, writes: [write] });
+
+  if (!result) {
+    // Unreachable: one write in, one result out. A throw rather than a non-null
+    // assertion so a future change to the batch semantics fails loudly instead
+    // of returning a fabricated result for a row nobody wrote.
+    throw errors.internal('client secret write produced no result');
+  }
+
+  return result;
+}
+
+/**
  * Renders decrypted secrets into a downloadable document.
  *
  * Lives here rather than in a route because it takes plaintext values, and every
@@ -380,6 +560,286 @@ export function renderSecretDocument(
       );
     }
     throw cause;
+  }
+}
+
+/** A client-mode write, once its outcome has been decided. */
+interface PreparedClientWrite {
+  kind: 'create' | 'append' | 'unchanged';
+  secretId: string;
+  name: string;
+  version: number;
+  valueType: SecretValueType;
+  retypes: boolean;
+  value: ClientSecretValue;
+  /** `undefined` leaves the stored note alone; `null` clears it. */
+  encNote: Uint8Array | null | undefined;
+}
+
+/**
+ * Decides what one client-encrypted write will do.
+ *
+ * ── What is deliberately *not* done here ──
+ * No value-type check. `checkSecretValue` inspects a plaintext, and this path has
+ * none: the shape of an `e2ee` value is the client's to enforce, using the same
+ * `@xecret/core/validation` module the dashboard already runs as you type. This
+ * is the one guarantee the migration genuinely gives up, and pretending otherwise
+ * — by checking the ciphertext's length, say — would be worse than conceding it.
+ * The declared type is still stored, still inherited, and still the rule the
+ * client applies.
+ *
+ * ── What *is* done here, and is the whole point of the function ──
+ * The two AAD components the client chose — the secret's id and the version the
+ * value will be stored as — are compared against what this write will actually
+ * land on. Both come from the request because both were baked into a ciphertext
+ * before the request existed; both are re-derived here from stored rows; and a
+ * disagreement is a conflict rather than a substitution.
+ *
+ * That refusal is the only defence there is. Every other AAD failure surfaces at
+ * the next read as an ordinary decryption error and the row can be rewritten
+ * from a backup. This one cannot: the value was never legible to this server, so
+ * a row committed under the wrong id or version is lost at the moment it is
+ * written, while the response says 200.
+ */
+function prepareClientWrite(activeKeyId: string, write: ClientSecretWrite): PreparedClientWrite {
+  if (write.value.envDataKeyId !== activeKeyId) {
+    // Refused before anything is written, and a conflict rather than a
+    // validation error: the body was well-formed and was correct when the client
+    // built it. Somebody rotated in between, and the remedy is to re-read the
+    // keys and encrypt again — which is a retry, not a fix.
+    throw errors.conflict(
+      'This environment was rotated while you were editing. Re-read its keys and try again.',
+    );
+  }
+
+  const valueType = resolveClientValueType(write);
+  const storedType = toSecretValueType(write.existing?.valueType);
+  const retypes = write.existing !== undefined && storedType !== valueType;
+
+  const encNote =
+    write.value.encNote === undefined
+      ? undefined
+      : write.value.encNote === null
+        ? null
+        : encodeBlob(write.value.encNote);
+
+  const existing = write.existing;
+  const valueHmac = fromBase64Url(write.value.valueHmac);
+
+  if (existing && existing.valueHmac !== null) {
+    // The same comparison the server path makes, on the same column, with the
+    // same `timingSafeEqual` — the attacker chooses the plaintext, and a
+    // byte-at-a-time timing signal on a stored tag is a real if narrow oracle.
+    // What differs is only who computed the tag: here the client did, from the
+    // EHK, which is why it survives an EDK rotation.
+    if (timingSafeEqual(toBytes(existing.valueHmac), valueHmac)) {
+      return {
+        kind: 'unchanged',
+        secretId: existing.secretId,
+        name: write.name,
+        version: existing.version,
+        valueType,
+        retypes,
+        value: write.value,
+        encNote,
+      };
+    }
+  }
+
+  // Where this write actually lands, derived from what is stored — never from
+  // the request. The client's own answer to the same two questions arrived in
+  // `secretId` and `expectedVersion`, and the next lines are the comparison.
+  const secretId = existing ? existing.secretId : write.secretId;
+  const version = existing ? existing.version + 1 : 1;
+
+  if (secretId !== write.secretId || version !== write.expectedVersion) {
+    // The AAD binds both (spec §4.2). Committing here would write a row whose
+    // ciphertext names an id or a version the row does not have: undecryptable
+    // for ever, by everybody, reported as a success. Nobody can repair it —
+    // no operator holds the key, and the plaintext lives only in the client.
+    //
+    // Reached on the `unchanged` path? No: that branch returns above, and
+    // rightly. A matching HMAC means the stored value is already the one being
+    // sent, so no ciphertext is stored and there is nothing to bind wrongly.
+    // Refusing there would turn a harmless re-submission into an error.
+    throw errors.conflict(
+      `version_conflict: "${write.name}" changed while you were editing it. ` +
+        'Re-read it and try again.',
+    );
+  }
+
+  return {
+    kind: existing ? 'append' : 'create',
+    secretId,
+    name: write.name,
+    version,
+    valueType,
+    retypes,
+    value: write.value,
+    encNote,
+  };
+}
+
+/**
+ * Writes the prepared client rows in one transaction.
+ *
+ * The version check after `addSecretVersion` matters more here than it does on
+ * the server path, not less. The AAD binds `version` (spec §4.2), and the client
+ * encrypted for the version it expected; if another writer commits first, the
+ * `MAX(version) + 1` subquery yields a higher number and the row inserts cleanly
+ * at a version its ciphertext was never bound to. On the server path that row
+ * would be undecryptable forever and an operator could at least re-encrypt it
+ * from a backup. Here **nobody** can repair it, because nobody but the client
+ * holds the key. So the mismatch is a rollback and a 409 the client retries.
+ */
+async function commitClientWrites(
+  services: ServiceContext,
+  scope: EnvironmentScope,
+  writer: SecretWriterRef,
+  writes: readonly PreparedClientWrite[],
+): Promise<void> {
+  try {
+    await services.db.transaction(async (tx) => {
+      for (const write of writes) {
+        const payload = {
+          mode: 'e2ee' as const,
+          envDataKeyId: write.value.envDataKeyId,
+          ciphertext: encodeBlob(write.value.ciphertext),
+          clientAlgorithm: write.value.clientAlgorithm,
+        };
+
+        if (write.kind === 'create') {
+          await createSecret(tx, {
+            id: write.secretId,
+            orgId: scope.organization.id,
+            environmentId: scope.environment.id,
+            name: write.name,
+            // `note` is left NULL and `encNote` carries the note: an `e2ee`
+            // secret must not have a plaintext note beside its encrypted value,
+            // because a note is free text people put credentials in.
+            encNote: write.encNote ?? null,
+            valueType: write.valueType,
+            payload,
+            valueHmac: fromBase64Url(write.value.valueHmac),
+            writer,
+          });
+          continue;
+        }
+
+        if (write.kind === 'append') {
+          const version = await addSecretVersion(tx, {
+            orgId: scope.organization.id,
+            secretId: write.secretId,
+            payload,
+            valueHmac: fromBase64Url(write.value.valueHmac),
+            writer,
+          });
+
+          if (version.version !== write.version) {
+            throw errors.conflict('This secret was changed by another request. Retry the update.');
+          }
+        }
+
+        // Metadata that travelled with the value — a redeclared type, a new
+        // encrypted note — lands in the same transaction as the version, so a
+        // committed value can never sit under a rolled-back label. Reached on
+        // the `unchanged` branch too, which is the case that would otherwise
+        // vanish: the HMAC matched, the write short-circuited, and the note the
+        // user just typed would spring back on the next reload.
+        if (write.retypes || write.encNote !== undefined) {
+          await updateSecretMetadata(tx, {
+            orgId: scope.organization.id,
+            environmentId: scope.environment.id,
+            name: write.name,
+            ...(write.retypes ? { valueType: write.valueType } : {}),
+            ...(write.encNote === undefined ? {} : { encNote: write.encNote }),
+          });
+        }
+      }
+    });
+  } catch (cause) {
+    rethrowRepositoryFailure(cause);
+  }
+}
+
+/**
+ * The environment's active data key id, or a refusal.
+ *
+ * An `e2ee` environment with no active key is not a state any code path can
+ * create — `createEnvironment` writes the environment and its key in one
+ * transaction — so this is the mirror of `withEnvironmentKey`'s unreachable
+ * branch, and it answers the same way: a 503, because the deployment is broken
+ * rather than the request. What differs is the repair, and the comment says so
+ * plainly: no operator can fix this one, because the key never existed outside a
+ * browser. Only `POST …/keys` from a member who somehow still holds it can.
+ */
+async function requireActiveDataKey(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+): Promise<string> {
+  const state = await loadEnvironmentKeyState(
+    services.db,
+    scope.organization.id,
+    scope.environment.id,
+  );
+
+  if (state.activeKey === null) {
+    services.log
+      .at('requireActiveDataKey')
+      .error(
+        'This end-to-end encrypted environment has no active data key, so nothing in it can be ' +
+          'written or read. An environment is created together with its key in one transaction, ' +
+          'so this should be unreachable — and unlike the server envelope, no operator can ' +
+          'repair it: the key only ever existed inside the browser that generated it.',
+        { environmentId: scope.environment.id },
+      );
+    throw errors.unavailable('environment has no active data key');
+  }
+
+  return state.activeKey.id;
+}
+
+/**
+ * The declared shape of a client-encrypted write.
+ *
+ * The same precedence as the server path — request, then the stored declaration,
+ * then `string` — so a type sticks to a secret across a rotation performed by a
+ * client that sends none. What is missing, and missing on purpose, is the check:
+ * see `prepareClientWrite`.
+ */
+function resolveClientValueType(write: ClientSecretWrite): SecretValueType {
+  if (write.valueType !== undefined) return toSecretValueType(write.valueType);
+  if (write.existing?.valueType !== undefined) return toSecretValueType(write.existing.valueType);
+  return DEFAULT_SECRET_VALUE_TYPE;
+}
+
+function toClientWriteResult(write: PreparedClientWrite): SecretWriteResult {
+  const status: SecretWriteStatus =
+    write.kind === 'unchanged' ? 'unchanged' : write.kind === 'create' ? 'created' : 'updated';
+
+  return { status, secretId: write.secretId, name: write.name, version: write.version };
+}
+
+/**
+ * Refuses a server-side rendering of an end-to-end encrypted environment.
+ *
+ * `renderSecretDocument` takes plaintext, and for an `e2ee` environment there is
+ * none to take. The client holds every value already — it decrypted them to show
+ * them — so formatting is something it can do without a round trip, using the
+ * same `@xecret/core/format` module compiled for the browser. Phase 3b moves it
+ * there; this is the refusal in the meantime.
+ *
+ * 409 rather than 501 or 400: the resource exists, the caller may read it, and
+ * the request is simply inapplicable to the state the environment is in — the
+ * same reading `requireE2ee` gives the mirror case. The `reason` code is stable
+ * so a client can branch on it rather than on prose.
+ */
+export function assertDocumentRenderable(scope: EnvironmentScope): void {
+  if (scope.environment.encryptionMode === 'e2ee') {
+    throw errors.conflict(
+      'client_side_only: this environment is end-to-end encrypted, so the server cannot render ' +
+        'its values. Format them in the client from the ciphertext it already holds.',
+    );
   }
 }
 
@@ -673,6 +1133,12 @@ async function commitWrites(
   try {
     await services.db.transaction(async (tx) => {
       for (const write of writes) {
+        const payload = {
+          mode: 'server' as const,
+          envKeyId: key.envKeyId,
+          encrypted: write.encrypted,
+        };
+
         if (write.kind === 'create') {
           await createSecret(tx, {
             id: write.secretId,
@@ -681,8 +1147,7 @@ async function commitWrites(
             name: write.name,
             note: write.note,
             valueType: write.valueType,
-            envKeyId: key.envKeyId,
-            encrypted: write.encrypted,
+            payload,
             valueHmac: write.valueHmac,
             writer,
           });
@@ -692,8 +1157,7 @@ async function commitWrites(
         const version = await addSecretVersion(tx, {
           orgId: scope.organization.id,
           secretId: write.secretId,
-          envKeyId: key.envKeyId,
-          encrypted: write.encrypted,
+          payload,
           valueHmac: write.valueHmac,
           writer,
         });
@@ -826,6 +1290,23 @@ async function openValue(
   envKeyBytes: Bytes,
   stored: StoredSecretValue,
 ): Promise<string> {
+  if (stored.encrypted === null) {
+    // An `e2ee` row on the server decryption path: a routing fault, not a
+    // cryptographic one. It means a caller reached `decryptOne` for an
+    // environment whose values the server holds no key for, and the correct
+    // answer is a loud 500 rather than a `DecryptionError` that would read as
+    // tampering and send an operator hunting for a corrupted row.
+    services.log
+      .at('openValue')
+      .error(
+        'A client-encrypted secret version reached the server decryption path. This environment ' +
+          'is end-to-end encrypted, so no key here can open it — the caller routed to the wrong ' +
+          'half of secrets-service.ts.',
+        { environmentId: stored.environmentId, reason: 'clientEncrypted' },
+      );
+    throw errors.internal('clientEncryptedOnServerPath');
+  }
+
   const context: EncryptionContext = {
     orgId: scope.organization.id,
     environmentId: stored.environmentId,

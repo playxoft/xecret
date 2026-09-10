@@ -96,8 +96,9 @@ describe('request descriptions', () => {
     expect(sentence('DELETE', '/api/auth/session', 204)).toBe(
       'Signed the user out and revoked their session',
     );
-    expect(sentence('POST', '/api/auth/pin/unlock', 200)).toBe(
-      'Unlocked the session with the account PIN',
+    expect(sentence('POST', '/api/auth/vault/unlock', 200)).toBe("Unlocked the session's vault");
+    expect(sentence('POST', '/api/auth/vault/recovery/complete', 200)).toBe(
+      'Recovered the vault with a recovery code',
     );
     expect(sentence('POST', '/api/orgs/acme/members', 201)).toBe('Invited a new member to acme');
     expect(sentence('GET', '/api/orgs/acme/audit', 200)).toBe('Read the audit log for acme');
@@ -173,10 +174,14 @@ describe('redaction', () => {
       'value',
       'secretValue',
       'password',
-      'pin',
-      'pinHash',
+      'passphrase',
       'apiToken',
       'cookie',
+      // The zero-knowledge artifacts. A wrap is an offline attack surface
+      // against a master passphrase, and a verifier is what unlocks a session.
+      'passphraseWrap',
+      'unlockVerifier',
+      'recoveryWraps',
     ]) {
       expect(isSensitiveKey(key)).toBe(true);
     }
@@ -199,6 +204,49 @@ describe('redaction', () => {
     ]) {
       expect(isSensitiveKey(key)).toBe(false);
     }
+  });
+
+  /**
+   * `bytes` used to sit in the identifier-suffix list, where it inverted the
+   * rule it belonged to. Every other suffix there names a *fact about* a
+   * credential — its version, its length, its id — and is safe for exactly that
+   * reason. `…Bytes` names the credential itself, so the one suffix that made a
+   * field more dangerous was the suffix that exempted it.
+   */
+  it('redacts a field that holds the raw material, not a fact about it', () => {
+    for (const key of ['keyBytes', 'seedBytes', 'secretBytes', 'wrapBytes', 'privateKeyBytes']) {
+      expect(isSensitiveKey(key)).toBe(true);
+    }
+
+    // A size is still a size: `bytes` only turns a name sensitive when a word
+    // from the deny list is already in it.
+    for (const key of ['sizeBytes', 'maxBytes', 'requestBytes']) {
+      expect(isSensitiveKey(key)).toBe(false);
+    }
+  });
+
+  /**
+   * A `Uint8Array` is neither an array nor a plain object to `sanitiseValue`, so
+   * it used to fall through to the object branch — where `Object.entries` turns
+   * a key into `{ "0": 214, "1": 9, … }` and writes every byte of it to the log
+   * sink under an innocuous field name. The name-based rule cannot help here;
+   * the value's *type* is what makes it a leak.
+   */
+  it('never serialises a binary buffer, whatever the field is called', () => {
+    const keyBytes = new Uint8Array([214, 9, 87, 3]);
+
+    expect(redactFields({ payload: keyBytes })).toEqual({ payload: '[redacted-bytes]' });
+    expect(redactFields({ buffer: keyBytes.buffer })).toEqual({ buffer: '[redacted-bytes]' });
+    expect(redactFields({ view: new DataView(keyBytes.buffer) })).toEqual({
+      view: '[redacted-bytes]',
+    });
+
+    // Including where it arrives nested, which is how a spread row delivers one.
+    expect(redactFields({ row: { value: keyBytes, note: { blob: keyBytes } } })).toEqual({
+      row: { value: '[redacted]', note: { blob: '[redacted-bytes]' } },
+    });
+
+    expect(JSON.stringify(redactFields({ payload: keyBytes }))).not.toContain('214');
   });
 
   // The field the route wrapper binds on every authenticated line. It shipped as
@@ -361,7 +409,7 @@ describe('redaction', () => {
     // the cause names what went wrong. Recording only `TypeError` turned a
     // one-line diagnosis into an afternoon.
     const described = describeError(
-      new Error('Failed query: update "pin_reset_tokens" …', {
+      new Error('Failed query: update "user_key_wraps" …', {
         cause: new TypeError(
           'The "string" argument must be of type string. Received an instance of Date',
         ),

@@ -12,6 +12,7 @@ import (
 	"github.com/playxoft/xecret/cli/internal/buildinfo"
 	"github.com/playxoft/xecret/cli/internal/config"
 	"github.com/playxoft/xecret/cli/internal/cred"
+	"github.com/playxoft/xecret/cli/internal/e2ee"
 	"github.com/playxoft/xecret/cli/internal/keyring"
 	"github.com/playxoft/xecret/cli/internal/output"
 )
@@ -97,9 +98,29 @@ func (a *app) clientFor(ctx context.Context) (*api.Client, *cred.Credentials, er
 // answers with exactly the credential's own scope, which then fills every gap
 // a missing `.xecret.yaml` leaves. One extra request per invocation, and CI
 // needs zero configuration beyond the token itself.
+//
+// ── The seam: this is where the key half stops ──
+//
+// A service token is two halves (spec §13.1). The second is the X25519 scalar
+// that opens every secret in the environment, and it is transport-forbidden:
+// putting it in an Authorization header would hand it to this server, to its
+// access logs, to every proxy in between and to any error report along the way.
+// The server refuses such a token outright rather than helpfully splitting it,
+// so a client that sends the whole string is not merely careless — it does not
+// work at all.
+//
+// So the split happens here, once, at the only point where the two halves are
+// still one string: the client is built around the auth half and the returned
+// credential carries the auth half, while the scalar reaches `envkeys` by being
+// re-read from the environment, in-process, by the one function that needs it.
+// A token this build cannot parse is passed through unchanged — it is not a
+// service token of either known shape, so there is no key half to strip, and the
+// server is the right place for that answer.
 func (a *app) serviceClient(ctx context.Context, token string) (*api.Client, *cred.Credentials, error) {
 	base := apiBase("")
-	client := api.New(base, token, userAgent())
+
+	authToken := authHalfOf(token)
+	client := api.New(base, authToken, userAgent())
 
 	if a.tokenScope == nil {
 		self, err := client.TokenSelf(ctx)
@@ -111,9 +132,22 @@ func (a *app) serviceClient(ctx context.Context, token string) (*api.Client, *cr
 
 	return client, &cred.Credentials{
 		APIURL:  base,
-		Token:   token,
+		Token:   authToken,
 		OrgSlug: a.tokenScope.Organization.Slug,
 	}, nil
+}
+
+// authHalfOf is the transmittable half of a service token, and the whole of
+// anything else. See serviceClient.
+func authHalfOf(token string) string {
+	parsed, err := e2ee.SplitServiceToken(token)
+	if err != nil {
+		return token
+	}
+	// The scalar was copied out of the token string to be decoded; this is the
+	// only copy this function made, and nothing here needs it.
+	defer parsed.Zeroize()
+	return parsed.AuthToken
 }
 
 // storedCredentials returns the saved login when there is one, and nil

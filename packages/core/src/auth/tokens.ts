@@ -21,6 +21,27 @@ import type { Bytes } from '../crypto/types';
 /** 256 bits. */
 const TOKEN_BYTES = 32;
 
+/** Unpadded base64url of 32 bytes. Every token secret is exactly this long. */
+const TOKEN_SECRET_CHARS = 43;
+
+/**
+ * The separator between a service token's two halves (spec §13.1).
+ *
+ * `k` is a member of the base64url alphabet, so both halves routinely contain
+ * one and `indexOf('k')` finds the wrong separator roughly half the time. It is
+ * safe only because it is read at a **fixed offset**, never searched for — see
+ * {@link splitServiceToken}, which is the only thing in this codebase that may
+ * take a service token apart.
+ *
+ * A third `_` would have been ambiguous for the same reason and would also have
+ * changed how {@link isWellFormedToken} parses every other token kind, which
+ * splits on the first two underscores.
+ */
+const SERVICE_KEY_SEPARATOR = 'k';
+
+/** Auth half, separator, key half. */
+const SERVICE_TOKEN_SECRET_CHARS = TOKEN_SECRET_CHARS + 1 + TOKEN_SECRET_CHARS;
+
 /**
  * Distinguishes token classes so one can never be presented as another, and so
  * secret scanners can pattern-match them.
@@ -30,16 +51,6 @@ export const TOKEN_PREFIXES = {
   cli: 'xct',
   service: 'xst',
   invitation: 'xin',
-  /**
-   * A PIN reset link, emailed to the account's own address.
-   *
-   * Deliberately the same 256-bit shape as every other token rather than the
-   * six-digit code an "enter the code we sent you" flow would use. A code has to
-   * be short enough to retype, which puts its entire security in an attempt
-   * counter; this arrives as a link nobody types, so it can simply be
-   * unguessable and the counter becomes a formality.
-   */
-  pinReset: 'xpr',
   /**
    * A CLI authorization code — the one-time value the consent screen hands to
    * the loopback listener during `xecret login`.
@@ -106,27 +117,132 @@ export async function verifyToken(presented: string, storedHash: Bytes): Promise
  * matches a stored row.
  */
 export function isWellFormedToken(token: string, kind?: TokenKind): boolean {
+  const parts = splitTokenString(token);
+  if (parts === null) return false;
+
+  const expectedPrefixes: string[] = kind ? [TOKEN_PREFIXES[kind]] : Object.values(TOKEN_PREFIXES);
+  if (!expectedPrefixes.includes(parts.prefix)) return false;
+
+  // A service token may carry a second half — its X25519 private scalar (spec
+  // §13.1). Both shapes are well-formed: the two-half form is what the browser
+  // hands a CI runner for an `e2ee` environment, and the single-half form is
+  // every token minted before Phase 4 and every token for a `server`-mode
+  // environment. Accepting only one of them would either refuse the new tokens
+  // or revoke every old one.
+  //
+  // Well-formed is not the same as presentable. Only the auth half is ever sent
+  // to a server, and `resolveServiceToken` refuses a two-half token in an
+  // `Authorization` header for that reason.
+  if (parts.prefix === TOKEN_PREFIXES.service) return splitServiceToken(token) !== null;
+
+  return isThirtyTwoBytes(parts.secret);
+}
+
+/** The prefix, environment, and secret segments, or null for anything else. */
+function splitTokenString(
+  token: string,
+): { prefix: string; environment: string; secret: string } | null {
   // Split on the FIRST TWO underscores only. The base64url alphabet includes
   // `_`, so `token.split('_')` would break roughly half of all valid tokens —
   // whichever ones happen to contain an underscore in their random segment.
   const firstSeparator = token.indexOf('_');
-  if (firstSeparator === -1) return false;
+  if (firstSeparator === -1) return null;
 
   const secondSeparator = token.indexOf('_', firstSeparator + 1);
-  if (secondSeparator === -1) return false;
+  if (secondSeparator === -1) return null;
 
-  const prefix = token.slice(0, firstSeparator);
   const environment = token.slice(firstSeparator + 1, secondSeparator);
-  const secret = token.slice(secondSeparator + 1);
+  if (environment !== 'live' && environment !== 'test') return null;
 
-  const expectedPrefixes: string[] = kind ? [TOKEN_PREFIXES[kind]] : Object.values(TOKEN_PREFIXES);
+  return {
+    prefix: token.slice(0, firstSeparator),
+    environment,
+    secret: token.slice(secondSeparator + 1),
+  };
+}
 
-  if (!expectedPrefixes.includes(prefix)) return false;
-  if (environment !== 'live' && environment !== 'test') return false;
-
+/** Whether a secret segment decodes to exactly 32 bytes of base64url. */
+function isThirtyTwoBytes(segment: string): boolean {
+  if (segment.length !== TOKEN_SECRET_CHARS) return false;
   try {
-    return fromBase64Url(secret).length === TOKEN_BYTES;
+    return fromBase64Url(segment).length === TOKEN_BYTES;
   } catch {
     return false;
   }
+}
+
+/**
+ * A service token taken apart (spec §13.1).
+ *
+ * The two halves are independent 32-byte CSPRNG values, and which one goes where
+ * is the whole design:
+ *
+ *  - `authToken` is the complete transmittable credential, prefix and all. It is
+ *    what goes in an `Authorization: Bearer` header and what the server hashes.
+ *  - `keyHalf` is the token's X25519 private scalar. It **never leaves the
+ *    client**: never transmitted, never logged, never written down by the
+ *    server. A caller that puts the full token in a header has handed the server
+ *    every secret in the environment.
+ */
+export interface ServiceTokenParts {
+  /** `xst_<env>_<43 chars>` — the half that authenticates, and only that half. */
+  authToken: string;
+  /** The 43-character base64url key half, or null for a legacy single-half token. */
+  keyHalf: string | null;
+}
+
+/**
+ * Splits a service token into the half that travels and the half that must not.
+ *
+ * Reads the separator at a fixed offset rather than searching for it, because
+ * `k` is in the base64url alphabet and appears inside both halves about half the
+ * time. Returns null for anything that is not a service token of either shape;
+ * a caller that gets null must not fall back to treating the input as an
+ * `authToken`, or a mangled two-half token would be sent whole.
+ */
+export function splitServiceToken(token: string): ServiceTokenParts | null {
+  const parts = splitTokenString(token);
+  if (parts === null || parts.prefix !== TOKEN_PREFIXES.service) return null;
+
+  const head = `${parts.prefix}_${parts.environment}_`;
+
+  if (isThirtyTwoBytes(parts.secret)) {
+    return { authToken: token, keyHalf: null };
+  }
+
+  if (parts.secret.length !== SERVICE_TOKEN_SECRET_CHARS) return null;
+  if (parts.secret[TOKEN_SECRET_CHARS] !== SERVICE_KEY_SEPARATOR) return null;
+
+  const authHalf = parts.secret.slice(0, TOKEN_SECRET_CHARS);
+  const keyHalf = parts.secret.slice(TOKEN_SECRET_CHARS + 1);
+
+  if (!isThirtyTwoBytes(authHalf) || !isThirtyTwoBytes(keyHalf)) return null;
+
+  return { authToken: head + authHalf, keyHalf };
+}
+
+/**
+ * Assembles the string a service token's owner is shown exactly once.
+ *
+ * The two halves are minted by different parties on purpose. The **server**
+ * mints `authToken`, because a client-chosen credential is a credential with
+ * client-chosen entropy, and it stores only that half's digest. The **browser**
+ * mints `keyHalf` and derives the public key it uploads, because a server that
+ * generated the key half would hold every environment key sealed to it — which
+ * is the whole of ADR 0009. This function is where the two meet, and it runs in
+ * the browser.
+ */
+export function joinServiceToken(authToken: string, keyHalf: string): string {
+  const parts = splitTokenString(authToken);
+  if (
+    parts === null ||
+    parts.prefix !== TOKEN_PREFIXES.service ||
+    !isThirtyTwoBytes(parts.secret)
+  ) {
+    throw new TypeError('Not a single-half service token');
+  }
+  if (!isThirtyTwoBytes(keyHalf)) {
+    throw new TypeError('A service token key half is 32 bytes, base64url encoded');
+  }
+  return authToken + SERVICE_KEY_SEPARATOR + keyHalf;
 }

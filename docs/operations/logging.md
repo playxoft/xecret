@@ -138,7 +138,7 @@ built from a request contains a path the caller chose.
 | --- | --- | --- |
 | `debug` | Request start; a 4xx rejection | off |
 | `info` | Request completion | on |
-| `warn` | Authorization denied, PIN attempt failed, identity verification failed — expected traffic worth a pattern | on |
+| `warn` | Authorization denied, vault unlock failed, identity verification failed — expected traffic worth a pattern | on |
 | `error` | 5xx, audit write/flush failure, missing binding, decryption failure, mail failure | on, **alertable** |
 
 One completion line per request, not a start/finish pair. A start line that is never followed by a
@@ -147,11 +147,11 @@ line was there for.
 
 **An `error` line does not imply a 5xx.** The completion line takes its level and its `outcome` from
 the status, but a request can be answered correctly and still report a broken guarantee — and the
-sentence on the completion line, being past tense below 400, will describe the happy path. `POST
-/api/auth/pin/reset` on a deployment with no mail configured is the worked example: **200** with
-`sent: false`, `outcome: success`, and an `error` line beside it saying nothing was sent, because
-every reset request on that deployment fails the same way and the account cannot get back in.
-Alerting on `outcome:server_error` alone would never see it.
+sentence on the completion line, being past tense below 400, will describe the happy path. An
+invitation on a deployment with no mail configured is the worked example: **200** with `sent:
+false`, `outcome: success`, and an `error` line beside it saying nothing was sent, because every
+invitation on that deployment fails the same way. Alerting on `outcome:server_error` alone would
+never see it.
 
 ### Suggested alerts
 
@@ -160,18 +160,18 @@ Query on `event` and `level`, never on `message` — the prose is meant to be im
 - `level:error` — any. These are broken guarantees, not traffic. The superset: some of these ride on
   a 2xx, so this is the alert, and the next one is a refinement of it.
 - `outcome:server_error` rate over 5 minutes.
-- `reason:mail_not_configured` — the deployment cannot send PIN reset links, and every person who
-  asks for one is told to find an operator.
+- `reason:mail_not_configured` — the deployment cannot send invitations, and every person who
+  tries is told to find an operator.
 - `error:MailDeliveryError` — the provider refused a send. The sibling of the alert above and the
   one that fires while mail *is* configured: read `status` and `detail` on the same line for which
-  of quota, credentials or sending domain is at fault. A minted reset token with no delivery also
-  lands in the audit log as `auth.pin_reset` with `outcome: error`, which is the only place the two
-  non-delivery cases are distinguishable — the unconfigured one never mints a token to record.
+  of quota, credentials or sending domain is at fault.
 - `event:secret.pull` — one request, every plaintext in an environment. The most sensitive read in the product.
 - `event:secret.pull AND isProduction:true` grouped by `userId` — who bulk-read production, and how often.
 - `level:error AND fn:settle` — the audit log is missing entries.
 - `level:error AND fn:rethrowCryptoFailure` — tampering or a key mismatch.
-- `fn:assertPinMatches` grouped by `userId` — a PIN brute force.
+- `fn:assertVerifierMatches` grouped by `userId` — a master-passphrase brute force. Its sibling
+  `fn:failRecovery` is somebody working through recovery codes, which is far more interesting: a
+  legitimate owner redeems one, not a series.
 - `level:warn AND fn:failure` grouped by `userId` — an account probing for resources it cannot reach.
 
 ---
@@ -208,8 +208,8 @@ condition, and the consequence if there is one.
 
 ### What must never be logged
 
-A secret value, a PIN, a session or service token, a CSRF token, a wrapped or unwrapped key, or a
-ciphertext. The guarantee is held **at the call site**, the same way the audit metadata allowlist is
+A secret value, a master passphrase, a User Key wrap, an unlock verifier, a recovery code, a
+session or service token, a CSRF token, a wrapped or unwrapped key, or a ciphertext. The guarantee is held **at the call site**, the same way the audit metadata allowlist is
 held.
 
 `redact.ts` is defence in depth behind that, not a substitute for it:

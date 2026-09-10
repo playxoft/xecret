@@ -52,7 +52,7 @@ export type ApiErrorCode =
   | 'payload_too_large'
   | 'rate_limited'
   | 'csrf_failed'
-  /** The session is authenticated but locked. The dashboard shows the PIN screen. */
+  /** The session is authenticated but its vault is locked. The dashboard shows the lock screen. */
   | 'session_locked'
   | 'internal_error'
   | 'unavailable'

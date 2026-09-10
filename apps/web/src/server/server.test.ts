@@ -384,6 +384,7 @@ describe('Firebase identity verification', () => {
     sub: 'firebase-uid-1',
     email: 'nitheesh@playxoft.com',
     email_verified: true,
+    auth_time: 1_760_000_000,
     name: 'Nitheesh',
     picture: 'https://example.test/a.png',
     firebase: { sign_in_provider: 'google.com' },
@@ -406,9 +407,38 @@ describe('Firebase identity verification', () => {
       subject: 'firebase-uid-1',
       email: 'nitheesh@playxoft.com',
       emailVerified: true,
+      authTime: 1_760_000_000,
       displayName: 'Nitheesh',
       avatarUrl: 'https://example.test/a.png',
     });
+  });
+
+  it('reads authTime from auth_time, which a token refresh does not move', async () => {
+    // The claim, not `iat`. A refresh token mints a fresh ID token every hour
+    // with nobody at the keyboard, so `iat` says only "this browser still holds
+    // a session" — and the vault reset's re-authentication gate would be
+    // satisfied by exactly the idle browser an attacker stole.
+    const identity = await new FirebaseIdentityProvider(
+      verifierReturning({ ...claims, auth_time: 1_700_000_042 }),
+    ).verify('token');
+
+    expect(identity.authTime).toBe(1_700_000_042);
+  });
+
+  it('reports an absent auth_time as the distant past, not as "just now"', async () => {
+    // Fails closed. An unknown authentication time compared against a freshness
+    // window has to be treated as stale, or the one destructive action in the
+    // product would be reachable with a token that cannot say when its holder
+    // last proved anything.
+    const identity = await new FirebaseIdentityProvider(
+      verifierReturning({
+        sub: 'u',
+        email: 'a@b.test',
+        firebase: { sign_in_provider: 'password' },
+      }),
+    ).verify('token');
+
+    expect(identity.authTime).toBe(0);
   });
 
   // exactOptionalPropertyTypes: an absent claim must be an absent key, not a
@@ -532,16 +562,16 @@ describe('rate limiting', () => {
     expect(attemptKey(null, 'a@b.test')).toBe('-:a%40b.test');
   });
 
-  // The shape `/api/auth/pin/reset` and its `confirm` use. Both properties are
-  // load-bearing: no address in the key, or every proxy is a fresh allowance to
-  // send mail to somebody else's inbox; and a prefix of its own, or failed
-  // unlock attempts spend the budget the reset needs and the 429 lands on the
-  // emailed link.
+  // The shape `/api/auth/vault/recovery` and its `complete` step use. Both
+  // properties are load-bearing: no address in the key, or every proxy is a
+  // fresh allowance against somebody else's recovery kit; and a prefix of its
+  // own, or failed unlock attempts spend the budget the recovery needs and the
+  // 429 lands on the one flow that gets a locked-out account back in.
   it('gives a per-subject limit a counter that neither follows the address nor shares another', () => {
-    const key = rateLimitKey(['pin_reset', 'user-1']);
-    expect(key).toBe('pin_reset:user-1');
+    const key = rateLimitKey(['vault_recovery', 'user-1']);
+    expect(key).toBe('vault_recovery:user-1');
     expect(key).not.toBe(attemptKey('1.2.3.4', 'user-1'));
     expect(key).not.toBe(attemptKey(null, 'user-1'));
-    expect(key).not.toBe(rateLimitKey(['pin_reset', 'user-2']));
+    expect(key).not.toBe(rateLimitKey(['vault_recovery', 'user-2']));
   });
 });

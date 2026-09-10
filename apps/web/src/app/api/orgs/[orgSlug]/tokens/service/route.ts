@@ -8,7 +8,13 @@ import { json, parseJsonBody } from '@/server/http';
 import { requireMembership, requireSessionPrincipal } from '@/server/members-service';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
-import { resolveExpiry, serviceTokenCreateSchema, toServiceToken } from '@/server/schemas/tokens';
+import {
+  assertKeypairMatchesMode,
+  decodeTokenPublicKey,
+  resolveExpiry,
+  serviceTokenCreateSchema,
+  toServiceToken,
+} from '@/server/schemas/tokens';
 import { authorize, resolveEnvironment, resolveOrg, resolveProject } from '@/server/tenancy';
 
 /**
@@ -87,6 +93,10 @@ export const POST = authenticatedRoute<Params>(
     const projectScope = await resolveProject(scope, body.projectSlug, services);
     const environmentScope = await resolveEnvironment(projectScope, body.environmentSlug, services);
 
+    // Both directions, in one place, with the reasoning: see
+    // `assertKeypairMatchesMode`.
+    assertKeypairMatchesMode(body.publicKey, environmentScope.environment.encryptionMode);
+
     const issued = await createServiceToken(services.db, {
       orgId,
       projectId: projectScope.project.id,
@@ -96,6 +106,9 @@ export const POST = authenticatedRoute<Params>(
       ipAllowlist: body.ipAllowlist ?? null,
       expiresAt: resolveExpiry(body.expiresAt, new Date()),
       createdBy: minter.user.id,
+      // The public half only. The private half is the token's key half, which
+      // the browser minted and this server must never see (spec §13.1).
+      publicKey: body.publicKey === undefined ? null : decodeTokenPublicKey(body.publicKey),
     });
 
     record(

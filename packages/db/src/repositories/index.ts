@@ -54,18 +54,35 @@ export type {
 } from './sessions';
 
 export {
-  consumePinReset,
-  createPinReset,
-  deleteExpiredPinResets,
-  deletePin,
-  findPinForUser,
-  hasPin,
-  recordPinAttempt,
-  rehashPin,
+  changePassphrase,
+  completeRecovery,
+  createVault,
+  deleteVault,
+  enrollPasskey,
+  findRecoveryWrap,
+  findVaultKeys,
+  hasVault,
+  listPasskeys,
+  loadVault,
+  recordRecoveryAttempt,
+  recordUnlockAttempt,
+  regenerateRecoveryCodes,
+  removePasskey,
+  resetVault,
   setAutoLockMinutes,
-  upsertPin,
-} from './pins';
-export type { CreatePinResetParams, PinRecord, PinResetRecord } from './pins';
+  touchPasskeyUsage,
+} from './vault';
+export type {
+  ChangePassphraseParams,
+  CompleteRecoveryParams,
+  CreateVaultParams,
+  EnrollPasskeyParams,
+  PasskeyRecord,
+  RecoveryWrapMatch,
+  RecoveryWrapSeed,
+  VaultKeyRecord,
+  VaultRecord,
+} from './vault';
 
 export {
   accountLockQuery,
@@ -103,6 +120,8 @@ export {
   listGrantsForOrganization,
   listMembers,
   loadAuthorizationContext,
+  loadOrganizationAuthorizationContexts,
+  lockOrganization,
   memberGrantsQuery,
   membersPageQuery,
   membershipQuery,
@@ -151,6 +170,43 @@ export type {
 } from './projects';
 
 export {
+  addEnvKeyGrants,
+  deleteGrantsForUser,
+  canClaimInvitationGrants,
+  findGrantForPrincipal,
+  findPendingInvitationForGrant,
+  initializeEnvironmentKeys,
+  listClaimableInvitationGrants,
+  listGrantsForEnvironment,
+  listMemberSealingKeys,
+  listPendingKeyGrants,
+  listSealableServiceTokens,
+  loadEnvironmentKeyState,
+  loadMemberKeyPresence,
+  queuePendingKeyGrant,
+  readInvitationGrants,
+  removeEnvKeyGrant,
+  removeMemberGrantsForEnvironment,
+  removePendingKeyGrant,
+  rotateEnvDataKey,
+  setInvitationPublicKey,
+} from './env-keys';
+export type {
+  AddEnvKeyGrantsParams,
+  ClaimableInvitationRecord,
+  EnvDataKeyRecord,
+  EnvironmentKeyState,
+  EnvKeyGrantRecord,
+  EnvKeyGrantSeed,
+  InitializeEnvironmentKeysParams,
+  InvitationGrantRecord,
+  MemberSealingKeys,
+  PendingInvitationForGrant,
+  PendingKeyGrantRecord,
+  RotateEnvDataKeyParams,
+} from './env-keys';
+
+export {
   createEnvironment,
   findEnvironmentById,
   findEnvironmentBySlug,
@@ -167,6 +223,7 @@ export {
 export type {
   CreateEnvironmentParams,
   EnvironmentKeyChain,
+  EnvironmentKeyInit,
   EnvironmentRecord,
   OrganizationEnvironment,
   UpdateEnvironmentParams,
@@ -192,6 +249,7 @@ export type {
   SecretListItem,
   SecretMaterial,
   SecretPage,
+  SecretPayload,
   SecretRecord,
   SecretVersionPage,
   SecretVersionSummary,

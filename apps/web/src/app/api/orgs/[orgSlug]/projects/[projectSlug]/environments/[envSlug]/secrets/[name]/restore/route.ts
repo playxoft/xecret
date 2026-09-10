@@ -2,13 +2,18 @@ import { findSecretByName, getSecretVersion } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
-import { restoreSecretBody, secretNameFromPath } from '@/server/schemas/secrets';
+import {
+  restoreClientSecretBody,
+  restoreSecretBody,
+  secretNameFromPath,
+} from '@/server/schemas/secrets';
 import {
   auditSource,
   authorizeSecretAction,
   enforceSecretRateLimit,
   restoreSecretVersion,
   secretWriter,
+  writeClientSecretValue,
 } from '@/server/secrets-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
 
@@ -47,7 +52,13 @@ export const POST = authenticatedRoute<Params>(
     await enforceSecretRateLimit(services, principal, 'write');
 
     const name = secretNameFromPath(params.name);
-    const body = await parseJsonBody(request, restoreSecretBody);
+    const e2ee = scope.environment.encryptionMode === 'e2ee';
+
+    // Parsed under the schema the environment's mode selects. The client body is
+    // a superset — it carries the version *and* the re-encrypted value — so the
+    // shared code below reads `version` from either.
+    const clientBody = e2ee ? await parseJsonBody(request, restoreClientSecretBody) : null;
+    const body = clientBody ?? (await parseJsonBody(request, restoreSecretBody));
 
     const current = await findSecretByName(
       services.db,
@@ -70,7 +81,48 @@ export const POST = authenticatedRoute<Params>(
     // the same answer, for the same reason everything else here does.
     if (!previous) throw errors.notFound('no such version of that secret');
 
-    const result = await restoreSecretVersion(scope, services, { writer, current, previous });
+    // ── Who performs the re-encryption ──
+    // In `server` mode the Worker does it, because it holds the key: it opens
+    // version 3 and seals the same plaintext for the version about to be written.
+    //
+    // In `e2ee` mode it cannot, so the **client** does — it reads version 3,
+    // decrypts it, encrypts the same plaintext for the next version, and posts
+    // the result alongside the version number it restored from. That is not a
+    // weaker restore, it is the same restore performed by the only party that
+    // can, and it preserves the rule that matters: **the old ciphertext is never
+    // copied forward**, because the AAD binds `version` and bytes produced for
+    // version 3 stored as version 7 would fail to open for the rest of their
+    // life, silently.
+    //
+    // What the server gives up is the ability to verify that the ciphertext
+    // really holds version 3's value. It does not pretend otherwise: the audit
+    // record says which version was restored *from*, which is what the client
+    // asserted, and the response says the same.
+    const result =
+      clientBody === null
+        ? await restoreSecretVersion(scope, services, { writer, current, previous })
+        : await writeClientSecretValue(scope, services, {
+            writer,
+            name: current.name,
+            // A restore always appends to a secret that exists, so this is the
+            // stored id — the one the re-encrypted value was sealed against.
+            secretId: current.secretId,
+            // The version the client sealed the re-encryption for. A history
+            // drawer held open across an earlier restore sends a number that has
+            // already been used, and that is refused here rather than committed
+            // as a version its AAD does not name.
+            expectedVersion: clientBody.expectedVersion,
+            value: {
+              ...clientBody.value,
+              ...(clientBody.encNote === undefined ? {} : { encNote: clientBody.encNote }),
+            },
+            existing: {
+              secretId: current.secretId,
+              version: current.version,
+              valueHmac: current.valueHmac,
+              valueType: current.valueType,
+            },
+          });
 
     record(
       audit(scope.organization.id).success(

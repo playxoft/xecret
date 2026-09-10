@@ -28,8 +28,20 @@ import type { ImportItemStatus, ParseWarning } from '@xecret/core/importer';
  * history answers it exactly.
  */
 export interface SecretSummary {
+  /**
+   * The `secrets` row id.
+   *
+   * Opaque in `server` mode and load-bearing in `e2ee` mode, where it is an AAD
+   * component: the encrypted note on this row is bound to it, and so is every
+   * value written against this secret. A client that did not have it could not
+   * decrypt anything.
+   */
+  id: string;
   name: string;
+  /** `null` in `e2ee` mode, where `encNote` carries it instead. */
   note: string | null;
+  /** The encrypted note, for an `e2ee` environment. `null` when there is none. */
+  encNote?: string | null;
   /**
    * The declared shape of the value — one of `SECRET_VALUE_TYPES`.
    *

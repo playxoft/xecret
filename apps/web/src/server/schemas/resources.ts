@@ -19,6 +19,7 @@ import type {
 } from '@xecret/db/repositories';
 import { errors } from '../errors';
 import type { ApiError } from '../errors';
+import { environmentKeyInitSchema } from './env-keys';
 
 /**
  * The request schemas and response shapes of the organisation, project and
@@ -232,6 +233,20 @@ export const projectPatchSchema = z
 
 export const environmentCreateSchema = z.strictObject(
   {
+    /**
+     * The id the new environment takes.
+     *
+     * Chosen by the client, and required whenever `keys` is present, for the
+     * reason `createClientSecretBody.id` gives about secrets: the creator's grant
+     * is sealed in a browser before this request exists, and the grant's AAD
+     * names the environment (spec §4.2). A row created under a server-minted id
+     * would hold a grant nobody could ever open — and unlike a secret, there is
+     * no repair, because the key bytes existed only in that browser.
+     *
+     * Optional in the schema because a `server`-mode creation needs no such
+     * agreement; the route requires it alongside `keys`.
+     */
+    id: z.optional(z.string().check(z.length(36, 'An environment is named by a UUID.'))),
     name: nameSchema,
     // `environmentSlugSchema` rather than `slugSchema`: an environment slug also
     // permits underscores, because it is typed at a shell prompt
@@ -240,6 +255,22 @@ export const environmentCreateSchema = z.strictObject(
     slug: z.optional(environmentSlugSchema),
     isProduction: z.optional(z.boolean()),
     sortOrder: z.optional(z.int().check(z.gte(0), z.lte(SORT_ORDER_MAX))),
+    /**
+     * The client-generated key hierarchy the new environment starts with.
+     *
+     * **Required in practice, optional in the schema**, and the distinction is
+     * deliberate. Every environment created from Phase 3 onward is `e2ee`, so a
+     * body without this cannot produce one — but refusing it here would give a
+     * caller a field-level validation error naming a field they have never heard
+     * of. The route refuses instead, with a message that explains what a caller
+     * without an unlocked vault has to do first.
+     *
+     * There is no `encryptionMode` field beside it, and there must not be:
+     * `server` mode is a migration state, not a choice, and offering it as one
+     * would let a client opt an environment out of end-to-end encryption for the
+     * life of that environment.
+     */
+    keys: z.optional(environmentKeyInitSchema),
   },
   UNEXPECTED_FIELD,
 );
@@ -436,6 +467,17 @@ export interface EnvironmentPayload {
   name: string;
   slug: string;
   isProduction: boolean;
+  /**
+   * Which key hierarchy this environment's values live under.
+   *
+   * Published, unlike most internal columns, because every client has to branch
+   * on it: the body a secret write takes, whether a reveal returns a plaintext,
+   * and whether an export can be requested at all all depend on it. A client that
+   * had to *discover* the mode by sending the wrong body and reading the error
+   * would put a plaintext credential in a request to an e2ee environment exactly
+   * once, which is once too many.
+   */
+  encryptionMode: string;
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
@@ -484,6 +526,7 @@ export function toEnvironment(environment: EnvironmentRecord): EnvironmentPayloa
     name: environment.name,
     slug: environment.slug,
     isProduction: environment.isProduction,
+    encryptionMode: environment.encryptionMode,
     sortOrder: environment.sortOrder,
     createdAt: environment.createdAt.toISOString(),
     updatedAt: environment.updatedAt.toISOString(),

@@ -6,6 +6,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import { PageHeader } from '@/components/layout';
 import { Button, SettingsIcon } from '@/components/ui';
+import {
+  EnvKeyUnavailableState,
+  NeedsRotationBanner,
+  PendingSharesBanner,
+  RotationDialog,
+  useEnvironmentKeys,
+} from '@/components/envkeys';
 import { EnvironmentBadge } from '@/components/projects/environment-badge';
 import { EnvironmentSwitcher } from '@/components/projects/environment-switcher';
 import type { ProjectResponse } from '@/components/projects/types';
@@ -16,6 +23,7 @@ import type { SecretListResponse, SecretSummary } from '@/components/secrets/typ
 import { apiPath, appPath, withQuery } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState } from './resource-states';
+import { isOrgAdmin, useOrganization } from './session';
 
 /** The API clamps `limit` to 200. Most environments arrive in one request. */
 const PAGE_SIZE = 200;
@@ -37,6 +45,45 @@ export function EnvironmentScreen({
   const environment = project.data?.environments.find((entry) => entry.slug === envSlug);
 
   const secrets = useSecretList(orgSlug, projectSlug, envSlug);
+
+  const organization = useOrganization(orgSlug);
+
+  /**
+   * This environment's key state, and the IO that follows from it.
+   *
+   * Read here rather than inside the table because three different things need
+   * it: the table (to read and write values), the banners above it (to say why
+   * it cannot), and the rotation dialog. Fetching it in each would give them
+   * three answers that can disagree about whether a rotation has landed.
+   */
+  const keys = useEnvironmentKeys({
+    orgSlug,
+    orgId: organization?.id ?? null,
+    projectSlug,
+    envSlug,
+  });
+
+  const [rotating, setRotating] = useState(false);
+
+  const io = keys.state.status === 'open' || keys.state.status === 'server' ? keys.state.io : null;
+  const material = keys.state.status === 'open' ? keys.state.material : null;
+  const keyState =
+    keys.state.status === 'open' || keys.state.status === 'server' ? keys.state.keys : null;
+  // Admins only: `pendingGrants` is `null` for a caller who may not see who is
+  // waiting, which is the same answer as "nobody is".
+  const pendingCount = keyState?.pendingGrants?.length ?? 0;
+
+  /**
+   * Whether to offer the rotation button.
+   *
+   * The coarse half of the answer, and deliberately so: rotation is
+   * `environment.update`, which a per-project grant can also confer, and only
+   * the server knows those. Showing the button to somebody the server will
+   * refuse is a worse failure than hiding it from somebody who could — the
+   * dialog reads the recipient list first and would fail there instead, after
+   * they had read the whole ceremony.
+   */
+  const canRotate = organization !== null && isOrgAdmin(organization.role);
 
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -132,6 +179,30 @@ export function EnvironmentScreen({
         }
       />
 
+      {/* The key banners sit above the table rather than replacing it: the
+          names are plaintext in both modes, so a person waiting for a key share
+          should still see what they are waiting for. */}
+      {keyState?.needsRotation === true ? (
+        <NeedsRotationBanner canRotate={canRotate} onRotate={() => setRotating(true)} />
+      ) : null}
+
+      {material !== null && pendingCount > 0 ? (
+        <PendingSharesBanner
+          target={{ orgSlug, projectSlug, envSlug }}
+          material={material}
+          pendingCount={pendingCount}
+          onShared={keys.reload}
+        />
+      ) : null}
+
+      {keys.state.status === 'unavailable' ? (
+        <EnvKeyUnavailableState
+          reason={keys.state.reason}
+          onRetry={keys.reload}
+          target={{ orgSlug, environmentId: keys.state.keys.environmentId }}
+        />
+      ) : null}
+
       {project.error !== null ? (
         <ErrorState subject="this project" error={project.error} onRetry={project.reload} />
       ) : secrets.error !== null ? (
@@ -141,9 +212,11 @@ export function EnvironmentScreen({
       ) : (
         <SecretTable
           orgSlug={orgSlug}
+          orgId={organization?.id ?? ''}
           projectSlug={projectSlug}
           envSlug={envSlug}
           isProduction={isProduction}
+          io={io}
           // Empty until the project resolves. The table reads these only for
           // `isProduction` — which decides what gets confirmed — so an empty list
           // is the safe premise to start from.
@@ -165,6 +238,7 @@ export function EnvironmentScreen({
         projectSlug={projectSlug}
         envSlug={envSlug}
         isProduction={isProduction}
+        io={io}
         open={importing}
         onOpenChange={setImporting}
         onImported={() => {
@@ -178,9 +252,28 @@ export function EnvironmentScreen({
         projectSlug={projectSlug}
         envSlug={envSlug}
         isProduction={isProduction}
+        io={io}
         open={exporting}
         onOpenChange={setExporting}
       />
+
+      {material !== null ? (
+        <RotationDialog
+          target={{ orgSlug, projectSlug, envSlug }}
+          material={material}
+          environmentName={environment?.name ?? envSlug}
+          isProduction={isProduction}
+          open={rotating}
+          onOpenChange={setRotating}
+          // Re-reads the key state, which opens the new grant through the
+          // ordinary path. The table's decrypted snapshot goes with it: every
+          // value it holds was opened under the key that has just been retired.
+          onRotated={() => {
+            keys.reload();
+            setExternalWrites((current) => current + 1);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

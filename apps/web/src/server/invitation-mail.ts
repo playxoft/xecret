@@ -4,7 +4,7 @@ import type { MailMessage } from './mail';
 /**
  * The invitation email — the second of the two mails xecret sends.
  *
- * The same discipline as `pin-reset-mail.ts`: a link, an expiry, a sentence for
+ * One discipline for every mail xecret sends: a link, an expiry, a sentence for
  * the person who did not expect it, and nothing else. What it deliberately
  * *does* include is who sent it and which organisation it opens — an invitation
  * that does not say who is asking reads as phishing, and training recipients to

@@ -1,6 +1,6 @@
 import {
   accountMembershipSummary,
-  deletePin,
+  deleteVault,
   removeMember,
   revokeAllCliTokensForUser,
   revokeAllUserSessions,
@@ -113,7 +113,7 @@ export async function deleteAccount(
 
     const revokedSessions = await revokeAllUserSessions(tx, userId);
     const revokedCliTokens = await revokeAllCliTokensForUser(tx, userId);
-    await deletePin(tx, userId);
+    await deleteVault(tx, userId);
     await softDeleteUser(tx, userId);
 
     return {

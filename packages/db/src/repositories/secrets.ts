@@ -43,6 +43,8 @@ export interface SecretListItem {
   environmentId: string;
   name: string;
   note: string | null;
+  /** The encrypted note of an `e2ee` secret. `null` in `server` mode. */
+  encNote: Uint8Array | null;
   /** One of `SECRET_VALUE_TYPES`. Left as the raw column — see `SecretMaterial`. */
   valueType: string;
   /** Exactly one of these two is set — `secrets_writer_check`. */
@@ -63,7 +65,10 @@ export interface SecretVersionSummary {
   id: string;
   secretId: string;
   version: number;
-  envKeyId: string;
+  /** Set for a `server`-mode row; `null` for an `e2ee` one — never both. */
+  envKeyId: string | null;
+  /** The mirror: set for an `e2ee` row, `null` for a `server` one. */
+  envDataKeyId: string | null;
   /**
    * Left as the raw column value rather than narrowed to `CipherAlgorithm`.
    * History is the one view that must still render when a row names something
@@ -104,8 +109,29 @@ export interface SecretMaterial {
   environmentId: string;
   versionId: string;
   version: number;
-  envKeyId: string;
-  encrypted: EncryptedValue;
+  /**
+   * The server-envelope key this row was encrypted under, and the value in the
+   * shape `EnvelopeService` expects.
+   *
+   * Both are `null` for an `e2ee` row, and `secret_versions_key_check`
+   * guarantees the pairing: a row with an `envKeyId` has an `encrypted`, and a
+   * row with an `envDataKeyId` has a `clientValue`. Modelled as two nullable
+   * fields rather than a discriminated union because `SecretMaterial` is
+   * consumed structurally by `StoredSecretValue` in `secrets-service.ts`, and a
+   * union would make every existing server-mode call site narrow first — for a
+   * distinction the CHECK already enforces one level down.
+   */
+  envKeyId: string | null;
+  encrypted: EncryptedValue | null;
+  /** The `env_data_keys` row an `e2ee` value was encrypted under. `null` otherwise. */
+  envDataKeyId: string | null;
+  /**
+   * The `xk2.gcm.` blob and the construction the client named, exactly as
+   * stored. The server has no key for it and never parses it — see the header of
+   * `schemas/env-keys.ts` for what "validates shape, never meaning" means at the
+   * API boundary.
+   */
+  clientValue: { ciphertext: Uint8Array; clientAlgorithm: string } | null;
   valueHmac: Uint8Array | null;
   createdBy: string | null;
   createdByServiceTokenId: string | null;
@@ -136,11 +162,74 @@ export function writerColumns(writer: SecretWriterRef): {
   return { createdBy: userId, createdByServiceTokenId: serviceTokenId };
 }
 
+/**
+ * The value a write stores, in whichever hierarchy the environment uses.
+ *
+ * A discriminated union rather than four optional fields, because this is the
+ * one place where the choice actually has to be made and a caller that supplied
+ * half of each would be writing a row `secret_versions_key_check` rejects — at
+ * the end of a transaction, after the encryption, rather than at the call site.
+ * The union makes the invalid combination unrepresentable in TypeScript and the
+ * CHECK makes it unrepresentable in PostgreSQL; neither makes the other
+ * redundant, because only one of them is still there when a cast is involved.
+ */
+export type SecretPayload =
+  | {
+      mode: 'server';
+      /** The `env_keys` row the value was encrypted under. */
+      envKeyId: string;
+      /** Exactly what `EnvelopeService.encrypt` returned. */
+      encrypted: EncryptedValue;
+    }
+  | {
+      mode: 'e2ee';
+      /** The `env_data_keys` row the client sealed against. */
+      envDataKeyId: string;
+      /** The ASCII of an `xk2.gcm.` blob. Stored verbatim, never parsed. */
+      ciphertext: Uint8Array;
+      /** What the client says it used, e.g. `xk2.gcm`. */
+      clientAlgorithm: string;
+    };
+
+/** The column set a payload writes, whichever arm it is. */
+function payloadColumns(payload: SecretPayload) {
+  if (payload.mode === 'server') {
+    return {
+      ciphertext: payload.encrypted.ciphertext,
+      iv: payload.encrypted.iv,
+      envKeyId: payload.envKeyId,
+      envDataKeyId: null,
+      algorithm: payload.encrypted.algorithm,
+      clientAlgorithm: null,
+    };
+  }
+
+  return {
+    ciphertext: payload.ciphertext,
+    // No IV column: the spec puts it inside the blob (§2.1), where it travels
+    // with the ciphertext it belongs to and cannot be paired with the wrong one.
+    iv: null,
+    envKeyId: null,
+    envDataKeyId: payload.envDataKeyId,
+    // The server-envelope `algorithm` column stays at its default, which is not a
+    // lie: `xk2.gcm` *is* AES-256-GCM. What names the construction authoritatively
+    // is `client_algorithm` beside it, and the blob's own prefix beyond that.
+    algorithm: 'AES-256-GCM',
+    clientAlgorithm: payload.clientAlgorithm,
+  };
+}
+
 export interface CreateSecretParams {
   orgId: string;
   environmentId: string;
   name: string;
   note?: string | null | undefined;
+  /**
+   * The note, encrypted under the EDK. `e2ee` mode only; `note` stays NULL when
+   * this is set. The two are never both written, because they are the same field
+   * seen from the two sides of the migration.
+   */
+  encNote?: Uint8Array | null | undefined;
   /** Defaults to `string`, which accepts anything, when omitted. */
   valueType?: string | undefined;
   /**
@@ -153,10 +242,8 @@ export interface CreateSecretParams {
    * that store no ciphertext of their own (fixtures, tests) need not care.
    */
   id?: string | undefined;
-  /** The `env_keys` row the value was encrypted under. */
-  envKeyId: string;
-  /** Exactly what `EnvelopeService.encrypt` returned. */
-  encrypted: EncryptedValue;
+  /** The value, in whichever hierarchy this environment uses. */
+  payload: SecretPayload;
   valueHmac?: Uint8Array | null | undefined;
   writer: SecretWriterRef;
 }
@@ -164,8 +251,7 @@ export interface CreateSecretParams {
 export interface AddSecretVersionParams {
   orgId: string;
   secretId: string;
-  envKeyId: string;
-  encrypted: EncryptedValue;
+  payload: SecretPayload;
   valueHmac?: Uint8Array | null | undefined;
   writer: SecretWriterRef;
 }
@@ -197,6 +283,7 @@ export async function listSecrets(
       environmentId: secrets.environmentId,
       name: secrets.name,
       note: secrets.note,
+      encNote: secrets.encNote,
       valueType: secrets.valueType,
       createdBy: secrets.createdBy,
       createdByServiceTokenId: secrets.createdByServiceTokenId,
@@ -263,9 +350,11 @@ export async function loadEnvironmentSecrets(
       versionId: secretVersions.id,
       version: secretVersions.version,
       envKeyId: secretVersions.envKeyId,
+      envDataKeyId: secretVersions.envDataKeyId,
       ciphertext: secretVersions.ciphertext,
       iv: secretVersions.iv,
       algorithm: secretVersions.algorithm,
+      clientAlgorithm: secretVersions.clientAlgorithm,
       valueHmac: secretVersions.valueHmac,
       createdBy: secretVersions.createdBy,
       createdByServiceTokenId: secretVersions.createdByServiceTokenId,
@@ -311,9 +400,11 @@ export async function findSecretByName(
       versionId: secretVersions.id,
       version: secretVersions.version,
       envKeyId: secretVersions.envKeyId,
+      envDataKeyId: secretVersions.envDataKeyId,
       ciphertext: secretVersions.ciphertext,
       iv: secretVersions.iv,
       algorithm: secretVersions.algorithm,
+      clientAlgorithm: secretVersions.clientAlgorithm,
       valueHmac: secretVersions.valueHmac,
       createdBy: secretVersions.createdBy,
       createdByServiceTokenId: secretVersions.createdByServiceTokenId,
@@ -388,6 +479,7 @@ export async function createSecret(
         environmentId: params.environmentId,
         name: params.name,
         note: params.note ?? null,
+        encNote: params.encNote ?? null,
         valueType: params.valueType ?? 'string',
         ...writerColumns(params.writer),
       })
@@ -407,10 +499,7 @@ export async function createSecret(
         id: uuidv7(),
         secretId: secret.id,
         version: 1,
-        ciphertext: params.encrypted.ciphertext,
-        iv: params.encrypted.iv,
-        envKeyId: params.envKeyId,
-        algorithm: params.encrypted.algorithm,
+        ...payloadColumns(params.payload),
         valueHmac: params.valueHmac ?? null,
         ...writerColumns(params.writer),
       })
@@ -484,10 +573,7 @@ export async function addSecretVersion(
             from ${secretVersions}
             where ${secretVersions.secretId} = ${params.secretId}
           )`,
-          ciphertext: params.encrypted.ciphertext,
-          iv: params.encrypted.iv,
-          envKeyId: params.envKeyId,
-          algorithm: params.encrypted.algorithm,
+          ...payloadColumns(params.payload),
           valueHmac: params.valueHmac ?? null,
           ...writerColumns(params.writer),
         })
@@ -582,9 +668,11 @@ export async function getSecretVersion(
       versionId: secretVersions.id,
       version: secretVersions.version,
       envKeyId: secretVersions.envKeyId,
+      envDataKeyId: secretVersions.envDataKeyId,
       ciphertext: secretVersions.ciphertext,
       iv: secretVersions.iv,
       algorithm: secretVersions.algorithm,
+      clientAlgorithm: secretVersions.clientAlgorithm,
       valueHmac: secretVersions.valueHmac,
       createdBy: secretVersions.createdBy,
       createdByServiceTokenId: secretVersions.createdByServiceTokenId,
@@ -680,6 +768,16 @@ export interface UpdateSecretMetadataParams {
   newName?: string | undefined;
   /** Omit to leave unchanged. */
   note?: string | null | undefined;
+  /**
+   * The encrypted note, for an `e2ee` environment. Omit to leave unchanged;
+   * `null` clears it.
+   *
+   * A separate field from `note` rather than one polymorphic one, because the two
+   * columns are written by different modes and a caller that conflated them
+   * would put a plaintext note on an end-to-end encrypted secret — the exact
+   * leak the column pair exists to prevent.
+   */
+  encNote?: Uint8Array | null | undefined;
   /** Omit to leave unchanged. One of `SECRET_VALUE_TYPES`. */
   valueType?: string | undefined;
 }
@@ -713,6 +811,7 @@ export async function updateSecretMetadata(
   const patch: Record<string, unknown> = {};
   if (params.newName !== undefined) patch['name'] = params.newName;
   if (params.note !== undefined) patch['note'] = params.note;
+  if (params.encNote !== undefined) patch['encNote'] = params.encNote;
   if (params.valueType !== undefined) patch['valueType'] = params.valueType;
 
   if (Object.keys(patch).length === 0) {
@@ -799,6 +898,7 @@ const versionSummaryColumns = {
   secretId: secretVersions.secretId,
   version: secretVersions.version,
   envKeyId: secretVersions.envKeyId,
+  envDataKeyId: secretVersions.envDataKeyId,
   algorithm: secretVersions.algorithm,
   createdBy: secretVersions.createdBy,
   createdByServiceTokenId: secretVersions.createdByServiceTokenId,
@@ -812,10 +912,12 @@ interface CiphertextRow {
   environmentId: string;
   versionId: string;
   version: number;
-  envKeyId: string;
+  envKeyId: string | null;
+  envDataKeyId: string | null;
   ciphertext: Uint8Array;
-  iv: Uint8Array;
+  iv: Uint8Array | null;
   algorithm: string;
+  clientAlgorithm: string | null;
   valueHmac: Uint8Array | null;
   createdBy: string | null;
   createdByServiceTokenId: string | null;
@@ -823,29 +925,74 @@ interface CiphertextRow {
 }
 
 /**
- * Assembles the decryption-ready shape from a row.
+ * Assembles the read-ready shape from a row, in whichever hierarchy wrote it.
  *
- * The algorithm is validated rather than asserted here — unlike in a version
- * listing — because this value is about to select a cipher. A row naming
- * something this build does not implement must fail closed.
+ * ── The branch is on `env_key_id`, and it is the only place it is decided ──
+ * `secret_versions_key_check` guarantees exactly one key column is set, so the
+ * two arms are exhaustive and mutually exclusive by construction rather than by
+ * convention. Deciding it here — once, from the row, never from a request —
+ * means no caller has to ask "is this environment e2ee?" while holding bytes; it
+ * holds either an `encrypted` it can decrypt or a `clientValue` it can only pass
+ * through, and the type says which.
+ *
+ * In the server arm the algorithm is **validated** rather than asserted, unlike
+ * in a version listing, because the value is about to select a cipher: a row
+ * naming something this build does not implement must fail closed.
+ *
+ * In the e2ee arm nothing is validated and nothing is parsed, because there is
+ * nothing this server could check that would mean anything. The blob's prefix is
+ * the client's business (spec §2), and `client_algorithm` is a label an operator
+ * reads. Calling `toCipherAlgorithm` on it would be the server pretending to
+ * understand a construction it holds no key for.
  */
 function toSecretMaterial(row: CiphertextRow): SecretMaterial {
-  return {
+  const base = {
     secretId: row.secretId,
     name: row.name,
     valueType: row.valueType,
     environmentId: row.environmentId,
     versionId: row.versionId,
     version: row.version,
-    envKeyId: row.envKeyId,
-    encrypted: {
-      ciphertext: toBytes(row.ciphertext),
-      iv: toBytes(row.iv),
-      algorithm: toCipherAlgorithm(row.algorithm),
-    },
     valueHmac: row.valueHmac,
     createdBy: row.createdBy,
     createdByServiceTokenId: row.createdByServiceTokenId,
     createdAt: row.createdAt,
+  };
+
+  if (row.envKeyId !== null && row.iv !== null) {
+    return {
+      ...base,
+      envKeyId: row.envKeyId,
+      encrypted: {
+        ciphertext: toBytes(row.ciphertext),
+        iv: toBytes(row.iv),
+        algorithm: toCipherAlgorithm(row.algorithm),
+      },
+      envDataKeyId: null,
+      clientValue: null,
+    };
+  }
+
+  if (row.envDataKeyId === null || row.clientAlgorithm === null) {
+    // Unreachable while `secret_versions_key_check`, `…_server_iv_check` and
+    // `…_client_algorithm_check` all hold. Reported as a fault rather than
+    // papered over: a row that is neither shape is ciphertext nothing can open,
+    // and returning a half-populated material would push the failure to a
+    // decryption far away from the row that caused it.
+    throw new RepositoryError(
+      'invalid',
+      `Secret version ${row.versionId} names neither an environment key nor a data key.`,
+    );
+  }
+
+  return {
+    ...base,
+    envKeyId: null,
+    encrypted: null,
+    envDataKeyId: row.envDataKeyId,
+    clientValue: {
+      ciphertext: toBytes(row.ciphertext),
+      clientAlgorithm: row.clientAlgorithm,
+    },
   };
 }

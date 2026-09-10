@@ -5,7 +5,7 @@ import { errorName, scrubText } from './logging';
 /**
  * Transactional email.
  *
- * xecret sends exactly one kind of mail today — a PIN reset link — and that
+ * xecret sends exactly one kind of mail today — an invitation — and that
  * shapes every decision here. This is not a mailing system; it is the narrowest
  * thing that can deliver a link to the address on an account.
  *
@@ -20,14 +20,14 @@ import { errorName, scrubText } from './logging';
  * database already holds one. Whether a caller pays that cost before or after
  * its response is the caller's decision, and the two sites here decide
  * differently: the invitation mail defers with `waitUntil`, because its response
- * carries the link itself and a failed send loses nothing. The PIN reset route
+ * carries the link itself and a failed send loses nothing. A recovery route
  * awaits, because its response is the *only* thing telling somebody locked out
  * of their account where to look next, and "check your email" is a lie if the
  * send has not happened yet. Each site states its reasoning; neither is the
  * default.
  *
  * ── What is never in an email ──
- * No secret value, no PIN, no session token, and no statement about whether an
+ * No secret value, no key material, no session token, and no statement about whether an
  * account exists. The reset mail contains a single-use link and nothing else
  * that would be useful to somebody who intercepted it after it had been used.
  */
@@ -178,7 +178,7 @@ export class ZeptoMailer implements Mailer {
  *
  * `null` rather than a throw, because email is optional. A self-hoster running
  * xecret for one team may reasonably not wire up a mail provider at all — the
- * PIN reset flow then reports that it is unavailable, and everything else in the
+ * invitation flow then reports that it is unavailable, and everything else in the
  * product works. Making mail a hard dependency would mean the whole deployment
  * fails to start over a feature most single-user installs never use.
  */

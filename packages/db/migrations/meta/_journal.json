@@ -78,6 +78,34 @@
       "when": 1786925500000,
       "tag": "0010_audit_partitions_quarterly_schema",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1786925600000,
+      "tag": "0011_user_vault",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1786925700000,
+      "tag": "0012_uk_unlock_verifier",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1786925800000,
+      "tag": "0013_environment_data_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1786925900000,
+      "tag": "0014_grant_recipient_public_key",
+      "breakpoints": true
     }
   ]
 }

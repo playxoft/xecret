@@ -2,20 +2,26 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { api } from '@/lib/api';
-import { apiPath, withQuery } from '@/app/(dashboard)/_lib/paths';
+import type { SecretIo } from '@/components/envkeys';
 
 /**
  * One decryption of a whole environment, and the two ways it is shown.
  *
  * ── One request, one audit record ──
- * This calls `GET …/pull?format=json`, which decrypts the whole environment
- * server-side and writes a **single** `secret.read` record carrying the count.
- * The alternative — asking each row to reveal itself — would issue sixty
- * requests and write sixty `secret.revealed` records for one deliberate act,
- * which is worse in both directions at once: slower for the user, and an audit
- * log where one click is indistinguishable from an afternoon of individual
- * reads.
+ * This calls `SecretIo.pull`, which is `GET …/pull` in both modes and writes a
+ * **single** `secret.read` record carrying the count. The alternative — asking
+ * each row to reveal itself — would issue sixty requests and write sixty
+ * `secret.revealed` records for one deliberate act, which is worse in both
+ * directions at once: slower for the user, and an audit log where one click is
+ * indistinguishable from an afternoon of individual reads.
+ *
+ * ── Which mode this is ──
+ * Neither, as far as this file is concerned. In `server` mode the pull returns a
+ * flat `{ NAME: value }` document the Worker decrypted; in `e2ee` mode it
+ * returns the caller's grant alongside every ciphertext, and `SecretIo` opens
+ * them here in the browser. Both end as the same map, and the reveal window, the
+ * masking and the forgetting below are identical — which is the point of routing
+ * through the IO rather than branching in the table.
  *
  * ── Why it exists at all ──
  * "Is this the same value as staging?" and "did the import actually land?" are
@@ -76,13 +82,29 @@ export interface RevealAll {
   forget: () => void;
 }
 
-export function useRevealAll(orgSlug: string, projectSlug: string, envSlug: string): RevealAll {
+export function useRevealAll(
+  orgSlug: string,
+  projectSlug: string,
+  envSlug: string,
+  io: SecretIo | null,
+): RevealAll {
   const [values, setValues] = useState<Readonly<Record<string, string>> | null>(null);
   const [shown, setShown] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const path = apiPath.pull(orgSlug, projectSlug, envSlug);
+  // Identifies the environment, and only the environment — it is the slugs and
+  // nothing else, so a rotation does not change it.
+  //
+  // That is worth stating because this comment used to claim the opposite: that
+  // the guard below dropped a snapshot decrypted under a retired key, because
+  // `io` is rebuilt when the key changes. It is not what happens. Nothing here
+  // watches `io`, and a rotation leaves this cache exactly as it was. What
+  // actually drops a stale snapshot is `forget`, called by every write the table
+  // performs and by the `externalWrites` counter the screen threads through it —
+  // and the `[path]` comparison covers the different case it was written for,
+  // which is navigating from dev to production with values on screen.
+  const path = `${orgSlug}/${projectSlug}/${envSlug}`;
 
   // The request in flight, so a second click cannot start a second decryption
   // of the same environment, and so a response for the environment the user has
@@ -166,26 +188,26 @@ export function useRevealAll(orgSlug: string, projectSlug: string, envSlug: stri
         return;
       }
 
+      if (io === null) {
+        // An `e2ee` environment this browser cannot open. The screen above
+        // already says why; a button that spun forever would say nothing.
+        setError('Could not reveal these values.');
+        return;
+      }
+
       const controller = new AbortController();
       inFlight.current = controller;
       showWhenLoaded.current = show;
       setLoading(true);
 
-      api
-        .get<Record<string, unknown>>(withQuery(path, { format: 'json' }), {
-          signal: controller.signal,
-        })
-        .then((document) => {
+      // The signal goes *into* the pull, not merely around it. In `e2ee` mode
+      // this is one request followed by a decryption per secret, and a controller
+      // the IO never saw could only cancel the fetch — leaving hundreds of
+      // AES-GCM opens running into a screen the person has already left, each one
+      // putting another plaintext into a promise chain whose result is discarded.
+      io.pull({ signal: controller.signal })
+        .then((plaintexts) => {
           if (controller.signal.aborted) return;
-
-          // The pull endpoint answers with a flat `{ NAME: value }` document.
-          // Non-string members are dropped rather than coerced: `String(…)` on an
-          // unexpected shape would put `[object Object]` in a field people are
-          // about to copy into a terminal.
-          const plaintexts: Record<string, string> = {};
-          for (const [name, value] of Object.entries(document)) {
-            if (typeof value === 'string') plaintexts[name] = value;
-          }
 
           setValues(plaintexts);
           setShown(showWhenLoaded.current);
@@ -203,7 +225,7 @@ export function useRevealAll(orgSlug: string, projectSlug: string, envSlug: stri
           if (inFlight.current === controller) inFlight.current = null;
         });
     },
-    [path, values],
+    [io, values],
   );
 
   const reveal = useCallback(() => request(true), [request]);

@@ -119,7 +119,7 @@ var completionTree = []completionCommand{
 	{Name: "export", Description: "Write every secret to a file",
 		Flags: scoped("--format", "-o", "--force")},
 	{Name: "run", Description: "Run a command with secrets injected",
-		Flags: scoped("--offline", "--no-cache")},
+		Flags: scoped("--offline", "--no-cache", "--max-cache-age")},
 	{Name: "audit", Description: "Read the organisation audit log",
 		Flags: scoped("--json", "--action", "--outcome", "--since", "--until", "--limit")},
 	{Name: "members", Description: "List who is in the organisation",

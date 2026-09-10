@@ -4,6 +4,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { api } from '@/lib/api';
 import { apiPath, withQuery } from '@/app/(dashboard)/_lib/paths';
+import {
+  clientSecretIo,
+  fetchEnvironmentKeys,
+  openEnvironmentKeys,
+  serverSecretIo,
+} from '@/components/envkeys';
+import type { SecretIo } from '@/components/envkeys';
+import { readVaultKeys } from '@/components/vault/key-store';
 import type { EnvironmentTarget } from './environment-target';
 import type { SecretListResponse, SecretSummary } from './types';
 
@@ -23,12 +31,30 @@ import type { SecretListResponse, SecretSummary } from './types';
  *
  * A failure is per environment and does not disturb the others: comparing three
  * environments where you lack production's grant should still show staging.
+ *
+ * ── The second request, and why it is here ──
+ * Each compared environment also gets its own `GET …/keys`, because a compared
+ * cell can reveal and can be written to — and in `e2ee` mode both need that
+ * environment's own key, not the one the page is about. Resolving it here rather
+ * than inside the cell is what keeps it two requests per environment instead of
+ * two per environment per row. An environment whose key this browser cannot open
+ * yields `io: null`, and the cell renders masked and read-only rather than
+ * failing when somebody clicks it.
  */
 
 /** The API clamps `limit` to 200, and matches the environment screen's page. */
 const PAGE_SIZE = 200;
 
 export interface ComparedEnvironment extends EnvironmentTarget {
+  /**
+   * How this environment's values are read and written.
+   *
+   * `null` while the key state is still loading, and for an `e2ee` environment
+   * this browser holds no grant for. A cell with no IO shows the mask and
+   * refuses the editor — which is the truth: the row exists, the name is
+   * readable, and the value is not.
+   */
+  io: SecretIo | null;
   loading: boolean;
   /** A fixed string; nothing from the thrown value is kept. See `lib/api.ts`. */
   error: string | null;
@@ -46,13 +72,20 @@ export interface ComparedEnvironment extends EnvironmentTarget {
 }
 
 interface Entry {
+  io: SecretIo | null;
   loading: boolean;
   error: string | null;
   byName: ReadonlyMap<string, SecretSummary>;
   truncated: boolean;
 }
 
-const EMPTY: Entry = { loading: true, error: null, byName: new Map(), truncated: false };
+const EMPTY: Entry = {
+  io: null,
+  loading: true,
+  error: null,
+  byName: new Map(),
+  truncated: false,
+};
 
 export interface ComparedSecrets {
   environments: readonly ComparedEnvironment[];
@@ -62,6 +95,7 @@ export interface ComparedSecrets {
 
 export function useComparedSecrets(
   orgSlug: string,
+  orgId: string,
   projectSlug: string,
   environments: readonly EnvironmentTarget[],
 ): ComparedSecrets {
@@ -97,17 +131,23 @@ export function useComparedSecrets(
     const controller = new AbortController();
 
     for (const slug of wanted) {
-      api
-        .get<SecretListResponse>(
+      // The listing and the key state, together. `Promise.all` rather than two
+      // independent chains so a cell never renders against one environment's
+      // names and another moment's key.
+      Promise.all([
+        api.get<SecretListResponse>(
           withQuery(apiPath.secrets(orgSlug, projectSlug, slug), { limit: PAGE_SIZE }),
           { signal: controller.signal },
-        )
-        .then((response) => {
+        ),
+        comparedIo({ orgSlug, orgId, projectSlug, envSlug: slug }, controller.signal),
+      ])
+        .then(([response, io]) => {
           if (controller.signal.aborted) return;
           const byName = new Map(response.data.map((secret) => [secret.name, secret]));
           setEntries((current) => ({
             ...current,
             [slug]: {
+              io,
               loading: false,
               error: null,
               byName,
@@ -128,6 +168,7 @@ export function useComparedSecrets(
             return {
               ...current,
               [slug]: {
+                io: previous?.io ?? null,
                 loading: false,
                 error: 'Could not read this environment.',
                 byName: previous?.byName ?? new Map(),
@@ -139,7 +180,7 @@ export function useComparedSecrets(
     }
 
     return () => controller.abort();
-  }, [orgSlug, projectSlug, key, attempt]);
+  }, [orgSlug, orgId, projectSlug, key, attempt]);
 
   const compared = useMemo(
     () =>
@@ -154,4 +195,32 @@ export function useComparedSecrets(
     environments: compared,
     reload: useCallback(() => setAttempt((current) => current + 1), []),
   };
+}
+
+/**
+ * The IO for one compared environment, or `null` when it cannot be opened.
+ *
+ * Reads the vault keys from the store rather than through the React context: a
+ * hook cannot be called per environment in a loop, and the store is the same
+ * object the context subscribes to. The effect above re-runs on `attempt`, so a
+ * comparison opened while locked picks the keys up on the next reload rather
+ * than staying dead for the life of the page.
+ *
+ * Every failure — no access, no grant, a locked vault — is `null` rather than a
+ * throw, because none of them should take the *listing* down with them. The
+ * names are still readable and are most of what a comparison is for.
+ */
+async function comparedIo(
+  context: { orgSlug: string; orgId: string; projectSlug: string; envSlug: string },
+  signal: AbortSignal,
+): Promise<SecretIo | null> {
+  try {
+    const keys = await fetchEnvironmentKeys(context, { signal });
+    if (keys.encryptionMode !== 'e2ee') return serverSecretIo(context);
+
+    const opened = await openEnvironmentKeys(keys, readVaultKeys());
+    return opened.status === 'open' ? clientSecretIo(context, opened.material) : null;
+  } catch {
+    return null;
+  }
 }

@@ -5,13 +5,19 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/playxoft/xecret/cli/internal/api"
 	"github.com/playxoft/xecret/cli/internal/auth"
 	"github.com/playxoft/xecret/cli/internal/cache"
 	"github.com/playxoft/xecret/cli/internal/cred"
+	"github.com/playxoft/xecret/cli/internal/e2ee"
+	"github.com/playxoft/xecret/cli/internal/envkeys"
 )
 
 // loginTimeout bounds how long the CLI waits for the browser. Long enough to
@@ -25,11 +31,17 @@ func cmdLogin(args []string) error {
 	flags := flag.NewFlagSet("login", flag.ContinueOnError)
 	apiURL := flags.String("api-url", "", "xecret deployment to log in to (default "+apiBase("")+")")
 	deviceName := flags.String("name", "", "device name shown on the consent screen and in the dashboard (default: hostname)")
+	passphrase := flags.Bool("passphrase", false,
+		"skip the browser: unlock this machine's vault key from your master passphrase")
 	if err := parseFlagsOnly(flags, args); err != nil {
 		return err
 	}
 
 	a := newApp(false)
+
+	if *passphrase {
+		return a.unlockWithPassphrase()
+	}
 	if a.usingServiceToken() {
 		// Logging in would succeed and then be ignored: client() prefers the
 		// environment credential. Saying so now beats a support ticket later.
@@ -60,13 +72,44 @@ func cmdLogin(args []string) error {
 		return err
 	}
 
+	// The hand-off keypair (spec 13.2). A CLI token acts as its user, and that
+	// user's environment grants are sealed to a public key whose private half is
+	// wrapped under the User Key — so a login that ended here would authenticate
+	// perfectly and decrypt nothing. The consent screen seals the User Key to
+	// this public half; the private half never leaves this process and is wiped
+	// on the way out, whichever way the login goes.
+	handoff, err := e2ee.GenerateHandoffKey()
+	if err != nil {
+		return err
+	}
+	defer handoff.Close()
+
 	listener, err := auth.Listen(state)
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
 
-	authorizeURL := auth.AuthorizeURL(base, auth.Challenge(verifier), device, state, listener.Port())
+	challenge := auth.Challenge(verifier)
+	authorizeURL := auth.AuthorizeURL(
+		base, challenge, device, state, listener.Port(), handoff.PublicKeyB64Url,
+	)
+
+	// The hand-off key's fingerprint, printed before the browser opens.
+	//
+	// Nothing in the flow binds the recipient of the sealed User Key to *this*
+	// process — see `e2ee.CLIHandoffAad`. Any program running as this user can
+	// open a consent screen for a hand-off key of its own, and a person who
+	// approves it because they had just typed `xecret login` hands the key to it.
+	// The only thing that separates the two is this string: the consent screen
+	// renders the fingerprint of whatever key it is about to seal to, in the same
+	// format the dashboard uses beside every member key, and it matches what is
+	// on this terminal exactly when the page is sealing to this process.
+	if handoffFingerprint, err := handoff.Fingerprint(); err == nil {
+		a.printer.Infof("This device's hand-off key is %s.", a.printer.Bold(handoffFingerprint))
+		a.printer.Infof("The approval page shows the same eight characters. If they differ, cancel it — " +
+			"something else asked for your vault key.")
+	}
 
 	a.printer.Infof("Opening your browser to approve this device…")
 	a.printer.Infof("If it does not open, visit:\n\n  %s\n", authorizeURL)
@@ -75,13 +118,13 @@ func cmdLogin(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), loginTimeout)
 	defer cancel()
 
-	code, err := listener.Wait(ctx)
+	callback, err := listener.Wait(ctx)
 	if err != nil {
 		return err
 	}
 
 	client := api.New(base, "", userAgent())
-	result, err := client.ExchangeCode(ctx, code, verifier)
+	result, err := client.ExchangeCode(ctx, callback.Code, verifier)
 	if err != nil {
 		if apiErr, ok := api.AsError(err); ok && apiErr.Code == "unauthenticated" {
 			return errors.New("the login could not be completed — the approval may have expired. Run 'xecret login' again")
@@ -89,6 +132,9 @@ func cmdLogin(args []string) error {
 		return err
 	}
 
+	// The token is live from here. Everything below can fail without costing the
+	// login — it costs the ability to decrypt, which is reported and recoverable
+	// by running the command again, whereas discarding a minted token is not.
 	if err := cred.Save(a.store, cred.Credentials{
 		APIURL:  base,
 		Token:   result.Token,
@@ -103,7 +149,93 @@ func cmdLogin(args []string) error {
 		a.printer.Bold(result.User.Email),
 		result.Organization.Slug,
 	)
+
+	if err := a.acceptHandoff(ctx, base, result.Token, challenge, callback.Handoff, handoff); err != nil {
+		a.printer.Warnf("%v", err)
+		a.printer.Warnf(
+			"end-to-end encrypted environments will not open on this machine until that succeeds.",
+		)
+	}
+
 	a.printer.Infof("This device appears as %q in the dashboard and can be revoked there.", device)
+	return nil
+}
+
+// acceptHandoff opens the sealed User Key and records it, with the ids that make
+// it usable.
+//
+// Failure is a warning rather than an error, and the distinction is the point: a
+// login without a hand-off is a working login for every server-mode environment
+// and for every command that does not decrypt. Turning it into a failure would
+// leave the user with a minted, saved token and a message saying the login did
+// not work.
+func (a *app) acceptHandoff(
+	ctx context.Context,
+	base, token, challenge, blob string,
+	key *e2ee.HandoffKey,
+) error {
+	// The stored key belongs to whoever just signed in. Removing the previous one
+	// first means a failure below leaves no key at all rather than the last
+	// account's — which would decrypt nothing and explain nothing.
+	if err := envkeys.ForgetUserKey(a.store); err != nil {
+		return err
+	}
+
+	if blob == "" {
+		return errors.New(
+			"the consent screen did not hand over a vault key — it may be an older deployment",
+		)
+	}
+
+	userKey, err := key.Open(blob, challenge)
+	if err != nil {
+		return fmt.Errorf("the vault key handed over by the browser could not be opened: %w", err)
+	}
+	defer e2ee.ZeroizeKey(userKey)
+
+	// The ids are fetched rather than assumed: orgId binds every secret's AAD and
+	// userId binds the private-key wrap, and a slug is neither of them.
+	client := api.New(base, token, userAgent())
+	me, err := client.FetchMe(ctx)
+	if err != nil {
+		return fmt.Errorf("reading this account's identity: %w", err)
+	}
+
+	credentials, err := cred.Load(a.store)
+	if err != nil {
+		return err
+	}
+	credentials.UserID = me.User.ID
+	for _, organization := range me.Organizations {
+		if organization.Slug == credentials.OrgSlug {
+			credentials.OrgID = organization.ID
+		}
+	}
+	if credentials.UserID == "" || credentials.OrgID == "" {
+		return errors.New("this deployment did not identify the account; upgrade the server")
+	}
+	if err := cred.Save(a.store, *credentials); err != nil {
+		return err
+	}
+
+	if err := envkeys.StoreUserKey(a.store, userKey); err != nil {
+		return err
+	}
+
+	// The wrap the User Key opens, kept beside it. One extra GET at login, and
+	// the reason it is worth making here rather than leaving to the first command
+	// is that the first command may be `xecret run --offline` on a train: a
+	// machine that has completed a login has been told it can open encrypted
+	// environments, and it should be true straight away rather than after some
+	// later moment nobody was told about.
+	if vault, vaultErr := client.Vault(ctx); vaultErr != nil {
+		a.printer.Warnf("could not read this account's vault material: %v", vaultErr)
+		a.printer.Warnf("'--offline' will not open encrypted environments until a command reaches the API.")
+	} else if wrapErr := envkeys.StoreVaultWraps(a.store, vault.Material); wrapErr != nil {
+		a.printer.Warnf("could not store this account's vault material: %v", wrapErr)
+	}
+
+	a.printer.Infof("Vault key stored — end-to-end encrypted environments will open on this machine.")
 	return nil
 }
 
@@ -131,6 +263,9 @@ func cmdLogout(args []string) error {
 		if err := cache.Clear(a.store); err != nil {
 			return err
 		}
+		if err := envkeys.ForgetUserKey(a.store); err != nil {
+			return err
+		}
 		a.printer.Infof("Not signed in; nothing to revoke.")
 		return nil
 	}
@@ -155,8 +290,14 @@ func cmdLogout(args []string) error {
 	if err := cache.Clear(a.store); err != nil {
 		return err
 	}
+	// The vault key is the thing that decrypts. Leaving it behind after a logout
+	// would make the cache wipe the only erasure that happened, and the next
+	// person at this machine would still hold the User Key of the last one.
+	if err := envkeys.ForgetUserKey(a.store); err != nil {
+		return err
+	}
 
-	a.printer.Successf("Signed out %s — credential revoked, offline cache wiped.", credentials.Email)
+	a.printer.Successf("Signed out %s — credential revoked, vault key and offline cache wiped.", credentials.Email)
 	return nil
 }
 
@@ -227,4 +368,151 @@ func cmdWhoami(args []string) error {
 	}
 	fmt.Fprintf(a.printer.Out, "Server         %s\n", credentials.APIURL)
 	return nil
+}
+
+// unlockWithPassphrase is the headless half of `xecret login`.
+//
+// ── What it is for ──
+// A machine with no browser cannot complete the consent flow, and a machine that
+// completed it before a vault reset holds a key that no longer opens anything.
+// Both need the same thing: the User Key, derived here rather than handed over.
+//
+// ── What it is not ──
+// It is not a way to sign in. It needs an existing credential, because the vault
+// material it reads is served to that credential and to nothing else. What it
+// replaces is the *hand-off*, not the login.
+//
+// ── Nothing is sent ──
+// The passphrase becomes a Stretched Key here, the Stretched Key becomes a wrap
+// key here, and the wrap opens here. This makes exactly one request — a GET for
+// the wraps, which are useless without the passphrase — and posts no verifier:
+// a CLI token is not subject to the server's lock gate, so there is nothing a
+// verifier would unlock and no reason to hand one over. The prohibition in the
+// specification is absolute, and this path keeps it trivially.
+func (a *app) unlockWithPassphrase() error {
+	if a.usingServiceToken() {
+		return errors.New(
+			"XECRET_TOKEN is a service token, which has no vault — its key travels in the token itself",
+		)
+	}
+
+	credentials, err := cred.Load(a.store)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	client := api.New(credentials.APIURL, credentials.Token, userAgent())
+
+	vault, err := client.Vault(ctx)
+	if err != nil {
+		return err
+	}
+	if vault.Material == nil {
+		return errors.New("this account has no vault; set one up in the dashboard first")
+	}
+
+	// Fetched before the prompt, so a machine that cannot reach the server says
+	// so before asking somebody to type their master passphrase into it.
+	if err := a.backfillIdentity(ctx, client, credentials); err != nil {
+		return err
+	}
+
+	entered, err := readPassphrase(a)
+	if err != nil {
+		return err
+	}
+
+	salt, err := e2ee.DecodeSalt(vault.Material.KdfSalt)
+	if err != nil {
+		return err
+	}
+
+	// Argon2id at the server's stated parameters — validated first, because a
+	// client that runs a memory-hard KDF with unvalidated server-supplied costs
+	// can be made to allocate arbitrary memory by a hostile one.
+	a.printer.Infof("Deriving your key…")
+	stretched, err := e2ee.DeriveStretchedKey(entered, salt, vault.Material.KdfParams)
+	if err != nil {
+		return err
+	}
+	defer e2ee.ZeroizeKey(stretched)
+
+	wrapKey, err := e2ee.DerivePassphraseWrapKey(stretched)
+	if err != nil {
+		return err
+	}
+	defer e2ee.ZeroizeKey(wrapKey)
+
+	userKey, err := e2ee.UnwrapUserKey(wrapKey, vault.Material.PassphraseWrap, e2ee.WrapContext{
+		UserID: credentials.UserID,
+		Kind:   e2ee.WrapPassphrase,
+	})
+	if err != nil {
+		// A wrong passphrase, a wrap row swapped with another account's, and a
+		// tampered blob are one outcome here, and should be: the honest message
+		// is that the vault did not open.
+		return errors.New("that passphrase did not open your vault")
+	}
+	defer e2ee.ZeroizeKey(userKey)
+
+	// Proof rather than assumption. Unwrapping the private key uses a different
+	// AAD under the same User Key, so a success here means the key that was
+	// stored is the key that opens grants — not merely one that satisfied the
+	// first GCM tag it met.
+	privateKey, err := e2ee.UnwrapPrivateKey(
+		userKey, vault.Material.EncPrivateKeyEnc, credentials.UserID, e2ee.PurposeEncryption)
+	if err != nil {
+		return errors.New("your vault opened but its private key did not; the record may be damaged")
+	}
+	e2ee.ZeroizeKey(privateKey)
+
+	if err := envkeys.StoreUserKey(a.store, userKey); err != nil {
+		return err
+	}
+	// The material this function already holds, kept for the offline path — see
+	// acceptHandoff. No extra request here: the wraps came back with the ones
+	// this unlock was built from.
+	if wrapErr := envkeys.StoreVaultWraps(a.store, vault.Material); wrapErr != nil {
+		a.printer.Warnf("could not store this account's vault material: %v", wrapErr)
+	}
+
+	a.printer.Successf("Vault key stored for %s.", credentials.Email)
+	a.printer.Infof("End-to-end encrypted environments will now open on this machine.")
+	return nil
+}
+
+// readPassphrase takes the master passphrase without echoing it, and without
+// ever accepting it from a flag.
+//
+// A flag would put it in the shell history, in the process table, and in every
+// CI log that prints its own command line. A pipe is accepted because a headless
+// box may have no terminal at all, and refusing one would leave that machine
+// with no way in — but it is the caller's job to feed that pipe from something
+// better than a file.
+func readPassphrase(a *app) (string, error) {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", errors.New("could not read the passphrase from stdin")
+		}
+		entered := strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
+		if entered == "" {
+			return "", errors.New("stdin was empty — pipe the passphrase in, or run interactively for a prompt")
+		}
+		return entered, nil
+	}
+
+	fmt.Fprint(a.printer.Err, "Master passphrase (input hidden): ")
+	raw, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(a.printer.Err)
+	if err != nil {
+		return "", errors.New("could not read the passphrase from the terminal")
+	}
+	if len(raw) == 0 {
+		return "", errors.New("no passphrase entered")
+	}
+	return string(raw), nil
 }

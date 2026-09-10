@@ -4,6 +4,7 @@ import { createContext, use } from 'react';
 import type { ReactNode } from 'react';
 
 import type { OrgRole } from '@xecret/core/authz';
+import type { VaultStatus } from '@/components/vault';
 
 /**
  * Who is signed in, and which organisations they can act in.
@@ -37,45 +38,30 @@ export interface SessionOrganization {
 }
 
 /**
- * Whether this session may currently reach a secret.
+ * Whether this session may currently reach key material.
  *
  * Two booleans rather than one tri-state, because the two questions have
- * different answers and different screens: `configured: false` means "choose a
- * PIN", `unlocked: false` means "enter yours", and a single `locked` flag would
- * make the shell guess which.
- */
-export interface PinStatus {
-  configured: boolean;
-  unlocked: boolean;
-  /** ISO 8601. When the current unlock lapses; `null` while locked. */
-  unlockedUntil: string | null;
-  /** Minutes of idleness before the dashboard locks itself; `0` never. */
-  autoLockMinutes: number;
-}
-
-/**
- * The answer to "email me a PIN reset link".
+ * different answers and different screens: `configured: false` means "set up
+ * your vault", `unlocked: false` means "unlock it", and a single `locked` flag
+ * would make the shell guess which.
  *
- * `sent: false` is a **successful** request with an unhappy answer, and it now
- * covers two of them: mail is optional in a self-hosted install and this
- * deployment may have none, or the provider refused the send outright. The
- * route awaits the send precisely so the second case can be answered here
- * rather than discovered by an empty inbox. `reason` says which.
+ * The vault's *material* — the wraps, the public keys, the KDF parameters — is
+ * deliberately absent here, and so are the keys themselves. The material comes
+ * from `GET /api/auth/vault` and is held by `VaultProvider`; the keys live in
+ * the module singleton behind it. Neither belongs in a context every screen
+ * reads: one is only wanted by the two screens that unlock, and the other must
+ * not be reachable by anything that merely renders a table.
  *
- * Neither is an error status, so callers must read this flag rather than
- * treating a resolved promise as "check your inbox" — the failure mode that
- * flag prevents is somebody watching a mailbox nothing will arrive in.
+ * Defined by `components/vault` rather than here, so that the type describing
+ * the vault ships with the code that operates it, and re-exported because every
+ * screen reads it through this module.
  */
-export interface PinResetResult {
-  sent: boolean;
-  /** Why nothing was sent, and what to do instead. Present when `sent` is false. */
-  reason?: string;
-}
+export type { VaultStatus };
 
 export interface SessionValue {
   user: SessionUser;
   organizations: readonly SessionOrganization[];
-  pin: PinStatus;
+  vault: VaultStatus;
   /** Locks this session without ending it, then re-reads the session. */
   lock: () => Promise<void>;
   /**
@@ -107,7 +93,7 @@ export interface SessionValue {
 export interface MeResponse {
   user: SessionUser;
   organizations: readonly SessionOrganization[];
-  pin: PinStatus;
+  vault: VaultStatus;
 }
 
 const SessionContext = createContext<SessionValue | null>(null);

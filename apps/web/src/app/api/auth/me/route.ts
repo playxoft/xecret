@@ -1,7 +1,7 @@
 import { findUserById, listOrganizationsForUser } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
 import { json } from '@/server/http';
-import { pinStatus } from '@/server/pin-service';
+import { vaultStatus } from '@/server/vault-service';
 import { authenticatedRoute } from '@/server/route';
 
 /**
@@ -49,18 +49,24 @@ export const GET = authenticatedRoute(
         avatarUrl: user.avatarUrl,
       },
       /**
-       * Whether a PIN exists and whether this session is unlocked.
+       * Whether a vault exists and whether this session has unlocked it.
        *
        * This is why the route is exempt from the lock gate: the dashboard has to
-       * distinguish "set up a PIN" from "enter your PIN" before it can render
+       * distinguish "set up your vault" from "unlock it" before it can render
        * either screen, and discovering that through a failed request to some other
        * endpoint would mean the first thing a locked user sees is an error.
+       *
+       * The state only — never a wrap. The material an unlock attempt needs comes
+       * from `GET /api/auth/vault`, which is a deliberate separation: this
+       * response is fetched on every page load by both the dashboard and
+       * `xecret whoami`, and key material has no business travelling on a route
+       * whose job is to say who you are.
        *
        * Like the rest of this response it is a convenience, not an authority. A
        * client that lied to itself about `unlocked` would still be refused by
        * `authenticatedRoute` on every request that matters.
        */
-      pin: await pinStatus(services, principal),
+      vault: await vaultStatus(services, principal),
       // Named so the CLI can show which credential is in use without the token
       // itself ever being echoed back.
       credential:

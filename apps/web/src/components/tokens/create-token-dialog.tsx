@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 
-import { api, errorMessage } from '@/lib/api';
+import { errorMessage } from '@/lib/api';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import { useApiResource } from '@/app/(dashboard)/_lib/use-api-resource';
 import {
@@ -27,7 +27,9 @@ import {
   SelectValue,
 } from '@/components/ui';
 import type { ProjectListResponse, ProjectResponse } from '@/components/projects/types';
-import type { CreateServiceTokenResponse } from './types';
+import { useVaultKeys } from '@/components/vault';
+import { mintServiceToken } from './token-keys';
+import type { MintedServiceToken } from './token-keys';
 
 export interface CreateTokenDialogProps {
   orgSlug: string;
@@ -49,7 +51,12 @@ export interface CreateTokenDialogProps {
  * forgets.
  *
  * The reveal step is deliberately terminal — closing it discards the values
- * forever, and the dialog says so before it happens, not after.
+ * forever, and the dialog says so before it happens, not after. Under
+ * end-to-end encryption that terminality acquired teeth: the token string now
+ * carries the credential *and* the X25519 key that opens the environment (spec
+ * §13.1), so a value lost here is lost cryptographically, not merely
+ * administratively. `token-keys.ts` decides which half goes where; this file
+ * remains a form.
  */
 export function CreateTokenDialog({
   orgSlug,
@@ -74,7 +81,7 @@ export function CreateTokenDialog({
 }
 
 interface MintOutcome {
-  minted: CreateServiceTokenResponse[];
+  minted: MintedServiceToken[];
   /** Environment slugs whose mint failed, in selection order. */
   failed: string[];
 }
@@ -91,6 +98,7 @@ function CreateTokenFlow({
   onCreated: () => void;
 }) {
   const projects = useApiResource<ProjectListResponse>(apiPath.projects(orgSlug));
+  const vault = useVaultKeys();
 
   const [name, setName] = useState('');
   const [projectSlug, setProjectSlug] = useState('');
@@ -135,17 +143,24 @@ function CreateTokenFlow({
     // audited act against the mutation rate limit. A mid-batch failure still
     // reveals what was minted: those tokens exist and will never be shown
     // again, so hiding them behind the error would destroy them.
-    const minted: CreateServiceTokenResponse[] = [];
+    const minted: MintedServiceToken[] = [];
     const failed: string[] = [];
     let firstFailure: string | null = null;
     for (const environmentSlug of environmentSlugs) {
       try {
         minted.push(
-          await api.post<CreateServiceTokenResponse>(apiPath.serviceTokens(orgSlug), {
-            name: name.trim(),
+          await mintServiceToken({
+            orgSlug,
             projectSlug,
             environmentSlug,
+            name: name.trim(),
             accessLevel,
+            // No `encryptionMode`. This screen's project listing is a cache, and
+            // a cache that answered `server` for an `e2ee` environment used to
+            // mint a keyless token and report it as a success. `mintServiceToken`
+            // reads the environment's own key state instead — one request, at the
+            // only moment the answer matters.
+            vault,
           }),
         );
       } catch (cause) {
@@ -174,8 +189,10 @@ function CreateTokenFlow({
             {outcome.minted.length === 1 ? 'Copy the token now' : 'Copy the tokens now'}
           </DialogTitle>
           <DialogDescription>
-            This is the only time they will be shown. Only a hash is stored — closing this dialog
-            discards the values forever; losing one means minting a new token.
+            This is the only time they will be shown. Only a hash is stored, and for an end-to-end
+            encrypted environment the string also carries the key that decrypts it — which exists
+            nowhere else. Closing this dialog discards the values forever; losing one means minting
+            a new token.
           </DialogDescription>
         </DialogHeader>
 
@@ -186,10 +203,21 @@ function CreateTokenFlow({
             </Alert>
           ) : null}
 
+          {outcome.minted.some((issued) => !issued.keyShared) ? (
+            <Alert tone="danger" title="One token has no key yet">
+              It authenticates but decrypts nothing until somebody shares this environment&apos;s
+              key with it. Copy it anyway — this is still the only time it is shown — then open the
+              environment&apos;s key panel and share or rotate.
+            </Alert>
+          ) : null}
+
           {outcome.minted.map((issued) => (
             <div key={issued.serviceToken.id} className="flex flex-col gap-1">
               <p className="text-fg-muted text-sm font-medium">
                 {issued.serviceToken.projectSlug}/{issued.serviceToken.environmentSlug}
+                {issued.keyShared ? null : (
+                  <span className="text-fg-subtle"> &mdash; no key shared</span>
+                )}
               </p>
               <div className="border-line bg-canvas-inset flex items-center gap-2 rounded-lg border px-3 py-2">
                 <code className="text-fg min-w-0 flex-1 truncate font-mono text-sm">

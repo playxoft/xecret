@@ -108,6 +108,27 @@ export const serviceTokens = pgTable(
     name: text('name').notNull(),
     tokenHash: bytea('token_hash').notNull().unique(),
     tokenPrefix: text('token_prefix').notNull(),
+    /**
+     * The token's own X25519 **public** key, 32 raw bytes, in the clear.
+     *
+     * A CI credential is a principal like any other under ADR 0009: the
+     * environment's keys are sealed to this public key, and the matching private
+     * scalar lives only inside the token string the creator was shown once. The
+     * server therefore stores a hash it can check and a public key it can seal
+     * to, and holds nothing that opens either.
+     *
+     * This is what makes a rotation cheap: because the public key is here, the
+     * client performing a rotation can re-seal the new EDK to every service token
+     * without anybody regenerating one — the v1 design, which gave tokens a
+     * symmetric key half, invalidated every token on every revocation.
+     *
+     * Nullable, and Phase 4 is what fills it: a token minted before the new
+     * creation flow has no keypair, and a grant to such a token is refused rather
+     * than sealed to nothing. `server`-mode environments do not need it at all.
+     */
+    publicKey: bytea('public_key'),
+    /** The construction `public_key` belongs to — `X25519` today. NULL beside a NULL key. */
+    keyAlgorithm: text('key_algorithm'),
     accessLevel: accessLevelEnum('access_level').notNull().default('read'),
     ipAllowlist: inetArray('ip_allowlist'),
     createdBy: uuid('created_by')

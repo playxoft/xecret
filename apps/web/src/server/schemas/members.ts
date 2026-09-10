@@ -8,6 +8,7 @@ import type {
   MemberListEntry,
   SeatUsage,
 } from '@xecret/db/repositories';
+import { publicKeySchema } from './env-keys';
 
 /**
  * The request schemas and response shapes of the member and invitation routes.
@@ -61,6 +62,21 @@ export const memberInviteSchema = z.strictObject(
      * limit.
      */
     grants: z.optional(z.array(invitationGrantSelectionSchema).check(z.maxLength(500))),
+    /**
+     * The invitation's X25519 public key, derived by the inviter's client from a
+     * 16-byte fragment (spec §10).
+     *
+     * **The fragment itself never appears in this body, or in any other.** It
+     * travels to the invitee out of band — copied from the UI and sent over a
+     * different channel from the emailed link — which is the whole of the
+     * two-channel design: a leaked email decrypts nothing, and a leaked fragment
+     * authenticates nothing. A field for the fragment would collapse the two
+     * channels into one, so there is not one and there must never be.
+     *
+     * Optional, because an invitation into an organisation whose environments are
+     * all `server`-mode carries no sealed grants and needs no keypair.
+     */
+    invitePublicKey: z.optional(publicKeySchema),
   },
   UNEXPECTED_FIELD,
 );

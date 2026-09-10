@@ -9,9 +9,9 @@ import {
   toSecretValueType,
 } from '@xecret/core/validation';
 import type { SecretValueType } from '@xecret/core/validation';
-import { api, isApiError } from '@/lib/api';
-import { apiPath } from '@/app/(dashboard)/_lib/paths';
-import type { SecretWriteResponse } from './types';
+import { isApiError } from '@/lib/api';
+import type { SecretIo } from '@/components/envkeys';
+import type { SecretSummary } from './types';
 
 /**
  * The editor's unsaved work.
@@ -228,10 +228,17 @@ export interface StagedChanges {
    * only where a type was staged too, and the batch happily sent `abc` for a
    * secret declared `integer` — under a field already showing that in red.
    */
-  save: (
-    existingNames: ReadonlySet<string>,
-    storedTypes: ReadonlyMap<string, string>,
-  ) => Promise<SaveOutcome>;
+  /**
+   * `stored` is the environment's listing, keyed by name.
+   *
+   * It replaces the two lookup maps this used to take, because an `e2ee` write
+   * needs more than a type: it needs the row's **id** and its current
+   * **version**, both of which are AAD components of the ciphertext it is about
+   * to produce. Passing the summaries themselves means there is one source for
+   * all four facts rather than four parallel maps that can disagree about which
+   * row they describe.
+   */
+  save: (stored: ReadonlyMap<string, SecretSummary>) => Promise<SaveOutcome>;
   /**
    * Drops every seeded plaintext, keeping whatever the user typed over it.
    *
@@ -447,11 +454,7 @@ function draftProblem(draft: Draft, name: string, claimed: ReadonlySet<string>):
   return null;
 }
 
-export function useStagedChanges(
-  orgSlug: string,
-  projectSlug: string,
-  envSlug: string,
-): StagedChanges {
+export function useStagedChanges(io: SecretIo | null): StagedChanges {
   const [drafts, setDrafts] = useState<readonly Draft[]>([]);
   const [edits, setEdits] = useState<ReadonlyMap<string, PendingEdit>>(new Map());
   const [saving, setSaving] = useState(false);
@@ -760,10 +763,7 @@ export function useStagedChanges(
   }, [drafts, edits]);
 
   const save = useCallback(
-    async (
-      existingNames: ReadonlySet<string>,
-      storedTypes: ReadonlyMap<string, string>,
-    ): Promise<SaveOutcome> => {
+    async (stored: ReadonlyMap<string, SecretSummary>): Promise<SaveOutcome> => {
       setSaving(true);
 
       const outcome: SaveOutcome = {
@@ -779,13 +779,35 @@ export function useStagedChanges(
       // Grows as the batch proceeds, so two rows that both say `API_KEY` cannot
       // both be attempted. Without it the second would race the unique index and
       // come back as a 409 that reads like a server fault rather than a typo.
-      const claimed = new Set(existingNames);
+      const claimed = new Set(stored.keys());
 
       // Wrapped so the two `set` calls and `setSaving(false)` happen on every
       // exit. Each write below already handles its own failure, so nothing is
       // *expected* to escape — but if anything ever does, the alternative is a
       // save button that spins forever over rows the user cannot get back.
       try {
+        if (io === null) {
+          // An `e2ee` environment this browser holds no key for. Nothing is
+          // attempted rather than half-attempted: every row keeps its work and
+          // the screen above is already explaining why.
+          for (const draft of drafts) {
+            if (isBlankDraft(draft)) continue;
+            survivingDrafts.push({
+              ...draft,
+              error: { field: 'value', message: 'This environment’s key is not available.' },
+            });
+            outcome.failed += 1;
+          }
+          for (const [name, edit] of edits) {
+            survivingEdits.set(name, {
+              ...edit,
+              error: 'This environment’s key is not available.',
+            });
+            outcome.failed += 1;
+          }
+          return outcome;
+        }
+
         // Sequential, not `Promise.all`. Each write is a separate audited
         // mutation against the `RL_MUTATION` bucket, and firing thirty at once
         // would trip the rate limit and leave a partial save nobody asked for.
@@ -803,7 +825,7 @@ export function useStagedChanges(
           }
 
           try {
-            await api.post<SecretWriteResponse>(apiPath.secrets(orgSlug, projectSlug, envSlug), {
+            await io.create({
               name,
               value: draft.value,
               valueType: draft.valueType,
@@ -860,8 +882,8 @@ export function useStagedChanges(
           // The staged type where one was staged, and otherwise the type the
           // secret already has: a row that changes only its value is declared
           // just as firmly as one that changes both.
-          const effectiveType =
-            edit.valueType ?? toSecretValueType(storedTypes.get(name) ?? 'string');
+          const row = stored.get(name);
+          const effectiveType = edit.valueType ?? toSecretValueType(row?.valueType ?? 'string');
           if (effectiveValue !== undefined) {
             const shape = checkSecretValue(effectiveValue, effectiveType);
             if (!shape.valid) {
@@ -881,21 +903,30 @@ export function useStagedChanges(
           // neither is a rotation and the version number must not claim one.
           let changed = false;
           try {
+            // The row this editor is filed under. Absent means the listing moved
+            // on underneath the editor — a delete, or a rename from another tab
+            // — and an `e2ee` write has no id to seal against, so it fails here
+            // rather than producing a ciphertext bound to a row that is gone.
+            if (row === undefined) {
+              survivingEdits.set(name, { ...edit, error: 'That secret no longer exists here.' });
+              outcome.failed += 1;
+              continue;
+            }
+
+            const target = { id: row.id, name, version: row.version };
+
             if (hasValue) {
-              const result = await api.patch<SecretWriteResponse>(
-                apiPath.secret(orgSlug, projectSlug, envSlug, name),
-                {
-                  value: edit.value,
-                  ...(edit.valueType === undefined ? {} : { valueType: edit.valueType }),
-                },
-              );
+              const result = await io.update(target, {
+                value: edit.value,
+                ...(edit.valueType === undefined ? {} : { valueType: edit.valueType }),
+              });
               changed = changed || result.secret.status !== 'unchanged';
             }
 
             const typeOnly = !hasValue && edit.valueType !== undefined;
             if (hasMeta || typeOnly) {
               const note = edit.note?.trim();
-              await api.put(apiPath.secret(orgSlug, projectSlug, envSlug, name), {
+              await io.patchMetadata(target, {
                 ...(renaming ? { name: rename } : {}),
                 ...(note === undefined ? {} : { note: note.length === 0 ? null : note }),
                 ...(typeOnly ? { valueType: edit.valueType } : {}),
@@ -933,7 +964,7 @@ export function useStagedChanges(
         setSaving(false);
       }
     },
-    [drafts, edits, orgSlug, projectSlug, envSlug],
+    [drafts, edits, io],
   );
 
   return {

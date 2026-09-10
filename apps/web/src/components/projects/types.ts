@@ -39,6 +39,17 @@ export interface Environment {
   slug: string;
   isProduction: boolean;
   sortOrder: number;
+  /**
+   * `'e2ee'` or `'server'`.
+   *
+   * Published on the listing deliberately, so a client never discovers the mode
+   * by sending a plaintext to an environment that cannot accept one — or, in the
+   * token dialog's case, by minting a credential that turns out to need a key.
+   * Typed as `string` rather than a union because the set closes when the
+   * migration completes, and a client that hard-codes today's two values would
+   * have to be redeployed to learn a third.
+   */
+  encryptionMode: string;
   createdAt: string;
   updatedAt: string;
 }

@@ -17,6 +17,9 @@ import (
 	"golang.org/x/term"
 
 	"github.com/playxoft/xecret/cli/internal/api"
+	"github.com/playxoft/xecret/cli/internal/cred"
+	"github.com/playxoft/xecret/cli/internal/envkeys"
+	"github.com/playxoft/xecret/cli/internal/ids"
 	"github.com/playxoft/xecret/cli/internal/output"
 )
 
@@ -179,6 +182,18 @@ func secretsGet(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// The environment's key state, read before any reveal — see decryptRevealed
+	// for why that order is not an optimisation to undo. `material` is nil for a
+	// server-mode environment, which is the same signal it has always been.
+	var material *envkeys.Material
+	if *plain {
+		material, err = a.openKeys(ctx, client, credentials, resolved)
+		if err != nil {
+			return withE2eeHint(err)
+		}
+		defer material.Close()
+	}
+
 	if *plain && *version > 0 {
 		revealed, err := client.RevealVersion(
 			ctx, resolved.Org, resolved.Project, resolved.Environment, name, *version)
@@ -192,27 +207,63 @@ func secretsGet(args []string) error {
 			// is a rollback nobody recorded.
 			a.printer.Warnf("v%d is not the current version — it may still be live at whoever issued it.", revealed.Version)
 		}
+
+		value := ""
+		if revealed.Value != nil {
+			value = *revealed.Value
+		} else {
+			// End-to-end encrypted: the server returned ciphertext because it
+			// holds no key to do otherwise.
+			value, err = decryptRevealed(material, revealedSecret{
+				name:         revealed.Name,
+				id:           revealed.ID,
+				ciphertext:   revealed.Ciphertext,
+				envDataKeyID: revealed.EnvDataKeyID,
+				version:      revealed.Version,
+			})
+			if err != nil {
+				return withE2eeHint(err)
+			}
+		}
+
 		if a.printer.JSON {
 			return a.printer.WriteJSON(map[string]any{
-				"name": revealed.Name, "value": revealed.Value, "version": revealed.Version,
+				"name": revealed.Name, "value": value, "version": revealed.Version,
 			})
 		}
-		fmt.Fprintln(a.printer.Out, revealed.Value)
+		fmt.Fprintln(a.printer.Out, value)
 		return nil
 	}
 
 	if *plain {
-		revealed, err := client.Reveal(ctx, resolved.Org, resolved.Project, resolved.Environment, name)
+		revealed, err := client.RevealClient(ctx, resolved.Org, resolved.Project, resolved.Environment, name)
 		if err != nil {
 			return err
 		}
+
+		value := ""
+		if revealed.Value != nil {
+			value = *revealed.Value
+		} else {
+			value, err = decryptRevealed(material, revealedSecret{
+				name:         revealed.Name,
+				id:           revealed.ID,
+				ciphertext:   revealed.Ciphertext,
+				envDataKeyID: revealed.EnvDataKeyID,
+				version:      revealed.Version,
+			})
+			if err != nil {
+				return withE2eeHint(err)
+			}
+		}
+
 		if a.printer.JSON {
-			return a.printer.WriteJSON(map[string]string{"name": revealed.Name, "value": revealed.Value})
+			return a.printer.WriteJSON(map[string]string{"name": revealed.Name, "value": value})
 		}
 		// Raw, plus the trailing newline every POSIX tool emits; `$(…)`
 		// substitution strips it. This is one of the two sanctioned places a
 		// value reaches stdout.
-		fmt.Fprintln(a.printer.Out, revealed.Value)
+		fmt.Fprintln(a.printer.Out, value)
 		return nil
 	}
 
@@ -297,16 +348,30 @@ func secretsSet(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Create, and on "already exists" append a version instead. Two calls in
-	// the worst case, but the create path stays the same one the dashboard
-	// uses, and the server's unique index remains the arbiter of the race.
-	appended := false
-	result, err := client.CreateSecret(ctx,
-		resolved.Org, resolved.Project, resolved.Environment, name, value, *valueType, *note)
-	if apiErr, ok := api.AsError(err); ok && apiErr.Code == "conflict" {
-		appended = true
-		result, err = client.UpdateSecret(ctx,
-			resolved.Org, resolved.Project, resolved.Environment, name, value, *valueType)
+	material, err := a.openKeys(ctx, client, credentials, resolved)
+	if err != nil {
+		return withE2eeHint(err)
+	}
+
+	var (
+		appended bool
+		result   *api.WriteResult
+	)
+	if material != nil {
+		defer material.Close()
+		appended, result, err = writeClientSecret(
+			ctx, a, client, material, resolved, name, value, *valueType, *note)
+	} else {
+		// Create, and on "already exists" append a version instead. Two calls in
+		// the worst case, but the create path stays the same one the dashboard
+		// uses, and the server's unique index remains the arbiter of the race.
+		result, err = client.CreateSecret(ctx,
+			resolved.Org, resolved.Project, resolved.Environment, name, value, *valueType, *note)
+		if apiErr, ok := api.AsError(err); ok && apiErr.Code == "conflict" {
+			appended = true
+			result, err = client.UpdateSecret(ctx,
+				resolved.Org, resolved.Project, resolved.Environment, name, value, *valueType)
+		}
 	}
 	if err != nil {
 		return err
@@ -319,11 +384,16 @@ func secretsSet(args []string) error {
 	// and the alternative is a note the user typed and never got.
 	var noteErr error
 	if appended && *note != "" {
-		if _, metaErr := client.UpdateMetadata(ctx,
-			resolved.Org, resolved.Project, resolved.Environment, name,
-			api.MetadataUpdate{Note: note},
-		); metaErr != nil {
-			noteErr = metaErr
+		metadata := api.MetadataUpdate{Note: note}
+		// Sealed first where the environment requires it, through the same
+		// helper `annotate` uses — a note is content, and content is encrypted.
+		noteErr = a.sealNote(ctx, client, credentials, resolved, name, &metadata)
+		if noteErr == nil {
+			if _, metaErr := client.UpdateMetadata(ctx,
+				resolved.Org, resolved.Project, resolved.Environment, name, metadata,
+			); metaErr != nil {
+				noteErr = metaErr
+			}
 		}
 	}
 
@@ -592,6 +662,10 @@ func secretsAnnotate(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	if err := a.sealNote(ctx, client, credentials, resolved, name, &update); err != nil {
+		return withE2eeHint(err)
+	}
+
 	updated, err := client.UpdateMetadata(ctx,
 		resolved.Org, resolved.Project, resolved.Environment, name, update)
 	if err != nil {
@@ -706,10 +780,21 @@ func secretsRestore(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	result, err := client.RestoreSecret(ctx,
-		resolved.Org, resolved.Project, resolved.Environment, name, *version)
+	material, err := a.openKeys(ctx, client, credentials, resolved)
 	if err != nil {
-		return err
+		return withE2eeHint(err)
+	}
+
+	var result *api.RestoreResult
+	if material != nil {
+		defer material.Close()
+		result, err = restoreClientSecret(ctx, client, material, resolved, name, *version)
+	} else {
+		result, err = client.RestoreSecret(ctx,
+			resolved.Org, resolved.Project, resolved.Environment, name, *version)
+	}
+	if err != nil {
+		return withE2eeHint(err)
 	}
 
 	if result.Status == "unchanged" {
@@ -740,4 +825,282 @@ func shortTime(iso string) string {
 		return iso
 	}
 	return parsed.Local().Format("2006-01-02 15:04")
+}
+
+// revealedSecret is one ciphertext and the context that opens it, from whichever
+// reveal endpoint produced it.
+type revealedSecret struct {
+	name         string
+	id           string
+	ciphertext   string
+	envDataKeyID string
+	version      int
+}
+
+// decryptRevealed opens a single ciphertext against material read **before** the
+// reveal that produced it.
+//
+// The order used to be the other way round, on the reasoning that a caller whose
+// secret does not exist should not pay for a grant it did not need. That saved a
+// request and invented a failure: a rotation landing between the reveal and the
+// key read hands this process the *new* key state and the *old* ciphertext, the
+// row's `envDataKeyId` no longer matches the active one, and the caller is told
+// their secret was rotated away when it was not. `openEnvironment` gets this
+// right for a whole bundle — the grant travels with the values, precisely so
+// nothing can land between the two — and a single secret deserves the same
+// answer. Reading first turns the race the other way: the key is at least as old
+// as the ciphertext, so a mismatch is a real one.
+func decryptRevealed(material *envkeys.Material, secret revealedSecret) (string, error) {
+	if material == nil {
+		// The reveal returned no value and the environment is not e2ee. Nothing
+		// this process can do produces a plaintext from that.
+		return "", errors.New("the server returned no value for this secret")
+	}
+
+	return material.DecryptSecret(api.ClientSecret{
+		ID:           secret.id,
+		Name:         secret.name,
+		Ciphertext:   secret.ciphertext,
+		EnvDataKeyID: secret.envDataKeyID,
+		Version:      secret.version,
+	})
+}
+
+// writeClientSecret is `set` for an end-to-end encrypted environment.
+//
+// The shape differs from the server-mode path in one way that matters: the
+// ciphertext is bound to **the version it will be stored as**, so the version
+// has to be known before anything is encrypted. That rules out "try to create,
+// fall back to update" — a value encrypted for version 1 cannot be re-used as
+// version 7 — so the current state is read first, from the listing rather than a
+// reveal. The listing carries the id and the version and decrypts nothing, so
+// asking writes no `secret.revealed` record for a write.
+//
+// That listing can be stale by the time the request lands, so the version it
+// produced is **sent** with the write. The server derives its own target from
+// the stored row and refuses the write when the two disagree; without that a
+// concurrent writer's version lands under this ciphertext and the row is
+// unopenable for ever, by everybody, behind an HTTP 200.
+func writeClientSecret(
+	ctx context.Context,
+	a *app,
+	client *api.Client,
+	material *envkeys.Material,
+	resolved scope,
+	name, value, valueType, note string,
+) (appended bool, result *api.WriteResult, err error) {
+	existing, err := client.Secrets(ctx, resolved.Org, resolved.Project, resolved.Environment)
+	if err != nil {
+		return false, nil, err
+	}
+
+	var current *api.SecretListItem
+	for i := range existing {
+		if existing[i].Name == name {
+			current = &existing[i]
+			break
+		}
+	}
+
+	if current != nil {
+		nextVersion := current.Version + 1
+		sealed, encryptErr := material.EncryptSecret(current.ID, nextVersion, value)
+		if encryptErr != nil {
+			return false, nil, encryptErr
+		}
+		result, err = client.UpdateClientSecret(
+			ctx, resolved.Org, resolved.Project, resolved.Environment, name, sealed, nextVersion, valueType)
+		return true, result, withWriteConflictHint(err)
+	}
+
+	// The id is minted here because the AAD binds it and the value is encrypted
+	// before any request exists to receive a server-assigned one.
+	id, err := ids.UUIDv7()
+	if err != nil {
+		return false, nil, err
+	}
+
+	sealed, err := material.EncryptSecret(id, 1, value)
+	if err != nil {
+		return false, nil, err
+	}
+
+	var encNote *string
+	if note != "" {
+		encoded, noteErr := material.EncryptNote(id, note)
+		if noteErr != nil {
+			return false, nil, noteErr
+		}
+		encNote = &encoded
+	}
+
+	result, err = client.CreateClientSecret(
+		ctx, resolved.Org, resolved.Project, resolved.Environment, id, name, sealed, valueType, encNote)
+	return false, result, err
+}
+
+// restoreClientSecret is `restore` for an end-to-end encrypted environment.
+//
+// The server cannot decrypt version N and re-encrypt it as version N+1, so this
+// process does — and the rule that matters survives intact: **the old ciphertext
+// is never copied.** It names version N in its AAD, and a copy stored under a
+// different number would authenticate against nothing, for ever, behind a 200.
+//
+// What the server gives up is the ability to check that the new ciphertext
+// really holds version N's value. It does not pretend otherwise; the audit
+// record says the restore was client-encrypted.
+func restoreClientSecret(
+	ctx context.Context,
+	client *api.Client,
+	material *envkeys.Material,
+	resolved scope,
+	name string,
+	version int,
+) (*api.RestoreResult, error) {
+	source, err := client.RevealVersion(
+		ctx, resolved.Org, resolved.Project, resolved.Environment, name, version)
+	if err != nil {
+		return nil, err
+	}
+	if source.Value != nil {
+		// The environment answered with a plaintext, which means it is not the
+		// mode this path is for. Refusing beats writing a ciphertext nobody asked
+		// for into a row the server would have handled itself.
+		return nil, errors.New("this environment returned a plaintext; restore it through the server path")
+	}
+
+	plaintext, err := material.DecryptSecret(api.ClientSecret{
+		ID:           source.ID,
+		Name:         source.Name,
+		Ciphertext:   source.Ciphertext,
+		EnvDataKeyID: source.EnvDataKeyID,
+		Version:      source.Version,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// The version this ciphertext will be *stored* as, which is one past the
+	// current one — not the one being restored from. The listing answers that
+	// without decrypting anything, so asking writes no reveal record.
+	existing, err := client.Secrets(ctx, resolved.Org, resolved.Project, resolved.Environment)
+	if err != nil {
+		return nil, err
+	}
+	current := 0
+	for _, secret := range existing {
+		if secret.Name == name {
+			current = secret.Version
+			break
+		}
+	}
+	if current == 0 {
+		return nil, fmt.Errorf("%s does not exist in %s/%s", name, resolved.Project, resolved.Environment)
+	}
+
+	nextVersion := current + 1
+	sealed, err := material.EncryptSecret(source.ID, nextVersion, plaintext)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := client.RestoreClientSecret(
+		ctx, resolved.Org, resolved.Project, resolved.Environment, name, version, sealed, nextVersion)
+	return result, withWriteConflictHint(err)
+}
+
+// withWriteConflictHint turns the server's refusal of a client-encrypted write
+// into an instruction.
+//
+// The refusal means something wrote between the listing this command read and
+// the request it sent. There is nothing to repair and nothing was lost — the
+// point of the check is that nothing was *written* — so the whole remedy is to
+// run the command again against the state that now exists.
+func withWriteConflictHint(err error) error {
+	apiErr, ok := api.AsError(err)
+	if !ok || apiErr.Status != 409 {
+		return err
+	}
+	return fmt.Errorf("%w. Run the command again: it re-reads the secret first", err)
+}
+
+// sealNote moves a plaintext note onto the encrypted field, where the
+// environment requires it.
+//
+// A note is the one piece of metadata that is content rather than shape, so it
+// is encrypted like a value — under the same EDK, with an AAD that carries no
+// version because notes live on the `secrets` row rather than on the append-only
+// `secret_versions` one.
+//
+// **Clearing one moves too.** It is the same null either way, but the field it
+// goes in is not: an `e2ee` environment has no `note` column the server will
+// accept a write to, so a plaintext `note: null` is refused with a 400 and the
+// note stays where it is. That left the CLI able to write a note onto an
+// encrypted secret and unable to take it off again. Clearing therefore asks the
+// environment which mode it is in — and asks only that, without opening a grant,
+// because removing a note needs no key and requiring one would refuse the
+// operation to somebody who has access but no grant yet.
+func (a *app) sealNote(
+	ctx context.Context,
+	client *api.Client,
+	credentials *cred.Credentials,
+	resolved scope,
+	name string,
+	update *api.MetadataUpdate,
+) error {
+	if update.Note == nil {
+		return nil
+	}
+
+	if *update.Note == "" {
+		keys, err := a.keyState(ctx, client, credentials, resolved)
+		if err != nil {
+			return err
+		}
+		if keys.EncryptionMode == "e2ee" {
+			// The empty string is what api.UpdateMetadata renders as a null, and
+			// the null is what removes the row's note. Sealing the empty string
+			// instead would store a blob that decrypts to nothing, which is a
+			// note that reads as empty rather than a secret with no note.
+			cleared := ""
+			update.EncNote = &cleared
+			update.Note = nil
+		}
+		return nil
+	}
+
+	material, err := a.openKeys(ctx, client, credentials, resolved)
+	if err != nil {
+		return err
+	}
+	if material == nil {
+		return nil
+	}
+	defer material.Close()
+
+	// The note's AAD binds the secret's id, which the listing carries and a
+	// reveal would additionally audit.
+	existing, err := client.Secrets(ctx, resolved.Org, resolved.Project, resolved.Environment)
+	if err != nil {
+		return err
+	}
+	secretID := ""
+	for _, secret := range existing {
+		if secret.Name == name {
+			secretID = secret.ID
+			break
+		}
+	}
+	if secretID == "" {
+		return fmt.Errorf("%s does not exist in %s/%s", name, resolved.Project, resolved.Environment)
+	}
+
+	sealed, err := material.EncryptNote(secretID, *update.Note)
+	if err != nil {
+		return err
+	}
+
+	update.EncNote = &sealed
+	update.Note = nil
+	return nil
 }

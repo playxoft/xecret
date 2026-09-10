@@ -7,20 +7,26 @@ import {
   parseYaml,
 } from '@xecret/core/importer';
 import type { ImportFormat, ImportItemStatus, ParseResult } from '@xecret/core/importer';
+import type { AuditBuilder, AuditRecord } from '@xecret/core/audit';
 import { loadEnvironmentSecrets } from '@xecret/db/repositories';
+import type { SecretWriterRef } from '@xecret/db/repositories';
+import type { Principal } from '@/server/actor';
+import type { ServiceContext } from '@/server/context';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
-import { importBody } from '@/server/schemas/secrets';
+import { duplicateEntryName, importBody, importClientBody } from '@/server/schemas/secrets';
 import {
+  applyClientSecretWrites,
   applySecretWrites,
   auditSource,
   authorizeSecretAction,
   enforceSecretRateLimit,
   secretWriter,
 } from '@/server/secrets-service';
-import type { SecretWrite } from '@/server/secrets-service';
+import type { ClientSecretWrite, SecretWrite } from '@/server/secrets-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
+import type { EnvironmentScope } from '@/server/tenancy';
 
 /**
  * Bulk import from a `.env`, JSON, YAML or shell file.
@@ -97,6 +103,22 @@ export const POST = authenticatedRoute<Params>(
     // it is not cheap, and "it is only a preview" is not a reason to leave it
     // unmetered.
     await enforceSecretRateLimit(services, principal, 'write');
+
+    // ── The e2ee import, and what moved ──
+    // The parsing did. On a `server`-mode environment this endpoint receives a
+    // `.env` file and parses it here, because parsing means reading the values
+    // and the Worker is allowed to. On an `e2ee` environment it receives the
+    // *outcome* — names and ciphertexts — because the same
+    // `@xecret/core/importer` module runs in the browser and the CLI, and a file
+    // uploaded to be parsed would be every secret in it, in plaintext, in a
+    // request body.
+    //
+    // What is preserved is everything the endpoint is *for*: one transaction,
+    // the same `unchanged` detection by HMAC equality, and `dryRun` running the
+    // identical code path so the preview cannot disagree with the outcome.
+    if (scope.environment.encryptionMode === 'e2ee') {
+      return importClientEntries({ request, scope, services, principal, writer, audit, record });
+    }
 
     const body = await parseJsonBody(request, importBody);
 
@@ -224,3 +246,128 @@ export const POST = authenticatedRoute<Params>(
     });
   },
 );
+
+/**
+ * The client-encrypted import.
+ *
+ * ── Where the strategy went ──
+ * `skip` / `overwrite` / `rename` are decisions about *names*, and names are
+ * plaintext in both modes — so the client applies them with the same
+ * `buildImportPlan` this route calls in `server` mode, against the name listing
+ * it already has. What arrives here is the plan's output, so the server's job
+ * shrinks to what only it can do: resolve each name to an existing secret,
+ * compare HMACs, and write.
+ *
+ * ── Why the counts are still computed here ──
+ * Because they are computed from the *outcome*, not from the plan. `unchanged`
+ * is only knowable after the HMAC comparison, which happens on this side, and a
+ * client that guessed it would have a preview that disagreed with the result —
+ * the exact discrepancy the shared-code-path design exists to prevent.
+ */
+async function importClientEntries(context: {
+  request: Request;
+  scope: EnvironmentScope;
+  services: ServiceContext;
+  principal: Principal;
+  writer: SecretWriterRef;
+  audit: (orgId: string) => AuditBuilder;
+  record: (...events: AuditRecord[]) => void;
+}): Promise<Response> {
+  const { request, scope, services, writer, principal, audit, record } = context;
+
+  const body = await parseJsonBody(request, importClientBody);
+
+  // Two entries for one name are refused here, by name. See
+  // `duplicateEntryName` for what used to happen instead — a rollback three
+  // layers down reported as a concurrent edit that never occurred.
+  const duplicate = duplicateEntryName(body.entries);
+  if (duplicate !== null) {
+    throw errors.badRequest(
+      `This import names "${duplicate}" more than once. Each secret may appear once per import.`,
+    );
+  }
+
+  // Unpaginated and complete, exactly as the plaintext path needs it: a plan
+  // built against the first page of existing names would classify an existing
+  // secret as a create and then fail against `secrets_env_name_idx`. It also
+  // carries `value_hmac` and the secret ids, so the same rows answer "does this
+  // name exist", "which secret does it name" and "has the value changed".
+  const existing = await loadEnvironmentSecrets(
+    services.db,
+    scope.organization.id,
+    scope.environment.id,
+  );
+  const current = new Map(existing.map((secret) => [secret.name, secret]));
+
+  const writes: ClientSecretWrite[] = body.entries.map((entry) => {
+    const target = current.get(entry.name);
+
+    return {
+      name: entry.name,
+      // The id the entry's ciphertext was sealed against, as the client stated
+      // it — never the stored one substituted in its place. Where the two
+      // disagree the client planned a create for a name that already exists
+      // (a truncated listing is the usual cause) and `prepareClientWrite`
+      // refuses; appending under the stored id would store a value whose AAD
+      // names the other one, unopenable for ever behind a 200.
+      secretId: entry.id,
+      expectedVersion: entry.expectedVersion,
+      value: { ...entry.value, ...(entry.encNote === undefined ? {} : { encNote: entry.encNote }) },
+      ...(target
+        ? {
+            existing: {
+              secretId: target.secretId,
+              version: target.version,
+              valueHmac: target.valueHmac,
+              valueType: target.valueType,
+            },
+          }
+        : {}),
+    };
+  });
+
+  const results = await applyClientSecretWrites(scope, services, {
+    writer,
+    writes,
+    dryRun: body.dryRun,
+  });
+
+  const counts = { create: 0, overwrite: 0, unchanged: 0 };
+  for (const result of results) {
+    if (result.status === 'created') counts.create += 1;
+    else if (result.status === 'unchanged') counts.unchanged += 1;
+    else counts.overwrite += 1;
+  }
+
+  const written = results.filter((result) => result.status !== 'unchanged').length;
+
+  // A dry run is not audited, for the reason the plaintext path gives: it writes
+  // nothing and decrypts nothing. Here it does even less — it compares tags the
+  // caller computed themselves.
+  if (!body.dryRun) {
+    record(
+      audit(scope.organization.id).success(
+        'secret.imported',
+        {
+          type: 'environment',
+          id: scope.environment.id,
+          projectId: scope.project.id,
+          environmentId: scope.environment.id,
+        },
+        {
+          secretCount: written,
+          projectSlug: scope.project.slug,
+          environmentSlug: scope.environment.slug,
+          source: auditSource(principal),
+          reason: 'client-encrypted',
+        },
+      ),
+    );
+  }
+
+  return json({
+    dryRun: body.dryRun,
+    counts,
+    items: results.map((result) => ({ name: result.name, status: result.status })),
+  });
+}

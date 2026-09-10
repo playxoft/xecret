@@ -8,6 +8,15 @@ import type { Database } from '../client';
 import * as auditRepository from './audit';
 import { appendAuditEvents, clampAuditRange, MAX_AUDIT_RANGE_DAYS, queryAuditLogs } from './audit';
 import {
+  addEnvKeyGrants,
+  initializeEnvironmentKeys,
+  listGrantsForEnvironment,
+  listPendingKeyGrants,
+  loadEnvironmentKeyState,
+  removeEnvKeyGrant,
+  rotateEnvDataKey,
+} from './env-keys';
+import {
   createEnvironment,
   findEnvironmentBySlug,
   listEnvironments,
@@ -37,6 +46,7 @@ import {
   softDeleteSecret,
 } from './secrets';
 import { isIpAllowed, listCliTokens, listServiceTokens, revokeCliToken } from './tokens';
+import { resetVault } from './vault';
 import { RepositoryError } from './shared';
 
 /**
@@ -123,6 +133,41 @@ const unusedKeyProvider: KeyProvider = {
 
 const ORG_PREDICATE = /"org_id" = \$\d+/;
 
+const DATA_KEY_ID = '01930000-0000-7000-8000-000000000007';
+
+/** A sealed grant as the API hands one to the repository. Bytes, never parsed. */
+function grantSeed() {
+  return {
+    recipientKind: 'member' as const,
+    recipientId: USER_ID,
+    // Stored as the client stated it: the signature binds it, and every other
+    // source for it is a table this database rewrites.
+    recipientPublicKey: new Uint8Array(32).fill(7),
+    edkSealed: new TextEncoder().encode('xk2.x25519.AAAA'),
+    ehkSealed: new TextEncoder().encode('xk2.x25519.BBBB'),
+    signature: new TextEncoder().encode('xk2.ed25519.CCCC'),
+  };
+}
+
+const SERVER_PAYLOAD = {
+  mode: 'server' as const,
+  envKeyId: ENVIRONMENT_ID,
+  encrypted: {
+    ciphertext: new Uint8Array([1, 2, 3]),
+    iv: new Uint8Array(12),
+    algorithm: 'AES-256-GCM' as const,
+  },
+};
+
+function serverSecret() {
+  return {
+    orgId: ORG_ID,
+    environmentId: ENVIRONMENT_ID,
+    name: 'DATABASE_URL',
+    payload: SERVER_PAYLOAD,
+  };
+}
+
 describe('cross-tenant isolation (threat T2)', () => {
   /**
    * Reads that must never be satisfiable with a child id alone. `environments`,
@@ -153,6 +198,23 @@ describe('cross-tenant isolation (threat T2)', () => {
     ['listServiceTokens', (db) => listServiceTokens(db, ORG_ID)],
     ['revokeCliToken', (db) => revokeCliToken(db, ORG_ID, TOKEN_ID)],
     ['queryAuditLogs', (db) => queryAuditLogs(db, { orgId: ORG_ID })],
+    // The four key tables hang off `environments`, which has no `org_id`, so for
+    // every one of these the predicate can only appear through a join or a
+    // correlated EXISTS — the construct a well-meaning simplification removes.
+    // Without it, an environment id from a URL reaches another tenant's sealed
+    // grants, which is the worst instance of threat T2 in the schema.
+    ['loadEnvironmentKeyState', (db) => loadEnvironmentKeyState(db, ORG_ID, ENVIRONMENT_ID)],
+    ['listGrantsForEnvironment', (db) => listGrantsForEnvironment(db, ORG_ID, ENVIRONMENT_ID)],
+    ['listPendingKeyGrants', (db) => listPendingKeyGrants(db, ORG_ID, ENVIRONMENT_ID)],
+    [
+      'removeEnvKeyGrant',
+      (db) =>
+        removeEnvKeyGrant(db, {
+          orgId: ORG_ID,
+          environmentId: ENVIRONMENT_ID,
+          grantId: DATA_KEY_ID,
+        }),
+    ],
   ];
 
   for (const [name, run] of orgScopedReads) {
@@ -175,45 +237,74 @@ describe('cross-tenant isolation (threat T2)', () => {
    */
   const orgScopedWrites: ReadonlyArray<readonly [string, (db: Database) => Promise<unknown>]> = [
     [
-      'createEnvironment',
+      'createEnvironment (server mode)',
       (db) =>
         createEnvironment(db, {
           orgId: ORG_ID,
           projectId: PROJECT_ID,
           name: 'Production',
           slug: 'prod',
+          encryptionMode: 'server',
           envelope: new EnvelopeService(unusedKeyProvider),
         }),
     ],
     [
-      'createSecret',
+      'createEnvironment (e2ee mode)',
       (db) =>
-        createSecret(db, {
+        createEnvironment(db, {
           orgId: ORG_ID,
-          environmentId: ENVIRONMENT_ID,
-          name: 'DATABASE_URL',
-          envKeyId: ENVIRONMENT_ID,
-          encrypted: {
-            ciphertext: new Uint8Array([1, 2, 3]),
-            iv: new Uint8Array(12),
-            algorithm: 'AES-256-GCM',
-          },
-          writer: { userId: USER_ID },
+          projectId: PROJECT_ID,
+          name: 'Production',
+          slug: 'prod',
+          keyInit: { createdBy: USER_ID, grant: grantSeed() },
         }),
     ],
+    ['createSecret', (db) => createSecret(db, { ...serverSecret(), writer: { userId: USER_ID } })],
     [
       'addSecretVersion',
       (db) =>
         addSecretVersion(db, {
           orgId: ORG_ID,
           secretId: SECRET_ID,
-          envKeyId: ENVIRONMENT_ID,
-          encrypted: {
-            ciphertext: new Uint8Array([1, 2, 3]),
-            iv: new Uint8Array(12),
-            algorithm: 'AES-256-GCM',
-          },
+          payload: SERVER_PAYLOAD,
           writer: { userId: USER_ID },
+        }),
+    ],
+    [
+      'initializeEnvironmentKeys',
+      (db) =>
+        initializeEnvironmentKeys(db, {
+          orgId: ORG_ID,
+          environmentId: ENVIRONMENT_ID,
+          createdBy: USER_ID,
+          grant: grantSeed(),
+        }),
+    ],
+    [
+      'rotateEnvDataKey',
+      (db) =>
+        rotateEnvDataKey(db, {
+          orgId: ORG_ID,
+          environmentId: ENVIRONMENT_ID,
+          createdBy: USER_ID,
+          version: 2,
+          grants: [grantSeed()],
+          // The completeness re-check the service layer supplies. A no-op here:
+          // this test asserts the statement *shape* of the rotation, and the
+          // policy it would run needs `can()`, which this package deliberately
+          // does not import.
+          assertGrantSet: () => Promise.resolve(),
+        }),
+    ],
+    [
+      'addEnvKeyGrants',
+      (db) =>
+        addEnvKeyGrants(db, {
+          orgId: ORG_ID,
+          environmentId: ENVIRONMENT_ID,
+          envDataKeyId: DATA_KEY_ID,
+          signedByUserId: USER_ID,
+          grants: [grantSeed()],
         }),
     ],
   ];
@@ -494,6 +585,65 @@ describe('isIpAllowed', () => {
     // Zone identifiers are rejected rather than stripped.
     expect(isIpAllowed(['fe80::1'], 'fe80::1%eth0')).toBe(false);
     expect(isIpAllowed(['2001:db8:::1'], '2001:db8::1')).toBe(false);
+  });
+});
+
+describe('destroying a vault destroys every key sealed to it', () => {
+  /**
+   * A recorder whose statements return one row, so a function that branches on
+   * "did anything come back?" reaches its second half.
+   *
+   * The default harness answers every statement with zero rows, which is right
+   * for asserting the shape of a single query and wrong for asserting a
+   * *sequence*: `resetVault` returns early when the vault delete matched
+   * nothing, so against the empty recorder the interesting half never runs.
+   */
+  function respondingDatabase(): { db: Database; statements: RecordedStatement[] } {
+    const statements: RecordedStatement[] = [];
+
+    const client = {
+      options: { parsers: {}, serializers: {} },
+      unsafe(sql: string, params: readonly unknown[]) {
+        statements.push({ sql, params });
+        const rows = [{ user_id: USER_ID, id: SECRET_ID }];
+        const result = Promise.resolve(rows) as Promise<unknown[]> & {
+          values: () => Promise<unknown[]>;
+        };
+        result.values = () => Promise.resolve(rows);
+        return result;
+      },
+      begin: <T>(run: (client: unknown) => Promise<T>) => run(client),
+      savepoint: <T>(run: (client: unknown) => Promise<T>) => run(client),
+    };
+
+    return { db: drizzle(client as unknown as Sql, { schema }), statements };
+  }
+
+  it('deletes the account grants and its queued key shares in the same transaction', async () => {
+    // Every grant is an EDK and an EHK sealed to a public key the reset has just
+    // destroyed, so what remains is ciphertext addressed to a principal with no
+    // private key. Leaving them is not merely untidy: a re-invitation would look
+    // like it had nothing to do, because a grant row would already exist for the
+    // member, and they would land in an environment they cannot decrypt with
+    // nothing anywhere explaining why.
+    const { db, statements } = respondingDatabase();
+    await runRecording(() => resetVault(db, USER_ID));
+
+    const sql = statements.map((statement) => statement.sql).join('\n');
+
+    expect(sql).toMatch(/delete from "user_keys"/);
+    expect(sql).toMatch(/delete from "env_key_grants"/);
+    // The queued debts go too: a pending row asks somebody to seal a key to a
+    // public key that no longer exists, so leaving it would put an unfulfillable
+    // item in a teammate's banner for ever.
+    expect(sql).toMatch(/delete from "pending_key_grants"/);
+    // And the sessions are locked, because every one of them was unlocked into
+    // the vault this destroyed.
+    expect(sql).toMatch(/update "sessions"/);
+
+    for (const statement of statements) {
+      expect(statement.params).toContain(USER_ID);
+    }
   });
 });
 

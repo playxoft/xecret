@@ -36,7 +36,7 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  * A bearer credential is refused even though `authenticatedRoute` accepts one.
  * A CLI token approving further CLI tokens would let one stolen laptop
  * credential quietly propagate itself; requiring the cookie-authenticated
- * session (with CSRF and the PIN gate in front of it) keeps a *person* in the
+ * session (with CSRF and the vault lock gate in front of it) keeps a *person* in the
  * loop for every new device. The default lock gate applies for the same
  * reason: an unattended, locked dashboard must not be able to approve anything.
  */

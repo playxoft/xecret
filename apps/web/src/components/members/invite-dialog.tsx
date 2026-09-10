@@ -4,8 +4,18 @@ import { useEffect, useState } from 'react';
 
 import { canAssignRole } from '@xecret/core/authz';
 import type { OrgRole } from '@xecret/core/authz';
+import { generateInviteFragment, zeroize } from '@xecret/core/crypto/client';
+import type { Bytes, InviteFragment } from '@xecret/core/crypto/client';
 import { api, isApiError } from '@/lib/api';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
+import {
+  fetchEnvironmentKeys,
+  invitePublicKey,
+  grantsPath,
+  openEnvironmentKeys,
+  sealInviteGrant,
+} from '@/components/envkeys';
+import { useVaultKeys } from '@/components/vault';
 import {
   Alert,
   Badge,
@@ -62,6 +72,20 @@ export interface InviteDialogProps {
  * The role menu offers nothing above the caller's own role — the same
  * hierarchy the server enforces. Rendering `Owner` to an admin and letting the
  * request fail would be showing a control that is really an error message.
+ *
+ * ── Two artefacts, and why they must travel apart ──
+ * Every environment ticked below is end-to-end encrypted, so the invitee needs
+ * its key — and they have no account yet, so there is no public key to seal it
+ * to. The flow instead mints a **one-off keypair from a 128-bit fragment** (spec
+ * §10): the public half is uploaded with the invitation, the grants are sealed
+ * to it, and the fragment itself never reaches the server in any request.
+ *
+ * That leaves the inviter holding two things at the end: the link, which the
+ * email already carries, and the fragment, which nothing carries. Sending both
+ * down one channel collapses the design into a single secret — an inbox
+ * compromise would then be enough. So the final step shows them separately, says
+ * plainly that they must go by different routes, and does not offer a button
+ * that sends them together.
  */
 export function InviteDialog({
   orgSlug,
@@ -101,14 +125,31 @@ function InviteFlow({
   onInvited: () => void;
 }) {
   const { toast } = useToast();
+  const vault = useVaultKeys();
 
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<OrgRole>('developer');
   const [submitting, setSubmitting] = useState(false);
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-  /** Set after a successful invite; flips the dialog to the link step. */
+  /** Set after a successful invite; flips the dialog to the two-artefact step. */
   const [issued, setIssued] = useState<InviteResponse | null>(null);
+  /**
+   * The invite fragment, once one has been minted.
+   *
+   * Held only for as long as this dialog shows it. It is not in the invitation
+   * response, not in any request body, and not in `localStorage` — the whole of
+   * the two-channel design is that the server has never seen it.
+   */
+  const [fragment, setFragment] = useState<InviteFragment | null>(null);
+  /**
+   * Environments whose key could not be sealed to the invitation.
+   *
+   * Named rather than swallowed: the invitation still works and the person still
+   * joins, but they will land with no key for these and will wait on a teammate.
+   * Saying which ones is the difference between a known gap and a mystery.
+   */
+  const [unsealed, setUnsealed] = useState<readonly string[]>([]);
 
   /**
    * The access tree, and the selection — **empty by default, deliberately**.
@@ -226,14 +267,37 @@ function InviteFlow({
     setBusy(true);
     setFormError(null);
 
+    // ── The invitation's own keypair ──
+    // Minted before the request, because the public half travels *with* the
+    // invitation and the grants sealed afterwards name the invitation's id. The
+    // fragment is generated here and stays here: it is never a field of this
+    // body, or of any other.
+    const minted = generateInviteFragment();
+
     try {
       const response = await api.post<InviteResponse>(apiPath.members(orgSlug), {
         email: trimmed,
         role,
         grants,
+        invitePublicKey: await invitePublicKey(minted.seed),
+      });
+
+      // Sealed one environment at a time, because a grant names its recipient
+      // and never its resource — a batch on the invitation body would carry no
+      // unambiguous statement of which environment each belonged to, and a key
+      // filed under the wrong environment looks exactly like a working grant
+      // until somebody tries to use it.
+      const failures = await sealInviteGrants({
+        orgSlug,
+        vault,
+        invitationId: response.invitation.id,
+        fragmentSeed: minted.seed,
+        targets: grantTargets(grants, projects),
       });
 
       onInvited();
+      setFragment(minted);
+      setUnsealed(failures);
       setIssued(response);
       toast({
         variant: 'success',
@@ -241,6 +305,10 @@ function InviteFlow({
         ...(response.emailSent ? { description: 'They have been emailed a link to join.' } : {}),
       });
     } catch (cause) {
+      // The seed is wiped on the failure path only. On success it is held for as
+      // long as the dialog is showing the fragment to a person — that display is
+      // the entire delivery mechanism for the second channel.
+      zeroize(minted.seed);
       if (isApiError(cause) && cause.code === 'conflict') {
         // Either the address already belongs to a member, or the seat limit is
         // full — the server's message says which, and both are addressed to
@@ -258,28 +326,75 @@ function InviteFlow({
     return (
       <>
         <DialogHeader>
-          <DialogTitle>Invitation sent</DialogTitle>
+          <DialogTitle>Invitation sent — now send the second half</DialogTitle>
           <DialogDescription>
             {issued.emailSent
-              ? `${issued.invitation.email} has been emailed a link to join. You can also hand them this link directly:`
-              : `Email is not configured for this deployment, so this link is the only copy — share it with ${issued.invitation.email} yourself.`}
+              ? `${issued.invitation.email} has been emailed the link. The code below did not go with it, and must not.`
+              : `Email is not configured for this deployment, so both halves below are the only copies — deliver them yourself, over two different channels.`}
           </DialogDescription>
         </DialogHeader>
 
-        <DialogBody className="flex flex-col gap-3">
-          <div className="border-line bg-canvas-inset flex items-center gap-2 rounded-lg border px-3 py-2">
-            <code className="text-fg min-w-0 flex-1 truncate text-sm">{issued.inviteUrl}</code>
-            <CopyButton value={issued.inviteUrl} label="Copy invitation link" />
-          </div>
-          <p className="text-fg-subtle text-sm">
-            The link works once, expires in 7 days, and only signs in the invited address. Closing
-            this dialog discards it — it cannot be shown again, only re-issued.
-          </p>
+        <DialogBody className="flex max-h-[60dvh] flex-col gap-4 overflow-y-auto">
+          <section className="flex flex-col gap-2">
+            <h3 className="text-fg text-sm font-medium">1. The link</h3>
+            <div className="border-line bg-canvas-inset flex items-center gap-2 rounded-lg border px-3 py-2">
+              <code className="text-fg min-w-0 flex-1 truncate text-sm">{issued.inviteUrl}</code>
+              <CopyButton value={issued.inviteUrl} label="Copy invitation link" />
+            </div>
+            <p className="text-fg-subtle text-sm">
+              {issued.emailSent
+                ? 'Already emailed. Works once, expires in 7 days, and only signs in the invited address.'
+                : 'Works once, expires in 7 days, and only signs in the invited address.'}
+            </p>
+          </section>
+
+          {fragment !== null ? (
+            <section className="flex flex-col gap-2">
+              <h3 className="text-fg text-sm font-medium">
+                2. The key code — send this separately
+              </h3>
+              <div className="border-line bg-canvas-inset flex items-center gap-2 rounded-lg border px-3 py-2">
+                <code className="text-fg min-w-0 flex-1 font-mono text-sm break-all select-all">
+                  {fragment.displayForm}
+                </code>
+                <CopyButton value={fragment.displayForm} label="Copy the key code" />
+              </div>
+
+              <Alert tone="warning" title="Send this over a different channel from the link">
+                <p>
+                  Together they unlock the environments you ticked. Apart, each is useless: the link
+                  proves who they are and decrypts nothing, and this code decrypts and proves
+                  nothing. Sending both by email would collapse the two into one — a compromised
+                  inbox would then be enough.
+                </p>
+                <p className="mt-2">
+                  Message it, say it on a call, hand it over in person. Anything but the same place
+                  the link went.
+                </p>
+              </Alert>
+
+              <p className="text-fg-subtle text-sm">
+                This code exists only in this browser and has never been sent to the server. Closing
+                this dialog discards it for good — if it is lost, the invitation still works and a
+                teammate shares the keys afterwards instead.
+              </p>
+            </section>
+          ) : null}
+
+          {unsealed.length > 0 ? (
+            <Alert tone="warning" title="Some environments could not be pre-shared">
+              <p>
+                The invitation is valid and they will join normally, but they will hold no key for{' '}
+                {unsealed.join(', ')} until somebody who does shares it. That is the ordinary
+                pending-share flow, and their teammates will see the prompt.
+              </p>
+            </Alert>
+          ) : null}
         </DialogBody>
 
         <DialogFooter>
           <Button variant="primary" onClick={() => onOpenChange(false)}>
-            Done
+            I have sent both
           </Button>
         </DialogFooter>
       </>
@@ -424,4 +539,99 @@ function InviteFlow({
       </DialogFooter>
     </form>
   );
+}
+
+/**
+ * Which environments the ticked access actually covers.
+ *
+ * A whole-project tick means every environment in it; an environment tick means
+ * that one. Expanded here rather than sent as-is because a grant is sealed per
+ * environment — there is no such thing as a project-level key.
+ */
+function grantTargets(
+  grants: readonly { projectSlug: string; environmentSlug: string | null }[],
+  projects: readonly ProjectAccessOption[],
+): { projectSlug: string; envSlug: string }[] {
+  const targets: { projectSlug: string; envSlug: string }[] = [];
+
+  for (const grant of grants) {
+    const project = projects.find((entry) => entry.slug === grant.projectSlug);
+    if (project === undefined) continue;
+
+    if (grant.environmentSlug === null) {
+      for (const environment of project.environments) {
+        targets.push({ projectSlug: project.slug, envSlug: environment.slug });
+      }
+      continue;
+    }
+
+    targets.push({ projectSlug: project.slug, envSlug: grant.environmentSlug });
+  }
+
+  return targets;
+}
+
+/**
+ * Seals this environment's key to the invitation, for each ticked environment.
+ *
+ * Returns the ones that could not be sealed rather than throwing. Every reason
+ * for a failure here — the inviter holds no grant on that environment, its key
+ * was rotated a moment ago, it is still `server`-mode — leaves the *invitation*
+ * perfectly valid: the person joins, and lands owing a key share that the
+ * pending queue already records for a teammate to fulfil. Abandoning the whole
+ * invitation over one environment would be much worse than naming it.
+ *
+ * An inviter with a locked vault seals nothing, and that is reported the same
+ * way: they can still invite, and every environment simply waits.
+ */
+async function sealInviteGrants(params: {
+  orgSlug: string;
+  vault: Parameters<typeof sealInviteGrant>[0]['vault'] | null;
+  invitationId: string;
+  fragmentSeed: Bytes;
+  targets: readonly { projectSlug: string; envSlug: string }[];
+}): Promise<string[]> {
+  const failed: string[] = [];
+  if (params.vault === null) return params.targets.map((target) => target.envSlug);
+
+  for (const target of params.targets) {
+    const ref = {
+      orgSlug: params.orgSlug,
+      projectSlug: target.projectSlug,
+      envSlug: target.envSlug,
+    };
+
+    try {
+      const keys = await fetchEnvironmentKeys(ref);
+      // A `server`-mode environment has no client key and needs no grant. Not a
+      // failure, and not reported as one.
+      if (keys.encryptionMode !== 'e2ee') continue;
+
+      const opened = await openEnvironmentKeys(keys, params.vault);
+      if (opened.status !== 'open' || keys.activeEdk === null) {
+        failed.push(`${target.projectSlug}/${target.envSlug}`);
+        continue;
+      }
+
+      const grant = await sealInviteGrant({
+        vault: params.vault,
+        fragmentSeed: params.fragmentSeed,
+        invitationId: params.invitationId,
+        environmentId: keys.environmentId,
+        edkVersion: keys.activeEdk.version,
+        edk: opened.material.edk,
+        ehk: opened.material.ehk,
+      });
+
+      await api.post(grantsPath(ref), {
+        envDataKeyId: keys.activeEdk.id,
+        grants: [grant],
+      });
+    } catch {
+      // Nothing from the thrown value is kept — see `lib/api.ts` on bodies.
+      failed.push(`${target.projectSlug}/${target.envSlug}`);
+    }
+  }
+
+  return failed;
 }

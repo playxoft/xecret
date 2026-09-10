@@ -11,6 +11,8 @@ import type {
 } from '@xecret/core/crypto';
 import { envKeys, orgKeys } from '../schema/keys';
 import { environments, projects } from '../schema/resources';
+import { initializeEnvironmentKeys } from './env-keys';
+import type { EnvKeyGrantSeed } from './env-keys';
 import { RepositoryError } from './shared';
 import type { Executor } from './shared';
 
@@ -29,19 +31,54 @@ import type { Executor } from './shared';
 
 export type EnvironmentRecord = typeof environments.$inferSelect;
 
+/**
+ * The client-generated key material a new `e2ee` environment is created with.
+ *
+ * Supplied rather than generated, and that is the whole design: the EDK and the
+ * EHK exist only in the browser that made them, and what arrives here is the
+ * creator's own grant — the two keys sealed to their public key, signed by their
+ * signing key. A server that could construct this object would be a server that
+ * could read the environment.
+ */
+export interface EnvironmentKeyInit {
+  createdBy: string;
+  grant: EnvKeyGrantSeed;
+}
+
 export interface CreateEnvironmentParams {
   orgId: string;
   projectId: string;
+  /**
+   * The id the row takes, when the caller has to know it in advance.
+   *
+   * Omitted, one is minted here — the ordinary path, and what every `server`-mode
+   * creation does. Supplied on the `e2ee` path, and not as a convenience: the
+   * creator's grant is sealed in a browser *before* this request exists, and the
+   * grant's AAD names the environment (spec §4.2). A row created under any other
+   * id holds a grant nobody can ever open, and there is no repair — the key bytes
+   * existed only in that browser.
+   */
+  id?: string | undefined;
   name: string;
   slug: string;
   isProduction?: boolean | undefined;
   sortOrder?: number | undefined;
   /**
-   * Supplies the Env Data Key. Passed in rather than constructed here because
-   * only the application layer knows how to resolve the Root KEK for the current
-   * runtime, and a repository must not reach for ambient key material.
+   * Which key hierarchy the environment is created under. Defaults to `e2ee`,
+   * matching the column default — every environment created from Phase 3 onward
+   * is end-to-end encrypted, and `server` exists here for the fixtures and the
+   * legacy path rather than as an option a caller chooses.
    */
-  envelope: EnvelopeService;
+  encryptionMode?: 'server' | 'e2ee' | undefined;
+  /**
+   * Supplies the Env Data Key. `server` mode only. Passed in rather than
+   * constructed here because only the application layer knows how to resolve the
+   * Root KEK for the current runtime, and a repository must not reach for ambient
+   * key material.
+   */
+  envelope?: EnvelopeService | undefined;
+  /** The client-generated hierarchy. `e2ee` mode only, and required there. */
+  keyInit?: EnvironmentKeyInit | undefined;
 }
 
 export interface UpdateEnvironmentParams {
@@ -85,16 +122,20 @@ export class UnsupportedAlgorithmError extends Error {
 }
 
 /**
- * Creates an environment together with its Env Data Key, atomically.
+ * Creates an environment together with its data key, atomically — in whichever
+ * of the two hierarchies it is being created under.
  *
- * The two writes must not be separable. `secret_versions.env_key_id` is
- * `NOT NULL`, so an environment that exists without an active key silently
- * rejects every write it will ever receive, and the failure surfaces far away
- * from its cause. Nothing on the request path can repair it either: minting a
- * key requires unwrapping the organisation's master key, and this function is
- * the only place that does so at creation time. A half-created environment
- * therefore needs an operator with the Root KEK to fix — so it must not be
- * possible to create one.
+ * The writes must not be separable, and the reason is the same in both modes: an
+ * environment that exists without an active key silently rejects every write it
+ * will ever receive, and the failure surfaces far away from its cause.
+ *
+ * What differs is the repair. A half-created `server` environment needs an
+ * operator holding the Root KEK, because minting an `env_keys` row means
+ * unwrapping the organisation's master key. A half-created `e2ee` environment
+ * cannot be repaired *at all*: the EDK and the EHK existed only in the browser
+ * that generated them, and that browser has navigated away. So the transaction is
+ * not a nicety in either mode, and is the difference between an inconvenience and
+ * an unrecoverable row in the second.
  *
  * `exec.transaction()` opens a `SAVEPOINT` when `exec` is already a transaction,
  * so a caller that has its own boundary — "create the project and its three
@@ -104,6 +145,25 @@ export async function createEnvironment(
   exec: Executor,
   params: CreateEnvironmentParams,
 ): Promise<EnvironmentRecord> {
+  const encryptionMode = params.encryptionMode ?? 'e2ee';
+
+  // Checked before the transaction opens, because both are caller mistakes
+  // rather than states of the database, and a caller that reached here without
+  // the material for the mode it asked for must not get a half-open transaction
+  // to show for it.
+  if (encryptionMode === 'e2ee' && params.keyInit === undefined) {
+    throw new RepositoryError(
+      'invalid',
+      'An end-to-end encrypted environment must be created with its client-generated keys.',
+    );
+  }
+  if (encryptionMode === 'server' && params.envelope === undefined) {
+    throw new RepositoryError(
+      'invalid',
+      'A server-mode environment must be created with an envelope service.',
+    );
+  }
+
   return exec.transaction(async (tx) => {
     // Tenancy. `environments` cannot express "belongs to this organisation", so
     // resolving the parent project through `org_id` is the only thing preventing
@@ -132,16 +192,21 @@ export async function createEnvironment(
     // distinguishable. The second is an operator-level fault and deserves to say
     // so; creation is not a hot path, so the extra round trip costs nothing that
     // matters.
-    const orgKey = await loadActiveOrgKey(tx, params.orgId);
+    //
+    // Not reached at all in `e2ee` mode: there is no organisation master key in
+    // that hierarchy, and asking for one would make an environment the server
+    // cannot read depend on a key the server holds.
+    const orgKey = encryptionMode === 'server' ? await loadActiveOrgKey(tx, params.orgId) : null;
 
     const [environment] = await tx
       .insert(environments)
       .values({
-        id: uuidv7(),
+        id: params.id ?? uuidv7(),
         projectId: params.projectId,
         name: params.name,
         slug: params.slug,
         isProduction: params.isProduction ?? false,
+        encryptionMode,
         sortOrder: params.sortOrder ?? 0,
       })
       .onConflictDoNothing()
@@ -154,20 +219,43 @@ export async function createEnvironment(
       );
     }
 
-    const wrapped = await params.envelope.createEnvKey({
+    if (orgKey !== null && params.envelope) {
+      const wrapped = await params.envelope.createEnvKey({
+        orgId: params.orgId,
+        environmentId: environment.id,
+        orgKey: orgKey.key,
+      });
+
+      await tx.insert(envKeys).values({
+        id: uuidv7(),
+        environmentId: environment.id,
+        orgKeyId: orgKey.id,
+        version: wrapped.version,
+        wrappedKey: wrapped.ciphertext,
+        wrapIv: wrapped.iv,
+        algorithm: wrapped.algorithm,
+      });
+
+      return environment;
+    }
+
+    // `e2ee`. The keys are already made; all that happens here is that they are
+    // recorded and the creator's sealed grant is stored beside them. Same
+    // transaction as the environment row, for the reason the header gives: there
+    // is no second chance to produce this material.
+    const keyInit = params.keyInit;
+    if (!keyInit) {
+      // Unreachable — checked before the transaction opened. A throw rather than
+      // a non-null assertion, so a future edit that moves the guard fails loudly
+      // instead of writing an environment nobody can ever use.
+      throw new RepositoryError('invalid', 'An end-to-end encrypted environment needs its keys.');
+    }
+
+    await initializeEnvironmentKeys(tx, {
       orgId: params.orgId,
       environmentId: environment.id,
-      orgKey: orgKey.key,
-    });
-
-    await tx.insert(envKeys).values({
-      id: uuidv7(),
-      environmentId: environment.id,
-      orgKeyId: orgKey.id,
-      version: wrapped.version,
-      wrappedKey: wrapped.ciphertext,
-      wrapIv: wrapped.iv,
-      algorithm: wrapped.algorithm,
+      createdBy: keyInit.createdBy,
+      grant: keyInit.grant,
     });
 
     return environment;
@@ -483,6 +571,11 @@ const environmentColumns = {
   name: environments.name,
   slug: environments.slug,
   isProduction: environments.isProduction,
+  // Selected everywhere an environment is read, because every secret route
+  // branches on it. An environment resolved without it would be one whose mode
+  // the caller has to guess, and the safe guess — "server" — is the one that
+  // hands ciphertext to a decryption path.
+  encryptionMode: environments.encryptionMode,
   sortOrder: environments.sortOrder,
   createdAt: environments.createdAt,
   updatedAt: environments.updatedAt,

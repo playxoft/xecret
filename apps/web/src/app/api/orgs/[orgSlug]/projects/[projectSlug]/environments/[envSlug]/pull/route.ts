@@ -1,5 +1,6 @@
-import { parseQuery } from '@/server/http';
+import { json, parseQuery } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
+import { clientEnvironmentBundle } from '@/server/env-bundle';
 import { documentQuery } from '@/server/schemas/secrets';
 import {
   auditSource,
@@ -72,6 +73,40 @@ export const GET = authenticatedRoute<Params>(
     // separate bucket so a runaway pipeline cannot exhaust the budget the
     // dashboard depends on.
     await enforceSecretRateLimit(services, principal, 'read');
+
+    // ── The e2ee bulk read ──
+    // Same two queries, same single audit record, same authorization — what
+    // changes is that no key is unwrapped and no value is rendered. The response
+    // is a JSON bundle of ciphertexts plus the caller's own grant, and the client
+    // does the decryption and the formatting with the key it already holds.
+    //
+    // `format` is not consulted here, and asking for one is refused rather than
+    // ignored: a caller who asked for `?format=yaml` and got JSON would have been
+    // told their request succeeded when it did not. Formatting moves to the
+    // client with the decryption, because they are the same act.
+    if (scope.environment.encryptionMode === 'e2ee') {
+      const bundle = await clientEnvironmentBundle(scope, services, principal);
+
+      record(
+        audit(scope.organization.id).success(
+          'secret.read',
+          {
+            type: 'environment',
+            id: scope.environment.id,
+            projectId: scope.project.id,
+            environmentId: scope.environment.id,
+          },
+          {
+            secretCount: bundle.secrets.length,
+            projectSlug: scope.project.slug,
+            environmentSlug: scope.environment.slug,
+            source: auditSource(principal),
+          },
+        ),
+      );
+
+      return json(bundle);
+    }
 
     const { format } = parseQuery(request, documentQuery);
 

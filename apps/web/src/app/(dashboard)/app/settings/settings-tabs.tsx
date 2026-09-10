@@ -10,7 +10,7 @@ import { appPath } from '../../_lib/paths';
  * The settings area's tab bar.
  *
  * Links styled as tabs rather than a client-side `<Tabs>`: each tab is a
- * route, so a security question ("where do I change my PIN?") has an address
+ * route, so a security question ("where do I change my passphrase?") has an address
  * that can be sent to someone, and a reload lands where the user was. The
  * active state is derived from the pathname, which is what makes this a nav,
  * not state.

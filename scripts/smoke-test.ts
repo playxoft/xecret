@@ -32,26 +32,27 @@ import { createDatabase } from '../packages/db/src/client.ts';
 import {
   createSecret,
   createSession,
-  findPinForUser,
+  createVault,
   findSecretByName,
   findSessionByTokenHash,
+  findVaultKeys,
   loadEnvironmentKeyChain,
+  loadVault,
   lockSessions,
   markSessionUnlocked,
   provisionOrganization,
   updateSecretMetadata,
-  upsertPin,
   upsertUserFromIdentity,
 } from '../packages/db/src/repositories/index.ts';
 import { EnvelopeService, keyProviderFromEnv } from '../packages/core/src/crypto/index.ts';
 import { DecryptionError } from '../packages/core/src/crypto/types.ts';
 import {
   generateToken,
-  hashPin,
   hashToken,
-  isSessionUnlocked,
-  verifyPin,
+  hashUnlockVerifier,
+  isVaultUnlocked,
 } from '../packages/core/src/auth/index.ts';
+import { randomBytes } from '../packages/core/src/crypto/encoding.ts';
 import { uuidv7 } from '../packages/core/src/ids/index.ts';
 
 /** Thrown to unwind the transaction once the checks have run. */
@@ -260,28 +261,91 @@ async function main(): Promise<void> {
         'secrets_value_type_check holds',
       );
 
-      // ── 8. The unlock PIN ───────────────────────────────────────────────
-      const pin = '481902';
-      await upsertPin(tx, user.id, await hashPin(pin));
+      // ── 8. The user vault ───────────────────────────────────────────────
+      // The zero-knowledge claim, checked against a real database rather than
+      // against prose: what these rows hold is a public key, a salt, a digest
+      // and a set of ciphertexts, and nothing here can open any of them.
+      const unlockVerifier = randomBytes(32);
+      // The second branch: what a passkey unlock sends, since it opens the User
+      // Key directly and never derives a Stretched Key.
+      const ukUnlockVerifier = randomBytes(32);
+      const blob = (label: string) => new TextEncoder().encode(`xk2.gcm.${label}`);
 
-      const pinRecord = await findPinForUser(tx, user.id);
+      await createVault(tx, {
+        userId: user.id,
+        encAlgorithm: 'X25519',
+        encPublicKey: randomBytes(32),
+        encPrivateKeyEnc: blob('privenc'),
+        signAlgorithm: 'Ed25519',
+        signPublicKey: randomBytes(32),
+        signPrivateKeyEnc: blob('privsign'),
+        kdfSalt: randomBytes(16),
+        kdfParams: { alg: 'argon2id', v: 19, m: 65536, t: 3, p: 1, len: 32 },
+        unlockVerifierHash: await hashUnlockVerifier(unlockVerifier),
+        ukUnlockVerifierHash: await hashUnlockVerifier(ukUnlockVerifier),
+        passphraseWrap: blob('passphrase'),
+        recoveryWraps: Array.from({ length: 5 }, (_unused, index) => ({
+          lookupHash: randomBytes(32),
+          wrap: blob(`recovery${index}`),
+        })),
+      });
+
+      const vault = await loadVault(tx, user.id);
       step(
-        'pin stored as a derived hash',
-        pinRecord !== null && !pinRecord.pinHash.includes(pin),
-        'pbkdf2-sha256, parameters recorded on the row',
+        'the vault stores only wrapped material',
+        vault !== null && vault.recoveryCodesRemaining === 5,
+        'one passphrase wrap, five recovery wraps, no key the server can use',
       );
 
+      const keys = await findVaultKeys(tx, user.id);
       step(
-        'pin verifies, and only the right one',
-        pinRecord !== null &&
-          (await verifyPin(pin, pinRecord.pinHash)) &&
-          !(await verifyPin('481903', pinRecord.pinHash)),
-        'constant-time comparison against the stored hash',
+        'both unlock verifiers are stored, and only as digests',
+        keys !== null &&
+          keys.unlockVerifierHash.length === 32 &&
+          keys.ukUnlockVerifierHash.length === 32 &&
+          Buffer.compare(Buffer.from(keys.unlockVerifierHash), Buffer.from(unlockVerifier)) !== 0 &&
+          Buffer.compare(Buffer.from(keys.ukUnlockVerifierHash), Buffer.from(ukUnlockVerifier)) !==
+            0 &&
+          // Distinct columns from distinct HKDF branches, so neither can ever
+          // be replayed for the other.
+          Buffer.compare(
+            Buffer.from(keys.unlockVerifierHash),
+            Buffer.from(keys.ukUnlockVerifierHash),
+          ) !== 0,
+        'SHA-256 of two sibling HKDF branches — possessing either opens nothing',
+      );
+
+      let secondVaultRefused = false;
+      try {
+        await tx.transaction(async (nested) => {
+          await createVault(nested, {
+            userId: user.id,
+            encAlgorithm: 'X25519',
+            encPublicKey: randomBytes(32),
+            encPrivateKeyEnc: blob('privenc2'),
+            signAlgorithm: 'Ed25519',
+            signPublicKey: randomBytes(32),
+            signPrivateKeyEnc: blob('privsign2'),
+            kdfSalt: randomBytes(16),
+            kdfParams: { alg: 'argon2id', v: 19, m: 65536, t: 3, p: 1, len: 32 },
+            unlockVerifierHash: randomBytes(32),
+            ukUnlockVerifierHash: randomBytes(32),
+            passphraseWrap: blob('passphrase2'),
+            recoveryWraps: [],
+          });
+        });
+      } catch {
+        secondVaultRefused = true;
+      }
+      step(
+        'a second vault is refused, never an overwrite',
+        secondVaultRefused,
+        'the old public key has environment keys sealed to it',
       );
 
       // The property the whole lock rests on: a session is authenticated the
       // moment it exists and is **not** unlocked, so the cookie alone cannot
-      // reach a secret.
+      // reach key material.
       const { token: sessionToken } = await generateToken('session');
       const session = await createSession(tx, {
         userId: user.id,
@@ -294,17 +358,17 @@ async function main(): Promise<void> {
       const fresh = await findSessionByTokenHash(tx, tokenHash);
       step(
         'a new session starts locked',
-        fresh !== null && fresh.pinVerifiedAt === null,
-        'authenticated, but pin_verified_at is null',
+        fresh !== null && fresh.vaultUnlockedAt === null,
+        'authenticated, but vault_unlocked_at is null',
       );
 
       await markSessionUnlocked(tx, session.id, new Date());
       const unlocked = await findSessionByTokenHash(tx, tokenHash);
       step(
         'unlocking is recorded on the session',
-        unlocked?.pinVerifiedAt !== null &&
+        unlocked?.vaultUnlockedAt !== null &&
           unlocked !== null &&
-          isSessionUnlocked(unlocked.pinVerifiedAt, new Date()),
+          isVaultUnlocked(unlocked.vaultUnlockedAt, new Date()),
         'the same session, now unlocked — not a new one',
       );
 
@@ -312,8 +376,8 @@ async function main(): Promise<void> {
       const relocked = await findSessionByTokenHash(tx, tokenHash);
       step(
         'locking does not sign the user out',
-        relocked !== null && relocked.pinVerifiedAt === null && relocked.revokedAt === null,
-        'pin_verified_at cleared, session still live',
+        relocked !== null && relocked.vaultUnlockedAt === null && relocked.revokedAt === null,
+        'vault_unlocked_at cleared, session still live',
       );
 
       throw new Rollback();

@@ -135,15 +135,18 @@ export interface AuthenticatedRouteOptions {
    * **Deny by default.** The option exists at all only because a locked user
    * must still be able to reach the handful of endpoints that get them unlocked
    * — otherwise the lock screen cannot function and the account is bricked until
-   * the session expires. Exactly four routes opt out, and each says why:
+   * the session expires. Exactly six routes opt out, and each says why:
    *
    *  - `GET /api/auth/me` — the dashboard has to learn *that* it is locked, and
-   *    whether a PIN exists at all, before it can render anything.
-   *  - `POST /api/auth/pin` — setting the first PIN happens from a locked
-   *    session by definition; a new session has never been unlocked.
-   *  - `POST /api/auth/pin/unlock` and the reset pair — the unlock itself.
+   *    whether a vault exists at all, before it can render anything.
+   *  - `GET` and `POST /api/auth/vault` — reading the wraps an unlock attempt
+   *    needs, and running the setup ceremony, both happen from a locked session
+   *    by definition; a new session has never been unlocked.
+   *  - `POST /api/auth/vault/unlock` — the unlock itself.
+   *  - `POST /api/auth/vault/recovery` and `…/recovery/complete` — the way back
+   *    in for somebody who has forgotten the passphrase entirely.
    *  - `DELETE /api/auth/session` — signing out must never require unlocking
-   *    first. "I cannot remember my PIN, let me just sign out" has to work.
+   *    first. "I cannot remember my passphrase, let me just sign out" has to work.
    *
    * Any other route reaching for this is a bug: the gate is what makes the lock
    * a security control rather than a screen the client chooses to draw.
@@ -154,8 +157,8 @@ export interface AuthenticatedRouteOptions {
 /**
  * Wraps a handler that requires an authenticated principal.
  *
- * Authentication, the cross-origin check, CSRF, and the PIN gate all run before
- * the handler body. Authorization does not: it needs the resource, which only
+ * Authentication, the cross-origin check, CSRF, and the vault lock gate all run
+ * before the handler body. Authorization does not: it needs the resource, which only
  * the handler can resolve. The handler calls `can()` — see
  * `docs/architecture/api.md` §2.
  *
@@ -346,7 +349,7 @@ function finished(logger: Logger, doing: RequestAction, status: number, startedA
  * handing the *resulting* promise to `waitUntil` ships only the lines written
  * before the response — and the lines that matter most are written after it. The
  * audit-flush failure in `settle`, the sign-in and CLI-exchange records in
- * `writeEvents`, an invitation or PIN-reset email that never left: every one of
+ * `writeEvents`, an invitation email that never left: every one of
  * those is an `error` emitted from inside `waitUntil`, into a buffer that has
  * already been drained and will never be drained again.
  * `docs/operations/logging.md` advertises those as the alertable lines, so

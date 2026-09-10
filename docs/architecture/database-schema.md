@@ -153,6 +153,8 @@ CREATE TABLE environments (
   name          text        NOT NULL,
   slug          citext      NOT NULL,
   is_production boolean     NOT NULL DEFAULT false,
+  encryption_mode text      NOT NULL DEFAULT 'e2ee'
+                            CHECK (encryption_mode IN ('server', 'e2ee')),
   sort_order    integer     NOT NULL DEFAULT 0,
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now(),
@@ -165,6 +167,14 @@ CREATE UNIQUE INDEX environments_project_slug_idx ON environments (project_id, s
 `is_production` is a first-class column, not a slug convention. Production safeguards
 (stronger permission checks, destructive-action confirmation, distinct UI treatment) key off
 this flag, so an environment named `prod-eu-west` behaves correctly.
+
+`encryption_mode` says which key hierarchy an environment's values live under — `server` for
+the envelope of ADR 0001 (§4), `e2ee` for the client-held keys of ADR 0009 (§4.1). It is a
+**migration mechanism, not a product option**: nothing in the API lets a caller choose one.
+Migration 0013 backfills every existing row to `server` through the `ADD COLUMN` default and
+then changes the default to `e2ee`, which is what makes every environment created from that
+deployment onward end-to-end encrypted. A row moves from `server` to `e2ee` exactly once, by
+the migration ceremony, and never back once the old ciphertext is gone.
 
 ---
 
@@ -211,6 +221,89 @@ deleting something else, because that would orphan ciphertext permanently.
 permanently unreadable without touching a ciphertext row. This is how deletion is honoured
 even when database backups still contain the data.
 
+### 4.1 Environment keys under zero knowledge
+
+The two tables above are the **server envelope** of ADR 0001: the Worker can unwrap both, and
+therefore can read every secret. ADR 0009 replaces them for new environments with a hierarchy
+whose key material this database never holds.
+
+```sql
+CREATE TABLE env_data_keys (              -- the EDK: identity and version only
+  id             uuid PRIMARY KEY,
+  environment_id uuid        NOT NULL REFERENCES environments(id) ON DELETE RESTRICT,
+  version        integer     NOT NULL CHECK (version >= 1),
+  status         text        NOT NULL DEFAULT 'active'
+                             CHECK (status IN ('active', 'retired')),
+  created_by     uuid        NOT NULL REFERENCES users(id),
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (environment_id, version)
+);
+CREATE UNIQUE INDEX env_data_keys_active_unique
+  ON env_data_keys (environment_id) WHERE status = 'active';
+
+CREATE TABLE env_hmac_keys (              -- the EHK: one per environment, never versioned
+  id             uuid PRIMARY KEY,
+  environment_id uuid        NOT NULL UNIQUE REFERENCES environments(id) ON DELETE RESTRICT,
+  created_by     uuid        NOT NULL REFERENCES users(id),
+  created_at     timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE env_key_grants (             -- one principal's sealed copy of both keys
+  id                uuid PRIMARY KEY,
+  env_data_key_id   uuid        NOT NULL REFERENCES env_data_keys(id) ON DELETE CASCADE,
+  member_user_id    uuid        REFERENCES users(id) ON DELETE CASCADE,
+  service_token_id  uuid        REFERENCES service_tokens(id) ON DELETE CASCADE,
+  invitation_id     uuid        REFERENCES invitations(id) ON DELETE CASCADE,
+  edk_sealed        bytea       NOT NULL,   -- xk2.x25519. blob (spec §2.2 type 6)
+  ehk_sealed        bytea       NOT NULL,   -- xk2.x25519. blob (type 7)
+  signature         bytea       NOT NULL,   -- xk2.ed25519. blob (type 8)
+  signed_by_user_id uuid        NOT NULL REFERENCES users(id),
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  CHECK (num_nonnulls(member_user_id, service_token_id, invitation_id) = 1)
+);
+-- Three partial unique indexes, not one composite: PostgreSQL treats NULLs as
+-- distinct, so a plain UNIQUE over all four columns would admit duplicates.
+CREATE UNIQUE INDEX env_key_grants_member_unique
+  ON env_key_grants (env_data_key_id, member_user_id) WHERE member_user_id IS NOT NULL;
+CREATE UNIQUE INDEX env_key_grants_token_unique
+  ON env_key_grants (env_data_key_id, service_token_id) WHERE service_token_id IS NOT NULL;
+CREATE UNIQUE INDEX env_key_grants_invitation_unique
+  ON env_key_grants (env_data_key_id, invitation_id) WHERE invitation_id IS NOT NULL;
+
+CREATE TABLE pending_key_grants (         -- the queue of shares nobody could seal
+  id             uuid PRIMARY KEY,
+  environment_id uuid        NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  target_user_id uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  requested_by   uuid        NOT NULL REFERENCES users(id),
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (environment_id, target_user_id)
+);
+```
+
+**`env_data_keys` and `env_hmac_keys` hold no key material.** That is the property to check
+every future column against, and the whole difference between them and `env_keys` above:
+`env_keys.wrapped_key` is a key this deployment can unwrap, and its successor deliberately is
+not. The bytes exist only inside `env_key_grants`, sealed to a public key whose private half
+the server has never seen.
+
+**One active EDK per environment.** Two would be two answers to "which key does the next write
+use", and a client picking the older one would encrypt under a key a revoked principal still
+holds — silently undoing the rotation that retired it. Retired rows are kept for ever, because
+historical `secret_versions` reference them.
+
+**The EHK is never versioned**, and that is its entire reason for existing: `value_hmac` must
+survive an EDK rotation (crypto spec §9). If the HMAC key rotated with the data key, the first
+write to every secret after a rotation would be recorded as a change when nothing changed.
+
+**Signatures are `NOT NULL`.** Verification is deferred past v1 — it needs a trust root for
+signer keys — but the columns are not, because turning verification on later has to be a client
+update rather than a data migration over grants that never carried a signature.
+
+**`pending_key_grants` is a queue, not authority.** Access is decided by people who may not
+hold the key: an owner can grant production access having never opened production, so their
+browser has no EDK to seal. The access change lands and a row here records the debt, which the
+next unlocked member holding that key fulfils. Every column is an id or a timestamp.
+
 ---
 
 ## 5. Secrets
@@ -220,7 +313,8 @@ CREATE TABLE secrets (
   id             uuid PRIMARY KEY,
   environment_id uuid        NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
   name           text        NOT NULL CHECK (name ~ '^[A-Za-z_][A-Za-z0-9_]*$'),
-  note           text,                          -- non-sensitive description, shown in UI
+  note           text,                          -- server mode: plaintext description
+  enc_note       bytea,                         -- e2ee mode: xk2.gcm. blob (spec type 10)
   created_by     uuid        NOT NULL REFERENCES users(id),
   created_at     timestamptz NOT NULL DEFAULT now(),
   updated_at     timestamptz NOT NULL DEFAULT now(),
@@ -230,20 +324,42 @@ CREATE UNIQUE INDEX secrets_env_name_idx ON secrets (environment_id, name)
   WHERE deleted_at IS NULL;
 
 CREATE TABLE secret_versions (
-  id         uuid PRIMARY KEY,
-  secret_id  uuid        NOT NULL REFERENCES secrets(id) ON DELETE CASCADE,
-  version    integer     NOT NULL,
-  ciphertext bytea       NOT NULL,
-  iv         bytea       NOT NULL,     -- 96-bit, unique per encryption
-  env_key_id uuid        NOT NULL REFERENCES env_keys(id) ON DELETE RESTRICT,
-  algorithm  text        NOT NULL DEFAULT 'AES-256-GCM',
-  value_hmac bytea,                    -- see note below
-  created_by uuid        NOT NULL REFERENCES users(id),
-  created_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (secret_id, version)
+  id               uuid PRIMARY KEY,
+  secret_id        uuid        NOT NULL REFERENCES secrets(id) ON DELETE CASCADE,
+  version          integer     NOT NULL,
+  ciphertext       bytea       NOT NULL,
+  iv               bytea,                 -- server mode only; e2ee puts it inside the blob
+  env_key_id       uuid        REFERENCES env_keys(id) ON DELETE RESTRICT,      -- server mode
+  env_data_key_id  uuid        REFERENCES env_data_keys(id) ON DELETE RESTRICT, -- e2ee mode
+  algorithm        text        NOT NULL DEFAULT 'AES-256-GCM',
+  client_algorithm text,                  -- e2ee mode: what the client says it used
+  value_hmac       bytea,                 -- see note below
+  created_by       uuid        NOT NULL REFERENCES users(id),
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (secret_id, version),
+  -- Exactly one key, and therefore exactly one mode, per row.
+  CHECK (num_nonnulls(env_key_id, env_data_key_id) = 1),
+  CHECK ((env_key_id IS NOT NULL) = (iv IS NOT NULL)),
+  CHECK ((env_data_key_id IS NOT NULL) = (client_algorithm IS NOT NULL))
 );
 CREATE INDEX secret_versions_current_idx ON secret_versions (secret_id, version DESC);
 ```
+
+**The three CHECKs are what make the dual-mode period safe.** A row naming both keys claims two
+different sets of bytes decrypt it; a row naming neither is ciphertext nothing can ever open —
+and would read as an e2ee row to any query testing `env_key_id IS NULL`. Both are silent,
+permanent data loss, so the database refuses them rather than the application remembering to.
+
+`iv` was `NOT NULL` before ADR 0009 and the invariant is unchanged, only narrowed to the rows it
+ever applied to: a server-envelope row still cannot be written without one. An e2ee row has no
+`iv` column value because the crypto spec puts the IV **inside** the `xk2.gcm.` blob (§2.1),
+where it travels with the ciphertext it belongs to and cannot be paired with the wrong one.
+
+`note` and `enc_note` are the same field seen from the two sides of the migration. No CHECK
+pairs them, because the rule that decides which is written depends on
+`environments.encryption_mode` — a join away, and unreachable from a row constraint. An e2ee
+secret leaves `note` NULL: a note is free text people put credentials in, and the column's old
+promise that it "never holds a value" was never enforceable.
 
 **`secret_versions` is append-only.** Updating a secret inserts a new row; it never mutates an
 existing one. This gives rotation, rollback, and audit history for free. The current value is
@@ -343,6 +459,8 @@ CREATE TABLE service_tokens (
   name           text         NOT NULL,
   token_hash     bytea        NOT NULL UNIQUE,
   token_prefix   text         NOT NULL,
+  public_key     bytea,                      -- the token's own X25519 public key (ADR 0009)
+  key_algorithm  text,                       -- 'X25519' beside a non-null key
   access_level   access_level NOT NULL DEFAULT 'read',
   ip_allowlist   inet[],
   created_by     uuid         NOT NULL REFERENCES users(id),
@@ -361,6 +479,20 @@ the type system should make that impossible rather than merely discouraged.
 
 `service_tokens.environment_id` is `NOT NULL` — a CI token is always scoped to exactly one
 environment. This is the primary blast-radius control for threat T5.
+
+`service_tokens.public_key` makes a CI credential a first-class principal under ADR 0009: the
+environment's keys are sealed to it, and the matching private scalar lives only inside the
+token string its creator was shown once. The server therefore holds a hash it can check and a
+public key it can seal to, and nothing that opens either. **This is what makes rotation cheap:**
+because the public key is here, a client rotating an EDK re-seals it to every service token
+without anybody regenerating one. Nullable, because the Phase 4 creation flow is what fills it,
+and a grant to a token without one is refused rather than sealed to nothing.
+
+`invitations.invite_public_key` plays the same role for an invitation (crypto spec §10). The
+16-byte **fragment** it is derived from never reaches the server: it travels to the invitee over
+a different channel from the emailed token, which is the whole of the two-channel design — a
+leaked email decrypts nothing, and a leaked fragment authenticates nothing. There is no column
+for the fragment, and there must never be one.
 
 `token_prefix` lets the UI show `xct_live_a1b2…` for identification without storing anything
 usable.
@@ -433,16 +565,26 @@ CREATE INDEX audit_logs_environment_idx ON audit_logs (environment_id, created_a
 ```
 users ──┬──< sessions
         ├──< cli_tokens
+        ├──< user_keys ──< user_key_wraps        (the vault — ADR 0009)
+        ├──< user_passkeys                       │
         └──< org_members >── organizations ──┬──< projects ──< environments
                     │                        │                     │
-                    │                        ├──< org_keys ──< env_keys
+                    │                        ├──< org_keys ──< env_keys       (server mode)
                     │                        ├──< invitations       │
                     │                        └──< service_tokens    │
-                    │                                               │
+                    │                                    │          │
+                    │                                    │          ├──< env_data_keys
+                    │                                    │          ├──< env_hmac_keys
+                    │                                    │          └──< pending_key_grants
+                    │                                    │                     (e2ee mode)
+                    │                                    ▼          │
+                    │              env_key_grants >──────┴──────────┘
+                    │                     (one sealed copy per principal)
                     └──< access_grants >─────────────────────────────┘
                                                                     │
                                                     secrets ──< secret_versions
 
+secret_versions references env_keys OR env_data_keys — exactly one, by CHECK.
 audit_logs — no FKs by design; references are soft
 ```
 
@@ -460,11 +602,27 @@ audit_logs — no FKs by design; references are soft
 0008  PIN auto-lock
 0009  organization creator index
 0010  audit partitions: quarterly, and into the audit_parts schema
+0011  user vault (user_keys, user_key_wraps, user_passkeys); retires the PIN
+0012  user_keys.uk_unlock_verifier_hash — the verifier a passkey unlock sends
+0013  environment data keys (env_data_keys, env_hmac_keys, env_key_grants,
+      pending_key_grants), environments.encryption_mode, the dual-mode
+      secret_versions columns, service_tokens.public_key, invitations.invite_public_key
 ```
 
-The 15 tables catalogued above are the ones 0000 creates. `user_pins`, `pin_reset_tokens` and
-`cli_auth_codes` arrive in 0004 and 0005 and are not catalogued in this document — which is why §8
-counts 18 tables in `public` and this list counts 15.
+Migration 0013 drops nothing and loses nothing. Every existing environment keeps its `env_keys`
+row and keeps working exactly as before; the one column that could not be added as a nullable
+afterthought — `environments.encryption_mode` — is backfilled to the behaviour those rows
+already have. What it does relax is `secret_versions.env_key_id` and `secret_versions.iv`, from
+`NOT NULL` to nullable, and the three CHECKs in §5 restore each invariant for exactly the rows
+it ever applied to.
+
+The 15 tables catalogued above are the ones 0000 creates. `cli_auth_codes` arrives in 0005, and
+`user_keys`, `user_key_wraps` and `user_passkeys` in 0011; none of the four is catalogued in this
+document. `user_pins` and `pin_reset_tokens` existed between 0004 and 0011 and are gone — 0011 is
+the first migration in the project to drop a table, and the reasoning is at the top of the file.
+`sessions.pin_verified_at` became `sessions.vault_unlocked_at` in the same migration, as an
+add-then-drop rather than a rename: the old values are wrong under the new model, because a session
+that entered a PIN has not unlocked a vault.
 
 Migration `0002` is not optional. The application role gets `SELECT`/`INSERT`/`UPDATE`/
 `DELETE` on tenant tables, `SELECT`/`INSERT` only on `audit_logs`, and no DDL rights

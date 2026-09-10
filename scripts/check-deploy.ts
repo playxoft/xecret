@@ -31,7 +31,7 @@
  * expiry date nobody wrote down.
  *
  * The failure that motivated this: production ran for days with no
- * `ZEPTOMAIL_TOKEN`, so every transactional email — including the PIN reset
+ * `ZEPTOMAIL_TOKEN`, so every transactional email — including the invitation
  * link — was declined by a code path designed to treat mail as optional. The
  * deploy was green, the site was up, and the only symptom was mail that never
  * arrived.
@@ -116,7 +116,7 @@ const CONTRACT: Contract[] = [
     name: 'ZEPTOMAIL_TOKEN',
     home: 'secret',
     required: false,
-    matters: 'authorises sending; absent means PIN reset mail is never delivered',
+    matters: 'authorises sending; absent means invitation mail is never delivered',
   },
   {
     name: 'ZEPTOMAIL_API_URL',

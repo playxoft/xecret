@@ -1,0 +1,385 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/url"
+)
+
+// The endpoints that exist only because the server cannot decrypt.
+//
+// Everything here returns ciphertext, key material sealed to somebody, or the
+// shape of one. Nothing in this file can be made to return a plaintext secret,
+// and that is the point: after the cutover the server holds no key that would
+// let it.
+//
+// Kept beside xecret.go rather than inside it because these responses are read
+// by internal/envkeys and nothing else, and the split says so.
+
+// VaultMaterial is GET /api/auth/vault's `material`.
+//
+// Public halves, wraps, and KDF parameters — everything an unlock needs and
+// nothing an unlock produces. Served to a CLI token for its issuing user, which
+// is what lets a headless process open the private key its grants are sealed to.
+type VaultMaterial struct {
+	EncAlgorithm string `json:"encAlgorithm"`
+	EncPublicKey string `json:"encPublicKey"`
+	// EncPrivateKeyEnc is the X25519 scalar as an xk2.gcm. blob under the User Key.
+	EncPrivateKeyEnc string `json:"encPrivateKeyEnc"`
+	SignAlgorithm    string `json:"signAlgorithm"`
+	SignPublicKey    string `json:"signPublicKey"`
+	// SignPrivateKeyEnc is the Ed25519 seed, likewise under the User Key.
+	SignPrivateKeyEnc string `json:"signPrivateKeyEnc"`
+	// KdfSalt is base64url; KdfParams is stored verbatim and validated by the
+	// client before it is allowed to drive Argon2id.
+	KdfSalt   string          `json:"kdfSalt"`
+	KdfParams json.RawMessage `json:"kdfParams"`
+	// PassphraseWrap is the User Key under the passphrase wrap key.
+	PassphraseWrap string `json:"passphraseWrap"`
+}
+
+// VaultResponse is GET /api/auth/vault.
+type VaultResponse struct {
+	Vault struct {
+		Configured bool `json:"configured"`
+		Unlocked   bool `json:"unlocked"`
+	} `json:"vault"`
+	// Material is null for a service token, which has no vault to read.
+	Material *VaultMaterial `json:"material"`
+}
+
+// Vault reads the caller's vault material.
+func (c *Client) Vault(ctx context.Context) (*VaultResponse, error) {
+	var response VaultResponse
+	if err := c.Get(ctx, "/api/auth/vault", &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+// ActiveKey names the environment data key a grant is against.
+type ActiveKey struct {
+	ID      string `json:"id"`
+	Version int    `json:"version"`
+}
+
+// MyGrant is the caller's own sealed pair for an environment.
+type MyGrant struct {
+	EDKSealed string `json:"edkSealed"`
+	EHKSealed string `json:"ehkSealed"`
+	Signature string `json:"signature"`
+	// SignedByUserID is who created the grant. Verification is deferred (ADR
+	// 0009, trade-off 3), so this is carried and not yet acted on.
+	SignedByUserID string `json:"signedByUserId"`
+}
+
+// EnvironmentKeys is GET …/keys, and the `keys` half of the pull bundle.
+type EnvironmentKeys struct {
+	// EncryptionMode is "e2ee" or "server". Every dual-mode decision the CLI
+	// makes reads this rather than guessing from a response's shape.
+	EncryptionMode string     `json:"encryptionMode"`
+	EnvironmentID  string     `json:"environmentId"`
+	ActiveEDK      *ActiveKey `json:"activeEdk"`
+	// MyGrant is null when the caller has access but nobody has shared the key.
+	MyGrant *MyGrant `json:"myGrant"`
+}
+
+// ClientSecret is one row of the e2ee pull bundle: ciphertext and the context
+// its AAD is built from. No plaintext, and no field that could hold one.
+type ClientSecret struct {
+	// ID is the secrets row id, and an AAD component — so it is load-bearing,
+	// not decoration.
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Ciphertext      string `json:"ciphertext"`
+	ClientAlgorithm string `json:"clientAlgorithm"`
+	// EnvDataKeyID may name a key that has since been rotated away, in which
+	// case this row cannot be read and says so rather than failing obscurely.
+	EnvDataKeyID string `json:"envDataKeyId"`
+	Version      int    `json:"version"`
+	UpdatedAt    string `json:"updatedAt"`
+}
+
+// EnvironmentBundle is GET …/pull for an e2ee environment: the key state and
+// every current ciphertext, read together so a rotation cannot land between two
+// requests and leave the client holding a key for the wrong version.
+type EnvironmentBundle struct {
+	// Bundle is the marker that says what this response *is*, rather than
+	// leaving a client to work it out from what the response happens to contain.
+	// See [Client.Pull].
+	Bundle bool `json:"bundle"`
+	// BundleVersion is the shape of everything below it. Carried and not yet
+	// acted on: a client that refuses an unknown version cannot be sent a new
+	// one, so the first build to see this field has to accept whatever it says.
+	BundleVersion  int             `json:"bundleVersion"`
+	EncryptionMode string          `json:"encryptionMode"`
+	Keys           EnvironmentKeys `json:"keys"`
+	Secrets        []ClientSecret  `json:"secrets"`
+}
+
+// Pulled is what a pull produced, in whichever mode the environment is in.
+//
+// One type for both because every caller wants the same thing — "give me this
+// environment" — and the difference is which field is populated. A caller that
+// forgets to check `Bundle` gets an empty document rather than a decrypted one,
+// which is the safe direction to be wrong in.
+type Pulled struct {
+	// Bundle is set for an e2ee environment. Its secrets are ciphertext.
+	Bundle *EnvironmentBundle
+	// Raw is the bundle's response body exactly as it arrived, for the offline
+	// cache. Re-marshalling the parsed struct would cache this build's idea of
+	// the shape rather than the server's, which is the one thing a cached
+	// ciphertext cannot afford: a field this build drops is a field the next one
+	// needs, and there is no key anywhere to re-derive it from.
+	Raw []byte
+	// Document is the server-rendered file for a server-mode environment,
+	// verbatim, in the requested format.
+	Document []byte
+}
+
+// Pull fetches an environment.
+//
+// The mode is read from the response rather than asked for in advance: one
+// request either way, and no window in which the mode could change between two.
+//
+// ── How a bundle is recognised ──
+//
+// By the response saying it is one. The bundle carries a top-level
+// `"bundle": true`, which is a field the server chose to send and not a
+// coincidence of content, and that is what this branches on.
+//
+// It did not always. The test used to be `encryptionMode == "e2ee"` at the top
+// level — and for `format=json` a server-mode pull is a *flat name→value object
+// of the environment's own secrets*, so an environment containing a secret
+// literally named `encryptionMode` whose value was `e2ee` was read as a bundle,
+// and its secrets were then treated as ciphertext. Nothing about that is exotic:
+// it is a name a person migrating between the two modes would plausibly write
+// down.
+//
+// The old shape is still accepted, because a client that only understands the
+// new marker cannot talk to a deployment that has not shipped it yet — but it is
+// accepted with the ambiguity closed: `secrets` must be a JSON *array*, which in
+// a flat document it can never be, because every value in one is a string. That
+// tolerance can be deleted once no supported deployment predates the marker.
+func (c *Client) Pull(ctx context.Context, org, project, env, format string) (*Pulled, error) {
+	raw, err := c.GetRaw(ctx, envPath(org, project, env)+"/pull?format="+url.QueryEscape(format))
+	if err != nil {
+		return nil, err
+	}
+
+	if looksLikeBundle(raw) {
+		var bundle EnvironmentBundle
+		if json.Unmarshal(raw, &bundle) == nil {
+			return &Pulled{Bundle: &bundle, Raw: raw}, nil
+		}
+	}
+	return &Pulled{Document: raw}, nil
+}
+
+// looksLikeBundle answers the question above without decoding the whole body.
+func looksLikeBundle(raw []byte) bool {
+	var probe struct {
+		Bundle         bool            `json:"bundle"`
+		EncryptionMode string          `json:"encryptionMode"`
+		Secrets        json.RawMessage `json:"secrets"`
+	}
+	if json.Unmarshal(raw, &probe) != nil {
+		return false
+	}
+	if probe.Bundle {
+		return true
+	}
+	return probe.EncryptionMode == "e2ee" && isJSONArray(probe.Secrets)
+}
+
+func isJSONArray(raw json.RawMessage) bool {
+	var array []json.RawMessage
+	return len(raw) > 0 && json.Unmarshal(raw, &array) == nil
+}
+
+// EnvironmentKeyState reads GET …/keys on its own, for the paths that need the
+// key without the values — `secrets get --plain`, and a write.
+func (c *Client) EnvironmentKeyState(ctx context.Context, org, project, env string) (*EnvironmentKeys, error) {
+	var response struct {
+		Keys EnvironmentKeys `json:"keys"`
+	}
+	if err := c.Get(ctx, envPath(org, project, env)+"/keys", &response); err != nil {
+		return nil, err
+	}
+	return &response.Keys, nil
+}
+
+// ClientValue is the sealed half of a write: what the server stores without
+// being able to read it.
+type ClientValue struct {
+	Ciphertext      string `json:"ciphertext"`
+	ClientAlgorithm string `json:"clientAlgorithm"`
+	EnvDataKeyID    string `json:"envDataKeyId"`
+	// ValueHmac is keyed from the long-lived EHK, so the server's no-op check
+	// survives an EDK rotation without seeing a plaintext.
+	ValueHmac string `json:"valueHmac"`
+}
+
+// RevealedCiphertext is GET …/secrets/{name} for an e2ee environment. `value`
+// comes back null; the caller decrypts.
+type RevealedCiphertext struct {
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	Value           *string `json:"value"`
+	Ciphertext      string  `json:"ciphertext"`
+	ClientAlgorithm string  `json:"clientAlgorithm"`
+	EnvDataKeyID    string  `json:"envDataKeyId"`
+	ValueType       string  `json:"valueType"`
+	Version         int     `json:"version"`
+}
+
+// RevealClient reads one secret's ciphertext.
+func (c *Client) RevealClient(ctx context.Context, org, project, env, name string) (*RevealedCiphertext, error) {
+	var response struct {
+		Secret RevealedCiphertext `json:"secret"`
+	}
+	if err := c.Get(ctx, secretPath(org, project, env, name), &response); err != nil {
+		return nil, err
+	}
+	return &response.Secret, nil
+}
+
+// CreateClientSecret writes a pre-encrypted secret.
+//
+// The id is minted here rather than by the server, and that is not a
+// convenience: it is an AAD component, so the ciphertext is already sealed
+// against it by the time this request is built. A server-assigned id would
+// arrive after the only moment it could have been bound.
+func (c *Client) CreateClientSecret(
+	ctx context.Context,
+	org, project, env, id, name string,
+	value ClientValue,
+	valueType string,
+	encNote *string,
+) (*WriteResult, error) {
+	body := map[string]any{"id": id, "name": name, "value": value}
+	if valueType != "" {
+		body["valueType"] = valueType
+	}
+	if encNote != nil {
+		body["encNote"] = *encNote
+	}
+
+	var response struct {
+		Secret WriteResult `json:"secret"`
+	}
+	if err := c.Post(ctx, envPath(org, project, env)+"/secrets", body, &response); err != nil {
+		return nil, err
+	}
+	response.Secret.Status = "created"
+	return &response.Secret, nil
+}
+
+// UpdateClientSecret appends a pre-encrypted version.
+//
+// expectedVersion is the version this ciphertext is bound to. It is not
+// bookkeeping: the AAD binds the version (spec §4.2), the server derives its own
+// target from the stored row, and a disagreement — a second writer, a stale
+// listing — would store bytes the row does not name, unopenable for ever behind
+// a 200. Stating it turns that into a 409 the caller retries.
+func (c *Client) UpdateClientSecret(
+	ctx context.Context,
+	org, project, env, name string,
+	value ClientValue,
+	expectedVersion int,
+	valueType string,
+) (*WriteResult, error) {
+	body := map[string]any{"value": value, "expectedVersion": expectedVersion}
+	if valueType != "" {
+		body["valueType"] = valueType
+	}
+
+	var response struct {
+		Secret WriteResult `json:"secret"`
+	}
+	if err := c.Patch(ctx, secretPath(org, project, env, name), body, &response); err != nil {
+		return nil, err
+	}
+	return &response.Secret, nil
+}
+
+// ClientImportEntry is one pre-encrypted row of an import.
+type ClientImportEntry struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// ExpectedVersion is what this entry sealed for: 1 where the client planned a
+	// create, the stored version plus one where it planned an overwrite. The
+	// server re-plans against the complete listing and refuses an entry whose id
+	// or version it does not agree with, rather than writing it under the row it
+	// resolved — see UpdateClientSecret.
+	ExpectedVersion int         `json:"expectedVersion"`
+	Value           ClientValue `json:"value"`
+	EncNote         *string     `json:"encNote,omitempty"`
+}
+
+// RestoreClientSecret re-appends an earlier value, re-encrypted for the version
+// it is about to become.
+//
+// The old ciphertext is never copied. It names version N in its AAD, and a copy
+// stored as version N+1 would authenticate against nothing — which is the same
+// reason the server re-encrypts on the `server`-mode path, done on the only side
+// that can here.
+//
+// Two version numbers, and they are different: version is the one being restored
+// *from*, expectedVersion the one these bytes are bound to. See
+// UpdateClientSecret for what the second one prevents.
+func (c *Client) RestoreClientSecret(
+	ctx context.Context,
+	org, project, env, name string,
+	version int,
+	value ClientValue,
+	expectedVersion int,
+) (*RestoreResult, error) {
+	var response struct {
+		Secret RestoreResult `json:"secret"`
+	}
+	body := map[string]any{
+		"version":         version,
+		"expectedVersion": expectedVersion,
+		"value":           value,
+	}
+	if err := c.Post(ctx, secretPath(org, project, env, name)+"/restore", body, &response); err != nil {
+		return nil, err
+	}
+	return &response.Secret, nil
+}
+
+// ClientImportOutcome is what the server made of one entry. `unchanged` is only
+// knowable after the HMAC comparison, which happens there.
+type ClientImportOutcome struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// ClientImportResult is the e2ee import response. No `format`, no `strategy`,
+// no warnings: the parsing and the planning happened on this side.
+type ClientImportResult struct {
+	DryRun bool                  `json:"dryRun"`
+	Counts map[string]int        `json:"counts"`
+	Items  []ClientImportOutcome `json:"items"`
+}
+
+// ImportClientEntries posts a batch of pre-encrypted secrets.
+func (c *Client) ImportClientEntries(
+	ctx context.Context,
+	org, project, env string,
+	entries []ClientImportEntry,
+	dryRun bool,
+) (*ClientImportResult, error) {
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("nothing to import")
+	}
+
+	var result ClientImportResult
+	body := map[string]any{"entries": entries, "dryRun": dryRun}
+	if err := c.Post(ctx, envPath(org, project, env)+"/import", body, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}

@@ -13,6 +13,23 @@
 //   - The cache is only ever consulted after the API has *failed to answer* —
 //     and only for network-shaped failures. A 401 or 403 never falls back:
 //     a revoked token must not keep working out of a file (see api.IsNetworkError).
+//
+// ── What an end-to-end encrypted environment stores here ──
+//
+// Ciphertext, and the grant that opens it — never plaintext. The pull bundle is
+// written verbatim, so a cache file for such an environment is encrypted twice
+// over: once by this package under the cache key, and once by the environment's
+// own data key, which lives nowhere on this machine except behind the vault key
+// in the same keyring. Stealing the cache *and* the cache key still yields
+// nothing without the vault key, which is a property the plaintext form cannot
+// have however it is encrypted at rest.
+//
+// Those files carry a distinct AAD, so they land under a distinct name. That is
+// not tidiness: it means a binary too old to understand a bundle finds no cache
+// at all and says so, rather than reading an entry whose plaintext map is empty
+// and injecting nothing into a child process that then fails somewhere else.
+// Server-mode entries keep the AAD and the filename they have always had, so an
+// upgrade does not invalidate one.
 package cache
 
 import (
@@ -35,6 +52,10 @@ import (
 // ErrMiss means no usable cache entry exists for this scope.
 var ErrMiss = errors.New("no offline copy of these secrets exists yet")
 
+// ErrTooOld means an offline copy exists and is older than this run is willing
+// to serve. See [ResolveMaxAge] for what the bound is for.
+var ErrTooOld = errors.New("the offline copy is older than the age bound")
+
 // keyStoreEntry is where the cache key lives in the keyring store.
 const keyStoreEntry = "cache-key"
 
@@ -44,12 +65,21 @@ type Scope struct {
 	Org         string
 	Project     string
 	Environment string
+	// Encrypted marks an environment whose values this machine cannot read
+	// without its vault key. It changes the AAD, and therefore the filename, so
+	// the two kinds of entry can never be read as one another.
+	Encrypted bool
 }
 
-// Entry is one cached environment.
+// Entry is one cached environment, in exactly one of its two forms.
 type Entry struct {
-	FetchedAt time.Time         `json:"fetchedAt"`
-	Secrets   map[string]string `json:"secrets"`
+	FetchedAt time.Time `json:"fetchedAt"`
+	// Secrets is the plaintext map, for a server-mode environment. The server
+	// decrypted it, so there is nothing this machine could hold back.
+	Secrets map[string]string `json:"secrets,omitempty"`
+	// Bundle is the pull response verbatim, for an end-to-end encrypted one:
+	// ciphertext plus the sealed grant, decrypted at use and never at rest.
+	Bundle json.RawMessage `json:"bundle,omitempty"`
 }
 
 // Age is how stale this copy is, rounded for display.
@@ -72,8 +102,16 @@ func path(scope Scope) string {
 // concatenate to the same string.
 func aad(scope Scope) string {
 	const sep = "\x1f"
-	return "xecret-cache-v1" + sep + scope.Host + sep + scope.Org + sep +
+	identity := "xecret-cache-v1" + sep + scope.Host + sep + scope.Org + sep +
 		scope.Project + sep + scope.Environment
+	if scope.Encrypted {
+		// Appended rather than versioned, so a server-mode entry written by any
+		// earlier build still decrypts under exactly the string it was sealed
+		// with. Bumping the version instead would turn every existing cache into
+		// a verification failure on the first upgrade.
+		return identity + sep + "e2ee"
+	}
+	return identity
 }
 
 // key loads the cache key, minting one on first use. The key is 32 random
@@ -105,14 +143,37 @@ func key(store keyring.Store, createIfMissing bool) ([]byte, error) {
 	return fresh, nil
 }
 
-// Write stores secrets for a scope, replacing any previous copy.
+// Write stores plaintext secrets for a server-mode scope, replacing any previous
+// copy.
 func Write(store keyring.Store, scope Scope, secrets map[string]string, now time.Time) error {
+	if scope.Encrypted {
+		// A caller that reached here with an e2ee scope is about to write
+		// plaintext into a file the model says holds none. Refused rather than
+		// tolerated: this is the one invariant the whole file exists for.
+		return errors.New("an end-to-end encrypted environment caches ciphertext, not values")
+	}
+	return write(store, scope, Entry{FetchedAt: now.UTC(), Secrets: secrets})
+}
+
+// WriteBundle stores the pull bundle of an end-to-end encrypted environment.
+//
+// bundle is the response body verbatim. This package does not look inside it and
+// could not use it if it did — the key that opens it is not one this package
+// holds.
+func WriteBundle(store keyring.Store, scope Scope, bundle []byte, now time.Time) error {
+	if !scope.Encrypted {
+		return errors.New("a server-mode environment caches values, not a bundle")
+	}
+	return write(store, scope, Entry{FetchedAt: now.UTC(), Bundle: bundle})
+}
+
+func write(store keyring.Store, scope Scope, entry Entry) error {
 	cacheKey, err := key(store, true)
 	if err != nil {
 		return err
 	}
 
-	plaintext, err := json.Marshal(Entry{FetchedAt: now.UTC(), Secrets: secrets})
+	plaintext, err := json.Marshal(entry)
 	if err != nil {
 		return err
 	}
@@ -198,6 +259,26 @@ func Read(store keyring.Store, scope Scope) (*Entry, error) {
 		return nil, errors.New("cache file is corrupt — run 'xecret cache clear'")
 	}
 	return &entry, nil
+}
+
+// Forget removes one scope's cache file, leaving every other scope and the
+// cache key alone.
+//
+// Written for the pre-migration plaintext copy an environment leaves behind when
+// it becomes end-to-end encrypted. Refusing to *serve* that file is only half an
+// answer: it stays on disk, holding values from before the migration, for the
+// next binary and for anybody who can read the directory. The e2ee read that
+// establishes there is a better copy is the moment it stops having a reason to
+// exist, so that is where it goes.
+//
+// A file that is already gone is not an error — this is called on a path whose
+// job is something else, and "the thing I was going to delete does not exist"
+// is the outcome that path wanted.
+func Forget(scope Scope) error {
+	if err := os.Remove(path(scope)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // Clear removes every cache file and forgets the cache key. Used by

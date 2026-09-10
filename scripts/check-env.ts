@@ -167,7 +167,7 @@ function checkDatabase(): void {
 /**
  * Email, which is optional — so this reports rather than fails.
  *
- * A deployment without a mail provider works: the PIN reset flow says so, and
+ * A deployment without a mail provider works: the invitation flow says so, and
  * nothing else in the product sends anything. What is *not* fine is a
  * half-configuration, where a token is set but the from-address is missing, or
  * a token from the EU region is pointed at the default host. Both produce a
@@ -183,7 +183,7 @@ function checkEmail(): void {
     check(
       'ZEPTOMAIL_TOKEN',
       true,
-      'not set — email is optional; PIN reset answers 200 with `sent: false` and a reason',
+      'not set — email is optional; invitations answer 200 with `sent: false` and a reason',
     );
     return;
   }

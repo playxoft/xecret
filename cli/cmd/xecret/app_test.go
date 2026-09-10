@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/playxoft/xecret/cli/internal/api"
@@ -59,6 +60,62 @@ func TestServiceTokenClientIntrospectsOnce(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("introspections = %d, want 1", calls)
+	}
+}
+
+// A two-half token must present its auth half and nothing else. The key half is
+// the X25519 scalar that opens every secret in the environment (spec §13.1): a
+// request carrying it hands it to the server, its logs and every proxy between —
+// and the server refuses such a token outright, so the mistake is both a
+// disclosure and a broken flow.
+func TestServiceTokenSendsOnlyTheAuthHalf(t *testing.T) {
+	// 43 base64url characters each. The final character carries only two
+	// significant bits, so it has to be one whose low bits are zero — 'B' in the
+	// last position would not decode to 32 bytes.
+	authHalf := strings.Repeat("A", 43)
+	keyHalf := strings.Repeat("B", 42) + "A"
+	token := "xst_live_" + authHalf + "k" + keyHalf
+
+	var seen string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":        map[string]any{"name": "deploy", "accessLevel": "read"},
+			"organization": map[string]any{"name": "Acme", "slug": "acme"},
+			"project":      map[string]any{"name": "API", "slug": "backend"},
+			"environment":  map[string]any{"name": "Production", "slug": "production"},
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv("XECRET_TOKEN", token)
+	t.Setenv("XECRET_API_URL", server.URL)
+
+	a := &app{printer: output.New(false)}
+	_, credentials, err := a.client()
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+
+	if want := "Bearer xst_live_" + authHalf; seen != want {
+		t.Fatalf("authorization = %q, want %q", seen, want)
+	}
+	if strings.Contains(seen, keyHalf) {
+		t.Fatal("the key half reached the Authorization header")
+	}
+	// The credential the rest of the command carries must be the auth half too,
+	// or the next request built from it puts the scalar back on the wire.
+	if credentials.Token != "xst_live_"+authHalf {
+		t.Fatalf("credential token = %q", credentials.Token)
+	}
+}
+
+// A token this build cannot parse is not a service token of either known shape,
+// so there is no key half to strip and the server gets to answer.
+func TestServiceTokenPassesAnUnparseableTokenThrough(t *testing.T) {
+	if got := authHalfOf("xst_live_abc"); got != "xst_live_abc" {
+		t.Fatalf("authHalfOf = %q", got)
 	}
 }
 

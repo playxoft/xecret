@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { api, errorMessage, isApiError } from '@/lib/api';
+import { errorMessage, isApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { pluralize } from '@/lib/format';
-import { apiPath } from '@/app/(dashboard)/_lib/paths';
+import type { SecretIo } from '@/components/envkeys';
 import {
   Alert,
   Badge,
@@ -48,6 +48,8 @@ export interface ImportDialogProps {
   projectSlug: string;
   envSlug: string;
   isProduction: boolean;
+  /** How the environment is written. `null` when its key is unavailable. */
+  io: SecretIo | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onImported: () => void;
@@ -114,11 +116,19 @@ const STATUS_LABEL: Readonly<Record<ImportPlanItem['status'], string>> = {
  * `console` call — including on the error path, which is the tempting one.
  *
  * ── The preview is the import ──
- * `dryRun: true` runs the identical server code path — the same parser, the same
+ * `dryRun: true` runs the identical code path — the same parser, the same
  * planner, the same write preparation that computes each value's HMAC — and
  * stops before opening the transaction. So "42 will be added, 3 overwritten"
  * cannot disagree with what happens, because there is no second implementation
  * for it to disagree with.
+ *
+ * ── Where the parsing happens ──
+ * In `server` mode, on the server: parsing means reading the values, and the
+ * Worker is allowed to. In `e2ee` mode it happens **here**, with the same
+ * `@xecret/core/importer` module, because a file uploaded to be parsed would be
+ * every secret in it, in plaintext, in a request body — which is the thing that
+ * mode exists to prevent. The dialog does not branch on any of this: `SecretIo`
+ * takes the file and answers with a plan either way.
  *
  * ── The preview has no value column, and must never grow one ──
  * The server does not send values back, in either mode, and that is deliberate:
@@ -145,14 +155,15 @@ export function ImportDialog({ open, onOpenChange, ...rest }: ImportDialogProps)
 }
 
 function ImportBody({
-  orgSlug,
-  projectSlug,
   envSlug,
   isProduction,
+  io,
   onOpenChange,
   onImported,
   onApplyingChange,
-}: Omit<ImportDialogProps, 'open'> & { onApplyingChange: (applying: boolean) => void }) {
+}: Omit<ImportDialogProps, 'open' | 'orgSlug' | 'projectSlug'> & {
+  onApplyingChange: (applying: boolean) => void;
+}) {
   const { toast } = useToast();
   const fileInput = useRef<HTMLInputElement | null>(null);
 
@@ -203,15 +214,18 @@ function ImportBody({
     onApplyingChange(busy);
   }
 
-  const requestBody = useCallback(
-    (dryRun: boolean) => ({
-      content,
-      ...(format === 'auto' ? {} : { format }),
-      ...(filename === null ? {} : { filename }),
-      strategy,
-      dryRun,
-    }),
-    [content, format, filename, strategy],
+  const run = useCallback(
+    (dryRun: boolean): Promise<ImportPlanResponse> => {
+      if (io === null) {
+        return Promise.reject(new Error('This environment’s key is not available.'));
+      }
+      // No listing is passed down. This screen's copy is paged and may hold only
+      // the first 200 names; a plan built from it would classify the 201st as a
+      // create and seal a ciphertext against a uuid the server will not use. The
+      // IO reads the complete listing itself — see `runImport`.
+      return io.runImport({ content, filename, format, strategy, dryRun });
+    },
+    [io, content, format, filename, strategy],
   );
 
   // The dry run is re-requested whenever the file, the format or the strategy
@@ -223,25 +237,22 @@ function ImportBody({
     // changed the inputs, so this effect only ever writes from its callbacks.
     if (applied !== null || content.trim().length === 0) return;
 
-    const controller = new AbortController();
+    // A dry run in `e2ee` mode encrypts every entry before it is sent, and a
+    // cancelled preview must not have its result adopted afterwards. The flag
+    // replaces the abort signal the server path used: the work is local, so
+    // there is nothing to abort — only a result to discard.
+    let cancelled = false;
     const timer = setTimeout(() => {
       setPlanning(true);
       setPlanError(null);
-      api
-        .post<ImportPlanResponse>(
-          apiPath.import(orgSlug, projectSlug, envSlug),
-          requestBody(true),
-          {
-            signal: controller.signal,
-          },
-        )
+      run(true)
         .then((response) => {
-          if (controller.signal.aborted) return;
+          if (cancelled) return;
           setPlan(response);
           setPlanning(false);
         })
         .catch((cause: unknown) => {
-          if (controller.signal.aborted) return;
+          if (cancelled) return;
           setPlan(null);
           setPlanError(cause);
           setPlanning(false);
@@ -249,10 +260,10 @@ function ImportBody({
     }, PREVIEW_DEBOUNCE_MS);
 
     return () => {
+      cancelled = true;
       clearTimeout(timer);
-      controller.abort();
     };
-  }, [applied, content, requestBody, orgSlug, projectSlug, envSlug]);
+  }, [applied, content, run]);
 
   async function readFile(file: File) {
     if (file.size > MAX_FILE_BYTES) {
@@ -272,10 +283,7 @@ function ImportBody({
     setBusy(true);
     setApplyError(null);
     try {
-      const result = await api.post<ImportPlanResponse>(
-        apiPath.import(orgSlug, projectSlug, envSlug),
-        requestBody(false),
-      );
+      const result = await run(false);
       // The uploaded file is dropped the instant it is no longer needed. Keeping
       // it so the user could "run it again" would hold every value in memory for
       // as long as the dialog stayed open.

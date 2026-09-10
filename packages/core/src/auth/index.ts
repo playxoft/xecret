@@ -22,8 +22,16 @@ export {
 } from './session';
 export type { CookieOptions, SessionRecord } from './session';
 
-export { generateToken, hashToken, isWellFormedToken, TOKEN_PREFIXES, verifyToken } from './tokens';
-export type { GeneratedToken, TokenKind } from './tokens';
+export {
+  generateToken,
+  hashToken,
+  isWellFormedToken,
+  joinServiceToken,
+  splitServiceToken,
+  TOKEN_PREFIXES,
+  verifyToken,
+} from './tokens';
+export type { GeneratedToken, ServiceTokenParts, TokenKind } from './tokens';
 
 export { INVITATION_TTL_MS, invitationExpiryFrom, invitationState } from './invitation';
 export type { InvitationLifecycle, InvitationState } from './invitation';
@@ -40,27 +48,21 @@ export {
 export {
   AUTO_LOCK_MINUTES_OPTIONS,
   DEFAULT_AUTO_LOCK_MINUTES,
+  UNLOCK_VERIFIER_BYTES,
+  VAULT_FREE_ATTEMPTS,
+  VAULT_LOCKOUT_BASE_MS,
+  VAULT_LOCKOUT_MAX_MS,
+  VAULT_UNLOCK_MS,
+  clearedUnlockFailures,
+  evaluateUnlockLockout,
+  hashUnlockVerifier,
   isAutoLockMinutes,
-  PBKDF2_ITERATIONS,
-  PIN_FREE_ATTEMPTS,
-  PIN_LENGTH,
-  PIN_LOCKOUT_BASE_MS,
-  PIN_LOCKOUT_MAX_MS,
-  PIN_PATTERN,
-  PIN_RESET_TTL_MS,
-  PIN_UNLOCK_MS,
-  checkPin,
-  clearedPinFailures,
-  evaluatePinLockout,
-  hashPin,
-  isSessionUnlocked,
-  nextPinFailure,
-  pinNeedsRehash,
-  pinResetExpiryFrom,
-  unlockExpiryFrom,
-  verifyPin,
-} from './pin';
-export type { AutoLockMinutes, PinAttemptState, PinCheck, PinLockout, PinProblem } from './pin';
+  isVaultUnlocked,
+  nextUnlockFailure,
+  unlockVerifierMatches,
+  vaultUnlockExpiryFrom,
+} from './vault';
+export type { AutoLockMinutes, UnlockAttemptState, UnlockLockout } from './vault';
 
 export { IdentityVerificationError } from './types';
 export type {

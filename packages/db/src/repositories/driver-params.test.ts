@@ -6,7 +6,6 @@ import { uuidv7 } from '@xecret/core/ids';
 import * as schema from '../schema';
 import type { Database } from '../client';
 import { consumeCliAuthCode, createCliAuthCode, deleteExpiredCliAuthCodes } from './cli-auth';
-import { consumePinReset, createPinReset, deleteExpiredPinResets } from './pins';
 import {
   createSession,
   deleteExpiredSessions,
@@ -28,8 +27,7 @@ import {
  *
  * Which is exactly what shipped. `sql`${column} > ${now}`` reads like the
  * operator form, produces identical SQL, type-checks, and is wrong — and it was
- * written twice, so every PIN reset and every `xecret login` code exchange
- * answered 500. Nothing in review or in the type system distinguishes the two
+ * written twice, so every credential-consuming lookup that used it answered 500. Nothing in review or in the type system distinguishes the two
  * forms, so the distinction is asserted here instead.
  *
  * **What this file proves:** that these calls bind only values the driver can
@@ -90,15 +88,6 @@ async function recorded(run: (db: Database) => Promise<unknown>): Promise<Record
 describe('no query hands the driver a Date', () => {
   const calls: Array<[string, (db: Database) => Promise<unknown>]> = [
     [
-      'consumePinReset',
-      async (db) => consumePinReset(db, await hashToken('xpr_live_example'), NOW),
-    ],
-    [
-      'createPinReset',
-      (db) => createPinReset(db, { userId: USER_ID, token: 'xpr_live_example', ipAddress: null }),
-    ],
-    ['deleteExpiredPinResets', (db) => deleteExpiredPinResets(db, NOW)],
-    [
       'consumeCliAuthCode',
       async (db) => consumeCliAuthCode(db, await hashToken('xac_live_example'), NOW),
     ],
@@ -144,15 +133,6 @@ describe('the single-use credential lookups still compare their expiry', () => {
    * predicates are what stop an expired reset link and an expired authorization
    * code from being redeemable.
    */
-  it('a PIN reset link is matched only while it is unconsumed and unexpired', async () => {
-    const [statement] = await recorded(async (db) =>
-      consumePinReset(db, await hashToken('xpr_live_example'), NOW),
-    );
-
-    expect(statement?.sql).toMatch(/"consumed_at" is null/);
-    expect(statement?.sql).toMatch(/"expires_at" > \$\d+/);
-  });
-
   it('a CLI authorization code is matched only while it is unconsumed and unexpired', async () => {
     const [statement] = await recorded(async (db) =>
       consumeCliAuthCode(db, await hashToken('xac_live_example'), NOW),

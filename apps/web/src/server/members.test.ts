@@ -93,6 +93,10 @@ describe('the effective-access preview', () => {
       name: slug,
       slug,
       isProduction,
+      // The effective-access preview is about grants and roles, not about how
+      // values are encrypted — so these fixtures stay `server`, which keeps them
+      // asserting the same thing they always did.
+      encryptionMode: 'server',
       sortOrder: 0,
       createdAt: new Date(0),
       updatedAt: new Date(0),

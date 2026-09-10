@@ -158,8 +158,17 @@ export default defineConfig([
      * with type information. That is a real, if small, gap: worth knowing about,
      * not worth a second tsconfig for two files that are covered by 29 tests in
      * `packages/core/src/crypto/escrow.test.ts`.
+     *
+     * A package's own `scripts` directory is here for the same reason: a
+     * package-level build script — `packages/core/scripts/generate-vectors.ts`
+     * is the only one today — is an operator script that happens to live next
+     * to its package. It also matches the `packages/core` block above, which
+     * bans Node imports; that ban is right for code that ships to a Worker and
+     * wrong for a script that only ever runs under Node, and this block, being
+     * later, replaces it with the plain Firebase ban. Nothing under `src` is
+     * affected, which is the code the ban exists for.
      */
-    files: ['scripts/**/*.ts', 'packages/*/*.config.ts'],
+    files: ['scripts/**/*.ts', 'packages/*/scripts/**/*.ts', 'packages/*/*.config.ts'],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     languageOptions: {
       parserOptions: { ecmaVersion: 2022, sourceType: 'module' },

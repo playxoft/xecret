@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/playxoft/xecret/cli/internal/api"
+	"github.com/playxoft/xecret/cli/internal/envkeys"
+	"github.com/playxoft/xecret/cli/internal/ids"
+	"github.com/playxoft/xecret/cli/internal/importer"
 	"github.com/playxoft/xecret/cli/internal/output"
 )
 
@@ -69,6 +72,26 @@ func cmdImport(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
+	// The mode decides who parses. A `server`-mode environment sends the file and
+	// the server plans it — one parser, which is the arrangement this CLI has
+	// always preferred. An `e2ee` one cannot: uploading a file full of plaintext
+	// to an endpoint that must never see one is the whole thing the model
+	// forbids, so the parse, the plan and the encryption all happen here.
+	material, err := a.openKeys(ctx, client, credentials, resolved)
+	if err != nil {
+		return withE2eeHint(err)
+	}
+	if material != nil {
+		defer material.Close()
+		return importClientSide(ctx, a, client, material, resolved, importInput{
+			content:  string(content),
+			filename: filepath.Base(filePath),
+			format:   *format,
+			strategy: *strategy,
+			dryRun:   *dryRun,
+		})
+	}
+
 	result, err := client.Import(ctx, resolved.Org, resolved.Project, resolved.Environment, api.ImportRequest{
 		Content:  string(content),
 		Format:   *format,
@@ -100,6 +123,147 @@ func cmdImport(args []string) error {
 
 	summary := fmt.Sprintf("%d created, %d overwritten, %d unchanged, %d skipped",
 		result.Counts["create"], result.Counts["overwrite"], result.Counts["unchanged"], result.Counts["skip"])
+	if result.DryRun {
+		a.printer.Infof("Dry run — nothing written. Plan: %s.", summary)
+		a.printer.Infof("Re-run without --dry-run to apply.")
+	} else {
+		a.printer.Successf("Imported into %s/%s: %s.", resolved.Project, resolved.Environment, summary)
+	}
+	return nil
+}
+
+// importInput is what the caller read off disk and off the flags.
+type importInput struct {
+	content  string
+	filename string
+	format   string
+	strategy string
+	dryRun   bool
+}
+
+// importClientSide parses, plans and encrypts an import for an end-to-end
+// encrypted environment.
+//
+// ── Why the dry run still makes a request ──
+// The plan decides create/overwrite/skip/rename, and this process can compute
+// all four. It cannot compute `unchanged`, which is an HMAC comparison against a
+// tag only the server holds. Sending the sealed entries with `dryRun: true`
+// costs one request and keeps the preview identical to the outcome — which is
+// the property the shared planner exists to protect, and which a locally-guessed
+// summary would quietly break.
+func importClientSide(
+	ctx context.Context,
+	a *app,
+	client *api.Client,
+	material *envkeys.Material,
+	resolved scope,
+	input importInput,
+) error {
+	format := importer.Format(input.format)
+	if input.format == "" {
+		format = importer.Detect(input.filename, input.content)
+	} else if !importer.KnownFormat(input.format) {
+		return fmt.Errorf("unknown format %q — use dotenv, json, yaml or shell", input.format)
+	}
+
+	parsed := importer.Parse(input.content, format)
+
+	// Unpaginated and complete, exactly as the server's own path needs it: a plan
+	// built against the first page of existing names would classify an existing
+	// secret as a create and then fail against the unique index. The listing also
+	// carries the ids and versions each ciphertext has to be sealed against.
+	existing, err := client.Secrets(ctx, resolved.Org, resolved.Project, resolved.Environment)
+	if err != nil {
+		return err
+	}
+
+	names := make([]string, 0, len(existing))
+	current := make(map[string]api.SecretListItem, len(existing))
+	for _, secret := range existing {
+		names = append(names, secret.Name)
+		current[secret.Name] = secret
+	}
+
+	plan := importer.BuildPlan(parsed, names, importer.Strategy(input.strategy))
+
+	entries := make([]api.ClientImportEntry, 0, len(plan.Items))
+	localCounts := map[string]int{}
+	for _, item := range plan.Items {
+		if item.Status == importer.StatusInvalid || item.Status == importer.StatusSkip {
+			localCounts[string(item.Status)]++
+			continue
+		}
+
+		// A create seals against the id this process mints and version 1; an
+		// overwrite seals against the stored id and the version the row is about
+		// to become. Both travel with the entry, because both are in the AAD and
+		// this listing can be stale by the time the request lands: the server
+		// re-plans against the rows that exist now and refuses any entry whose id
+		// or version it does not agree with, rather than writing it under the row
+		// it resolved. Without that, an entry planned as a create for a name that
+		// already exists is stored under the stored id — a ciphertext naming a
+		// uuid the row does not have, unopenable for ever, reported as success.
+		secretID, version := "", 1
+		if target, exists := current[item.TargetName]; exists {
+			secretID, version = target.ID, target.Version+1
+		} else if secretID, err = ids.UUIDv7(); err != nil {
+			return err
+		}
+
+		sealed, encryptErr := material.EncryptSecret(secretID, version, item.Value)
+		if encryptErr != nil {
+			return encryptErr
+		}
+		entries = append(entries, api.ClientImportEntry{
+			ID: secretID, Name: item.TargetName, ExpectedVersion: version, Value: sealed,
+		})
+	}
+
+	for _, warning := range plan.Warnings {
+		a.printer.Warnf("line %d: %s", warning.Line, warning.Message)
+	}
+
+	if len(entries) == 0 {
+		a.printer.Infof("Nothing to import: %d skipped, %d unusable.",
+			localCounts[string(importer.StatusSkip)], localCounts[string(importer.StatusInvalid)])
+		return nil
+	}
+
+	result, err := client.ImportClientEntries(
+		ctx, resolved.Org, resolved.Project, resolved.Environment, entries, input.dryRun)
+	if err != nil {
+		return withWriteConflictHint(err)
+	}
+
+	// The server's outcome per name, joined to the local plan's note — which is
+	// the only place a "renamed from" or "already exists" explanation lives.
+	notes := make(map[string]string, len(plan.Items))
+	for _, item := range plan.Items {
+		notes[item.TargetName] = item.Note
+	}
+
+	rows := make([][]string, 0, len(result.Items)+len(plan.Items))
+	for _, item := range result.Items {
+		rows = append(rows, []string{item.Name, item.Status, notes[item.Name]})
+	}
+	for _, item := range plan.Items {
+		if item.Status == importer.StatusInvalid || item.Status == importer.StatusSkip {
+			rows = append(rows, []string{item.SourceKey, string(item.Status), item.Note})
+		}
+	}
+
+	if a.printer.JSON {
+		return a.printer.WriteJSON(map[string]any{
+			"dryRun": result.DryRun,
+			"counts": result.Counts,
+			"items":  rows,
+		})
+	}
+	a.printer.Table([]string{"name", "status", "note"}, rows)
+
+	summary := fmt.Sprintf("%d created, %d overwritten, %d unchanged, %d skipped",
+		result.Counts["create"], result.Counts["overwrite"], result.Counts["unchanged"],
+		localCounts[string(importer.StatusSkip)]+localCounts[string(importer.StatusInvalid)])
 	if result.DryRun {
 		a.printer.Infof("Dry run — nothing written. Plan: %s.", summary)
 		a.printer.Infof("Re-run without --dry-run to apply.")
@@ -159,7 +323,7 @@ func cmdExport(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	document, err := client.Export(ctx, resolved.Org, resolved.Project, resolved.Environment, *format)
+	document, err := a.exportDocument(ctx, client, credentials, resolved, *format)
 	if err != nil {
 		return err
 	}
@@ -279,9 +443,22 @@ func cmdPull(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	document, err := client.Pull(ctx, resolved.Org, resolved.Project, resolved.Environment, *format)
+	pulled, err := client.Pull(ctx, resolved.Org, resolved.Project, resolved.Environment, *format)
 	if err != nil {
 		return err
+	}
+
+	document := pulled.Document
+	if pulled.Bundle != nil {
+		// The server rendered nothing, because it could not read anything. The
+		// same five formats, produced here from values this process decrypted.
+		secrets, openErr := a.openEnvironment(ctx, client, credentials, pulled)
+		if openErr != nil {
+			return withE2eeHint(openErr)
+		}
+		if document, err = formatSecrets(secrets, *format); err != nil {
+			return err
+		}
 	}
 
 	if *outPath != "" {

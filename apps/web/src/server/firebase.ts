@@ -27,7 +27,7 @@ import { MissingBindingError } from './bindings';
  * generous window widens the replay opportunity for a token captured before it
  * was formally valid, and there is no legitimate client that needs more.
  */
-const CLOCK_SKEW_SECONDS = 10;
+export const CLOCK_SKEW_SECONDS = 10;
 
 /** KV key under which Google's signing certificates are cached. */
 const JWKS_CACHE_KEY = 'firebase-jwks';
@@ -77,6 +77,14 @@ export interface FirebaseClaims {
   sub: string;
   email?: string | undefined;
   email_verified?: boolean | undefined;
+  /**
+   * Seconds since the epoch at which the user last authenticated for real.
+   *
+   * Firebase sets it on every ID token and — crucially — does **not** move it
+   * when a refresh token mints a new one. That is what makes it, and not `iat`,
+   * the claim a re-authentication gate can rely on.
+   */
+  auth_time?: number | undefined;
   name?: string | undefined;
   picture?: string | undefined;
   firebase: { sign_in_provider: string };
@@ -121,6 +129,12 @@ export class FirebaseIdentityProvider implements IdentityProvider {
       subject: claims.sub,
       email,
       emailVerified: claims.email_verified === true,
+      // Absent means "this token cannot say when the user authenticated", and
+      // the honest encoding of that is a moment infinitely far in the past — so
+      // a caller comparing it against a freshness window fails closed rather
+      // than treating an unknown as "just now". Firebase always sets it; a
+      // stubbed verifier in a test may not.
+      authTime: typeof claims.auth_time === 'number' ? claims.auth_time : 0,
     };
 
     // `exactOptionalPropertyTypes` means an absent field must be absent, not

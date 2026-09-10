@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -33,12 +34,15 @@ func TestCallbackDeliversTheCode(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	code, err := listener.Wait(ctx)
+	callback, err := listener.Wait(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if code != "xac_live_abc" {
-		t.Errorf("delivered code %q", code)
+	if callback.Code != "xac_live_abc" {
+		t.Errorf("delivered code %q", callback.Code)
+	}
+	if callback.Handoff != "" {
+		t.Errorf("invented a hand-off nobody sent: %q", callback.Handoff)
 	}
 }
 
@@ -62,12 +66,55 @@ func TestWrongStateIsIgnoredNotFatal(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	code, err := listener.Wait(ctx)
+	callback, err := listener.Wait(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if code != "real-code" {
-		t.Errorf("the wrong-state request influenced the outcome: %q", code)
+	if callback.Code != "real-code" {
+		t.Errorf("the wrong-state request influenced the outcome: %q", callback.Code)
+	}
+}
+
+// TestHandoffRidesTheCallback: the sealed User Key arrives on the same redirect
+// as the code (spec 13.2), as a query parameter rather than a fragment — a
+// fragment is never transmitted, which is exactly why one would be useless
+// against an HTTP listener.
+func TestHandoffRidesTheCallback(t *testing.T) {
+	listener, err := Listen("expected-state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	const wrap = "xk2.x25519.QUJDREVGRw"
+	callbackGet(t, listener.Port(), "state=expected-state&code=xac_live_abc&handoff="+wrap)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	callback, err := listener.Wait(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if callback.Handoff != wrap {
+		t.Errorf("hand-off = %q, want %q", callback.Handoff, wrap)
+	}
+}
+
+// TestAuthorizeURLOmitsAnAbsentHandoff: a CLI that does not ask for one gets the
+// flow it always had, and the consent screen must not see an empty parameter and
+// try to seal to it.
+func TestAuthorizeURLOmitsAnAbsentHandoff(t *testing.T) {
+	with := AuthorizeURL("https://xecret.dev/", "challenge", "laptop", "state", 52310, "PUBKEY")
+	if !strings.Contains(with, "handoff=PUBKEY") {
+		t.Errorf("hand-off key missing from %q", with)
+	}
+
+	without := AuthorizeURL("https://xecret.dev/", "challenge", "laptop", "state", 52310, "")
+	if strings.Contains(without, "handoff") {
+		t.Errorf("empty hand-off reached the URL: %q", without)
+	}
+	if !strings.Contains(without, "challenge=challenge") || !strings.Contains(without, "port=52310") {
+		t.Errorf("the rest of the request did not survive: %q", without)
 	}
 }
 

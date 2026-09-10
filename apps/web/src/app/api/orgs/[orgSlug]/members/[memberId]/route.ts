@@ -16,6 +16,7 @@ import {
 } from '@/server/members-service';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
+import { recordKeyReconciliation, reconcileMemberKeyAccess } from '@/server/member-keys';
 import { memberPatchSchema, toMember } from '@/server/schemas/members';
 import { authorize, resolveOrg } from '@/server/tenancy';
 
@@ -93,6 +94,20 @@ export const PATCH = authenticatedRoute<Params>(
         ),
       );
 
+      // A role change moves what this person may read, and often in both
+      // directions at once: `developer` to `viewer` narrows every non-production
+      // environment while leaving production exactly where it was. So the keys
+      // are *reconciled* rather than adjusted — see `member-keys.ts` for why one
+      // total function beats a branch per act.
+      recordKeyReconciliation(
+        await reconcileMemberKeyAccess(services, {
+          orgId,
+          userId: target.userId,
+          actorUserId: actor.user.id,
+        }),
+        { orgId, audit, record, targetEmail: target.user.email },
+      );
+
       return json({
         member: toMember({ ...target, role: updated.role, status: updated.status }, actor.user.id),
       });
@@ -111,6 +126,19 @@ export const PATCH = authenticatedRoute<Params>(
         { type: 'member', id: target.id },
         { targetEmail: target.user.email },
       ),
+    );
+
+    // A suspension resolves to `none` everywhere, so this revokes every key the
+    // member held; a reinstatement queues them all back. The asymmetry is the
+    // honest one: taking a key away is a row deletion, and giving it back needs
+    // somebody who holds it to seal a new one.
+    recordKeyReconciliation(
+      await reconcileMemberKeyAccess(services, {
+        orgId,
+        userId: target.userId,
+        actorUserId: actor.user.id,
+      }),
+      { orgId, audit, record, targetEmail: target.user.email },
     );
 
     return json({
@@ -154,6 +182,20 @@ export const DELETE = authenticatedRoute<Params>(
 
     await removeMember(services.db, { orgId, memberId: target.id }).catch(mapMembershipError);
 
+    // After the removal, not before: the reconciliation reads the membership to
+    // decide, and a member who is gone resolves to no context — a denial
+    // everywhere, which is exactly the answer removal needs.
+    //
+    // Their `access_grants` rows went with the membership by cascade; their
+    // `env_key_grants` rows do **not**, because those hang off `users` rather
+    // than off the membership row. This is what removes them, and without it a
+    // removed member would keep a sealed key for every environment they had.
+    const reconciliation = await reconcileMemberKeyAccess(services, {
+      orgId,
+      userId: target.userId,
+      actorUserId: actor.user.id,
+    });
+
     record(
       audit(orgId).success(
         'member.removed',
@@ -161,6 +203,13 @@ export const DELETE = authenticatedRoute<Params>(
         { targetEmail: target.user.email, previousRole: target.role },
       ),
     );
+
+    recordKeyReconciliation(reconciliation, {
+      orgId,
+      audit,
+      record,
+      targetEmail: target.user.email,
+    });
 
     return noContent();
   },

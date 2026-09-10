@@ -1,0 +1,47 @@
+{
+  "_comment": [
+    "A GET .../pull response for an e2ee environment, field for field as apps/web",
+    "serves it. The shape is the web contract; the ciphertexts are not fabricated.",
+    "",
+    "edkSealed is sealed-box/token-edk from e2ee-vectors.json verbatim, so it was",
+    "produced by the TypeScript implementation and opens to the EDK the",
+    "secret-value vectors encrypt under. Each secret's ciphertext, orgId,",
+    "environmentId, secretId and version come from those vectors unchanged.",
+    "",
+    "ehkSealed is the one blob the vector file has no token-recipient entry for.",
+    "It was produced by cli/internal/e2ee, sealing value-hmac/ascii's EHK to the",
+    "same token public key under the ehk-grant AAD. Byte-compatibility of that",
+    "construction is what vectors_test.go proves; this file's job is the plumbing",
+    "above it — bundle to principal to plaintext.",
+    "",
+    "STALE_KEY names a retired env_data_keys row, which is the shape a version",
+    "written before a rotation has. It must be reported as rotated away rather",
+    "than as a decryption failure."
+  ],
+  "encryptionMode": "e2ee",
+  "keys": {
+    "encryptionMode": "e2ee",
+    "environmentId": "018f3b2c-9c1a-7c3d-8e4f-1a1b2c3d4e5f",
+    "activeEdk": {
+      "id": "018f3b2c-9c1a-7c3d-8e4f-7a1b2c3d4e5f",
+      "version": 1
+    },
+    "myGrant": {
+      "edkSealed": "xk2.x25519.6yHM4IGTF8kbSyr_u5eioqCuczyIDlbxGdMLDzxlwARw28rloxBxzdnLHgPwSa1gDrDg31TVIGyRHENRXJSGWJXYiQ2yHCkbGQPfw0XPfekmEJA6kx_LckU2SXg",
+      "ehkSealed": "xk2.x25519.5sFgXqNFa2uq89bW8VK68V6QHf2c0QsKMDqJPQmHXz3DDEjrgqQamxjbFKM915vAs0N1m_oiVXio5VpAujoMb1jkH4GhWgfBarlieQBN_EXJw4Ed4oXQeWjwT0U",
+      "signature": "xk2.ed25519.2aVz3NL3G7-uq1Tt-fHkAqKEkGpWAWi1eN00OLeQXcNUB4zFDM5JXSRPO5RROtS5vNYayb2Oc6tCzRAKBRAOAg",
+      "signedByUserId": "018f3b2c-9c1a-7c3d-8e4f-4a1b2c3d4e5f"
+    }
+  },
+  "secrets": [
+    {
+      "id": "018f3b2c-9c1a-7c3d-8e4f-2a1b2c3d4e5f",
+      "name": "DATABASE_URL",
+      "ciphertext": "xk2.gcm.m-nKxw9KsrkbcOGtgRdWFeW0a8gSHVR0YufZ59lwPgpGiuU7rjMpNQLh_MJG1_MKvxCwSjgwLH66wt8YVWBWmiTrCl94geY_7Gsw6kxFGiz4_HjI3nSDEE54",
+      "clientAlgorithm": "xk2.gcm",
+      "envDataKeyId": "018f3b2c-9c1a-7c3d-8e4f-7a1b2c3d4e5f",
+      "version": 1,
+      "updatedAt": "2026-09-08T12:00:00.000Z"
+    }
+  ]
+}

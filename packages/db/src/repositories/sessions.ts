@@ -33,13 +33,13 @@ export interface SessionUser {
 export interface AuthenticatedSession extends SessionRecord {
   user: SessionUser;
   /**
-   * When this session last had its PIN accepted, or `null` for never.
+   * When this session last unlocked its owner's vault, or `null` for never.
    *
    * Carried on the hot-path lookup rather than fetched separately, because every
    * request that resolves a session also has to decide whether it is unlocked —
    * a second query for one timestamp would be a round trip per request forever.
    */
-  pinVerifiedAt: Date | null;
+  vaultUnlockedAt: Date | null;
 }
 
 /**
@@ -141,7 +141,7 @@ export async function touchSession(exec: Executor, sessionId: string, now: Date)
 }
 
 /**
- * Records that this session's PIN was just accepted.
+ * Records that this session just unlocked its owner's vault.
  *
  * Written to the session rather than to the user, so unlocking on a desktop does
  * not silently unlock the phone that is also signed in. Each device proves
@@ -155,7 +155,7 @@ export async function markSessionUnlocked(
 ): Promise<void> {
   await exec
     .update(sessions)
-    .set({ pinVerifiedAt: now, lastSeenAt: now })
+    .set({ vaultUnlockedAt: now, lastSeenAt: now })
     .where(and(eq(sessions.id, sessionId), isNull(sessions.revokedAt)));
 }
 
@@ -179,7 +179,7 @@ export async function lockSessions(
 
   const result = await exec
     .update(sessions)
-    .set({ pinVerifiedAt: null })
+    .set({ vaultUnlockedAt: null })
     .where(and(scope, isNull(sessions.revokedAt)));
 
   return result.count;
@@ -262,7 +262,7 @@ export function sessionLookupQuery(exec: Executor, tokenHash: Uint8Array, now: D
       expiresAt: sessions.expiresAt,
       lastSeenAt: sessions.lastSeenAt,
       revokedAt: sessions.revokedAt,
-      pinVerifiedAt: sessions.pinVerifiedAt,
+      vaultUnlockedAt: sessions.vaultUnlockedAt,
       user: {
         id: users.id,
         email: users.email,

@@ -4,7 +4,8 @@ import { usePathname } from 'next/navigation';
 import { useCallback, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 
-import { api, isApiError, SIGN_IN_PATH } from '@/lib/api';
+import { isApiError, SIGN_IN_PATH } from '@/lib/api';
+import { lockVault, VaultProvider } from '@/components/vault';
 import { AppShell, Wordmark } from '@/components/layout';
 import type { BreadcrumbItem, ShellOrganization } from '@/components/layout';
 import { CreateOrganizationDialog } from '@/components/organizations';
@@ -92,10 +93,15 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
 
   // Locking re-reads the session, which re-renders this component and lands on
   // the lock screen. One code path for "we are locked", whether that came from
-  // the menu or from an eight-hour timeout.
+  // the menu, from the idle timer below, or from an eight-hour timeout.
+  //
+  // `lockVault` rather than a bare POST, because locking is two things and only
+  // one of them is a request: it also zeroizes the User Key and both private
+  // keys in this browser, in a `finally`, so a failed request still leaves the
+  // laptop locked. That is the direction the idle timer needs it to fail in.
   const reloadSession = session.reload;
   const lock = useCallback(async () => {
-    await api.post('/auth/pin/lock');
+    await lockVault();
     // `void`, not awaited: `reload` returns a promise now, and nothing after
     // this line depends on the answer — the re-render it causes is the whole
     // point, and it is what lands on the lock screen. Left bare it was a
@@ -105,10 +111,10 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
 
   // The idle lock. Armed only while there is an unlock to lose; the interval
   // comes from the account's setting on the security page, `0` disarms it.
-  const pinState = session.data?.pin;
+  const vaultState = session.data?.vault;
   useAutoLock(
-    pinState?.autoLockMinutes ?? 0,
-    pinState?.configured === true && pinState.unlocked,
+    vaultState?.autoLockMinutes ?? 0,
+    vaultState?.configured === true && vaultState.unlocked,
     lock,
   );
 
@@ -140,7 +146,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     );
   }
 
-  const { user, organizations, pin } = session.data;
+  const { user, organizations, vault } = session.data;
 
   // ── The lock, before anything else the shell would render ──
   //
@@ -151,8 +157,18 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   //
   // Checked before the "no organisations" case below, because a locked session
   // has not yet earned an explanation of its membership.
-  if (!pin.configured || !pin.unlocked) {
-    return <LockScreen status={pin} email={user.email} onUnlocked={session.reload} />;
+  if (!vault.configured || !vault.unlocked) {
+    // `VaultProvider` wraps this branch as well as the shell below, because the
+    // lock screen is the one place that *needs* the material — the wraps and the
+    // KDF parameters an unlock attempt runs against. It is mounted separately in
+    // each branch rather than around both: the transition between them is a
+    // remount either way, and the keys survive it because they live in a module
+    // singleton rather than in this tree.
+    return (
+      <VaultProvider>
+        <LockScreen status={vault} user={user} onUnlocked={session.reload} />
+      </VaultProvider>
+    );
   }
 
   if (organizations.length === 0) {
@@ -213,30 +229,32 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
       value={{
         user,
         organizations,
-        pin,
+        vault,
         lock,
         refresh: reloadSession,
         createOrganization: openCreateOrganization,
       }}
     >
-      <AppShell
-        nav={nav}
-        organizations={shellOrganizations}
-        currentOrgSlug={currentOrg?.slug ?? ''}
-        onCreateOrganization={openCreateOrganization}
-        user={{ name: user.displayName ?? user.email, email: user.email }}
-        accountHref={appPath.account()}
-        onLock={lock}
-        breadcrumbs={buildBreadcrumbs(location, currentOrg?.name ?? null)}
-      >
-        {children}
-      </AppShell>
+      <VaultProvider>
+        <AppShell
+          nav={nav}
+          organizations={shellOrganizations}
+          currentOrgSlug={currentOrg?.slug ?? ''}
+          onCreateOrganization={openCreateOrganization}
+          user={{ name: user.displayName ?? user.email, email: user.email }}
+          accountHref={appPath.account()}
+          onLock={lock}
+          breadcrumbs={buildBreadcrumbs(location, currentOrg?.name ?? null)}
+        >
+          {children}
+        </AppShell>
 
-      {/* Outside `AppShell` rather than inside the sidebar: the dialog is
+        {/* Outside `AppShell` rather than inside the sidebar: the dialog is
           portalled to the document either way, and keeping it here means the
           mobile drawer closing does not unmount a form somebody is typing in.
           Inside the provider, so every screen below can open it. */}
-      {createOrganizationDialog}
+        {createOrganizationDialog}
+      </VaultProvider>
     </SessionProvider>
   );
 }

@@ -41,10 +41,21 @@ export const GET = authenticatedRoute(async ({ principal, services }) => {
 
   return json({
     token: {
+      /**
+       * The token's own row id — the `recipientId` of every grant sealed to it
+       * (spec §4.2). A service token in an `e2ee` environment cannot build the
+       * AAD that opens its own grant without it, and it is not a disclosure: the
+       * credential is naming itself to itself.
+       */
+      id: principal.tokenId,
       name: principal.tokenName,
       accessLevel: principal.accessLevel,
     },
-    organization: { name: organization.name, slug: organization.slug },
+    /**
+     * `id` alongside the slug for the same reason: `orgId` is a component of
+     * every secret's AAD, and slugs are renameable while AAD components are not.
+     */
+    organization: { id: organization.id, name: organization.name, slug: organization.slug },
     project: { name: project.name, slug: project.slug },
     environment: {
       name: environment.name,

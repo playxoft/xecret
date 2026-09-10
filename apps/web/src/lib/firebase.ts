@@ -389,6 +389,74 @@ export async function changePassword(
   }
 }
 
+/* ───────────────────── proving it is still you, later ───────────────────── */
+
+/**
+ * A fresh Firebase ID token, minted by an authentication that just happened.
+ *
+ * ── Why anything in the dashboard needs one at all ──
+ * The dashboard holds no Firebase session: `exchangeForSession` drops it the
+ * moment the xecret cookie exists, and persistence is in-memory so a reload
+ * would not restore it. That is the right default and it is exactly what makes
+ * *re*-authentication a deliberate act — there is no cached credential to
+ * silently reuse, so a token produced here can only have come from somebody
+ * typing a password or completing a Google prompt seconds ago.
+ *
+ * The token's `auth_time` claim is what the server actually checks, and Firebase
+ * does not move that claim when a refresh token mints a new ID token. So this
+ * cannot be satisfied by a browser that has merely been left open.
+ *
+ * ── The one rule about the return value ──
+ * It is a bare string, returned so the caller can put it straight into a request
+ * body, and it must go nowhere else: not into React state, not into a log, not
+ * into `localStorage`. `exchangeForSession` keeps the same rule for the sign-in
+ * token and says so at greater length.
+ *
+ * The transient Firebase session is signed out in a `finally`, success or not —
+ * a failed attempt must not leave a refresh token in the isolate either.
+ */
+async function idTokenFrom(user: User): Promise<string> {
+  try {
+    // `true` forces a refresh rather than returning whatever was minted a moment
+    // ago at sign-in. Same claims, but it removes any question about which
+    // authentication the token describes.
+    return await user.getIdToken(true);
+  } finally {
+    await firebaseSignOut(getFirebaseAuth());
+  }
+}
+
+/**
+ * Re-authenticates with the account's password.
+ *
+ * A Google-only account has no password, and Firebase answers with a credential
+ * error that `describeAuthError` renders like any other wrong-credential
+ * outcome. That is the correct behaviour rather than a gap: the caller offers the
+ * Google button beside this, and the two together cover every sign-in method the
+ * product supports.
+ */
+export async function reauthenticateWithPassword(email: string, password: string): Promise<string> {
+  const credential = await signInWithEmailAndPassword(getFirebaseAuth(), email, password);
+  return idTokenFrom(credential.user);
+}
+
+/**
+ * Re-authenticates through the Google popup.
+ *
+ * `prompt: 'select_account'` for the reason sign-in gives — somebody with a
+ * personal and a work account must not be silently re-authenticated as whichever
+ * one the browser saw last — and here it matters more, because the server
+ * compares the token's subject against the signed-in account and the mismatch
+ * would read as a failure rather than as the wrong account being chosen.
+ */
+export async function reauthenticateWithGoogle(): Promise<string> {
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
+
+  const credential = await signInWithPopup(getFirebaseAuth(), provider);
+  return idTokenFrom(credential.user);
+}
+
 /**
  * There is deliberately no `signOut` here.
  *

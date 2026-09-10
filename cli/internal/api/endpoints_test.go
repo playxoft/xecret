@@ -57,7 +57,7 @@ func TestRevealVersionAsksForTheRightVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if revealed.Value != "old-value" || revealed.Current {
+	if revealed.Value == nil || *revealed.Value != "old-value" || revealed.Current {
 		t.Fatalf("revealed = %+v", revealed)
 	}
 	if !strings.HasSuffix(path, "/secrets/API_KEY/versions/3") {
@@ -286,5 +286,196 @@ func TestExportAndPullAreDifferentPaths(t *testing.T) {
 	}
 	if len(paths) != 2 || !strings.HasSuffix(paths[0], "/pull") || !strings.HasSuffix(paths[1], "/export") {
 		t.Fatalf("paths = %v — the audit record is told apart by the path", paths)
+	}
+}
+
+// ── The client-encrypted write bodies ────────────────────────────────────────
+//
+// Each of these carries the version its ciphertext is bound to. The server
+// derives its own target from the stored row and refuses a disagreement, so a
+// body that omitted the field would have the row commit at a number the
+// ciphertext does not name — unopenable for ever, by everybody, behind a 200.
+
+func TestClientUpdateSendsTheVersionItSealedFor(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("method = %s, want PATCH", r.Method)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"secret":{"name":"API_KEY","version":5,"status":"updated"}}`))
+	}))
+	defer server.Close()
+
+	_, err := New(server.URL, "xct_live_abc", "test-agent").UpdateClientSecret(
+		context.Background(), "acme", "web", "production", "API_KEY",
+		ClientValue{Ciphertext: "xk2.gcm.AAAA", ClientAlgorithm: "xk2.gcm"}, 5, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["expectedVersion"] != float64(5) {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+// A restore carries two version numbers and they are not the same one: the
+// version being restored *from*, and the version the re-encrypted bytes are
+// bound to. Conflating them is the bug the two names exist to prevent.
+func TestClientRestoreSendsBothVersions(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"secret":{"name":"API_KEY","version":8,"status":"changed","restoredFrom":3}}`))
+	}))
+	defer server.Close()
+
+	_, err := New(server.URL, "xct_live_abc", "test-agent").RestoreClientSecret(
+		context.Background(), "acme", "web", "production", "API_KEY", 3,
+		ClientValue{Ciphertext: "xk2.gcm.AAAA", ClientAlgorithm: "xk2.gcm"}, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["version"] != float64(3) || body["expectedVersion"] != float64(8) {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestClientImportEntriesCarryTheirExpectedVersion(t *testing.T) {
+	var body struct {
+		Entries []map[string]any `json:"entries"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"dryRun":false,"counts":{},"items":[]}`))
+	}))
+	defer server.Close()
+
+	_, err := New(server.URL, "xct_live_abc", "test-agent").ImportClientEntries(
+		context.Background(), "acme", "web", "production",
+		[]ClientImportEntry{
+			{ID: "a", Name: "NEW", ExpectedVersion: 1, Value: ClientValue{Ciphertext: "xk2.gcm.AAAA"}},
+			{ID: "b", Name: "OLD", ExpectedVersion: 4, Value: ClientValue{Ciphertext: "xk2.gcm.BBBB"}},
+		},
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Entries) != 2 {
+		t.Fatalf("entries = %+v", body.Entries)
+	}
+	if body.Entries[0]["expectedVersion"] != float64(1) ||
+		body.Entries[1]["expectedVersion"] != float64(4) {
+		t.Fatalf("entries = %+v", body.Entries)
+	}
+}
+
+// ── Recognising a bundle ──
+//
+// A pull answers in one of two shapes and the client has to tell them apart from
+// the bytes. Getting that wrong in the direction that matters — reading a
+// server-mode document as a bundle — makes every value in it get treated as
+// ciphertext, so the test cases here are mostly about the responses that look
+// like one and are not.
+
+func pullServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+}
+
+func pullOnce(t *testing.T, body string) *Pulled {
+	t.Helper()
+	server := pullServer(t, body)
+	defer server.Close()
+
+	pulled, err := New(server.URL, "xct_live_abc", "test-agent").
+		Pull(context.Background(), "acme", "web", "dev", "json")
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	return pulled
+}
+
+// The marker the server sends is what a bundle is recognised by, and nothing
+// about the content has to agree with it.
+func TestPullPrefersTheBundleMarker(t *testing.T) {
+	pulled := pullOnce(t, `{"bundle":true,"bundleVersion":1,"encryptionMode":"e2ee",
+		"keys":{"encryptionMode":"e2ee","environmentId":"env-1","activeEdk":{"id":"k1","version":1}},
+		"secrets":[{"id":"s1","name":"A","ciphertext":"xk2.gcm.x","version":1}]}`)
+
+	if pulled.Bundle == nil {
+		t.Fatal("a response carrying the marker was not read as a bundle")
+	}
+	if pulled.Bundle.BundleVersion != 1 {
+		t.Errorf("bundleVersion = %d", pulled.Bundle.BundleVersion)
+	}
+	// The bytes are kept as received: the cache stores these, not a re-encoding
+	// of the struct they parsed into.
+	if len(pulled.Raw) == 0 || !strings.Contains(string(pulled.Raw), `"bundle":true`) {
+		t.Errorf("Raw did not carry the response body: %q", pulled.Raw)
+	}
+}
+
+// The transition case: a deployment that has not shipped the marker yet.
+func TestPullStillAcceptsTheOlderBundleShape(t *testing.T) {
+	pulled := pullOnce(t, `{"encryptionMode":"e2ee",
+		"keys":{"encryptionMode":"e2ee","environmentId":"env-1","activeEdk":{"id":"k1","version":1}},
+		"secrets":[{"id":"s1","name":"A","ciphertext":"xk2.gcm.x","version":1}]}`)
+
+	if pulled.Bundle == nil {
+		t.Fatal("a pre-marker bundle was not recognised")
+	}
+}
+
+// The collision the marker exists to close. A `server`-mode pull with
+// `format=json` is a flat object of the environment's own secret names, so an
+// environment containing a secret called `encryptionMode` whose value is `e2ee`
+// used to be read as a bundle — and its values then treated as ciphertext.
+func TestPullDoesNotMistakeASecretNamedEncryptionModeForABundle(t *testing.T) {
+	pulled := pullOnce(t, `{"encryptionMode":"e2ee","DATABASE_URL":"postgres://u:p@h/db","secrets":"3"}`)
+
+	if pulled.Bundle != nil {
+		t.Fatal("a flat document was read as a bundle")
+	}
+	var document map[string]string
+	if err := json.Unmarshal(pulled.Document, &document); err != nil {
+		t.Fatalf("the document did not survive: %v", err)
+	}
+	if document["DATABASE_URL"] != "postgres://u:p@h/db" {
+		t.Errorf("document = %v", document)
+	}
+}
+
+// And the same trick played with the marker itself: a secret named `bundle` is
+// a string, not a boolean, so the probe fails and the response stays a document.
+func TestPullDoesNotMistakeASecretNamedBundleForABundle(t *testing.T) {
+	pulled := pullOnce(t, `{"bundle":"true","encryptionMode":"e2ee","A":"b"}`)
+
+	if pulled.Bundle != nil {
+		t.Fatal("a flat document carrying a secret named 'bundle' was read as a bundle")
+	}
+}
+
+// A rendered document in any other format is not JSON at all.
+func TestPullReadsARenderedDocumentAsItself(t *testing.T) {
+	server := pullServer(t, "DATABASE_URL=postgres://u:p@h/db\n")
+	defer server.Close()
+
+	pulled, err := New(server.URL, "xct_live_abc", "test-agent").
+		Pull(context.Background(), "acme", "web", "dev", "env")
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if pulled.Bundle != nil {
+		t.Fatal("a .env document was read as a bundle")
+	}
+	if !strings.HasPrefix(string(pulled.Document), "DATABASE_URL=") {
+		t.Errorf("document = %q", pulled.Document)
 	}
 }

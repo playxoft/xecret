@@ -36,6 +36,7 @@ import {
   UploadIcon,
   useToast,
 } from '@/components/ui';
+import type { SecretIo } from '@/components/envkeys';
 import type { EnvironmentTarget } from './environment-target';
 import { useComparedSecrets } from './use-compared-secrets';
 import { usePlaintextCache } from './use-plaintext-cache';
@@ -50,9 +51,21 @@ import type { SecretSummary } from './types';
 
 export interface SecretTableProps {
   orgSlug: string;
+  orgId: string;
   projectSlug: string;
   envSlug: string;
   isProduction: boolean;
+  /**
+   * How this environment's values are read and written.
+   *
+   * `null` for an `e2ee` environment whose key this browser has not opened. The
+   * table still renders — names are plaintext in both modes and the listing is
+   * exactly as useful — but nothing can be revealed or saved, and the screen
+   * above is already saying why. Passing `null` rather than hiding the table is
+   * deliberate: a person waiting for a key share should still be able to see
+   * what they are waiting for.
+   */
+  io: SecretIo | null;
   /**
    * Every environment in this project — read for `isProduction`, which decides
    * which writes are confirmed, and to name the one on screen.
@@ -117,9 +130,11 @@ type SortDirection = 'asc' | 'desc';
  */
 export function SecretTable({
   orgSlug,
+  orgId,
   projectSlug,
   envSlug,
   isProduction,
+  io,
   environments,
   comparedEnvironments,
   onStopComparing,
@@ -138,7 +153,7 @@ export function SecretTable({
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
-  const revealAll = useRevealAll(orgSlug, projectSlug, envSlug);
+  const revealAll = useRevealAll(orgSlug, projectSlug, envSlug, io);
   /**
    * The per-row decryptions, held above the rows so they survive a row
    * unmounting — which is what a filter keystroke does to fifty of them.
@@ -183,13 +198,18 @@ export function SecretTable({
   }, []);
   // Which environment's history: a compared row's version chip opens the
   // history of *that* environment, not of the one the page is about.
-  const [history, setHistory] = useState<{ envSlug: string; secretName: string } | null>(null);
+  const [history, setHistory] = useState<{
+    envSlug: string;
+    secret: SecretSummary;
+    /** The compared environment's own IO, or this one's. */
+    io: SecretIo | null;
+  } | null>(null);
   const [deleting, setDeleting] = useState<SecretSummary | null>(null);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [actionError, setActionError] = useState<unknown>(null);
 
-  const staged = useStagedChanges(orgSlug, projectSlug, envSlug);
-  const compared = useComparedSecrets(orgSlug, projectSlug, comparedEnvironments);
+  const staged = useStagedChanges(io);
+  const compared = useComparedSecrets(orgSlug, orgId, projectSlug, comparedEnvironments);
 
   // Compared during render rather than in an effect: an effect runs after paint,
   // so the superseded value would be on screen for a frame — and could be
@@ -231,6 +251,21 @@ export function SecretTable({
   }
 
   const currentEnvironment = environments.find((entry) => entry.slug === envSlug);
+
+  /**
+   * The history target for a compared environment.
+   *
+   * A row of the same name in another environment is a **different secret**: its
+   * own id, its own version, its own key. Reusing this environment's summary
+   * would decrypt one environment's history with another's AAD, which fails —
+   * loudly, but for a reason nobody could read off the screen.
+   */
+  function comparedHistory(slug: string, name: string) {
+    const environment = compared.environments.find((entry) => entry.slug === slug);
+    const row = environment?.byName.get(name);
+    if (environment === undefined || row === undefined) return null;
+    return { envSlug: slug, secret: row, io: environment.io };
+  }
 
   /** Whether a given environment is the production one, for the dialogs. */
   function environmentIsProduction(slug: string): boolean {
@@ -275,10 +310,17 @@ export function SecretTable({
 
   const existingNames = useMemo(() => new Set(secrets.map((secret) => secret.name)), [secrets]);
 
-  // What each secret is already declared as, for the save-time shape check: a
-  // row that stages only a value has no type of its own to be checked against.
-  const storedTypes = useMemo(
-    () => new Map(secrets.map((secret) => [secret.name, secret.valueType])),
+  /**
+   * The listing keyed by name, for the save path.
+   *
+   * One map rather than the two lookup tables this used to build. A save needs
+   * the declared type (for the shape check), and in `e2ee` mode it also needs
+   * the row's id and current version, because both are bound into the AAD of the
+   * ciphertext it is about to produce. Parallel maps would be four facts that
+   * can disagree about which row they describe.
+   */
+  const storedByName = useMemo(
+    () => new Map(secrets.map((secret) => [secret.name, secret])),
     [secrets],
   );
 
@@ -492,7 +534,7 @@ export function SecretTable({
     if (staged.pendingCount === 0 || staged.saving) return;
     setActionError(null);
 
-    const outcome = await staged.save(existingNames, storedTypes);
+    const outcome = await staged.save(storedByName);
     // Always, even on a total failure: a partial batch has already changed the
     // environment, and leaving the table showing the old versions would make the
     // next save operate on stale version numbers.
@@ -761,9 +803,8 @@ export function SecretTable({
                   return (
                     <SecretRow
                       key={secret.name}
-                      orgSlug={orgSlug}
-                      projectSlug={projectSlug}
                       envSlug={envSlug}
+                      io={io}
                       environment={currentEnvironment}
                       secret={secret}
                       selected={selected.has(secret.name)}
@@ -807,7 +848,13 @@ export function SecretTable({
                           ? staged.clearEditType(secret.name)
                           : staged.setEditType(secret.name, type)
                       }
-                      onHistory={(slug) => setHistory({ envSlug: slug, secretName: secret.name })}
+                      onHistory={(slug) =>
+                        setHistory(
+                          slug === envSlug
+                            ? { envSlug: slug, secret, io }
+                            : comparedHistory(slug, secret.name),
+                        )
+                      }
                       onDelete={() => setDeleting(secret)}
                       onCommit={saveStaged}
                       onComparedSaved={compared.reload}
@@ -902,7 +949,8 @@ export function SecretTable({
           projectSlug={projectSlug}
           envSlug={history.envSlug}
           isProduction={environmentIsProduction(history.envSlug)}
-          secretName={history.secretName}
+          secret={history.secret}
+          io={history.io}
           onOpenChange={(next) => (next ? undefined : setHistory(null))}
           // A restore in a compared environment changes that environment's
           // listing, not this one's.

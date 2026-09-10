@@ -26,7 +26,7 @@ export default function robots(): MetadataRoute.Robots {
       {
         userAgent: '*',
         allow: '/',
-        disallow: ['/api/', '/app/', '/invite/', '/reset-password', '/reset-pin', '/cli/'],
+        disallow: ['/api/', '/app/', '/invite/', '/reset-password', '/cli/'],
       },
     ],
     sitemap: absoluteUrl('/sitemap.xml'),

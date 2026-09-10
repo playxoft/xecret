@@ -44,6 +44,16 @@ export interface CreateServiceTokenParams {
   expiresAt?: Date | null | undefined;
   createdBy: string;
   environment?: 'live' | 'test' | undefined;
+  /**
+   * The token's X25519 public key, 32 raw bytes, for an `e2ee` environment.
+   *
+   * Minted in the creator's browser alongside the token's key half, which stays
+   * there (spec §13.1). Absent means the token has no keypair: correct for a
+   * `server`-mode environment, and the state every token minted before Phase 4
+   * is in. `key_algorithm` is written beside it or left NULL with it — the two
+   * columns are never independently set, so "has a key" is one question.
+   */
+  publicKey?: Uint8Array | null | undefined;
 }
 
 export interface CliTokenSummary {
@@ -310,6 +320,8 @@ export async function createServiceToken(
         params.ipAllowlist && params.ipAllowlist.length > 0 ? [...params.ipAllowlist] : null,
       createdBy: params.createdBy,
       expiresAt: params.expiresAt ?? null,
+      publicKey: params.publicKey ?? null,
+      keyAlgorithm: params.publicKey ? 'X25519' : null,
     })
     .returning(serviceTokenColumns);
 

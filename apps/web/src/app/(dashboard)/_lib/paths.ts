@@ -80,10 +80,18 @@ export const apiPath = {
   me: (): string => '/api/auth/me',
   sessions: (): string => '/api/auth/sessions',
   account: (): string => '/api/auth/account',
-  pin: (): string => '/api/auth/pin',
-  pinLock: (): string => '/api/auth/pin/lock',
-  /** Requests a reset link to the account's own address. See `PinResetResult`. */
-  pinReset: (): string => '/api/auth/pin/reset',
+  /** The vault's state, and the material an unlock attempt needs. */
+  vault: (): string => '/api/auth/vault',
+  vaultUnlock: (): string => '/api/auth/vault/unlock',
+  vaultLock: (): string => '/api/auth/vault/lock',
+  vaultPassphrase: (): string => '/api/auth/vault/passphrase',
+  /** `POST` redeems a recovery code's lookup hash; `PUT` reissues the whole kit. */
+  vaultRecovery: (): string => '/api/auth/vault/recovery',
+  vaultRecoveryComplete: (): string => '/api/auth/vault/recovery/complete',
+  /** Passkey wraps for one-touch unlock. `DELETE` takes `/{passkeyId}`. */
+  vaultPasskeys: (): string => '/api/auth/vault/prf',
+  /** Destroys the vault when the passphrase and every recovery code are gone. */
+  vaultReset: (): string => '/api/auth/vault/reset',
   orgs: (): string => '/api/orgs',
   /**
    * Whether an organisation slug is free. Takes `?slug=`.

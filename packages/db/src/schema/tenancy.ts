@@ -127,6 +127,20 @@ export const invitations = pgTable(
      * anything that no longer exists at acceptance is simply skipped.
      */
     initialGrants: jsonb('initial_grants').$type<InvitationGrantSeed[] | null>(),
+    /**
+     * The invitation's X25519 **public** key, 32 raw bytes (spec §10).
+     *
+     * The inviter's client generates a 16-byte fragment, derives a keypair from
+     * it, seals the relevant EDK and EHK grants to this public key, and uploads
+     * the public half here. The fragment itself **never reaches the server** —
+     * it travels to the invitee out of band, over a different channel from the
+     * emailed `xin_…` token, which is the whole of the two-channel design: a
+     * leaked email decrypts nothing, and a leaked fragment authenticates nothing.
+     *
+     * Nullable, because an invitation into an organisation whose environments are
+     * all `server`-mode carries no grants and needs no keypair.
+     */
+    invitePublicKey: bytea('invite_public_key'),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     acceptedAt: timestamp('accepted_at', { withTimezone: true }),
     acceptedBy: uuid('accepted_by').references(() => users.id),

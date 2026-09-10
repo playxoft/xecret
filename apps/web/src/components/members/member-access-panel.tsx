@@ -96,6 +96,8 @@ export function MemberAccessPanel({
   const { toast } = useToast();
   const [error, setError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
+  /** Set by a write that has key consequences. See the note above `save`. */
+  const [keyNotice, setKeyNotice] = useState(false);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   // Projects revealed by "Add project" but not yet holding any grant. Local
   // only: revealing is not an act the server needs to hear about.
@@ -134,6 +136,13 @@ export function MemberAccessPanel({
     });
   }
 
+  /**
+   * Whether an access change has just landed that has key consequences.
+   *
+   * Shown once, after a write, rather than permanently: the standing state of
+   * "who is owed a key" belongs on the environment, where somebody who holds the
+   * key can act on it. This is the pointer that sends them there.
+   */
   async function save() {
     if (!dirty || saving) return;
     setSaving(true);
@@ -154,6 +163,13 @@ export function MemberAccessPanel({
         variant: 'success',
         title: `Updated access for ${member.displayName ?? member.email}`,
       });
+      // Access changed, and in an end-to-end encrypted environment that is only
+      // half of what has to happen: an environment they can now read is one they
+      // still hold no key for, and an environment they can no longer read is one
+      // whose key they still have a copy of. Neither is something this screen can
+      // fix — sealing a key requires holding it, and whoever changes access
+      // often does not.
+      setKeyNotice(true);
       // The panel stays open: the staging empties, the matrix re-reads, and
       // what is shown is the server's answer rather than a memory of the form.
       setStaged(new Map());
@@ -193,6 +209,7 @@ export function MemberAccessPanel({
         });
       }
       toast({ variant: 'success', title: `Removed access to ${project.name}` });
+      setKeyNotice(true);
       setAdded((current) => {
         const next = new Set(current);
         next.delete(project.slug);
@@ -222,6 +239,23 @@ export function MemberAccessPanel({
       {error !== null ? (
         <Alert tone="danger" title="That change was not saved">
           {errorMessage(error)}
+        </Alert>
+      ) : null}
+
+      {keyNotice ? (
+        <Alert tone="info" title="Access changed — the keys have not caught up yet">
+          <p>
+            Every environment is end-to-end encrypted, so access and keys are two separate things.
+            An environment they can now read is one they hold <strong>no key</strong> for until
+            somebody who does shares it — they will see “waiting for a teammate” until then, and a
+            prompt appears on that environment for whoever can help.
+          </p>
+          <p className="mt-2">
+            An environment they can <em>no longer</em> read is one whose key they still have a copy
+            of. Removing the grant stops them being handed it again; only rotating the key stops the
+            copy they have from opening what is written next. That environment&apos;s settings page
+            says so and offers the rotation.
+          </p>
         </Alert>
       ) : null}
 

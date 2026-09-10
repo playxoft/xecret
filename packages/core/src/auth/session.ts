@@ -24,15 +24,14 @@ export const SESSION_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
  * two weeks' leave signed in again — and it bought it badly, because seven days
  * is a long time to leave a laptop open on a desk.
  *
- * The unlock PIN (see `pin.ts`) addresses the same threat directly and far
+ * The vault lock (see `vault.ts`) addresses the same threat directly and far
  * better: an idle session re-locks after eight hours, and the cookie on its own
- * cannot read a secret. Keeping both would mean paying the idle rule's cost for
- * protection the PIN already provides more tightly.
+ * reaches no key material. Keeping both would mean paying the idle rule's cost
+ * for protection the lock already provides more tightly.
  *
  * The constant stays rather than being deleted, and `evaluateSession` still
  * applies it. Removing the mechanism would make re-introducing a shorter window
- * — for a deployment that chooses not to require PINs, say — a code change
- * rather than a number change.
+ * a code change rather than a number change.
  */
 export const SESSION_IDLE_MS = SESSION_LIFETIME_MS;
 
