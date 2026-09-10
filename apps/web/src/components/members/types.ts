@@ -109,6 +109,12 @@ export interface ProjectMemberListResponse {
   project: { name: string; slug: string };
   environments: readonly { name: string; slug: string; isProduction: boolean }[];
   members: readonly ProjectMember[];
+  /**
+   * Whether the organisation has more members than this single page carries.
+   * The endpoint does not paginate — one page at the repository's ceiling — so
+   * this is the dialog's only way to know it is not showing everyone.
+   */
+  hasMore: boolean;
 }
 
 export const ROLE_LABELS: Readonly<Record<OrgRole, string>> = {

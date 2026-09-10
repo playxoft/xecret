@@ -171,6 +171,7 @@ interface Body {
   project: { name: string; slug: string };
   environments: { slug: string }[];
   members: MemberRow[];
+  hasMore: boolean;
 }
 
 beforeEach(() => {
@@ -375,6 +376,38 @@ describe('GET /api/orgs/{orgSlug}/projects/{projectSlug}/members', () => {
     // dropped here. A dialog that showed it would be describing access its own
     // controls cannot change.
     expect(developer?.grants).toEqual([{ environmentSlug: 'production', accessLevel: 'read' }]);
+  });
+
+  it('says when the single page it reads is not the whole organisation', async () => {
+    // This endpoint does not paginate — one page at the repository's ceiling —
+    // so dropping `hasMore` presented a truncated roster as the complete answer,
+    // and the dialog would have shown "nobody else has access" to an
+    // organisation whose 201st member is an admin on production.
+    repositories.listMembers.mockResolvedValue({
+      members: [
+        member({
+          id: OWNER_MEMBER_ID,
+          userId: OWNER_USER_ID,
+          email: 'owner@playxoft.com',
+          role: 'owner',
+        }),
+      ],
+      page: 1,
+      pageSize: 200,
+      hasMore: true,
+    });
+
+    const response = await readProjectMembers(request(), params());
+    const body = (await response.json()) as Body;
+
+    expect(body.hasMore).toBe(true);
+  });
+
+  it('reports a complete roster as complete', async () => {
+    const response = await readProjectMembers(request(), params());
+    const body = (await response.json()) as Body;
+
+    expect(body.hasMore).toBe(false);
   });
 
   it('refuses a caller who may read members but not change their access', async () => {

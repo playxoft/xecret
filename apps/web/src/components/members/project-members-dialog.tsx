@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { canAssignRole } from '@xecret/core/authz';
 import type { AccessLevel, OrgRole } from '@xecret/core/authz';
@@ -83,25 +83,83 @@ export function ProjectMembersDialog({
   open,
   onOpenChange,
 }: ProjectMembersDialogProps) {
+  // Reported up from the panel, because Radix asks *this* component about
+  // Escape and the overlay while the two facts that decide the answer — a
+  // batch in flight, levels staged — live with the work one component down.
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
+
+  function close() {
+    setDiscarding(false);
+    setDirty(false);
+    onOpenChange(false);
+  }
+
+  /**
+   * Every way out of this dialog, on the same terms.
+   *
+   * Escape, the overlay and the Close button all arrive here, so none of them
+   * can be the one that gets away with throwing staged levels out silently or
+   * abandoning a batch halfway through.
+   */
+  function requestClose(next: boolean) {
+    if (next) {
+      onOpenChange(true);
+      return;
+    }
+    // Mid-batch there is no safe answer to give: the writes still to go would
+    // land against a dialog that is no longer there to report or re-read them.
+    if (saving) return;
+    if (dirty) {
+      setDiscarding(true);
+      return;
+    }
+    close();
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      {/* Wider than the default: every row carries a three-segment capsule per
-          environment, and squeezing those into `max-w-lg` wraps each one onto
-          its own line. */}
-      <DialogContent className="max-w-2xl">
-        {/* One component down, because Radix unmounts a closed dialog's
-            content — so each opening re-reads the grants and starts with an
-            empty staging area, with no effect to clear them a render later. */}
-        <ProjectMembersPanel
-          orgSlug={orgSlug}
-          projectSlug={projectSlug}
-          projectName={projectName}
-          viewerRole={viewerRole}
-          onOpenChange={onOpenChange}
-        />
-      </DialogContent>
-    </Dialog>
+    <>
+      <Dialog open={open} onOpenChange={requestClose}>
+        {/* Wider than the default: every row carries a three-segment capsule per
+            environment, and squeezing those into `max-w-lg` wraps each one onto
+            its own line. */}
+        <DialogContent className="max-w-2xl">
+          {/* One component down, because Radix unmounts a closed dialog's
+              content — so each opening re-reads the grants and starts with an
+              empty staging area, with no effect to clear them a render later. */}
+          <ProjectMembersPanel
+            orgSlug={orgSlug}
+            projectSlug={projectSlug}
+            projectName={projectName}
+            viewerRole={viewerRole}
+            onOpenChange={requestClose}
+            onSavingChange={setSaving}
+            onDirtyChange={setDirty}
+          />
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={discarding}
+        onOpenChange={(next) => (next ? undefined : setDiscarding(false))}
+        title="Discard these changes?"
+        description={`The levels you changed for ${projectName} have not been written yet. Closing now throws them away.`}
+        confirmLabel="Discard and close"
+        cancelLabel="Keep editing"
+        onConfirm={close}
+      />
+    </>
   );
+}
+
+/** A write that did not land, named well enough to act on. */
+interface SaveFailure {
+  /** Which member, and where — "Ada Lovelace in Production". */
+  scope: string;
+  /** What the rest of the batch did, when that changes what to do next. */
+  note: string | null;
+  cause: unknown;
 }
 
 function ProjectMembersPanel({
@@ -110,18 +168,22 @@ function ProjectMembersPanel({
   projectName,
   viewerRole,
   onOpenChange,
+  onSavingChange,
+  onDirtyChange,
 }: {
   orgSlug: string;
   projectSlug: string;
   projectName: string;
   viewerRole: OrgRole;
   onOpenChange: (open: boolean) => void;
+  onSavingChange: (saving: boolean) => void;
+  onDirtyChange: (dirty: boolean) => void;
 }) {
   const access = useApiResource<ProjectMemberListResponse>(
     apiPath.projectMembers(orgSlug, projectSlug),
   );
   const { toast } = useToast();
-  const [error, setError] = useState<unknown>(null);
+  const [failure, setFailure] = useState<SaveFailure | null>(null);
   const [saving, setSaving] = useState(false);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   // Members revealed by "Add member" but not yet holding anything here. Local
@@ -145,11 +207,34 @@ function ProjectMembersPanel({
       added.has(member.id) ||
       member.environments.some((environment) => environment.level !== 'none'),
   );
-  const assignable = members.filter((member) => !visible.includes(member));
+  // Only people whose grants this viewer may actually write. Offering the rest
+  // pins a row that every capsule on it is disabled — a dead end that looks
+  // like a permission problem with the row rather than with the viewer.
+  const assignable = members.filter((member) => !visible.includes(member) && mayEdit(member));
   const dirty = staged.size > 0;
+
+  // The dialog above owns Escape and the overlay, and needs both of these to
+  // decide whether closing is allowed.
+  useEffect(() => {
+    onSavingChange(saving);
+  }, [saving, onSavingChange]);
+  useEffect(() => {
+    onDirtyChange(dirty);
+  }, [dirty, onDirtyChange]);
 
   function shownLevel(memberId: string, environmentSlug: string, server: AccessLevel) {
     return staged.get(`${memberId}/${environmentSlug}`) ?? server;
+  }
+
+  function memberLabel(member: ProjectMember) {
+    return member.displayName ?? member.email;
+  }
+
+  /** "Ada Lovelace in Production", for a cell key. */
+  function cellScope(memberId: string, environmentSlug: string) {
+    const member = members.find((entry) => entry.id === memberId);
+    const environment = environments.find((entry) => entry.slug === environmentSlug);
+    return `${member === undefined ? 'that member' : memberLabel(member)} in ${environment?.name ?? environmentSlug}`;
   }
 
   function stageLevel(
@@ -179,31 +264,57 @@ function ProjectMembersPanel({
   async function save() {
     if (!dirty || saving) return;
     setSaving(true);
-    setError(null);
-    try {
-      // Sequential: each write is a separate audited mutation, and the upsert
-      // is idempotent — a retry after a mid-batch failure re-sends already
-      // applied cells harmlessly.
-      for (const [cell, level] of staged) {
-        const [memberId, environmentSlug] = cell.split('/') as [string, string];
+    setFailure(null);
+
+    // Sequential, and it stops at the first refusal: the batch is one decision
+    // about who reaches this project, and pressing on past a write the server
+    // would not take composes an arrangement nobody chose.
+    const applied = new Set<string>();
+    let failed: { cell: string; cause: unknown } | null = null;
+
+    for (const [cell, level] of staged) {
+      const [memberId, environmentSlug] = cell.split('/') as [string, string];
+      try {
         await api.put(apiPath.memberGrants(orgSlug, memberId), {
           projectSlug,
           environmentSlug,
           accessLevel: level,
         });
+        applied.add(cell);
+      } catch (cause) {
+        failed = { cell, cause };
+        break;
       }
-      toast({ variant: 'success', title: `Updated access to ${projectName}` });
-      // The dialog stays open: the staging empties, the grid re-reads, and
-      // what is shown is the server's answer rather than a memory of the form.
-      setStaged(new Map());
-      access.reload();
-    } catch (cause) {
-      // The whole batch stays staged: re-saving re-sends everything, and the
-      // writes that already landed answer as no-ops.
-      setError(cause);
-    } finally {
-      setSaving(false);
     }
+
+    // Whatever landed is enforced access now, not unsaved work — so it leaves
+    // the staging area whether the batch finished or not. Keeping it would make
+    // a retry re-send writes that are already true and, worse, would leave the
+    // grid showing pre-batch levels as though nothing had happened.
+    setStaged((current) => {
+      const next = new Map(current);
+      for (const cell of applied) next.delete(cell);
+      return next;
+    });
+    // Unconditional: after a partial batch the server is the only thing that
+    // knows which half of the screen is now stale.
+    access.reload();
+    setSaving(false);
+
+    if (failed !== null) {
+      const [memberId, environmentSlug] = failed.cell.split('/') as [string, string];
+      setFailure({
+        scope: cellScope(memberId, environmentSlug),
+        note:
+          applied.size === 0
+            ? null
+            : `${pluralize(applied.size, 'earlier change')} in this batch did save; the rest were not attempted. The levels below have been re-read.`,
+        cause: failed.cause,
+      });
+      return;
+    }
+
+    toast({ variant: 'success', title: `Updated access to ${projectName}` });
   }
 
   /**
@@ -214,23 +325,33 @@ function ProjectMembersPanel({
    */
   async function removeMember(member: ProjectMember) {
     setSaving(true);
-    setError(null);
+    setFailure(null);
+
+    // Named as the calls go out, so a failure says which one stopped rather
+    // than that "a change" did not save.
+    let scope = `${memberLabel(member)} in ${projectName}`;
     try {
       await api.put(apiPath.memberGrants(orgSlug, member.id), {
         projectSlug,
         environmentSlug: null,
         accessLevel: 'none',
       });
-      for (const grant of member.grants) {
-        if (grant.environmentSlug === null) continue;
+      // Every environment of the project, not only the grants this dialog read
+      // when it opened: one written since — by this dialog's own Save, or by
+      // somebody else while it was up — would otherwise survive and override
+      // the project-wide deny, leaving a "removed" member still holding an
+      // environment. Deleting a grant that is not there is a success at the
+      // endpoint, so the extra calls cost a round trip and nothing else.
+      for (const environment of environments) {
+        scope = `${memberLabel(member)} in ${environment.name}`;
         await api.delete(apiPath.memberGrants(orgSlug, member.id), {
           projectSlug,
-          environmentSlug: grant.environmentSlug,
+          environmentSlug: environment.slug,
         });
       }
       toast({
         variant: 'success',
-        title: `Removed ${member.displayName ?? member.email} from ${projectName}`,
+        title: `Removed ${memberLabel(member)} from ${projectName}`,
       });
       setAdded((current) => {
         const next = new Set(current);
@@ -248,7 +369,14 @@ function ProjectMembersPanel({
       });
       access.reload();
     } catch (cause) {
-      setError(cause);
+      setFailure({
+        scope,
+        note: 'Their access to this project may be only partly removed. The levels below have been re-read.',
+        cause,
+      });
+      // The deny may have landed and the deletions not, or the reverse. Either
+      // way the screen no longer describes the server.
+      access.reload();
     } finally {
       setSaving(false);
     }
@@ -266,9 +394,10 @@ function ProjectMembersPanel({
       </DialogHeader>
 
       <DialogBody className="flex flex-col gap-3">
-        {error !== null ? (
-          <Alert tone="danger" title="That change was not saved">
-            {errorMessage(error)}
+        {failure !== null ? (
+          <Alert tone="danger" title={`${failure.scope} was not saved`}>
+            {errorMessage(failure.cause)}
+            {failure.note === null ? null : ` ${failure.note}`}
           </Alert>
         ) : null}
 
@@ -375,11 +504,10 @@ function ProjectMembersPanel({
                     </button>
                     {editable ? (
                       <Button
-                        variant="ghost"
+                        variant="danger-outline"
                         size="sm"
-                        className="text-danger-text hover:text-danger-text"
                         disabled={saving}
-                        aria-label={`Remove ${member.displayName ?? member.email} from ${projectName}`}
+                        aria-label={`Remove ${memberLabel(member)} from ${projectName}`}
                         onClick={() => setRemoving(member)}
                       >
                         Remove
@@ -419,6 +547,14 @@ function ProjectMembersPanel({
               Owners and admins hold admin access everywhere by their role; turning a level off
               writes an explicit “no access” that overrides even a role default.
             </p>
+
+            {access.data.hasMore ? (
+              <Alert tone="warning" title="Not everyone is listed">
+                This organisation has more members than this dialog loads at once, so somebody with
+                access to {projectName} may be missing from the list above. The Members page shows
+                all of them, and each one’s access can be managed from there.
+              </Alert>
+            ) : null}
           </>
         )}
       </DialogBody>

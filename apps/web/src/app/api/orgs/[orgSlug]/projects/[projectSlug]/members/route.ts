@@ -44,6 +44,8 @@ export const GET = authenticatedRoute<Params>(async ({ params, principal, servic
     // One page, at the repository's ceiling. An organisation past 200 members
     // is past what a grant dialog can usefully show anyway, and the member
     // screen — which pages properly — remains the place to work through one.
+    // `hasMore` goes out with the page so the dialog can say so rather than
+    // quietly present a truncated list as the whole answer.
     listMembers(services.db, orgId, { pageSize: 200 }),
     listGrantsForOrganization(services.db, orgId),
     listEnvironments(services.db, orgId, scope.project.id),
@@ -59,15 +61,27 @@ export const GET = authenticatedRoute<Params>(async ({ params, principal, servic
     project: { id: scope.project.id, name: scope.project.name, slug: scope.project.slug },
   }));
 
+  // Indexed once rather than rescanned per member: the organisation's grant
+  // list is members × projects × environments, and filtering it inside the map
+  // below made a 200-member response quadratic in the thing most likely to be
+  // large.
+  const grantsByMember = new Map<string, typeof grants>();
+  for (const grant of grants) {
+    const existing = grantsByMember.get(grant.memberId);
+    if (existing === undefined) grantsByMember.set(grant.memberId, [grant]);
+    else existing.push(grant);
+  }
+  const environmentSlugs = new Map(
+    environments.map((environment) => [environment.id, environment.slug]),
+  );
+
   return json({
     project: { name: scope.project.name, slug: scope.project.slug },
     environments: environments.map(toEnvironment),
+    hasMore: page.hasMore,
     members: page.members.map((member) => {
-      const [project] = effectiveAccess(
-        member,
-        grants.filter((grant) => grant.memberId === member.id),
-        environmentRows,
-      );
+      const held = grantsByMember.get(member.id) ?? [];
+      const [project] = effectiveAccess(member, held, environmentRows);
 
       return {
         ...toMember(member, viewerUserId),
@@ -75,14 +89,13 @@ export const GET = authenticatedRoute<Params>(async ({ params, principal, servic
         // which of the levels below are written grants and which are role
         // defaults it would have to write over — the same distinction the
         // per-member access endpoint returns.
-        grants: grants
-          .filter((grant) => grant.memberId === member.id && grant.projectId === scope.project.id)
+        grants: held
+          .filter((grant) => grant.projectId === scope.project.id)
           .map((grant) => ({
             environmentSlug:
               grant.environmentId === null
                 ? null
-                : (environments.find((environment) => environment.id === grant.environmentId)
-                    ?.slug ?? null),
+                : (environmentSlugs.get(grant.environmentId) ?? null),
             accessLevel: grant.accessLevel,
           })),
         // Absent only for a project with no environments at all, where there
