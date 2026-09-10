@@ -142,12 +142,15 @@ export function PassphraseFields({
   // verdict blanks on every keystroke (see the hook), and a meter wired to it
   // directly flickered empty while the user typed. Holding the last verdict on
   // screen until the next one lands keeps the reading steady; the parent's
-  // gate still reads the strict prop and stays shut in the gap.
+  // gate still reads the strict prop and stays shut in the gap. Adjusted
+  // during render — the "storing information from previous renders" pattern —
+  // rather than in an effect, which would repaint the blank frame first.
   const [held, setHeld] = useState<PassphraseStrength | null>(null);
-  useEffect(() => {
-    if (strength !== null) setHeld(strength);
-    else if (passphrase.length === 0) setHeld(null);
-  }, [strength, passphrase]);
+  if (strength !== null && held !== strength) {
+    setHeld(strength);
+  } else if (empty && held !== null) {
+    setHeld(null);
+  }
 
   const display = strength ?? (empty ? null : held);
   const score = display?.score ?? 0;
