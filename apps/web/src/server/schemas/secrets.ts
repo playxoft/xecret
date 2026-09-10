@@ -3,6 +3,7 @@ import { MAX_SECRET_VALUE_BYTES } from '@xecret/core/crypto';
 import { MAX_SECRET_BLOB_LENGTH } from '@xecret/core/crypto/client';
 import { toBytes } from '@xecret/db/repositories';
 import type { SecretMaterial } from '@xecret/db/repositories';
+import { uuidField } from './ids';
 import { decodeBlob } from './vault';
 import {
   DEFAULT_SECRET_VALUE_TYPE,
@@ -153,7 +154,7 @@ const valueHmacSchema = z.string().check(
  * not bookkeeping, it is the only way the server can catch a write that raced a
  * rotation.
  */
-const dataKeyIdSchema = z.string().check(z.length(36, 'A key is named by a UUID.'));
+const dataKeyIdSchema = uuidField('A key is named by a UUID.');
 
 /** One client-encrypted value, with everything needed to store and to re-find it. */
 const clientValueSchema = z.object({
@@ -188,7 +189,7 @@ const clientValueSchema = z.object({
  * id produces a ciphertext that fails to authenticate on the first read, which
  * is the same failure mode as every other AAD component.
  */
-const secretIdSchema = z.string().check(z.length(36, 'A secret is named by a UUID.'));
+const secretIdSchema = uuidField('A secret is named by a UUID.');
 
 /**
  * The version this ciphertext was sealed for.
@@ -468,6 +469,38 @@ export type CreateClientSecretBody = z.infer<typeof createClientSecretBody>;
 export type UpdateClientSecretBody = z.infer<typeof updateClientSecretBody>;
 export type RestoreClientSecretBody = z.infer<typeof restoreClientSecretBody>;
 export type ImportClientBody = z.infer<typeof importClientBody>;
+
+/**
+ * The first name an import lists twice, or `null`.
+ *
+ * ── Why this is checked at the boundary rather than left to the writer ──
+ * The plaintext import cannot produce a duplicate: `buildImportPlan` tracks the
+ * target names it has claimed precisely so two source keys cannot resolve to one
+ * secret. The client-encrypted import receives the plan's *output*, so nothing
+ * upstream has made that promise — and until this check existed, two entries for
+ * one name reached `commitClientWrites`, where the first appended version N+1,
+ * the second appended N+2 carrying a ciphertext bound to N+1, and the version
+ * guard rolled the whole transaction back with "This secret was changed by
+ * another request."
+ *
+ * Which is untrue and expensive: nothing else changed it, the import wrote
+ * nothing, and the message sends somebody hunting a concurrent editor who does
+ * not exist. The fault is in the request, so it is answered as one — and the
+ * offending name is returned rather than a boolean, because "one of your
+ * thousand entries is duplicated" is not something a caller can act on.
+ *
+ * A separate function rather than a schema refinement so it can be exercised
+ * directly: the failure it prevents is a rollback three layers down, which no
+ * schema test would ever reach.
+ */
+export function duplicateEntryName(entries: readonly { name: string }[]): string | null {
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (seen.has(entry.name)) return entry.name;
+    seen.add(entry.name);
+  }
+  return null;
+}
 
 /**
  * One stored ciphertext, on its way back to the client that can open it.

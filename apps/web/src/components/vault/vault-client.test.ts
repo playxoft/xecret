@@ -722,11 +722,17 @@ describe('the vault reset', () => {
     nextResponse = {
       vault: { ...STATUS, configured: false, unlocked: false, unlockedUntil: null },
     };
-    const status = await resetVault(VAULT_RESET_CONFIRMATION);
+    const status = await resetVault(VAULT_RESET_CONFIRMATION, 'a-fresh-id-token');
 
     expect(readVaultKeys()).toBeNull();
     expect(posted[0]?.path).toBe('/api/auth/vault/reset');
-    expect(posted[0]?.body).toEqual({ confirm: VAULT_RESET_CONFIRMATION });
+    // The re-authentication token travels with the phrase. Without it the
+    // server refuses: the phrase is printed on the screen, so on its own it
+    // guards against a mistake and not against whoever stole the session.
+    expect(posted[0]?.body).toEqual({
+      confirm: VAULT_RESET_CONFIRMATION,
+      idToken: 'a-fresh-id-token',
+    });
     // `configured: false` is what routes the screen to the setup ceremony.
     expect(status.configured).toBe(false);
   });
@@ -741,7 +747,7 @@ describe('the vault reset', () => {
       ),
     );
 
-    await expect(resetVault('reset my vault')).rejects.toBeInstanceOf(ApiError);
+    await expect(resetVault('reset my vault', 'a-fresh-id-token')).rejects.toBeInstanceOf(ApiError);
     expect(readVaultKeys()).toBeNull();
   });
 });

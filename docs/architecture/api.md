@@ -232,7 +232,7 @@ Three conventions hold throughout:
 | `PUT` | `/api/auth/vault/recovery` | Body `{ unlockVerifier, recoveryWraps[5] }`. Reissues the kit from an unlocked session with the passphrase re-entered (sudo mode). Every live code is revoked in the transaction that writes the new five; redeemed ones keep their tombstones. Returns `{ vault, recoveryCodesRemaining }`. Audited `vault.recovery_codes_regenerated`. |
 | `GET` `POST` | `/api/auth/vault/prf` | List, or enrol, a passkey for one-touch unlock. `POST` body `{ credentialId, label, transports?, wrap }` → **201** `{ passkey }`. A passkey is never the only wrap — the passphrase wrap always exists and has no removal path — so enrolling adds a door rather than replacing one. Rate limited: `RL_MUTATION`. |
 | `DELETE` | `/api/auth/vault/prf/{passkeyId}` | Unenrols a passkey; its wrap goes with it by cascade. **204**. Scoped by user, so another account's id answers the same **404** as one that does not exist. |
-| `POST` | `/api/auth/vault/reset` | Body `{ confirm: "reset my vault" }`, compared with the same trimming, case-insensitive helper `DELETE /api/auth/account` uses. Destroys `user_keys` and every wrap and passkey, and clears `vault_unlocked_at` on **all** the account's sessions, in one transaction; returns `{ vault }` reporting `configured: false`, so the client routes straight to the setup ceremony. **404** when there is no vault. **This is not recovery** — nothing is decrypted or restored, because nothing can be. Rate limited: `RL_LOGIN` under a `vault_reset` key of its own, deliberately *not* sharing recovery's counter. Audited `vault.reset`. Exempt from the lock gate, which is the entire point. |
+| `POST` | `/api/auth/vault/reset` | Body `{ confirm: "reset my vault", idToken }`. The phrase is compared with the same trimming, case-insensitive helper `DELETE /api/auth/account` uses; `idToken` is a **fresh Firebase ID token**, verified server-side through the same provider `POST /api/auth/session` uses, whose subject must resolve to this session's own account and whose `auth_time` must be within 5 minutes. Destroys `user_keys` and every wrap and passkey, clears `vault_unlocked_at` on **all** the account's sessions, and re-records a pending key share for every environment the account may still read — one transaction; returns `{ vault }` reporting `configured: false`, so the client routes straight to the setup ceremony. **404** when there is no vault, **401** when the re-authentication fails (one message for every cause). **This is not recovery** — nothing is decrypted or restored, because nothing can be. Rate limited: `RL_LOGIN` under a `vault_reset` key of its own, deliberately *not* sharing recovery's counter. Audited `vault.reset`. Exempt from the lock gate, which is the entire point. |
 
 **What the server holds.** Public keys, an Argon2id salt and its parameters, the digests of
 both unlock verifiers, and a set of ciphertexts. Each verifier is a *sibling* HKDF branch of
@@ -248,6 +248,23 @@ session, because an unlock cannot happen otherwise. A stolen session cookie ther
 yields an *offline* Argon2id attack on the master passphrase, unbounded by the lockout.
 That is inherent to a browser-delivered zero-knowledge product, and it is why ADR 0009
 sets the passphrase bar where it does rather than at a composition rule.
+
+**And it is wider than a session.** A **CLI token** reads its issuing user's material through
+the same endpoint, and must: it acts as that user, its grants are sealed to that user's X25519
+public key, and the private half exists only as a wrap under the User Key — so withholding the
+material would leave headless `xecret login --passphrase` authenticating perfectly and
+decrypting nothing. What the token receives is the passphrase wrap, the KDF salt and the Argon2
+parameters: everything an offline attack needs, plus the *cost* of that attack stated in the
+parameters, held by a credential that lives in a file on a laptop or an environment variable in
+a CI runner and is good for months rather than for a session. "The wraps are useless without the
+passphrase" is true of a locked browser and is a weaker sentence here.
+
+It is not removable without removing the flow, so it is metered and made visible instead: a
+token read spends `RL_CLI_TOKEN` under a `vault_material` key, and writes a **`vault.material_read`**
+audit record carrying `principalKind: "token"`, so "a token in a CI runner pulled my wraps at
+04:00" is a question somebody can ask. A browser session reading its own material is neither
+metered nor audited — it happens on every lock screen, several times a day, and recording it
+would bury `vault.unlocked` under page views. ADR 0009 carries the trade under residual risks.
 
 ### CLI authorization — how `xecret login` gets its token
 
@@ -395,6 +412,15 @@ keys* below for the shape). There is **no `encryptionMode` field**, and there mu
 `server` mode is a migration state, not a choice, and offering it as one would let a client opt
 an environment out of end-to-end encryption for the life of that environment.
 
+**The first grant must be the creator's own** — `recipientKind: "member"` with `recipientId`
+equal to the caller's user id — and is refused otherwise, exactly as `POST …/environments/{envSlug}/keys`
+refuses it on the repair path. At creation there is one public key the caller could honestly have
+sealed to, and anything else was either fabricated or sealed to a key they had no business using.
+The check is not redundant with the foreign keys: those establish that a principal *exists*, not
+that it belongs to this tenant, so without it this route would seal an organisation's brand-new
+key to a member of another one, to a service token scoped elsewhere, or to an invitation nobody
+here issued — before any grant of it could be read, revoked, or noticed.
+
 **`id` is chosen by the client**, and is required beside `keys`. The creator's grant is sealed in
 a browser *before* this request exists, and the grant's AAD names the environment (crypto spec
 §4.2) — so a row created under a server-minted id would hold a grant nobody could ever open.
@@ -435,7 +461,7 @@ accepting a genuine migration back is a deliberate manual act (clear site data, 
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `…/environments/{envSlug}/keys` | The caller's own grant, the active key, and the administrative state. `secret.read`. |
+| `GET` | `…/environments/{envSlug}/keys` | The caller's own grant, the active key, and the administrative state. `secret.read`. Rate limited on the read bucket — `RL_SECRET_READ`, or `RL_SERVICE` for a token — through the same helper reveal and pull use. |
 | `POST` | `…/environments/{envSlug}/keys` | Initialise, for an `e2ee` environment that somehow has none. Body `{ grant }`. `environment.update`. A second call is a **409**. |
 | `POST` | `…/environments/{envSlug}/keys/rotate` | Body `{ newVersion, grants: [...] }` — the **complete** replacement set. `environment.update`. |
 | `GET` | `…/environments/{envSlug}/keys/recipients` | Who a grant may be sealed to, and who already holds one. `secret.read`. |
@@ -474,7 +500,8 @@ to pin *against the server* from a column the server writes.
                  "signature": "…", "signedByUserId": "…" },
     "ehkExists": true,
     "pendingGrants": [ … ],          // admins only; null for anyone else
-    "needsRotation": false,
+    "needsRotation": false,          // admins only; null means "not computed for you"
+    "missingGrants": [ { "kind": "member", "id": "…" } ],   // admins only; null for anyone else
     "currentMaxSecretVersion": 41
   }
 }
@@ -493,7 +520,27 @@ has not been replaced". Deleting a grant stops a principal being handed the key 
 rotation stops the copy they already have from opening what is written next. Until one lands
 with a version bump the revocation is on paper, and this field is how a dashboard says so
 rather than letting an administrator believe an act completed that did not. It is **derived**
-from the rows, never stored, so it cannot drift from the grants it describes.
+from the rows, never stored, so it cannot drift from the grants it describes. A revoked or
+expired service token still holding a grant on the active key counts here too: whoever held its
+token string may have fetched the key while it authenticated, so the environment is not actually
+safe from it until the key is replaced.
+
+**`missingGrants` is the same comparison in the other direction**, and until it existed nothing
+in the product reported that direction at all. A principal entitled to an environment who holds
+no grant on its active key can list every secret name and decrypt none of them — the state a
+vault reset produces for every environment at once, and the state an acceptance leaves behind
+when the re-seal never lands. It is not a duplicate of `pendingGrants`: that is a queue of
+*requests*, written when somebody changed an access level, whereas this is derived from the
+grants themselves and is therefore still right when the request was never recorded or was
+deleted by a path that should not have deleted it. One is intent; the other is state.
+
+**Both are `null` for a caller who cannot act on them, and `null` is not `false`.** They name
+other people, so they are administrative on the same terms as `pendingGrants`. They are also the
+only part of this payload whose cost is proportional to the organisation — deciding them reads
+the active roster and its access grants — and the caller who would pay for that on the hottest
+path in the product, `POST …/pull` on every `xecret run` and every CI job, is exactly the caller
+who can do nothing with the answer. A client must treat `null` as "unknown" and render nothing,
+never as a reassurance.
 
 **`currentMaxSecretVersion`** is freshness groundwork and nothing more. ADR 0009 records
 rollback as an accepted residual risk — a server can serve stale grants or omit recent
@@ -520,18 +567,38 @@ match:
 - **Every active member** whose resolved level on this environment is at least `read`, decided
   by the same `can()` every request goes through — so the key set and the access model cannot
   disagree.
-- **Every service token** pinned to this environment that still has a `public_key`. Tokens
-  minted before the Phase 4 creation flow have no keypair, so there is nothing to seal to;
-  excluding them is what stops a rotation being blocked for ever by a legacy credential nobody
-  can re-key.
+- **Every service token** pinned to this environment that is live — not revoked, not expired —
+  and still has a `public_key`. The expiry predicate is the one `findServiceTokenByHash`
+  authenticates with, and the two agreeing is the point: a token that stopped working in March
+  would otherwise stay *required* in every rotation afterwards, failing each one with "Missing a
+  grant for token:…" and naming a credential nobody thinks to revoke because it already stopped
+  working. Tokens minted before the Phase 4 creation flow have no keypair at all, so there is
+  nothing to seal to. A dead token's existing grant is left alone rather than deleted — it opens
+  the history that token could already read and nothing written since — and it makes
+  `needsRotation` true until the rotation that omits it lands.
 - **Invitations are permitted but never required.** Their grants are sealed to a one-off keypair
   whose private half exists only in a fragment the server has never seen, so nobody rotating can
-  re-seal to them.
+  re-seal to them. Permitted is not unchecked: every `invite` grant in a rotation goes through
+  the same eligibility check `POST …/keys/grants` applies — this organisation's invitation, still
+  open, and one whose `initial_grants` will actually confer access to this environment.
 
 Both directions are refused, and the second matters as much: an **extra** grant is a key handed
 to somebody the access model does not permit, minted through the one endpoint whose job is
 writing grants in bulk. Without the check, a rotation would be a way to give a viewer production
 keys while the audit log recorded routine maintenance.
+
+**The check runs inside the rotation's transaction, under the organisation's write lock.** It
+used to run before it, and the gap was long enough for a concurrent member removal to land: the
+rotation then wrote the set it had already validated, sealing the brand-new key to the person the
+removal was cutting off — with a `200`, an `envkey.rotated` record, and nothing anywhere saying
+the revocation had not taken. The lock is the organisation row rather than the environment,
+because "who must hold this key" is a question about the set of members and their access grants,
+and no environment row is touched when somebody is removed or has a grant revoked. Membership
+changes and access-grant changes take the same lock, so the three queue in one order.
+
+A rotation settles only the queued key shares it actually paid — the members its grant set
+names. Clearing every pending row for the environment would erase a debt recorded *after* the
+completeness check ran, leaving that person with no grant, no banner entry, and no explanation.
 
 The refusal is a `422` naming the principals that are missing or surplus. That is a deliberate
 exception to §3's rule against echoing request content: the ids are ones the caller already
@@ -681,13 +748,20 @@ queries and 0 outgoing fetches**, constant in the number of secrets. Audited onc
 `secret.read` with a count — not once per secret, which would make a 200-secret pull write
 200 audit rows and turn the audit table into a denial-of-service surface against itself.
 
-In `e2ee` mode the same two queries return a JSON bundle instead:
-`{ encryptionMode: "e2ee", keys: { … }, secrets: [ { name, ciphertext, clientAlgorithm,
-envDataKeyId, version, … } ] }`. The **caller's grant travels with the values**, and that is
-not a convenience: fetching `…/keys` and then `…/pull` would be two round trips on the hottest
-path in the product and would open a window in which a rotation lands between them, leaving the
-client holding a key for one version and ciphertext for another with nothing in either response
-saying so.
+In `e2ee` mode the bundle is `{ encryptionMode: "e2ee", keys: { … }, secrets: [ { name,
+ciphertext, clientAlgorithm, envDataKeyId, version, … } ] }`. The **caller's grant travels with
+the values**, and that is not a convenience: fetching `…/keys` and then `…/pull` would be two
+round trips on the hottest path in the product and would open a window in which a rotation lands
+between them, leaving the client holding a key for one version and ciphertext for another with
+nothing in either response saying so.
+
+**Five statements, not two** — the active key, the HMAC key, the environment's highest secret
+version, the caller's own grant, and the `DISTINCT ON` that resolves the current version of each
+secret. Every one of them is constant in the size of the environment *and of the organisation*.
+It briefly was not: `needsRotation` was computed for every caller and walked the member roster
+two queries at a time, putting an O(members) scan on `xecret run` and every CI job. That answer
+is now computed only for a caller who can act on it — never a pull — and when it is computed the
+roster is read in bulk rather than a member at a time.
 
 `format` is not consulted in `e2ee` mode, and a caller who asks for one is not silently given
 JSON — formatting takes plaintext, so it moves to the client with the decryption. A caller who
@@ -712,6 +786,16 @@ parses it here, because parsing means reading the values and the Worker is allow
 would be every secret in it, in plaintext, in a request body. The `skip`/`overwrite`/`rename`
 strategy is applied client-side for the same reason: it is a decision about names, and names are
 plaintext in both modes.
+
+**A body that names one secret twice is a 400 naming it.** The `server` path cannot produce a
+duplicate — the planner tracks the target names it has claimed, precisely so two source keys
+cannot resolve to one secret — but the `e2ee` path receives the plan's output, so nothing
+upstream has made that promise. Left unchecked, both entries resolved to the same stored row and
+planned the same next version; the first append landed, the second carried a ciphertext bound to
+a version already taken, and the whole transaction rolled back with *"This secret was changed by
+another request"*. Nothing had changed it, the import wrote nothing, and the message sent people
+hunting a concurrent editor who did not exist. Names are compared exactly, as the unique index
+compares them.
 
 **Export refuses rather than degrades.** Formatting takes plaintext, and the client already
 holds every value — it decrypted them to show them — so the download is one it can build itself

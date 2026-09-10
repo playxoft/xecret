@@ -251,8 +251,46 @@ export type VaultUnlockRequest = z.infer<typeof vaultUnlockSchema>;
  */
 export const VAULT_RESET_CONFIRMATION = 'reset my vault';
 
+/**
+ * How recently the caller must have actually authenticated, in seconds.
+ *
+ * Long enough to type a passphrase into a Google popup and then a confirmation
+ * phrase into ours; short enough that an ID token captured earlier in the session
+ * is already useless. It is compared against Firebase's `auth_time`, which a
+ * refresh does not move — so this is five minutes since somebody proved who they
+ * were, not five minutes since a token was minted.
+ */
+export const VAULT_RESET_MAX_AUTH_AGE_SECONDS = 5 * 60;
+
+/**
+ * The reset body: a typed phrase, and proof of account ownership.
+ *
+ * ── Why the phrase alone was not enough ──
+ * `confirmationMatches` guards against a *mistake*, and it says so: the phrase is
+ * printed on the screen above the field, so anybody who can reach the route can
+ * read it. Against an attacker it is worth nothing. And the route is `allowLocked`
+ * by necessity — every caller is locked out by definition — so what a stolen
+ * session cookie could reach was the single irreversible, unrecoverable action in
+ * the product: destroy the vault, and with it every environment key the account
+ * held, permanently, for an attacker who never knew the passphrase.
+ *
+ * So the request carries a **fresh Firebase ID token**, verified server-side
+ * through exactly the path `POST /api/auth/session` uses — same signature, same
+ * issuer, same audience. Two things are then required of it: that its subject is
+ * this session's own account, and that its `auth_time` is inside
+ * {@link VAULT_RESET_MAX_AUTH_AGE_SECONDS}. The first stops a token for another
+ * account being presented; the second is what makes it *re-authentication* rather
+ * than a second copy of the credential the attacker already has.
+ *
+ * The bound is the same 8192 the session route applies, and for the same reason:
+ * an unauthenticated-sized blob must not be buffered and base64-decoded on the
+ * strength of a length nobody checked.
+ */
 export const vaultResetSchema = z.strictObject(
-  { confirm: z.string().check(z.maxLength(100)) },
+  {
+    confirm: z.string().check(z.maxLength(100)),
+    idToken: z.string().check(z.minLength(1), z.maxLength(8192)),
+  },
   UNEXPECTED_FIELD,
 );
 

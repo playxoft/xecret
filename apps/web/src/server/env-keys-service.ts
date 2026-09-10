@@ -1,5 +1,5 @@
-import { can } from '@xecret/core/authz';
-import type { Action } from '@xecret/core/authz';
+import { can, roleDefaultAccessLevel } from '@xecret/core/authz';
+import type { Action, Membership, ResolvedGrant } from '@xecret/core/authz';
 import {
   addEnvKeyGrants,
   findGrantForPrincipal,
@@ -8,11 +8,11 @@ import {
   initializeEnvironmentKeys,
   listGrantsForEnvironment,
   listMemberSealingKeys,
-  listMembers,
   listPendingKeyGrants,
   listSealableServiceTokens,
   loadAuthorizationContext,
   loadEnvironmentKeyState,
+  loadOrganizationAuthorizationContexts,
   queuePendingKeyGrant,
   removeEnvKeyGrant,
   removeMemberGrantsForEnvironment,
@@ -21,7 +21,11 @@ import {
   RepositoryError,
   toBytes,
 } from '@xecret/db/repositories';
-import type { EnvKeyGrantRecord } from '@xecret/db/repositories';
+import type {
+  EnvKeyGrantRecord,
+  Executor,
+  PendingInvitationForGrant,
+} from '@xecret/db/repositories';
 import type { Principal } from './actor';
 import type { ServiceContext } from './context';
 import { errors } from './errors';
@@ -38,6 +42,7 @@ import type {
   EnvironmentKeyRotateRequest,
   EnvironmentKeysPayload,
   GrantRequest,
+  MissingGrantPayload,
   RecipientPayload,
   RecipientsPayload,
   UnsealablePayload,
@@ -155,9 +160,24 @@ export function requireSealingUser(principal: Principal): string {
 /**
  * Everything `GET …/keys` answers.
  *
- * Four reads at most, and the two administrative ones are skipped entirely for a
- * caller who may not see them — so the common case (a developer opening an
- * environment) costs the key state and their own grant, and nothing else.
+ * ── The query budget, stated honestly ──
+ * Four reads for an ordinary caller: the key state (three statements) and their
+ * own grant. Every one of them is constant in the size of the organisation.
+ *
+ * An **administrator** pays for the key-hygiene answer on top — the pending
+ * queue, the environment's grants, the active roster and its access grants: four
+ * more statements, and still constant in the roster, because
+ * `loadOrganizationAuthorizationContexts` reads members and grants in bulk
+ * rather than a context per member. That distinction is the whole point: a
+ * per-member loop had to paginate, and a paginated roster produces a "complete"
+ * grant set missing everybody past the first page.
+ *
+ * The hygiene fields are computed **only for a caller who may act on them**, and
+ * that is a cost decision as much as a disclosure one: `POST …/pull` reaches this
+ * function on the hottest path in the product, always as a non-administrator, and
+ * it has no use for "somebody needs to rotate this". `needsRotation` and
+ * `missingGrants` are therefore `null` rather than `false` for them — an
+ * uncomputed answer said out loud, instead of a reassuring one nobody checked.
  */
 export async function environmentKeyState(
   scope: EnvironmentScope,
@@ -194,6 +214,11 @@ export async function environmentKeyState(
     ? await listPendingKeyGrants(services.db, scope.organization.id, scope.environment.id)
     : null;
 
+  const hygiene =
+    isAdmin && state.activeKey !== null
+      ? await keyHygiene(services.db, scope, state.activeKey.id)
+      : null;
+
   return {
     encryptionMode: scope.environment.encryptionMode === 'e2ee' ? 'e2ee' : 'server',
     environmentId: scope.environment.id,
@@ -201,8 +226,11 @@ export async function environmentKeyState(
     myGrant: grant === null ? null : stripRecipient(toGrant(grant)),
     ehkExists: state.ehkExists,
     pendingGrants: pending === null ? null : pending.map(toPendingGrant),
-    needsRotation:
-      state.activeKey === null ? false : await needsRotation(scope, services, state.activeKey.id),
+    // `false` when there is no key at all and this caller could have seen one:
+    // an environment with nothing to rotate is not owed a rotation. `null` means
+    // "not computed for you" — see the header.
+    needsRotation: isAdmin ? (hygiene?.needsRotation ?? false) : null,
+    missingGrants: isAdmin ? (hygiene?.missingGrants ?? []) : null,
     currentMaxSecretVersion: state.currentMaxSecretVersion,
   };
 }
@@ -253,8 +281,26 @@ export async function initializeKeys(
 /**
  * Rotates the environment's data key, after checking the grant set is complete.
  *
- * The completeness check runs **before** the write and is the whole value this
- * endpoint adds over "insert what you were given" — see `assertCompleteGrantSet`.
+ * ── The completeness check runs *inside* the rotation's transaction ──
+ * It used to run before it, and that was a hole rather than an ordering
+ * preference. Between a check that passed and a commit that landed, a concurrent
+ * member removal could revoke somebody — and the rotation, working from the set
+ * it had already validated, would seal the brand-new key **to the person it was
+ * meant to cut off**. Silently: a 200, an `envkey.rotated` audit record, and an
+ * environment the removed member can still read.
+ *
+ * So `assertGrantSet` is handed to the repository and re-derives the required set
+ * from *this* transaction's view, under the organisation lock that membership and
+ * access-grant changes already take. A drift is an abort, not a warning.
+ *
+ * ── Invitation grants are checked here rather than only in `addGrants` ──
+ * `assertCompleteGrantSet` permits an `invite:` entry without demanding one,
+ * because nobody rotating can re-seal to an invitation's one-off keypair. Permit
+ * is not the same as accept: without an eligibility check, this endpoint would
+ * hand an invitation of another organisation — or one whose selected access never
+ * included this environment — a working copy of the key. Every invite grant in a
+ * rotation goes through the same `assertRecipientEligible` the grant endpoint
+ * uses.
  */
 export async function rotateKeys(
   scope: EnvironmentScope,
@@ -267,8 +313,6 @@ export async function rotateKeys(
 
   const userId = requireSealingUser(principal);
 
-  await assertCompleteGrantSet(scope, services, body.grants);
-
   try {
     const key = await rotateEnvDataKey(services.db, {
       orgId: scope.organization.id,
@@ -276,6 +320,14 @@ export async function rotateKeys(
       createdBy: userId,
       version: body.newVersion,
       grants: body.grants.map(toGrantSeed),
+      assertGrantSet: async (tx) => {
+        await assertCompleteGrantSet(tx, scope, body.grants);
+
+        for (const grant of body.grants) {
+          if (grant.recipientKind !== 'invite') continue;
+          await assertRecipientEligible(tx, scope, grant);
+        }
+      },
     });
 
     return { id: key.id, version: key.version, grantCount: body.grants.length };
@@ -311,7 +363,7 @@ export async function addGrants(
   const userId = requireSealingUser(principal);
 
   for (const grant of body.grants) {
-    await assertRecipientEligible(scope, services, grant);
+    await assertRecipientEligible(services.db, scope, grant);
   }
 
   try {
@@ -372,14 +424,21 @@ export async function revokeGrant(
  *
  * Returns whether anything was removed, so the caller records an audit event for
  * a revocation that happened rather than one that was merely requested.
+ *
+ * ── Takes an executor, not a service context ──
+ * Because the two statements are one act. Run separately they can half-happen:
+ * the grants go, the process dies, and the queued row survives as an instruction
+ * to re-seal a key to somebody who was just cut off. The caller passes the
+ * transaction it is already inside — `reconcileMemberKeyAccess` runs the whole
+ * reconciliation in one — so the pair commits together or not at all.
  */
 export async function revokeMemberAccess(
-  services: ServiceContext,
+  exec: Executor,
   params: { orgId: string; environmentId: string; userId: string },
 ): Promise<number> {
-  const removed = await removeMemberGrantsForEnvironment(services.db, params);
+  const removed = await removeMemberGrantsForEnvironment(exec, params);
 
-  await removePendingKeyGrant(services.db, {
+  await removePendingKeyGrant(exec, {
     environmentId: params.environmentId,
     targetUserId: params.userId,
   });
@@ -401,42 +460,68 @@ export async function revokeMemberAccess(
  * owes the same single key.
  */
 export async function queueKeyShare(
-  services: ServiceContext,
+  exec: Executor,
   params: { environmentId: string; targetUserId: string; requestedBy: string },
 ): Promise<boolean> {
-  return queuePendingKeyGrant(services.db, params);
+  return queuePendingKeyGrant(exec, params);
+}
+
+/** The two directions in which an environment's grants can be out of step. */
+interface KeyHygiene {
+  /**
+   * Somebody holds the active key who should not — a grant was deleted, a token
+   * was revoked or expired, and no rotation has followed.
+   */
+  needsRotation: boolean;
+  /**
+   * Somebody may read the environment and holds no key for it. The opposite
+   * direction, and until now nothing anywhere reported it.
+   */
+  missingGrants: MissingGrantPayload[];
 }
 
 /**
- * Whether an environment has a principal whose grant was deleted but whose key
- * has not been replaced.
+ * Compares who holds the active key against who the authorization model says
+ * should — **in both directions**.
  *
- * Derived rather than stored, and that is deliberate. A stored flag would be a
- * second source of truth about a state that is fully determined by the rows:
- * somebody who should not hold the active key still can, because a grant was
- * removed and no rotation followed. Deriving it means the answer cannot drift
- * from the grants it describes, and it cannot be left set by a failed write or
- * cleared by one that did not actually rotate anything.
+ * ── Why one direction was not enough ──
+ * `needsRotation` asked only "is there a holder the model does not name?", which
+ * catches a revocation waiting for its rotation and nothing else. The opposite
+ * asymmetry is just as real and was invisible from every screen in the product: a
+ * member who is entitled to an environment and holds no grant can list every
+ * secret name and decrypt none of them. A vault reset produces exactly that state
+ * for every environment at once, and so does an acceptance whose re-seal never
+ * completed. Nobody was told — not the person, not an administrator, not the
+ * audit log.
  *
- * The comparison is between **who holds a grant on the active key** and **who the
- * authorization model says should** — the same computation `assertCompleteGrantSet`
- * performs, which is why they share `requiredPrincipals`. A holder the model does
- * not name is a revocation waiting for its rotation.
+ * `missingGrants` is that answer. It is not a duplicate of `pendingGrants`: the
+ * queue records that somebody *asked* for a share, and this is derived from the
+ * rows themselves, so it is still right when the request was never recorded or
+ * was deleted by a path that should not have deleted it. The queue is an intent;
+ * this is the state.
+ *
+ * Derived rather than stored, both of them, for the reason a stored flag always
+ * fails: it is a second source of truth about something the rows already
+ * determine, and it can be left set by a failed write or cleared by one that
+ * rotated nothing.
  */
-async function needsRotation(
+async function keyHygiene(
+  exec: Executor,
   scope: EnvironmentScope,
-  services: ServiceContext,
   activeKeyId: string,
-): Promise<boolean> {
-  const holders = await listGrantsForEnvironment(
-    services.db,
-    scope.organization.id,
-    scope.environment.id,
+): Promise<KeyHygiene> {
+  const holders = await listGrantsForEnvironment(exec, scope.organization.id, scope.environment.id);
+
+  const entitled = await entitledPrincipals(exec, scope);
+  const required = toPrincipalKeys(entitled);
+
+  const held = new Set(
+    holders
+      .filter((grant) => grant.envDataKeyId === activeKeyId)
+      .map((grant) => principalKey(grant.recipientKind, grant.recipientId)),
   );
 
-  const entitled = await requiredPrincipals(scope, services);
-
-  return holders.some(
+  const needsRotation = holders.some(
     (grant) =>
       grant.envDataKeyId === activeKeyId &&
       // An invitation grant is not held by anybody yet — it is a key waiting for
@@ -444,8 +529,19 @@ async function needsRotation(
       // rotated away, so counting it as a stale holder would report every
       // outstanding invitation as a pending revocation.
       grant.recipientKind !== 'invite' &&
-      !entitled.has(principalKey(grant.recipientKind, grant.recipientId)),
+      !required.has(principalKey(grant.recipientKind, grant.recipientId)),
   );
+
+  const missingGrants: MissingGrantPayload[] = [
+    ...entitled.memberUserIds
+      .filter((userId) => !held.has(principalKey('member', userId)))
+      .map((userId) => ({ kind: 'member' as const, id: userId })),
+    ...entitled.tokens
+      .filter((token) => !held.has(principalKey('token', token.id)))
+      .map((token) => ({ kind: 'token' as const, id: token.id })),
+  ];
+
+  return { needsRotation, missingGrants };
 }
 
 /**
@@ -460,10 +556,10 @@ async function needsRotation(
  * at least `read`, decided by `can()` — the same function every request goes
  * through, so the key set and the access model cannot disagree.
  *
- * **Service tokens** are those pinned to this environment that still have a
- * public key. A token minted before the Phase 4 creation flow has no keypair, so
- * there is nothing to seal to; excluding it is what stops a rotation being
- * blocked for ever by a legacy credential nobody can re-key.
+ * **Service tokens** are those pinned to this environment that are live and still
+ * have a public key. Revoked, expired and keyless tokens are all excluded by
+ * `listSealableServiceTokens`, because none of them can be sealed to and
+ * demanding a grant for one blocks every rotation of the environment for ever.
  *
  * **Invitations** are not required. An invitation's grants are sealed to a
  * one-off keypair whose private half exists only in a fragment the server has
@@ -471,12 +567,7 @@ async function needsRotation(
  * that the invitation's grants become stale and its holder re-runs the flow,
  * which is why they are permitted in a set but never demanded.
  */
-async function requiredPrincipals(
-  scope: EnvironmentScope,
-  services: ServiceContext,
-): Promise<Set<string>> {
-  const entitled = await entitledPrincipals(scope, services);
-
+function toPrincipalKeys(entitled: EntitledPrincipals): Set<string> {
   const required = new Set<string>();
   for (const userId of entitled.memberUserIds) required.add(principalKey('member', userId));
   for (const token of entitled.tokens) required.add(principalKey('token', token.id));
@@ -489,29 +580,41 @@ interface EntitledPrincipals {
   tokens: { id: string; publicKey: Uint8Array }[];
 }
 
+/**
+ * Everyone entitled to this environment, exhaustively, in three statements.
+ *
+ * ── What was wrong with the loop this replaces ──
+ * It read one page of the roster — two hundred members, the clamp's ceiling, with
+ * `hasMore` discarded — and then issued two queries per member. Both halves were
+ * faults, and the first was the dangerous one. At two hundred and one members the
+ * answer stopped being *the set* and became *a page of it*: everybody past the
+ * boundary was absent from `requiredPrincipals`, so a rotation either refused
+ * (they were classified surplus) or, through `sealingRecipients`, quietly dropped
+ * them from the list a client seals to. A silent revocation produced by the very
+ * check that exists to prevent silent revocations.
+ *
+ * There is no pagination here now, and that is not an oversight to be tidied
+ * later: an incomplete answer to this question is worse than a slow one by a
+ * margin that is not close. `loadOrganizationAuthorizationContexts` reads the
+ * active roster and its access grants in two bulk statements — narrowed to this
+ * project, because `resolveAccessLevel` consults no other — and `can()` then runs
+ * in memory, per member, with no round trip. Same decision procedure as every
+ * request in the system; the only thing that changed is where the rows come from.
+ */
 async function entitledPrincipals(
+  exec: Executor,
   scope: EnvironmentScope,
-  services: ServiceContext,
 ): Promise<EntitledPrincipals> {
+  const contexts = await loadOrganizationAuthorizationContexts(exec, {
+    orgId: scope.organization.id,
+    projectId: scope.environment.projectId,
+  });
+
   const memberUserIds: string[] = [];
 
-  // Unpaginated on purpose: a partial roster would produce a "complete" grant
-  // set missing everybody past the first page, which is precisely the silent
-  // revocation this whole check exists to prevent. `listMembers` clamps its page
-  // size, so the ceiling is asked for explicitly.
-  const roster = await listMembers(services.db, scope.organization.id, { pageSize: 200 });
-
-  for (const member of roster.members) {
-    if (member.status !== 'active') continue;
-
-    const context = await loadAuthorizationContext(services.db, {
-      orgId: scope.organization.id,
-      userId: member.userId,
-    });
-    if (!context) continue;
-
+  for (const context of contexts) {
     const decision = can(
-      { kind: 'user', userId: member.userId, orgId: scope.organization.id },
+      { kind: 'user', userId: context.userId, orgId: scope.organization.id },
       READ_KEYS,
       {
         kind: 'environment',
@@ -522,14 +625,10 @@ async function entitledPrincipals(
       { membership: toGrantContext(context), isProduction: scope.environment.isProduction },
     );
 
-    if (decision.allowed) memberUserIds.push(member.userId);
+    if (decision.allowed) memberUserIds.push(context.userId);
   }
 
-  const tokens = await listSealableServiceTokens(
-    services.db,
-    scope.organization.id,
-    scope.environment.id,
-  );
+  const tokens = await listSealableServiceTokens(exec, scope.organization.id, scope.environment.id);
 
   return { memberUserIds, tokens };
 }
@@ -569,7 +668,7 @@ export async function sealingRecipients(
     scope.environment.id,
   );
 
-  const entitled = await entitledPrincipals(scope, services);
+  const entitled = await entitledPrincipals(services.db, scope);
 
   const holders =
     state.activeKey === null
@@ -649,11 +748,11 @@ export async function sealingRecipients(
  * hope, which is exactly how a client ends up looping.
  */
 async function assertCompleteGrantSet(
+  exec: Executor,
   scope: EnvironmentScope,
-  services: ServiceContext,
   grants: readonly GrantRequest[],
 ): Promise<void> {
-  const required = await requiredPrincipals(scope, services);
+  const required = toPrincipalKeys(await entitledPrincipals(exec, scope));
 
   const supplied = new Set(
     grants.map((grant) => principalKey(grant.recipientKind, grant.recipientId)),
@@ -688,32 +787,38 @@ async function assertCompleteGrantSet(
 /**
  * Refuses a grant to a principal that is not entitled to the environment.
  *
- * The recipient-side check `addGrants` describes. An invitation is exempt: it has
- * no membership to resolve yet, and its entitlement was decided when the
- * invitation's `initial_grants` were chosen — re-deciding it here would need a
- * member row that does not exist.
+ * The recipient-side check `addGrants` describes, and — since a rotation may
+ * carry invite grants — the one `rotateKeys` runs over its own set.
  */
 async function assertRecipientEligible(
+  exec: Executor,
   scope: EnvironmentScope,
-  services: ServiceContext,
   grant: GrantRequest,
 ): Promise<void> {
   if (grant.recipientKind === 'invite') {
-    // No membership to resolve — the invitee has not joined and may not have an
-    // account. What is checked instead is that the invitation is **this
-    // organisation's and still open**: without it, a member of one organisation
-    // could seal their environment's key to an invitation belonging to another,
-    // and the invitee would decrypt it on acceptance somewhere else entirely.
+    // Two questions, and until now only the first was asked.
     //
-    // An expired or revoked invitation is refused for the plainer reason that
-    // nobody will ever open the grant: acceptance is what consumes it, and a
-    // closed invitation is never accepted.
+    // **Is this invitation ours and still open?** Without it, a member of one
+    // organisation could seal their environment's key to an invitation belonging
+    // to another and the invitee would decrypt it on acceptance somewhere else
+    // entirely. An expired or revoked invitation is refused for the plainer
+    // reason that nobody will ever open the grant: acceptance is what consumes
+    // it, and a closed invitation is never accepted.
+    //
+    // **Will the invitee actually be allowed in here?** This is the one that was
+    // missing, and its absence was a privilege escalation dressed as
+    // convenience: any member with `secret.read` on an environment could seal its
+    // key to *any* open invitation, and the invitee would arrive holding key
+    // bytes for an environment the role and selection they were invited under
+    // never entitled them to. They would be denied by every route that reads
+    // secrets and would hold the key anyway — which is the wrong way round, since
+    // the key is the thing routes cannot take back.
     const invitation = await findPendingInvitationForGrant(
-      services.db,
+      exec,
       scope.organization.id,
       grant.recipientId,
     );
-    if (invitation === null) {
+    if (invitation === null || !invitationReaches(invitation, scope)) {
       throw errors.badRequest('That invitation cannot hold a key for this environment.');
     }
     return;
@@ -721,7 +826,7 @@ async function assertRecipientEligible(
 
   if (grant.recipientKind === 'token') {
     const tokens = await listSealableServiceTokens(
-      services.db,
+      exec,
       scope.organization.id,
       scope.environment.id,
     );
@@ -732,13 +837,13 @@ async function assertRecipientEligible(
       // keypair cannot be sealed to and there is nothing the caller can do about
       // it from here.
       throw errors.badRequest(
-        'That service token cannot hold a key for this environment. It may be revoked, scoped elsewhere, or created before token keypairs existed.',
+        'That service token cannot hold a key for this environment. It may be revoked, expired, scoped elsewhere, or created before token keypairs existed.',
       );
     }
     return;
   }
 
-  const context = await loadAuthorizationContext(services.db, {
+  const context = await loadAuthorizationContext(exec, {
     orgId: scope.organization.id,
     userId: grant.recipientId,
   });
@@ -766,13 +871,97 @@ async function assertRecipientEligible(
 }
 
 /**
+ * Whether accepting this invitation would let its holder read the environment.
+ *
+ * ── Why this can be decided before anybody joins ──
+ * Because acceptance is deterministic. `applyInitialGrants` turns the invitation
+ * into `access_grants` rows by a rule that is fixed at invitation time, so the
+ * membership the invitee *will* have is computable now — and running the real
+ * `can()` over it means this check and the one the invitee meets on their first
+ * request are the same decision, rather than two rules that will drift.
+ *
+ * The rule, mirrored from `applyInitialGrants`:
+ *
+ *  - `initialGrants === null` is the pre-selection shape: role defaults
+ *    everywhere, so the answer is `can()` with no grants at all.
+ *  - otherwise it is **deny-by-default**. Every project gets an explicit `none`
+ *    unless it was selected; a selected project or environment gets the invited
+ *    role's *non-production* level. Production is therefore reachable only by
+ *    having been ticked explicitly, which is the conscious act the schema comment
+ *    demands — and the reason this check matters most on exactly the environments
+ *    where handing out a key is worst.
+ *
+ * `memberStatus: 'active'` because that is what `addMember` writes. An
+ * invitation cannot produce a suspended member.
+ */
+function invitationReaches(
+  invitation: PendingInvitationForGrant,
+  scope: EnvironmentScope,
+): boolean {
+  const projectId = scope.environment.projectId;
+  const environmentId = scope.environment.id;
+
+  const grants: ResolvedGrant[] = [];
+
+  if (invitation.initialGrants !== null) {
+    // The level a selection confers. Deliberately the non-production default:
+    // `applyInitialGrants` writes exactly this, so an invitation that ticked a
+    // production environment grants a level chosen without regard to the flag —
+    // and `can()` still applies the production rule on top.
+    const level = roleDefaultAccessLevel(invitation.role, false);
+
+    const selectedEnvironment = invitation.initialGrants.some(
+      (seed) => seed.projectId === projectId && seed.environmentId === environmentId,
+    );
+    const selectedProject = invitation.initialGrants.some(
+      (seed) => seed.projectId === projectId && seed.environmentId === null,
+    );
+
+    if (selectedEnvironment) grants.push({ projectId, environmentId, accessLevel: level });
+    grants.push({
+      projectId,
+      environmentId: null,
+      accessLevel: selectedProject ? level : 'none',
+    });
+  }
+
+  const membership: Membership = {
+    role: invitation.role,
+    memberStatus: 'active',
+    grants,
+  };
+
+  return can(
+    // The invitee has no user id yet, and `can()` does not consult one for a
+    // membership decision — the id in the actor is there for the service-token
+    // branch and for callers that log it.
+    { kind: 'user', userId: invitation.id, orgId: scope.organization.id },
+    READ_KEYS,
+    {
+      kind: 'environment',
+      orgId: scope.organization.id,
+      projectId,
+      environmentId,
+    },
+    { membership, isProduction: scope.environment.isProduction },
+  ).allowed;
+}
+
+/**
  * Refuses an initialisation whose grant is addressed to somebody else.
  *
  * At creation the only principal whose key could have sealed this blob is the
  * creator's own, so a grant naming anybody else was either fabricated or sealed
  * to a public key the creator had no business using. Neither is a state to store.
+ *
+ * Exported because environment *creation* writes a first grant too, through a
+ * different route and a different repository function, and it needs the identical
+ * rule. It did not have one: `POST …/environments` accepted a first grant
+ * addressed to an arbitrary principal — any kind, any 36-character id — with the
+ * foreign keys checking existence rather than tenancy. One assertion, used twice,
+ * is the only shape in which the two cannot disagree.
  */
-function assertSelfGrant(grant: GrantRequest, userId: string): void {
+export function assertSelfGrant(grant: GrantRequest, userId: string): void {
   if (grant.recipientKind !== 'member' || grant.recipientId !== userId) {
     throw errors.badRequest("An environment's first key grant must be the creator's own.");
   }

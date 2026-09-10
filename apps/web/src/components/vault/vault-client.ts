@@ -516,10 +516,26 @@ export function resetConfirmationProblem(typed: string): string | null {
  * in this state — every caller arrives from a locked session — but a reset that
  * left a User Key resident because the request failed would be holding the one
  * key that no longer opens anything on the server.
+ *
+ * ── `idToken` is proof this is still the account's owner ──
+ * The typed phrase guards against a mistake and nothing else — it is printed on
+ * the screen above the field. This route is necessarily reachable from a *locked*
+ * session, so without a second credential the one irreversible act in the product
+ * would be available to anybody holding a stolen session cookie. The caller
+ * obtains the token from `reauthenticateWithPassword` or
+ * `reauthenticateWithGoogle` immediately before calling this, and the server
+ * verifies its signature, its subject and how recently it was minted.
+ *
+ * It is a parameter rather than something this function fetches, so the token
+ * exists as a local `const` in one call frame and is never held anywhere this
+ * module could log or cache it.
  */
-export async function resetVault(confirm: string): Promise<VaultStatus> {
+export async function resetVault(confirm: string, idToken: string): Promise<VaultStatus> {
   releaseVaultKeys();
-  const response = await api.post<{ vault: VaultStatus }>(apiPath.vaultReset(), { confirm });
+  const response = await api.post<{ vault: VaultStatus }>(apiPath.vaultReset(), {
+    confirm,
+    idToken,
+  });
   return response.vault;
 }
 

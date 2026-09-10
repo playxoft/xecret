@@ -120,6 +120,8 @@ export {
   listGrantsForOrganization,
   listMembers,
   loadAuthorizationContext,
+  loadOrganizationAuthorizationContexts,
+  lockOrganization,
   memberGrantsQuery,
   membersPageQuery,
   membershipQuery,
@@ -196,6 +198,7 @@ export type {
   InitializeEnvironmentKeysParams,
   InvitationGrantRecord,
   MemberSealingKeys,
+  PendingInvitationForGrant,
   PendingKeyGrantRecord,
   RotateEnvDataKeyParams,
 } from './env-keys';

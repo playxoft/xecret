@@ -5,6 +5,11 @@ import { fromBase64Url, zeroize } from '@xecret/core/crypto/client';
 import type { Bytes, RecoveryCode } from '@xecret/core/crypto/client';
 
 import { errorMessage, SIGN_IN_PATH } from '@/lib/api';
+import {
+  describeAuthError,
+  reauthenticateWithGoogle,
+  reauthenticateWithPassword,
+} from '@/lib/firebase';
 import { Alert, Button, Field, Input, KeyIcon, Separator, Skeleton } from '@/components/ui';
 import { kitConfirmationProblem, promptedCodeIndex } from './emergency-kit';
 import { assertPasskeyPrf, currentPasskeyAvailability } from './passkey';
@@ -68,7 +73,7 @@ export function VaultUnlock({ user, onUnlocked }: VaultUnlockProps) {
   // anything, and it has to stay rendered through the reset that empties
   // `material` underneath it.
   if (stage === 'lost') {
-    return <AllCodesLost onBack={() => setStage('code')} onReset={onUnlocked} />;
+    return <AllCodesLost email={user.email} onBack={() => setStage('code')} onReset={onUnlocked} />;
   }
 
   if (vault.material === null) {
@@ -569,13 +574,54 @@ function RecoveryFlow({
  * a soft delete, not a thirty-day window. And the phrase states the act rather
  * than naming the account, so it cannot be satisfied by muscle memory.
  *
+ * And a **re-authentication**, which the typed phrase is not a substitute for.
+ * The phrase is printed on the screen above the field, so it costs an attacker
+ * one glance; and this is the one screen in the product that must stay reachable
+ * from a locked session, so the vault lock cannot stand in front of it the way it
+ * stands in front of every other destructive act. Without a second credential, a
+ * stolen session cookie would be enough to destroy somebody's keys for good.
+ *
+ * So the person signs in again — a password, or the Google prompt — and the fresh
+ * ID token travels with the request. The server verifies it against the identity
+ * provider and checks both that it names this account and that the
+ * authentication behind it happened minutes ago rather than at sign-in.
+ *
+ * The token is a local `const` in one call frame: obtained, passed into
+ * {@link resetVault}, and unreachable the moment the handler returns. It is never
+ * put into React state, which is the same rule `lib/firebase.ts` keeps for the
+ * sign-in token.
+ *
  * The keys are released before the request, inside {@link resetVault}. Nothing
  * is held in this state, and doing it anyway costs nothing and closes the case
  * where something was.
  */
-function AllCodesLost({ onBack, onReset }: { onBack: () => void; onReset: () => void }) {
+/**
+ * Whether a thrown value came from Firebase rather than from our API.
+ *
+ * A `code` of the `auth/…` shape is the only marker the SDK gives, and matching
+ * on the prefix rather than on any string `code` keeps an ApiError — which may
+ * one day grow a `code` of its own — from being rendered through
+ * `describeAuthError`, whose vocabulary is entirely about sign-in.
+ */
+function isAuthError(cause: unknown): boolean {
+  if (typeof cause !== 'object' || cause === null || !('code' in cause)) return false;
+  const code = (cause as { code: unknown }).code;
+  return typeof code === 'string' && code.startsWith('auth/');
+}
+
+function AllCodesLost({
+  email,
+  onBack,
+  onReset,
+}: {
+  /** The signed-in address, so a password re-auth needs no second field. */
+  email: string;
+  onBack: () => void;
+  onReset: () => void;
+}) {
   const vault = useVault();
   const [typed, setTyped] = useState('');
+  const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [showProblem, setShowProblem] = useState(false);
@@ -583,8 +629,15 @@ function AllCodesLost({ onBack, onReset }: { onBack: () => void; onReset: () => 
 
   const problem = resetConfirmationProblem(typed);
 
-  async function reset(event: React.FormEvent) {
-    event.preventDefault();
+  /**
+   * The shared tail of both re-authentication routes.
+   *
+   * `prove` runs the Firebase half and hands back a token this function
+   * immediately spends. Written once so the password path and the Google path
+   * cannot drift on the order of operations — the phrase check, the token, the
+   * reset, and the adopt-then-reload that follows it.
+   */
+  async function resetWith(prove: () => Promise<string>) {
     if (busy) return;
 
     if (problem !== null) {
@@ -595,7 +648,7 @@ function AllCodesLost({ onBack, onReset }: { onBack: () => void; onReset: () => 
     setBusy(true);
     setFailure(null);
     try {
-      const status = await resetVault(typed);
+      const status = await resetVault(typed, await prove());
       // Adopted before anything navigates, so this provider stops describing a
       // vault that no longer exists. `reload` follows to drop the material with
       // it — safe here and nowhere else in this file, because the dead end is
@@ -607,7 +660,11 @@ function AllCodesLost({ onBack, onReset }: { onBack: () => void; onReset: () => 
       // that is what swaps this screen for the setup ceremony.
       onReset();
     } catch (cause) {
-      setFailure(errorMessage(cause));
+      // `describeAuthError` first: a Firebase failure carries a `code` and a
+      // developer-facing message that sometimes echoes the input, and it is the
+      // likelier failure here. `errorMessage` handles our own API errors.
+      setFailure(isAuthError(cause) ? describeAuthError(cause) : errorMessage(cause));
+      setPassword('');
     } finally {
       setBusy(false);
     }
@@ -658,7 +715,14 @@ function AllCodesLost({ onBack, onReset }: { onBack: () => void; onReset: () => 
         </Alert>
       ) : null}
 
-      <form onSubmit={reset} noValidate className="flex flex-col gap-4">
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void resetWith(() => reauthenticateWithPassword(email, password));
+        }}
+        noValidate
+        className="flex flex-col gap-4"
+      >
         <Field
           label={`Type “${VAULT_RESET_CONFIRMATION}” to confirm`}
           error={showProblem ? problem : null}
@@ -672,10 +736,41 @@ function AllCodesLost({ onBack, onReset }: { onBack: () => void; onReset: () => 
           />
         </Field>
 
+        <Separator />
+
+        {/*
+          The second credential, and the copy says what it is for. Somebody at
+          this screen has just failed to prove they know their passphrase, so
+          being asked for a *different* secret needs a reason attached or it
+          reads as the same demand repeated.
+        */}
+        <p className="text-fg-muted text-sm leading-6">
+          Confirm it is you before anything is destroyed. Signing in again is not the passphrase —
+          it is the password or Google account you use to reach xecret, and it is what stops
+          somebody who has your browser session from doing this to you.
+        </p>
+
+        <Field label={`Password for ${email}`}>
+          <Input
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            autoComplete="current-password"
+          />
+        </Field>
+
         <Button type="submit" variant="danger" loading={busy}>
           Reset my vault
         </Button>
       </form>
+
+      <Button
+        variant="secondary"
+        loading={busy}
+        onClick={() => void resetWith(reauthenticateWithGoogle)}
+      >
+        Confirm with Google and reset
+      </Button>
 
       <Button variant="secondary" onClick={onBack}>
         I have found a code after all

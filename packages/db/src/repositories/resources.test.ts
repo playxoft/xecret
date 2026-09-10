@@ -289,6 +289,11 @@ describe('cross-tenant isolation (threat T2)', () => {
           createdBy: USER_ID,
           version: 2,
           grants: [grantSeed()],
+          // The completeness re-check the service layer supplies. A no-op here:
+          // this test asserts the statement *shape* of the rotation, and the
+          // policy it would run needs `can()`, which this package deliberately
+          // does not import.
+          assertGrantSet: () => Promise.resolve(),
         }),
     ],
     [

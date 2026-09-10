@@ -134,8 +134,12 @@ function keyStateWith(grant: GrantBody | null): EnvironmentKeys {
             signedByUserId: USER_ID,
           },
     ehkExists: true,
+    // `null` for all three, which is what the server answers a caller who may not
+    // manage the environment's keys — the ordinary case for the paths this file
+    // exercises.
     pendingGrants: null,
-    needsRotation: false,
+    needsRotation: null,
+    missingGrants: null,
     currentMaxSecretVersion: 0,
   };
 }

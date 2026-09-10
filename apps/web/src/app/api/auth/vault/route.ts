@@ -31,9 +31,33 @@ import {
  * unlock is a client-side operation, and a client cannot try to unwrap a User
  * Key it has not been given. See `VaultMaterialPayload` for what that concedes
  * and why it is the standing trade-off of the model rather than a gap in it.
+ *
+ * ── The token read, and why it is metered and audited rather than removed ──
+ * A **CLI token** reads its issuing user's material, and that is a genuine
+ * concession rather than a symmetric one. What it receives is the passphrase
+ * wrap, the KDF salt and the Argon2 parameters: everything an offline attack on
+ * the passphrase needs, held by a credential that lives in a file on a laptop or
+ * an environment variable in a CI runner and is good for months. "The wraps are
+ * useless without the passphrase" is true of a locked *browser*, which is bounded
+ * by a session; it is a weaker statement about an `xct_…` token, and stating it
+ * without qualification would be the comment doing the work the design cannot.
+ *
+ * It is not removable. Headless `xecret login --passphrase` exists precisely so a
+ * machine can decrypt, and a CLI token cannot open a single grant without the
+ * user's wrapped private key — so withholding the material would leave the flow
+ * authenticating perfectly and decrypting nothing. What is available is to make
+ * the read *cost* something and *show up*: `RL_CLI_TOKEN` bounds how fast a token
+ * can pull fresh material, and `vault.material_read` puts the read in the audit
+ * log with the credential kind on it, so an unexpected pull at 04:00 from a CI
+ * runner is a question somebody can ask. ADR 0009 §residual risks records the
+ * trade honestly, including that the Argon2 cost is disclosed to the holder.
+ *
+ * A **browser session** is neither metered here nor audited: it reads its own
+ * material on every lock screen, several times a day, and burying
+ * `vault.unlocked` under page views would cost more than it buys.
  */
 export const GET = authenticatedRoute(
-  async ({ principal, services }) => {
+  async ({ principal, services, audit, record }) => {
     const status = await vaultStatus(services, principal);
 
     // Whose material, if any — see `vaultMaterialOwner`. A session reads its
@@ -45,7 +69,33 @@ export const GET = authenticatedRoute(
       return json({ vault: status, material: null });
     }
 
-    return json({ vault: status, material: await vaultMaterial(services, owner) });
+    if (principal.kind !== 'user') {
+      await enforce(services.env, 'RL_CLI_TOKEN', rateLimitKey(['vault_material', owner]));
+    }
+
+    const material = await vaultMaterial(services, owner);
+
+    if (principal.kind !== 'user' && material !== null) {
+      // Filed against the account's primary organisation, like every other
+      // account-level record: `audit_logs.org_id` is NOT NULL, because a record
+      // nobody's audit view can reach is a record nobody will read.
+      const orgId = await primaryOrgId(services, owner);
+      if (orgId !== null) {
+        record(
+          audit(orgId).success(
+            'vault.material_read',
+            { type: 'user', id: owner },
+            {
+              source: 'cli',
+              principalKind: 'token',
+              reason: 'headless unlock: the wraps a passphrase login must open',
+            },
+          ),
+        );
+      }
+    }
+
+    return json({ vault: status, material });
   },
   { allowLocked: true },
 );

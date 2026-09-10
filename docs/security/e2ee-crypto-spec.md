@@ -837,6 +837,20 @@ signs in, completes vault setup, derives the same private key from the fragment,
 grants, re-seals each EDK and EHK to their own public key, and uploads; the invite grants are
 then deleted.
 
+**"The relevant grants" is enforced, not assumed.** Every route that writes an `invite` grant —
+`POST …/keys/grants` and `POST …/keys/rotate` alike — refuses one unless the invitation is this
+organisation's, still open, **and** its `initial_grants` (or, where none were selected, its
+invited role's defaults) will actually confer read access to that environment once accepted.
+Without the last condition any member holding an environment's key could seal it to any open
+invitation, and the invitee would arrive holding key bytes for an environment their role and
+selection never entitled them to — denied by every route that reads secrets while holding the
+one thing a route cannot take back. Acceptance is deterministic, so the check runs the same
+`can()` the invitee will meet on their first request rather than a second rule that could drift.
+
+The deletion at acceptance names the grant rows the tenant-scoped read returned, never the
+invitation id: sealing to a foreign invitation id needs nothing more than knowing it, and a
+delete keyed on the id alone would let one organisation's acceptance destroy another's rows.
+
 **On 128 bits for a key-exchange key.** This is lower than the 256-bit security level of the
 rest of the system, and it is bounded deliberately rather than accidentally: an invitation
 expires, is single-use, and its token half is independently rate-limited server-side. An

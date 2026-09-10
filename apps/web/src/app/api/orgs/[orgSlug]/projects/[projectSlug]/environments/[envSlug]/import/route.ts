@@ -15,7 +15,7 @@ import type { ServiceContext } from '@/server/context';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
-import { importBody, importClientBody } from '@/server/schemas/secrets';
+import { duplicateEntryName, importBody, importClientBody } from '@/server/schemas/secrets';
 import {
   applyClientSecretWrites,
   applySecretWrites,
@@ -276,6 +276,16 @@ async function importClientEntries(context: {
   const { request, scope, services, writer, principal, audit, record } = context;
 
   const body = await parseJsonBody(request, importClientBody);
+
+  // Two entries for one name are refused here, by name. See
+  // `duplicateEntryName` for what used to happen instead — a rollback three
+  // layers down reported as a concurrent edit that never occurred.
+  const duplicate = duplicateEntryName(body.entries);
+  if (duplicate !== null) {
+    throw errors.badRequest(
+      `This import names "${duplicate}" more than once. Each secret may appear once per import.`,
+    );
+  }
 
   // Unpaginated and complete, exactly as the plaintext path needs it: a plan
   // built against the first page of existing names would classify an existing

@@ -7,6 +7,7 @@ import type {
   PendingKeyGrantRecord,
 } from '@xecret/db/repositories';
 import { decodePublicKey, encodePublicKey } from '@xecret/core/crypto/client';
+import { uuidField } from './ids';
 import { decodeBlob, encodeBlob } from './vault';
 
 /**
@@ -116,7 +117,7 @@ export const recipientKindSchema = z.enum(['member', 'token', 'invite']);
 export const grantSchema = z.strictObject(
   {
     recipientKind: recipientKindSchema,
-    recipientId: z.string().check(z.length(36, 'A recipient is named by a UUID.')),
+    recipientId: uuidField('A recipient is named by a UUID.'),
     /**
      * The public key the client sealed to, base64url. Signed, and therefore
      * stored (spec §6.1).
@@ -211,7 +212,7 @@ export type EnvironmentKeyRotateRequest = z.infer<typeof environmentKeyRotateSch
  */
 export const environmentKeyGrantsSchema = z.strictObject(
   {
-    envDataKeyId: z.string().check(z.length(36, 'A key is named by a UUID.')),
+    envDataKeyId: uuidField('A key is named by a UUID.'),
     grants: grantsSchema,
   },
   UNEXPECTED_FIELD,
@@ -289,6 +290,20 @@ export interface RecipientsPayload {
   unsealable: UnsealablePayload[];
 }
 
+/**
+ * A principal entitled to this environment who holds no key for it.
+ *
+ * Named by kind and id and nothing else, because that is all it is: an
+ * observation about two sets of rows. What to do about it — seal them a grant
+ * through `POST …/keys/grants` — is the same act `RecipientPayload.holdsGrant`
+ * already describes, so this field points at the work rather than duplicating the
+ * material for it.
+ */
+export interface MissingGrantPayload {
+  kind: 'member' | 'token';
+  id: string;
+}
+
 /** One queued key share, for the admin banner. Ids and a timestamp only. */
 export interface PendingGrantPayload {
   id: string;
@@ -341,8 +356,34 @@ export interface EnvironmentKeysPayload {
    * written next. Until one lands with a version bump, the revocation is on
    * paper, and this field is how the dashboard says so rather than letting an
    * administrator believe an act completed that did not.
+   *
+   * **`null` means "not computed for you"**, not "no". Deciding it costs a read
+   * of the whole active roster and its access grants, and the caller who pays for
+   * it on the hottest path in the product — `POST …/pull`, on every `xecret run`
+   * and every CI job — is exactly the caller who can do nothing about the answer.
+   * So it is computed only for a caller who may act on it, and the type says so:
+   * `false` would be a reassurance nobody checked.
    */
-  needsRotation: boolean;
+  needsRotation: boolean | null;
+  /**
+   * Principals who may read this environment and hold no key for it.
+   *
+   * The other direction of the same comparison, and until now nothing reported
+   * it. A member entitled to an environment with no grant on its active key can
+   * list every secret name and decrypt none of them — the state a vault reset
+   * produces for every environment at once, and the state an acceptance leaves
+   * behind when the re-seal never lands.
+   *
+   * Distinct from `pendingGrants` on purpose. That is a queue of *requests*: rows
+   * somebody wrote when they changed an access level. This is derived from the
+   * grants themselves, so it is still correct when the request was never recorded
+   * or was deleted by a path that should not have deleted it. One is intent, the
+   * other is state, and the reason this field exists is that they had drifted.
+   *
+   * Admins only, and `null` for everybody else, on the same terms as
+   * `needsRotation` and `pendingGrants`: it names other people.
+   */
+  missingGrants: MissingGrantPayload[] | null;
   /**
    * The highest secret version currently stored in this environment.
    *

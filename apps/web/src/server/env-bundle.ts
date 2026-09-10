@@ -22,13 +22,23 @@ import type { EnvironmentScope } from './tenancy';
  * Serving both together means the grant and the values are read in one
  * consistent moment.
  *
- * ── The query budget is preserved ──
- * Two statements for the values and the key state, exactly as the server-mode
- * path spends two — `loadEnvironmentSecrets` resolves "current version of each"
- * with one `DISTINCT ON`, and `environmentKeyState` reads the active key and the
- * caller's grant. Both are constant in the number of secrets. What the e2ee path
- * *saves* is the envelope unwrap: no Root KEK, no org key, no AES-GCM open, and
- * therefore no plaintext anywhere in the Worker.
+ * ── The query budget, counted rather than claimed ──
+ * Five statements, not two, and the comment that said two was wrong in a way
+ * worth recording: `environmentKeyState` is not one read. It is the active key,
+ * the HMAC key, the environment's highest secret version, and the caller's own
+ * grant — four — and `loadEnvironmentSecrets` resolves "current version of each"
+ * with one `DISTINCT ON` for the fifth.
+ *
+ * What matters is that every one of them is **constant in the size of the
+ * environment and of the organisation**. It briefly was not: `needsRotation` used
+ * to be computed for every caller, and it walked the member roster two queries at
+ * a time — an O(members) scan on the single hottest path in the product, `xecret
+ * run` and every CI job. That answer is now computed only for a caller who can act
+ * on it, which a pull never is, and when it is computed it reads the roster in
+ * bulk rather than a member at a time.
+ *
+ * What the e2ee path *saves* is the envelope unwrap: no Root KEK, no org key, no
+ * AES-GCM open, and therefore no plaintext anywhere in the Worker.
  *
  * ── What is deliberately absent ──
  * No `format`. Rendering `.env` or YAML takes plaintext, and this path has none;

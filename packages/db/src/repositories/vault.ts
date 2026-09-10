@@ -746,10 +746,28 @@ export async function deleteVault(exec: Executor, userId: string): Promise<boole
  * lock is not revocation: the user stays signed in, which is what lets them run
  * the ceremony immediately.
  *
+ * ── Why the debts are re-recorded rather than merely dropped ──
+ * The grants and the queued rows both have to go — they address a public key
+ * that no longer exists. But "this person is owed a key on production" is still
+ * true after the reset, and it is *more* true than before: they now hold nothing
+ * at all. Deleting the queue without re-recording it leaves an entitled member
+ * invisible from every screen — no grant, no pending row, nothing in any banner —
+ * and the reset UI's promise that "a teammate can share those environments with
+ * you again" would depend on somebody remembering unaided.
+ *
+ * So `requeue` runs in this same transaction, after the delete, and re-records a
+ * debt for every environment the account may still read. It is a callback for the
+ * reason `rotateEnvDataKey.assertGrantSet` is: deciding what somebody may read
+ * needs `can()`, and this layer does not import the policy engine.
+ *
  * Returns whether there was a vault to destroy, so the caller can answer "no
  * such thing" rather than reporting a success that did nothing.
  */
-export async function resetVault(exec: Executor, userId: string): Promise<boolean> {
+export async function resetVault(
+  exec: Executor,
+  userId: string,
+  options: { requeue?: ((tx: Executor) => Promise<void>) | undefined } = {},
+): Promise<boolean> {
   return exec.transaction(async (tx) => {
     const removed = await deleteVault(tx, userId);
     if (!removed) return false;
@@ -771,6 +789,11 @@ export async function resetVault(exec: Executor, userId: string): Promise<boolea
     // In the same transaction as the delete, so the account cannot be left
     // holding grants for a vault it no longer has.
     await deleteGrantsForUser(tx, userId);
+
+    // After the delete, never before: `deleteGrantsForUser` clears the queue
+    // wholesale, so a debt recorded first would be erased by the line above and
+    // the account would come out of the reset owed nothing.
+    await options.requeue?.(tx);
 
     await lockSessions(tx, { userId });
     return true;

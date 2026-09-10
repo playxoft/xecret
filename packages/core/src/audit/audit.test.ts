@@ -582,7 +582,10 @@ describe('every declared metadata field survives sanitisation', () => {
   // `sanitizeMetadata` rebuilds the object field by field with no loop, so a
   // field added to `AuditMetadata` but not to the sanitiser is silently dropped
   // before the INSERT. That happened to `deviceName`, `sessionCount` and
-  // `valueType` once; this test makes the omission a failure instead.
+  // `valueType` once, and to `grantCount` and `principalKind` again after —
+  // every `envkey.grant_pending` and `envkey.created` record written since
+  // carried neither. This test makes the omission a failure instead, which is
+  // the only reason it stops recurring.
   it('copies each field through, sanitised', () => {
     const record = builderWith().success('member.role_changed', null, {
       secretName: 'DATABASE_URL',
@@ -599,6 +602,8 @@ describe('every declared metadata field survives sanitisation', () => {
       deviceName: 'work-laptop',
       keyVersion: 2,
       sessionCount: 4,
+      grantCount: 7,
+      principalKind: 'token',
       valueType: 'url',
       reason: 'rotation',
       source: 'dashboard',
@@ -623,6 +628,8 @@ describe('every declared metadata field survives sanitisation', () => {
       deviceName: 'work-laptop',
       keyVersion: 2,
       sessionCount: 4,
+      grantCount: 7,
+      principalKind: 'token',
       valueType: 'url',
       reason: 'rotation',
       source: 'dashboard',

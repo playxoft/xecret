@@ -85,10 +85,28 @@ CREATE TABLE IF NOT EXISTS user_keys (
 -- Restates AUTO_LOCK_MINUTES_OPTIONS in @xecret/core/auth, carried over from
 -- `user_pins_auto_lock_check`, so a row cannot hold an interval no settings
 -- screen can display or repair.
+--
+-- ── Why every guard in this series names `current_schema()` ──
+-- `pg_constraint.conname` is unique per *namespace*, not per database, and
+-- `information_schema.columns` spans every schema the role can see. An
+-- unqualified lookup therefore answers "does anything anywhere called this
+-- exist?", and it answers yes for a constraint of the same name in a different
+-- schema — a second tenant's, a `_shadow` copy left by a diff tool, an old
+-- namespace kept for a rollback. The guard then reports "already applied", the
+-- ALTER never runs, and the migration is recorded as successful against a table
+-- that does not have the constraint. Silent, and discovered later as data that
+-- should have been impossible.
+--
+-- `current_schema()` restricts each guard to the schema the migration is
+-- actually altering, which is the same one the bare `ALTER TABLE` below resolves
+-- through `search_path`. The refuse-rather-than-backfill semantics are unchanged;
+-- what changes is that the question and the action now name the same table.
 DO $$
 BEGIN
 	IF NOT EXISTS (
-		SELECT 1 FROM pg_constraint WHERE conname = 'user_keys_auto_lock_check'
+		SELECT 1 FROM pg_constraint
+			WHERE conname = 'user_keys_auto_lock_check'
+			  AND connamespace = current_schema()::regnamespace
 	) THEN
 		ALTER TABLE user_keys
 			ADD CONSTRAINT user_keys_auto_lock_check
@@ -122,7 +140,9 @@ CREATE TABLE IF NOT EXISTS user_passkeys (
 DO $$
 BEGIN
 	IF NOT EXISTS (
-		SELECT 1 FROM pg_constraint WHERE conname = 'user_passkeys_credential_id_unique'
+		SELECT 1 FROM pg_constraint
+			WHERE conname = 'user_passkeys_credential_id_unique'
+			  AND connamespace = current_schema()::regnamespace
 	) THEN
 		ALTER TABLE user_passkeys
 			ADD CONSTRAINT user_passkeys_credential_id_unique UNIQUE (credential_id);
@@ -169,7 +189,9 @@ CREATE TABLE IF NOT EXISTS user_key_wraps (
 DO $$
 BEGIN
 	IF NOT EXISTS (
-		SELECT 1 FROM pg_constraint WHERE conname = 'user_key_wraps_kind_check'
+		SELECT 1 FROM pg_constraint
+			WHERE conname = 'user_key_wraps_kind_check'
+			  AND connamespace = current_schema()::regnamespace
 	) THEN
 		ALTER TABLE user_key_wraps
 			ADD CONSTRAINT user_key_wraps_kind_check
@@ -177,7 +199,9 @@ BEGIN
 	END IF;
 
 	IF NOT EXISTS (
-		SELECT 1 FROM pg_constraint WHERE conname = 'user_key_wraps_lookup_check'
+		SELECT 1 FROM pg_constraint
+			WHERE conname = 'user_key_wraps_lookup_check'
+			  AND connamespace = current_schema()::regnamespace
 	) THEN
 		ALTER TABLE user_key_wraps
 			ADD CONSTRAINT user_key_wraps_lookup_check
@@ -185,7 +209,9 @@ BEGIN
 	END IF;
 
 	IF NOT EXISTS (
-		SELECT 1 FROM pg_constraint WHERE conname = 'user_key_wraps_passkey_check'
+		SELECT 1 FROM pg_constraint
+			WHERE conname = 'user_key_wraps_passkey_check'
+			  AND connamespace = current_schema()::regnamespace
 	) THEN
 		ALTER TABLE user_key_wraps
 			ADD CONSTRAINT user_key_wraps_passkey_check
@@ -193,7 +219,9 @@ BEGIN
 	END IF;
 
 	IF NOT EXISTS (
-		SELECT 1 FROM pg_constraint WHERE conname = 'user_key_wraps_used_check'
+		SELECT 1 FROM pg_constraint
+			WHERE conname = 'user_key_wraps_used_check'
+			  AND connamespace = current_schema()::regnamespace
 	) THEN
 		ALTER TABLE user_key_wraps
 			ADD CONSTRAINT user_key_wraps_used_check

@@ -1,10 +1,13 @@
-import { and, desc, eq, inArray, isNotNull, isNull, max, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, max, or, sql } from 'drizzle-orm';
 import { uuidv7 } from '@xecret/core/ids';
+import { lockOrganization } from './membership';
 import { envDataKeys, envHmacKeys, envKeyGrants, pendingKeyGrants } from '../schema/env-keys';
 import type { GrantRecipientKind } from '../schema/env-keys';
+import type { OrgRole } from '@xecret/core/authz';
 import { environments, projects } from '../schema/resources';
 import { secrets, secretVersions } from '../schema/secrets';
 import { invitations } from '../schema/tenancy';
+import type { InvitationGrantSeed } from '../schema/tenancy';
 import { serviceTokens } from '../schema/tokens';
 import { userKeys } from '../schema/vault';
 import { isUniqueViolation } from './users';
@@ -306,6 +309,23 @@ export interface RotateEnvDataKeyParams {
   version: number;
   /** The **complete** replacement set, for every principal that keeps access. */
   grants: readonly EnvKeyGrantSeed[];
+  /**
+   * Re-checks the grant set against the authorization model, **inside** the
+   * transaction and under the organisation lock.
+   *
+   * ── Why this is a callback rather than a check in the caller ──
+   * Deciding who must appear in a rotation needs `can()`, and this layer does not
+   * import the policy engine (see `membership.ts` for the same seam). But the
+   * decision is only sound while nothing can change underneath it: a check that
+   * ran before the transaction opened would be re-answering a question that a
+   * concurrent member removal had already invalidated, and the rotation would
+   * seal the new key to somebody who had just lost access — silently, and
+   * audited as a success.
+   *
+   * So the policy stays with the caller and the *moment* comes from here. The
+   * callback is handed this transaction's executor and must throw to abort.
+   */
+  assertGrantSet: (tx: Executor) => Promise<void>;
 }
 
 /**
@@ -332,7 +352,19 @@ export interface RotateEnvDataKeyParams {
  * It does not decide *who* should be in the grant set. Completeness against the
  * authorization model is the service layer's question, because it needs
  * `can()`, and this layer does not import the policy engine (see
- * `membership.ts` for the same seam).
+ * `membership.ts` for the same seam). What it *does* own is **when** that
+ * question is asked: `assertGrantSet` runs inside this transaction, under the
+ * organisation lock, so the answer cannot have gone stale by the time the grants
+ * are written.
+ *
+ * ── The organisation lock, and why it is not the environment row ──
+ * "Who must hold this key" is a question about the *set* of members and their
+ * access grants, and no environment row is touched when somebody is removed from
+ * an organisation or has a grant revoked. Locking the environment would serialise
+ * two rotations — which the `FOR UPDATE` on the active key already does — and
+ * nothing else. The organisation row is where membership changes and grant
+ * changes already serialise (`lockOrganization`), so it is the only lock that
+ * closes the window this function's completeness check exists to cover.
  */
 export async function rotateEnvDataKey(
   exec: Executor,
@@ -343,7 +375,21 @@ export async function rotateEnvDataKey(
 
   try {
     return await exec.transaction(async (tx) => {
+      // Tenancy first, as every write in this file does — the caller's org and
+      // environment ids are resolved together before anything else is read.
       await requireEnvironment(tx, params.orgId, params.environmentId);
+
+      // Then the organisation's write lock, before the grant set is judged.
+      // Every write whose correctness depends on the membership *set* queues
+      // behind this in one order, which is what makes the recomputation below
+      // trustworthy rather than merely recent.
+      await lockOrganization(tx, params.orgId);
+
+      // Re-derived here, not merely re-used from before the transaction opened.
+      // A member removed between a pre-flight check and this commit would
+      // otherwise be handed the brand-new key by the very act that exists to
+      // take the old one away from them.
+      await params.assertGrantSet(tx);
 
       const [current] = await tx
         .select({ id: envDataKeys.id, version: envDataKeys.version })
@@ -396,12 +442,29 @@ export async function rotateEnvDataKey(
         .insert(envKeyGrants)
         .values(params.grants.map((seed) => grantRow(dataKeyId, params.createdBy, seed, now)));
 
-      // A rotation settles every debt on this environment: the new key has just
-      // been sealed to everyone entitled to it, so anything still queued is a
-      // request that has already been answered.
-      await tx
-        .delete(pendingKeyGrants)
-        .where(eq(pendingKeyGrants.environmentId, params.environmentId));
+      // A rotation settles the debts it actually paid — and only those.
+      //
+      // Deleting every queued row for the environment would look equivalent and
+      // is not: a debt recorded *after* the completeness check ran (an admin
+      // widening somebody's access in another tab) names a person this rotation
+      // did not seal to, and clearing it would erase the only record that they
+      // are owed a key. They would then hold no grant, appear in no banner, and
+      // see a list of secret names they cannot decrypt with nothing anywhere
+      // saying why. So the delete names the members this set granted.
+      const settled = params.grants
+        .filter((seed) => seed.recipientKind === 'member')
+        .map((seed) => seed.recipientId);
+
+      if (settled.length > 0) {
+        await tx
+          .delete(pendingKeyGrants)
+          .where(
+            and(
+              eq(pendingKeyGrants.environmentId, params.environmentId),
+              inArray(pendingKeyGrants.targetUserId, settled),
+            ),
+          );
+      }
 
       return dataKey;
     });
@@ -753,11 +816,34 @@ export async function removePendingKeyGrant(
 /**
  * Every service token in an environment that can be sealed to.
  *
- * Revoked tokens are excluded, and so are tokens with no public key: a token
- * minted before the Phase 4 creation flow has no keypair, so there is nothing to
- * seal to and a rotation must not be blocked waiting for one. The service layer
- * uses this to decide the required grant set, so what is filtered here is
- * precisely what a rotation is not required to cover.
+ * Three exclusions, and each is the answer to "must a rotation wait for this?".
+ *
+ * **Revoked** tokens are dead credentials.
+ *
+ * **Expired** tokens are dead in exactly the same way, and this is the same
+ * predicate `findServiceTokenByHash` authenticates with — which is the point.
+ * Without the two agreeing, a token that stopped working in March is still
+ * *required* in every rotation afterwards: every attempt fails with "Missing a
+ * grant for token:…", naming a credential that cannot authenticate and that
+ * nobody thinks to revoke because it already stopped working. An environment's
+ * keys become unrotatable until somebody revokes a token that is already dead.
+ *
+ * **Tokens with no public key** were minted before the Phase 4 creation flow, so
+ * there is nothing to seal to and no client can invent one.
+ *
+ * ── What happens to a dead token's existing grants ──
+ * Nothing deletes them, and a rotation simply omits the token. Its old grant
+ * stays against the **retired** key, where it opens the history that token could
+ * already read and nothing written since — which is exactly what a revocation
+ * should leave behind. Deleting them here was the alternative and is worse: it
+ * would silently rewrite what a credential could read, with no record of when.
+ *
+ * Until that rotation lands, the leftover grant makes `needsRotation` true, and
+ * that is the honest reading: whoever held the token string may have fetched the
+ * key while it still authenticated, so the environment is not actually safe from
+ * it until the key is replaced. What has changed is only that the token is no
+ * longer *required* — a rotation can now happen, where before it was refused
+ * for ever with "Missing a grant for token:…".
  */
 export async function listSealableServiceTokens(
   exec: Executor,
@@ -772,11 +858,24 @@ export async function listSealableServiceTokens(
         eq(serviceTokens.orgId, orgId),
         eq(serviceTokens.environmentId, environmentId),
         isNull(serviceTokens.revokedAt),
+        or(isNull(serviceTokens.expiresAt), sql`${serviceTokens.expiresAt} > now()`),
         isNotNull(serviceTokens.publicKey),
       ),
     );
 
   return rows.flatMap((row) => (row.publicKey ? [{ id: row.id, publicKey: row.publicKey }] : []));
+}
+
+/** An open invitation, with everything needed to decide what it may be sealed. */
+export interface PendingInvitationForGrant {
+  id: string;
+  /** The role acceptance will assign, which sets the defaults. */
+  role: OrgRole;
+  /**
+   * The access selection acceptance will apply, or `null` for "role defaults
+   * everywhere" — the pre-selection shape. See `invitations.initial_grants`.
+   */
+  initialGrants: InvitationGrantSeed[] | null;
 }
 
 /**
@@ -787,14 +886,22 @@ export async function listSealableServiceTokens(
  * another organisation, one already accepted, and one revoked all come back the
  * same way, because the caller is entitled to the same answer for all three —
  * "that invitation cannot hold a key here".
+ *
+ * The role and the selection come back with it because "may this invitation hold
+ * *this environment's* key" is a different question from "does this invitation
+ * exist", and only the caller — which has `can()` — can answer the first.
  */
 export async function findPendingInvitationForGrant(
   exec: Executor,
   orgId: string,
   invitationId: string,
-): Promise<{ id: string } | null> {
+): Promise<PendingInvitationForGrant | null> {
   const [row] = await exec
-    .select({ id: invitations.id })
+    .select({
+      id: invitations.id,
+      role: invitations.role,
+      initialGrants: invitations.initialGrants,
+    })
     .from(invitations)
     .where(
       and(
@@ -931,7 +1038,26 @@ export async function takeInvitationGrants(
 
     if (rows.length === 0) return [];
 
-    await tx.delete(envKeyGrants).where(eq(envKeyGrants.invitationId, params.invitationId));
+    // Deleted **by the ids the tenant-scoped SELECT returned**, never by
+    // `invitation_id` alone.
+    //
+    // The two look equivalent and are not. The select above is scoped through
+    // `projects.org_id`; a delete keyed only on the invitation would reach every
+    // grant that names it, including one written by another organisation — and
+    // sealing a grant to a foreign invitation id needs nothing more than knowing
+    // it. Accepting an invitation would then quietly destroy another tenant's
+    // rows, from a code path nobody would think to look at (threat T2).
+    //
+    // Naming the ids also means a row inserted between the select and this
+    // statement survives, which is the correct outcome: it was not read, so it
+    // was not handed to anybody, so consuming it would destroy a key nobody
+    // received.
+    await tx.delete(envKeyGrants).where(
+      inArray(
+        envKeyGrants.id,
+        rows.map((row) => row.grantId),
+      ),
+    );
 
     return rows
       .filter((row) => row.status === 'active')

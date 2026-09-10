@@ -288,6 +288,24 @@ the mitigations are a mandatory recovery-code ceremony at setup that will not le
 skipped, a downloadable Emergency Kit, and codes that can be regenerated at any time from the
 Security screen.
 
+The escape hatch beside it — destroying the vault so the account can be used again — is the one
+irreversible act in the product, and it is necessarily reachable from a **locked** session,
+since every caller of it is locked out by definition. The vault lock that stands in front of
+every other destructive act therefore cannot stand in front of this one, and a typed phrase
+printed on the screen above the field guards against a mistake rather than against an attacker.
+So the reset demands a **fresh identity-provider re-authentication**: an ID token verified the
+same way sign-in verifies one, whose subject must be this session's account and whose
+`auth_time` — the claim a token refresh does not move — must be minutes old. Without it a stolen
+session cookie was enough to destroy somebody's keys for good.
+
+The reset also **re-records the key debts it destroys**. It deletes the account's grants and its
+queued shares, because both address a public key that no longer exists; leaving it there would
+put an entitled member in a state no screen could see — no grant, no pending row, nothing in any
+banner — while the UI promised that "a teammate can share those environments with you again".
+The debts are re-queued in the same transaction, and `GET …/keys` reports the same fact
+independently as `missingGrants`, derived from the rows rather than from a record of what
+somebody meant to do.
+
 **8. Encryption mode is pinned, not proved.** An environment's `encryption_mode` is a column,
 not a signed statement, and every client branches on it: a `server` answer means the dashboard
 puts plaintext values in request bodies and the CLI injects whatever it is handed into a child
@@ -309,6 +327,30 @@ key substitution is, and a client whose pins were cleared is at first contact ag
 a genuine migration back is deliberately a manual act — clearing the browser's site data, or
 `xecret cache clear` — taken after asking whoever runs the deployment, because that question is
 the mitigation and no program can ask it.
+
+**8b. A long-lived CLI token can pull offline-grindable passphrase material.**
+`GET /api/auth/vault` serves the passphrase wrap, the KDF salt and the Argon2 parameters to a
+**bearer credential**, not only to a locked browser session. The reason is structural rather
+than an oversight: a CLI token acts as its user, that user's environment grants are sealed to a
+public key whose private half exists only as a wrap under the User Key, so a token that could not
+read the material would authenticate perfectly and decrypt nothing — headless `xecret login
+--passphrase` would not exist.
+
+The concession is wider than the session one it inherits, and the comment that said "the wraps
+are useless without the passphrase" was true of a browser and weaker here. What the token holder
+gets is an *offline* Argon2id attack on the master passphrase, unbounded by the unlock lockout,
+from a credential that lives in a file on a laptop or an environment variable in a CI runner and
+is good for months rather than for a session — **and the parameters disclose the cost of that
+attack**, so an attacker knows in advance what it will take rather than having to guess.
+
+Not removable without removing the flow, so it is bounded and made visible instead: the read
+spends `RL_CLI_TOKEN` under a key of its own, and writes a **`vault.material_read`** audit record
+carrying the principal kind, so "a token in a CI runner pulled my wraps at 04:00" is a question
+somebody can ask rather than an event with no trace. **Residual risk: a stolen `xct_…` token
+yields an unbounded offline attack on that account's passphrase, at a cost the token holder can
+read off the response.** The mitigations that actually bear on it are the passphrase bar this ADR
+sets, token expiry, and revocation — none of which is defeated by the disclosure, all of which
+are weakened by a long-lived token nobody rotates.
 
 **9. A web-delivered E2EE app's trust anchor is the JavaScript we serve.** This is the
 honest asterisk on the entire claim, and stating it plainly is not optional. Every mitigation

@@ -145,6 +145,104 @@ export async function loadAuthorizationContext(
   return toAuthorizationContext(member, grants);
 }
 
+/**
+ * Every active member's authorization context, in **two statements** whatever
+ * the size of the roster.
+ *
+ * ── Why this exists rather than a loop over `loadAuthorizationContext` ──
+ * Some questions are about the whole organisation at once — "who may read this
+ * environment?" is the one that matters, because it is what decides an
+ * environment key's grant set. Asked member by member it costs two round trips
+ * per person, and — far worse — it has to be *paginated*, which means the answer
+ * silently stops being a set and becomes a page. A grant set computed from a page
+ * is a silent revocation of everybody past it, which is precisely the failure the
+ * completeness check exists to prevent.
+ *
+ * So the roster is read whole and the grants are read whole, and the pairing
+ * happens in memory. There is no `LIMIT` anywhere here **on purpose**: an
+ * organisation's membership is bounded by its seat count, both result sets are
+ * narrow rows of ids, and a truncated answer would be worse than a slow one by a
+ * margin that is not close.
+ *
+ * Narrow it with `projectId` when the question is about one project.
+ * `resolveAccessLevel` only ever consults grants whose `projectId` matches the
+ * resource, so dropping the rest changes no decision and is what keeps the second
+ * statement proportional to the project rather than to the organisation.
+ *
+ * **Only active members are returned.** A suspended member resolves to `none`
+ * everywhere through `resolveAccessLevel`, and a removed one has no row — so
+ * absence here means the same thing `loadAuthorizationContext` returning `null`
+ * means, and callers need no second rule.
+ */
+export async function loadOrganizationAuthorizationContexts(
+  exec: Executor,
+  params: { orgId: string; projectId?: string | undefined },
+): Promise<AuthorizationContext[]> {
+  const members = await exec
+    .select(MEMBER_COLUMNS)
+    .from(orgMembers)
+    .innerJoin(users, and(eq(users.id, orgMembers.userId), isNull(users.deletedAt)))
+    .innerJoin(
+      organizations,
+      and(eq(organizations.id, orgMembers.orgId), isNull(organizations.deletedAt)),
+    )
+    .where(and(eq(orgMembers.orgId, params.orgId), eq(orgMembers.status, 'active')))
+    .orderBy(asc(orgMembers.createdAt), asc(orgMembers.id));
+
+  if (members.length === 0) return [];
+
+  const grants = await exec
+    .select({ ...GRANT_COLUMNS, memberId: accessGrants.orgMemberId })
+    .from(accessGrants)
+    .innerJoin(
+      projects,
+      and(
+        eq(projects.id, accessGrants.projectId),
+        eq(projects.orgId, params.orgId),
+        isNull(projects.deletedAt),
+      ),
+    )
+    .where(
+      params.projectId === undefined ? undefined : eq(accessGrants.projectId, params.projectId),
+    );
+
+  const byMember = new Map<string, MemberGrant[]>();
+  for (const { memberId, ...grant } of grants) {
+    const bucket = byMember.get(memberId);
+    if (bucket) bucket.push(grant);
+    else byMember.set(memberId, [grant]);
+  }
+
+  return members.map((member) => toAuthorizationContext(member, byMember.get(member.id) ?? []));
+}
+
+/**
+ * Takes the organisation's write lock, and confirms it exists.
+ *
+ * ── One lock, one ordering ──
+ * The organisation row is the serialisation point for every write whose
+ * correctness depends on a *set* rather than on a row: the last-owner invariant
+ * counts members, and an environment key rotation's completeness check counts who
+ * may read an environment. Both read a set, decide, and then write — and both are
+ * wrong if the set changes in between.
+ *
+ * Every such transaction takes this lock **first**, so they queue behind each
+ * other in one order and cannot deadlock against one another. It is the cheapest
+ * serialisation that works: one row, on writes that are rare by nature, with no
+ * advisory-lock bookkeeping and no `SERIALIZABLE` retry loop for callers to get
+ * wrong.
+ */
+export async function lockOrganization(tx: Executor, orgId: string): Promise<void> {
+  const [organization] = await tx
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
+    .limit(1)
+    .for('update');
+
+  if (!organization) throw new RepositoryError('notFound', 'Organisation not found.');
+}
+
 /** Pure row-to-context mapping, so the shape can be tested without a database. */
 export function toAuthorizationContext(
   member: MemberRecord,
@@ -378,6 +476,13 @@ export async function upsertAccessGrant(
     await requireMember(tx, params.orgId, params.memberId);
     await requireProjectScope(tx, params.orgId, params.projectId, environmentId);
 
+    // The organisation's write lock, before anything is written. A grant change
+    // moves who may read an environment, and an environment key rotation decides
+    // its grant set from exactly that answer — so the two must not interleave, or
+    // a rotation seals the brand-new key to somebody whose access was revoked a
+    // millisecond after it looked. See `lockOrganization`.
+    await lockOrganization(tx, params.orgId);
+
     const now = new Date();
     const scope = grantScope(params.projectId, environmentId);
 
@@ -433,18 +538,25 @@ export async function removeAccessGrant(
   params: RemoveAccessGrantParams,
 ): Promise<boolean> {
   const environmentId = params.environmentId ?? null;
-  await requireMember(exec, params.orgId, params.memberId);
 
-  const result = await exec
-    .delete(accessGrants)
-    .where(
-      and(
-        eq(accessGrants.orgMemberId, params.memberId),
-        grantScope(params.projectId, environmentId),
-      ),
-    );
+  return exec.transaction(async (tx) => {
+    await requireMember(tx, params.orgId, params.memberId);
 
-  return result.count > 0;
+    // Same lock and same reason as `upsertAccessGrant`: narrowing access is the
+    // half of the pair a rotation must not be able to miss.
+    await lockOrganization(tx, params.orgId);
+
+    const result = await tx
+      .delete(accessGrants)
+      .where(
+        and(
+          eq(accessGrants.orgMemberId, params.memberId),
+          grantScope(params.projectId, environmentId),
+        ),
+      );
+
+    return result.count > 0;
+  });
 }
 
 export async function listGrantsForMember(
@@ -611,13 +723,7 @@ async function lockOrgAndLoadMember(
   orgId: string,
   memberId: string,
 ): Promise<MemberRecord> {
-  const [organization] = await tx
-    .select({ id: organizations.id })
-    .from(organizations)
-    .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
-    .limit(1)
-    .for('update');
-  if (!organization) throw new RepositoryError('notFound', 'Organisation not found.');
+  await lockOrganization(tx, orgId);
 
   const [member] = await tx
     .select(MEMBER_COLUMNS)

@@ -3,6 +3,7 @@ import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 import { actorId } from '@/server/actor';
 import { environmentKeyState, initializeKeys } from '@/server/env-keys-service';
+import { enforceSecretRateLimit } from '@/server/secrets-service';
 import { environmentKeyInitSchema } from '@/server/schemas/env-keys';
 import { resolveEnvironmentPath } from '@/server/tenancy';
 
@@ -36,6 +37,17 @@ interface Params {
 
 export const GET = authenticatedRoute<Params>(async ({ params, principal, services }) => {
   const scope = await resolveEnvironmentPath(principal, params, services);
+
+  // Metered on the same bucket as the other reads that hand a caller key
+  // material — `RL_SECRET_READ`, or `RL_SERVICE` for a token — through the same
+  // helper the reveal and pull paths use, so the bucket is not a decision this
+  // route makes for itself.
+  //
+  // It was unmetered, which was a gap rather than an exemption: this is the
+  // endpoint that hands out sealed key material, and for an administrator it also
+  // reads the organisation's active roster and its access grants to answer
+  // `needsRotation` and `missingGrants`. Cheap per call, unbounded in calls.
+  await enforceSecretRateLimit(services, principal, 'read');
 
   // Authorisation lives inside `environmentKeyState`, alongside every other
   // decision in `env-keys-service.ts`, so a future route reaching for the same

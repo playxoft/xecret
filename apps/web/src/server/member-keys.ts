@@ -1,9 +1,11 @@
 import { can } from '@xecret/core/authz';
 import {
   listEnvironmentsForOrganization,
+  listOrganizationsForUser,
   loadAuthorizationContext,
   loadMemberKeyPresence,
 } from '@xecret/db/repositories';
+import type { Executor } from '@xecret/db/repositories';
 import type { AuditBuilder, AuditRecord } from '@xecret/core/audit';
 import type { ServiceContext } from './context';
 import { queueKeyShare, revokeMemberAccess } from './env-keys-service';
@@ -64,22 +66,54 @@ export interface KeyAccessReconciliation {
  * A member who is no longer in the organisation resolves to no context, and
  * `can()` is never consulted for them: absence of membership is a denial
  * everywhere, which is exactly the answer removal needs.
+ *
+ * ── One transaction, and what it does and does not buy ──
+ * The whole reconciliation commits or none of it does. It used to be a loop of
+ * untransacted statements, and a failure part-way through — the fourth
+ * environment of six — left a member with grants revoked on some environments and
+ * intact on others, with no record anywhere that the act was incomplete. The
+ * transaction makes that state unreachable, and `revokeMemberAccess` takes the
+ * same executor so its own pair of statements cannot half-happen either.
+ *
+ * It is **not** in the same transaction as the membership change that prompted
+ * it, and cannot honestly be made so: `removeMember`, `updateMemberRole` and
+ * `suspendMember` each open their own transaction inside the repository, and the
+ * reconciliation deliberately runs *after* the membership write so that it reads
+ * the world the change produced. Threading one transaction through both would
+ * mean either the route composing a repository transaction by hand — losing the
+ * last-owner guard's lock discipline — or the reconciliation deciding from a
+ * membership that has not committed.
+ *
+ * What covers the remaining window is that this function is **total and
+ * idempotent**: it asks one question per environment and moves the world to
+ * match, so re-running it after a crash produces the same answer and no
+ * duplicate work. And the state it would have been left in is no longer
+ * invisible — `GET …/keys` reports `missingGrants` for an entitled member holding
+ * no key and `needsRotation` for a holder who should not be one, both derived
+ * from the rows rather than from a record of what somebody meant to do.
  */
 export async function reconcileMemberKeyAccess(
   services: ServiceContext,
   params: { orgId: string; userId: string; actorUserId: string },
 ): Promise<KeyAccessReconciliation> {
-  const environments = await listEnvironmentsForOrganization(services.db, params.orgId);
+  return services.db.transaction((tx) => reconcile(tx, params));
+}
+
+async function reconcile(
+  exec: Executor,
+  params: { orgId: string; userId: string; actorUserId: string },
+): Promise<KeyAccessReconciliation> {
+  const environments = await listEnvironmentsForOrganization(exec, params.orgId);
   const e2ee = environments.filter((environment) => environment.encryptionMode === 'e2ee');
 
   if (e2ee.length === 0) return { queued: [], revoked: [] };
 
-  const context = await loadAuthorizationContext(services.db, {
+  const context = await loadAuthorizationContext(exec, {
     orgId: params.orgId,
     userId: params.userId,
   });
 
-  const presence = await loadMemberKeyPresence(services.db, params.orgId, params.userId);
+  const presence = await loadMemberKeyPresence(exec, params.orgId, params.userId);
 
   const queued: string[] = [];
   const revoked: string[] = [];
@@ -109,7 +143,7 @@ export async function reconcileMemberKeyAccess(
       // what makes a repeated call free rather than merely harmless.
       if (presence.granted.has(environment.id) || presence.pending.has(environment.id)) continue;
 
-      const recorded = await queueKeyShare(services, {
+      const recorded = await queueKeyShare(exec, {
         environmentId: environment.id,
         targetUserId: params.userId,
         requestedBy: params.actorUserId,
@@ -123,7 +157,7 @@ export async function reconcileMemberKeyAccess(
     // and a grant on a retired version is exactly the stale reach a revocation
     // has to remove. `revokeMemberAccess` reports how many rows went, and only a
     // non-zero count is worth telling the audit log about.
-    const removed = await revokeMemberAccess(services, {
+    const removed = await revokeMemberAccess(exec, {
       orgId: params.orgId,
       environmentId: environment.id,
       userId: params.userId,
@@ -132,6 +166,76 @@ export async function reconcileMemberKeyAccess(
   }
 
   return { queued, revoked };
+}
+
+/**
+ * Re-records the key debts a vault reset destroys, across every organisation the
+ * account belongs to.
+ *
+ * ── The gap this closes ──
+ * A reset deletes the account's grants *and* its queued shares, because both
+ * address a public key that no longer exists. That much is right. What was wrong
+ * is what it left behind: an entitled member with no grant and no pending row, in
+ * every environment at once — invisible to the pending-shares banner, invisible
+ * to the person themselves beyond a list of secret names that will not open, and
+ * carrying nothing that would prompt a teammate to act. The reset route's own
+ * copy told the user "a teammate can share those environments with you again",
+ * and nothing in the system was going to tell the teammate.
+ *
+ * So the debts are re-recorded, in the transaction that destroyed them. It is a
+ * plain restatement of a fact that is still true: this person may read these
+ * environments and now holds no key for any of them.
+ *
+ * ── `requestedBy` is the account itself ──
+ * Because it is. Nobody else changed anything; the person reset their own vault,
+ * and attributing the request to whoever last touched their access would put a
+ * name on the row that had nothing to do with it.
+ *
+ * Runs inside the reset's transaction, so an account cannot come out of a reset
+ * with its grants gone and its debts unrecorded.
+ */
+export async function requeueKeySharesAfterVaultReset(
+  exec: Executor,
+  userId: string,
+): Promise<string[]> {
+  const memberships = await listOrganizationsForUser(exec, userId);
+  const queued: string[] = [];
+
+  for (const membership of memberships) {
+    const orgId = membership.organization.id;
+
+    const context = await loadAuthorizationContext(exec, { orgId, userId });
+    if (context === null) continue;
+
+    const environments = await listEnvironmentsForOrganization(exec, orgId);
+
+    for (const environment of environments) {
+      if (environment.encryptionMode !== 'e2ee') continue;
+
+      const allowed = can(
+        { kind: 'user', userId, orgId },
+        'secret.read',
+        {
+          kind: 'environment',
+          orgId,
+          projectId: environment.projectId,
+          environmentId: environment.id,
+        },
+        { membership: toGrantContext(context), isProduction: environment.isProduction },
+      ).allowed;
+
+      if (!allowed) continue;
+
+      const recorded = await queueKeyShare(exec, {
+        environmentId: environment.id,
+        targetUserId: userId,
+        requestedBy: userId,
+      });
+      if (recorded) queued.push(environment.id);
+    }
+  }
+
+  return queued;
 }
 
 /**

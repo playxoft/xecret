@@ -12,6 +12,23 @@ export interface VerifiedIdentity {
   subject: string;
   email: string;
   emailVerified: boolean;
+  /**
+   * When the user last actually proved who they are, in **seconds since the
+   * epoch** — Firebase's `auth_time`, not `iat`.
+   *
+   * The distinction is the whole value of the field. A refresh token mints a
+   * fresh ID token every hour without anybody touching a keyboard, so `iat` says
+   * only "this browser still holds a session". `auth_time` says "a password was
+   * typed, or a passkey was tapped, at this moment", and that is the one question
+   * a re-authentication gate is asking.
+   *
+   * Required, not optional. A provider that cannot attest when authentication
+   * happened cannot back an irreversible action, and an absent field would
+   * default to whatever the reader assumed — which on this path is a destruction
+   * with no undo. Making it part of the interface means an alternative provider
+   * has to answer the question rather than omit it.
+   */
+  authTime: number;
   displayName?: string | undefined;
   avatarUrl?: string | undefined;
 }

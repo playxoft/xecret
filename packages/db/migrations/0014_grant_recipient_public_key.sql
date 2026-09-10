@@ -54,7 +54,8 @@ DO $$
 BEGIN
 	IF NOT EXISTS (
 		SELECT 1 FROM information_schema.columns
-		WHERE table_name = 'env_key_grants' AND column_name = 'recipient_public_key'
+		WHERE table_schema = current_schema()
+		  AND table_name = 'env_key_grants' AND column_name = 'recipient_public_key'
 	) THEN
 		IF EXISTS (SELECT 1 FROM env_key_grants) THEN
 			RAISE EXCEPTION
@@ -77,7 +78,9 @@ $$;
 DO $$
 BEGIN
 	IF NOT EXISTS (
-		SELECT 1 FROM pg_constraint WHERE conname = 'env_key_grants_recipient_public_key_check'
+		SELECT 1 FROM pg_constraint
+			WHERE conname = 'env_key_grants_recipient_public_key_check'
+			  AND connamespace = current_schema()::regnamespace
 	) THEN
 		ALTER TABLE env_key_grants
 			ADD CONSTRAINT env_key_grants_recipient_public_key_check

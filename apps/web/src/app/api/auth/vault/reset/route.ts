@@ -3,8 +3,13 @@ import { json, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 import { confirmationMatches } from '@/server/schemas/resources';
-import { VAULT_RESET_CONFIRMATION, vaultResetSchema } from '@/server/schemas/vault';
 import {
+  VAULT_RESET_CONFIRMATION,
+  VAULT_RESET_MAX_AUTH_AGE_SECONDS,
+  vaultResetSchema,
+} from '@/server/schemas/vault';
+import {
+  assertRecentAccountOwner,
   primaryOrgId,
   requireUserPrincipal,
   resetVault,
@@ -37,6 +42,21 @@ import {
  * exactly the people it is for. Everything else stands — a browser session
  * (a token has no vault), CSRF on the mutation, and a typed confirmation.
  *
+ * ── And, since the lock gate is off, proof that this is the account's owner ──
+ * The typed phrase is a check against a *mistake*: it is printed on the screen
+ * above the field, so it costs an attacker one glance. With the lock gate
+ * necessarily absent, that left the single irreversible act in the product —
+ * destroying a vault, and with it every environment key the account holds,
+ * permanently — reachable by anybody holding a stolen session cookie, without
+ * ever knowing the passphrase.
+ *
+ * So the body carries a fresh Firebase ID token and this route verifies it
+ * server-side, through the same `FirebaseIdentityProvider` that backs
+ * `POST /api/auth/session`. Its subject must be this session's own account, and
+ * its `auth_time` must be inside {@link VAULT_RESET_MAX_AUTH_AGE_SECONDS} — the
+ * claim a refresh does *not* move, which is what makes this a second act of
+ * authentication rather than a second copy of the same credential.
+ *
  * Rate limited on `RL_LOGIN` under a **`vault_reset` key of its own**, keyed on
  * the user alone like the recovery counter it sits beside. Its own counter
  * rather than recovery's, deliberately: somebody arrives here having just
@@ -59,6 +79,11 @@ export const POST = authenticatedRoute(
     if (!confirmationMatches(VAULT_RESET_CONFIRMATION, body.confirm)) {
       throw errors.badRequest(`Type “${VAULT_RESET_CONFIRMATION}” exactly to confirm.`);
     }
+
+    // After the phrase, before anything is destroyed. The order matters only for
+    // the message a caller gets: a mistyped phrase should not be reported as an
+    // authentication failure, and a stale token should not be reported as a typo.
+    await assertRecentAccountOwner(services, user, body.idToken);
 
     const destroyed = await resetVault(services, user);
 

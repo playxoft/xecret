@@ -73,6 +73,26 @@ export type AuditAction =
    * otherwise inexplicable "I cannot see any of my secrets" answerable.
    */
   | 'vault.reset'
+  /**
+   * A **bearer credential** read the account's vault material: the passphrase
+   * wrap, the KDF salt and the Argon2 parameters.
+   *
+   * Not recorded for a browser session, and the asymmetry is the whole point. A
+   * session reading its own material is the lock screen doing its job, several
+   * times a day, and auditing it would bury this event under page views. A
+   * long-lived `xct_…` token reading it is a different fact: that material is
+   * offline-grindable, so the read hands whoever holds the token everything they
+   * need to attack the passphrase at their leisure — and it discloses the Argon2
+   * cost, which tells them how expensive that attack will be.
+   *
+   * The read is legitimate — it is what makes headless `xecret login
+   * --passphrase` possible at all, since a CLI token cannot open a single grant
+   * without the user's wrapped private key — and it is not removable without
+   * removing the flow. So it is made *visible* instead: `principalKind` names the
+   * credential, and "a token in a CI runner pulled my wraps at 04:00" becomes a
+   * question somebody can ask. ADR 0009 records it under residual risks.
+   */
+  | 'vault.material_read'
   /** A session was locked without being revoked — the user is still signed in. */
   | 'auth.locked'
   /** The idle auto-lock interval was changed. `reason` carries the new value. */

@@ -50,11 +50,20 @@
 -- to the wraps and the passkeys and is the intended remedy — it destroys access
 -- to anything already encrypted under them, which on a pre-release deployment is
 -- nothing anyone can afford to be attached to.
+-- `table_schema = current_schema()` is load-bearing, not tidiness:
+-- `information_schema.columns` spans every schema the role can see, so an
+-- unqualified lookup finds a `user_keys.uk_unlock_verifier_hash` belonging to
+-- some *other* schema — a second tenant's, a shadow copy — concludes the column
+-- already exists, skips both the refusal and the ALTER, and records the
+-- migration as applied against a table that still lacks the column. See the
+-- longer note in 0011, which the same reasoning gave to every `pg_constraint`
+-- guard in this series.
 DO $$
 BEGIN
 	IF NOT EXISTS (
 		SELECT 1 FROM information_schema.columns
-		WHERE table_name = 'user_keys' AND column_name = 'uk_unlock_verifier_hash'
+		WHERE table_schema = current_schema()
+		  AND table_name = 'user_keys' AND column_name = 'uk_unlock_verifier_hash'
 	) THEN
 		IF EXISTS (SELECT 1 FROM user_keys) THEN
 			RAISE EXCEPTION

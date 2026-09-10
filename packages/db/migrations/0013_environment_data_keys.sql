@@ -52,7 +52,9 @@ CREATE TABLE IF NOT EXISTS env_data_keys (
 DO $$
 BEGIN
 	IF NOT EXISTS (
-		SELECT 1 FROM pg_constraint WHERE conname = 'env_data_keys_status_check'
+		SELECT 1 FROM pg_constraint
+			WHERE conname = 'env_data_keys_status_check'
+			  AND connamespace = current_schema()::regnamespace
 	) THEN
 		ALTER TABLE env_data_keys
 			ADD CONSTRAINT env_data_keys_status_check
@@ -60,7 +62,9 @@ BEGIN
 	END IF;
 
 	IF NOT EXISTS (
-		SELECT 1 FROM pg_constraint WHERE conname = 'env_data_keys_version_check'
+		SELECT 1 FROM pg_constraint
+			WHERE conname = 'env_data_keys_version_check'
+			  AND connamespace = current_schema()::regnamespace
 	) THEN
 		ALTER TABLE env_data_keys
 			ADD CONSTRAINT env_data_keys_version_check CHECK (version >= 1);
@@ -70,7 +74,9 @@ BEGIN
 	-- their AAD (spec §4.2), so two rows sharing one would be two keys that a
 	-- single grant claims to open.
 	IF NOT EXISTS (
-		SELECT 1 FROM pg_constraint WHERE conname = 'env_data_keys_environment_version_unique'
+		SELECT 1 FROM pg_constraint
+			WHERE conname = 'env_data_keys_environment_version_unique'
+			  AND connamespace = current_schema()::regnamespace
 	) THEN
 		ALTER TABLE env_data_keys
 			ADD CONSTRAINT env_data_keys_environment_version_unique UNIQUE (environment_id, version);
@@ -111,7 +117,9 @@ CREATE TABLE IF NOT EXISTS env_hmac_keys (
 DO $$
 BEGIN
 	IF NOT EXISTS (
-		SELECT 1 FROM pg_constraint WHERE conname = 'env_hmac_keys_environment_unique'
+		SELECT 1 FROM pg_constraint
+			WHERE conname = 'env_hmac_keys_environment_unique'
+			  AND connamespace = current_schema()::regnamespace
 	) THEN
 		ALTER TABLE env_hmac_keys
 			ADD CONSTRAINT env_hmac_keys_environment_unique UNIQUE (environment_id);
@@ -160,7 +168,9 @@ CREATE TABLE IF NOT EXISTS env_key_grants (
 DO $$
 BEGIN
 	IF NOT EXISTS (
-		SELECT 1 FROM pg_constraint WHERE conname = 'env_key_grants_principal_check'
+		SELECT 1 FROM pg_constraint
+			WHERE conname = 'env_key_grants_principal_check'
+			  AND connamespace = current_schema()::regnamespace
 	) THEN
 		ALTER TABLE env_key_grants
 			ADD CONSTRAINT env_key_grants_principal_check
@@ -254,7 +264,9 @@ ALTER TABLE environments ALTER COLUMN encryption_mode SET DEFAULT 'e2ee';
 DO $$
 BEGIN
 	IF NOT EXISTS (
-		SELECT 1 FROM pg_constraint WHERE conname = 'environments_encryption_mode_check'
+		SELECT 1 FROM pg_constraint
+			WHERE conname = 'environments_encryption_mode_check'
+			  AND connamespace = current_schema()::regnamespace
 	) THEN
 		ALTER TABLE environments
 			ADD CONSTRAINT environments_encryption_mode_check
@@ -305,7 +317,9 @@ ALTER TABLE secret_versions ALTER COLUMN iv DROP NOT NULL;
 DO $$
 BEGIN
 	IF NOT EXISTS (
-		SELECT 1 FROM pg_constraint WHERE conname = 'secret_versions_key_check'
+		SELECT 1 FROM pg_constraint
+			WHERE conname = 'secret_versions_key_check'
+			  AND connamespace = current_schema()::regnamespace
 	) THEN
 		ALTER TABLE secret_versions
 			ADD CONSTRAINT secret_versions_key_check
@@ -313,7 +327,9 @@ BEGIN
 	END IF;
 
 	IF NOT EXISTS (
-		SELECT 1 FROM pg_constraint WHERE conname = 'secret_versions_server_iv_check'
+		SELECT 1 FROM pg_constraint
+			WHERE conname = 'secret_versions_server_iv_check'
+			  AND connamespace = current_schema()::regnamespace
 	) THEN
 		ALTER TABLE secret_versions
 			ADD CONSTRAINT secret_versions_server_iv_check
@@ -321,7 +337,9 @@ BEGIN
 	END IF;
 
 	IF NOT EXISTS (
-		SELECT 1 FROM pg_constraint WHERE conname = 'secret_versions_client_algorithm_check'
+		SELECT 1 FROM pg_constraint
+			WHERE conname = 'secret_versions_client_algorithm_check'
+			  AND connamespace = current_schema()::regnamespace
 	) THEN
 		ALTER TABLE secret_versions
 			ADD CONSTRAINT secret_versions_client_algorithm_check

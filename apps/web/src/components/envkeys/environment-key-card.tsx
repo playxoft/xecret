@@ -63,6 +63,7 @@ export function EnvironmentKeyCard({
   const keyState =
     keys.state.status === 'open' || keys.state.status === 'server' ? keys.state.keys : null;
   const pendingCount = keyState?.pendingGrants?.length ?? 0;
+  const missingCount = keyState?.missingGrants?.length ?? 0;
 
   return (
     <Card>
@@ -108,11 +109,37 @@ export function EnvironmentKeyCard({
               </div>
             </dl>
 
-            {keys.state.keys.needsRotation ? (
+            {/*
+              `=== true` rather than truthiness: the field is `boolean | null`,
+              and `null` means the server did not compute it for this caller
+              rather than "no". The two render the same today — no banner — but
+              writing the comparison out is what stops a later `!needsRotation`
+              from turning "unknown" into a reassurance.
+            */}
+            {keys.state.keys.needsRotation === true ? (
               <Alert tone="warning" title="A revocation here is only half done">
                 <p>
                   Somebody&apos;s grant was deleted and the key they held has not been replaced. The
                   copy they already have still opens anything written from now on.
+                </p>
+              </Alert>
+            ) : null}
+
+            {/*
+              The other direction, and the one nothing reported until now: people
+              who may read this environment and hold no key for it. They see every
+              secret name and can decrypt none of them, which looks from their
+              side like a bug in the product rather than a share nobody has made
+              yet — so the person who *can* fix it is the one who has to be told.
+            */}
+            {missingCount > 0 ? (
+              <Alert tone="warning" title="Somebody here cannot read anything">
+                <p>
+                  {missingCount === 1
+                    ? 'One principal has access to this environment and holds no key for it.'
+                    : `${missingCount} principals have access to this environment and hold no key for it.`}{' '}
+                  They can see every secret name and decrypt none of them until somebody who holds
+                  the key shares it.
                 </p>
               </Alert>
             ) : null}

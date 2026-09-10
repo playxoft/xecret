@@ -41,6 +41,19 @@ export interface PendingGrant {
   createdAt: string;
 }
 
+/**
+ * A principal who may read the environment and holds no key for it.
+ *
+ * The mirror of `needsRotation`. Where that says "somebody holds the key who
+ * should not", this says "somebody should hold it and does not" — the state a
+ * vault reset leaves behind, and one no screen could see until the server began
+ * reporting it.
+ */
+export interface MissingGrant {
+  kind: 'member' | 'token';
+  id: string;
+}
+
 /** The body of `GET …/environments/{envSlug}/keys`. */
 export interface EnvironmentKeys {
   encryptionMode: 'server' | 'e2ee';
@@ -50,8 +63,17 @@ export interface EnvironmentKeys {
   myGrant: MyGrant | null;
   ehkExists: boolean;
   pendingGrants: PendingGrant[] | null;
-  /** A principal lost access and the key they held has not been replaced. */
-  needsRotation: boolean;
+  /**
+   * A principal lost access and the key they held has not been replaced.
+   *
+   * `null` means the server did not compute it for this caller — it is answered
+   * only for somebody who can act on it, because deciding it costs a read of the
+   * whole roster and the caller who pays for it on the pull path can do nothing
+   * with the answer. Treat `null` as "unknown", never as `false`.
+   */
+  needsRotation: boolean | null;
+  /** Entitled principals holding no grant. `null` on the same terms as above. */
+  missingGrants: MissingGrant[] | null;
   currentMaxSecretVersion: number;
 }
 

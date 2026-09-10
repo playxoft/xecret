@@ -18,7 +18,11 @@ import {
   environmentKeyRotateSchema,
   grantSchema,
 } from './schemas/env-keys';
-import { createClientSecretBody, updateClientSecretBody } from './schemas/secrets';
+import {
+  createClientSecretBody,
+  duplicateEntryName,
+  updateClientSecretBody,
+} from './schemas/secrets';
 
 /**
  * What these tests prove, and what they do not.
@@ -63,6 +67,8 @@ const DEVELOPER_ID = '01930000-0000-7000-8000-0000000000f2';
 const TOKEN_ID = '01930000-0000-7000-8000-0000000000f3';
 const INVITATION_ID = '01930000-0000-7000-8000-0000000000f4';
 const GRANT_ID = '01930000-0000-7000-8000-0000000000f5';
+/** A second project, for the invitation selections that must not reach this one. */
+const OTHER_PROJECT_ID = '01930000-0000-7000-8000-0000000000f6';
 
 /** A conforming `xk2.x25519.` payload: 92 bytes, base64url, no padding. */
 const SEALED = `xk2.x25519.${'A'.repeat(123)}`;
@@ -82,7 +88,7 @@ const repository = vi.hoisted(() => ({
   listGrantsForEnvironment: vi.fn(),
   listPendingKeyGrants: vi.fn(),
   listSealableServiceTokens: vi.fn(),
-  listMembers: vi.fn(),
+  loadOrganizationAuthorizationContexts: vi.fn(),
   loadAuthorizationContext: vi.fn(),
   rotateEnvDataKey: vi.fn(),
   addEnvKeyGrants: vi.fn(),
@@ -108,6 +114,7 @@ vi.mock('@xecret/db/repositories', async (importOriginal) => {
 
 const {
   addGrants,
+  assertSelfGrant,
   environmentKeyState,
   initializeKeys,
   requireE2ee,
@@ -223,26 +230,21 @@ function grantRow(kind: 'member' | 'token' | 'invite', id: string, keyId = KEY_I
  * important row in `ROLE_ACCESS_DEFAULTS` and the one these tests lean on.
  */
 function roster(members: { userId: string; role: 'owner' | 'developer' }[]) {
-  repository.listMembers.mockResolvedValue({
-    members: members.map((member) => ({
-      id: member.userId,
+  // One bulk read, not a page plus a context per member. The shape is what
+  // `loadOrganizationAuthorizationContexts` returns: every **active** member of
+  // the organisation with their grants already attached, and no `hasMore` to
+  // discard — which is the whole point, since a page boundary in this answer is
+  // a silent revocation of everybody past it.
+  repository.loadOrganizationAuthorizationContexts.mockResolvedValue(
+    members.map((member) => ({
       orgId: ORG_ID,
       userId: member.userId,
+      memberId: member.userId,
       role: member.role,
       status: 'active',
-      seatAssigned: true,
-      createdAt: new Date(),
-      user: {
-        id: member.userId,
-        email: `${member.role}@example.com`,
-        displayName: null,
-        avatarUrl: null,
-      },
+      grants: [],
     })),
-    page: 1,
-    pageSize: 200,
-    hasMore: false,
-  });
+  );
 
   repository.loadAuthorizationContext.mockImplementation(
     (_db: unknown, params: { userId: string }) => {
@@ -259,6 +261,9 @@ function roster(members: { userId: string; role: 'owner' | 'developer' }[]) {
     },
   );
 }
+
+/** Rotations that got past the completeness check and would have written rows. */
+let rotationsCommitted = 0;
 
 async function rejection(run: () => Promise<unknown>): Promise<ApiError> {
   try {
@@ -288,12 +293,38 @@ beforeEach(() => {
   repository.listGrantsForEnvironment.mockResolvedValue([]);
   repository.listPendingKeyGrants.mockResolvedValue([]);
   repository.listSealableServiceTokens.mockResolvedValue([]);
-  repository.rotateEnvDataKey.mockResolvedValue({ id: KEY_ID, version: 2 });
+  rotationsCommitted = 0;
+  // The double runs the callback, which is the only way this file can observe
+  // that the completeness check happens **inside** the rotation's transaction
+  // rather than before it. A mock that merely resolved would let the service
+  // stop calling it and every test below would still pass.
+  //
+  // `rotationsCommitted` is incremented only *after* the callback returns, so it
+  // counts rotations that would actually have written rows — which is what "the
+  // check refused it" now means. Asserting that `rotateEnvDataKey` was never
+  // called stopped being the right question the moment the check moved inside
+  // it: it is called, and it aborts.
+  repository.rotateEnvDataKey.mockImplementation(
+    async (_db: unknown, params: { version: number; assertGrantSet: (tx: unknown) => unknown }) => {
+      await params.assertGrantSet({});
+      rotationsCommitted += 1;
+      return { id: KEY_ID, version: params.version };
+    },
+  );
   repository.addEnvKeyGrants.mockResolvedValue(1);
   repository.queuePendingKeyGrant.mockResolvedValue(true);
   repository.removePendingKeyGrant.mockResolvedValue(false);
   repository.removeMemberGrantsForEnvironment.mockResolvedValue(0);
-  repository.findPendingInvitationForGrant.mockResolvedValue({ id: INVITATION_ID });
+  // An `admin` invitation with no selection: role defaults everywhere, and
+  // `admin` reaches production. The scope under test is production, so this is
+  // the fixture that lets an invite grant be *permitted* — which is what the
+  // rotation tests below are about. An invitation whose future access does not
+  // reach the environment is a separate case, exercised in its own describe.
+  repository.findPendingInvitationForGrant.mockResolvedValue({
+    id: INVITATION_ID,
+    role: 'admin',
+    initialGrants: null,
+  });
   roster([{ userId: OWNER_ID, role: 'owner' }]);
 });
 
@@ -309,6 +340,161 @@ describe('rotation completeness', () => {
     expect(result.version).toBe(2);
     expect(result.grantCount).toBe(1);
     expect(repository.rotateEnvDataKey).toHaveBeenCalledOnce();
+  });
+
+  it('recomputes the required set inside the rotation, never before it', async () => {
+    // ── The race this closes ──
+    // The check used to run before `rotateEnvDataKey` opened its transaction, and
+    // the gap between the two was long enough for a concurrent member removal to
+    // land. The rotation then wrote the grant set it had already validated — so
+    // the brand-new key was sealed to the person the removal was cutting off, with
+    // a 200 and an `envkey.rotated` record saying the revocation had completed.
+    //
+    // The observable form of the fix: the roster is not read until the repository
+    // has been entered. Inside the real transaction that read sits under the
+    // organisation lock, which is the same lock every membership and access-grant
+    // write takes, so a removal either lands entirely before it or waits.
+    const order: string[] = [];
+
+    repository.loadOrganizationAuthorizationContexts.mockImplementation(() => {
+      order.push('roster');
+      return Promise.resolve([
+        {
+          orgId: ORG_ID,
+          userId: OWNER_ID,
+          memberId: OWNER_ID,
+          role: 'owner',
+          status: 'active',
+          grants: [],
+        },
+      ]);
+    });
+    repository.rotateEnvDataKey.mockImplementation(
+      async (
+        _db: unknown,
+        params: { version: number; assertGrantSet: (tx: unknown) => unknown },
+      ) => {
+        order.push('transaction opened');
+        await params.assertGrantSet({});
+        order.push('grants written');
+        return { id: KEY_ID, version: params.version };
+      },
+    );
+
+    await rotateKeys(scope(), services(), ownerPrincipal, { newVersion: 2, grants: [grant()] });
+
+    expect(order).toEqual(['transaction opened', 'roster', 'grants written']);
+  });
+
+  it('aborts the rotation when the roster changed under it', async () => {
+    // The same race from the client's side: the set was built from a recipients
+    // listing that named the developer, and by the time the transaction reads the
+    // roster they are gone. The write must not happen — an extra grant minted
+    // through the rotation endpoint is a key handed to somebody the access model
+    // no longer permits, recorded as routine maintenance.
+    roster([{ userId: OWNER_ID, role: 'owner' }]);
+
+    const error = await rejection(() =>
+      rotateKeys(scope(), services(), ownerPrincipal, {
+        newVersion: 2,
+        grants: [grant(), grant({ id: DEVELOPER_ID })],
+      }),
+    );
+
+    expect(error.code).toBe('validation_failed');
+    expect(rotationsCommitted).toBe(0);
+  });
+
+  it('is exhaustive past the page size the roster used to be read with', async () => {
+    // ── The finding, at the boundary that produced it ──
+    // The required set was computed from `listMembers(..., { pageSize: 200 })`
+    // with `hasMore` discarded, so at 201 members the answer stopped being *the
+    // set* and became *a page of it*. Everybody past the boundary was absent from
+    // the required set: a rotation naming them was refused as surplus, and one
+    // omitting them was accepted — silently revoking every member past the two
+    // hundredth through the check that exists to prevent silent revocation.
+    //
+    // 250 rather than a lowered constant, because there is no constant left to
+    // lower: the repository reads the roster whole. What this asserts is that the
+    // service demands a grant for the 250th member, which the old code could not
+    // see at all.
+    const members = Array.from({ length: 250 }, (_, index) => ({
+      userId: `01930000-0000-7000-8000-${String(index).padStart(12, '0')}`,
+      role: 'owner' as const,
+    }));
+    roster(members);
+
+    const last = members[249]!.userId;
+
+    const error = await rejection(() =>
+      rotateKeys(scope(), services(), ownerPrincipal, {
+        newVersion: 2,
+        // Everybody but the last one — the set a paginated computation would
+        // have called complete.
+        grants: members.slice(0, 249).map((member) => grant({ id: member.userId })),
+      }),
+    );
+
+    expect(error.code).toBe('validation_failed');
+    expect(error.fields?.[0]?.message).toContain(last);
+    expect(rotationsCommitted).toBe(0);
+  });
+
+  it('accepts the whole set at that size', async () => {
+    const members = Array.from({ length: 250 }, (_, index) => ({
+      userId: `01930000-0000-7000-8000-${String(index).padStart(12, '0')}`,
+      role: 'owner' as const,
+    }));
+    roster(members);
+
+    await expect(
+      rotateKeys(scope(), services(), ownerPrincipal, {
+        newVersion: 2,
+        grants: members.map((member) => grant({ id: member.userId })),
+      }),
+    ).resolves.toMatchObject({ version: 2, grantCount: 250 });
+  });
+
+  it('refuses an invite grant for an invitation of another organisation', async () => {
+    // The rotate path never ran the recipient check for invite grants: they were
+    // filtered out of the surplus comparison and nothing looked at them again. So
+    // a rotation could attach this environment's brand-new key to an invitation
+    // belonging to somebody else's organisation, and the invitee would open it on
+    // acceptance somewhere else entirely.
+    repository.findPendingInvitationForGrant.mockResolvedValue(null);
+
+    const error = await rejection(() =>
+      rotateKeys(scope(), services(), ownerPrincipal, {
+        newVersion: 2,
+        grants: [grant(), grant({ kind: 'invite', id: INVITATION_ID })],
+      }),
+    );
+
+    expect(error.code).toBe('bad_request');
+    expect(rotationsCommitted).toBe(0);
+  });
+
+  it('refuses an invite grant whose selected access never reaches this environment', async () => {
+    // A non-null selection is deny-by-default: every project the organisation
+    // has receives an explicit `none` unless it was ticked, and `none` outranks
+    // the role default. This invitation selected a different project entirely, so
+    // acceptance will grant nothing here — and sealing this environment's key to
+    // it would hand the invitee bytes their selection never entitled them to.
+    repository.findPendingInvitationForGrant.mockResolvedValue({
+      id: INVITATION_ID,
+      role: 'admin',
+      initialGrants: [{ projectId: OTHER_PROJECT_ID, environmentId: null }],
+    });
+
+    const error = await rejection(() =>
+      rotateKeys(scope(), services(), ownerPrincipal, {
+        newVersion: 2,
+        grants: [grant(), grant({ kind: 'invite', id: INVITATION_ID })],
+      }),
+    );
+
+    expect(error.code).toBe('bad_request');
+    expect(rotationsCommitted).toBe(0);
   });
 
   it('refuses a set missing a member who has access, and names them', async () => {
@@ -331,9 +517,11 @@ describe('rotation completeness', () => {
     expect(error.code).toBe('validation_failed');
     expect(error.fields?.[0]?.message).toContain(DEVELOPER_ID);
     expect(error.fields?.[0]?.message).toContain('Missing a grant');
-    // Nothing was written: the check runs before the rotation, so a refused set
-    // cannot leave a half-rotated environment behind.
-    expect(repository.rotateEnvDataKey).not.toHaveBeenCalled();
+    // Nothing was written. The check now runs *inside* the rotation transaction,
+    // so the repository is entered and then aborts — which is what closes the
+    // window a pre-flight check left open, and why the assertion counts commits
+    // rather than calls.
+    expect(rotationsCommitted).toBe(0);
   });
 
   it('refuses a set carrying a principal with no access', async () => {
@@ -353,7 +541,7 @@ describe('rotation completeness', () => {
 
     expect(error.code).toBe('validation_failed');
     expect(error.fields?.some((field) => field.message.includes('Unexpected grant'))).toBe(true);
-    expect(repository.rotateEnvDataKey).not.toHaveBeenCalled();
+    expect(rotationsCommitted).toBe(0);
   });
 
   it('requires a grant for every service token that can be sealed to', async () => {
@@ -427,6 +615,79 @@ describe('rotation completeness', () => {
   });
 });
 
+describe('missingGrants — the direction nothing used to report', () => {
+  it('names an entitled member who holds no key', async () => {
+    // ── The state this makes visible ──
+    // `needsRotation` only ever asked "is somebody holding the key who should not
+    // be?". The opposite asymmetry is just as real and was invisible from every
+    // screen: a member entitled to an environment with no grant on its active key
+    // can list every secret name and decrypt none of them. A vault reset produces
+    // exactly that for every environment at once, and so does an acceptance whose
+    // re-seal never completed — and nothing told the person, an administrator, or
+    // the audit log.
+    roster([
+      { userId: OWNER_ID, role: 'owner' },
+      { userId: DEVELOPER_ID, role: 'owner' },
+    ]);
+    repository.listGrantsForEnvironment.mockResolvedValue([grantRow('member', OWNER_ID)]);
+
+    const state = await environmentKeyState(scope(), services(), ownerPrincipal);
+
+    expect(state.missingGrants).toEqual([{ kind: 'member', id: DEVELOPER_ID }]);
+    // And nothing is owed in the other direction: every holder is still entitled.
+    expect(state.needsRotation).toBe(false);
+  });
+
+  it('names an entitled service token that holds no key', async () => {
+    repository.listSealableServiceTokens.mockResolvedValue([
+      { id: TOKEN_ID, publicKey: new Uint8Array(32) },
+    ]);
+    repository.listGrantsForEnvironment.mockResolvedValue([grantRow('member', OWNER_ID)]);
+
+    const state = await environmentKeyState(scope(), services(), ownerPrincipal);
+
+    expect(state.missingGrants).toEqual([{ kind: 'token', id: TOKEN_ID }]);
+  });
+
+  it('is empty when everybody entitled holds the active key', async () => {
+    repository.listGrantsForEnvironment.mockResolvedValue([grantRow('member', OWNER_ID)]);
+
+    const state = await environmentKeyState(scope(), services(), ownerPrincipal);
+
+    expect(state.missingGrants).toEqual([]);
+  });
+
+  it('does not count a grant on a retired key as holding the key', async () => {
+    // Which is the whole point of comparing against the *active* version: a
+    // member holding only a retired grant reads history and nothing written
+    // since, and that is precisely the person a share is owed to.
+    repository.listGrantsForEnvironment.mockResolvedValue([
+      grantRow('member', OWNER_ID, 'a-retired-key'),
+    ]);
+
+    const state = await environmentKeyState(scope(), services(), ownerPrincipal);
+
+    expect(state.missingGrants).toEqual([{ kind: 'member', id: OWNER_ID }]);
+  });
+
+  it('withholds both hygiene answers from a caller who cannot act on them', async () => {
+    // `null`, not `false`. They name other people, so they are administrative on
+    // the same terms as `pendingGrants` — and computing them costs a read of the
+    // whole roster, which `POST …/pull` would otherwise pay on every `xecret run`
+    // for an answer it can do nothing with.
+    const developerScope = scope({ role: 'developer', isProduction: false });
+
+    const state = await environmentKeyState(developerScope, services(), developerPrincipal);
+
+    expect(state.needsRotation).toBeNull();
+    expect(state.missingGrants).toBeNull();
+    // The roster is not read for them at all — the O(members) scan that used to
+    // sit on the pull path is simply not issued.
+    expect(repository.loadOrganizationAuthorizationContexts).not.toHaveBeenCalled();
+    expect(repository.listGrantsForEnvironment).not.toHaveBeenCalled();
+  });
+});
+
 describe('needsRotation', () => {
   it('is false when every holder of the active key still has access', async () => {
     repository.listGrantsForEnvironment.mockResolvedValue([grantRow('member', OWNER_ID)]);
@@ -473,6 +734,26 @@ describe('needsRotation', () => {
     const state = await environmentKeyState(scope(), services(), ownerPrincipal);
 
     expect(state.needsRotation).toBe(false);
+  });
+
+  it('counts a dead service token still holding the active key', async () => {
+    // A revoked or expired token drops out of `listSealableServiceTokens`, so it
+    // is no longer *required* — which is the fix for a rotation blocked for ever
+    // behind a credential nobody can re-key. Its leftover grant on the active key
+    // is still a revocation waiting for its rotation, though: whoever held the
+    // token string may have fetched the key while it authenticated. Reporting it
+    // is what stops the expiry fix from quietly downgrading a revocation.
+    repository.listSealableServiceTokens.mockResolvedValue([]);
+    repository.listGrantsForEnvironment.mockResolvedValue([
+      grantRow('member', OWNER_ID),
+      grantRow('token', TOKEN_ID),
+    ]);
+
+    const state = await environmentKeyState(scope(), services(), ownerPrincipal);
+
+    expect(state.needsRotation).toBe(true);
+    // And it is not also reported as owed a key — it cannot be sealed to.
+    expect(state.missingGrants).toEqual([]);
   });
 });
 
@@ -629,6 +910,36 @@ describe('initialisation', () => {
     expect(repository.initializeEnvironmentKeys).not.toHaveBeenCalled();
   });
 
+  /**
+   * The same assertion the *creation* route now makes, exercised directly.
+   *
+   * ── The finding ──
+   * `POST …/environments` writes an environment's first key grant through
+   * `createEnvironment` rather than through `initializeKeys`, and it never made
+   * this check. `grantSchema` accepts any `recipientKind` and any uuid, and the
+   * foreign keys check that a row exists rather than that it belongs to this
+   * tenant — so the one endpoint that mints a grant before an environment exists,
+   * before any grant of it could be read or revoked or noticed, would seal an
+   * organisation's brand-new key to a member of another one, to a service token
+   * scoped elsewhere, or to an invitation nobody here issued.
+   *
+   * One exported assertion, called from both routes, is the only shape in which
+   * the two cannot disagree again.
+   */
+  describe('the first-grant rule, which both creation paths now share', () => {
+    it.each([
+      ['another member', grant({ id: DEVELOPER_ID })],
+      ['a service token', grant({ kind: 'token', id: TOKEN_ID })],
+      ['an invitation', grant({ kind: 'invite', id: INVITATION_ID })],
+    ])('refuses a first grant addressed to %s', (_name, offered) => {
+      expect(() => assertSelfGrant(offered, OWNER_ID)).toThrowError(ApiError);
+    });
+
+    it('accepts the creator’s own', () => {
+      expect(() => assertSelfGrant(grant({ id: OWNER_ID }), OWNER_ID)).not.toThrow();
+    });
+  });
+
   it('refuses to operate on a server-mode environment at all', () => {
     const serverScope = {
       ...scope(),
@@ -680,6 +991,45 @@ describe('the pending key-share queue', () => {
       granted: new Set<string>(),
       pending: new Set<string>(),
     });
+  });
+
+  it('runs the whole reconciliation in one transaction', async () => {
+    // ── What a loop of untransacted statements left behind ──
+    // Six environments, a failure at the fourth: grants revoked on three, intact
+    // on three, and no record anywhere that the act was incomplete. The member
+    // could still read half the environments they had been removed from, and the
+    // audit log said the removal succeeded.
+    //
+    // `revokeMemberAccess` takes the same executor for the same reason at a
+    // smaller scale: deleting the grants and clearing the queued debt are one
+    // act, and separately they can half-happen — leaving an instruction to re-seal
+    // a key to somebody who was just cut off.
+    const inside: string[] = [];
+    const context = services();
+    const db = context.db as unknown as { transaction: (run: (tx: unknown) => unknown) => unknown };
+    const transaction = vi.fn((run: (tx: unknown) => unknown) => run({}));
+    db.transaction = transaction;
+
+    repository.loadAuthorizationContext.mockImplementation(() => {
+      inside.push('read');
+      return Promise.resolve(null);
+    });
+    repository.removeMemberGrantsForEnvironment.mockImplementation(() => {
+      inside.push('revoke');
+      return Promise.resolve(1);
+    });
+
+    await reconcileMemberKeyAccess(context, {
+      orgId: ORG_ID,
+      userId: DEVELOPER_ID,
+      actorUserId: OWNER_ID,
+    });
+
+    expect(transaction).toHaveBeenCalledOnce();
+    // Everything the reconciliation did happened inside it — the reads it decides
+    // from as well as the writes, so it cannot decide from one moment and write
+    // into another.
+    expect(inside).toEqual(['read', 'revoke']);
   });
 
   it('queues a share when a member gains access without a key', async () => {
@@ -1104,6 +1454,40 @@ describe('blob validation', () => {
     expect(grantSchema.safeParse(withoutKey).success).toBe(false);
   });
 
+  it('rejects a 36-character recipient id that is not a UUID', () => {
+    // ── The 500 this closes ──
+    // The field was validated by length alone, so `------------------------------------`
+    // passed the schema, reached a `uuid` column, and PostgreSQL raised 22P02 —
+    // which the route wrapper has no reason to recognise, so a malformed request
+    // body was answered as a server fault. An alert fires, the caller learns
+    // nothing, and the incident is filed against us rather than against the
+    // request that caused it.
+    expect(grantSchema.safeParse({ ...grant(), recipientId: '-'.repeat(36) }).success).toBe(false);
+    expect(
+      grantSchema.safeParse({ ...grant(), recipientId: 'not-a-uuid-but-exactly-36-chars-long' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('rejects an uppercase UUID rather than normalising it', () => {
+    // Strict on purpose: these ids are compared against database values and bound
+    // into AAD, and two spellings of one identifier is how inconsistent-comparison
+    // bugs start.
+    expect(grantSchema.safeParse({ ...grant(), recipientId: OWNER_ID.toUpperCase() }).success).toBe(
+      false,
+    );
+  });
+
+  it('applies the same rule to the key id a grant set names', () => {
+    expect(
+      environmentKeyGrantsSchema.safeParse({ envDataKeyId: '-'.repeat(36), grants: [grant()] })
+        .success,
+    ).toBe(false);
+    expect(
+      environmentKeyGrantsSchema.safeParse({ envDataKeyId: KEY_ID, grants: [grant()] }).success,
+    ).toBe(true);
+  });
+
   it('rejects a recipient public key that is not 32 bytes', () => {
     expect(
       grantSchema.safeParse({ ...grant(), recipientPublicKey: toBase64Url(new Uint8Array(31)) })
@@ -1178,6 +1562,32 @@ describe('blob validation', () => {
         },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('a client import that names one secret twice', () => {
+  it('is caught in the body, naming the entry', () => {
+    // ── What used to happen instead ──
+    // Both entries resolved to the same stored row, so both planned version N+1.
+    // The first append landed at N+1; the second landed at N+2 carrying a
+    // ciphertext bound to N+1, and `commitClientWrites` rolled the entire
+    // transaction back with "This secret was changed by another request." Nothing
+    // else had changed it, the import wrote nothing, and the message sent
+    // somebody hunting a concurrent editor who did not exist.
+    expect(
+      duplicateEntryName([{ name: 'API_KEY' }, { name: 'DATABASE_URL' }, { name: 'API_KEY' }]),
+    ).toBe('API_KEY');
+  });
+
+  it('says nothing about a body whose names are all distinct', () => {
+    expect(duplicateEntryName([{ name: 'A' }, { name: 'B' }, { name: 'C' }])).toBeNull();
+    expect(duplicateEntryName([])).toBeNull();
+  });
+
+  it('compares names exactly, as the unique index does', () => {
+    // `secrets_env_name_idx` is on the name as stored, and the two spellings are
+    // two secrets. Folding case here would refuse a body the database accepts.
+    expect(duplicateEntryName([{ name: 'API_KEY' }, { name: 'api_key' }])).toBeNull();
   });
 });
 

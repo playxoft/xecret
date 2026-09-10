@@ -362,9 +362,20 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   if (metadata.sessionCount !== undefined && Number.isFinite(metadata.sessionCount)) {
     clean.sessionCount = metadata.sessionCount;
   }
+  if (metadata.grantCount !== undefined && Number.isFinite(metadata.grantCount)) {
+    clean.grantCount = metadata.grantCount;
+  }
 
-  // A closed union of four literals; there is nothing to sanitise.
+  // Closed unions of literals; there is nothing to sanitise.
   if (metadata.source !== undefined) clean.source = metadata.source;
+  // `principalKind` and `grantCount` above were declared on `AuditMetadata` and
+  // never copied here, so every caller that set them — the key-reconciliation
+  // records, the environment-creation record — wrote a row with the field
+  // silently missing. The doc comment above says the repetition is the feature
+  // precisely because a field added to the contract has to be decided *here*;
+  // these two were added to the contract and the decision was never made, which
+  // is the failure mode that argument predicts rather than an exception to it.
+  if (metadata.principalKind !== undefined) clean.principalKind = metadata.principalKind;
 
   return clean;
 }

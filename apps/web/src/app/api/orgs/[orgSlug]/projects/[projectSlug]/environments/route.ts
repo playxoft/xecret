@@ -10,7 +10,7 @@ import {
   resolveEnvironmentSlug,
   toEnvironment,
 } from '@/server/schemas/resources';
-import { callerHasVault, requireSealingUser } from '@/server/env-keys-service';
+import { assertSelfGrant, callerHasVault, requireSealingUser } from '@/server/env-keys-service';
 import { toGrantSeed } from '@/server/schemas/env-keys';
 import { authorize, resolveProjectPath } from '@/server/tenancy';
 
@@ -102,6 +102,20 @@ export const POST = authenticatedRoute<Params>(
         'Set up your vault before creating an environment: its keys are sealed to your public key.',
       );
     }
+
+    // The first grant must be the creator's own — the same assertion
+    // `initializeKeys` makes on the repair endpoint, and it was missing here.
+    //
+    // Without it this route accepted a first grant addressed to **any** principal
+    // of any kind: `grantSchema` takes a `recipientKind` and a uuid, and the
+    // foreign keys check that the row exists, not that it belongs to this tenant.
+    // So the one endpoint that writes a key grant before an environment exists —
+    // before any grant of it could be read, revoked or noticed — would happily
+    // seal an organisation's brand-new key to a member of another one, to a
+    // service token scoped elsewhere, or to an invitation nobody here issued. At
+    // creation there is exactly one public key the caller could honestly have
+    // sealed to, and it is their own.
+    assertSelfGrant(body.keys.grant, creator);
 
     // The id the grant was sealed against. Required beside `keys` and refused
     // without it, because the AAD of the creator's grant names the environment
