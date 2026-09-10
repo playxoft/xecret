@@ -38,12 +38,11 @@ export interface EmergencyKit {
  * when they are gone (nothing can be done), in that order.
  */
 export const EMERGENCY_KIT_EXPLANATION =
-  'These recovery codes are the only way back into your xecret vault if you forget your master passphrase. ' +
-  'Each code can be used once, and using any one of them replaces all five and forces you to set a new passphrase. ' +
-  'Anyone holding a code and your sign-in can read everything in your vault, so keep this somewhere you would keep a ' +
-  'passport — not in the password manager or the inbox that your xecret sign-in already protects. ' +
-  'If you lose your passphrase and all five codes, your secrets cannot be decrypted by anyone, including xecret. ' +
-  'There is no support process that recovers them, because there is no key on our side to recover them with.';
+  'These five codes are your only way back in if you ever forget your master passphrase. ' +
+  'Each works once, and using one replaces all five. ' +
+  'Treat them like a passport: anyone with a code and your sign-in can open your vault, so keep them out of the ' +
+  'inbox and password manager your sign-in already protects. ' +
+  'Lose the passphrase and all five codes, and nothing can bring your secrets back — not even xecret.';
 
 /** `2026-09-08` — the date, unambiguous in every locale. */
 function isoDate(at: Date): string {

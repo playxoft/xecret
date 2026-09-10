@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { ORGANIZATION_NAME_MAX_LENGTH } from './names';
 import {
   checkSlug,
+  checkSlugShape,
   isReservedSlug,
   normalizeSlugInput,
   ORGANIZATION_SLUG_MAX_LENGTH,
   organizationSlugSchema,
   slugify,
+  slugReferenceSchema,
   slugSchema,
   SLUG_MAX_LENGTH,
 } from './slug';
@@ -162,6 +164,75 @@ describe('checkSlug', () => {
     expect(result.error?.issues[0]?.message).toBe(
       'A slug cannot end with a hyphen. Add a letter or digit after it.',
     );
+  });
+});
+
+describe('slugReferenceSchema', () => {
+  /**
+   * The `xecret login` regression.
+   *
+   * `POST /api/cli/authorize` validated the organisation the user chose from
+   * their own switcher with `slugSchema`, so an organisation whose slug is on
+   * the reserved list could never be approved for the CLI. The reserved list
+   * governs what may be *claimed*; a slug being referenced was claimed long ago.
+   */
+  it('accepts a reserved slug, which a claim schema refuses', () => {
+    for (const slug of ['playxoft', 'xecret', 'docs', 'settings']) {
+      expect(isReservedSlug(slug), slug).toBe(true);
+      expect(slugSchema.safeParse(slug).success, slug).toBe(false);
+      expect(slugReferenceSchema.safeParse(slug).success, slug).toBe(true);
+    }
+  });
+
+  // Loosened by exactly one rule and no others: a reference still has to be
+  // shaped like a slug, because it is about to be used as one in a query.
+  it('still refuses anything that is not shaped like a slug', () => {
+    for (const slug of [
+      '',
+      'Acme',
+      'acme corp',
+      '-acme',
+      'acme-',
+      'a--b',
+      'a'.repeat(SLUG_MAX_LENGTH + 1),
+    ]) {
+      expect(slugReferenceSchema.safeParse(slug).success, slug).toBe(false);
+    }
+  });
+
+  it('agrees with `checkSlugShape` across the corpus', () => {
+    for (const slug of [
+      'acme',
+      'acme-corp',
+      'a1',
+      'playxoft',
+      'settings',
+      '-acme',
+      'a--b',
+      'ACME',
+    ]) {
+      expect(slugReferenceSchema.safeParse(slug).success, slug).toBe(
+        checkSlugShape(slug, SLUG_MAX_LENGTH).valid,
+      );
+    }
+  });
+
+  // `checkSlug` is `checkSlugShape` plus the list, and nothing else. A rule
+  // added to one that the other cannot see is the drift this pins.
+  it('is the only difference between the two checks', () => {
+    for (const slug of ['acme', 'playxoft', 'settings', '-acme', 'a--b', 'ACME', '']) {
+      const shape = checkSlugShape(slug, SLUG_MAX_LENGTH);
+      const claim = checkSlug(slug, SLUG_MAX_LENGTH);
+      expect(claim, slug).toEqual(
+        shape.valid && isReservedSlug(slug)
+          ? {
+              valid: false,
+              problem: 'reserved',
+              message: 'That slug is reserved. Choose a different one.',
+            }
+          : shape,
+      );
+    }
   });
 });
 

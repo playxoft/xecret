@@ -58,17 +58,37 @@ import { useVault } from './vault-keys';
  * nothing to retry and a permanently failing button is worse than no button.
  */
 
+/**
+ * Which screen of the unlock flow is showing.
+ *
+ * Exported, because the host that titles and sizes the frame around it needs
+ * the same list — and a hand-copied union there is a list that stops agreeing
+ * with this one the first time a stage is added.
+ */
+export type Stage = 'unlock' | 'code' | 'reset' | 'kit' | 'lost';
+
 export interface VaultUnlockProps {
   user: { id: string; email: string; displayName: string | null };
   /** Re-reads the session, which is what actually dismisses the lock. */
   onUnlocked: () => void;
+  /**
+   * Reports which stage is on screen, so the host can title each one for what
+   * it actually asks, and widen its frame for the one stage that needs it —
+   * the reissued kit, which is five full-width codes and a row of save buttons.
+   */
+  onStageChange?: (stage: Stage) => void;
 }
 
-type Stage = 'unlock' | 'code' | 'reset' | 'kit' | 'lost';
-
-export function VaultUnlock({ user, onUnlocked }: VaultUnlockProps) {
+export function VaultUnlock({ user, onUnlocked, onStageChange }: VaultUnlockProps) {
   const vault = useVault();
   const [stage, setStage] = useState<Stage>('unlock');
+
+  useEffect(() => {
+    onStageChange?.(stage);
+    // Intentionally keyed on the stage alone: a new callback identity from a
+    // host re-render carries no new information.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage]);
 
   /**
    * The wraps are re-read whenever this screen appears.
@@ -384,7 +404,7 @@ function UnlockForm({
         </p>
       ) : null}
 
-      <Button variant="ghost" size="sm" onClick={onForgot}>
+      <Button variant="ghost" onClick={onForgot}>
         Forgot your passphrase?
       </Button>
     </div>
@@ -533,10 +553,10 @@ function RecoveryFlow({
   if (stage === 'code') {
     return (
       <form onSubmit={redeem} noValidate className="flex flex-col gap-4">
+        {/* Both consequences are forced, because a code is what somebody
+            reaches for when their passphrase is already lost. */}
         <p className="text-fg-muted text-sm leading-6">
-          Enter one of the five recovery codes from your Emergency Kit. Using it replaces all five
-          and asks you to choose a new passphrase — both are forced, because a code is what somebody
-          reaches for when their passphrase is already lost.
+          Heads up: using a code replaces all five and asks you to choose a new passphrase.
         </p>
 
         {failure !== null ? (
@@ -561,10 +581,10 @@ function RecoveryFlow({
         <Button type="submit" variant="primary" loading={busy} disabled={typed.trim().length === 0}>
           Continue
         </Button>
-        <Button variant="ghost" size="sm" onClick={abandon}>
+        <Button variant="ghost" onClick={abandon}>
           Back to the passphrase
         </Button>
-        <Button variant="ghost" size="sm" onClick={() => onStage('lost')}>
+        <Button variant="ghost" onClick={() => onStage('lost')}>
           I have lost all five codes
         </Button>
       </form>
@@ -729,6 +749,11 @@ function AllCodesLost({
   const [showProblem, setShowProblem] = useState(false);
   const [done, setDone] = useState(false);
 
+  // Two screens rather than one: the facts, then the act. A single page
+  // carrying both was a wall of text with a destructive form at the bottom —
+  // splitting them means each screen asks the reader for exactly one thing.
+  const [step, setStep] = useState<'facts' | 'confirm'>('facts');
+
   const problem = resetConfirmationProblem(typed);
 
   /**
@@ -784,33 +809,42 @@ function AllCodesLost({
     );
   }
 
+  // Screen one: the facts, and every way out that is not a reset. The copy
+  // keeps its two sentences apart — the data is gone, and here is how to
+  // start again — see the header comment for why that order is load-bearing.
+  if (step === 'facts') {
+    return (
+      <div className="flex flex-col gap-4">
+        <Alert tone="danger" title="We can’t bring your secrets back">
+          They were sealed with keys only your passphrase and recovery codes could open. With both
+          gone, nothing can unseal them — not even xecret.
+        </Alert>
+
+        <div className="text-fg-muted flex flex-col gap-3 text-sm leading-6">
+          <p>
+            <span className="text-fg">Resetting gives you a fresh start</span> — a new passphrase
+            and a new Emergency Kit. Nothing old comes back, and an owner or admin will need to
+            share team environments with you again.
+          </p>
+          <p>Your teammates and your organisation’s data are unaffected.</p>
+        </div>
+
+        <Button variant="danger-outline" onClick={() => setStep('confirm')}>
+          I understand — reset my vault
+        </Button>
+        <Button variant="secondary" onClick={onBack}>
+          I have found a code after all
+        </Button>
+        <Button variant="ghost" asChild>
+          <a href={SIGN_IN_PATH}>Sign in with a different account</a>
+        </Button>
+      </div>
+    );
+  }
+
+  // Screen two: the act, and nothing else to read.
   return (
     <div className="flex flex-col gap-4">
-      <Alert tone="danger" title="We cannot recover this">
-        Your secrets are encrypted with a key derived from your passphrase, and we hold no copy of
-        it. Without the passphrase or one of your recovery codes, the data in your vault cannot be
-        decrypted by anyone — including us. There is no support process that gets it back, because
-        there is nothing on our side to get it back with.
-      </Alert>
-
-      <div className="text-fg-muted flex flex-col gap-3 text-sm leading-6">
-        <p>
-          What is lost is your own copy of the keys. Your organisation’s data is not damaged by
-          this, and teammates who still have their vaults are unaffected.
-        </p>
-        <p>
-          <span className="text-fg">You can start again by resetting your vault.</span> That
-          discards your keys, your recovery codes and your passkeys permanently. It does not recover
-          anything and it is not a way back in: everything already encrypted under the old vault
-          stays unreadable, including your access to every team environment you were shared into.
-        </p>
-        <p>
-          Afterwards you choose a new passphrase and get a new Emergency Kit, and an owner or admin
-          of your organisation can share those environments with you again — from that point on, not
-          retroactively. Ask them before you reset, so you know the way back exists.
-        </p>
-      </div>
-
       {failure !== null ? (
         <Alert tone="danger" title="Your vault was not reset">
           {failure}
@@ -834,6 +868,7 @@ function AllCodesLost({
             onChange={(event) => setTyped(event.target.value)}
             autoComplete="off"
             spellCheck={false}
+            autoFocus
             placeholder={VAULT_RESET_CONFIRMATION}
           />
         </Field>
@@ -847,9 +882,8 @@ function AllCodesLost({
           reads as the same demand repeated.
         */}
         <p className="text-fg-muted text-sm leading-6">
-          Confirm it is you before anything is destroyed. Signing in again is not the passphrase —
-          it is the password or Google account you use to reach xecret, and it is what stops
-          somebody who has your browser session from doing this to you.
+          One last check that it’s really you — sign in again with the password or Google account
+          you use for xecret. It protects you if someone else has this browser session.
         </p>
 
         <Field label={`Password for ${email}`}>
@@ -874,11 +908,8 @@ function AllCodesLost({
         Confirm with Google and reset
       </Button>
 
-      <Button variant="secondary" onClick={onBack}>
-        I have found a code after all
-      </Button>
-      <Button variant="ghost" size="sm" asChild>
-        <a href={SIGN_IN_PATH}>Sign in with a different account</a>
+      <Button variant="ghost" onClick={() => setStep('facts')}>
+        Back
       </Button>
     </div>
   );

@@ -6,6 +6,7 @@ import { endSession, SIGN_IN_PATH } from '@/lib/api';
 import { Wordmark } from '@/components/layout';
 import { Button, LockIcon, ShieldCheckIcon } from '@/components/ui';
 import { releaseVaultKeys, VaultSetup, VaultUnlock } from '@/components/vault';
+import type { VaultUnlockStage } from '@/components/vault';
 import type { SessionUser, VaultStatus } from './session';
 
 /**
@@ -43,27 +44,63 @@ export interface LockScreenProps {
 export function LockScreen({ status, user, onUnlocked }: LockScreenProps) {
   const configured = status.configured;
 
+  // The unlock flow reports which of its stages is on screen, so the frame
+  // can title each one honestly — a person typing a recovery code is not
+  // "unlocking", and the panel saying so reads as being on the wrong page.
+  const [stage, setStage] = useState<VaultUnlockStage>('unlock');
+  const wide = !configured || stage === 'kit';
+
+  const stageCopy = {
+    unlock: {
+      title: 'Your vault is locked',
+      description: `Signed in as ${user.email}. Your passphrase unlocks it right here in your browser — xecret never sees it.`,
+    },
+    code: {
+      title: 'Unlock with a recovery code',
+      description: 'Any one of the five codes from your Emergency Kit gets you back in.',
+    },
+    reset: {
+      title: 'Choose a new passphrase',
+      description: 'Your code worked. Pick a new master passphrase to finish.',
+    },
+    kit: {
+      title: 'Your new Emergency Kit',
+      description: 'Five fresh codes. Save them somewhere safe before you continue.',
+    },
+    lost: {
+      title: 'Reset your vault',
+      description: 'For when the passphrase and all five codes are truly gone.',
+    },
+  }[stage];
+
   return (
     <div className="bg-canvas flex min-h-dvh flex-col">
-      <header className="border-line flex h-[var(--topbar-height)] shrink-0 items-center border-b px-4 sm:px-6">
+      <header className="border-line bg-canvas sticky top-0 z-10 flex h-[var(--topbar-height)] shrink-0 items-center border-b px-4 sm:px-6">
         <Wordmark />
       </header>
 
-      <main className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-4 py-12 sm:px-6">
+      {/* Setup and the reissued-kit stage get a wider panel than plain
+          unlock: five full-width recovery codes and a row of save buttons at
+          `max-w-md` stack into a column taller than the viewport. */}
+      <main
+        className={`mx-auto flex w-full flex-1 flex-col justify-center px-4 py-6 sm:px-6 sm:py-8 ${
+          wide ? 'max-w-md sm:max-w-2xl' : 'max-w-md'
+        }`}
+      >
         <PanelFrame
           icon={
             configured ? <LockIcon className="size-5" /> : <ShieldCheckIcon className="size-5" />
           }
-          title={configured ? 'Your vault is locked' : 'Set up your vault'}
+          title={configured ? stageCopy.title : 'Set up your vault'}
           description={
             configured
-              ? `Signed in as ${user.email}. Unlocking decrypts your keys in this browser — xecret never sees your passphrase.`
+              ? stageCopy.description
               : `Signed in as ${user.email}. A master passphrase encrypts everything you store, on your device, before it leaves it.`
           }
         >
           <div className="flex flex-col gap-6">
             {configured ? (
-              <VaultUnlock user={user} onUnlocked={onUnlocked} />
+              <VaultUnlock user={user} onUnlocked={onUnlocked} onStageChange={setStage} />
             ) : (
               <VaultSetup user={user} onComplete={onUnlocked} />
             )}
@@ -129,7 +166,7 @@ function Footer() {
   }
 
   return (
-    <Button variant="ghost" loading={busy} onClick={() => void signOut()}>
+    <Button variant="danger-outline" loading={busy} onClick={() => void signOut()}>
       Sign out
     </Button>
   );

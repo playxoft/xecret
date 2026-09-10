@@ -1,12 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { RecoveryCode } from '@xecret/core/crypto/client';
 
 import {
   Alert,
   Button,
-  CopyButton,
+  CheckIcon,
+  CopyIcon,
   DownloadIcon,
   Field,
   FileTextIcon,
@@ -67,8 +68,35 @@ export function RecoveryKitPanel({
   problem = null,
 }: RecoveryKitPanelProps) {
   const [printFailed, setPrintFailed] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const kit = { email, issuedAt, codes };
+
+  // Held in a ref and cleared on unmount, the way `CopyButton` does it: this
+  // panel is dismissed by the step it gates, so a bare `setTimeout` outlives it
+  // and fires into a component that is gone — and a second click within the two
+  // seconds would otherwise inherit the first click's timer and drop the
+  // "Copied" state early.
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+    },
+    [],
+  );
+
+  async function copyAll() {
+    try {
+      await navigator.clipboard.writeText(codes.map((code) => code.displayForm).join('\n'));
+      setCopied(true);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard access can be denied; the codes are on screen and selectable
+      // either way, so fail quietly. Nothing about the value is logged.
+      setCopied(false);
+    }
+  }
   const promptedIndex = promptedCode === null ? -1 : codes.indexOf(promptedCode);
 
   function download() {
@@ -89,8 +117,8 @@ export function RecoveryKitPanel({
   }
 
   return (
-    <div className="flex flex-col gap-5">
-      <Alert tone="warning" title="This is the only time these are shown">
+    <div className="flex flex-col gap-4">
+      <Alert tone="warning" title="You’ll only see these codes once">
         {EMERGENCY_KIT_EXPLANATION}
       </Alert>
 
@@ -101,15 +129,20 @@ export function RecoveryKitPanel({
               {index + 1}
             </span>
             {/* `select-all` so a click selects the whole code rather than one
-                hyphen-separated group, which is how a partial paste happens. */}
-            <code className="text-fg flex-1 font-mono text-sm tracking-wide select-all">
+                hyphen-separated group, which is how a partial paste happens.
+                A code is 31 characters and never wraps, which is wider than the
+                column on a small phone — so it scrolls inside its own row
+                (`min-w-0` is what lets the flex item shrink below its content)
+                rather than bursting the bordered box and putting a horizontal
+                scrollbar on the whole lock screen. */}
+            <code className="text-fg min-w-0 flex-1 overflow-x-auto font-mono text-sm tracking-wide whitespace-nowrap select-all sm:text-base">
               {code.displayForm}
             </code>
           </li>
         ))}
       </ol>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Button variant="primary" onClick={download}>
           <DownloadIcon className="size-4" />
           Download Emergency Kit
@@ -121,10 +154,14 @@ export function RecoveryKitPanel({
         {/* Copy is offered and deliberately does *not* satisfy the gate: a
             clipboard is overwritten by the next thing anybody copies, and the
             failure it causes surfaces months later. See `emergency-kit.ts`. */}
-        <span className="text-fg-muted inline-flex items-center gap-1 text-sm">
-          <CopyButton value={codes.map((code) => code.displayForm).join('\n')} label="all codes" />
-          Copy
-        </span>
+        <Button variant="secondary" onClick={() => void copyAll()}>
+          {copied ? (
+            <CheckIcon className="text-success-text size-4" />
+          ) : (
+            <CopyIcon className="size-4" />
+          )}
+          {copied ? 'Copied' : 'Copy'}
+        </Button>
       </div>
 
       {printFailed ? (

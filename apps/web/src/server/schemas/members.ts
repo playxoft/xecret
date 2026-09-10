@@ -1,7 +1,7 @@
 import * as z from 'zod/mini';
 import { invitationState } from '@xecret/core/auth';
 import type { AccessLevel, OrgRole } from '@xecret/core/authz';
-import { environmentSlugSchema, slugSchema } from '@xecret/core/validation';
+import { environmentSlugSchema, slugReferenceSchema } from '@xecret/core/validation';
 import type {
   InvitationListEntry,
   InvitationRecord,
@@ -48,7 +48,7 @@ const emailSchema = z.email('Enter a valid email address.').check(z.maxLength(32
  */
 export const invitationGrantSelectionSchema = z.strictObject(
   {
-    projectSlug: slugSchema,
+    projectSlug: slugReferenceSchema,
     environmentSlug: z.nullable(environmentSlugSchema),
     accessLevel: z.optional(accessLevelSchema),
   },
@@ -113,7 +113,7 @@ export const memberPatchSchema = z
  */
 export const grantWriteSchema = z.strictObject(
   {
-    projectSlug: slugSchema,
+    projectSlug: slugReferenceSchema,
     environmentSlug: z.optional(z.nullable(environmentSlugSchema)),
     accessLevel: accessLevelSchema,
   },
@@ -122,7 +122,7 @@ export const grantWriteSchema = z.strictObject(
 
 export const grantRemoveSchema = z.strictObject(
   {
-    projectSlug: slugSchema,
+    projectSlug: slugReferenceSchema,
     environmentSlug: z.optional(z.nullable(environmentSlugSchema)),
   },
   UNEXPECTED_FIELD,

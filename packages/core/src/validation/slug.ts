@@ -183,7 +183,12 @@ export type SlugCheck =
   | { valid: false; problem: SlugProblem; message: string };
 
 /**
- * What a valid slug is. The one definition of it.
+ * What a slug may *look like*. The one definition of it.
+ *
+ * Structure only: length, characters, hyphen placement. Whether the name is one
+ * this installation still hands out is `checkSlug`'s question, and the two are
+ * separate because a slug that already exists has to keep working after the
+ * reserved list grows.
  *
  * ── Why each hyphen rule is its own problem ──
  * `normalizeSlugInput` deliberately lets a trailing hyphen be typed, because
@@ -204,7 +209,7 @@ export type SlugCheck =
  *   is the same class of mistake as an availability check that disagrees with
  *   the schema. Failing to compile is the only version of this that cannot ship.
  */
-export function checkSlug(slug: string, maxLength: number): SlugCheck {
+export function checkSlugShape(slug: string, maxLength: number): SlugCheck {
   if (slug.length === 0) {
     return { valid: false, problem: 'empty', message: 'A slug cannot be empty.' };
   }
@@ -245,6 +250,31 @@ export function checkSlug(slug: string, maxLength: number): SlugCheck {
       message: 'Use lowercase letters, digits and single hyphens — no spaces.',
     };
   }
+  return { valid: true };
+}
+
+/**
+ * The structural rules *and* the reserved list: what a slug about to be
+ * **claimed** must satisfy.
+ *
+ * ── Why the reserved check is separable at all ──
+ * The two halves answer different questions. The shape rules say whether a
+ * string can be a slug; the reserved list says whether this installation is
+ * willing to hand that particular one out. Only the first is true of a slug
+ * *forever* — the second is a policy about new names, and a row that already
+ * holds one of them is not retroactively invalid.
+ *
+ * Conflating them broke `xecret login`: `POST /api/cli/authorize` validated the
+ * organisation the user picked from their own switcher with this schema, so an
+ * organisation whose slug was on the list could never be approved for the CLI,
+ * with a 400 that named no field. A slug being *referenced* has already been
+ * claimed — the reserved list has nothing left to decide. See
+ * `checkSlugShape` and `slugReferenceSchema`.
+ */
+export function checkSlug(slug: string, maxLength: number): SlugCheck {
+  const shape = checkSlugShape(slug, maxLength);
+  if (!shape.valid) return shape;
+
   if (isReservedSlug(slug)) {
     return {
       valid: false,
@@ -264,17 +294,38 @@ export function checkSlug(slug: string, maxLength: number): SlugCheck {
  * `checkSlug` only for as long as somebody kept editing both. A schema whose
  * only job is to delegate cannot drift.
  */
-function slugSchemaWithin(maxLength: number) {
+function schemaFrom(check: (slug: string) => SlugCheck) {
   return z.string().check(
     z.superRefine((slug, ctx) => {
-      const check = checkSlug(slug, maxLength);
-      if (check.valid) return;
-      ctx.addIssue({ code: 'custom', message: check.message });
+      const result = check(slug);
+      if (result.valid) return;
+      ctx.addIssue({ code: 'custom', message: result.message });
     }),
   );
 }
 
+function slugSchemaWithin(maxLength: number) {
+  return schemaFrom((slug) => checkSlug(slug, maxLength));
+}
+
 export const slugSchema = slugSchemaWithin(SLUG_MAX_LENGTH);
+
+/**
+ * The schema for a slug that **names something that already exists** — the
+ * `orgSlug` in a request body, the `projectSlug` a token is scoped to.
+ *
+ * Shape only, deliberately. A reference is checked to bound what reaches a
+ * query, not to re-litigate whether the name should have been granted: that was
+ * settled when the row was created, and the reserved list has since changed at
+ * least once. Applying it here turns "this name is no longer available" into
+ * "this organisation cannot be used", which is a different and much worse
+ * sentence — and one the caller cannot act on, since a slug is immutable.
+ *
+ * The general ceiling rather than the organisation's tighter one, for the same
+ * reason: `ORGANIZATION_SLUG_MAX_LENGTH` bounds what may be created, and a row
+ * predating it must still be addressable.
+ */
+export const slugReferenceSchema = schemaFrom((slug) => checkSlugShape(slug, SLUG_MAX_LENGTH));
 
 /**
  * The same rules at the organisation's shorter ceiling.

@@ -16,7 +16,10 @@ export default function AuthLayout({ children }: LayoutProps<'/'>) {
         <div className="absolute inset-0 [background-image:linear-gradient(to_right,var(--line-subtle)_1px,transparent_1px),linear-gradient(to_bottom,var(--line-subtle)_1px,transparent_1px)] [mask-image:radial-gradient(ellipse_at_top,black,transparent_65%)] [background-size:56px_56px]" />
       </div>
 
-      <header className="relative px-6 py-6">
+      {/* Sticky, so the wordmark holds still on the rare screens tall enough
+          to scroll. Translucent over the backdrop glow rather than a solid
+          bar. */}
+      <header className="bg-canvas/80 sticky top-0 z-10 px-6 py-6 backdrop-blur-sm">
         <Link href="/" className="inline-flex rounded-md" aria-label="xecret home">
           <Wordmark />
         </Link>
