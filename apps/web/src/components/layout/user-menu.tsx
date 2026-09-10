@@ -10,6 +10,7 @@ import { initials } from '@/lib/format';
 import { THEME_LABELS } from '@/lib/theme';
 import type { ThemePreference } from '@/lib/theme';
 import {
+  ariaKeyShortcuts,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -23,6 +24,7 @@ import {
   MonitorIcon,
   MoonIcon,
   SettingsIcon,
+  Shortcut,
   SunIcon,
 } from '@/components/ui';
 import { useTheme } from './theme-provider';
@@ -166,9 +168,14 @@ export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps
               event.preventDefault();
               void handleLock();
             }}
+            aria-keyshortcuts={ariaKeyShortcuts(['Shift', 'L'])}
           >
             <LockIcon className="size-4" />
-            {locking ? 'Locking…' : 'Lock now'}
+            <span className="flex-1">{locking ? 'Locking…' : 'Lock now'}</span>
+            {/* The chord `AppShell` registers, advertised on the item that does
+                the same thing. This menu is where somebody looks for "lock",
+                so it is where they should learn they need not open it again. */}
+            <Shortcut keys={['Shift', 'L']} />
           </DropdownMenuItem>
         ) : null}
 

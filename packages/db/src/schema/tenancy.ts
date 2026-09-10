@@ -12,6 +12,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import type { AccessLevel } from '@xecret/core/authz';
 import { bytea, citext } from './columns';
 import { memberStatusEnum, orgRoleEnum } from './enums';
 import { users } from './identity';
@@ -94,6 +95,17 @@ export const orgMembers = pgTable(
 export interface InvitationGrantSeed {
   projectId: string;
   environmentId: string | null;
+  /**
+   * The level to write at acceptance. Absent — which every seed written
+   * before the invite dialog offered levels is — falls back to the invited
+   * role's ordinary (non-production) default, exactly as it always did.
+   *
+   * Optional rather than a column default because this is a jsonb snapshot:
+   * old rows keep their old shape, and the reader is the only place that has
+   * to know both. `'none'` is representable and meaningful — an explicit
+   * denial written at acceptance.
+   */
+  accessLevel?: AccessLevel;
 }
 
 export const invitations = pgTable(
@@ -117,7 +129,8 @@ export const invitations = pgTable(
      * included — switches acceptance to **deny-by-default**: every project the
      * organisation has at acceptance time receives an explicit `none` grant
      * unless it appears here, and each listed environment receives a grant at
-     * the invited role's non-production level.
+     * the level the seed names, or at the invited role's non-production level
+     * when it names none.
      *
      * A snapshot in jsonb rather than a relational table on purpose: these
      * rows are a *request in transit*, not live authority. Authority only

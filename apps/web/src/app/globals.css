@@ -441,10 +441,12 @@
   }
 }
 
+/* Downwards, because the stack hangs from the top right: a toast should enter
+   from the edge it is anchored to, not slide up towards it from off-screen. */
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateY(0.75rem);
+    transform: translateY(-0.75rem);
   }
 }
 

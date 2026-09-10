@@ -116,7 +116,8 @@ export function EnvironmentSettingsForm({
   }
 
   return (
-    <div className="flex max-w-2xl flex-col gap-6">
+    // The width cap lives on the screen around this now, which centres it.
+    <div className="flex flex-col gap-6">
       {error !== null ? (
         <Alert tone="danger" title="That change was not saved">
           <p>{errorMessage(error)}</p>

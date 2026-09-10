@@ -30,7 +30,10 @@ export function EnvironmentSettingsScreen({
   const canManage = organization !== null && isOrgAdmin(organization.role);
 
   return (
-    <div className="flex flex-col gap-6">
+    // Centred, for the reason the organisation settings screen gives: this is
+    // one reading column of fields, and a wide viewport should put it in front
+    // of the reader rather than in a corner.
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
       <PageHeader
         title={`${environment.data?.environment.name ?? envSlug} settings`}
         titleLoading={environment.data === null && environment.error === null}

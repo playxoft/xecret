@@ -17,5 +17,11 @@ export type { NavItem, NavSection, SidebarProps } from './sidebar';
 
 export { ThemeProvider, useTheme } from './theme-provider';
 
+export { useGlobalShortcut, useGlobalShortcuts } from './use-nav-shortcuts';
+export type { ShortcutChord } from './use-nav-shortcuts';
+
 export { UserMenu } from './user-menu';
 export type { ShellUser, UserMenuProps } from './user-menu';
+
+export { WorkspaceSwitcherDialog } from './workspace-switcher-dialog';
+export type { WorkspaceSwitcherDialogProps } from './workspace-switcher-dialog';

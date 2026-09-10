@@ -6,7 +6,7 @@ import type { ButtonHTMLAttributes, ReactNode, Ref } from 'react';
 import { cn } from '@/lib/cn';
 import { Spinner } from './spinner';
 
-export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
+export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'danger-outline';
 export type ButtonSize = 'sm' | 'md' | 'lg' | 'icon';
 
 const BASE =
@@ -23,6 +23,13 @@ const VARIANTS: Record<ButtonVariant, string> = {
   secondary: 'border-line bg-surface text-fg hover:bg-surface-hover hover:border-line-strong',
   ghost: 'border-transparent bg-transparent text-fg-muted hover:bg-surface-hover hover:text-fg',
   danger: 'border-transparent bg-danger text-danger-fg hover:bg-danger-hover',
+  // Filled `danger` is for the one button that commits a destructive act — the
+  // confirm inside a dialog. This is for the control that *offers* one from a
+  // list: Revoke, on a row among thirty others. It has to read as a button and
+  // as red, which a ghost does not, without turning a table into a wall of
+  // solid red, which `danger` does.
+  'danger-outline':
+    'border-danger-line bg-surface text-danger-text hover:bg-danger-tint hover:border-danger',
 };
 
 const SIZES: Record<ButtonSize, string> = {

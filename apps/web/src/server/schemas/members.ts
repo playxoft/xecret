@@ -40,11 +40,17 @@ const emailSchema = z.email('Enter a valid email address.').check(z.maxLength(32
 /**
  * One access selection on an invitation: an environment of a project, or —
  * with `environmentSlug: null` — the project as a whole.
+ *
+ * `accessLevel` is optional so a caller that only knows *what* to grant and
+ * not *how much* — the pre-levels dashboard, the API's own documented shape —
+ * still works: acceptance falls back to the invited role's ordinary level.
+ * The dashboard always sends it, because the invite dialog now asks.
  */
 export const invitationGrantSelectionSchema = z.strictObject(
   {
     projectSlug: slugSchema,
     environmentSlug: z.nullable(environmentSlugSchema),
+    accessLevel: z.optional(accessLevelSchema),
   },
   UNEXPECTED_FIELD,
 );

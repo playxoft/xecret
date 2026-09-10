@@ -1,14 +1,17 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 
 import { toSecretValueType } from '@xecret/core/validation';
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { pluralize } from '@/lib/format';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
+import { useGlobalShortcut } from '@/components/layout';
 import {
   Alert,
+  ariaKeyShortcuts,
   Badge,
   Button,
   Checkbox,
@@ -24,6 +27,7 @@ import {
   PlusIcon,
   PointerIcon,
   SearchIcon,
+  Shortcut,
   Skeleton,
   Table,
   TableBody,
@@ -34,6 +38,7 @@ import {
   TableRow,
   UnsavedChangesGuard,
   UploadIcon,
+  useModKey,
   useToast,
 } from '@/components/ui';
 import type { SecretIo } from '@/components/envkeys';
@@ -585,6 +590,39 @@ export function SecretTable({
   const someVisibleSelected = selectedVisible.length > 0 && !allVisibleSelected;
   const hasRows = visible.length > 0 || staged.drafts.length > 0;
 
+  /**
+   * The four things this table does, under the keyboard.
+   *
+   * Shift-chords rather than bare letters, and ⌘/Ctrl for the filter. This
+   * screen is where people paste values, so a bare `R` that emptied a field
+   * and revealed the environment instead would be indistinguishable from data
+   * loss — `useGlobalShortcut` already stands down inside a text field, and
+   * the modifier is the second lock. Each cap is printed on the control it
+   * drives, in `Toolbar` below, so nothing here is advertised only in a
+   * changelog.
+   */
+  const filterRef = useRef<HTMLInputElement>(null);
+  const anythingShown = revealAll.revealed || hoverRevealed.size > 0;
+
+  useGlobalShortcut('shift:KeyR', () => {
+    if (secrets.length === 0) return;
+    if (anythingShown) hideAll();
+    else revealAll.reveal();
+  });
+  useGlobalShortcut('shift:KeyH', () => {
+    if (secrets.length === 0) return;
+    toggleHoverReveal();
+  });
+  useGlobalShortcut('shift:KeyN', () => {
+    if (staged.saving) return;
+    staged.addDraft(undefined, 'start');
+  });
+  useGlobalShortcut('mod:KeyK', () => {
+    // `select()` rather than `focus()`: ⌘K pressed a second time is somebody
+    // starting a different search, not appending to the last one.
+    filterRef.current?.select();
+  });
+
   return (
     <div className="flex flex-col gap-4">
       <Toolbar
@@ -596,7 +634,8 @@ export function SecretTable({
         disabled={staged.saving}
         revealAll={revealAll}
         onHideAll={hideAll}
-        anythingShown={revealAll.revealed || hoverRevealed.size > 0}
+        anythingShown={anythingShown}
+        filterRef={filterRef}
         hoverReveal={hoverArmed}
         hoverLoading={hoverReveal && revealAll.loading}
         onToggleHoverReveal={toggleHoverReveal}
@@ -999,6 +1038,7 @@ export function SecretTable({
 function Toolbar({
   query,
   onQueryChange,
+  filterRef,
   onAddDraft,
   disabled,
   revealAll,
@@ -1013,6 +1053,8 @@ function Toolbar({
 }: {
   query: string;
   onQueryChange: (value: string) => void;
+  /** So ⌘/Ctrl+K can put the caret here from anywhere on the screen. */
+  filterRef: RefObject<HTMLInputElement | null>;
   onAddDraft: () => void;
   disabled: boolean;
   revealAll: RevealAll;
@@ -1035,17 +1077,31 @@ function Toolbar({
   onImport?: () => void;
   onExport?: () => void;
 }) {
+  // `null` until the first commit, which is what keeps the server's markup and
+  // the browser's identical — see `useModKey`.
+  const mod = useModKey();
+
   return (
     <div className="flex flex-wrap items-center gap-2">
       <div className="min-w-0 flex-1 sm:max-w-xs">
         <Input
+          ref={filterRef}
           type="search"
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
           placeholder="Filter by name"
           aria-label="Filter secrets by name"
+          aria-keyshortcuts={ariaKeyShortcuts(['Control', 'K'])}
           autoComplete="off"
           startIcon={<SearchIcon className="size-4" />}
+          endSlot={
+            mod === null ? undefined : (
+              // Inside the field, where every search box in every editor puts
+              // it. `pointer-events-none` because the cap is a label for a key,
+              // not a button — clicking it should land in the field behind.
+              <Shortcut keys={[mod, 'K']} className="pointer-events-none mr-2" />
+            )
+          }
         />
       </div>
 
@@ -1065,9 +1121,11 @@ function Toolbar({
               onClick={anythingShown ? onHideAll : revealAll.reveal}
               loading={revealAll.loading && !hoverLoading}
               aria-pressed={anythingShown}
+              aria-keyshortcuts={ariaKeyShortcuts(['Shift', 'R'])}
             >
               {anythingShown ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
               {anythingShown ? 'Hide all' : 'Reveal all'}
+              <Shortcut keys={['Shift', 'R']} className="hidden lg:inline-flex" />
             </Button>
 
             {/* Between the two extremes this screen otherwise offers: one value at
@@ -1081,10 +1139,12 @@ function Toolbar({
               onClick={onToggleHoverReveal}
               loading={hoverLoading}
               aria-pressed={hoverReveal}
+              aria-keyshortcuts={ariaKeyShortcuts(['Shift', 'H'])}
               title="Show each value while the pointer is over its row"
             >
               <PointerIcon className="size-4" />
               Reveal on hover
+              <Shortcut keys={['Shift', 'H']} className="hidden lg:inline-flex" />
             </Button>
           </>
         ) : null}
@@ -1103,9 +1163,20 @@ function Toolbar({
         ) : null}
       </div>
 
-      <Button variant="primary" onClick={onAddDraft} disabled={disabled}>
+      <Button
+        variant="primary"
+        onClick={onAddDraft}
+        disabled={disabled}
+        aria-keyshortcuts={ariaKeyShortcuts(['Shift', 'N'])}
+      >
         <PlusIcon className="size-4" />
         Add secret
+        {/* On the accent fill the cap's own surface would fight the button, so
+            it borrows the foreground it sits on at reduced opacity. */}
+        <Shortcut
+          keys={['Shift', 'N']}
+          className="hidden lg:inline-flex [&>kbd]:border-transparent [&>kbd]:bg-white/15 [&>kbd]:text-current"
+        />
       </Button>
     </div>
   );

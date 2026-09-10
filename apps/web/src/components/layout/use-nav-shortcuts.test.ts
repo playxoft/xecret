@@ -3,7 +3,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import * as SelectPrimitive from '@radix-ui/react-select';
 
-import { ownsPlainKeys } from './use-nav-shortcuts';
+import { ownsPlainKeys, parseChord } from './use-nav-shortcuts';
 
 /**
  * The guard that decides whether an unmodified letter is ours to act on.
@@ -139,5 +139,45 @@ describe('the Radix contract ownsPlainKeys depends on', () => {
     // asked about here, so a Radix upgrade that renames the role fails this
     // even if `SELF_MANAGED_ROLES` is never touched.
     expect(ownsPlainKeys(tagName, role)).toBe(true);
+  });
+});
+
+/**
+ * Which modifiers a chord asks for, and — the part that matters — which it
+ * refuses.
+ *
+ * The environment switcher binds two chords to the same digit: `⇧2` navigates
+ * to staging, `⌘⇧2` brings staging's values onto the page you are on. They are
+ * only distinguishable because a chord is exact about the modifiers it does
+ * *not* want, so a parser that treated `mod` as "don't care" would make ⌘⇧2 do
+ * both — navigate away *and* stage a comparison on the page it just left.
+ * Nothing about that fails loudly; it just occasionally moves somebody off
+ * production while they were trying to compare against it.
+ */
+describe('parsing a shortcut chord', () => {
+  it('reads a bare key as wanting no modifiers at all', () => {
+    expect(parseChord('KeyG')).toEqual({ code: 'KeyG', shift: false, mod: false });
+  });
+
+  it('reads each single-modifier prefix', () => {
+    expect(parseChord('shift:KeyR')).toEqual({ code: 'KeyR', shift: true, mod: false });
+    expect(parseChord('mod:KeyK')).toEqual({ code: 'KeyK', shift: false, mod: true });
+  });
+
+  it('reads both modifiers, which is what separates compare from navigate', () => {
+    expect(parseChord('mod+shift:Digit2')).toEqual({
+      code: 'Digit2',
+      shift: true,
+      mod: true,
+    });
+  });
+
+  it('gives the two chords on one digit different modifier requirements', () => {
+    const navigate = parseChord('shift:Digit2');
+    const compare = parseChord('mod+shift:Digit2');
+
+    expect(navigate.code).toBe(compare.code);
+    expect(navigate.mod).toBe(false);
+    expect(compare.mod).toBe(true);
   });
 });

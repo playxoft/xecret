@@ -1,10 +1,15 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useCallback, useMemo } from 'react';
 import type { MouseEvent } from 'react';
 
 import { cn } from '@/lib/cn';
+import { useGlobalShortcuts } from '@/components/layout';
+import type { ShortcutChord } from '@/components/layout';
 import {
+  ariaKeyShortcuts,
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
@@ -14,7 +19,10 @@ import {
   DropdownMenuTrigger,
   MoreHorizontalIcon,
   PlusIcon,
+  Shortcut,
+  useModKey,
 } from '@/components/ui';
+import { askBeforeLeaving } from '@/components/ui/leave-guard';
 import type { Environment } from './types';
 
 /**
@@ -55,6 +63,30 @@ import type { Environment } from './types';
  * touchscreen, so the overflow menu lists every environment as an ordinary
  * command. That list is also the only route to an environment past the fourth,
  * which never gets a capsule to shift-click.
+ *
+ * ── The keyboard ──
+ * Two chords on the same digits, doing the two things this switcher does.
+ *
+ *  - **`⇧1` `⇧2` `⇧3` navigate** to the first three environments in the
+ *    project's own order — which is `sort_order`, so they are dev, staging and
+ *    production in almost every project — and `⇧4` steps to the *next* one,
+ *    wrapping. That last chord is what reaches a fifth and a sixth without
+ *    inventing a cap for each.
+ *  - **`⌘⇧1` … `⌘⇧9`, `⌘⇧0` compare**, adding and removing an environment from
+ *    the comparison shown beneath this one — the keyboard's answer to
+ *    shift-click, and unlike shift-click it reaches every environment rather
+ *    than only the ones with a capsule. `0` is the tenth, following the tab
+ *    convention every browser already teaches. Past the tenth the overflow
+ *    menu remains the way in, as it is for the pointer.
+ *
+ * Navigating and comparing differ only by the mod key, which is right: they are
+ * the same question — "what about staging?" — answered by going there or by
+ * bringing it here.
+ *
+ * Shift-chords rather than bare digits, because this screen is full of fields
+ * people paste into and a bare `1` that navigated away mid-edit would be
+ * indistinguishable from data loss. `useGlobalShortcuts` stands down inside any
+ * text field regardless; the modifier is the second lock.
  */
 
 export interface EnvironmentSwitcherProps {
@@ -83,6 +115,34 @@ export interface EnvironmentSwitcherProps {
  */
 const MAX_VISIBLE = 4;
 
+/** How many capsules carry a numbered cap. `⇧4` is "the next one" instead. */
+const DIRECT_SHORTCUTS = 3;
+
+/**
+ * The digit each environment's compare chord uses, by position.
+ *
+ * `1`–`9` then `0` for the tenth, which is the ordering every browser's tab
+ * shortcuts already teach. An eleventh environment gets no chord; the overflow
+ * menu lists it, exactly as it does for the pointer.
+ */
+const COMPARE_CODES = [
+  'Digit1',
+  'Digit2',
+  'Digit3',
+  'Digit4',
+  'Digit5',
+  'Digit6',
+  'Digit7',
+  'Digit8',
+  'Digit9',
+  'Digit0',
+] as const;
+
+/** The cap printed for a compare chord — `'1'` … `'9'`, then `'0'`. */
+function compareDigit(index: number): string | null {
+  return index < COMPARE_CODES.length ? String((index + 1) % 10) : null;
+}
+
 export function EnvironmentSwitcher({
   environments,
   currentSlug,
@@ -92,6 +152,59 @@ export function EnvironmentSwitcher({
   comparing,
   className,
 }: EnvironmentSwitcherProps) {
+  const router = useRouter();
+  // `null` until the first commit, which is what keeps the server's markup and
+  // the browser's identical — see `useModKey`. The compare caps simply do not
+  // draw until then.
+  const mod = useModKey();
+
+  // Declared before the early return, because hooks cannot run conditionally.
+  // A no-op when the environment it names does not exist, so a project with one
+  // environment simply has three dead chords rather than a branch.
+  const go = useCallback(
+    (target: Environment | undefined) => {
+      if (target === undefined || target.slug === currentSlug) return;
+      const to = href(target.slug);
+      // The same guard the nav shortcuts use: a chord is a door
+      // `UnsavedChangesGuard` cannot watch, and this screen is the one holding
+      // a table of half-typed values.
+      if (askBeforeLeaving(to)) return;
+      router.push(to);
+    },
+    [currentSlug, href, router],
+  );
+
+  const bindings = useMemo(() => {
+    const map: Partial<Record<ShortcutChord, () => void>> = {
+      'shift:Digit1': () => go(environments[0]),
+      'shift:Digit2': () => go(environments[1]),
+      'shift:Digit3': () => go(environments[2]),
+      'shift:Digit4': () => {
+        // "The next one", wrapping — the only navigation chord that reaches an
+        // environment past the third, however many there are.
+        const index = environments.findIndex((entry) => entry.slug === currentSlug);
+        if (index === -1) return;
+        go(environments[(index + 1) % environments.length]);
+      },
+    };
+
+    // Comparing is offered only where there is somewhere to show a comparison,
+    // and never for the environment already on screen — comparing a page with
+    // itself is the one answer nobody needs. Bound for every environment up to
+    // the tenth, not just the four with capsules: the chord is the *only* route
+    // that scales past what the row can draw.
+    if (onCompare !== undefined) {
+      environments.slice(0, COMPARE_CODES.length).forEach((environment, index) => {
+        if (environment.slug === currentSlug) return;
+        map[`mod+shift:${COMPARE_CODES[index]}`] = () => onCompare(environment.slug);
+      });
+    }
+
+    return map;
+  }, [go, environments, currentSlug, onCompare]);
+
+  useGlobalShortcuts(bindings);
+
   if (environments.length === 0) return null;
 
   const { visible, overflow } = visibleSet(environments, currentSlug);
@@ -111,11 +224,19 @@ export function EnvironmentSwitcher({
       {visible.map((environment) => {
         const active = environment.slug === currentSlug;
         const compared = comparing?.has(environment.slug) ?? false;
+        // The cap belongs to the environment's position in the *project's*
+        // order, not its position in this row — the row can drop an
+        // environment into the overflow menu, and the chord follows the
+        // environment rather than the slot it happens to be drawn in.
+        const rank = environments.indexOf(environment);
+        const chord = rank >= 0 && rank < DIRECT_SHORTCUTS ? `${rank + 1}` : null;
+
         return (
           <Link
             key={environment.slug}
             href={href(environment.slug)}
             aria-current={active ? 'page' : undefined}
+            aria-keyshortcuts={chord === null ? undefined : ariaKeyShortcuts(['Shift', chord])}
             {...(onCompare === undefined || active
               ? {}
               : {
@@ -169,6 +290,13 @@ export function EnvironmentSwitcher({
               />
             ) : null}
             {environment.name}
+            {/* Only on the capsules you are not already on: a cap that goes
+                where you already are is an offer with nothing behind it.
+                Hidden on narrow screens, where the row is tight and there is
+                usually no keyboard to press them with. */}
+            {chord !== null && !active ? (
+              <Shortcut keys={['Shift', chord]} className="ml-1.5 hidden sm:inline-flex" />
+            ) : null}
           </Link>
         );
       })}
@@ -188,6 +316,14 @@ export function EnvironmentSwitcher({
             <MoreHorizontalIcon className="size-4" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56">
+            {/* Where `⇧4` is advertised: it has no capsule of its own, because
+                what it goes to changes with where you are. */}
+            <DropdownMenuLabel className="flex items-center justify-between gap-3 font-normal">
+              <span>Next environment</span>
+              <Shortcut keys={['Shift', '4']} />
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+
             {overflow.length > 0 ? (
               <>
                 <DropdownMenuLabel>More environments</DropdownMenuLabel>
@@ -211,9 +347,14 @@ export function EnvironmentSwitcher({
               <>
                 {overflow.length > 0 ? <DropdownMenuSeparator /> : null}
                 <DropdownMenuLabel>Compare on this page</DropdownMenuLabel>
-                {environments
-                  .filter((environment) => environment.slug !== currentSlug)
-                  .map((environment) => (
+                {environments.map((environment, index) => {
+                  if (environment.slug === currentSlug) return null;
+                  // The digit follows the environment's position in the
+                  // project, so the cap here and the chord that fires are read
+                  // off the same index — the list is filtered for display only.
+                  const digit = compareDigit(index);
+
+                  return (
                     <DropdownMenuCheckboxItem
                       key={`compare-${environment.slug}`}
                       // Checkboxes, not radio items: several environments can be
@@ -225,10 +366,21 @@ export function EnvironmentSwitcher({
                       // more than one. Radix closes a menu on select by default,
                       // which would mean reopening it once per environment.
                       onSelect={(event) => event.preventDefault()}
+                      {...(digit === null || mod === null
+                        ? {}
+                        : { 'aria-keyshortcuts': ariaKeyShortcuts(['Control', 'Shift', digit]) })}
                     >
-                      {environment.name}
+                      <span className="min-w-0 flex-1 truncate">{environment.name}</span>
+                      {/* This menu is where comparing is discovered — the
+                          capsules only ever hint at it through a shift-click
+                          nobody can see — so it is also where its chord is
+                          advertised. */}
+                      {digit !== null && mod !== null ? (
+                        <Shortcut keys={[mod, 'Shift', digit]} />
+                      ) : null}
                     </DropdownMenuCheckboxItem>
-                  ))}
+                  );
+                })}
               </>
             ) : null}
 

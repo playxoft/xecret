@@ -1,3 +1,6 @@
+'use client';
+
+import { useSyncExternalStore } from 'react';
 import type { HTMLAttributes } from 'react';
 
 import { cn } from '@/lib/cn';
@@ -14,8 +17,8 @@ import { cn } from '@/lib/cn';
  * `Mod` is deliberately not here. Rendering `⌘` on macOS and `Ctrl` elsewhere
  * requires reading `navigator` at runtime, which the server cannot do; the
  * markup would hydrate into a different string and React would warn on every
- * shortcut on the page. Callers that need it should pass the platform key
- * from a client component that already knows.
+ * shortcut on the page. `useModKey` below is how a caller gets it: after the
+ * commit, never during render, so both passes agree.
  */
 const GLYPHS: Record<string, string> = {
   shift: '⇧',
@@ -133,4 +136,42 @@ export function Shortcut({ keys, className, ...props }: ShortcutProps) {
       ))}
     </span>
   );
+}
+
+function subscribeToNothing(): () => void {
+  // The platform cannot change under a running tab, so there is nothing to
+  // subscribe to. The store is a constant read through the hook that knows how
+  // to keep a constant off the server.
+  return () => {};
+}
+
+function modKeySnapshot(): string {
+  const source = `${navigator.platform ?? ''} ${navigator.userAgent}`;
+  return /mac|iphone|ipad|ipod/i.test(source) ? '⌘' : 'Ctrl';
+}
+
+function noModKey(): null {
+  return null;
+}
+
+/**
+ * The platform's modifier key: `'⌘'` on a Mac, `'Ctrl'` everywhere else — and
+ * `null` on the server, where the question has no answer.
+ *
+ * ── Why `useSyncExternalStore` and not an effect ──
+ * The server has no `navigator`, so a cap computed during render would be
+ * `Ctrl` in the HTML and `⌘` after hydration — a mismatch on every shortcut on
+ * the page. This hook is React's own answer to exactly that: `getServerSnapshot`
+ * is used for the server render *and* for hydration, and `getSnapshot` takes
+ * over immediately afterwards. No setState, no cascading render, no mismatch.
+ *
+ * Callers render nothing while it is `null`. That lasts until the first commit,
+ * which is long before anybody could have pressed the key.
+ *
+ * `navigator.platform` is deprecated and still the most reliable answer where
+ * it exists, so it is consulted first and the user-agent string is the
+ * fallback — the same order every editor in the browser uses.
+ */
+export function useModKey(): string | null {
+  return useSyncExternalStore(subscribeToNothing, modKeySnapshot, noModKey);
 }

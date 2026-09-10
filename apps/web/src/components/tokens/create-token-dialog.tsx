@@ -26,10 +26,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui';
+import { LevelToggle } from '@/components/members/level-toggle';
 import type { ProjectListResponse, ProjectResponse } from '@/components/projects/types';
 import { useVaultKeys } from '@/components/vault';
 import { mintServiceToken } from './token-keys';
 import type { MintedServiceToken } from './token-keys';
+
+/** See `serviceAccessSchema`: a service token tops out at `write`. */
+const SERVICE_TOKEN_LEVELS = ['read', 'write'] as const;
 
 export interface CreateTokenDialogProps {
   orgSlug: string;
@@ -329,18 +333,23 @@ function CreateTokenFlow({
               : 'Also writes secrets — for pipelines that rotate credentials. Cannot delete.'
           }
         >
-          <Select
-            value={accessLevel}
-            onValueChange={(next) => setAccessLevel(next as 'read' | 'write')}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="read">Read-only</SelectItem>
-              <SelectItem value="write">Read &amp; write</SelectItem>
-            </SelectContent>
-          </Select>
+          {/* The same capsule the member screens grant with, so one vocabulary
+              covers every level in the product. Two segments, not three:
+              `admin` is not a level a service token can hold — the engine's
+              service-token allowlist tops out at `write` — and clearing the
+              choice is not offered either, because a token with no level is
+              not a credential. */}
+          <div>
+            <LevelToggle
+              level={accessLevel}
+              disabled={submitting}
+              scopeLabel="this token"
+              levels={SERVICE_TOKEN_LEVELS}
+              onSelect={(next) => {
+                if (next === 'read' || next === 'write') setAccessLevel(next);
+              }}
+            />
+          </div>
         </Field>
 
         {formError ? <Alert tone="danger">{formError}</Alert> : null}

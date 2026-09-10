@@ -1,8 +1,10 @@
 'use client';
 
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
+import type { OrgRole } from '@xecret/core/authz';
 import { api } from '@/lib/api';
 import { apiPath, appPath } from '@/app/(dashboard)/_lib/paths';
 import {
@@ -24,9 +26,12 @@ import {
   DropdownMenuTrigger,
   Field,
   Input,
+  PlusIcon,
   Textarea,
+  UsersIcon,
   useToast,
 } from '@/components/ui';
+import { ProjectMembersDialog } from '@/components/members/project-members-dialog';
 import type { Environment, Project } from './types';
 
 export interface ProjectActionsProps {
@@ -35,6 +40,12 @@ export interface ProjectActionsProps {
   environments: readonly Environment[];
   /** Hidden for roles that certainly cannot use it. The server still decides. */
   canManage: boolean;
+  /**
+   * The viewer's organisation role, which bounds whose grants the members
+   * dialog lets them touch — nobody manages a role above their own, and the
+   * server refuses it either way.
+   */
+  viewerRole: OrgRole;
   onChanged: () => void;
 }
 
@@ -42,11 +53,25 @@ const NAME_MAX_LENGTH = 100;
 const DESCRIPTION_MAX_LENGTH = 500;
 
 /**
- * Rename and delete, for a project.
+ * Members, rename and delete, for a project.
  *
  * There is no `/app/{org}/{project}/settings` route — a project has two editable
- * fields and a delete, which is a menu, not a page. Both live here so the
+ * fields and a delete, which is a menu, not a page. All of it lives here so the
  * overview screen stays a description of the project rather than a form.
+ *
+ * The two member items are first and separated from the other two, because
+ * they are what somebody opens on purpose rather than what they reach while
+ * tidying up: "who can read this project's production?" is asked far more
+ * often than a project is renamed, and a menu that buries it under Rename
+ * teaches people to go to the Members page and open every member in turn
+ * instead.
+ *
+ * "Invite" is a link out to the organisation's Members page rather than a
+ * dialog raised here. Inviting is an *organisation* act — a seat, a role, an
+ * email — that happens to be wanted while looking at a project, and the page
+ * it lands on is where the invitation, the seat count and the pending list all
+ * already live. Sending someone there beats mounting a third copy of the
+ * invite dialog behind a project's menu.
  *
  * The controls are hidden when the viewer's organisation role cannot possibly
  * complete them. That is a courtesy and nothing more: every action is authorised
@@ -57,10 +82,12 @@ export function ProjectActions({
   project,
   environments,
   canManage,
+  viewerRole,
   onChanged,
 }: ProjectActionsProps) {
   const router = useRouter();
   const { toast } = useToast();
+  const [managingMembers, setManagingMembers] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -91,7 +118,23 @@ export function ProjectActions({
             <ChevronDownIcon className="size-4" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent>
+        <DropdownMenuContent className="w-56">
+          <DropdownMenuItem onSelect={() => setManagingMembers(true)}>
+            <UsersIcon className="size-4" />
+            Members…
+          </DropdownMenuItem>
+          {/* Marked out from the items around it: everything else in this menu
+              changes the project in place, and this one leaves the page. The
+              accent is the same one the sidebar uses for "you are here", which
+              is the only colour in the design system that means "this is the
+              live thing" rather than "this is dangerous". */}
+          <DropdownMenuItem asChild>
+            <Link href={appPath.members(orgSlug)} className="text-accent-text">
+              <PlusIcon className="size-4" />
+              Invite a member
+            </Link>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => setRenaming(true)}>Rename project…</DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem destructive onSelect={() => setDeleting(true)}>
@@ -99,6 +142,15 @@ export function ProjectActions({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      <ProjectMembersDialog
+        orgSlug={orgSlug}
+        projectSlug={project.slug}
+        projectName={project.name}
+        viewerRole={viewerRole}
+        open={managingMembers}
+        onOpenChange={setManagingMembers}
+      />
 
       <RenameProjectDialog
         orgSlug={orgSlug}

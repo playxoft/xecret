@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { cn } from '@/lib/cn';
 import { initials } from '@/lib/format';
 import {
+  ariaKeyShortcuts,
   CheckIcon,
   ChevronUpDownIcon,
   DropdownMenu,
@@ -14,6 +15,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   PlusIcon,
+  Shortcut,
 } from '@/components/ui';
 
 export interface ShellOrganization {
@@ -66,6 +68,11 @@ export function OrgSwitcher({ organizations, currentSlug, onCreate, className }:
           className,
         )}
         aria-label={`Organisation: ${current.name}. Switch organisation`}
+        // The cap below is decorative; this is the half assistive technology
+        // reads. `G` opens the centred switcher — `AppShell` owns the key, and
+        // this is the only place it is advertised, because this is where
+        // somebody looks when they want to change organisation.
+        aria-keyshortcuts={ariaKeyShortcuts(['G'])}
       >
         <span
           aria-hidden="true"
@@ -77,6 +84,7 @@ export function OrgSwitcher({ organizations, currentSlug, onCreate, className }:
           <span className="text-fg block truncate text-sm font-medium">{current.name}</span>
           <span className="text-fg-subtle block truncate text-sm capitalize">{current.role}</span>
         </span>
+        <Shortcut keys={['G']} className="x-sidebar-wide" />
         <ChevronUpDownIcon className="x-sidebar-wide text-fg-subtle size-3.5 shrink-0" />
       </DropdownMenuTrigger>
 

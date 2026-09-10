@@ -39,13 +39,16 @@ export function ProjectScreen({ orgSlug, projectSlug }: { orgSlug: string; proje
                   New environment
                 </Button>
               ) : null}
-              <ProjectActions
-                orgSlug={orgSlug}
-                project={project.data.project}
-                environments={project.data.environments}
-                canManage={canManage}
-                onChanged={project.reload}
-              />
+              {organization !== null ? (
+                <ProjectActions
+                  orgSlug={orgSlug}
+                  project={project.data.project}
+                  environments={project.data.environments}
+                  canManage={canManage}
+                  viewerRole={organization.role}
+                  onChanged={project.reload}
+                />
+              ) : null}
             </>
           )
         }

@@ -350,15 +350,16 @@ export async function acceptInvitation(
  * moment a request-in-transit becomes authority.
  *
  * The rule, uniformly applied: **every project the organisation has right
- * now** gets a row. Selected whole-projects get the invited role's
- * non-production level; every other project gets an explicit `none`, which the
+ * now** gets a row. Selected whole-projects get the level their seed names —
+ * or the invited role's non-production level for a seed written before levels
+ * were selectable; every other project gets an explicit `none`, which the
  * grants engine treats as a denial that outranks the role default — so a
  * member invited to two projects cannot see the third, nor a fourth created
  * between the invitation and its acceptance. Selected environments get their
- * own rows at the same level, which override the project-wide `none` beside
+ * own rows at their own levels, which override the project-wide `none` beside
  * them; environments *not* selected in a partially-granted project therefore
  * stay denied, as does any environment added later. Production is only
- * reachable by having been explicitly ticked — the conscious act the schema
+ * reachable by having been explicitly selected — the conscious act the schema
  * comment demands.
  *
  * Anything in the selection that no longer exists — a deleted project, a
@@ -381,14 +382,28 @@ async function applyInitialGrants(
     .from(projects)
     .where(and(eq(projects.orgId, params.orgId), isNull(projects.deletedAt)));
 
-  const wholeProjects = new Set(
-    params.seeds.filter((seed) => seed.environmentId === null).map((seed) => seed.projectId),
+  // The invited role's ordinary (non-production) level, used for a seed that
+  // names none — every seed written before the invite dialog offered levels.
+  // A selected production environment receives the level explicitly; the
+  // selection is the consent.
+  const fallbackLevel = roleDefaultAccessLevel(params.role, false);
+
+  // Keyed rather than a set, because a seed now carries the level it was
+  // selected at. Last seed wins for a repeated scope, which is what the
+  // caller's own de-duplication already guarantees cannot happen.
+  const wholeProjects = new Map(
+    params.seeds
+      .filter((seed) => seed.environmentId === null)
+      .map((seed) => [seed.projectId, seed.accessLevel ?? fallbackLevel] as const),
   );
-  const environmentIds = [
-    ...new Set(
-      params.seeds.map((seed) => seed.environmentId).filter((id): id is string => id !== null),
-    ),
-  ];
+  const environmentLevels = new Map(
+    params.seeds
+      .filter(
+        (seed): seed is typeof seed & { environmentId: string } => seed.environmentId !== null,
+      )
+      .map((seed) => [seed.environmentId, seed.accessLevel ?? fallbackLevel] as const),
+  );
+  const environmentIds = [...environmentLevels.keys()];
 
   // Selected environments, verified live and — through the join — belonging to
   // a live project of *this* organisation. A seed cannot smuggle in an
@@ -409,9 +424,6 @@ async function applyInitialGrants(
           )
           .where(and(inArray(environments.id, environmentIds), isNull(environments.deletedAt)));
 
-  // The invited role's ordinary (non-production) level. A ticked production
-  // environment receives the same level explicitly — the tick is the consent.
-  const level = roleDefaultAccessLevel(params.role, false);
   const now = new Date();
 
   const rows: (typeof accessGrants.$inferInsert)[] = [];
@@ -419,16 +431,18 @@ async function applyInitialGrants(
   let denied = 0;
 
   for (const project of liveProjects) {
-    const selected = wholeProjects.has(project.id);
-    if (selected) granted += 1;
-    else denied += 1;
+    // `none` is selectable, and it is a denial: the counters describe what the
+    // member ends up holding, not how many rows the inviter touched.
+    const accessLevel = wholeProjects.get(project.id) ?? 'none';
+    if (accessLevel === 'none') denied += 1;
+    else granted += 1;
 
     rows.push({
       id: uuidv7(),
       orgMemberId: params.memberId,
       projectId: project.id,
       environmentId: null,
-      accessLevel: selected ? level : 'none',
+      accessLevel,
       grantedBy: params.grantedBy,
       createdAt: now,
       updatedAt: now,
@@ -436,17 +450,20 @@ async function applyInitialGrants(
   }
 
   for (const environment of liveEnvironments) {
-    // A whole-project selection already covers its environments at `level`;
+    // A whole-project selection already covers its environments at its level;
     // an extra row would restate it and complicate later editing.
     if (wholeProjects.has(environment.projectId)) continue;
 
-    granted += 1;
+    const accessLevel = environmentLevels.get(environment.id) ?? fallbackLevel;
+    if (accessLevel === 'none') denied += 1;
+    else granted += 1;
+
     rows.push({
       id: uuidv7(),
       orgMemberId: params.memberId,
       projectId: environment.projectId,
       environmentId: environment.id,
-      accessLevel: level,
+      accessLevel,
       grantedBy: params.grantedBy,
       createdAt: now,
       updatedAt: now,

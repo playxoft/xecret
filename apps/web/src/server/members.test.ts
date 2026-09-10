@@ -211,6 +211,36 @@ describe('member request schemas', () => {
     ).toBe(true);
   });
 
+  it('lets an invitation grant name its level, and lets it stay unstated', () => {
+    // Stated: what the invite dialog sends, so acceptance writes that level.
+    const withLevel = memberInviteSchema.safeParse({
+      email: 'a@example.com',
+      role: 'developer',
+      grants: [{ projectSlug: 'backend', environmentSlug: 'staging', accessLevel: 'write' }],
+    });
+    expect(withLevel.success).toBe(true);
+
+    // Unstated: the documented shape, and every invitation issued before
+    // levels were selectable. Acceptance falls back to the role default, so
+    // this must stay accepted rather than becoming a required field.
+    expect(
+      memberInviteSchema.safeParse({
+        email: 'a@example.com',
+        role: 'developer',
+        grants: [{ projectSlug: 'backend', environmentSlug: null }],
+      }).success,
+    ).toBe(true);
+
+    // Still strict about what a level may be.
+    expect(
+      memberInviteSchema.safeParse({
+        email: 'a@example.com',
+        role: 'developer',
+        grants: [{ projectSlug: 'backend', environmentSlug: null, accessLevel: 'owner' }],
+      }).success,
+    ).toBe(false);
+  });
+
   it('derives the invitation state at serialisation time', () => {
     const now = new Date('2026-08-14T12:00:00Z');
     const base = {

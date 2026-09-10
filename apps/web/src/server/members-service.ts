@@ -201,7 +201,11 @@ function accessSource(
 export async function resolveInvitationGrants(
   db: Database,
   orgId: string,
-  selections: readonly { projectSlug: string; environmentSlug: string | null }[],
+  selections: readonly {
+    projectSlug: string;
+    environmentSlug: string | null;
+    accessLevel?: AccessLevel | undefined;
+  }[],
 ): Promise<InvitationGrantSeed[]> {
   const projectIds = new Map<string, string>();
   const seeds: InvitationGrantSeed[] = [];
@@ -239,7 +243,14 @@ export async function resolveInvitationGrants(
     const key = `${projectId}/${environmentId ?? '*'}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    seeds.push({ projectId, environmentId });
+    // The level rides along only when the caller named one; omitting it is
+    // what makes acceptance fall back to the invited role's default, and an
+    // explicit `undefined` in the jsonb would not.
+    seeds.push({
+      projectId,
+      environmentId,
+      ...(selection.accessLevel === undefined ? {} : { accessLevel: selection.accessLevel }),
+    });
   }
 
   return seeds;
