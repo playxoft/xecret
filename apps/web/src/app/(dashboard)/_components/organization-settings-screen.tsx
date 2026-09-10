@@ -50,7 +50,12 @@ export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
   const canDelete = membership?.role === 'owner';
 
   return (
-    <div className="flex flex-col gap-6">
+    // A centred column rather than a full-width page with a narrow form pinned
+    // to its left edge. A settings screen is a single reading column — nothing
+    // here is a table or a grid that wants the width — and hugging the left
+    // margin on a wide display leaves the eye travelling to a corner for
+    // fields that describe the whole organisation.
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
       <PageHeader
         title="Organisation settings"
         description="Who this organisation is, and the identifier every consumer of it depends on."
@@ -71,7 +76,7 @@ export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
           onRetry={organization.reload}
         />
       ) : loaded ? (
-        <div className="flex max-w-2xl flex-col gap-6">
+        <div className="flex flex-col gap-6">
           <OrganizationForm
             orgSlug={orgSlug}
             organization={loaded}

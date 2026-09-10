@@ -42,6 +42,23 @@ export function askBeforeLeaving(href: string): boolean {
 }
 
 /**
+ * Whether anything on screen currently has work to lose.
+ *
+ * For the callers whose act is not a navigation and so cannot be handed to
+ * `askBeforeLeaving`: locking the vault zeroizes the keys and unmounts the
+ * table, which destroys staged edits just as surely as leaving the page, but
+ * the guard's confirm path ends in `router.push` and would take the user
+ * somewhere instead of locking. Those callers stand down rather than ask.
+ *
+ * Read at the moment of the act, never during render: the slot is module-level
+ * precisely because the guard is a sibling rather than a descendant, so arming
+ * it re-renders nothing and a value captured in a render is stale by design.
+ */
+export function isLeaveGuardArmed(): boolean {
+  return armedGuard !== null;
+}
+
+/**
  * The parts of a click that decide whether it is ours to intercept.
  *
  * Taken as plain data rather than a `MouseEvent` so the rule can be tested

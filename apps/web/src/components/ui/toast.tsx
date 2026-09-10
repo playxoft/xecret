@@ -135,7 +135,13 @@ export function Toaster({ children }: { children?: ReactNode }) {
         role="region"
         aria-label="Notifications"
         aria-live="polite"
-        className="pointer-events-none fixed inset-x-0 bottom-0 z-[60] flex flex-col items-center gap-2 p-4 sm:items-end"
+        // Top right, above everything including the sticky top bar. The stack
+        // grows downwards from there, so a second toast pushes nothing that is
+        // already being read — and it sits where the eye returns after an
+        // action rather than in the corner furthest from the page's heading.
+        // Centred on narrow screens, where a right-hugging card would sit under
+        // the thumb reaching for the account menu.
+        className="pointer-events-none fixed inset-x-0 top-0 z-[70] flex flex-col items-center gap-2 p-4 sm:items-end"
         onMouseEnter={pause}
         onMouseLeave={resume}
         onFocusCapture={pause}

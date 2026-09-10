@@ -26,6 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui';
+import { LevelToggle, SERVICE_TOKEN_LEVELS } from '@/components/members/level-toggle';
 import type { ProjectListResponse, ProjectResponse } from '@/components/projects/types';
 import { useVaultKeys } from '@/components/vault';
 import { mintServiceToken } from './token-keys';
@@ -329,18 +330,25 @@ function CreateTokenFlow({
               : 'Also writes secrets — for pipelines that rotate credentials. Cannot delete.'
           }
         >
-          <Select
-            value={accessLevel}
-            onValueChange={(next) => setAccessLevel(next as 'read' | 'write')}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="read">Read-only</SelectItem>
-              <SelectItem value="write">Read &amp; write</SelectItem>
-            </SelectContent>
-          </Select>
+          {/* The same capsule the member screens grant with, so one vocabulary
+              covers every level in the product. Two segments, not three:
+              `admin` is not a level a service token can hold — the engine's
+              service-token allowlist tops out at `write` — and `clearable`
+              is off, because a token with no level is not a credential and a
+              gesture whose result this screen would drop is a control that
+              looks broken. */}
+          <div>
+            <LevelToggle
+              level={accessLevel}
+              disabled={submitting}
+              scopeLabel="this token"
+              levels={SERVICE_TOKEN_LEVELS}
+              clearable={false}
+              onSelect={(next) => {
+                if (next === 'read' || next === 'write') setAccessLevel(next);
+              }}
+            />
+          </div>
         </Field>
 
         {formError ? <Alert tone="danger">{formError}</Alert> : null}

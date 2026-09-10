@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 
 import { askBeforeLeaving } from '@/components/ui/leave-guard';
 import type { NavItem, NavSection } from './sidebar';
@@ -171,6 +171,133 @@ function isOverlayOpen(): boolean {
         '[data-state="open"][role="listbox"]',
     ) !== null
   );
+}
+
+/**
+ * A chord this hook understands: an optional modifier prefix and a
+ * `KeyboardEvent.code`.
+ *
+ *  - `'KeyG'`             — the bare key, no modifiers at all.
+ *  - `'shift:KeyR'`       — Shift and nothing else.
+ *  - `'mod:KeyK'`         — ⌘ on a Mac, Ctrl elsewhere, and nothing else.
+ *  - `'mod+shift:Digit2'` — both, and nothing else.
+ *
+ * A `code` rather than a `key` for the reason `codeFor` gives: the physical
+ * key is what a printed cap refers to, and `Shift`+`1` does not report `"1"`.
+ *
+ * Every chord is exact about the modifiers it does *not* want, so `mod:KeyK`
+ * never fires for ⌘⇧K. Two chords on one key that differ only by a modifier —
+ * `⇧2` navigates, `⌘⇧2` compares — are therefore genuinely distinct, which is
+ * the property the environment switcher is built on.
+ */
+export type ShortcutChord = `${'' | 'shift:' | 'mod:' | 'mod+shift:'}${string}`;
+
+export interface ParsedChord {
+  code: string;
+  shift: boolean;
+  mod: boolean;
+}
+
+export function parseChord(chord: ShortcutChord): ParsedChord {
+  // `lastIndexOf`, so a prefix containing `+` is read whole and a chord with no
+  // prefix at all — `'KeyG'` — falls through to `-1` and keeps every character.
+  const separator = chord.lastIndexOf(':');
+  const prefix = separator === -1 ? '' : chord.slice(0, separator);
+  const tokens = prefix.split('+');
+
+  return {
+    code: separator === -1 ? chord : chord.slice(separator + 1),
+    shift: tokens.includes('shift'),
+    mod: tokens.includes('mod'),
+  };
+}
+
+/**
+ * Global shortcuts, on the same terms as the nav chords.
+ *
+ * The guards below are shared with `useNavShortcuts` rather than restated,
+ * which is what stops a second shortcut from being subtly more aggressive than
+ * the first — the kind of difference nobody notices until a letter disappears
+ * from a secret value.
+ *
+ * ── Where the two kinds part company ──
+ * A bare or shifted letter stands down whenever the focused element owns plain
+ * keys: `Shift`+`R` inside a value field is somebody typing `R`, and stealing
+ * it is data loss. A chord carrying `mod` does not stand down, because ⌘/Ctrl
+ * chords are unambiguous everywhere — ⌘K is *how* you leave the field you are
+ * in and jump to the filter, so declining it exactly when it is most useful
+ * would be backwards.
+ *
+ * Both stand down under an open overlay. A dialog owns the keyboard while it
+ * is up, and acting on a page the user cannot see is never right.
+ *
+ * ── Why a map rather than one call per chord ──
+ * A caller binding ten digits would otherwise call a hook ten times, or once
+ * inside a loop, which is the shape the rules of hooks exist to forbid. One
+ * listener also means one place where two chords on the same key are resolved,
+ * rather than ten listeners each deciding independently whether the event was
+ * theirs.
+ */
+export function useGlobalShortcuts(
+  bindings: Readonly<Partial<Record<ShortcutChord, () => void>>>,
+  enabled = true,
+): void {
+  // Kept in a ref so a caller passing a freshly-built object — which is every
+  // caller — does not re-subscribe the listener on every render; the effect
+  // below then depends only on *which* chords are bound, not on their bodies.
+  // Written in an effect rather than during render, because a ref mutated
+  // while rendering is a value React may discard on a re-entrant render, and a
+  // keystroke cannot arrive between the render and this commit anyway.
+  const latest = useRef(bindings);
+  useEffect(() => {
+    latest.current = bindings;
+  }, [bindings]);
+
+  // The chord set, as a stable string. Two renders binding the same ten digits
+  // to different closures produce the same key and keep the same listener.
+  const chords = Object.keys(bindings).sort().join('|');
+
+  useEffect(() => {
+    if (!enabled || chords === '') return;
+
+    const parsed = chords
+      .split('|')
+      .map((chord) => ({ chord, ...parseChord(chord as ShortcutChord) }));
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || event.repeat) return;
+      if (event.altKey) return;
+
+      const mod = event.metaKey || event.ctrlKey;
+      const match = parsed.find(
+        (candidate) =>
+          candidate.code === event.code &&
+          candidate.shift === event.shiftKey &&
+          candidate.mod === mod,
+      );
+      if (match === undefined) return;
+
+      if (isOverlayOpen()) return;
+      if (!match.mod && focusOwnsPlainKeys(event.target)) return;
+
+      const action = latest.current[match.chord as ShortcutChord];
+      if (action === undefined) return;
+
+      event.preventDefault();
+      action();
+    }
+
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [chords, enabled]);
+}
+
+/** One chord, for the callers that only have one. */
+export function useGlobalShortcut(chord: ShortcutChord, action: () => void, enabled = true): void {
+  // `useMemo` only to keep the object out of `bindings`' effect on every
+  // render; the subscription itself is keyed on the chord regardless.
+  const bindings = useMemo(() => ({ [chord]: action }), [chord, action]);
+  useGlobalShortcuts(bindings, enabled);
 }
 
 /**

@@ -963,6 +963,118 @@ describe('the authorization matrix around a production key', () => {
   });
 });
 
+/**
+ * The level an invitation's selection confers, which decides who gets a key.
+ *
+ * ── The finding these exist for ──
+ * `invitationReaches` read the invited *role's* default for any scope the
+ * selection named and never looked at the seed's own `accessLevel`. So an
+ * invitation seeded `none` for an environment — an inviter deliberately
+ * withholding it — passed the eligibility check anyway, and this environment's
+ * key was sealed to the invitation. The invitee then joined with no access and
+ * a copy of the key they could open through `/api/invitations/claimable`: the
+ * routes said no and the bytes were already theirs, which is the one order of
+ * events an access model cannot recover from.
+ *
+ * Nothing tested the level plumbing, so the whole of it passed CI. These are
+ * the decision itself, stated as the pair of rules `applyInitialGrants` writes:
+ * a seed's level is what it says, and a seed naming an environment outranks the
+ * seed naming its project.
+ */
+describe('the level an invitation seed confers', () => {
+  function invitation(
+    initialGrants: { projectId: string; environmentId: string | null; accessLevel?: string }[],
+    role: 'admin' | 'viewer' = 'admin',
+  ) {
+    repository.findPendingInvitationForGrant.mockResolvedValue({
+      id: INVITATION_ID,
+      role,
+      initialGrants,
+    });
+  }
+
+  /** Sealing this environment's key to the invitation. Production by default. */
+  function seal(isProduction = true) {
+    return addGrants(scope({ isProduction }), services(), ownerPrincipal, {
+      envDataKeyId: KEY_ID,
+      grants: [grant({ kind: 'invite', id: INVITATION_ID })],
+    });
+  }
+
+  it('withholds the key from a seed that named this environment at no access', async () => {
+    // The finding, at its narrowest. `admin` reaches everything by role, which
+    // is exactly why the role default was the wrong thing to read: the inviter
+    // said `none` for this one environment and the check said `admin`.
+    invitation([{ projectId: PROJECT_ID, environmentId: ENV_ID, accessLevel: 'none' }]);
+
+    const error = await rejection(() => seal());
+
+    expect(error.code).toBe('bad_request');
+    expect(repository.addEnvKeyGrants).not.toHaveBeenCalled();
+  });
+
+  it('withholds it from a whole-project seed at no access', async () => {
+    invitation([{ projectId: PROJECT_ID, environmentId: null, accessLevel: 'none' }]);
+
+    const error = await rejection(() => seal());
+
+    expect(error.code).toBe('bad_request');
+  });
+
+  it('lets a named environment deny what its project seed granted', async () => {
+    // The precedence rule, in the direction that matters: the two levels are
+    // chosen independently, and `resolveAccessLevel` gives the specific row
+    // precedence — so an environment carved out of an otherwise-granted project
+    // must not receive its key.
+    invitation([
+      { projectId: PROJECT_ID, environmentId: null, accessLevel: 'admin' },
+      { projectId: PROJECT_ID, environmentId: ENV_ID, accessLevel: 'none' },
+    ]);
+
+    const error = await rejection(() => seal());
+
+    expect(error.code).toBe('bad_request');
+  });
+
+  it('lets a named environment grant what its project seed denied', async () => {
+    // And the other way round, which is the ordinary shape: nothing across the
+    // project except this one environment.
+    invitation([
+      { projectId: PROJECT_ID, environmentId: null, accessLevel: 'none' },
+      { projectId: PROJECT_ID, environmentId: ENV_ID, accessLevel: 'read' },
+    ]);
+
+    await expect(seal()).resolves.toEqual({ added: 1 });
+  });
+
+  it('grants at the level the seed names rather than the role default', async () => {
+    // A `viewer` has no production access by role — `read` here is the
+    // inviter's explicit choice, and the selection of a production environment
+    // is the conscious act the model asks for.
+    invitation([{ projectId: PROJECT_ID, environmentId: ENV_ID, accessLevel: 'read' }], 'viewer');
+
+    await expect(seal()).resolves.toEqual({ added: 1 });
+  });
+
+  it("falls back to the invited role's non-production default for a seed with no level", async () => {
+    // Every seed written before the invite dialog offered levels has this
+    // shape, and acceptance still reads it the way it always did.
+    invitation([{ projectId: PROJECT_ID, environmentId: ENV_ID }], 'viewer');
+
+    await expect(seal()).resolves.toEqual({ added: 1 });
+  });
+
+  it('withholds it from a project this invitation never named at all', async () => {
+    // Deny-by-default has not moved: a non-null selection means every project
+    // not in it receives an explicit `none` at acceptance.
+    invitation([{ projectId: OTHER_PROJECT_ID, environmentId: null, accessLevel: 'admin' }]);
+
+    const error = await rejection(() => seal());
+
+    expect(error.code).toBe('bad_request');
+  });
+});
+
 describe('initialisation', () => {
   it('refuses a first grant addressed to anybody but the creator', async () => {
     // At creation the only principal whose key could have sealed this blob is

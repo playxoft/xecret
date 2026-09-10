@@ -91,6 +91,32 @@ export interface MemberAccessResponse {
   projects: readonly EffectiveProject[];
 }
 
+/**
+ * One member as the project-members endpoint returns them: the member, the
+ * grant rows they hold *on this project*, and what those resolve to in each of
+ * its environments.
+ *
+ * The same three facts `MemberAccessResponse` carries for one member across
+ * every project — transposed, because managing a project asks "who can reach
+ * this?" and managing a person asks "what can they reach?".
+ */
+export interface ProjectMember extends Member {
+  grants: readonly { environmentSlug: string | null; accessLevel: AccessLevel }[];
+  environments: readonly EffectiveEnvironment[];
+}
+
+export interface ProjectMemberListResponse {
+  project: { name: string; slug: string };
+  environments: readonly { name: string; slug: string; isProduction: boolean }[];
+  members: readonly ProjectMember[];
+  /**
+   * Whether the organisation has more members than this single page carries.
+   * The endpoint does not paginate — one page at the repository's ceiling — so
+   * this is the dialog's only way to know it is not showing everyone.
+   */
+  hasMore: boolean;
+}
+
 export const ROLE_LABELS: Readonly<Record<OrgRole, string>> = {
   owner: 'Owner',
   admin: 'Admin',

@@ -22,7 +22,7 @@ import {
 } from '@/components/ui';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import { useApiResource } from '@/app/(dashboard)/_lib/use-api-resource';
-import { ACCESS_LEVEL_LABELS } from './types';
+import { LevelToggle } from './level-toggle';
 import type { EffectiveProject, Member, MemberAccessResponse } from './types';
 
 /**
@@ -65,16 +65,6 @@ import type { EffectiveProject, Member, MemberAccessResponse } from './types';
  * function the authorization engine calls — so the panel cannot disagree with
  * what a request will experience.
  */
-
-const GRANTABLE_LEVELS: readonly AccessLevel[] = ['read', 'write', 'admin'];
-
-/** Cumulative order, for implication: everything below a level is contained in it. */
-const LEVEL_RANK: Readonly<Record<AccessLevel, number>> = {
-  none: 0,
-  read: 1,
-  write: 2,
-  admin: 3,
-};
 
 export function MemberAccessPanel({
   orgSlug,
@@ -437,68 +427,5 @@ export function MemberAccessPanel({
         />
       ) : null}
     </div>
-  );
-}
-
-/**
- * One environment's access level, as a single segmented toggle.
- *
- * Three segments in one bubble, because the levels are one choice rather than
- * three switches. Every segment the level contains is lit — Admin lights all
- * three — and every segment stays clickable:
- *
- *  - clicking a different segment moves the level there (up or down), and
- *  - clicking the segment that *is* the level turns everything off at once.
- *    Un-choosing Admin never strands a leftover Read & write.
- *
- * `aria-pressed` on each segment says what is lit; the group carries the
- * scope's name so sixty rows of "Read" stay tellable apart.
- */
-function LevelToggle({
-  level,
-  disabled,
-  scopeLabel,
-  onSelect,
-}: {
-  level: AccessLevel;
-  disabled: boolean;
-  scopeLabel: string;
-  onSelect: (next: AccessLevel) => void;
-}) {
-  return (
-    <span
-      role="group"
-      aria-label={`Access to ${scopeLabel}`}
-      className={cn(
-        'border-line inline-flex overflow-hidden rounded-full border',
-        disabled && 'opacity-70',
-      )}
-    >
-      {GRANTABLE_LEVELS.map((segment) => {
-        const lit = LEVEL_RANK[level] >= LEVEL_RANK[segment];
-
-        return (
-          <button
-            key={segment}
-            type="button"
-            aria-pressed={lit}
-            aria-label={`${ACCESS_LEVEL_LABELS[segment]} access to ${scopeLabel}`}
-            disabled={disabled}
-            // The one rule of the control: clicking the current level clears
-            // everything; clicking anything else *is* the new level.
-            onClick={() => onSelect(segment === level ? 'none' : segment)}
-            className={cn(
-              'border-line px-3.5 py-1.5 text-sm font-medium transition-colors [&:not(:first-child)]:border-l',
-              lit ? 'bg-accent-tint text-accent-text' : 'bg-canvas-inset text-fg-muted',
-              !disabled && 'cursor-pointer',
-              !disabled &&
-                (lit ? 'hover:bg-accent-tint/70' : 'hover:bg-surface-hover hover:text-fg'),
-            )}
-          >
-            {ACCESS_LEVEL_LABELS[segment]}
-          </button>
-        );
-      })}
-    </span>
   );
 }

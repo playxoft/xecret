@@ -28,6 +28,7 @@ import {
   TableRow,
   useToast,
 } from '@/components/ui';
+import { LevelPills, SERVICE_TOKEN_LEVELS } from '@/components/members/level-toggle';
 import { CreateTokenDialog } from '@/components/tokens/create-token-dialog';
 import type {
   CliToken,
@@ -119,7 +120,7 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
                   <TableRow>
                     <TableHead>Token</TableHead>
                     <TableHead className="w-44">Scope</TableHead>
-                    <TableHead className="w-28">Access</TableHead>
+                    <TableHead className="w-52">Access</TableHead>
                     <TableHead className="w-32">Last used</TableHead>
                     <TableHead className="w-28">Status</TableHead>
                     <TableHead className="w-24">
@@ -138,9 +139,19 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
                         {token.projectSlug}/{token.environmentSlug}
                       </TableCell>
                       <TableCell>
-                        <span className="text-fg-muted text-sm">
-                          {token.accessLevel === 'read' ? 'Read-only' : 'Read & write'}
-                        </span>
+                        {/* The same capsule the member screens grant with, so
+                            one vocabulary covers every level in the product.
+                            Static, not a setter: a token's scope is fixed at
+                            mint time and cannot be widened afterwards — that
+                            is the property that makes its blast radius
+                            knowable — so changing one means minting another.
+                            `admin` is absent because a service token cannot
+                            hold it; see `serviceAccessSchema`. */}
+                        <LevelPills
+                          level={token.accessLevel}
+                          label={`Access for ${token.name}`}
+                          levels={SERVICE_TOKEN_LEVELS}
+                        />
                       </TableCell>
                       <TableCell className="text-fg-muted text-sm whitespace-nowrap">
                         {token.lastUsedAt === null ? (
@@ -161,7 +172,8 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
                         {token.revokedAt === null ? (
                           <Button
                             size="sm"
-                            variant="ghost"
+                            variant="danger-outline"
+                            aria-label={`Revoke ${token.name}`}
                             onClick={() => setRevokingService(token)}
                           >
                             Revoke
@@ -224,7 +236,12 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
                     <TokenStatus expiresAt={token.expiresAt} revokedAt={token.revokedAt} />
 
                     {token.revokedAt === null ? (
-                      <Button size="sm" variant="ghost" onClick={() => setRevokingCli(token)}>
+                      <Button
+                        size="sm"
+                        variant="danger-outline"
+                        aria-label={`Revoke ${token.name}`}
+                        onClick={() => setRevokingCli(token)}
+                      >
                         Revoke
                       </Button>
                     ) : null}
@@ -296,6 +313,18 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
   );
 }
 
+/**
+ * What state a credential is in, as one chip.
+ *
+ * All three states are badges now, in the three tones that mean what they say:
+ * a live credential is green, a lapsed one amber, a revoked one red. "Active"
+ * used to be muted grey text, which made the one row an operator is scanning
+ * for — the token that still works — the least visible thing in the column.
+ *
+ * An expiry is shown *under* the badge rather than instead of it. The two are
+ * different facts: "this still works" and "it stops on Friday", and a token
+ * with an expiry was previously rendered without ever saying the first.
+ */
 function TokenStatus({
   expiresAt,
   revokedAt,
@@ -307,14 +336,20 @@ function TokenStatus({
   if (expiresAt !== null && hasExpired(expiresAt)) {
     return <Badge tone="warning">Expired</Badge>;
   }
-  if (expiresAt !== null) {
-    return (
-      <span className="text-fg-muted text-sm whitespace-nowrap">
-        expires {formatRelativeTime(expiresAt)}
-      </span>
-    );
-  }
-  return <span className="text-fg-muted text-sm">Active</span>;
+
+  return (
+    <span className="inline-flex flex-col items-start gap-1">
+      <Badge tone="success">Active</Badge>
+      {expiresAt !== null ? (
+        <span className="text-fg-subtle text-sm whitespace-nowrap">
+          expires{' '}
+          <time dateTime={toIsoString(expiresAt)} title={formatAbsoluteTime(expiresAt)}>
+            {formatRelativeTime(expiresAt)}
+          </time>
+        </span>
+      ) : null}
+    </span>
+  );
 }
 
 /** "Now" defaults inside the helper — the same convention as `formatRelativeTime`. */

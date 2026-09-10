@@ -122,6 +122,9 @@ export const apiPath = {
   project: (org: string, project: string): string => `${apiPath.projects(org)}/${segment(project)}`,
   environments: (org: string, project: string): string =>
     `${apiPath.project(org, project)}/environments`,
+  /** Who can reach one project, and at what level — the transpose of `memberAccess`. */
+  projectMembers: (org: string, project: string): string =>
+    `${apiPath.project(org, project)}/members`,
   environment: (org: string, project: string, env: string): string =>
     `${apiPath.environments(org, project)}/${segment(env)}`,
   secrets: (org: string, project: string, env: string): string =>

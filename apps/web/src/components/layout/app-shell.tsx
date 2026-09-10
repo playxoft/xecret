@@ -6,6 +6,7 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 
 import { MenuIcon } from '@/components/ui';
+import { isLeaveGuardArmed } from '@/components/ui/leave-guard';
 import { Breadcrumbs } from './breadcrumbs';
 import type { BreadcrumbItem } from './breadcrumbs';
 import { Wordmark } from './logo';
@@ -13,9 +14,10 @@ import { OrgSwitcher } from './org-switcher';
 import type { ShellOrganization } from './org-switcher';
 import { Sidebar } from './sidebar';
 import type { NavSection } from './sidebar';
-import { useNavShortcuts } from './use-nav-shortcuts';
+import { useGlobalShortcut, useNavShortcuts } from './use-nav-shortcuts';
 import { UserMenu } from './user-menu';
 import type { ShellUser } from './user-menu';
+import { WorkspaceSwitcherDialog } from './workspace-switcher-dialog';
 
 export interface AppShellProps {
   nav: readonly NavSection[];
@@ -60,12 +62,48 @@ export function AppShell({
 }: AppShellProps) {
   const pathname = usePathname();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
 
   // Disabled while the mobile drawer is open. The drawer is a Radix dialog, so
   // `useNavShortcuts` would stand down on its own — but it is also the one
   // surface where the key caps are on screen and the keyboard is not, and
   // being explicit here is cheaper than relying on that coincidence.
   useNavShortcuts(nav, !drawerOpen);
+
+  // `G` for "go to organisation". It is not a nav item — there is no href to
+  // navigate to, the answer is a list — so it is registered here rather than
+  // declared in the nav tree, and it stands down under exactly the same
+  // conditions the nav chords do, this dialog's own overlay included.
+  useGlobalShortcut('KeyG', () => setSwitcherOpen(true), !drawerOpen);
+
+  // `⇧L` locks the session. Shifted rather than bare, and it is the one chord
+  // here where that is a security decision rather than a typing one: locking
+  // is the act you want reachable in the second before you walk away from a
+  // screen full of production values, and a bare `L` that fired from a filter
+  // box would instead make people avoid the keyboard entirely. It is
+  // advertised in the account menu beside "Lock now", which is the same act.
+  useGlobalShortcut(
+    'shift:KeyL',
+    () => {
+      // Locking zeroizes the vault and unmounts the secret table, which throws
+      // staged edits away exactly as leaving the page would — so the chord
+      // stands down while anything is unsaved. It cannot be handed to
+      // `askBeforeLeaving`: that guard's confirm path navigates, and a user who
+      // answered "leave and lose them" to lock would be routed somewhere with
+      // the vault still open. The Lock item in the account menu remains, so the
+      // act is never unreachable, only never accidental.
+      //
+      // Asked here rather than through this hook's `enabled` flag because the
+      // flag is an effect dependency: arming the guard re-renders nothing in
+      // this shell, so a value read during render would still be `false` at the
+      // moment the key is pressed.
+      if (isLeaveGuardArmed()) return;
+      // Floating deliberately: the re-render onto the lock screen is the whole
+      // point, and there is nothing after it to sequence.
+      if (onLock !== undefined) void onLock();
+    },
+    !drawerOpen && onLock !== undefined,
+  );
 
   // A link inside the drawer navigates without unmounting the shell, so the
   // drawer has to be told to close. Comparing against the previous pathname
@@ -173,6 +211,16 @@ export function AppShell({
           {children}
         </main>
       </div>
+
+      {/* Portalled to the document by Radix, so where it sits in this tree
+          decides nothing about where it appears — only what it can read. */}
+      <WorkspaceSwitcherDialog
+        organizations={organizations}
+        currentSlug={currentOrgSlug}
+        open={switcherOpen}
+        onOpenChange={setSwitcherOpen}
+        {...(onCreateOrganization === undefined ? {} : { onCreate: onCreateOrganization })}
+      />
     </div>
   );
 }

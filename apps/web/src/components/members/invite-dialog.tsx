@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 
 import { canAssignRole } from '@xecret/core/authz';
-import type { OrgRole } from '@xecret/core/authz';
+import type { AccessLevel, OrgRole } from '@xecret/core/authz';
 import { generateInviteFragment, zeroize } from '@xecret/core/crypto/client';
 import type { Bytes, InviteFragment } from '@xecret/core/crypto/client';
 import { api, isApiError } from '@/lib/api';
@@ -20,7 +20,6 @@ import {
   Alert,
   Badge,
   Button,
-  Checkbox,
   CopyButton,
   Dialog,
   DialogBody,
@@ -29,8 +28,13 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
   Field,
   Input,
+  PlusIcon,
   Select,
   SelectContent,
   SelectItem,
@@ -39,6 +43,7 @@ import {
   Skeleton,
   useToast,
 } from '@/components/ui';
+import { LevelToggle } from './level-toggle';
 import { ROLE_DESCRIPTIONS, ROLE_LABELS, ROLES_DESCENDING } from './types';
 import type { InviteResponse } from './types';
 
@@ -152,16 +157,22 @@ function InviteFlow({
   const [unsealed, setUnsealed] = useState<readonly string[]>([]);
 
   /**
-   * The access tree, and the selection — **empty by default, deliberately**.
-   * An invitation grants exactly what is ticked here and nothing else: the
-   * server writes an explicit `none` for every unticked project at
-   * acceptance, so an unticked invitee can open the dashboard and see no
-   * projects at all until somebody grants them one.
+   * The projects to choose from, and the selection — **empty by default,
+   * deliberately**. An invitation grants exactly what is chosen here and
+   * nothing else: the server writes an explicit `none` for every project left
+   * out at acceptance, so an invitee with nothing chosen can open the
+   * dashboard and see no projects at all until somebody grants them one.
    */
   const [projects, setProjects] = useState<ProjectAccessOption[] | null>(null);
   const [projectsError, setProjectsError] = useState(false);
-  const [wholeProjects, setWholeProjects] = useState<ReadonlySet<string>>(new Set());
-  const [environments, setEnvironments] = useState<ReadonlySet<string>>(new Set());
+  /**
+   * Projects added to the form, in the order they were added. Adding one only
+   * reveals its environments so a level can be chosen; it grants nothing on
+   * its own, exactly as "Add project" behaves on a member's access panel.
+   */
+  const [added, setAdded] = useState<readonly string[]>([]);
+  /** The chosen level per `${project}/${environment}`. Absent means no access. */
+  const [levels, setLevels] = useState<ReadonlyMap<string, AccessLevel>>(new Map());
 
   useEffect(() => {
     let cancelled = false;
@@ -196,28 +207,41 @@ function InviteFlow({
   const envKey = (projectSlug: string, environmentSlug: string) =>
     `${projectSlug}/${environmentSlug}`;
 
-  function toggleWholeProject(projectSlug: string, checked: boolean) {
-    setWholeProjects((current) => {
-      const next = new Set(current);
-      if (checked) next.add(projectSlug);
-      else next.delete(projectSlug);
-      return next;
-    });
-  }
-
-  function toggleEnvironment(projectSlug: string, environmentSlug: string, checked: boolean) {
-    setEnvironments((current) => {
-      const next = new Set(current);
+  function setLevel(projectSlug: string, environmentSlug: string, next: AccessLevel) {
+    setLevels((current) => {
+      const map = new Map(current);
       const key = envKey(projectSlug, environmentSlug);
-      if (checked) next.add(key);
-      else next.delete(key);
-      return next;
+      // `none` is the absence of a grant here, not a grant of nothing: an
+      // invitation that lists no level for a scope already denies it.
+      if (next === 'none') map.delete(key);
+      else map.set(key, next);
+      return map;
     });
   }
 
-  const selectionCount =
-    wholeProjects.size +
-    [...environments].filter((key) => !wholeProjects.has(key.slice(0, key.indexOf('/')))).length;
+  function addProject(projectSlug: string) {
+    setAdded((current) => (current.includes(projectSlug) ? current : [...current, projectSlug]));
+  }
+
+  function removeProject(projectSlug: string) {
+    setAdded((current) => current.filter((slug) => slug !== projectSlug));
+    // The levels go with it. Leaving them behind would send access for a
+    // project no longer on screen — a grant nobody could see themselves make.
+    setLevels((current) => {
+      const map = new Map(current);
+      for (const key of map.keys()) {
+        if (key.startsWith(`${projectSlug}/`)) map.delete(key);
+      }
+      return map;
+    });
+  }
+
+  // The projects on the form, in the order they were added, and the ones the
+  // "Add project" menu still has to offer.
+  const chosen = (projects ?? []).filter((project) => added.includes(project.slug));
+  chosen.sort((a, b) => added.indexOf(a.slug) - added.indexOf(b.slug));
+  const assignable = (projects ?? []).filter((project) => !added.includes(project.slug));
+  const selectionCount = levels.size;
 
   const offeredRoles = ROLES_DESCENDING.filter((candidate) => canAssignRole(viewerRole, candidate));
 
@@ -247,22 +271,18 @@ function InviteFlow({
       return;
     }
 
-    // Whole-project ticks, plus environment ticks not already covered by one.
-    const grants = [
-      ...[...wholeProjects].map((projectSlug) => ({
-        projectSlug,
-        environmentSlug: null as string | null,
-      })),
-      ...[...environments]
-        .map((key) => {
-          const separator = key.indexOf('/');
-          return {
-            projectSlug: key.slice(0, separator),
-            environmentSlug: key.slice(separator + 1),
-          };
-        })
-        .filter((entry) => !wholeProjects.has(entry.projectSlug)),
-    ];
+    // One selection per environment carrying a level. Never a whole-project
+    // grant: "give them the project" quietly including production is the
+    // accident the per-environment model exists to prevent, and the member
+    // access panel refuses it for the same reason.
+    const grants = [...levels].map(([key, accessLevel]) => {
+      const separator = key.indexOf('/');
+      return {
+        projectSlug: key.slice(0, separator),
+        environmentSlug: key.slice(separator + 1),
+        accessLevel,
+      };
+    });
 
     setBusy(true);
     setFormError(null);
@@ -406,8 +426,8 @@ function InviteFlow({
       <DialogHeader>
         <DialogTitle>Invite a member</DialogTitle>
         <DialogDescription>
-          They join with the role you choose and access to exactly the projects and environments you
-          tick below — nothing else. Both can be changed per member afterwards.
+          They join with the role you choose and access to exactly the environments you add below —
+          nothing else. Both can be changed per member afterwards.
         </DialogDescription>
       </DialogHeader>
 
@@ -443,13 +463,6 @@ function InviteFlow({
 
         <fieldset className="flex flex-col gap-2">
           <legend className="text-fg text-sm font-medium">Access</legend>
-          <p className="text-fg-subtle text-sm">
-            Nothing is selected by default, and the invitation grants exactly what you tick — every
-            unticked project stays completely inaccessible to them, including projects created later
-            inside a partially-granted one. Ticked items get the role&apos;s normal level; you can
-            adjust per-item levels on their member page after they join.
-          </p>
-
           {projectsError ? (
             <Alert tone="danger">The project list could not be loaded. Close and retry.</Alert>
           ) : projects === null ? (
@@ -463,64 +476,87 @@ function InviteFlow({
               which is also what they get by default.
             </p>
           ) : (
-            <div className="border-line max-h-64 overflow-y-auto rounded-lg border">
-              {projects.map((project) => {
-                const whole = wholeProjects.has(project.slug);
-                return (
-                  <div
-                    key={project.slug}
-                    className="border-line-subtle px-3 py-2 [&:not(:last-child)]:border-b"
-                  >
-                    <label className="flex cursor-pointer items-center gap-2.5">
-                      <Checkbox
-                        checked={whole}
-                        onCheckedChange={(checked) =>
-                          toggleWholeProject(project.slug, checked === true)
-                        }
-                        aria-label={`Entire project ${project.name}`}
-                      />
-                      <span className="text-fg text-sm font-medium">{project.name}</span>
-                      <span className="text-fg-subtle text-sm">entire project</span>
-                    </label>
-
-                    <div className="mt-1.5 flex flex-col gap-1 pl-7">
-                      {project.environments.map((environment) => {
-                        const checked =
-                          whole || environments.has(envKey(project.slug, environment.slug));
-                        return (
-                          <label
-                            key={environment.slug}
-                            className={
-                              whole
-                                ? 'flex items-center gap-2.5 opacity-60'
-                                : 'flex cursor-pointer items-center gap-2.5'
-                            }
-                          >
-                            <Checkbox
-                              checked={checked}
-                              disabled={whole}
-                              onCheckedChange={(next) =>
-                                toggleEnvironment(project.slug, environment.slug, next === true)
-                              }
-                              aria-label={`${project.name} ${environment.name}`}
-                            />
-                            <span className="text-fg-muted text-sm">{environment.name}</span>
-                            {environment.isProduction ? (
-                              <Badge tone="production">Production</Badge>
-                            ) : null}
-                          </label>
-                        );
-                      })}
-                    </div>
+            <>
+              {chosen.map((project) => (
+                <section
+                  key={project.slug}
+                  className="border-line bg-canvas-inset overflow-hidden rounded-lg border"
+                >
+                  <div className="flex items-center gap-2 px-3 py-1.5">
+                    <span className="text-fg min-w-0 flex-1 truncate text-sm font-semibold">
+                      {project.name}
+                    </span>
+                    <Button
+                      variant="danger-outline"
+                      size="sm"
+                      aria-label={`Remove ${project.name} from this invitation`}
+                      onClick={() => removeProject(project.slug)}
+                    >
+                      Remove
+                    </Button>
                   </div>
-                );
-              })}
-            </div>
+
+                  {project.environments.map((environment) => (
+                    <div
+                      key={environment.slug}
+                      className="border-line-subtle bg-surface flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 border-t px-3 py-2"
+                    >
+                      <span className="flex items-center gap-2 text-sm">
+                        {environment.name}
+                        {environment.isProduction ? (
+                          <Badge tone="production">Production</Badge>
+                        ) : null}
+                      </span>
+                      <LevelToggle
+                        level={levels.get(envKey(project.slug, environment.slug)) ?? 'none'}
+                        disabled={submitting}
+                        scopeLabel={`${project.name} ${environment.name}`}
+                        size="sm"
+                        onSelect={(next) => setLevel(project.slug, environment.slug, next)}
+                      />
+                    </div>
+                  ))}
+                </section>
+              ))}
+              {/* The call to action, not a trailing convenience. An empty
+                  Access section has exactly one next step, and a small
+                  secondary button tucked to the right of a label row is not
+                  where anybody looks for it. Full width and at primary weight
+                  while nothing is chosen; once a project is on the form it
+                  steps back to secondary, because by then it is "add another"
+                  rather than "start here". */}
+              {assignable.length > 0 ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant={chosen.length === 0 ? 'primary' : 'secondary'}
+                      className="w-full justify-center"
+                    >
+                      <PlusIcon className="size-4" />
+                      Add project
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    align="start"
+                    className="max-h-64 w-(--radix-dropdown-menu-trigger-width) overflow-y-auto"
+                  >
+                    {assignable.map((project) => (
+                      <DropdownMenuItem
+                        key={project.slug}
+                        onSelect={() => addProject(project.slug)}
+                      >
+                        {project.name}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : null}
+            </>
           )}
 
           {projects !== null && projects.length > 0 && selectionCount === 0 ? (
             <Alert tone="warning">
-              Nothing is ticked — they will join with <strong>no access to any project</strong>{' '}
+              Nothing is granted — they will join with <strong>no access to any project</strong>{' '}
               until someone grants them access on their member page.
             </Alert>
           ) : null}
@@ -544,12 +580,14 @@ function InviteFlow({
 /**
  * Which environments the ticked access actually covers.
  *
- * A whole-project tick means every environment in it; an environment tick means
- * that one. Expanded here rather than sent as-is because a grant is sealed per
- * environment — there is no such thing as a project-level key.
+ * One target per selection, because this form only ever selects environments —
+ * a whole-project tick is not offered, for the reason `handleSubmit` gives.
+ * Still a pass rather than the selection itself: a grant is sealed per
+ * environment against a project that has to still exist in the loaded tree, and
+ * a selection naming one that does not is dropped rather than sealed blind.
  */
 function grantTargets(
-  grants: readonly { projectSlug: string; environmentSlug: string | null }[],
+  grants: readonly { projectSlug: string; environmentSlug: string }[],
   projects: readonly ProjectAccessOption[],
 ): { projectSlug: string; envSlug: string }[] {
   const targets: { projectSlug: string; envSlug: string }[] = [];
@@ -557,13 +595,6 @@ function grantTargets(
   for (const grant of grants) {
     const project = projects.find((entry) => entry.slug === grant.projectSlug);
     if (project === undefined) continue;
-
-    if (grant.environmentSlug === null) {
-      for (const environment of project.environments) {
-        targets.push({ projectSlug: project.slug, envSlug: environment.slug });
-      }
-      continue;
-    }
 
     targets.push({ projectSlug: project.slug, envSlug: grant.environmentSlug });
   }

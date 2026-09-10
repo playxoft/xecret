@@ -179,15 +179,6 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
         <MembersSkeleton />
       ) : (
         <>
-          {canManage && invitations.data !== null ? (
-            <InvitationsSection
-              orgSlug={orgSlug}
-              invitations={invitations.data.data}
-              onChanged={reloadAll}
-              onReinvite={() => setInviting(true)}
-            />
-          ) : null}
-
           <div className="flex flex-wrap items-center gap-2">
             <div className="min-w-0 flex-1 sm:max-w-xs">
               <Input
@@ -432,6 +423,18 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
               </Table>
             </TableContainer>
           )}
+
+          {/* Below the members, not above them: the people who are actually in
+              the organisation are the answer to this page, and the ones who
+              have merely been asked are the footnote. */}
+          {canManage && invitations.data !== null ? (
+            <InvitationsSection
+              orgSlug={orgSlug}
+              invitations={invitations.data.data}
+              onChanged={reloadAll}
+              onReinvite={() => setInviting(true)}
+            />
+          ) : null}
         </>
       )}
 
