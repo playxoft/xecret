@@ -118,9 +118,9 @@ export function VaultSetup({ user, onComplete }: VaultSetupProps) {
   return (
     <div className="flex flex-col gap-6">
       {step === 'generating' ? null : (
-        <p className="text-fg-subtle text-sm">
+        <h2 className="text-fg text-xl font-semibold tracking-tight">
           Step {position.current} of {position.total}
-        </p>
+        </h2>
       )}
 
       {failure !== null ? (
@@ -210,15 +210,14 @@ function ExplainStep({
     <div className="flex flex-col gap-4">
       <div className="text-fg-muted flex flex-col gap-3 text-sm leading-6">
         <p>
-          Everything you store in xecret is encrypted on this device before it is sent. The key that
-          decrypts it is derived from a <span className="text-fg">master passphrase</span> only you
-          know. We never receive it, and we cannot derive it from anything we hold.
+          Everything you store in xecret is encrypted on your device before it leaves it. The key
+          comes from a <span className="text-fg">master passphrase</span> only you know — we never
+          see it and can&apos;t recreate it.
         </p>
         <p>
-          That is the whole product, and it has one consequence worth being blunt about: a forgotten
-          passphrase is not a support ticket. There is no key on our side to reset it with. What
-          stands between you and that outcome is a set of five recovery codes, which you will be
-          given in a moment and which you must keep somewhere safe.
+          That privacy has one honest catch: if you forget your passphrase, we can&apos;t reset it.
+          Nobody can. Your safety net is the five recovery codes you&apos;re about to get — tuck
+          them somewhere safe.
         </p>
       </div>
 

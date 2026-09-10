@@ -80,12 +80,13 @@ async function loadEstimator(): Promise<
     translations: english.translations,
     graphs: common.adjacencyGraphs,
     dictionary: { ...common.dictionary, ...english.dictionary },
-    // Catches a dictionary word with a character or two changed, which is the
-    // single most common way a weak passphrase gets past a naive matcher. The
-    // library defaults it off for speed; this form runs the estimate once per
-    // keystroke on strings of at most a few dozen characters, and the cost is
-    // not measurable against that.
-    useLevenshteinDistance: true,
+    // Levenshtein matching (a dictionary word with a character or two changed)
+    // stays off, as the library defaults. `check` runs synchronously on the
+    // main thread while the user is typing, and fuzzy-matching every token
+    // against these dictionaries is the one cost that grows fast enough to
+    // freeze the field mid-word. The l33t, reversal and keyboard-walk matchers
+    // cover the common disguises without it.
+    useLevenshteinDistance: false,
   });
 
   return (passphrase, userInputs) => {
