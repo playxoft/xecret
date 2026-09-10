@@ -45,8 +45,10 @@ describe('the kit file', () => {
 
   it('explains what the codes are and what losing them costs', () => {
     expect(text).toContain(EMERGENCY_KIT_EXPLANATION);
-    expect(EMERGENCY_KIT_EXPLANATION).toMatch(/cannot be decrypted by anyone, including xecret/i);
-    expect(EMERGENCY_KIT_EXPLANATION).toMatch(/used once/i);
+    expect(EMERGENCY_KIT_EXPLANATION).toMatch(
+      /nothing can bring your secrets back — not even xecret/i,
+    );
+    expect(EMERGENCY_KIT_EXPLANATION).toMatch(/works once/i);
   });
 
   it('does not contain the passphrase, and says where it should be kept instead', () => {
