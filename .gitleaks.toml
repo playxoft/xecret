@@ -40,3 +40,38 @@ paths = [
 description = "self-identifying credential specimens quoted in the documentation"
 regexTarget = "secret"
 regexes = ['''(?i)example[-_]?not[-_]?a[-_]?real[-_]?key''']
+
+# E2EE protocol identifiers: HKDF info strings, AAD purposes, and storage-key
+# versions all start with `xecret.` and are public by definition — domain
+# separation only works if both sides of the wire can read the label. No real
+# credential in this system carries that prefix (tokens are xst_/xct_/xes_,
+# key material is base64url or hex), so the value class is closed.
+[[allowlists]]
+description = "public domain-separation identifiers"
+regexTarget = "secret"
+regexes = ['''^xecret\.[a-z0-9.\-]+$''']
+
+# The fixture UUID family. Every test and self-test id in the E2EE suites is
+# minted from one recognizable stem so that a reader (and this file) can tell
+# a fixture from a real identifier at a glance. Real ids are uuidv7 minted at
+# runtime; nothing production-shaped shares this stem.
+[[allowlists]]
+description = "the 018f3b2c fixture UUID family used by the E2EE test suites"
+regexTarget = "secret"
+regexes = ['''^018f3b2c-9c1a-7c3d-8e4f-[0-9a-f]{12}$''']
+
+# The cross-implementation test vectors and their generator. Every value is
+# derived from seeds fixed in the spec and validated byte-for-byte by both the
+# TypeScript and Go suites — the entire point of the file is to be published.
+# The two Go files hold fixtures cut from that same vector file (a token key
+# half, sealed grants) plus counting-pattern halves that name themselves.
+# Named files, not a glob, for the same reason as the block above: a new
+# fixture file failing the scan should force a deliberate decision.
+[[allowlists]]
+description = "published E2EE test vectors and the named fixtures cut from them"
+paths = [
+  '''^packages/core/src/crypto/client/vectors/e2ee-vectors\.json$''',
+  '''^packages/core/src/crypto/client/vectors/build\.ts$''',
+  '''^cli/internal/e2ee/token_test\.go$''',
+  '''^cli/internal/envkeys/envkeys_test\.go$''',
+]
