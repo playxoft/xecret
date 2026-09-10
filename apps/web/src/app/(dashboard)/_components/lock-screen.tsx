@@ -6,6 +6,7 @@ import { endSession, SIGN_IN_PATH } from '@/lib/api';
 import { Wordmark } from '@/components/layout';
 import { Button, LockIcon, ShieldCheckIcon } from '@/components/ui';
 import { releaseVaultKeys, VaultSetup, VaultUnlock } from '@/components/vault';
+import type { VaultUnlockStage } from '@/components/vault';
 import type { SessionUser, VaultStatus } from './session';
 
 /**
@@ -46,7 +47,7 @@ export function LockScreen({ status, user, onUnlocked }: LockScreenProps) {
   // The unlock flow reports which of its stages is on screen, so the frame
   // can title each one honestly — a person typing a recovery code is not
   // "unlocking", and the panel saying so reads as being on the wrong page.
-  const [stage, setStage] = useState<'unlock' | 'code' | 'reset' | 'kit' | 'lost'>('unlock');
+  const [stage, setStage] = useState<VaultUnlockStage>('unlock');
   const wide = !configured || stage === 'kit';
 
   const stageCopy = {

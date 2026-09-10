@@ -58,16 +58,23 @@ import { useVault } from './vault-keys';
  * nothing to retry and a permanently failing button is worse than no button.
  */
 
-type Stage = 'unlock' | 'code' | 'reset' | 'kit' | 'lost';
+/**
+ * Which screen of the unlock flow is showing.
+ *
+ * Exported, because the host that titles and sizes the frame around it needs
+ * the same list — and a hand-copied union there is a list that stops agreeing
+ * with this one the first time a stage is added.
+ */
+export type Stage = 'unlock' | 'code' | 'reset' | 'kit' | 'lost';
 
 export interface VaultUnlockProps {
   user: { id: string; email: string; displayName: string | null };
   /** Re-reads the session, which is what actually dismisses the lock. */
   onUnlocked: () => void;
   /**
-   * Reports which stage is on screen, so the host can size its frame for the
-   * wide ones — the reissued kit and the all-codes-lost reset both show more
-   * than a passphrase field.
+   * Reports which stage is on screen, so the host can title each one for what
+   * it actually asks, and widen its frame for the one stage that needs it —
+   * the reissued kit, which is five full-width codes and a row of save buttons.
    */
   onStageChange?: (stage: Stage) => void;
 }

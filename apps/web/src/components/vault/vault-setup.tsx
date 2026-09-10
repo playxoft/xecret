@@ -117,8 +117,12 @@ export function VaultSetup({ user, onComplete }: VaultSetupProps) {
 
   return (
     <div className="flex flex-col gap-6">
+      {/* A real heading, and deliberately smaller than the panel's `h1`: the
+          step counter orients, the panel title says what the screen is for, and
+          a counter set larger than the title reads as the more important of the
+          two. */}
       {step === 'generating' ? null : (
-        <h2 className="text-fg text-xl font-semibold tracking-tight">
+        <h2 className="text-fg text-base font-medium tracking-tight">
           Step {position.current} of {position.total}
         </h2>
       )}

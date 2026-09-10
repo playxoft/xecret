@@ -15,7 +15,7 @@ export { VaultSetup } from './vault-setup';
 export type { VaultSetupProps } from './vault-setup';
 
 export { VaultUnlock } from './vault-unlock';
-export type { VaultUnlockProps } from './vault-unlock';
+export type { Stage as VaultUnlockStage, VaultUnlockProps } from './vault-unlock';
 
 export { VaultCard } from './vault-card';
 export type { VaultCardProps } from './vault-card';

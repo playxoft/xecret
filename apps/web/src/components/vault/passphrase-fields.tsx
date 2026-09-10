@@ -138,22 +138,38 @@ export function PassphraseFields({
   const [revealPassphrase, setRevealPassphrase] = useState(false);
   const [revealConfirm, setRevealConfirm] = useState(false);
 
-  // What the meter *shows* is allowed to lag what the gate *knows*. The strict
+  // What the meter *shows* is allowed to lag what the gate *knows*, but only
+  // for a string the held verdict can still honestly describe. The strict
   // verdict blanks on every keystroke (see the hook), and a meter wired to it
-  // directly flickered empty while the user typed. Holding the last verdict on
-  // screen until the next one lands keeps the reading steady; the parent's
-  // gate still reads the strict prop and stays shut in the gap. Adjusted
-  // during render — the "storing information from previous renders" pattern —
-  // rather than in an effect, which would repaint the blank frame first.
-  const [held, setHeld] = useState<PassphraseStrength | null>(null);
-  if (strength !== null && held !== strength) {
-    setHeld(strength);
-  } else if (empty && held !== null) {
+  // directly flickered empty while the user typed, so the last verdict is held
+  // on screen while the passphrase is *extended* — the case the flicker came
+  // from. It is dropped the moment anything is deleted or replaced: the verdict
+  // is stored with the passphrase it was about, and a green "Very strong" over
+  // a string the estimator has never seen is the one direction this component
+  // must not be wrong in. Somebody who selects all and types `password` would
+  // otherwise read a full green meter and a ticked "Very strong" for it until
+  // the next estimate landed. The parent's gate reads the strict prop either
+  // way and stays shut in the gap. Adjusted during render — the "storing
+  // information from previous renders" pattern — rather than in an effect,
+  // which would repaint the blank frame first.
+  const [held, setHeld] = useState<{ of: string; strength: PassphraseStrength } | null>(null);
+  if (strength !== null && held?.strength !== strength) {
+    setHeld({ of: passphrase, strength });
+  } else if (held !== null && !passphrase.startsWith(held.of)) {
     setHeld(null);
   }
 
-  const display = strength ?? (empty ? null : held);
+  const display = strength ?? held?.strength ?? null;
   const score = display?.score ?? 0;
+
+  // One line of the estimator's own words, and its *first* suggestion when it
+  // has no warning to give. zxcvbn fills the two independently — `aaaaaaaaaaaa`
+  // comes back with both, and a passphrase it recognises no pattern in comes
+  // back with suggestions only — so reading the warning alone left the person
+  // furthest from the bar with nothing actionable on screen at all. Still one
+  // line, which is the whole constraint the checklist below is built around.
+  const advice =
+    empty || display === null ? null : (display.warning ?? display.suggestions[0] ?? null);
 
   return (
     <div className="flex flex-col gap-4">
@@ -243,8 +259,8 @@ export function PassphraseFields({
         <ChecklistPoint met={confirm.length > 0 && confirm === passphrase}>
           Both passphrases match
         </ChecklistPoint>
-        {!empty && display !== null && display.warning !== null && score < PASSPHRASE_MIN_SCORE ? (
-          <li className="text-warning-text pl-6">{display.warning}</li>
+        {advice !== null && score < PASSPHRASE_MIN_SCORE ? (
+          <li className="text-warning-text pl-6">{advice}</li>
         ) : null}
       </ul>
     </div>
@@ -254,16 +270,20 @@ export function PassphraseFields({
 /** One always-visible requirement row: grey ✗ until met, green ✓ after. */
 function ChecklistPoint({ met, children }: { met: boolean; children: ReactNode }) {
   return (
-    <li
-      className={cn('flex items-start gap-2', met ? 'text-success-text' : 'text-fg-subtle')}
-      aria-label={met ? 'Requirement met' : 'Requirement not met'}
-    >
+    <li className={cn('flex items-start gap-2', met ? 'text-success-text' : 'text-fg-subtle')}>
       {met ? (
         <CheckIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
       ) : (
         <CloseIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
       )}
-      <span>{children}</span>
+      {/* The state is spoken *in front of* the requirement rather than through
+          an `aria-label` on the row: a label on a `listitem` replaces its
+          accessible name, so "Requirement met" was all a screen reader had —
+          the requirement it was about never reached the user. */}
+      <span>
+        <span className="sr-only">{met ? 'Requirement met: ' : 'Requirement not met: '}</span>
+        {children}
+      </span>
     </li>
   );
 }

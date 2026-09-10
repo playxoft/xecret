@@ -41,37 +41,49 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  * reason: an unattended, locked dashboard must not be able to approve anything.
  */
 
-const authorizeRequest = z.strictObject({
-  /*
-   * `slugReferenceSchema`, not `slugSchema`.
-   *
-   * This names an organisation the caller already belongs to — it came out of
-   * their own switcher, which is populated from `GET /api/auth/me`. The
-   * reserved-name list is a rule about *claiming* a slug, and applying it here
-   * refused the approval outright for any organisation holding one, with a
-   * `validation_failed` whose message ("The request could not be processed.")
-   * named neither the field nor the reason. `xecret login` was unusable for
-   * those organisations and there was nothing on the screen to say why.
-   *
-   * Nothing is loosened by this: the slug still has to resolve to an
-   * organisation, `resolveOrg` still 404s when it does not, and `member.read`
-   * below still settles whether this person may approve anything in it.
-   */
-  orgSlug: slugReferenceSchema,
-  deviceName: z
-    .string()
-    .check(
-      z.trim(),
-      z.minLength(1, 'A device name is required.'),
-      z.maxLength(100, 'A device name must be at most 100 characters.'),
-      // Control characters are refused: this string lands in the consent UI, the
-      // token listing and the audit log, where a carriage return is a spoof.
-      z.regex(/^\P{C}+$/u, 'A device name cannot contain control characters.'),
-    ),
-  codeChallenge: z
-    .string()
-    .check(z.regex(PKCE_CHALLENGE_PATTERN, 'The code challenge is not a valid S256 value.')),
-});
+/**
+ * Carried so an unrecognised field is refused with a sentence rather than with
+ * zod's default `Invalid input`. `errorMessage` now renders field problems
+ * verbatim on the consent screen, so every message this schema can produce is
+ * one a person reads.
+ */
+const UNEXPECTED_FIELD = 'The request contains a field this endpoint does not accept.';
+
+const authorizeRequest = z.strictObject(
+  {
+    /*
+     * `slugReferenceSchema`, not `slugSchema`.
+     *
+     * This names an organisation the caller already belongs to — it came out of
+     * their own switcher, which is populated from `GET /api/auth/me`. The
+     * reserved-name list is a rule about *claiming* a slug, and applying it here
+     * refused the approval outright for any organisation holding one, with a
+     * `validation_failed` whose message ("The request could not be processed.")
+     * named neither the field nor the reason. `xecret login` was unusable for
+     * those organisations and there was nothing on the screen to say why.
+     *
+     * Nothing is loosened by this: the slug still has to resolve to an
+     * organisation, `resolveOrg` still 404s when it does not, and `member.read`
+     * below still settles whether this person may approve anything in it.
+     */
+    orgSlug: slugReferenceSchema,
+    deviceName: z
+      .string()
+      .check(
+        z.trim(),
+        z.minLength(1, 'A device name is required.'),
+        z.maxLength(100, 'A device name must be at most 100 characters.'),
+        // Control characters are refused: this string lands in the consent UI,
+        // the token listing and the audit log, where a carriage return is a
+        // spoof.
+        z.regex(/^\P{C}+$/u, 'A device name cannot contain control characters.'),
+      ),
+    codeChallenge: z
+      .string()
+      .check(z.regex(PKCE_CHALLENGE_PATTERN, 'The code challenge is not a valid S256 value.')),
+  },
+  UNEXPECTED_FIELD,
+);
 
 export const POST = authenticatedRoute(async ({ request, principal, services, audit, record }) => {
   if (principal.kind !== 'user') {
