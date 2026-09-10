@@ -356,8 +356,10 @@ export async function acceptInvitation(
  * grants engine treats as a denial that outranks the role default — so a
  * member invited to two projects cannot see the third, nor a fourth created
  * between the invitation and its acceptance. Selected environments get their
- * own rows at their own levels, which override the project-wide `none` beside
- * them; environments *not* selected in a partially-granted project therefore
+ * own rows at their own levels, which override the project-wide row beside
+ * them whatever that row says — the two levels are selected independently, so
+ * an environment named explicitly is never folded into its project's level;
+ * environments *not* selected in a partially-granted project therefore
  * stay denied, as does any environment added later. Production is only
  * reachable by having been explicitly selected — the conscious act the schema
  * comment demands.
@@ -366,8 +368,13 @@ export async function acceptInvitation(
  * deleted environment, an environment whose project is gone — is skipped, not
  * an error: the invitation was honest when written, and the strict default
  * (`none`) already covers whatever replaced it.
+ *
+ * @internal Exported for the row-planning assertions in
+ * `invitation-grants.test.ts`. Its decision is mirrored by `invitationReaches`
+ * in the web app, which must be able to predict these rows before anybody joins
+ * — so what it writes is a contract, not an implementation detail.
  */
-async function applyInitialGrants(
+export async function applyInitialGrants(
   tx: Executor,
   params: {
     orgId: string;
@@ -450,13 +457,20 @@ async function applyInitialGrants(
   }
 
   for (const environment of liveEnvironments) {
-    // A whole-project selection already covers its environments at its level;
-    // an extra row would restate it and complicate later editing.
-    if (wholeProjects.has(environment.projectId)) continue;
-
+    // Written even when the same project carries a whole-project seed: the two
+    // levels are chosen independently, so skipping the row would silently
+    // replace an explicit environment level with the project's. The resolver
+    // gives the specific row precedence, which makes a restating row harmless
+    // and a differing one meaningful.
     const accessLevel = environmentLevels.get(environment.id) ?? fallbackLevel;
-    if (accessLevel === 'none') denied += 1;
-    else granted += 1;
+
+    // A row that restates the project's own level changes nothing the member
+    // holds, so it is not counted twice — the counters stay a description of
+    // the outcome rather than of the rows.
+    if (accessLevel !== (wholeProjects.get(environment.projectId) ?? 'none')) {
+      if (accessLevel === 'none') denied += 1;
+      else granted += 1;
+    }
 
     rows.push({
       id: uuidv7(),

@@ -910,11 +910,14 @@ async function assertRecipientEligible(
  *  - `initialGrants === null` is the pre-selection shape: role defaults
  *    everywhere, so the answer is `can()` with no grants at all.
  *  - otherwise it is **deny-by-default**. Every project gets an explicit `none`
- *    unless it was selected; a selected project or environment gets the invited
- *    role's *non-production* level. Production is therefore reachable only by
- *    having been ticked explicitly, which is the conscious act the schema comment
- *    demands — and the reason this check matters most on exactly the environments
- *    where handing out a key is worst.
+ *    unless it was selected; a selected project or environment gets the level its
+ *    seed names, or the invited role's *non-production* level for a seed written
+ *    before levels were selectable. A named environment carries its own level
+ *    independently of its project's, and wins over it. Production is therefore
+ *    reachable only by having been ticked explicitly, which is the conscious act
+ *    the schema comment demands — and the reason this check matters most on
+ *    exactly the environments where handing out a key is worst. A seed naming
+ *    `none` is a denial, so it withholds the key rather than conferring it.
  *
  * `memberStatus: 'active'` because that is what `addMember` writes. An
  * invitation cannot produce a suspended member.
@@ -929,24 +932,37 @@ function invitationReaches(
   const grants: ResolvedGrant[] = [];
 
   if (invitation.initialGrants !== null) {
-    // The level a selection confers. Deliberately the non-production default:
+    // The level a seed that names none confers — every seed written before the
+    // invite dialog offered levels. Deliberately the non-production default:
     // `applyInitialGrants` writes exactly this, so an invitation that ticked a
     // production environment grants a level chosen without regard to the flag —
     // and `can()` still applies the production rule on top.
-    const level = roleDefaultAccessLevel(invitation.role, false);
+    const fallbackLevel = roleDefaultAccessLevel(invitation.role, false);
 
-    const selectedEnvironment = invitation.initialGrants.some(
+    const selectedEnvironment = invitation.initialGrants.find(
       (seed) => seed.projectId === projectId && seed.environmentId === environmentId,
     );
-    const selectedProject = invitation.initialGrants.some(
+    const selectedProject = invitation.initialGrants.find(
       (seed) => seed.projectId === projectId && seed.environmentId === null,
     );
 
-    if (selectedEnvironment) grants.push({ projectId, environmentId, accessLevel: level });
+    // Both rows, in the same shape `applyInitialGrants` writes them: the
+    // environment row is emitted whenever the environment was named, at its own
+    // level, and `resolveAccessLevel` gives it precedence over the project row.
+    // Emitting only one of the two — or reading the project's level for a named
+    // environment — is how this check would drift from acceptance.
+    if (selectedEnvironment !== undefined) {
+      grants.push({
+        projectId,
+        environmentId,
+        accessLevel: selectedEnvironment.accessLevel ?? fallbackLevel,
+      });
+    }
     grants.push({
       projectId,
       environmentId: null,
-      accessLevel: selectedProject ? level : 'none',
+      accessLevel:
+        selectedProject === undefined ? 'none' : (selectedProject.accessLevel ?? fallbackLevel),
     });
   }
 
