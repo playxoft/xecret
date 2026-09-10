@@ -63,6 +63,30 @@ export function EnvKeyUnavailableState({
     );
   }
 
+  if (reason === 'downgraded') {
+    // No retry button, and no "continue anyway". The whole content of the
+    // warning is that the server asked this browser to stop encrypting, and an
+    // override beside that sentence is a button that exists to be clicked under
+    // deadline pressure by somebody who has read one line of it. The way out is
+    // a conversation with whoever runs the deployment, not a control here.
+    return (
+      <Alert tone="danger" title="This environment is no longer reporting end-to-end encryption">
+        <p>
+          Your browser has read this environment as end-to-end encrypted before. The server now says
+          it uses server-side encryption instead, which would mean sending every value you save in{' '}
+          <strong>plaintext</strong> — so nothing here will be read or written until that is
+          resolved.
+        </p>
+        <p className="mt-2">
+          There are two explanations and both need a person. Either this deployment genuinely
+          migrated the environment back, in which case an administrator can tell you so and you can
+          clear this site&apos;s stored data to accept it. Or the answer did not come from your
+          deployment, and clearing anything would be exactly what an attacker needs.
+        </p>
+      </Alert>
+    );
+  }
+
   if (reason === 'unkeyed') {
     return (
       <Alert tone="danger" title="This environment has no data key">

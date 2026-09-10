@@ -107,6 +107,11 @@ export const POST = authenticatedRoute<Params>(
             // A restore always appends to a secret that exists, so this is the
             // stored id — the one the re-encrypted value was sealed against.
             secretId: current.secretId,
+            // The version the client sealed the re-encryption for. A history
+            // drawer held open across an earlier restore sends a number that has
+            // already been used, and that is refused here rather than committed
+            // as a version its AAD does not name.
+            expectedVersion: clientBody.expectedVersion,
             value: {
               ...clientBody.value,
               ...(clientBody.encNote === undefined ? {} : { encNote: clientBody.encNote }),

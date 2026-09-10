@@ -6,6 +6,7 @@ import { useVaultKeys } from '@/components/vault/vault-keys';
 import { fetchEnvironmentKeys, keysPath, openEnvironmentKeys } from './env-keys';
 import type { EnvKeyUnavailable, EnvironmentRef } from './env-keys';
 import type { EnvKeyMaterial } from './env-key-store';
+import { modeIsAllowed, modePinKey, readModePins, recordModePin } from './pins';
 import { clientSecretIo, serverSecretIo } from './secret-io';
 import type { SecretIo } from './secret-io';
 import type { EnvironmentKeys } from './types';
@@ -78,6 +79,22 @@ export function useEnvironmentKeys(
         if (controller.signal.aborted) return;
 
         const context = { orgSlug, orgId: orgId ?? '', projectSlug, envSlug };
+
+        // ── The mode is checked before it is believed ──
+        // `encryptionMode` decides whether the editor above sends ciphertext or
+        // **plaintext values in request bodies**. Nothing in the payload
+        // authenticates it, so a server that flips it from `e2ee` to `server`
+        // collects every value saved afterwards without breaking anything. The
+        // pin is what makes that a refusal instead of a quiet success — see
+        // `pins.ts`. Recorded here too, on the read path, because a browser that
+        // only pinned on its first *write* would be unprotected on exactly the
+        // page load where the downgrade is offered.
+        const pinKey = modePinKey({ orgSlug, projectSlug, envSlug });
+        if (!modeIsAllowed(readModePins(), pinKey, keys.encryptionMode).allowed) {
+          setState({ status: 'unavailable', keys, reason: 'downgraded' });
+          return;
+        }
+        recordModePin(pinKey, keys.encryptionMode);
 
         if (keys.encryptionMode !== 'e2ee') {
           setState({ status: 'server', keys, io: serverSecretIo(context) });

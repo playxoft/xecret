@@ -229,6 +229,11 @@ async function createClientSecret(
     // ciphertext in this body was already sealed against it — see `id` on
     // `createClientSecretBody`.
     secretId: body.id,
+    // A create is version 1 by definition — there is no earlier row to append
+    // to — and the body carries no `expectedVersion` for that reason. Stated
+    // here rather than defaulted in the service, so the one function that checks
+    // this invariant sees a number from every caller.
+    expectedVersion: 1,
     value: {
       ...body.value,
       ...(body.encNote === undefined ? {} : { encNote: body.encNote }),

@@ -417,14 +417,31 @@ export interface ClientSecretValue {
 export interface ClientSecretWrite {
   name: string;
   /**
-   * The id the row takes if this write **creates** one.
+   * The id the ciphertext was sealed against.
    *
    * Chosen by the client and not by this process, because the AAD binds it (spec
    * §4.2) and the encryption happened in a browser before the request existed.
-   * Ignored when `existing` is present: an append keeps the stored id, which is
-   * the one that ciphertext was sealed against.
+   *
+   * **Not "the id to use if this creates a row".** It is a statement about bytes
+   * that already exist, and `prepareClientWrite` checks it against the id this
+   * write will actually land on. Where a row already exists and the client sealed
+   * against a different one, the write is refused; substituting the stored id
+   * would store a value nobody can ever read.
+   *
+   * For the single-secret routes the caller resolved the row by name and passes
+   * the stored id here, because the client resolved the same row by the same name
+   * from the same listing — so the check is trivially satisfied and the field
+   * carries its meaning rather than a second, weaker one.
    */
   secretId: string;
+  /**
+   * The version number the ciphertext is bound to.
+   *
+   * 1 for a create, `existing.version + 1` for an append — as the *client*
+   * computed it. See `expectedVersionSchema` in `schemas/secrets.ts` for what
+   * goes wrong without it.
+   */
+  expectedVersion: number;
   value: ClientSecretValue;
   valueType?: string | undefined;
   existing?: ExistingSecret | undefined;
@@ -571,11 +588,18 @@ interface PreparedClientWrite {
  * The declared type is still stored, still inherited, and still the rule the
  * client applies.
  *
- * The secret's id is chosen here for the same reason the server path chooses it:
- * the AAD binds it (spec §4.2), so a value cannot be encrypted for a row whose
- * identity does not exist yet. The difference is that on this path the *client*
- * chose it, minted it into the AAD, and sent it — which is why a create carries
- * a `secretId` from the request rather than one invented at this line.
+ * ── What *is* done here, and is the whole point of the function ──
+ * The two AAD components the client chose — the secret's id and the version the
+ * value will be stored as — are compared against what this write will actually
+ * land on. Both come from the request because both were baked into a ciphertext
+ * before the request existed; both are re-derived here from stored rows; and a
+ * disagreement is a conflict rather than a substitution.
+ *
+ * That refusal is the only defence there is. Every other AAD failure surfaces at
+ * the next read as an ordinary decryption error and the row can be rewritten
+ * from a backup. This one cannot: the value was never legible to this server, so
+ * a row committed under the wrong id or version is lost at the moment it is
+ * written, while the response says 200.
  */
 function prepareClientWrite(activeKeyId: string, write: ClientSecretWrite): PreparedClientWrite {
   if (write.value.envDataKeyId !== activeKeyId) {
@@ -622,15 +646,33 @@ function prepareClientWrite(activeKeyId: string, write: ClientSecretWrite): Prep
     }
   }
 
+  // Where this write actually lands, derived from what is stored — never from
+  // the request. The client's own answer to the same two questions arrived in
+  // `secretId` and `expectedVersion`, and the next lines are the comparison.
+  const secretId = existing ? existing.secretId : write.secretId;
+  const version = existing ? existing.version + 1 : 1;
+
+  if (secretId !== write.secretId || version !== write.expectedVersion) {
+    // The AAD binds both (spec §4.2). Committing here would write a row whose
+    // ciphertext names an id or a version the row does not have: undecryptable
+    // for ever, by everybody, reported as a success. Nobody can repair it —
+    // no operator holds the key, and the plaintext lives only in the client.
+    //
+    // Reached on the `unchanged` path? No: that branch returns above, and
+    // rightly. A matching HMAC means the stored value is already the one being
+    // sent, so no ciphertext is stored and there is nothing to bind wrongly.
+    // Refusing there would turn a harmless re-submission into an error.
+    throw errors.conflict(
+      `version_conflict: "${write.name}" changed while you were editing it. ` +
+        'Re-read it and try again.',
+    );
+  }
+
   return {
     kind: existing ? 'append' : 'create',
-    // The client's id on a create, the stored one on an append. Never minted
-    // here: a value encrypted against an id this line invented would fail to
-    // authenticate on its first read, for ever, with nothing at write time
-    // saying so.
-    secretId: existing ? existing.secretId : write.secretId,
+    secretId,
     name: write.name,
-    version: existing ? existing.version + 1 : 1,
+    version,
     valueType,
     retypes,
     value: write.value,

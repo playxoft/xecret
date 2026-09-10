@@ -140,6 +140,9 @@ function grantSeed() {
   return {
     recipientKind: 'member' as const,
     recipientId: USER_ID,
+    // Stored as the client stated it: the signature binds it, and every other
+    // source for it is a table this database rewrites.
+    recipientPublicKey: new Uint8Array(32).fill(7),
     edkSealed: new TextEncoder().encode('xk2.x25519.AAAA'),
     ehkSealed: new TextEncoder().encode('xk2.x25519.BBBB'),
     signature: new TextEncoder().encode('xk2.ed25519.CCCC'),

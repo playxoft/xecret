@@ -109,7 +109,12 @@ export type EnvKeyUnavailable =
   /** Access, but no grant. Somebody has to share the key. */
   | 'pending'
   /** An `e2ee` environment with no active key at all — a broken creation. */
-  | 'unkeyed';
+  | 'unkeyed'
+  /**
+   * The server answered `server` for an environment this browser has seen as
+   * `e2ee`. Refused rather than obeyed: see `pins.ts` on the mode book.
+   */
+  | 'downgraded';
 
 export type OpenEnvironmentResult =
   | { status: 'open'; material: EnvKeyMaterial; keys: EnvironmentKeys }
@@ -238,6 +243,10 @@ export async function sealGrantFor(params: {
   return {
     recipientKind: params.recipientKind,
     recipientId: params.recipientId,
+    // Sent because it is signed (spec §6.1). The server stores it verbatim, so
+    // the stored row carries every field its signature covers and a verifier
+    // never has to join to a table the server can rewrite.
+    recipientPublicKey: encodePublicKey(params.recipientPublicKey),
     edkSealed: sealed.edkSealed,
     ehkSealed: sealed.ehkSealed,
     signature,

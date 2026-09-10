@@ -4,12 +4,12 @@ import {
   listEnvironmentsForOrganization,
   listServiceTokens,
 } from '@xecret/db/repositories';
-import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { requireMembership, requireSessionPrincipal } from '@/server/members-service';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 import {
+  assertKeypairMatchesMode,
   decodeTokenPublicKey,
   resolveExpiry,
   serviceTokenCreateSchema,
@@ -93,18 +93,9 @@ export const POST = authenticatedRoute<Params>(
     const projectScope = await resolveProject(scope, body.projectSlug, services);
     const environmentScope = await resolveEnvironment(projectScope, body.environmentSlug, services);
 
-    // A keypair belongs to a token only where there is something to seal to it.
-    // Refused rather than ignored, for the same reason the secret routes refuse
-    // `note` on an `e2ee` environment: silently dropping a field a caller sent
-    // deliberately is how a client comes to believe it did something it did not.
-    if (body.publicKey !== undefined && environmentScope.environment.encryptionMode !== 'e2ee') {
-      throw errors.validation([
-        {
-          field: 'publicKey',
-          message: 'This environment uses server-side encryption; a token needs no keypair.',
-        },
-      ]);
-    }
+    // Both directions, in one place, with the reasoning: see
+    // `assertKeypairMatchesMode`.
+    assertKeypairMatchesMode(body.publicKey, environmentScope.environment.encryptionMode);
 
     const issued = await createServiceToken(services.db, {
       orgId,

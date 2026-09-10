@@ -59,6 +59,8 @@ export interface EnvKeyGrantRecord {
   envDataKeyId: string;
   recipientKind: GrantRecipientKind;
   recipientId: string;
+  /** The 32-byte X25519 key sealed to, as the client stated it at creation. */
+  recipientPublicKey: Uint8Array;
   edkSealed: Uint8Array;
   ehkSealed: Uint8Array;
   signature: Uint8Array;
@@ -98,6 +100,8 @@ export interface EnvironmentKeyState {
 export interface EnvKeyGrantSeed {
   recipientKind: GrantRecipientKind;
   recipientId: string;
+  /** 32 raw bytes: the X25519 key the blobs were sealed to, which the signature binds. */
+  recipientPublicKey: Uint8Array;
   edkSealed: Uint8Array;
   ehkSealed: Uint8Array;
   signature: Uint8Array;
@@ -118,6 +122,7 @@ const GRANT_COLUMNS = {
   memberUserId: envKeyGrants.memberUserId,
   serviceTokenId: envKeyGrants.serviceTokenId,
   invitationId: envKeyGrants.invitationId,
+  recipientPublicKey: envKeyGrants.recipientPublicKey,
   edkSealed: envKeyGrants.edkSealed,
   ehkSealed: envKeyGrants.ehkSealed,
   signature: envKeyGrants.signature,
@@ -954,6 +959,9 @@ function grantRow(
     memberUserId: seed.recipientKind === 'member' ? seed.recipientId : null,
     serviceTokenId: seed.recipientKind === 'token' ? seed.recipientId : null,
     invitationId: seed.recipientKind === 'invite' ? seed.recipientId : null,
+    // Stored as the client stated it, because the signature covers it and the
+    // row has to be verifiable from itself. See the column comment.
+    recipientPublicKey: seed.recipientPublicKey,
     edkSealed: seed.edkSealed,
     ehkSealed: seed.ehkSealed,
     signature: seed.signature,
@@ -979,6 +987,7 @@ interface GrantRow {
   memberUserId: string | null;
   serviceTokenId: string | null;
   invitationId: string | null;
+  recipientPublicKey: Uint8Array;
   edkSealed: Uint8Array;
   ehkSealed: Uint8Array;
   signature: Uint8Array;

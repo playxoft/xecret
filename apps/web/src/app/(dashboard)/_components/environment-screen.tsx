@@ -235,7 +235,6 @@ export function EnvironmentScreen({
         envSlug={envSlug}
         isProduction={isProduction}
         io={io}
-        existing={secrets.data ?? []}
         open={importing}
         onOpenChange={setImporting}
         onImported={() => {

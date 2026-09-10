@@ -341,6 +341,51 @@ Notes on the less obvious choices:
   dropping it in v2 would make the migration's before/after comparison harder to reason about
   for no gain.
 
+
+### 4.3 The client-write contract
+
+An AAD component chosen by a client is a promise about bytes that already exist. Two of them —
+`secretId` and `version` on `secret-value` — name a database row the client has not written
+yet, and the server decides where that row actually lands. When the two disagree, AES-GCM does
+its job perfectly and the outcome is still total loss: the row commits, the response is `200`,
+and the ciphertext authenticates against an AAD nobody will ever reconstruct.
+
+That failure has no repair. On a `server`-mode environment an operator holds the key and can
+re-encrypt from a backup. Here nobody does — the plaintext existed only inside a client that
+has moved on — so the loss is permanent at the instant of the write, and silent.
+
+It is also easy to reach without an attacker. Two clients writing one secret; one client whose
+listing is a page old; one screen holding a snapshot across its own earlier write.
+
+Therefore:
+
+> **Every client-encrypted write MUST state the AAD components it sealed against, and the server
+> MUST refuse the write when its own derivation of them differs.**
+
+| Write | States | Server derives it from |
+|---|---|---|
+| create | the `secretId` it minted; target version is 1 by definition | — |
+| update | `expectedVersion` | `MAX(version) + 1` of the stored secret |
+| restore | `expectedVersion`, distinct from the `version` being restored *from* | the same |
+| import (per entry) | the entry's `id` **and** its `expectedVersion` | the row the entry's name resolves to |
+
+The refusal is a `409`, not a validation error: the body was well formed and was correct when it
+was built. The remedy is to re-read and encrypt again, which is a retry rather than a fix.
+
+Three rules make it exact:
+
+- **The server never substitutes.** An import entry that planned a create for a name that turns
+  out to exist is refused, not stored under the row's own id. Substituting produces exactly the
+  undecryptable row this section exists to prevent, and does it while reporting a successful
+  import.
+- **A no-op is exempt.** When the write's `valueHmac` (§9) equals the stored one, no ciphertext
+  is stored, so nothing can be bound wrongly. Refusing there would turn a harmless
+  re-submission into an error.
+- **The plan is built against the whole listing.** A client that pages through names MUST read
+  every page before planning an import. The `409` is a backstop against a race; a plan built
+  against the first page is not a race, it is a guaranteed collision for every name past the
+  page boundary.
+
 ---
 
 ## 5. Sealed box
@@ -468,6 +513,21 @@ stored    := "xk2.ed25519." + b64url(signature)
 
 Verification recomputes `signingPayload` from the row's own columns and checks the signature
 against `user_keys.signPublicKey` for `env_key_grants.signedByUserId`.
+
+**`recipientPublicKey` is stored on the row**, in `env_key_grants.recipient_public_key`, exactly
+as the client stated it. It is the only field of the payload that is not otherwise a column, and
+recording it is what makes "from the row's own columns" true rather than aspirational. The
+alternative — reading the key from the principal's own table at verification time — fails twice
+over. It is *wrong*: `user_keys.enc_public_key` is replaced by a vault reset and an invitation's
+key is deleted at acceptance, so honest grants written before either event would recompute to a
+different payload and verify as forged. And it is *backwards*: the reason this field is in the
+payload at all is that a server must not be able to move a grant between two principals, and a
+verifier that takes the key from a table the server writes has handed that back.
+
+A verifier MAY additionally compare the recorded key against the principal's current one. That
+is a separate question with a separate answer — "this grant was sealed to a key this account no
+longer has" is not "this grant's signature does not verify" — and the two MUST NOT be collapsed
+into one result.
 
 ### 6.2 Why it is shaped this way
 
@@ -895,7 +955,10 @@ whole design:
 | `authHalf` | The `Authorization: Bearer` header, hashed on arrival | `SHA-256("xst_<env>_" + authHalf)` in `service_tokens.token_hash` |
 | `keyHalf` | **Nowhere.** It never leaves the client, is never transmitted, never logged, and never written to disk by the server | nothing |
 
-A client transmits `xst_<env>_<authHalf>` and nothing else. The full string is a credential
+A client MUST split the token exactly once, at the point where it builds its HTTP client, and
+MUST carry only `xst_<env>_<authHalf>` in whatever credential the rest of the process passes
+around; the key half reaches the key machinery by a path that is not the request path. A client
+transmits `xst_<env>_<authHalf>` and nothing else. The full string is a credential
 *and* a key; the half that authenticates is the only half any endpoint ever sees. An
 implementation that sends the whole token in an `Authorization` header has handed the server
 every secret in the environment and defeated the entire model — this is the single most
@@ -974,3 +1037,4 @@ parameter when the CLI did not ask for one, and never treats its absence as an e
 | 2026-09-08 | Phase 2a (server side of the user vault). The two references to `nextPinFailure` in `auth/pin.ts` now name `nextUnlockFailure` in `auth/vault.ts`, which replaced it when the PIN was retired, and §7.5 records that the recovery counter is kept separate from the passphrase one. No format, no derivation, and no byte layout changed. |
 | 2026-09-08 | Phase 2b (passkey unlock). Adds `xecret.v2.uk-unlock-verifier` to §3.3 — the first and only HKDF branch taking the UK as input keying material — and splits §8 into the two verifiers, with one shared attempt counter across both. Closes a gap the client half surfaced: a passkey unlock opens blob type 3 and therefore holds the UK, never `SK`, so it could decrypt everything and still not prove an unlock. No existing format, derivation, or byte layout changed; the new branch is additive. |
 | 2026-09-08 | Phase 4 (Go CLI and service-token E2EE). Adds §13, which specifies two strings the earlier phases had no headless client to need: the service token's `xst_<env>_<43>k<43>` layout, parsed by offset because `k` is in the base64url alphabet, with only the auth half ever transmitted; and the CLI hand-off wrap that carries the User Key from an unlocked browser to a `xecret login` process over the loopback redirect. The hand-off adds blob type 11 to §2.2 and the `cli-handoff` purpose to §4.2, both reusing the §5 sealed box unchanged. No existing format, derivation, or byte layout changed; the additions are additive, the legacy service-token shape stays valid, and no new HKDF branch was introduced — the token's key half is the X25519 scalar directly, precisely so §3.3's closed registry did not have to grow. |
+| 2026-09-10 | Review fixes. Adds §4.3, the client-write contract: every client-encrypted write states the `secretId` and version its ciphertext is bound to, and the server refuses rather than substitutes — closing a class of silent, unrepairable data loss reachable from an ordinary double-restore or an import planned against a truncated listing. §6.1 now requires `recipientPublicKey` to be stored on the grant row, because every other source for it is mutable and a deferred verifier reading one would report honest grants as forged. §13.1 states where a service token is split, after a client was found sending both halves in the `Authorization` header. No format, no derivation, and no byte layout changed; the additions are request fields and one column. |

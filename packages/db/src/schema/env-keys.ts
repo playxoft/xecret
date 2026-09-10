@@ -205,6 +205,19 @@ export const envKeyGrants = pgTable(
     edkSealed: bytea('edk_sealed').notNull(),
     /** `xk2.x25519.` blob (type 7): the EHK, same construction, different AAD. */
     ehkSealed: bytea('ehk_sealed').notNull(),
+    /**
+     * The 32-byte X25519 public key the two blobs were sealed to.
+     *
+     * Recorded because the signature binds it (spec §6.1) and every other place
+     * it could be read from is mutable: a vault reset replaces
+     * `user_keys.enc_public_key`, and an invitation's key is deleted at
+     * acceptance. A deferred verifier that joined to those tables would report
+     * every honest grant written before a reset as forged — and would be taking
+     * the one field the signature pins *against the server* from a column the
+     * server writes. Stored raw, not as an `xk2.` blob: a public key has no
+     * version tag and no AAD (see `types.ts` in the client package).
+     */
+    recipientPublicKey: bytea('recipient_public_key').notNull(),
     /** `xk2.ed25519.` blob (type 8): the creator's signature over both (spec §6.1). */
     signature: bytea('signature').notNull(),
     /**

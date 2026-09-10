@@ -190,6 +190,168 @@ function defaultStorage(): Storage | null {
 }
 
 /**
+ * ── The second book: which mode an environment is in ──
+ *
+ * The same trust-on-first-use argument, applied to a field rather than a key.
+ * `GET …/keys` answers `encryptionMode`, and the dashboard believes it: a
+ * `'server'` answer means the editor sends **plaintext values in request
+ * bodies**. So a malicious or compromised server that flips an environment's
+ * mode from `e2ee` to `server` does not have to break any cryptography — it just
+ * asks, and the next value anybody saves arrives in the clear.
+ *
+ * Nothing in the payload can be checked against anything: the mode is a column,
+ * not a signed statement, and there is no key it is bound to. What there is, as
+ * with a public key, is continuity. Once this browser has seen an environment
+ * answer `e2ee`, a later `server` answer is refused outright — not warned about
+ * and not overridable in the same screen that would have carried out the
+ * downgrade, because "click here to send your credentials in plaintext" is a
+ * button no interface should offer under pressure.
+ *
+ * `server` → `e2ee` pins forward and is not refused. That direction is the
+ * migration this whole branch exists to perform, and it takes capability away
+ * from the server rather than granting it.
+ *
+ * ── Why the slug path is the key, and not `environmentId` ──
+ * The id arrives in the same response as the mode, so a server willing to lie
+ * about one would file its lie under a fresh id and miss the pin entirely. The
+ * slug path is what *this browser* put in the URL. It is renameable, and a
+ * rename loses the pin — which reads as first contact and permits the answer,
+ * over-permitting in a rare and deliberate case rather than under-permitting on
+ * every page load.
+ */
+
+/** Separate from the key book: a different record shape, kept in a different key. */
+const MODE_STORAGE_KEY = 'xecret.pins.mode.v1';
+
+export type EncryptionMode = 'server' | 'e2ee';
+
+export interface ModePin {
+  mode: EncryptionMode;
+  firstSeen: string;
+}
+
+export type ModePinStore = Readonly<Record<string, ModePin>>;
+
+/** How a mode pin is filed. The slug path, never an id the server chose. */
+export function modePinKey(target: {
+  orgSlug: string;
+  projectSlug: string;
+  envSlug: string;
+}): string {
+  return `mode:${target.orgSlug}/${target.projectSlug}/${target.envSlug}`;
+}
+
+/** Reads the mode book. Every failure is an empty book — see {@link readPins}. */
+export function readModePins(storage: Storage | null = defaultStorage()): ModePinStore {
+  const parsed = readRecord(MODE_STORAGE_KEY, storage);
+  const pins: Record<string, ModePin> = {};
+
+  for (const [key, value] of Object.entries(parsed)) {
+    if (typeof value !== 'object' || value === null) continue;
+    const candidate = value as Record<string, unknown>;
+    const mode = candidate['mode'];
+    if (mode !== 'server' && mode !== 'e2ee') continue;
+    pins[key] = {
+      mode,
+      firstSeen:
+        typeof candidate['firstSeen'] === 'string'
+          ? candidate['firstSeen']
+          : '1970-01-01T00:00:00Z',
+    };
+  }
+
+  return pins;
+}
+
+/**
+ * Whether an environment may be used in the mode the server just claimed.
+ *
+ * `false` for exactly one transition — a pinned `e2ee` answering `server` — and
+ * `true` for every other combination including first contact.
+ */
+export function modeIsAllowed(
+  pins: ModePinStore,
+  key: string,
+  mode: EncryptionMode,
+): { allowed: boolean; pinned: EncryptionMode | null; firstSeen: string | null } {
+  const pinned = pins[key];
+  if (pinned === undefined) return { allowed: true, pinned: null, firstSeen: null };
+  return {
+    allowed: !(pinned.mode === 'e2ee' && mode === 'server'),
+    pinned: pinned.mode,
+    firstSeen: pinned.firstSeen,
+  };
+}
+
+/**
+ * Records the mode this browser just used, persisting immediately.
+ *
+ * Unlike {@link recordPin}, this writes on *observation* rather than on an act
+ * the user went through with, and the asymmetry is deliberate. A key pin is a
+ * statement about somebody the user chose to seal to; a mode pin is a statement
+ * about a request this browser has already made, and delaying it until the first
+ * write would leave the read path — which decrypts under the very key the
+ * downgrade would abandon — unpinned.
+ *
+ * A pin only ever moves `server` → `e2ee`. The other direction is refused before
+ * this is reached, so overwriting downward is not a case that arises; the guard
+ * is written out anyway, because a future caller reaching it by another path must
+ * not be able to erase the pin that would have stopped it.
+ */
+export function recordModePin(
+  key: string,
+  mode: EncryptionMode,
+  storage: Storage | null = defaultStorage(),
+  now: Date = new Date(),
+): void {
+  const pins = readModePins(storage);
+  const pinned = pins[key];
+  if (pinned !== undefined && (pinned.mode === mode || pinned.mode === 'e2ee')) return;
+
+  writeRecord(
+    MODE_STORAGE_KEY,
+    { ...pins, [key]: { mode, firstSeen: now.toISOString() } },
+    storage,
+  );
+}
+
+/**
+ * The tolerant read both books share: a store that cannot be read is a store
+ * with nothing in it, never an exception thrown at render.
+ */
+function readRecord(storageKey: string, storage: Storage | null): Record<string, unknown> {
+  if (storage === null) return {};
+
+  let raw: string | null;
+  try {
+    raw = storage.getItem(storageKey);
+  } catch {
+    return {};
+  }
+  if (raw === null) return {};
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
+  return parsed as Record<string, unknown>;
+}
+
+function writeRecord(storageKey: string, value: unknown, storage: Storage | null): void {
+  if (storage === null) return;
+  try {
+    storage.setItem(storageKey, JSON.stringify(value));
+  } catch {
+    // See writePins: a pin that could not be written degrades to first contact,
+    // which over-permits once rather than warning for ever.
+  }
+}
+
+/**
  * The short human-comparable form of a public key.
  *
  * ── The format, and why this one ──

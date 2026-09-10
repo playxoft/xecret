@@ -22,6 +22,7 @@ import { apiPath, withQuery } from '@/app/(dashboard)/_lib/paths';
 import type {
   ImportPlanItem,
   ImportPlanResponse,
+  SecretListResponse,
   SecretRestoreResponse,
   SecretWriteResponse,
 } from '@/components/secrets/types';
@@ -55,6 +56,17 @@ import type { ClientEnvironmentBundle } from './types';
  * locked vault, or a key nobody has shared yet. The lock screen already gates
  * the first; the second is a designed state with its own copy.
  */
+
+/**
+ * How many names one listing page carries while an import reads them all.
+ *
+ * The server's own ceiling, so the loop below does the fewest round trips the
+ * API allows rather than a number chosen to look tidy.
+ */
+const LISTING_PAGE_SIZE = 200;
+
+/** See `listAllSecrets`: the loop's exit condition is the server's to supply. */
+const MAX_LISTING_PAGES = 100;
 
 /** Which row a value belongs to, as the table already knows it. */
 export interface SecretRef {
@@ -100,10 +112,6 @@ export interface SecretIo {
     format: ImportFormat | 'auto';
     strategy: ConflictStrategy;
     dryRun: boolean;
-    /** Names already in the environment. Only read on the `e2ee` path. */
-    existingNames: readonly string[];
-    /** The rows an overwrite appends to, by name. Only read on the `e2ee` path. */
-    existing: ReadonlyMap<string, SecretRef>;
   }) => Promise<ImportPlanResponse>;
 }
 
@@ -223,6 +231,42 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
     });
   }
 
+  /**
+   * Every secret in the environment, by name, however many pages that takes.
+   *
+   * Metadata only — the listing carries no ciphertext — so this costs pages, not
+   * decryptions, and it is the only honest input to an import plan. See
+   * `runImport`.
+   */
+  async function listAllSecrets(): Promise<SecretRef[]> {
+    const path = apiPath.secrets(orgSlug, projectSlug, envSlug);
+    const all: SecretRef[] = [];
+    let cursor: string | null = null;
+
+    // A bound, because the loop's exit condition comes from the server. A cursor
+    // that never resolves to `null` — a bug, or a server that wants this tab to
+    // stop responding — must end as a named failure rather than as a browser
+    // that hangs. Well above any environment: the import itself refuses more
+    // than 1000 entries.
+    for (let page = 0; page < MAX_LISTING_PAGES; page += 1) {
+      const response: SecretListResponse = await api.get<SecretListResponse>(
+        withQuery(path, {
+          limit: LISTING_PAGE_SIZE,
+          ...(cursor === null ? {} : { cursor }),
+        }),
+      );
+
+      for (const secret of response.data) {
+        all.push({ id: secret.id, name: secret.name, version: secret.version });
+      }
+
+      cursor = response.nextCursor;
+      if (cursor === null) return all;
+    }
+
+    throw new Error('This environment has more secrets than an import can plan against.');
+  }
+
   return {
     mode: 'e2ee',
 
@@ -275,13 +319,13 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
     },
 
     update: async (secret, input) => {
+      // The version this ciphertext will be *stored* as, computed from the
+      // snapshot this screen is holding.
+      const version = secret.version + 1;
       const value = await encryptValue({
         material,
         target: targetFor(secret.id),
-        // The version this ciphertext will be *stored* as. The server rejects a
-        // row that lands at any other number, because the AAD would name one
-        // version and the row another — unopenable, for ever, with a 200.
-        version: secret.version + 1,
+        version,
         plaintext: input.value,
       });
 
@@ -289,6 +333,12 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
         apiPath.secret(orgSlug, projectSlug, envSlug, secret.name),
         {
           value,
+          // Stated, not assumed. The server derives the same number from the
+          // stored row and refuses the write when the two disagree — which is
+          // what a second writer, or a snapshot older than it looks, produces.
+          // Without this the row commits at the server's number carrying a
+          // ciphertext bound to ours: unopenable for ever, behind a 200.
+          expectedVersion: version,
           ...(input.valueType === undefined ? {} : { valueType: input.valueType }),
         },
       );
@@ -322,16 +372,22 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
 
       const plaintext = await open(previous.secret);
 
+      const version = secret.version + 1;
       const value = await encryptValue({
         material,
         target: targetFor(secret.id),
-        version: secret.version + 1,
+        version,
         plaintext,
       });
 
       return api.post<SecretRestoreResponse>(
         apiPath.secretRestore(orgSlug, projectSlug, envSlug, secret.name),
-        { version: fromVersion, value },
+        // Two different versions, and the names say which is which:
+        // `version` is the one being restored *from*, `expectedVersion` is the
+        // one these bytes are bound to. A drawer that restored once and kept its
+        // snapshot sends the same `expectedVersion` twice, and the second one is
+        // refused rather than stored under a number its AAD does not name.
+        { version: fromVersion, expectedVersion: version, value },
       );
     },
 
@@ -347,9 +403,20 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
           : input.format;
 
       const parsed = parseWith(detected, input.content);
+
+      // Read here, and read to exhaustion. The screen's own listing is paged —
+      // it stops at the first page unless somebody scrolls — and a plan built
+      // against a truncated set classifies an existing secret as a *create*: a
+      // fresh uuid, version 1, and a ciphertext sealed against both. The server
+      // resolves the stored row instead and refuses, which is the backstop; a
+      // plan that never gets it wrong is the fix. The CLI has always paginated
+      // fully here, and this is the same rule.
+      const existing = await listAllSecrets();
+      const byName = new Map(existing.map((secret) => [secret.name, secret]));
+
       const plan = buildImportPlan({
         parsed,
-        existingNames: [...input.existingNames],
+        existingNames: existing.map((secret) => secret.name),
         strategy: input.strategy,
       });
 
@@ -360,15 +427,21 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
 
       const entries = [];
       for (const item of writable) {
-        const target = input.existing.get(item.targetName);
+        const target = byName.get(item.targetName);
         const id = target?.id ?? uuidv7();
+        const version = target === undefined ? 1 : target.version + 1;
         entries.push({
           id,
           name: item.targetName,
+          // Both AAD components this entry was sealed against, stated. The server
+          // re-derives them from the stored rows and refuses a disagreement
+          // rather than committing under an id or a version the ciphertext does
+          // not name.
+          expectedVersion: version,
           value: await encryptValue({
             material,
             target: targetFor(id),
-            version: target === undefined ? 1 : target.version + 1,
+            version,
             plaintext: item.value,
           }),
         });

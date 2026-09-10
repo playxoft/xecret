@@ -868,9 +868,11 @@ func (a *app) decryptRevealed(
 // reveal. The listing carries the id and the version and decrypts nothing, so
 // asking writes no `secret.revealed` record for a write.
 //
-// The server re-derives the version and refuses a row that lands at any other
-// number, so a concurrent write is a rejected request rather than a ciphertext
-// nobody can ever open.
+// That listing can be stale by the time the request lands, so the version it
+// produced is **sent** with the write. The server derives its own target from
+// the stored row and refuses the write when the two disagree; without that a
+// concurrent writer's version lands under this ciphertext and the row is
+// unopenable for ever, by everybody, behind an HTTP 200.
 func writeClientSecret(
 	ctx context.Context,
 	a *app,
@@ -893,13 +895,14 @@ func writeClientSecret(
 	}
 
 	if current != nil {
-		sealed, encryptErr := material.EncryptSecret(current.ID, current.Version+1, value)
+		nextVersion := current.Version + 1
+		sealed, encryptErr := material.EncryptSecret(current.ID, nextVersion, value)
 		if encryptErr != nil {
 			return false, nil, encryptErr
 		}
 		result, err = client.UpdateClientSecret(
-			ctx, resolved.Org, resolved.Project, resolved.Environment, name, sealed, valueType)
-		return true, result, err
+			ctx, resolved.Org, resolved.Project, resolved.Environment, name, sealed, nextVersion, valueType)
+		return true, result, withWriteConflictHint(err)
 	}
 
 	// The id is minted here because the AAD binds it and the value is encrypted
@@ -987,13 +990,30 @@ func restoreClientSecret(
 		return nil, fmt.Errorf("%s does not exist in %s/%s", name, resolved.Project, resolved.Environment)
 	}
 
-	sealed, err := material.EncryptSecret(source.ID, current+1, plaintext)
+	nextVersion := current + 1
+	sealed, err := material.EncryptSecret(source.ID, nextVersion, plaintext)
 	if err != nil {
 		return nil, err
 	}
 
-	return client.RestoreClientSecret(
-		ctx, resolved.Org, resolved.Project, resolved.Environment, name, version, sealed)
+	result, err := client.RestoreClientSecret(
+		ctx, resolved.Org, resolved.Project, resolved.Environment, name, version, sealed, nextVersion)
+	return result, withWriteConflictHint(err)
+}
+
+// withWriteConflictHint turns the server's refusal of a client-encrypted write
+// into an instruction.
+//
+// The refusal means something wrote between the listing this command read and
+// the request it sent. There is nothing to repair and nothing was lost — the
+// point of the check is that nothing was *written* — so the whole remedy is to
+// run the command again against the state that now exists.
+func withWriteConflictHint(err error) error {
+	apiErr, ok := api.AsError(err)
+	if !ok || apiErr.Status != 409 {
+		return err
+	}
+	return fmt.Errorf("%w. Run the command again: it re-reads the secret first", err)
 }
 
 // sealNote moves a plaintext note onto the encrypted field, where the

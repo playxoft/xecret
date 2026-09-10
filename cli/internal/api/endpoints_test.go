@@ -288,3 +288,87 @@ func TestExportAndPullAreDifferentPaths(t *testing.T) {
 		t.Fatalf("paths = %v — the audit record is told apart by the path", paths)
 	}
 }
+
+// ── The client-encrypted write bodies ────────────────────────────────────────
+//
+// Each of these carries the version its ciphertext is bound to. The server
+// derives its own target from the stored row and refuses a disagreement, so a
+// body that omitted the field would have the row commit at a number the
+// ciphertext does not name — unopenable for ever, by everybody, behind a 200.
+
+func TestClientUpdateSendsTheVersionItSealedFor(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("method = %s, want PATCH", r.Method)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"secret":{"name":"API_KEY","version":5,"status":"updated"}}`))
+	}))
+	defer server.Close()
+
+	_, err := New(server.URL, "xct_live_abc", "test-agent").UpdateClientSecret(
+		context.Background(), "acme", "web", "production", "API_KEY",
+		ClientValue{Ciphertext: "xk2.gcm.AAAA", ClientAlgorithm: "xk2.gcm"}, 5, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["expectedVersion"] != float64(5) {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+// A restore carries two version numbers and they are not the same one: the
+// version being restored *from*, and the version the re-encrypted bytes are
+// bound to. Conflating them is the bug the two names exist to prevent.
+func TestClientRestoreSendsBothVersions(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"secret":{"name":"API_KEY","version":8,"status":"changed","restoredFrom":3}}`))
+	}))
+	defer server.Close()
+
+	_, err := New(server.URL, "xct_live_abc", "test-agent").RestoreClientSecret(
+		context.Background(), "acme", "web", "production", "API_KEY", 3,
+		ClientValue{Ciphertext: "xk2.gcm.AAAA", ClientAlgorithm: "xk2.gcm"}, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["version"] != float64(3) || body["expectedVersion"] != float64(8) {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestClientImportEntriesCarryTheirExpectedVersion(t *testing.T) {
+	var body struct {
+		Entries []map[string]any `json:"entries"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"dryRun":false,"counts":{},"items":[]}`))
+	}))
+	defer server.Close()
+
+	_, err := New(server.URL, "xct_live_abc", "test-agent").ImportClientEntries(
+		context.Background(), "acme", "web", "production",
+		[]ClientImportEntry{
+			{ID: "a", Name: "NEW", ExpectedVersion: 1, Value: ClientValue{Ciphertext: "xk2.gcm.AAAA"}},
+			{ID: "b", Name: "OLD", ExpectedVersion: 4, Value: ClientValue{Ciphertext: "xk2.gcm.BBBB"}},
+		},
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Entries) != 2 {
+		t.Fatalf("entries = %+v", body.Entries)
+	}
+	if body.Entries[0]["expectedVersion"] != float64(1) ||
+		body.Entries[1]["expectedVersion"] != float64(4) {
+		t.Fatalf("entries = %+v", body.Entries)
+	}
+}

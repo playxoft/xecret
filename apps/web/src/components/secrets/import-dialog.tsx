@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { errorMessage, isApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -41,7 +41,6 @@ import type {
   ImportPlanResponse,
   ImportSourceFormat,
   ImportStrategy,
-  SecretSummary,
 } from './types';
 
 export interface ImportDialogProps {
@@ -51,16 +50,6 @@ export interface ImportDialogProps {
   isProduction: boolean;
   /** How the environment is written. `null` when its key is unavailable. */
   io: SecretIo | null;
-  /**
-   * The environment's current listing.
-   *
-   * Only read on the `e2ee` path, where the planning happens here: an entry that
-   * appends to an existing secret has to be encrypted against **that row's** id
-   * and **the version it will become**, both of which come from this listing.
-   * The `server` path ignores it — the Worker holds the same rows and does the
-   * same planning with them.
-   */
-  existing: readonly SecretSummary[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onImported: () => void;
@@ -169,7 +158,6 @@ function ImportBody({
   envSlug,
   isProduction,
   io,
-  existing,
   onOpenChange,
   onImported,
   onApplyingChange,
@@ -226,34 +214,18 @@ function ImportBody({
     onApplyingChange(busy);
   }
 
-  const existingNames = useMemo(() => existing.map((secret) => secret.name), [existing]);
-  const existingByName = useMemo(
-    () =>
-      new Map(
-        existing.map((secret) => [
-          secret.name,
-          { id: secret.id, name: secret.name, version: secret.version },
-        ]),
-      ),
-    [existing],
-  );
-
   const run = useCallback(
     (dryRun: boolean): Promise<ImportPlanResponse> => {
       if (io === null) {
         return Promise.reject(new Error('This environment’s key is not available.'));
       }
-      return io.runImport({
-        content,
-        filename,
-        format,
-        strategy,
-        dryRun,
-        existingNames,
-        existing: existingByName,
-      });
+      // No listing is passed down. This screen's copy is paged and may hold only
+      // the first 200 names; a plan built from it would classify the 201st as a
+      // create and seal a ciphertext against a uuid the server will not use. The
+      // IO reads the complete listing itself — see `runImport`.
+      return io.runImport({ content, filename, format, strategy, dryRun });
     },
-    [io, content, format, filename, strategy, existingNames, existingByName],
+    [io, content, format, filename, strategy],
   );
 
   // The dry run is re-requested whenever the file, the format or the strategy

@@ -294,11 +294,14 @@ async function importClientEntries(context: {
 
     return {
       name: entry.name,
-      // The entry's own uuid where this turns out to be a create, and the stored
-      // one where it appends. The client sealed against whichever of the two its
-      // own reading of the listing said applied, and a disagreement is caught by
-      // GCM on the first read rather than here.
-      secretId: target ? target.secretId : entry.id,
+      // The id the entry's ciphertext was sealed against, as the client stated
+      // it — never the stored one substituted in its place. Where the two
+      // disagree the client planned a create for a name that already exists
+      // (a truncated listing is the usual cause) and `prepareClientWrite`
+      // refuses; appending under the stored id would store a value whose AAD
+      // names the other one, unopenable for ever behind a 200.
+      secretId: entry.id,
+      expectedVersion: entry.expectedVersion,
       value: { ...entry.value, ...(entry.encNote === undefined ? {} : { encNote: entry.encNote }) },
       ...(target
         ? {

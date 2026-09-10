@@ -196,9 +196,13 @@ func importClientSide(
 
 		// A create seals against the id this process mints and version 1; an
 		// overwrite seals against the stored id and the version the row is about
-		// to become. The server re-derives both and refuses a row that lands
-		// anywhere else, so a concurrent write is a rejected request rather than
-		// a ciphertext nobody can ever open.
+		// to become. Both travel with the entry, because both are in the AAD and
+		// this listing can be stale by the time the request lands: the server
+		// re-plans against the rows that exist now and refuses any entry whose id
+		// or version it does not agree with, rather than writing it under the row
+		// it resolved. Without that, an entry planned as a create for a name that
+		// already exists is stored under the stored id — a ciphertext naming a
+		// uuid the row does not have, unopenable for ever, reported as success.
 		secretID, version := "", 1
 		if target, exists := current[item.TargetName]; exists {
 			secretID, version = target.ID, target.Version+1
@@ -211,7 +215,7 @@ func importClientSide(
 			return encryptErr
 		}
 		entries = append(entries, api.ClientImportEntry{
-			ID: secretID, Name: item.TargetName, Value: sealed,
+			ID: secretID, Name: item.TargetName, ExpectedVersion: version, Value: sealed,
 		})
 	}
 
@@ -228,7 +232,7 @@ func importClientSide(
 	result, err := client.ImportClientEntries(
 		ctx, resolved.Org, resolved.Project, resolved.Environment, entries, input.dryRun)
 	if err != nil {
-		return err
+		return withWriteConflictHint(err)
 	}
 
 	// The server's outcome per name, joined to the local plan's note — which is

@@ -311,7 +311,7 @@ describe('secret-value vectors', () => {
     expect(plaintexts).toContain('');
     expect(plaintexts.some((value) => value.length === 65_536)).toBe(true);
     // eslint-disable-next-line no-control-regex -- deliberately asking for non-ASCII
-    expect(plaintexts.some((value) => /[^ -]/.test(value))).toBe(true);
+    expect(plaintexts.some((value) => /[^\u0000-\u007f]/.test(value))).toBe(true);
     expect(of('secret-value').some((vector) => vector.input['field'] === 'note')).toBe(true);
   });
 });

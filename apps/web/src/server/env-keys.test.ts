@@ -68,6 +68,8 @@ const GRANT_ID = '01930000-0000-7000-8000-0000000000f5';
 const SEALED = `xk2.x25519.${'A'.repeat(123)}`;
 /** A conforming `xk2.ed25519.` payload: exactly 64 bytes. */
 const SIGNATURE = `xk2.ed25519.${'B'.repeat(86)}`;
+/** A conforming 32-byte public key, base64url. */
+const RECIPIENT_KEY = toBase64Url(new Uint8Array(32).fill(7));
 /** A conforming `xk2.gcm.` payload, comfortably above the 28-byte floor. */
 const CIPHERTEXT = `xk2.gcm.${'C'.repeat(64)}`;
 
@@ -190,6 +192,7 @@ function grant(overrides: Partial<{ kind: 'member' | 'token' | 'invite'; id: str
   return {
     recipientKind: overrides.kind ?? ('member' as const),
     recipientId: overrides.id ?? OWNER_ID,
+    recipientPublicKey: RECIPIENT_KEY,
     edkSealed: SEALED,
     ehkSealed: SEALED,
     signature: SIGNATURE,
@@ -203,6 +206,7 @@ function grantRow(kind: 'member' | 'token' | 'invite', id: string, keyId = KEY_I
     envDataKeyId: keyId,
     recipientKind: kind,
     recipientId: id,
+    recipientPublicKey: new Uint8Array(32).fill(7),
     edkSealed: new TextEncoder().encode(SEALED),
     ehkSealed: new TextEncoder().encode(SEALED),
     signature: new TextEncoder().encode(SIGNATURE),
@@ -518,6 +522,7 @@ describe('the key state payload', () => {
     const state = await environmentKeyState(scope(), services(), ownerPrincipal);
 
     expect(state.myGrant).toEqual({
+      recipientPublicKey: RECIPIENT_KEY,
       edkSealed: SEALED,
       ehkSealed: SEALED,
       signature: SIGNATURE,
@@ -806,6 +811,7 @@ describe('the client write path', () => {
       writer: { userId: OWNER_ID },
       name: 'DATABASE_URL',
       secretId: NEW_SECRET_ID,
+      expectedVersion: 1,
       value,
     });
 
@@ -830,7 +836,11 @@ describe('the client write path', () => {
     const result = await writeClientSecretValue(scope(), services(), {
       writer: { userId: OWNER_ID },
       name: 'DATABASE_URL',
+      // Deliberately not the stored id, and deliberately a version nobody could
+      // be writing: a matching HMAC stores nothing, so there is no ciphertext
+      // whose binding could be wrong and nothing to refuse.
       secretId: NEW_SECRET_ID,
+      expectedVersion: 99,
       value,
       existing: {
         secretId: '01930000-0000-7000-8000-0000000000e1',
@@ -850,7 +860,8 @@ describe('the client write path', () => {
     const result = await writeClientSecretValue(scope(), services(), {
       writer: { userId: OWNER_ID },
       name: 'DATABASE_URL',
-      secretId: NEW_SECRET_ID,
+      secretId: '01930000-0000-7000-8000-0000000000e1',
+      expectedVersion: 2,
       value: { ...value, valueHmac: HMAC_B },
       existing: {
         secretId: '01930000-0000-7000-8000-0000000000e1',
@@ -873,6 +884,7 @@ describe('the client write path', () => {
         writer: { userId: OWNER_ID },
         name: 'DATABASE_URL',
         secretId: NEW_SECRET_ID,
+        expectedVersion: 1,
         value: { ...value, envDataKeyId: '01930000-0000-7000-8000-00000000dead' },
       }),
     );
@@ -893,6 +905,7 @@ describe('the client write path', () => {
         writer: { userId: OWNER_ID },
         name: 'DATABASE_URL',
         secretId: NEW_SECRET_ID,
+        expectedVersion: 1,
         value,
       }),
     );
@@ -916,10 +929,11 @@ describe('the client write path', () => {
       writer: { userId: OWNER_ID },
       dryRun: true,
       writes: [
-        { name: 'NEW_ONE', secretId: NEW_SECRET_ID, value },
+        { name: 'NEW_ONE', secretId: NEW_SECRET_ID, expectedVersion: 1, value },
         {
           name: 'SAME',
-          secretId: '01930000-0000-7000-8000-0000000000c2',
+          secretId: '01930000-0000-7000-8000-0000000000e2',
+          expectedVersion: 6,
           value,
           existing: {
             secretId: '01930000-0000-7000-8000-0000000000e2',
@@ -933,6 +947,105 @@ describe('the client write path', () => {
     expect(results.map((result) => result.status)).toEqual(['created', 'unchanged']);
     expect(repository.createSecret).not.toHaveBeenCalled();
     expect(repository.addSecretVersion).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The AAD components the client chose, checked against where the write lands.
+   *
+   * Every case below would previously have committed with a 200 and produced a
+   * row that opens for nobody — permanently, because no operator holds the key
+   * and the plaintext existed only in the client that has since moved on.
+   */
+  describe('the client-write binding', () => {
+    it('refuses a version the client did not seal for', async () => {
+      // The repro: a version-history drawer left open across a restore. Its
+      // snapshot still says version 3, so the second restore seals for 4 — and
+      // the row is about to become 5.
+      const error = await rejection(() =>
+        writeClientSecretValue(scope(), services(), {
+          writer: { userId: OWNER_ID },
+          name: 'DATABASE_URL',
+          secretId: '01930000-0000-7000-8000-0000000000e1',
+          expectedVersion: 4,
+          value: { ...value, valueHmac: HMAC_B },
+          existing: {
+            secretId: '01930000-0000-7000-8000-0000000000e1',
+            version: 4,
+            valueHmac: new Uint8Array(32).fill(1),
+          },
+        }),
+      );
+
+      expect(error.code).toBe('conflict');
+      expect(error.message).toContain('version_conflict');
+      expect(repository.addSecretVersion).not.toHaveBeenCalled();
+    });
+
+    it('refuses an entry that planned a create for a name that already exists', async () => {
+      // The repro: a browser that listed only the first 200 names planned a
+      // create — fresh uuid, version 1 — for the 201st. The server resolves the
+      // stored row instead. Appending under the stored id would store bytes
+      // whose AAD names the uuid the client invented.
+      const error = await rejection(() =>
+        applyClientSecretWrites(scope(), services(), {
+          writer: { userId: OWNER_ID },
+          writes: [
+            {
+              name: 'DATABASE_URL',
+              secretId: NEW_SECRET_ID,
+              expectedVersion: 1,
+              value: { ...value, valueHmac: HMAC_B },
+              existing: {
+                secretId: '01930000-0000-7000-8000-0000000000e1',
+                version: 7,
+                valueHmac: new Uint8Array(32).fill(1),
+              },
+            },
+          ],
+        }),
+      );
+
+      expect(error.code).toBe('conflict');
+      expect(error.message).toContain('DATABASE_URL');
+      expect(repository.createSecret).not.toHaveBeenCalled();
+      expect(repository.addSecretVersion).not.toHaveBeenCalled();
+    });
+
+    it('refuses before the batch is written, not part-way through it', async () => {
+      // Preparation happens for every write before any of them commits, so a
+      // bad entry in an import takes nothing with it.
+      const error = await rejection(() =>
+        applyClientSecretWrites(scope(), services(), {
+          writer: { userId: OWNER_ID },
+          writes: [
+            { name: 'GOOD', secretId: NEW_SECRET_ID, expectedVersion: 1, value },
+            { name: 'BAD', secretId: NEW_SECRET_ID, expectedVersion: 3, value },
+          ],
+        }),
+      );
+
+      expect(error.code).toBe('conflict');
+      expect(repository.createSecret).not.toHaveBeenCalled();
+    });
+
+    it('does not refuse a no-op, whatever it claims to have sealed for', async () => {
+      // A matching HMAC stores no ciphertext, so nothing can be bound wrongly.
+      // Refusing would turn a harmless re-submission into an error.
+      const result = await writeClientSecretValue(scope(), services(), {
+        writer: { userId: OWNER_ID },
+        name: 'DATABASE_URL',
+        secretId: NEW_SECRET_ID,
+        expectedVersion: 1,
+        value,
+        existing: {
+          secretId: '01930000-0000-7000-8000-0000000000e1',
+          version: 9,
+          valueHmac: new Uint8Array(32).fill(1),
+        },
+      });
+
+      expect(result.status).toBe('unchanged');
+    });
   });
 });
 
@@ -979,7 +1092,23 @@ describe('blob validation', () => {
   });
 
   it('rejects an unknown field on a grant', () => {
-    expect(grantSchema.safeParse({ ...grant(), recipientPublicKey: 'x' }).success).toBe(false);
+    expect(grantSchema.safeParse({ ...grant(), signedByUserId: OWNER_ID }).success).toBe(false);
+  });
+
+  it('requires the recipient public key the signature binds', () => {
+    // Without it the row is not verifiable from itself, and a deferred verifier
+    // would have to read the key from a table a vault reset rewrites — which
+    // makes every honest pre-reset grant look forged (spec §6.1).
+    const withoutKey: Record<string, unknown> = { ...grant() };
+    delete withoutKey['recipientPublicKey'];
+    expect(grantSchema.safeParse(withoutKey).success).toBe(false);
+  });
+
+  it('rejects a recipient public key that is not 32 bytes', () => {
+    expect(
+      grantSchema.safeParse({ ...grant(), recipientPublicKey: toBase64Url(new Uint8Array(31)) })
+        .success,
+    ).toBe(false);
   });
 
   it('requires a rotation to start at version 2 or above', () => {
@@ -1024,6 +1153,7 @@ describe('blob validation', () => {
   it('accepts a well-formed client update', () => {
     expect(
       updateClientSecretBody.safeParse({
+        expectedVersion: 2,
         value: {
           ciphertext: CIPHERTEXT,
           clientAlgorithm: 'xk2.gcm',
@@ -1032,6 +1162,22 @@ describe('blob validation', () => {
         },
       }).success,
     ).toBe(true);
+  });
+
+  it('requires a client update to state the version it sealed for', () => {
+    // Without it the server derives a version the ciphertext was never bound to
+    // whenever anything else has been written in between, and the row is lost
+    // behind a 200.
+    expect(
+      updateClientSecretBody.safeParse({
+        value: {
+          ciphertext: CIPHERTEXT,
+          clientAlgorithm: 'xk2.gcm',
+          envDataKeyId: KEY_ID,
+          valueHmac: HMAC_A,
+        },
+      }).success,
+    ).toBe(false);
   });
 });
 

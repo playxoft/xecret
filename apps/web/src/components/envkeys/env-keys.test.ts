@@ -32,7 +32,18 @@ import {
   sealInviteGrant,
 } from './env-keys';
 import { envKeyCount, readEnvKey, releaseEnvKeys } from './env-key-store';
-import { checkPin, fingerprint, readPins, recordPin, replacePin, writePins } from './pins';
+import {
+  checkPin,
+  fingerprint,
+  modeIsAllowed,
+  modePinKey,
+  readModePins,
+  readPins,
+  recordModePin,
+  recordPin,
+  replacePin,
+  writePins,
+} from './pins';
 import { buildRotationGrants, planRotation, shareTargets } from './rotation';
 import { clientSecretIo, renderExport } from './secret-io';
 import { decryptValue, encryptValue } from './secret-crypto';
@@ -116,6 +127,7 @@ function keyStateWith(grant: GrantBody | null): EnvironmentKeys {
       grant === null
         ? null
         : {
+            recipientPublicKey: grant.recipientPublicKey,
             edkSealed: grant.edkSealed,
             ehkSealed: grant.ehkSealed,
             signature: grant.signature,
@@ -126,6 +138,23 @@ function keyStateWith(grant: GrantBody | null): EnvironmentKeys {
     needsRotation: false,
     currentMaxSecretVersion: 0,
   };
+}
+
+/**
+ * One page of `GET …/secrets`, as the import path reads it.
+ *
+ * Registered under the exact query string the IO builds, so a test that mocks
+ * the first page and not the second fails rather than quietly serving `{}` —
+ * which is the whole point of the pagination this exercises.
+ */
+function listing(
+  data: { id: string; name: string; version: number }[],
+  nextCursor: string | null = null,
+  cursor?: string,
+) {
+  const base = '/api/orgs/acme/projects/api/environments/production/secrets?limit=200';
+  const path = cursor === undefined ? base : `${base}&cursor=${cursor}`;
+  responses.set(`GET ${path}`, { data, nextCursor });
 }
 
 beforeEach(() => {
@@ -544,6 +573,68 @@ describe('trust-on-first-use pinning', () => {
     expect(readPins(storage)).toEqual({});
   });
 
+  /**
+   * The second book: which mode an environment answered in.
+   *
+   * A downgrade needs no cryptography at all — the server just says `server`,
+   * and the dashboard starts putting values in request bodies in the clear. So
+   * the transition that is refused is exactly one, and the other three are not.
+   */
+  describe('the encryption-mode pin', () => {
+    const key = modePinKey({ orgSlug: 'acme', projectSlug: 'api', envSlug: 'production' });
+
+    it('permits first contact and every direction except the downgrade', () => {
+      const storage = memoryStorage();
+
+      expect(modeIsAllowed(readModePins(storage), key, 'server').allowed).toBe(true);
+      expect(modeIsAllowed(readModePins(storage), key, 'e2ee').allowed).toBe(true);
+
+      recordModePin(key, 'e2ee', storage);
+
+      // The one that matters: obeying it means the next value this browser saves
+      // travels in plaintext.
+      const downgrade = modeIsAllowed(readModePins(storage), key, 'server');
+      expect(downgrade.allowed).toBe(false);
+      expect(downgrade.pinned).toBe('e2ee');
+
+      expect(modeIsAllowed(readModePins(storage), key, 'e2ee').allowed).toBe(true);
+    });
+
+    it('pins forward through the migration, and never back', () => {
+      const storage = memoryStorage();
+
+      recordModePin(key, 'server', storage);
+      expect(modeIsAllowed(readModePins(storage), key, 'e2ee').allowed).toBe(true);
+
+      // `server` → `e2ee` takes capability away from the server, so it is
+      // adopted rather than warned about.
+      recordModePin(key, 'e2ee', storage);
+      expect(readModePins(storage)[key]?.mode).toBe('e2ee');
+
+      // And the reverse write cannot erase it — a caller that could would be the
+      // same hole, reached from the other side.
+      recordModePin(key, 'server', storage);
+      expect(readModePins(storage)[key]?.mode).toBe('e2ee');
+    });
+
+    it('is filed per environment, not per project', () => {
+      const storage = memoryStorage();
+      recordModePin(key, 'e2ee', storage);
+
+      const sibling = modePinKey({ orgSlug: 'acme', projectSlug: 'api', envSlug: 'staging' });
+      expect(modeIsAllowed(readModePins(storage), sibling, 'server').allowed).toBe(true);
+    });
+
+    it('treats unreadable storage as no pin at all', () => {
+      const storage = memoryStorage();
+      recordModePin(key, 'e2ee', storage);
+      storage.setItem('xecret.pins.mode.v1', 'not json');
+
+      expect(readModePins(storage)).toEqual({});
+      expect(modeIsAllowed(readModePins(storage), key, 'server').allowed).toBe(true);
+    });
+  });
+
   it('renders a fingerprint that is stable, short, and in the product’s alphabet', async () => {
     const keypair = generateEncryptionKeyPair();
 
@@ -617,6 +708,11 @@ describe('the client secret IO', () => {
 
     const body = parseWith(updateClientSecretBody, posted[0]?.body);
 
+    // Stated on the wire, not left for the server to derive. Without it a second
+    // writer's version lands under this ciphertext and the row is lost behind a
+    // 200 — see `expectedVersionSchema`.
+    expect(body.expectedVersion).toBe(5);
+
     // Version 5, because that is the row the ciphertext will occupy. Bytes
     // produced for version 4 and stored as version 5 would fail to open for the
     // rest of their life, silently — which is the failure the AAD binding of
@@ -666,7 +762,10 @@ describe('the client secret IO', () => {
     await io.restore({ id: secretId, name: 'API_KEY', version: 6 }, 2);
 
     const body = parseWith(restoreClientSecretBody, posted[0]?.body);
+    // The two versions a restore carries, and they are not the same number:
+    // restored *from* 2, written *as* 7.
     expect(body.version).toBe(2);
+    expect(body.expectedVersion).toBe(7);
     // A different ciphertext from the one that was read, holding the same
     // plaintext, bound to version 7.
     expect(body.value.ciphertext).not.toBe(oldCiphertext);
@@ -729,14 +828,14 @@ describe('import and export, client-side', () => {
       ],
     });
 
+    listing([]);
+
     const plan = await io.runImport({
       content: 'DATABASE_URL=postgres://live\nSTRIPE_KEY=sk_live_x\n',
       filename: '.env',
       format: 'auto',
       strategy: 'skip',
       dryRun: false,
-      existingNames: [],
-      existing: new Map(),
     });
 
     expect(plan.counts.create).toBe(2);
@@ -752,6 +851,7 @@ describe('import and export, client-side', () => {
     expect(JSON.stringify(body)).not.toContain('sk_live_x');
 
     const entry = body.entries[0]!;
+    expect(entry.expectedVersion).toBe(1);
     await expect(
       decryptValue({
         material,
@@ -772,22 +872,28 @@ describe('import and export, client-side', () => {
       items: [{ name: 'DATABASE_URL', status: 'updated' }],
     });
 
+    // The listing arrives in two pages, so the plan is only correct if the IO
+    // follows the cursor to the end. A run that stopped at the first page would
+    // classify DATABASE_URL as a create and seal against a uuid nobody stores.
+    listing([{ id: uuidv7(), name: 'AAA_FIRST', version: 1 }], 'page-2');
+    listing([{ id: secretId, name: 'DATABASE_URL', version: 3 }], null, 'page-2');
+
     await io.runImport({
       content: 'DATABASE_URL=postgres://newer\n',
       filename: '.env',
       format: 'dotenv',
       strategy: 'overwrite',
       dryRun: false,
-      existingNames: ['DATABASE_URL'],
-      existing: new Map([['DATABASE_URL', { id: secretId, name: 'DATABASE_URL', version: 3 }]]),
     });
 
     const body = parseWith(importClientBody, posted[0]?.body);
     const entry = body.entries[0]!;
 
     // The stored id, not a fresh one — the row already exists, and a ciphertext
-    // bound to a new uuid would be unopenable against it.
+    // bound to a new uuid would be unopenable against it. It is on the *second*
+    // listing page, so this also pins that the whole listing was read.
     expect(entry.id).toBe(secretId);
+    expect(entry.expectedVersion).toBe(4);
     await expect(
       decryptValue({
         material,

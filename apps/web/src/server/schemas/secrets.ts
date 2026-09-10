@@ -190,6 +190,31 @@ const clientValueSchema = z.object({
  */
 const secretIdSchema = z.string().check(z.length(36, 'A secret is named by a UUID.'));
 
+/**
+ * The version this ciphertext was sealed for.
+ *
+ * ── Why a client-encrypted write cannot be version-free ──
+ * The AAD binds `version` (spec §4.2), so the number is chosen *before* the
+ * request exists — in the browser, from the listing it read a moment ago. The
+ * server derives its own target from the stored row. When the two disagree, the
+ * row commits at the server's number carrying a ciphertext that names the
+ * client's, and it is unopenable **for ever**, by everyone, behind an HTTP 200.
+ * Nobody can repair it: no operator holds the key, and the plaintext existed only
+ * in a browser that has since navigated away.
+ *
+ * Two ordinary things produce the disagreement. A second writer commits between
+ * the read and the write. Or one client holds a stale snapshot — a version-history
+ * drawer left open across a restore is enough — and seals against a version that
+ * has already been used.
+ *
+ * So the client states what it sealed for and the server refuses anything else.
+ * A mismatch is a `conflict`, not a validation error: the body was well formed and
+ * was correct when it was built, and the remedy is to re-read and encrypt again.
+ */
+const expectedVersionSchema = z
+  .int()
+  .check(z.gte(1, 'A version is at least 1.'), z.lte(2_147_483_647));
+
 export const createClientSecretBody = z.object({
   id: secretIdSchema,
   name: secretNameSchema,
@@ -211,6 +236,8 @@ export const createClientSecretBody = z.object({
  */
 export const updateClientSecretBody = z.object({
   value: clientValueSchema,
+  /** The version this ciphertext is bound to. See `expectedVersionSchema`. */
+  expectedVersion: expectedVersionSchema,
   encNote: encNoteSchema,
   valueType: z.optional(valueTypeSchema),
 });
@@ -234,6 +261,16 @@ export const updateClientSecretBody = z.object({
  */
 export const restoreClientSecretBody = z.object({
   version: z.int().check(z.gte(1), z.lte(2_147_483_647)),
+  /**
+   * The version being **written**, which is not `version` above.
+   *
+   * `version` is the one being restored from; this is the one the re-encrypted
+   * bytes are bound to. Conflating them is the mistake the two names exist to
+   * prevent — a stale history drawer restoring twice sends the same
+   * `expectedVersion` for two different writes, and the second one is refused
+   * rather than stored as a version its AAD does not name.
+   */
+  expectedVersion: expectedVersionSchema,
   value: clientValueSchema,
   encNote: encNoteSchema,
 });
@@ -262,13 +299,30 @@ export const importClientBody = z.object({
          *
          * Supplied for every entry rather than only the new ones, because the
          * client cannot know which is which: whether a name already exists is
-         * the planner's answer, and the planner runs on the server. An entry
-         * that appends to an existing secret ignores this and keeps the stored
-         * id — its ciphertext was sealed against that one, which the client
-         * read from the listing.
+         * the planner's answer, and the planner re-runs on the server against
+         * the complete listing.
+         *
+         * **The server does not silently substitute.** An entry that turns out
+         * to append must carry the stored id, because its ciphertext was sealed
+         * against that one; if it carries a different id — the client planned a
+         * create — the write is refused, not committed under the stored id. The
+         * two are not interchangeable: `secretId` is in the AAD, and a row
+         * written under an id its ciphertext does not name opens for nobody.
          */
         id: secretIdSchema,
         name: secretNameSchema,
+        /**
+         * The version this entry sealed for: 1 where the client planned a
+         * create, the stored version plus one where it planned an overwrite.
+         *
+         * Both halves of that sentence are checked, because both can be wrong
+         * independently. A client that planned a create for a name that already
+         * exists sends this entry's own `id` and version 1, and the server
+         * resolves a different id and a higher version — which is exactly the
+         * >200-name listing bug this field closes, and exactly the case the old
+         * code committed under the stored id with a shrug.
+         */
+        expectedVersion: expectedVersionSchema,
         value: clientValueSchema,
         encNote: encNoteSchema,
       }),

@@ -821,6 +821,10 @@ function principalKey(kind: string, id: string): string {
 
 function stripRecipient(grant: ReturnType<typeof toGrant>) {
   return {
+    // The recipient's key stays: it is the caller's own, it is part of the
+    // signed payload, and a client that wants to check its grant was sealed to
+    // the key it actually holds needs it in the same answer.
+    recipientPublicKey: grant.recipientPublicKey,
     edkSealed: grant.edkSealed,
     ehkSealed: grant.ehkSealed,
     signature: grant.signature,

@@ -223,13 +223,20 @@ func (c *Client) CreateClientSecret(
 }
 
 // UpdateClientSecret appends a pre-encrypted version.
+//
+// expectedVersion is the version this ciphertext is bound to. It is not
+// bookkeeping: the AAD binds the version (spec §4.2), the server derives its own
+// target from the stored row, and a disagreement — a second writer, a stale
+// listing — would store bytes the row does not name, unopenable for ever behind
+// a 200. Stating it turns that into a 409 the caller retries.
 func (c *Client) UpdateClientSecret(
 	ctx context.Context,
 	org, project, env, name string,
 	value ClientValue,
+	expectedVersion int,
 	valueType string,
 ) (*WriteResult, error) {
-	body := map[string]any{"value": value}
+	body := map[string]any{"value": value, "expectedVersion": expectedVersion}
 	if valueType != "" {
 		body["valueType"] = valueType
 	}
@@ -245,10 +252,16 @@ func (c *Client) UpdateClientSecret(
 
 // ClientImportEntry is one pre-encrypted row of an import.
 type ClientImportEntry struct {
-	ID      string      `json:"id"`
-	Name    string      `json:"name"`
-	Value   ClientValue `json:"value"`
-	EncNote *string     `json:"encNote,omitempty"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// ExpectedVersion is what this entry sealed for: 1 where the client planned a
+	// create, the stored version plus one where it planned an overwrite. The
+	// server re-plans against the complete listing and refuses an entry whose id
+	// or version it does not agree with, rather than writing it under the row it
+	// resolved — see UpdateClientSecret.
+	ExpectedVersion int         `json:"expectedVersion"`
+	Value           ClientValue `json:"value"`
+	EncNote         *string     `json:"encNote,omitempty"`
 }
 
 // RestoreClientSecret re-appends an earlier value, re-encrypted for the version
@@ -258,16 +271,25 @@ type ClientImportEntry struct {
 // stored as version N+1 would authenticate against nothing — which is the same
 // reason the server re-encrypts on the `server`-mode path, done on the only side
 // that can here.
+//
+// Two version numbers, and they are different: version is the one being restored
+// *from*, expectedVersion the one these bytes are bound to. See
+// UpdateClientSecret for what the second one prevents.
 func (c *Client) RestoreClientSecret(
 	ctx context.Context,
 	org, project, env, name string,
 	version int,
 	value ClientValue,
+	expectedVersion int,
 ) (*RestoreResult, error) {
 	var response struct {
 		Secret RestoreResult `json:"secret"`
 	}
-	body := map[string]any{"version": version, "value": value}
+	body := map[string]any{
+		"version":         version,
+		"expectedVersion": expectedVersion,
+		"value":           value,
+	}
 	if err := c.Post(ctx, secretPath(org, project, env, name)+"/restore", body, &response); err != nil {
 		return nil, err
 	}

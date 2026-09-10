@@ -288,7 +288,29 @@ the mitigations are a mandatory recovery-code ceremony at setup that will not le
 skipped, a downloadable Emergency Kit, and codes that can be regenerated at any time from the
 Security screen.
 
-**7. A web-delivered E2EE app's trust anchor is the JavaScript we serve.** This is the
+**8. Encryption mode is pinned, not proved.** An environment's `encryption_mode` is a column,
+not a signed statement, and every client branches on it: a `server` answer means the dashboard
+puts plaintext values in request bodies and the CLI injects whatever it is handed into a child
+process. So a deployment willing to flip an environment from `e2ee` back to `server` collects
+everything written afterwards without breaking any cryptography — it just asks. No key is bound
+to the mode, so nothing in the payload can be checked against anything.
+
+The mitigation is continuity, the same shape as trade-off 2 and with the same honest limit.
+Once a client has seen an environment answer `e2ee`, a later `server` answer is **refused** —
+not warned about, and with no override offered in the same screen that would have carried out
+the downgrade, because "continue and send your credentials in plaintext" is a button that
+exists to be clicked under deadline pressure. The `server` → `e2ee` direction pins forward and
+is never refused: it takes capability away from the server, and it is the migration this ADR
+schedules. The dashboard files its pins by slug path in local storage; the CLI files them
+beside the offline cache, and a service token that carries a key half is its own pin, in a
+string the server cannot edit after the fact — which is the only one an ephemeral CI runner
+gets. **Residual risk: a first-contact downgrade is undetectable**, exactly as a first-contact
+key substitution is, and a client whose pins were cleared is at first contact again. Accepting
+a genuine migration back is deliberately a manual act — clearing the browser's site data, or
+`xecret cache clear` — taken after asking whoever runs the deployment, because that question is
+the mitigation and no program can ask it.
+
+**9. A web-delivered E2EE app's trust anchor is the JavaScript we serve.** This is the
 honest asterisk on the entire claim, and stating it plainly is not optional. Every mitigation
 above assumes the client is running the code we published. A server willing to serve one
 poisoned bundle to one targeted user defeats all of it, and no amount of client-side crypto

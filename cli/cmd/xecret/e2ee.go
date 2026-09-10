@@ -6,7 +6,9 @@ import (
 	"fmt"
 
 	"github.com/playxoft/xecret/cli/internal/api"
+	"github.com/playxoft/xecret/cli/internal/cache"
 	"github.com/playxoft/xecret/cli/internal/cred"
+	"github.com/playxoft/xecret/cli/internal/e2ee"
 	"github.com/playxoft/xecret/cli/internal/envkeys"
 )
 
@@ -78,6 +80,63 @@ func (a *app) backfillIdentity(
 	return nil
 }
 
+// cacheScope is the identity a mode pin and an offline copy are filed under.
+func cacheScope(credentials *cred.Credentials, resolved scope) cache.Scope {
+	return cache.Scope{
+		Host:        credentials.APIURL,
+		Org:         resolved.Org,
+		Project:     resolved.Project,
+		Environment: resolved.Environment,
+	}
+}
+
+// checkMode refuses a server that has stopped reporting end-to-end encryption
+// for an environment, and records the answer when it accepts it.
+//
+// Two pins, and they close different halves of the same hole:
+//
+//   - A **service token that carries a key half** is itself the statement that
+//     this environment was end-to-end encrypted when the token was minted, in a
+//     string the server cannot edit after the fact. That is the only pin CI ever
+//     gets — a runner is ephemeral and writes no files — and it is the strongest
+//     one available anywhere, so it is checked first.
+//   - Otherwise the offline cache's mode book answers, on the trust-on-first-use
+//     terms `cache/mode.go` sets out.
+//
+// Recording is skipped under a service token for the reason `run` gives about
+// the cache generally: a CI credential must leave nothing behind on a runner it
+// does not own.
+func (a *app) checkMode(credentials *cred.Credentials, resolved scope, mode string) error {
+	if a.usingServiceToken() {
+		parsed, err := e2ee.SplitServiceToken(serviceTokenFromEnv())
+		if err == nil {
+			defer parsed.Zeroize()
+			if parsed.PrivateKey != nil && mode != "e2ee" {
+				return fmt.Errorf(
+					"%w.\n"+
+						"  XECRET_TOKEN carries an environment key, which is only minted for an\n"+
+						"  end-to-end encrypted environment — so a 'server' answer means either the\n"+
+						"  environment was migrated back or this is not the deployment that issued\n"+
+						"  the token. Confirm with an administrator before re-issuing it",
+					cache.ErrModeDowngrade,
+				)
+			}
+		}
+		return nil
+	}
+
+	key := cacheScope(credentials, resolved)
+	if err := cache.CheckMode(key, mode); err != nil {
+		return err
+	}
+	if err := cache.PinMode(key, mode); err != nil {
+		// A pin that could not be written degrades to first contact next time,
+		// which over-permits once rather than failing a command over a file.
+		a.printer.Warnf("could not record this environment's encryption mode: %v", err)
+	}
+	return nil
+}
+
 // openEnvironment turns a pull into the flat name→value map the rest of the CLI
 // speaks, whichever mode the environment is in.
 //
@@ -114,6 +173,12 @@ func (a *app) openKeys(
 ) (*envkeys.Material, error) {
 	keys, err := client.EnvironmentKeyState(ctx, resolved.Org, resolved.Project, resolved.Environment)
 	if err != nil {
+		return nil, err
+	}
+	// Before the mode is believed. A `server` answer sends this command down the
+	// plaintext path, which is correct for an environment that is in that mode
+	// and a disclosure for one that is not — see `cache/mode.go`.
+	if err := a.checkMode(credentials, resolved, keys.EncryptionMode); err != nil {
 		return nil, err
 	}
 	if keys.EncryptionMode != "e2ee" {

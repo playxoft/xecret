@@ -118,14 +118,6 @@ function CreateTokenFlow({
     onSubmittingChange(busy);
   }
 
-  /** The chosen project's environments, by slug, for the mode lookup. */
-  function modeOf(slug: string): string {
-    return (
-      (project.data?.environments ?? []).find((environment) => environment.slug === slug)
-        ?.encryptionMode ?? 'server'
-    );
-  }
-
   function toggleEnvironment(slug: string, checked: boolean) {
     setEnvironmentSlugs((current) => {
       const next = new Set(current);
@@ -163,11 +155,11 @@ function CreateTokenFlow({
             environmentSlug,
             name: name.trim(),
             accessLevel,
-            // An environment the listing does not describe is treated as
-            // server-mode: the server refuses a `publicKey` it did not ask for,
-            // so the mistake surfaces as a rejected request rather than as a
-            // token holding a key for an environment that has none.
-            encryptionMode: modeOf(environmentSlug),
+            // No `encryptionMode`. This screen's project listing is a cache, and
+            // a cache that answered `server` for an `e2ee` environment used to
+            // mint a keyless token and report it as a success. `mintServiceToken`
+            // reads the environment's own key state instead — one request, at the
+            // only moment the answer matters.
             vault,
           }),
         );

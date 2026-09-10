@@ -6,6 +6,7 @@ import type {
   InvitationGrantRecord,
   PendingKeyGrantRecord,
 } from '@xecret/db/repositories';
+import { decodePublicKey, encodePublicKey } from '@xecret/core/crypto/client';
 import { decodeBlob, encodeBlob } from './vault';
 
 /**
@@ -116,6 +117,20 @@ export const grantSchema = z.strictObject(
   {
     recipientKind: recipientKindSchema,
     recipientId: z.string().check(z.length(36, 'A recipient is named by a UUID.')),
+    /**
+     * The public key the client sealed to, base64url. Signed, and therefore
+     * stored (spec §6.1).
+     *
+     * The server does not check it against the principal's current key, and must
+     * not: an invitation's key is deleted at acceptance and a member's is
+     * replaced by a vault reset, so "matches the row we hold today" is neither
+     * necessary nor sufficient for a grant written yesterday. What it is for is
+     * making the row verifiable **from itself** — a deferred verifier recomputes
+     * the signing payload from these columns rather than joining to a table this
+     * server writes, which is the only reading under which the signature's
+     * binding of this field means anything at all.
+     */
+    recipientPublicKey: publicKeySchema,
     /** `xk2.x25519.` blob (type 6): the EDK sealed to the recipient. */
     edkSealed: sealedBlobSchema,
     /** `xk2.x25519.` blob (type 7): the EHK, same construction, different AAD. */
@@ -215,6 +230,8 @@ export interface GrantPayload {
   id: string;
   recipientKind: 'member' | 'token' | 'invite';
   recipientId: string;
+  /** The key this grant was sealed to, base64url. Part of the signed payload. */
+  recipientPublicKey: string;
   edkSealed: string;
   ehkSealed: string;
   signature: string;
@@ -351,6 +368,7 @@ export function toGrant(grant: EnvKeyGrantRecord): GrantPayload {
     id: grant.id,
     recipientKind: grant.recipientKind,
     recipientId: grant.recipientId,
+    recipientPublicKey: encodePublicKey(toBytes(grant.recipientPublicKey)),
     edkSealed: decodeBlob(toBytes(grant.edkSealed)),
     ehkSealed: decodeBlob(toBytes(grant.ehkSealed)),
     signature: decodeBlob(toBytes(grant.signature)),
@@ -410,6 +428,7 @@ export function toGrantSeed(grant: GrantRequest) {
   return {
     recipientKind: grant.recipientKind,
     recipientId: grant.recipientId,
+    recipientPublicKey: decodePublicKey(grant.recipientPublicKey),
     edkSealed: encodeBlob(grant.edkSealed),
     ehkSealed: encodeBlob(grant.ehkSealed),
     signature: encodeBlob(grant.signature),
@@ -430,4 +449,4 @@ export function toGrantSeed(grant: GrantRequest) {
  * ciphertext: there is no version prefix and no AAD to carry, and the algorithm
  * lives in its own column.
  */
-export { decodePublicKey, encodePublicKey } from '@xecret/core/crypto/client';
+export { decodePublicKey, encodePublicKey };

@@ -114,7 +114,20 @@ func fetchSecrets(
 	}
 
 	if pulled.Bundle != nil {
+		if err := a.checkMode(credentials, resolved, "e2ee"); err != nil {
+			return nil, err
+		}
 		return openBundle(ctx, a, client, credentials, scopeKey, pulled.Bundle, noCache)
+	}
+
+	// A plaintext document means the server says this environment is
+	// server-mode, and `run` is about to inject what it contains into a child
+	// process with nothing on screen. That is correct for an environment which
+	// really is in that mode; for one this machine has read as end-to-end
+	// encrypted it is a downgrade, and it is refused here rather than obeyed —
+	// see `cache/mode.go`.
+	if err := a.checkMode(credentials, resolved, "server"); err != nil {
+		return nil, err
 	}
 
 	// The JSON pull document is a flat, sorted name→value object.

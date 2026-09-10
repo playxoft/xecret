@@ -194,9 +194,13 @@ export const PATCH = authenticatedRoute<Params>(
           const result = await writeClientSecretValue(scope, services, {
             writer,
             name: current.name,
-            // An append, so the stored id is the one the ciphertext names. Passed
-            // for the type's sake; `prepareClientWrite` reads `existing` here.
+            // An append, so the stored id is the one the ciphertext names —
+            // resolved from the same name the client resolved it from.
             secretId: current.secretId,
+            // What the *client* sealed for. `prepareClientWrite` compares it
+            // against `existing.version + 1` and refuses a disagreement rather
+            // than storing bytes bound to a version this row will not have.
+            expectedVersion: body.expectedVersion,
             value: {
               ...body.value,
               ...(body.encNote === undefined ? {} : { encNote: body.encNote }),

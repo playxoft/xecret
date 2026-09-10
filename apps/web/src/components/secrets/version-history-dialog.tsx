@@ -32,12 +32,14 @@ export interface VersionHistoryDialogProps {
   /**
    * The secret this history is of.
    *
-   * The whole summary rather than a name, because an `e2ee` reveal and an `e2ee`
-   * restore both need the row's id and its current version: the id is an AAD
-   * component of every version's ciphertext, and the current version is what the
-   * restored value will be encrypted *for*. A restore is a re-encryption, never
-   * a copy — bytes produced for version 3 and stored as version 7 would fail to
-   * open for the rest of their life.
+   * The whole summary rather than a name, because the row's id is an AAD
+   * component of every version's ciphertext and an `e2ee` reveal cannot be built
+   * without it.
+   *
+   * Its `version` is only a starting guess. A restore is a re-encryption, never
+   * a copy — bytes produced for version 3 and stored as version 7 fail to open
+   * for the rest of their life — so the number they are sealed for comes from
+   * this drawer's own listing rather than from this prop. See `currentVersion`.
    */
   secret: SecretSummary;
   /** How this environment's values are read. `null` when its key is unavailable. */
@@ -93,6 +95,23 @@ export function VersionHistoryDialog({
   const [versions, setVersions] = useState<readonly SecretVersion[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [restoring, setRestoring] = useState<SecretVersion | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  /**
+   * The version a restore will be written *as*, from this drawer's own listing.
+   *
+   * **Not `secret.version`.** That is the parent table's snapshot, and it is
+   * stale the moment anything writes — including a restore performed from this
+   * very drawer. An `e2ee` restore binds the version into the ciphertext's AAD
+   * (spec §4.2), so a second restore seeded from a stale number produces bytes
+   * the row it lands in does not name: unopenable for ever, by everybody. The
+   * server refuses it now, which is the backstop; reading the number from the
+   * listing this drawer just fetched is what stops the drawer asking for it.
+   *
+   * The listing is newest-first, so its head *is* the current version. The prop
+   * answers only until the first response arrives.
+   */
+  const currentVersion = versions?.[0]?.version ?? secret.version;
 
   const path = withQuery(apiPath.secretVersions(orgSlug, projectSlug, envSlug, secretName), {
     limit: PAGE_SIZE,
@@ -117,7 +136,7 @@ export function VersionHistoryDialog({
       });
 
     return () => controller.abort();
-  }, [path]);
+  }, [path, attempt]);
 
   /**
    * Decrypts one historical version.
@@ -136,10 +155,21 @@ export function VersionHistoryDialog({
   async function restore(version: SecretVersion) {
     if (io === null) throw new Error('This environment’s key is not available.');
 
-    const result = await io.restore(
-      { id: secret.id, name: secretName, version: secret.version },
-      version.version,
-    );
+    let result;
+    try {
+      result = await io.restore(
+        { id: secret.id, name: secretName, version: currentVersion },
+        version.version,
+      );
+    } catch (cause) {
+      // Something else wrote in between — another tab, a teammate, or an earlier
+      // restore from this drawer. The refusal is the server's, and it is
+      // correct; what this can do is make the retry work, by re-reading the
+      // history so `currentVersion` names the row that now exists. The error
+      // still propagates, so the confirm dialog keeps the reason on screen.
+      setAttempt((current) => current + 1);
+      throw cause;
+    }
 
     toast(
       result.secret.status === 'unchanged'
@@ -156,6 +186,9 @@ export function VersionHistoryDialog({
     );
 
     setRestoring(null);
+    // Re-read before handing back, so that a drawer reopened from the parent's
+    // not-yet-refreshed listing still corrects itself from its own response.
+    setAttempt((current) => current + 1);
     onOpenChange(false);
     onRestored();
   }

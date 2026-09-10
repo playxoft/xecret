@@ -12,7 +12,11 @@ import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import {
   fetchEnvironmentKeys,
   grantsPath,
+  modeIsAllowed,
+  modePinKey,
   openEnvironmentKeys,
+  readModePins,
+  recordModePin,
   sealGrantFor,
 } from '@/components/envkeys';
 import type { VaultKeyMaterial } from '@/components/vault';
@@ -76,8 +80,6 @@ export interface MintServiceTokenParams {
   environmentSlug: string;
   name: string;
   accessLevel: 'read' | 'write';
-  /** From the environment listing. Only `'e2ee'` triggers the key ceremony. */
-  encryptionMode: string;
   /** The unlocked vault, or null. Required for an `e2ee` environment. */
   vault: VaultKeyMaterial | null;
 }
@@ -102,16 +104,39 @@ export async function mintServiceToken(
     accessLevel: params.accessLevel,
   };
 
-  if (params.encryptionMode !== 'e2ee') {
-    const issued = await api.post<CreateServiceTokenResponse>(path, body);
-    return { token: issued.token, serviceToken: issued.serviceToken, keyShared: true };
-  }
-
   const target = {
     orgSlug: params.orgSlug,
     projectSlug: params.projectSlug,
     envSlug: params.environmentSlug,
   };
+
+  // ── The mode is read here, from the environment's own key state ──
+  // Not passed in from a screen's cached project listing. A listing that had not
+  // loaded, or had loaded a moment before the environment was migrated, used to
+  // fall back to `'server'` — and a `'server'` mint for an `e2ee` environment
+  // produces a token with no keypair, reported as a success, that decrypts
+  // nothing on its first CI run. This is the one request that answers the
+  // question the whole ceremony turns on, so it is the one that is asked.
+  const keys = await fetchEnvironmentKeys(target);
+
+  // And the same continuity rule the dashboard applies. Minting is exactly the
+  // moment a downgrade pays off: a keyless token is a credential that reads an
+  // environment through the server, which is what a server that wanted the
+  // values would ask for.
+  const pinKey = modePinKey(target);
+  if (!modeIsAllowed(readModePins(), pinKey, keys.encryptionMode).allowed) {
+    throw new TokenKeyUnavailableError(
+      'This environment is reporting server-side encryption, but your browser has read it as ' +
+        'end-to-end encrypted before. No token will be minted until that is explained — a token ' +
+        'issued now would read this environment through the server.',
+    );
+  }
+  recordModePin(pinKey, keys.encryptionMode);
+
+  if (keys.encryptionMode !== 'e2ee') {
+    const issued = await api.post<CreateServiceTokenResponse>(path, body);
+    return { token: issued.token, serviceToken: issued.serviceToken, keyShared: true };
+  }
 
   if (params.vault === null) {
     throw new TokenKeyUnavailableError(
@@ -120,7 +145,7 @@ export async function mintServiceToken(
   }
   const vault = params.vault;
 
-  const opened = await openEnvironmentKeys(await fetchEnvironmentKeys(target), vault);
+  const opened = await openEnvironmentKeys(keys, vault);
   if (opened.status !== 'open') {
     throw new TokenKeyUnavailableError(
       opened.reason === 'pending'

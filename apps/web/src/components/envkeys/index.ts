@@ -53,8 +53,28 @@ export type { InviteKeyStepProps } from './invite-key-step';
 
 export { PendingSharesBanner } from './pending-shares';
 
-export { checkPin, fingerprint, pinKey, readPins, recordPin, replacePin, writePins } from './pins';
-export type { Pin, PinCheck, PinnedKind, PinStore } from './pins';
+export {
+  checkPin,
+  fingerprint,
+  modeIsAllowed,
+  modePinKey,
+  pinKey,
+  readModePins,
+  readPins,
+  recordModePin,
+  recordPin,
+  replacePin,
+  writePins,
+} from './pins';
+export type {
+  EncryptionMode,
+  ModePin,
+  ModePinStore,
+  Pin,
+  PinCheck,
+  PinnedKind,
+  PinStore,
+} from './pins';
 
 export { RotationDialog } from './rotation-dialog';
 

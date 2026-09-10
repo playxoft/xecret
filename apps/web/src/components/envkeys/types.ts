@@ -24,6 +24,8 @@ export interface ActiveEdk {
 
 /** The caller's own grant. Sealed to them, and useless to anybody else. */
 export interface MyGrant {
+  /** The key this grant was sealed to, base64url. Part of the signed payload. */
+  recipientPublicKey: string;
   edkSealed: string;
   ehkSealed: string;
   signature: string;
@@ -83,6 +85,8 @@ export interface RecipientsResponse {
 export interface GrantBody {
   recipientKind: 'member' | 'token' | 'invite';
   recipientId: string;
+  /** 32 bytes, base64url — the key sealed to, which the signature binds. */
+  recipientPublicKey: string;
   edkSealed: string;
   ehkSealed: string;
   signature: string;

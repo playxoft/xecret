@@ -420,6 +420,17 @@ requested at all all depend on it. A client that had to *discover* the mode by s
 wrong body and reading the error would put a plaintext credential in a request to an e2ee
 environment exactly once, which is once too many.
 
+**Mode continuity.** Nothing authenticates that field — it is a column, not a signed statement,
+and no key is bound to it — so a client that simply believes a `server` answer for an
+environment that was `e2ee` starts sending values in the clear. Clients therefore pin the mode
+on first sighting and **refuse** the `e2ee` → `server` transition outright, with no in-band
+override; the `server` → `e2ee` direction pins forward and is never refused, because it takes
+capability away from the server. The dashboard files pins by slug path in local storage, the CLI
+beside its offline cache, and a service token carrying a key half is its own pin. This is a
+client-side property with a first-contact hole, stated as such in ADR 0009, trade-off 8;
+accepting a genuine migration back is a deliberate manual act (clear site data, or
+`xecret cache clear`) taken after asking whoever runs the deployment.
+
 ### Environment keys
 
 | Method | Path | Notes |
@@ -431,18 +442,25 @@ environment exactly once, which is once too many.
 | `POST` | `…/environments/{envSlug}/keys/grants` | Body `{ envDataKeyId, grants: [...] }`. Hands the key to principals that did not have it. `secret.read`. |
 | `DELETE` | `…/environments/{envSlug}/keys/grants/{grantId}` | Removes one grant. `environment.update`. |
 
-A grant is `{ recipientKind: "member" | "token" | "invite", recipientId, edkSealed, ehkSealed,
-signature }`. The blobs are `xk2.x25519.` sealed boxes and an `xk2.ed25519.` signature (crypto
+A grant is `{ recipientKind: "member" | "token" | "invite", recipientId, recipientPublicKey,
+edkSealed, ehkSealed, signature }`. The blobs are `xk2.x25519.` sealed boxes and an `xk2.ed25519.` signature (crypto
 spec §§2, 5, 6). **The server validates shape, never meaning**: prefix, alphabet and length, and
 then it stores what it is given. It holds no key with which it could do more, and a validator
 that opened a grant would be the first line of the code path ADR 0009 exists to make
 impossible.
 
-`recipientKind` and `recipientId` travel in the body rather than being inferred, because both
-are **signed** (spec §6.1) — so a server cannot relabel a service-token grant as a member grant
-or move a valid grant between principals. Accepting them as fields, and storing them into the
-columns the signature names, is what makes that guarantee reachable when verification is later
-enabled.
+`recipientKind`, `recipientId` and `recipientPublicKey` travel in the body rather than being
+inferred, because all three are **signed** (spec §6.1) — so a server cannot relabel a
+service-token grant as a member grant or move a valid grant between principals. Accepting them
+as fields, and storing them into the columns the signature names, is what makes that guarantee
+reachable when verification is later enabled.
+
+`recipientPublicKey` in particular is stored rather than looked up, and the reason is not
+convenience. Every other source for it is mutable: a vault reset replaces
+`user_keys.enc_public_key`, and an invitation's key is deleted at acceptance. A verifier that
+joined to those tables would recompute a different payload for every honest grant written before
+either event and report it as forged — and it would be taking the one field the signature exists
+to pin *against the server* from a column the server writes.
 
 `GET` answers:
 
@@ -452,8 +470,8 @@ enabled.
     "encryptionMode": "e2ee",
     "environmentId": "…",
     "activeEdk": { "id": "…", "version": 3 },
-    "myGrant": { "edkSealed": "xk2.x25519.…", "ehkSealed": "…", "signature": "…",
-                 "signedByUserId": "…" },
+    "myGrant": { "recipientPublicKey": "…", "edkSealed": "xk2.x25519.…", "ehkSealed": "…",
+                 "signature": "…", "signedByUserId": "…" },
     "ehkExists": true,
     "pendingGrants": [ … ],          // admins only; null for anyone else
     "needsRotation": false,
@@ -597,12 +615,12 @@ never from a request. `server` behaviour is unchanged, field for field.
 | `GET` | `…/environments/{envSlug}/secrets` | **Masked.** Ids, names, versions, timestamps, updater, and `encNote` for `e2ee` rows. No value ciphertext leaves the database. |
 | `POST` | `…/secrets` | Create. `server`: `{ name, value, note?, valueType? }`. `e2ee`: `{ id, name, value: { ciphertext, clientAlgorithm, envDataKeyId, valueHmac }, encNote?, valueType? }`. |
 | `GET` | `…/secrets/{name}` | **Reveal.** `server` decrypts and returns `value`; `e2ee` returns `value: null` plus `id`, `ciphertext`, `clientAlgorithm` and `envDataKeyId`. Audited as `secret.revealed` in both. |
-| `PATCH` | `…/secrets/{name}` | Appends a new version, same two body shapes. A value identical to the current one is a no-op in **both** modes, detected via `value_hmac` without decrypting. |
+| `PATCH` | `…/secrets/{name}` | Appends a new version, same two body shapes. `e2ee` adds `expectedVersion`. A value identical to the current one is a no-op in **both** modes, detected via `value_hmac` without decrypting. |
 | `PUT` | `…/secrets/{name}` | Metadata only — `{ name?, note?, encNote?, valueType? }`. Appends **no** version. Sending `note` to an `e2ee` environment, or `encNote` to a `server` one, is refused rather than ignored. |
 | `DELETE` | `…/secrets/{name}` | Soft delete. |
 | `GET` | `…/secrets/{name}/versions/{version}` | **Reveal one historical version.** In `e2ee` mode `envDataKeyId` may name a **retired** key — a version written before a rotation is still encrypted under the key that was active then. |
 | `GET` | `…/secrets/{name}/versions` | History. Metadata only — no ciphertext, no values. |
-| `POST` | `…/secrets/{name}/restore` | `server`: `{ version }`, and the Worker re-encrypts. `e2ee`: `{ version, value: { … }, encNote? }` — the client reads the old version, decrypts it, encrypts the same plaintext for the version about to be written, and posts the result. |
+| `POST` | `…/secrets/{name}/restore` | `server`: `{ version }`, and the Worker re-encrypts. `e2ee`: `{ version, expectedVersion, value: { … }, encNote? }` — the client reads the old version, decrypts it, encrypts the same plaintext for the version about to be written, and posts the result. The two numbers differ: `version` is restored *from*, `expectedVersion` is written *as*. |
 
 **Why every `e2ee` secret carries an `id`.** `secrets.id` is an AAD component (crypto spec §4.2):
 the ciphertext of a value is bound to it, and so is the encrypted note. A client that did not
@@ -614,10 +632,23 @@ both modes rather than conditionally: a payload whose *shape* depends on the mod
 two branches of a client have to agree about, and the id names a row the caller is already
 reading.
 
-On an import, every entry carries an `id` that is used **only if that entry turns out to be a
-create**. Whether a name already exists is the planner's answer and the planner runs on the
-server, so the client cannot know which entries are creates; an entry that appends keeps the
-stored id, which the client read from the listing and sealed against.
+**Every `e2ee` write states what it sealed against, and the server refuses rather than
+substitutes.** `secretId` and `version` are both AAD components, both chosen in a client before
+the request existed, and both re-derived here from stored rows. When the two disagree the row
+would commit at the server's numbers carrying a ciphertext bound to the client's — undecryptable
+for ever, by everybody, behind a `200`, with no operator able to repair it because no operator
+holds the key. So `PATCH`, `POST …/restore` and every import entry carry `expectedVersion`, an
+import entry carries the `id` it sealed against, and a mismatch is a **409** naming the secret.
+Crypto spec §4.3 is the normative statement.
+
+Two consequences worth stating plainly. An import entry that planned a *create* for a name that
+already exists is **refused**, not quietly appended to the stored row — appending would produce
+exactly the dead row the check exists to prevent. And a client that pages through the secret
+listing MUST read every page before planning an import: the 409 is a backstop against a race,
+while a plan built from the first page is a guaranteed collision for every name past it.
+
+A no-op is exempt. When `value_hmac` matches, no ciphertext is stored, so nothing can be bound
+wrongly and a re-submission is answered `unchanged` rather than refused.
 
 **Why an `e2ee` restore carries a ciphertext.** A restore is a *re-encryption*, never a copy:
 the AAD binds `version`, so bytes produced for version 3 and stored as version 7 would fail to
@@ -691,7 +722,7 @@ a client can branch on it rather than on prose.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` `POST` | `/api/orgs/{orgSlug}/tokens/service` | Both gated on `token.create` — the listing is a map of every standing credential, which is reconnaissance for anyone who should not hold it. Minting is session + CSRF only (a bearer credential may not mint further credentials). Body `{ name, projectSlug, environmentSlug, accessLevel?: read\|write, expiresAt?, ipAllowlist?, publicKey? }` — `read` by default, `admin` unrepresentable. `publicKey` is the token's own X25519 public key, base64url, and is accepted only for an `e2ee` environment (a `server`-mode one refuses it with a 400 rather than storing a key nothing would use). The token is returned **once**; only its hash is stored. Audited as `token.created`. |
+| `GET` `POST` | `/api/orgs/{orgSlug}/tokens/service` | Both gated on `token.create` — the listing is a map of every standing credential, which is reconnaissance for anyone who should not hold it. Minting is session + CSRF only (a bearer credential may not mint further credentials). Body `{ name, projectSlug, environmentSlug, accessLevel?: read\|write, expiresAt?, ipAllowlist?, publicKey? }` — `read` by default, `admin` unrepresentable. `publicKey` is the token's own X25519 public key, base64url. It is **required for an `e2ee` environment and refused for a `server`-mode one**, both as a 400 naming the field. Required, because a token minted without one has nothing an environment key can ever be sealed to: it authenticates, it is listed, and it decrypts nothing for ever — a token's key half is generated in the browser at mint time and cannot be added afterwards, nor can the token be un-minted. Refused in the other direction so that a field a caller sent deliberately is never silently dropped. The token is returned **once**; only its hash is stored. Audited as `token.created`. |
 | `GET` | `/api/orgs/{orgSlug}/tokens/cli` | "Your devices" — the caller's **own** CLI tokens only, revoked ones included so a recent revocation is visible. An admin revokes others' tokens without browsing their device names first. |
 | `DELETE` | `/api/orgs/{orgSlug}/tokens/{kind}/{tokenId}` | `kind` is `cli` or `service`. Your own CLI token: always. Someone else's, or any service token: `token.revoke`. Immediate — the hash lookup filters `revoked_at IS NULL` in SQL — and idempotent, with the audit record written only by the call that actually did it. |
 | `GET` | `/api/tokens/self` | Service-token introspection: the pinned organisation, project and environment as names and slugs, plus the token's own id, name and level, and the organisation's id. The two ids are there because they are AAD components — `orgId` binds every secret ciphertext and the token's id is the `recipientId` of every grant sealed to it — so a token in an `e2ee` environment cannot decrypt without them. Neither is a disclosure: the credential is naming itself to itself. The answer derives from the credential row alone — there is no parameter to lie in. This is how `XECRET_TOKEN=… xecret run` learns its scope without configuration. |
