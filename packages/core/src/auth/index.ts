@@ -48,21 +48,33 @@ export {
 export {
   AUTO_LOCK_MINUTES_OPTIONS,
   DEFAULT_AUTO_LOCK_MINUTES,
+  DEVICE_PIN_MAX_ATTEMPTS,
+  MAX_AUTO_LOCK_MINUTES,
+  MIN_AUTO_LOCK_MINUTES,
   UNLOCK_VERIFIER_BYTES,
   VAULT_FREE_ATTEMPTS,
   VAULT_LOCKOUT_BASE_MS,
   VAULT_LOCKOUT_MAX_MS,
-  VAULT_UNLOCK_MS,
+  VAULT_UNLOCK_MAX_MS,
+  clampAutoLockMinutes,
   clearedUnlockFailures,
   evaluateUnlockLockout,
   hashUnlockVerifier,
   isAutoLockMinutes,
   isVaultUnlocked,
+  nearestAutoLockOption,
+  nextPinFailure,
   nextUnlockFailure,
   unlockVerifierMatches,
   vaultUnlockExpiryFrom,
 } from './vault';
-export type { AutoLockMinutes, UnlockAttemptState, UnlockLockout } from './vault';
+export type {
+  AutoLockMinutes,
+  DevicePinFailure,
+  UnlockAttemptState,
+  UnlockLockout,
+  VaultUnlockState,
+} from './vault';
 
 export { IdentityVerificationError } from './types';
 export type {

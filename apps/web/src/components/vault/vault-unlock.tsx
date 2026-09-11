@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { fromBase64Url, zeroize } from '@xecret/core/crypto/client';
 import type { Bytes, RecoveryCode } from '@xecret/core/crypto/client';
 
@@ -10,12 +10,31 @@ import {
   reauthenticateWithGoogle,
   reauthenticateWithPassword,
 } from '@/lib/firebase';
-import { Alert, Button, Field, Input, KeyIcon, Separator, Skeleton } from '@/components/ui';
+import {
+  Alert,
+  Button,
+  Field,
+  Input,
+  KeyIcon,
+  Separator,
+  Skeleton,
+  useToast,
+} from '@/components/ui';
+import { appPath } from '@/app/(dashboard)/_lib/paths';
 import { kitConfirmationProblem, promptedCodeIndex } from './emergency-kit';
 import { assertPasskeyPrf, currentPasskeyAvailability } from './passkey';
+import { PinUnlock } from './pin-unlock';
 import { PassphraseFields, usePassphraseStrength } from './passphrase-fields';
 import { passphraseProblem } from './passphrase';
 import { RecoveryKitPanel } from './recovery-kit-panel';
+import { useDevicePinId } from './device-pin';
+import {
+  hasDevicePinWrap,
+  nudgeStorage,
+  readNudgeDismissedAt,
+  rememberNudge,
+  shouldNudge,
+} from './unlock-nudge';
 import {
   beginRecovery,
   completeRecovery,
@@ -39,11 +58,14 @@ import { useVault } from './vault-keys';
  *
  * ── What this screen must never do ──
  * It must not offer "remember this device": a lock you can permanently dismiss
- * is not a lock. It must not show how many attempts remain — that tells somebody
- * guessing exactly how much room they have, and the person who knows their own
- * passphrase has no use for a countdown. And it must always offer a way out,
- * which is why sign-out is rendered by every caller and why the recovery flow
- * below is reachable in one click rather than buried.
+ * is not a lock. It must not show how many *passphrase* attempts remain — that
+ * tells somebody guessing exactly how much room they have, and the person who
+ * knows their own passphrase has no use for a countdown. The PIN form below is a
+ * deliberate exception and not a drift: five is that credential's entire budget
+ * rather than a sample of a search space, and the guesser is holding the device
+ * anyway — `pin-unlock.tsx` makes the whole argument. And this screen must
+ * always offer a way out, which is why sign-out is rendered by every caller and
+ * why the recovery flow below is reachable in one click rather than buried.
  *
  * ── The order of the offers ──
  * Passkey first when one is enrolled, then the passphrase, per plan §4.2 —
@@ -202,6 +224,7 @@ function UnlockForm({
   onForgot: () => void;
 }) {
   const vault = useVault();
+  const { toast } = useToast();
   const [passphrase, setPassphrase] = useState('');
   const [busy, setBusy] = useState(false);
   const [passkeyBusy, setPasskeyBusy] = useState(false);
@@ -215,6 +238,30 @@ function UnlockForm({
    * is the primary credential, and the reason a passkey is never the only wrap.
    */
   const [passkeyUnavailable, setPasskeyUnavailable] = useState<string | null>(null);
+
+  /**
+   * Whether this browser holds a PIN wrap, and what killed it if one did.
+   *
+   * Subscribed rather than read once: `unlockWithPin` clears the record on a
+   * burn, on an unknown enrolment and on a wrap that does not open, and this
+   * form has to disappear when it does. `useDevicePinId` also answers `null`
+   * during server rendering, which is what keeps the two credential forms from
+   * swapping places at hydration.
+   */
+  const pinDeviceId = useDevicePinId();
+  const [pinGone, setPinGone] = useState<string | null>(null);
+  const pinOffered = pinDeviceId !== null;
+
+  /**
+   * The passphrase field, so the caret can be handed back to it.
+   *
+   * Needed for exactly one moment: the PIN form withdrawing itself after a burn
+   * or a revocation. Focus is inside a subtree that is about to unmount, and a
+   * browser given no instruction drops it on `document.body` — which leaves
+   * somebody who has just been told their PIN is gone with a keyboard that types
+   * nowhere, on a screen whose only remaining control is the field below.
+   */
+  const passphraseRef = useRef<HTMLInputElement>(null);
 
   // Read once. It cannot change while this screen is mounted, and re-reading it
   // per render would make the button flicker on a browser that answers slowly.
@@ -263,12 +310,61 @@ function UnlockForm({
     try {
       await unlockWithPassphrase({ userId: user.id, passphrase, material });
       setPassphrase('');
+      offerAFasterUnlock();
       onUnlocked();
     } catch (cause) {
       setFailure(await explainFailure(cause));
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * The offer of a one-touch unlock, made at the one moment it is about
+   * something the person has just felt.
+   *
+   * ── Why here and not in the provider ──
+   * Because this is the only seam that knows *what* opened the vault. The keys
+   * arrive in the store identically whether they were derived from a
+   * passphrase, unwrapped by an authenticator, or found in this tab's own
+   * mirror after a reload — and only the first of those is somebody paying the
+   * cost this offer would remove. A nudge hung off the store's `unlocked`
+   * transition would fire on every refresh of an already-open tab, which is the
+   * behaviour that makes people stop reading notifications.
+   *
+   * The availability check is the call site's rather than {@link shouldNudge}'s
+   * because it is not a rule about nagging: on a browser without WebAuthn, or
+   * on plain HTTP in development, there is nothing on the other end of the link
+   * to set up.
+   *
+   * Fired before `onUnlocked`, which unmounts this screen. The toast outlives
+   * it — `Toaster` is mounted at the root layout, above every route — so the
+   * message lands on the dashboard the unlock just revealed.
+   */
+  function offerAFasterUnlock() {
+    if (availability !== 'available') return;
+
+    const storage = nudgeStorage();
+    const now = Date.now();
+
+    const nudge = shouldNudge({
+      cause: 'passphrase',
+      hasPasskey: material.passkeys.length > 0,
+      hasPinWrap: hasDevicePinWrap(storage),
+      dismissedAt: readNudgeDismissedAt(storage),
+      now,
+    });
+    if (!nudge) return;
+
+    rememberNudge(storage, now);
+    toast({
+      title: 'Unlock with your fingerprint or face next time — set it up in seconds',
+      action: { label: 'Set it up', href: appPath.settingsSecurity() },
+      // Until dismissed. Five seconds is long enough to notice a message and
+      // too short to decide on one, and this is the only toast in the product
+      // carrying a link somebody is meant to reach for.
+      duration: 0,
+    });
   }
 
   /**
@@ -351,6 +447,40 @@ function UnlockForm({
         </Alert>
       ) : null}
 
+      {pinOffered ? (
+        <div className="flex flex-col gap-3">
+          <PinUnlock
+            user={user}
+            material={material}
+            onUnlocked={onUnlocked}
+            // The form withdraws itself: `unlockWithPin` has already cleared the
+            // local record, so `useDevicePinId` answers `null` on the next
+            // render. All this has to add is the sentence explaining why —
+            // withdrawing rather than disabling, the same call the passkey path
+            // makes, because a permanently failing entry box is worse than none.
+            onGone={(message) => {
+              setPinGone(message);
+              // Synchronously, while this subtree is still mounted. The next
+              // render withdraws it — `useDevicePinId` already answers `null`.
+              passphraseRef.current?.focus();
+            }}
+            disabled={busy || passkeyBusy}
+          />
+
+          <div className="flex items-center gap-3">
+            <Separator className="flex-1" />
+            <span className="text-fg-subtle text-xs uppercase">or</span>
+            <Separator className="flex-1" />
+          </div>
+        </div>
+      ) : null}
+
+      {pinGone !== null ? (
+        <Alert tone="warning" title="Your PIN is off on this browser">
+          {pinGone}
+        </Alert>
+      ) : null}
+
       {material.passkeys.length > 0 &&
       availability !== 'available' &&
       passkeyUnavailable === null ? (
@@ -370,22 +500,30 @@ function UnlockForm({
 
         <Field label="Master passphrase">
           <Input
+            ref={passphraseRef}
             type="password"
             value={passphrase}
             onChange={(event) => setPassphrase(event.target.value)}
             autoComplete="current-password"
-            autoFocus
+            // Only when it is the first thing to reach for. The PIN box above
+            // autofocuses too and is rendered later in the tree, so two
+            // unconditional `autoFocus` attributes meant the passphrase won the
+            // caret off a form somebody was about to type six digits into. The
+            // passkey button is not a text field, but it is the primary action
+            // when it is offered, and stealing focus past it is the same
+            // mistake in the other direction.
+            autoFocus={!pinOffered && !passkeyOffered}
             spellCheck={false}
           />
         </Field>
 
         <Button
           type="submit"
-          // Secondary only when a passkey is offered above it — two primary
-          // buttons would put the emphasis nowhere. Still a full-width button
-          // and still the first thing in the form: the demotion is about
+          // Secondary only when a faster unlock is offered above it — two
+          // primary buttons would put the emphasis nowhere. Still a full-width
+          // button and still the first thing in the form: the demotion is about
           // prominence between two working options, not about hiding one.
-          variant={passkeyOffered ? 'secondary' : 'primary'}
+          variant={passkeyOffered || pinOffered ? 'secondary' : 'primary'}
           size="lg"
           loading={busy}
           disabled={passphrase.length === 0 || passkeyBusy}

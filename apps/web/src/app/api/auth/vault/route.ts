@@ -149,22 +149,31 @@ export const POST = authenticatedRoute(
 );
 
 /**
- * Changes how long the dashboard may sit idle before locking itself.
+ * Changes how long a vault may sit idle before it locks.
  *
  * *Not* exempt from the lock gate, unlike GET and POST: this route only tunes a
  * protection, and a locked session has no business loosening one. It changes no
  * key material and unlocks nothing, so it takes the ordinary mutation allowance
  * rather than the login bucket — it is not a guessing surface.
  *
- * Audited: setting the interval to "never" is the act an incident review wants
- * to see dated, because it is how an unlocked laptop stays unlocked.
+ * Audited, and audited with the *effective* interval rather than the requested
+ * one: the service clamps, and a record naming a number no gate ever used would
+ * be a record an incident review is entitled to disbelieve. Stretching the
+ * allowance is the act worth having dated, because it is how an unlocked laptop
+ * stays unlocked.
+ *
+ * ── The effect is not confined to this session ──
+ * The preference lives on the vault row, and the gate reads it on every request
+ * from every device. So loosening it here loosens every signed-in browser at
+ * once, which is what the settings copy promises and what makes this a
+ * protection rather than a per-tab convenience.
  */
 export const PATCH = authenticatedRoute(async ({ request, principal, services, audit, record }) => {
   const user = requireUserPrincipal(principal);
   await enforce(services.env, 'RL_MUTATION', rateLimitKey([user.user.id]));
 
   const body = await parseJsonBody(request, autoLockSchema);
-  await setAutoLock(services, user, body.autoLockMinutes);
+  const minutes = await setAutoLock(services, user, body.autoLockMinutes);
 
   const orgId = await primaryOrgId(services, user.user.id);
   if (orgId !== null) {
@@ -175,7 +184,9 @@ export const PATCH = authenticatedRoute(async ({ request, principal, services, a
         {
           source: 'dashboard',
           reason:
-            body.autoLockMinutes === 0 ? 'never' : `after ${body.autoLockMinutes} minutes idle`,
+            body.autoLockMinutes === null
+              ? `reset to the default of ${minutes} minutes idle`
+              : `after ${minutes} minutes idle`,
         },
       ),
     );

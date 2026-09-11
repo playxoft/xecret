@@ -54,6 +54,29 @@ export const HKDF_INFO = {
   recoveryWrap: 'xecret.v2.recovery-wrap',
   /** A WebAuthn PRF output → the passkey wrap key (`PK`). */
   prfWrap: 'xecret.v2.prf-wrap',
+  /**
+   * A device PIN's Argon2id output → the value sent to the server at enrolment
+   * and at every PIN unlock.
+   *
+   * The sibling of `pinWrap`, and the separation is the only reason a
+   * server-held pepper can be safe to release. The server compares the digest of
+   * *this* branch; if it were the wrap key, or anything invertibly derived from
+   * it, then a server holding verifiers would hold half of every wrap key it
+   * also holds the pepper for — which is the whole of the wrap key.
+   */
+  pinVerifier: 'xecret.v2.pin-verifier',
+  /**
+   * `pinKey ‖ pepper` → the AES-256-GCM key wrapping the UK in a device PIN
+   * wrap.
+   *
+   * The one branch in this table whose input keying material is a
+   * *concatenation*, and it is what makes six digits into something worth
+   * encrypting under: the browser holds the wrap and can derive `pinKey`, the
+   * server holds the 32-byte pepper, and neither half alone is a key. The
+   * concatenation is unambiguous without a length prefix because both operands
+   * are fixed-width — 32 bytes each.
+   */
+  pinWrap: 'xecret.v2.pin-wrap',
   /** `EHK` → the HMAC-SHA256 key behind `valueHmac`. */
   valueHmac: 'xecret.v2.value-hmac',
   /** An invite fragment's seed → the invite keypair's X25519 private scalar. */

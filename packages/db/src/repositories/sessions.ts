@@ -3,6 +3,7 @@ import { hashToken, sessionExpiryFrom } from '@xecret/core/auth';
 import type { SessionRecord } from '@xecret/core/auth';
 import { uuidv7 } from '@xecret/core/ids';
 import { sessions, users } from '../schema/identity';
+import { userKeys } from '../schema/vault';
 import { MAX_PAGE_SIZE } from './shared';
 import type { Executor } from './shared';
 
@@ -40,6 +41,16 @@ export interface AuthenticatedSession extends SessionRecord {
    * a second query for one timestamp would be a round trip per request forever.
    */
   vaultUnlockedAt: Date | null;
+  /**
+   * The owner's auto-lock preference, or `null` for "no vault, or no preference".
+   *
+   * Here for the same reason `vaultUnlockedAt` is, and it is the other half of
+   * the same decision: since the unlock window *is* this preference, a request
+   * that resolves a session cannot tell whether it is unlocked without it. A
+   * second query for one integer would be a round trip per request forever, so
+   * it rides along on the join that is already happening.
+   */
+  vaultAutoLockMinutes: number | null;
 }
 
 /**
@@ -255,32 +266,42 @@ export async function deleteExpiredSessions(exec: Executor, before: Date): Promi
  * refactor that drops one should fail a test rather than pass review.
  */
 export function sessionLookupQuery(exec: Executor, tokenHash: Uint8Array, now: Date) {
-  return exec
-    .select({
-      id: sessions.id,
-      userId: sessions.userId,
-      expiresAt: sessions.expiresAt,
-      lastSeenAt: sessions.lastSeenAt,
-      revokedAt: sessions.revokedAt,
-      vaultUnlockedAt: sessions.vaultUnlockedAt,
-      user: {
-        id: users.id,
-        email: users.email,
-        emailVerified: users.emailVerified,
-        displayName: users.displayName,
-        avatarUrl: users.avatarUrl,
-      },
-    })
-    .from(sessions)
-    .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
-    .where(
-      and(
-        eq(sessions.tokenHash, tokenHash),
-        isNull(sessions.revokedAt),
-        gt(sessions.expiresAt, now),
-      ),
-    )
-    .limit(1);
+  return (
+    exec
+      .select({
+        id: sessions.id,
+        userId: sessions.userId,
+        expiresAt: sessions.expiresAt,
+        lastSeenAt: sessions.lastSeenAt,
+        revokedAt: sessions.revokedAt,
+        vaultUnlockedAt: sessions.vaultUnlockedAt,
+        vaultAutoLockMinutes: userKeys.autoLockMinutes,
+        user: {
+          id: users.id,
+          email: users.email,
+          emailVerified: users.emailVerified,
+          displayName: users.displayName,
+          avatarUrl: users.avatarUrl,
+        },
+      })
+      .from(sessions)
+      .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
+      // LEFT, and one column. An account with no vault has no row here and must
+      // still resolve — it is on its way to the setup ceremony. `user_keys` is
+      // deliberately not part of `users` (see its schema header) because eleven
+      // columns on the hot path is a cost paid forever; one integer on a
+      // primary-key equality is what the unlock gate costs instead of a second
+      // query per request.
+      .leftJoin(userKeys, eq(userKeys.userId, sessions.userId))
+      .where(
+        and(
+          eq(sessions.tokenHash, tokenHash),
+          isNull(sessions.revokedAt),
+          gt(sessions.expiresAt, now),
+        ),
+      )
+      .limit(1)
+  );
 }
 
 /**

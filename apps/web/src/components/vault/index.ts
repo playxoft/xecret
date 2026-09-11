@@ -23,14 +23,32 @@ export type { VaultCardProps } from './vault-card';
 export { PasskeyEnrolment } from './passkey-enrolment';
 export type { PasskeyEnrolmentProps } from './passkey-enrolment';
 
+export { PasskeysSection } from './passkeys-section';
+export type { PasskeysSectionProps } from './passkeys-section';
+
 export { RecoveryKitPanel } from './recovery-kit-panel';
 export type { RecoveryKitPanelProps } from './recovery-kit-panel';
 
 export { useVault, useVaultKeys, VaultProvider } from './vault-keys';
 export type { VaultContextValue } from './vault-keys';
 
-export { readVaultKeys, releaseVaultKeys, subscribeVaultKeys, vaultKeysHeld } from './key-store';
+export {
+  readVaultKeys,
+  releaseVaultKeys,
+  restoreVaultKeys,
+  subscribeVaultKeys,
+  vaultKeysHeld,
+} from './key-store';
 export type { VaultKeyMaterial } from './key-store';
 
-export { fetchVault, lockVault, setAutoLockMinutes } from './vault-client';
-export type { VaultMaterial, VaultPasskey, VaultStatus } from './vault-client';
+export { DevicePinSection } from './device-pin-section';
+export type { DevicePinSectionProps } from './device-pin-section';
+
+export { fetchVault, hasPinWrap, lockVault, setAutoLockMinutes } from './vault-client';
+export type {
+  PinDevice,
+  PinUnlockOutcome,
+  VaultMaterial,
+  VaultPasskey,
+  VaultStatus,
+} from './vault-client';

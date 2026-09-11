@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ZodMiniType } from 'zod/mini';
 import {
+  DEFAULT_AUTO_LOCK_MINUTES,
   IdentityVerificationError,
+  MAX_AUTO_LOCK_MINUTES,
+  MIN_AUTO_LOCK_MINUTES,
   VAULT_FREE_ATTEMPTS,
   VAULT_LOCKOUT_BASE_MS,
   hashUnlockVerifier,
@@ -45,6 +48,11 @@ const repo = vi.hoisted(() => ({
   listPasskeys: vi.fn(),
   removePasskey: vi.fn(),
   resetVault: vi.fn(),
+  mintPinPepper: vi.fn(),
+  attemptPinUnlock: vi.fn(),
+  disablePinPepper: vi.fn(),
+  listPinPeppers: vi.fn(),
+  revokeAllPinPeppers: vi.fn(),
   recordUnlockAttempt: vi.fn(),
   recordRecoveryAttempt: vi.fn(),
   markSessionUnlocked: vi.fn(),
@@ -96,7 +104,10 @@ const {
   encodeBlob,
   decodeBlob,
   passkeyEnrollSchema,
+  pinAttemptSchema,
+  pinEnrollSchema,
   RECOVERY_CODE_COUNT,
+  toPinDevice,
   recoveryCompleteSchema,
   toVaultMaterial,
   vaultCreateSchema,
@@ -373,9 +384,19 @@ describe('the remaining request schemas', () => {
     ).toBe('validation_failed');
   });
 
-  it('restricts auto-lock to the menu the settings screen offers', () => {
-    expect(parseWith(autoLockSchema, { autoLockMinutes: 0 })).toEqual({ autoLockMinutes: 0 });
-    for (const minutes of [1, 43, 61, -5]) {
+  it('accepts any plausible auto-lock interval, and null for “use the default”', () => {
+    // Deliberately not restricted to the four on the menu. The bounds are the
+    // security decision and `clampAutoLockMinutes` is what a value is held to;
+    // refusing an off-menu number would turn "lock me after five minutes" — an
+    // unmistakable, *safer* intention — into a 422 that leaves the looser
+    // setting in place.
+    expect(parseWith(autoLockSchema, { autoLockMinutes: 15 })).toEqual({ autoLockMinutes: 15 });
+    expect(parseWith(autoLockSchema, { autoLockMinutes: 5 })).toEqual({ autoLockMinutes: 5 });
+    expect(parseWith(autoLockSchema, { autoLockMinutes: null })).toEqual({ autoLockMinutes: null });
+  });
+
+  it('refuses an auto-lock value that is not a plain count of minutes', () => {
+    for (const minutes of [-5, 0.5, 1_000_000, '30', true]) {
       expect(rejected(autoLockSchema, { autoLockMinutes: minutes }).code).toBe('validation_failed');
     }
   });
@@ -399,7 +420,7 @@ describe('the vault material serialiser', () => {
       lockedUntil: null,
       recoveryFailedAttempts: 1,
       recoveryLockedUntil: null,
-      autoLockMinutes: 10,
+      autoLockMinutes: null,
       createdAt: new Date(0),
       rotatedAt: null,
     },
@@ -446,15 +467,73 @@ describe('the vault material serialiser', () => {
 describe('the lock gate', () => {
   const now = new Date('2026-09-08T12:00:00.000Z');
 
+  const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
+
   it('reads the session’s vault unlock, not merely its existence', () => {
     expect(isUnlocked(userPrincipal({ vaultUnlockedAt: null }), now)).toBe(false);
     expect(
       isUnlocked(userPrincipal({ vaultUnlockedAt: new Date(now.getTime() - 1000) }), now),
     ).toBe(true);
-    // Past the eight-hour window.
+    // Past the eight-hour ceiling, which no preference can lift.
+    expect(
+      isUnlocked(userPrincipal({ vaultUnlockedAt: minutesAgo(9 * 60), lastSeenAt: now }), now),
+    ).toBe(false);
+  });
+
+  it('measures the idle window against the account’s own preference', () => {
+    // The point of carrying `vaultAutoLockMinutes` on the principal at all: the
+    // browser's timer and this gate are the same number, so a tight setting is
+    // tight on both sides. Before this, the gate counted a fixed eight hours and
+    // a client that never ran its timer kept a session the server still
+    // considered unlocked for the rest of the day.
+    const idleTwoHours = { vaultUnlockedAt: minutesAgo(120), lastSeenAt: minutesAgo(120) };
+
+    expect(isUnlocked(userPrincipal({ ...idleTwoHours, vaultAutoLockMinutes: 15 }), now)).toBe(
+      false,
+    );
+    expect(isUnlocked(userPrincipal({ ...idleTwoHours, vaultAutoLockMinutes: 240 }), now)).toBe(
+      true,
+    );
+  });
+
+  it('resolves “no preference” to the default rather than to “forever”', () => {
     expect(
       isUnlocked(
-        userPrincipal({ vaultUnlockedAt: new Date(now.getTime() - 9 * 60 * 60 * 1000) }),
+        userPrincipal({
+          vaultUnlockedAt: minutesAgo(DEFAULT_AUTO_LOCK_MINUTES + 1),
+          lastSeenAt: minutesAgo(DEFAULT_AUTO_LOCK_MINUTES + 1),
+          vaultAutoLockMinutes: null,
+        }),
+        now,
+      ),
+    ).toBe(false);
+  });
+
+  it('does not lock a session that is being used, however tight the preference', () => {
+    // An absolute timer wearing an idle timer's name would throw somebody who
+    // chose fifteen minutes back to the lock screen four times an hour while
+    // they were typing.
+    expect(
+      isUnlocked(
+        userPrincipal({
+          vaultUnlockedAt: minutesAgo(180),
+          lastSeenAt: minutesAgo(1),
+          vaultAutoLockMinutes: 15,
+        }),
+        now,
+      ),
+    ).toBe(true);
+  });
+
+  it('clamps a preference that is outside the range the gate assumes', () => {
+    // A hand-edited row must not buy an unlock longer than the ceiling.
+    expect(
+      isUnlocked(
+        userPrincipal({
+          vaultUnlockedAt: minutesAgo(9 * 60),
+          lastSeenAt: now,
+          vaultAutoLockMinutes: 100_000,
+        }),
         now,
       ),
     ).toBe(false);
@@ -1301,12 +1380,47 @@ describe('the vault service', () => {
   });
 
   describe('the auto-lock interval', () => {
+    const stored = () => repo.setAutoLockMinutes.mock.calls[0]?.[2];
+
     it('refuses to invent a vault to hang a preference on', async () => {
       repo.setAutoLockMinutes.mockResolvedValue(null);
 
       await expect(service.setAutoLock(services(), userPrincipal(), 30)).rejects.toMatchObject({
         code: 'bad_request',
       });
+    });
+
+    it('stores a value inside the range the gate assumes, whatever was asked for', async () => {
+      // The gate reads this column on every request. A row outside the range
+      // would be a window nothing else in the system believes in.
+      repo.setAutoLockMinutes.mockImplementation(
+        async (_db: unknown, _userId: string, minutes: number | null) =>
+          await vaultKeys({ verifier: randomBytes(32), autoLockMinutes: minutes }),
+      );
+
+      await expect(service.setAutoLock(services(), userPrincipal(), 1)).resolves.toBe(
+        MIN_AUTO_LOCK_MINUTES,
+      );
+      expect(stored()).toBe(MIN_AUTO_LOCK_MINUTES);
+
+      repo.setAutoLockMinutes.mockClear();
+      await expect(service.setAutoLock(services(), userPrincipal(), 100_000)).resolves.toBe(
+        MAX_AUTO_LOCK_MINUTES,
+      );
+      expect(stored()).toBe(MAX_AUTO_LOCK_MINUTES);
+    });
+
+    it('clears the preference on null rather than pinning today’s default into the row', async () => {
+      // "Never chose" and "chose an hour" are different facts, and only the
+      // first follows the default if it is ever reconsidered.
+      repo.setAutoLockMinutes.mockResolvedValue(
+        await vaultKeys({ verifier: randomBytes(32), autoLockMinutes: null }),
+      );
+
+      await expect(service.setAutoLock(services(), userPrincipal(), null)).resolves.toBe(
+        DEFAULT_AUTO_LOCK_MINUTES,
+      );
+      expect(stored()).toBeNull();
     });
   });
 
@@ -1345,6 +1459,196 @@ describe('the vault service', () => {
       expect(status.unlocked).toBe(false);
     });
   });
+
+  describe('the device PIN', () => {
+    const DEVICE_ID = uuidv7();
+
+    beforeEach(() => {
+      repo.findVaultKeys.mockResolvedValue({ userId: USER_ID, autoLockMinutes: null });
+      repo.mintPinPepper.mockImplementation(
+        async (_exec: unknown, params: { deviceId: string }) => ({
+          deviceId: params.deviceId,
+          createdAt: new Date('2026-09-10T09:00:00.000Z'),
+          lastUsedAt: null,
+          attempts: 0,
+        }),
+      );
+    });
+
+    it('mints a 32-byte pepper the browser has no way of deriving', async () => {
+      const result = await service.enrolDevicePin(services(), userPrincipal(), {
+        deviceId: DEVICE_ID,
+        verifier: b64(32),
+      });
+
+      const stored = repo.mintPinPepper.mock.calls[0]?.[1] as { pepper: Bytes };
+      expect(stored.pepper).toHaveLength(32);
+      // Handed over once, here, and never persisted by the client. Every later
+      // use goes back through the attempt endpoint and its counter.
+      expect(result.pepper).toBe(toBase64Url(stored.pepper));
+    });
+
+    it('stores the digest of the verifier, never the verifier', async () => {
+      const verifier = b64(32);
+      await service.enrolDevicePin(services(), userPrincipal(), {
+        deviceId: DEVICE_ID,
+        verifier,
+      });
+
+      const stored = repo.mintPinPepper.mock.calls[0]?.[1] as { verifierHash: Uint8Array };
+      expect([...stored.verifierHash]).toEqual([...(await hashUnlockVerifier(fromB64(verifier)))]);
+    });
+
+    it('refuses to enrol against a vault that does not exist', async () => {
+      repo.findVaultKeys.mockResolvedValue(null);
+
+      await expect(
+        service.enrolDevicePin(services(), userPrincipal(), {
+          deviceId: DEVICE_ID,
+          verifier: b64(32),
+        }),
+      ).rejects.toMatchObject({ code: 'bad_request' });
+
+      expect(repo.mintPinPepper).not.toHaveBeenCalled();
+    });
+
+    it('releases the pepper and unlocks the session on a match', async () => {
+      const pepper = randomBytes(32);
+      repo.attemptPinUnlock.mockResolvedValue({ status: 'ok', pepper });
+
+      const result = await service.attemptDevicePin(services(), userPrincipal(), {
+        deviceId: DEVICE_ID,
+        verifier: b64(32),
+      });
+
+      expect(result).toMatchObject({ outcome: 'unlocked', pepper: toBase64Url(pepper) });
+      expect(repo.markSessionUnlocked).toHaveBeenCalledOnce();
+    });
+
+    it('unlocks nothing on any outcome that is not a match', async () => {
+      for (const outcome of [
+        { status: 'wrong', attemptsRemaining: 2 },
+        { status: 'burned' },
+        { status: 'unknown' },
+      ]) {
+        vi.clearAllMocks();
+        repo.findVaultKeys.mockResolvedValue({ userId: USER_ID, autoLockMinutes: null });
+        repo.attemptPinUnlock.mockResolvedValue(outcome);
+
+        const result = await service.attemptDevicePin(services(), userPrincipal(), {
+          deviceId: DEVICE_ID,
+          verifier: b64(32),
+        });
+
+        expect(result.outcome, outcome.status).not.toBe('unlocked');
+        expect(repo.markSessionUnlocked, outcome.status).not.toHaveBeenCalled();
+      }
+    });
+
+    it('hands the comparison to the repository, so it runs inside the row lock', async () => {
+      // Read-then-write would let two concurrent attempts both see four
+      // failures, and a scripted attacker would get as many guesses per round
+      // trip as they cared to open connections.
+      const presented = randomBytes(32);
+      let matched: boolean | null = null;
+
+      repo.attemptPinUnlock.mockImplementation(
+        async (_exec: unknown, params: { matches: (hash: Uint8Array) => Promise<boolean> }) => {
+          matched = await params.matches(await hashUnlockVerifier(presented));
+          return { status: 'wrong', attemptsRemaining: 4 };
+        },
+      );
+
+      await service.attemptDevicePin(services(), userPrincipal(), {
+        deviceId: DEVICE_ID,
+        verifier: toBase64Url(presented),
+      });
+
+      expect(matched).toBe(true);
+    });
+
+    it('answers 404 when a device belongs to somebody else, or to nobody', async () => {
+      // Indistinguishable by construction: the repository scopes by user, so
+      // this service never learns which of the two it was (threat T2).
+      repo.disablePinPepper.mockResolvedValue(false);
+
+      await expect(
+        service.disableDevicePin(services(), userPrincipal(), DEVICE_ID),
+      ).rejects.toMatchObject({ code: 'not_found' });
+    });
+
+    it('serves a device list with no pepper, no digest, and no attempt counter', () => {
+      expect(
+        toPinDevice({
+          deviceId: DEVICE_ID,
+          createdAt: new Date('2026-09-01T10:00:00.000Z'),
+          lastUsedAt: new Date('2026-09-09T10:00:00.000Z'),
+          attempts: 3,
+        }),
+      ).toEqual({
+        deviceId: DEVICE_ID,
+        createdAt: '2026-09-01T10:00:00.000Z',
+        lastUsedAt: '2026-09-09T10:00:00.000Z',
+      });
+    });
+  });
+});
+
+describe('the device-PIN schemas', () => {
+  const DEVICE_ID = uuidv7();
+
+  it('takes a device uuid and a 32-byte verifier, and nothing else', () => {
+    const body = { deviceId: DEVICE_ID, verifier: b64(32) };
+
+    for (const schema of [pinEnrollSchema, pinAttemptSchema]) {
+      expect(parseWith(schema, body)).toEqual(body);
+    }
+  });
+
+  it('refuses a device id that is not a canonical uuid', () => {
+    // It reaches a `uuid` column. Without this the driver raises `22P02` and
+    // the route wrapper turns a malformed body into a 500 — see `schemas/ids.ts`.
+    for (const deviceId of ['not-a-uuid', DEVICE_ID.toUpperCase(), `{${DEVICE_ID}}`, '']) {
+      expect(rejected(pinEnrollSchema, { deviceId, verifier: b64(32) }).code, deviceId).toBe(
+        'validation_failed',
+      );
+    }
+  });
+
+  it('holds the verifier to exactly 32 bytes', () => {
+    for (const bytes of [16, 31, 33, 64]) {
+      expect(
+        rejected(pinAttemptSchema, { deviceId: DEVICE_ID, verifier: b64(bytes) }).code,
+        String(bytes),
+      ).toBe('validation_failed');
+    }
+  });
+
+  it('refuses a body carrying the salt, which the server must never hold', () => {
+    // The salt lives beside the wrap in the browser. A server holding it would
+    // hold one more piece of an offline attack on six digits than it needs to,
+    // and `strictObject` is what stops a client volunteering it.
+    expect(
+      rejected(pinEnrollSchema, {
+        deviceId: DEVICE_ID,
+        verifier: b64(32),
+        salt: b64(16),
+      }).code,
+    ).toBe('validation_failed');
+  });
+
+  it('refuses a body carrying a wrap', () => {
+    // The wrap never reaches this server, by design. A schema that accepted one
+    // would be the first line of the code path that ends the zero-knowledge
+    // property for this feature.
+    expect(
+      rejected(pinEnrollSchema, {
+        deviceId: DEVICE_ID,
+        verifier: b64(32),
+        wrap: gcmBlob(),
+      }).code,
+    ).toBe('validation_failed');
+  });
 });
 
 function fromB64(value: string): Bytes {
@@ -1362,6 +1666,8 @@ async function vaultKeys(overrides: {
   lockedUntil?: Date | null;
   recoveryFailedAttempts?: number;
   recoveryLockedUntil?: Date | null;
+  /** `null` — no preference — is the shape the column actually defaults to. */
+  autoLockMinutes?: number | null;
 }) {
   return {
     userId: USER_ID,
@@ -1381,7 +1687,7 @@ async function vaultKeys(overrides: {
     lockedUntil: overrides.lockedUntil ?? null,
     recoveryFailedAttempts: overrides.recoveryFailedAttempts ?? 0,
     recoveryLockedUntil: overrides.recoveryLockedUntil ?? null,
-    autoLockMinutes: 10,
+    autoLockMinutes: overrides.autoLockMinutes ?? null,
     createdAt: new Date(0),
     rotatedAt: null,
   };
@@ -1396,12 +1702,25 @@ async function wholeVault() {
   };
 }
 
-function userPrincipal(overrides: { vaultUnlockedAt?: Date | null } = {}) {
+function userPrincipal(
+  overrides: {
+    vaultUnlockedAt?: Date | null;
+    lastSeenAt?: Date;
+    vaultAutoLockMinutes?: number | null;
+  } = {},
+) {
+  const unlockedAt =
+    'vaultUnlockedAt' in overrides ? (overrides.vaultUnlockedAt ?? null) : new Date();
+
   return {
     kind: 'user' as const,
     sessionId: SESSION_ID,
-    vaultUnlockedAt:
-      'vaultUnlockedAt' in overrides ? (overrides.vaultUnlockedAt ?? null) : new Date(),
+    vaultUnlockedAt: unlockedAt,
+    // Defaults to the unlock itself, so a fixture that says nothing about
+    // activity describes a session that has made no request since it unlocked —
+    // the case where the idle window is measured from `vaultUnlockedAt`.
+    lastSeenAt: overrides.lastSeenAt ?? unlockedAt ?? new Date(),
+    vaultAutoLockMinutes: overrides.vaultAutoLockMinutes ?? null,
     user: {
       id: USER_ID,
       email: 'nitheesh@playxoft.com',

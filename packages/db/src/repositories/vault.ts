@@ -4,6 +4,7 @@ import type { UnlockAttemptState } from '@xecret/core/auth';
 import { uuidv7 } from '@xecret/core/ids';
 import { userKeys, userKeyWraps, userPasskeys } from '../schema/vault';
 import { deleteGrantsForUser } from './env-keys';
+import { revokeAllPinPeppers } from './vault-pin';
 import { lockSessions } from './sessions';
 import { isUniqueViolation } from './users';
 import { RepositoryError } from './shared';
@@ -54,7 +55,8 @@ export interface VaultKeyRecord extends UnlockAttemptState {
   /** The recovery-code attempt counter, kept apart from the passphrase one. */
   recoveryFailedAttempts: number;
   recoveryLockedUntil: Date | null;
-  autoLockMinutes: number;
+  /** The idle allowance in minutes; `null` when the account never chose one. */
+  autoLockMinutes: number | null;
   createdAt: Date;
   rotatedAt: Date | null;
 }
@@ -304,17 +306,22 @@ export async function recordRecoveryAttempt(
 }
 
 /**
- * Changes how long the dashboard may sit idle before locking itself.
+ * Changes how long a vault may sit idle before it locks.
  *
- * The value is validated by the caller against `AUTO_LOCK_MINUTES_OPTIONS` and
- * again by the table's CHECK; this module only stores, as ever. No row means no
- * vault — there is nothing an idle timer could lock — so the update refusing to
- * invent one is the correct answer rather than an error to paper over.
+ * `null` clears the preference rather than storing a number: the account goes
+ * back to whatever `DEFAULT_AUTO_LOCK_MINUTES` is *now*, which is the only state
+ * that can be redefined later without rewriting the row. Anything else has
+ * already been through `clampAutoLockMinutes` at the API boundary and is checked
+ * again by the table's CHECK; this module only stores, as ever.
+ *
+ * No row means no vault — there is nothing an idle timer could lock — so the
+ * update refusing to invent one is the correct answer rather than an error to
+ * paper over.
  */
 export async function setAutoLockMinutes(
   exec: Executor,
   userId: string,
-  minutes: number,
+  minutes: number | null,
 ): Promise<VaultKeyRecord | null> {
   const [row] = await exec
     .update(userKeys)
@@ -351,6 +358,13 @@ export interface ChangePassphraseParams {
  * The old wrap is superseded rather than deleted, and the new one is inserted
  * first: the partial unique index means the insert is what fails if two changes
  * race, and it fails before anything has been retired.
+ *
+ * **Every device PIN dies here**, in the same transaction. Changing a passphrase
+ * is one of the three acts that may move the key hierarchy a browser-held PIN
+ * wrap addresses, and a pepper that outlives its wrap is a row this server will
+ * hand out for a ciphertext nothing can open. Removing the pepper is also the
+ * only reach this server has: the wraps are in browsers, and what it can do is
+ * make them permanently undecryptable.
  */
 export async function changePassphrase(
   exec: Executor,
@@ -386,6 +400,8 @@ export async function changePassphrase(
       if (updated.length === 0) {
         throw new RepositoryError('notFound', 'This account has no vault.');
       }
+
+      await revokeAllPinPeppers(tx, params.userId);
     });
   } catch (cause) {
     throw asVaultConflict(cause, 'The passphrase was changed by another request.');
@@ -523,6 +539,13 @@ export async function completeRecovery(
           recoveryLockedUntil: null,
         })
         .where(eq(userKeys.userId, params.userId));
+
+      // Every device PIN, for the reason `changePassphrase` gives — and with one
+      // more of its own. Somebody redeeming a recovery code has lost control of
+      // their passphrase, which is exactly the situation in which a PIN left
+      // live on a device they may no longer hold is a second way in that nobody
+      // has re-authorised.
+      await revokeAllPinPeppers(tx, params.userId);
     });
   } catch (cause) {
     throw asVaultConflict(cause, 'The passphrase was changed by another request.');
@@ -789,6 +812,13 @@ export async function resetVault(
     // In the same transaction as the delete, so the account cannot be left
     // holding grants for a vault it no longer has.
     await deleteGrantsForUser(tx, userId);
+
+    // And every device PIN. A reset replaces the User Key outright, so every
+    // browser-held PIN wrap is now a ciphertext of a key that no longer exists —
+    // and this server cannot delete those wraps, only the peppers without which
+    // they can never be opened. Left behind, they would keep each of those
+    // browsers offering a PIN unlock that can only fail.
+    await revokeAllPinPeppers(tx, userId);
 
     // After the delete, never before: `deleteGrantsForUser` clears the queue
     // wholesale, so a debt recorded first would be erased by the line above and

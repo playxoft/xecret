@@ -30,6 +30,7 @@ const actor = vi.hoisted(() => ({
   authenticate: vi.fn(),
   assertCsrf: vi.fn(),
   isUnlocked: vi.fn(() => true),
+  latchVaultLock: vi.fn(),
   actorType: vi.fn(() => 'user' as const),
   actorId: vi.fn(() => 'actor-id'),
   actorLabel: vi.fn(() => 'nitheesh@playxoft.com'),
@@ -102,6 +103,8 @@ const principal = {
   // Unlocked. The lock gate lives in `authenticatedRoute`, and these fixtures
   // exercise what happens *past* it.
   vaultUnlockedAt: new Date(),
+  lastSeenAt: new Date(),
+  vaultAutoLockMinutes: null,
   sessionId: uuidv7(),
   user: {
     id: uuidv7(),
@@ -664,5 +667,31 @@ describe('the lock gate', () => {
     const handler = publicRoute(async () => new Response(null, { status: 204 }));
 
     expect((await handler(request())).status).toBe(204);
+  });
+
+  it('latches the lock it just enforced, so the refusal outlives the request', async () => {
+    // The gate measures against an anchor this very request has already
+    // scheduled a write to — see `latchVaultLock`. Refusing without clearing
+    // the unlock made the lock last exactly one request.
+    actor.isUnlocked.mockReturnValue(false);
+    const handler = authenticatedRoute(async () => new Response(null, { status: 204 }));
+
+    await handler(request());
+
+    expect(actor.latchVaultLock).toHaveBeenCalledWith(principal, expect.anything());
+  });
+
+  it('does not latch when the route runs, or when it is exempt', async () => {
+    // A latch on a passing request would lock a session that is working, and a
+    // latch on `POST /api/auth/vault/unlock` would undo the unlock it just did.
+    actor.isUnlocked.mockReturnValue(true);
+    await authenticatedRoute(async () => new Response(null, { status: 204 }))(request());
+
+    actor.isUnlocked.mockReturnValue(false);
+    await authenticatedRoute(async () => new Response(null, { status: 204 }), {
+      allowLocked: true,
+    })(request());
+
+    expect(actor.latchVaultLock).not.toHaveBeenCalled();
   });
 });

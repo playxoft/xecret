@@ -92,6 +92,8 @@ function principalFor(userId: string) {
   return {
     kind: 'user' as const,
     vaultUnlockedAt: new Date(),
+    lastSeenAt: new Date(),
+    vaultAutoLockMinutes: null,
     sessionId: uuidv7(),
     user: {
       id: userId,

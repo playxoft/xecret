@@ -276,7 +276,10 @@ export function InviteKeyStep({
             </p>
           </div>
 
-          <VaultProvider>
+          {/* `key`: an account switch in this tab has to remount the provider,
+              or the restore — and the account check inside it — never runs
+              again. */}
+          <VaultProvider key={vaultGate.user.id} userId={vaultGate.user.id}>
             {vaultGate.configured ? (
               <VaultUnlock user={vaultGate.user} onUnlocked={vaultGate.onChanged} />
             ) : (

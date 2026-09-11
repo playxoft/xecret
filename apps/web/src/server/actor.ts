@@ -11,12 +11,14 @@ import {
   splitServiceToken,
   verifyCsrf,
 } from '@xecret/core/auth';
+import type { VaultUnlockState } from '@xecret/core/auth';
 import type { AccessLevel } from '@xecret/core/authz';
 import {
   findCliTokenByHash,
   findServiceTokenByHash,
   findSessionByTokenHash,
   isIpAllowed,
+  lockSessions,
   touchCliTokenUsage,
   touchServiceTokenUsage,
   touchSession,
@@ -59,6 +61,24 @@ export type Principal =
        * Firebase, which is the whole thing this design avoids.
        */
       vaultUnlockedAt: Date | null;
+      /**
+       * The last request this session made — the server's only view of activity.
+       *
+       * The unlock window is an *idle* allowance, so it has to be measured from
+       * something that moves while somebody is working. `vault_unlocked_at` does
+       * not move, and measuring from it alone would throw a user who chose
+       * fifteen minutes back to the lock screen four times an hour while they
+       * typed. See `isVaultUnlocked`.
+       */
+      lastSeenAt: Date;
+      /**
+       * The account's auto-lock preference in minutes; `null` for no preference.
+       *
+       * The same number the browser's idle timer counts against. Carried here so
+       * that the gate and the timer cannot disagree about when this session
+       * stopped being unlocked.
+       */
+      vaultAutoLockMinutes: number | null;
     }
   | {
       kind: 'cliToken';
@@ -155,6 +175,12 @@ async function principalFromSession(token: string, services: ServiceContext): Pr
     sessionId: session.id,
     user: session.user,
     vaultUnlockedAt: session.vaultUnlockedAt,
+    // The row's value, not the throttled write above: `touchSession` runs in
+    // `waitUntil` and may not have happened yet, and the gate must judge this
+    // request on what the database actually says rather than on what is about to
+    // be written to it.
+    lastSeenAt: resolution.session.lastSeenAt,
+    vaultAutoLockMinutes: session.vaultAutoLockMinutes,
   };
 }
 
@@ -179,7 +205,52 @@ async function principalFromSession(token: string, services: ServiceContext): Pr
  */
 export function isUnlocked(principal: Principal, now: Date): boolean {
   if (principal.kind !== 'user') return true;
-  return isVaultUnlocked(principal.vaultUnlockedAt, now);
+  return isVaultUnlocked(vaultUnlockStateOf(principal), now);
+}
+
+/**
+ * The three fields the unlock policy reads, out of a session principal.
+ *
+ * Exported because `vault-service.ts` builds the same record to compute
+ * `unlockedUntil`, and a second hand-assembled copy is how the gate and the
+ * expiry the client is shown come to disagree.
+ */
+export function vaultUnlockStateOf(
+  principal: Extract<Principal, { kind: 'user' }>,
+): VaultUnlockState {
+  return {
+    vaultUnlockedAt: principal.vaultUnlockedAt,
+    lastSeenAt: principal.lastSeenAt,
+    autoLockMinutes: principal.vaultAutoLockMinutes,
+  };
+}
+
+/**
+ * Makes a refusal by {@link isUnlocked} stick, by clearing the unlock it judged.
+ *
+ * ── The lock that lasted exactly one request ──
+ * Without this, the gate was self-healing. The window is measured from the later
+ * of `vault_unlocked_at` and `last_seen_at` (see `isVaultUnlocked`), and
+ * `authenticate` touches `last_seen_at` on every request *before* the gate runs.
+ * So an idled-out session was refused once — and that very refusal slid the
+ * anchor to now, leaving the next request inside the window again. A fifteen
+ * minute preference produced one 423 and then carried on as though nothing had
+ * happened, re-arming itself every five minutes until the eight-hour ceiling.
+ *
+ * Clearing the timestamp is what `POST /api/auth/vault/lock` does, through the
+ * same repository call, and it means the same thing here: the session stays
+ * signed in for its thirty days and simply has to prove presence again. The
+ * write is deferred past the response because the caller is being refused
+ * either way and must not wait for the bookkeeping that records it.
+ *
+ * Only for a session that *had* an unlock to clear. A principal already at
+ * `null` is a fresh sign-in on its way to the unlock screen, and issuing an
+ * UPDATE per refused request for it would be a write on the one path that is
+ * meant to be cheap. CLI and service tokens are never locked at all.
+ */
+export function latchVaultLock(principal: Principal, services: ServiceContext): void {
+  if (principal.kind !== 'user' || principal.vaultUnlockedAt === null) return;
+  services.waitUntil(lockSessions(services.db, { sessionId: principal.sessionId }));
 }
 
 async function principalFromBearer(token: string, services: ServiceContext): Promise<Principal> {

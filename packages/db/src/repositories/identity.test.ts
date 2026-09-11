@@ -91,6 +91,18 @@ describe('resolving a request from its session cookie', () => {
     expect(sql.match(/ from /g)).toHaveLength(1);
     expect(sql).toContain('limit');
   });
+
+  it('carries the auto-lock preference, because the unlock gate is measured against it', async () => {
+    // Without it, every request that has to decide whether a session is still
+    // unlocked would need a second query for one integer. The join is LEFT
+    // because an account on its way to the setup ceremony has no vault row and
+    // must still resolve.
+    const { sql } = await lookup();
+
+    expect(sql).toContain('left join "user_keys"');
+    expect(sql).toContain('"user_keys"."auto_lock_minutes"');
+    expect(sql.match(/ from /g)).toHaveLength(1);
+  });
 });
 
 describe('the active-devices list', () => {

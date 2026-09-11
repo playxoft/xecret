@@ -3,21 +3,27 @@ import { randomBytes } from '../crypto/encoding';
 import {
   AUTO_LOCK_MINUTES_OPTIONS,
   DEFAULT_AUTO_LOCK_MINUTES,
+  DEVICE_PIN_MAX_ATTEMPTS,
+  MAX_AUTO_LOCK_MINUTES,
+  MIN_AUTO_LOCK_MINUTES,
   UNLOCK_VERIFIER_BYTES,
   VAULT_FREE_ATTEMPTS,
   VAULT_LOCKOUT_BASE_MS,
   VAULT_LOCKOUT_MAX_MS,
-  VAULT_UNLOCK_MS,
+  VAULT_UNLOCK_MAX_MS,
+  clampAutoLockMinutes,
   clearedUnlockFailures,
   evaluateUnlockLockout,
   hashUnlockVerifier,
   isAutoLockMinutes,
   isVaultUnlocked,
+  nearestAutoLockOption,
+  nextPinFailure,
   nextUnlockFailure,
   unlockVerifierMatches,
   vaultUnlockExpiryFrom,
 } from './vault';
-import type { UnlockAttemptState } from './vault';
+import type { UnlockAttemptState, VaultUnlockState } from './vault';
 
 const NOW = new Date('2026-09-08T12:00:00.000Z');
 
@@ -87,27 +93,71 @@ describe('the unlock lockout', () => {
 });
 
 describe('the unlock window', () => {
+  /** A session unlocked `agoMs` ago that has been making requests ever since. */
+  const active = (agoMs: number, autoLockMinutes: number | null = null): VaultUnlockState => ({
+    vaultUnlockedAt: new Date(NOW.getTime() - agoMs),
+    lastSeenAt: NOW,
+    autoLockMinutes,
+  });
+
+  /** A session unlocked `agoMs` ago that has made no request since. */
+  const idle = (agoMs: number, autoLockMinutes: number | null = null): VaultUnlockState => ({
+    vaultUnlockedAt: new Date(NOW.getTime() - agoMs),
+    lastSeenAt: new Date(NOW.getTime() - agoMs),
+    autoLockMinutes,
+  });
+
   it('treats a session that has never been unlocked as locked', () => {
     // A fresh sign-in lands here, which is what makes the cookie insufficient on
     // its own to reach key material.
-    expect(isVaultUnlocked(null, NOW)).toBe(false);
+    expect(isVaultUnlocked({ ...idle(0), vaultUnlockedAt: null }, NOW)).toBe(false);
   });
 
-  it('stays unlocked for the working day, then re-locks', () => {
-    expect(isVaultUnlocked(new Date(NOW.getTime() - VAULT_UNLOCK_MS + 1000), NOW)).toBe(true);
-    expect(isVaultUnlocked(new Date(NOW.getTime() - VAULT_UNLOCK_MS), NOW)).toBe(false);
+  it('lapses once the account idles past its own preference', () => {
+    const minutes = 15;
+    expect(isVaultUnlocked(idle(minutes * 60_000 - 1000, minutes), NOW)).toBe(true);
+    expect(isVaultUnlocked(idle(minutes * 60_000, minutes), NOW)).toBe(false);
   });
 
-  it('is not extended by activity', () => {
-    // Deliberate: the window is measured from the unlock, so a laptop left open
-    // with a background tab polling cannot hold itself unlocked indefinitely.
-    expect(isVaultUnlocked(new Date(NOW.getTime() - VAULT_UNLOCK_MS - 1), NOW)).toBe(false);
+  it('follows the preference rather than one fixed window', () => {
+    // The whole point of reading it here: the browser's timer and this gate are
+    // the same number, so a tight setting is tight on both sides and a loose one
+    // is loose on both.
+    const twoHours = 2 * 60 * 60_000;
+    expect(isVaultUnlocked(idle(twoHours, 15), NOW)).toBe(false);
+    expect(isVaultUnlocked(idle(twoHours, 240), NOW)).toBe(true);
   });
 
-  it('reports the expiry the client schedules its re-lock against', () => {
-    expect(vaultUnlockExpiryFrom(NOW).getTime()).toBe(NOW.getTime() + VAULT_UNLOCK_MS);
-    expect(isVaultUnlocked(NOW, new Date(vaultUnlockExpiryFrom(NOW).getTime() - 1))).toBe(true);
-    expect(isVaultUnlocked(NOW, vaultUnlockExpiryFrom(NOW))).toBe(false);
+  it('resolves no preference to the default', () => {
+    expect(isVaultUnlocked(idle(DEFAULT_AUTO_LOCK_MINUTES * 60_000 - 1000, null), NOW)).toBe(true);
+    expect(isVaultUnlocked(idle(DEFAULT_AUTO_LOCK_MINUTES * 60_000, null), NOW)).toBe(false);
+  });
+
+  it('clamps a stored value that is outside the range the gate assumes', () => {
+    // A hand-edited row must not be able to buy an unlock longer than the
+    // ceiling, or one so short the owner cannot work.
+    expect(isVaultUnlocked(idle(MIN_AUTO_LOCK_MINUTES * 60_000 - 1000, 1), NOW)).toBe(true);
+    expect(isVaultUnlocked(idle(MAX_AUTO_LOCK_MINUTES * 60_000 + 1000, 100_000), NOW)).toBe(false);
+  });
+
+  it('is extended by activity, because it is an idle allowance and not a stopwatch', () => {
+    // Measuring from the unlock alone would throw somebody who chose fifteen
+    // minutes back to the lock screen four times an hour while they were typing.
+    expect(isVaultUnlocked(active(3 * 60 * 60_000, 15), NOW)).toBe(true);
+  });
+
+  it('still ends at the absolute ceiling, however busy the session is', () => {
+    // Otherwise a sliding window never closes: a stolen cookie replayed on a
+    // timer would hold an unlocked session for as long as anyone kept replaying.
+    expect(isVaultUnlocked(active(VAULT_UNLOCK_MAX_MS - 1000, 720), NOW)).toBe(true);
+    expect(isVaultUnlocked(active(VAULT_UNLOCK_MAX_MS, 720), NOW)).toBe(false);
+  });
+
+  it('reports the idle expiry the client schedules its re-lock against', () => {
+    const state = idle(0, 60);
+    expect(vaultUnlockExpiryFrom(state).getTime()).toBe(NOW.getTime() + 60 * 60_000);
+    expect(isVaultUnlocked(state, new Date(vaultUnlockExpiryFrom(state).getTime() - 1))).toBe(true);
+    expect(isVaultUnlocked(state, vaultUnlockExpiryFrom(state))).toBe(false);
   });
 });
 
@@ -119,10 +169,98 @@ describe('the auto-lock menu', () => {
     }
   });
 
-  it('refuses an interval no settings screen can display or repair', () => {
+  it('offers nothing outside the range the gate will honour', () => {
+    for (const minutes of AUTO_LOCK_MINUTES_OPTIONS) {
+      expect(minutes).toBeGreaterThanOrEqual(MIN_AUTO_LOCK_MINUTES);
+      expect(minutes).toBeLessThanOrEqual(MAX_AUTO_LOCK_MINUTES);
+    }
+  });
+
+  it('has no "never": a window the server honours cannot be infinite', () => {
+    expect(isAutoLockMinutes(0)).toBe(false);
+    expect(clampAutoLockMinutes(0)).toBe(MIN_AUTO_LOCK_MINUTES);
+  });
+
+  it('reports an off-menu interval as off-menu', () => {
     for (const minutes of [-1, 1, 43, 61, 1440, 0.5, Number.NaN]) {
       expect(isAutoLockMinutes(minutes)).toBe(false);
     }
+  });
+});
+
+describe('clamping a stored preference', () => {
+  it('resolves an absent preference to the default', () => {
+    expect(clampAutoLockMinutes(null)).toBe(DEFAULT_AUTO_LOCK_MINUTES);
+    expect(clampAutoLockMinutes(undefined)).toBe(DEFAULT_AUTO_LOCK_MINUTES);
+    expect(clampAutoLockMinutes(Number.NaN)).toBe(DEFAULT_AUTO_LOCK_MINUTES);
+  });
+
+  it('holds every answer inside the range, rather than refusing one', () => {
+    // Failing towards the tighter number: a caller asking for one minute has an
+    // unmistakable intention, and a 422 would leave the looser setting in place.
+    expect(clampAutoLockMinutes(1)).toBe(MIN_AUTO_LOCK_MINUTES);
+    expect(clampAutoLockMinutes(-500)).toBe(MIN_AUTO_LOCK_MINUTES);
+    expect(clampAutoLockMinutes(100_000)).toBe(MAX_AUTO_LOCK_MINUTES);
+    expect(clampAutoLockMinutes(37.4)).toBe(37);
+  });
+
+  it('leaves every offered option untouched', () => {
+    for (const minutes of AUTO_LOCK_MINUTES_OPTIONS) {
+      expect(clampAutoLockMinutes(minutes)).toBe(minutes);
+    }
+  });
+});
+
+describe('displaying a stored preference', () => {
+  it('answers with the option a picker should highlight', () => {
+    // The menu is a set and the column is a range, so a row remapped by
+    // migration 0015 — or a hand-crafted PATCH — can name no menu item. A picker
+    // handed that renders blank, which reads as "auto-lock is off" on the one
+    // screen where that must never be a guess.
+    expect(nearestAutoLockOption(null)).toBe(DEFAULT_AUTO_LOCK_MINUTES);
+    expect(nearestAutoLockOption(37)).toBe(15);
+    expect(nearestAutoLockOption(45)).toBe(60);
+    expect(nearestAutoLockOption(200)).toBe(240);
+    expect(nearestAutoLockOption(100_000)).toBe(720);
+  });
+
+  it('answers with an option, always', () => {
+    for (const minutes of [-10, 0, 1, 14, 15, 16, 300, 719, 721, 5000]) {
+      expect(AUTO_LOCK_MINUTES_OPTIONS).toContain(nearestAutoLockOption(minutes));
+    }
+  });
+});
+
+describe('the device-PIN attempt budget', () => {
+  it('counts down from five and never hands out a sixth try', () => {
+    // The whole security of a six-digit PIN is that this number is finite and
+    // the guesser does not control it.
+    expect(DEVICE_PIN_MAX_ATTEMPTS).toBe(5);
+
+    expect(nextPinFailure(0)).toEqual({ attempts: 1, burned: false, attemptsRemaining: 4 });
+    expect(nextPinFailure(1)).toEqual({ attempts: 2, burned: false, attemptsRemaining: 3 });
+    expect(nextPinFailure(2)).toEqual({ attempts: 3, burned: false, attemptsRemaining: 2 });
+    expect(nextPinFailure(3)).toEqual({ attempts: 4, burned: false, attemptsRemaining: 1 });
+    expect(nextPinFailure(4)).toEqual({ attempts: 5, burned: true, attemptsRemaining: 0 });
+  });
+
+  it('burns rather than escalating — unlike the passphrase lockout beside it', () => {
+    // A passphrase is up against real entropy, so its lockout only has to make
+    // guessing slow. A PIN's has to make guessing *end*: there is nothing to
+    // come back to once the pepper is deleted.
+    expect(nextPinFailure(4).burned).toBe(true);
+    expect(nextUnlockFailure({ failedAttempts: 4, lockedUntil: null }, NOW).lockedUntil).toBeNull();
+  });
+
+  it('treats a corrupt counter as at least one failure, never as a fresh start', () => {
+    // A row hand-edited below zero, or carrying a fraction, must not buy extra
+    // guesses. Every input answers with a count that has moved forward.
+    for (const stored of [-5, -1, 0.4, 3.9]) {
+      expect(nextPinFailure(stored).attempts, String(stored)).toBeGreaterThanOrEqual(1);
+    }
+    // And one past the ceiling still burns rather than storing an illegal value
+    // the table's CHECK would refuse.
+    expect(nextPinFailure(99)).toEqual({ attempts: 5, burned: true, attemptsRemaining: 0 });
   });
 });
 

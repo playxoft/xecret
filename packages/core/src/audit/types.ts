@@ -93,6 +93,35 @@ export type AuditAction =
    * question somebody can ask. ADR 0009 records it under residual risks.
    */
   | 'vault.material_read'
+  /**
+   * A browser enrolled a six-digit device PIN, or re-enrolled under a new one.
+   *
+   * The one event that records an account choosing a *weaker* credential for
+   * daily use, and that is exactly why it is here. The PIN is opt-in, the
+   * passphrase stays the root, and the honest trade-off — a server colluding
+   * with whoever holds the device can enumerate six digits — is stated in the
+   * settings screen. An enrolment nobody remembers making is the shape of that
+   * trade being taken by somebody else, and no other event marks it.
+   */
+  | 'vault.pin_enrolled'
+  /**
+   * A device PIN was turned off: on this browser, on another one, or on all of
+   * them at once. `reason` says which, and which browser.
+   *
+   * Deliberately distinct from {@link 'vault.pin_burned'}. Both end an enrolment
+   * and they answer opposite questions in a review: this one was somebody
+   * deciding, the other was somebody failing.
+   */
+  | 'vault.pin_disabled'
+  /**
+   * A device PIN was destroyed by wrong guesses — the fifth failure in a row.
+   *
+   * The security event of the whole feature. A PIN's entire budget is five
+   * attempts, so this record is the moment that budget was spent, and a burst of
+   * them across an account is the shape of somebody working through a stolen
+   * laptop. Afterwards that wrap opens for nobody who never saw its pepper.
+   */
+  | 'vault.pin_burned'
   /** A session was locked without being revoked — the user is still signed in. */
   | 'auth.locked'
   /** The idle auto-lock interval was changed. `reason` carries the new value. */
@@ -265,7 +294,15 @@ export interface AuditMetadata {
   previousAccessLevel?: string;
   newAccessLevel?: string;
   tokenPrefix?: string;
-  /** The device a CLI credential was approved for, e.g. a hostname. */
+  /**
+   * Which device an event concerned: a hostname for a CLI approval, the
+   * browser's own uuid for a device PIN.
+   *
+   * A name the device gave or an id it minted — never a fingerprint this server
+   * derived, and never a `User-Agent`. Both kinds are already known to the
+   * account that owns them, which is what makes the field safe to keep and
+   * useful to read: "which browser burned its PIN" is unanswerable without it.
+   */
   deviceName?: string;
   keyVersion?: number;
   /**
@@ -307,8 +344,12 @@ export interface AuditMetadata {
    * reading an unlock trail is actually asking. "Every unlock on this account
    * last week was a passkey and then one was not" is the shape of a story, and
    * it is unreadable if the two paths are only distinguishable by wrap type.
+   *
+   * `pin` is the third, and the one most worth being able to count: it is the
+   * weakest of the three by design, and "every unlock on this laptop for a month
+   * was a PIN" is a posture somebody may want to notice.
    */
-  method?: 'passphrase' | 'passkey';
+  method?: 'passphrase' | 'passkey' | 'pin';
   /** How many recovery codes a regeneration issued. A count, never a code. */
   recoveryCodeCount?: number;
   /** How many sessions one act affected — "lock everywhere", "sign out everywhere". */

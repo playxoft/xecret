@@ -29,6 +29,16 @@ import { useVault } from './vault-keys';
  * Offer to remember the passphrase. Offer to email the codes. Offer to skip the
  * kit. Each of those turns a zero-knowledge vault into a vault with a copy of
  * the key somewhere convenient, which is the same thing as not having one.
+ *
+ * ── Why the last step reads as opt-out, and why that is not the same thing ──
+ * A passkey is the one part of this ceremony that costs nothing to security and
+ * buys back the friction everything above it adds: without one, the passphrase
+ * is typed every morning, and a passphrase typed every morning is the passphrase
+ * people shorten. So the step's primary action is the enrolment and the way past
+ * it is a small ghost button — the emphasis a screen gives to the thing it
+ * recommends. It remains one click to leave, and `setupStepProblem` still gates
+ * nothing here: an authenticator without PRF must never be a vault its owner
+ * cannot finish creating.
  */
 
 export interface VaultSetupProps {
@@ -65,6 +75,13 @@ export function VaultSetup({ user, onComplete }: VaultSetupProps) {
 
   const problem = setupStepProblem(step, { ...state, score: strength?.score ?? null });
   const position = setupStepPosition(step);
+
+  // Read from the adopted material rather than from state of its own, so the
+  // one place that knows a passkey exists is the one place that says so.
+  const passkeyEnrolled = (vault.material?.passkeys.length ?? 0) > 0;
+
+  /** Whether the footer button is the step's action or its way past. */
+  const skippable = step === 'passkey' && !passkeyEnrolled;
 
   async function generate() {
     setStep('generating');
@@ -171,6 +188,7 @@ export function VaultSetup({ user, onComplete }: VaultSetupProps) {
       {step === 'passkey' ? (
         <PasskeyEnrolment
           user={user}
+          framing="offer"
           material={vault.material}
           keys={vault.keys}
           onEnrolled={(passkey) => {
@@ -184,8 +202,27 @@ export function VaultSetup({ user, onComplete }: VaultSetupProps) {
 
       {step === 'generating' ? null : (
         <div className="flex flex-col gap-2">
-          <Button variant="primary" size="lg" onClick={advance}>
-            {step === 'passphrase' ? 'Create my vault' : step === 'passkey' ? 'Finish' : 'Continue'}
+          {/* ── The one step whose button is not the point of the screen ──
+              Everywhere else this is the action; on the passkey step the action
+              is the enrolment above, and this is the way past it. So it is a
+              small ghost until something has been enrolled, and the primary
+              only once there is a result to confirm. Skipping stays one click,
+              because a passkey is an extra door and an authenticator that
+              cannot do PRF must not be a vault somebody cannot finish
+              creating — the gate in `ceremony.ts` says the same thing. */}
+          <Button
+            variant={skippable ? 'ghost' : 'primary'}
+            size={skippable ? 'sm' : 'lg'}
+            className={skippable ? 'self-center' : undefined}
+            onClick={advance}
+          >
+            {step === 'passphrase'
+              ? 'Create my vault'
+              : step === 'passkey'
+                ? passkeyEnrolled
+                  ? 'Finish'
+                  : 'Skip for now'
+                : 'Continue'}
           </Button>
 
           {/* Shown under the button rather than as a tooltip on a disabled one:

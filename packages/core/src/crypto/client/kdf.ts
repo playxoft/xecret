@@ -63,6 +63,38 @@ export const CURRENT_KDF_PARAMS: Readonly<Argon2idParams> = Object.freeze({
 });
 
 /**
+ * The parameters a **device PIN** is stretched at.
+ *
+ * ── Why this is cheaper than {@link CURRENT_KDF_PARAMS}, and why that is not a
+ * weakening ──
+ * Argon2id's cost is what stands between a guess and a key, and against six
+ * digits no achievable cost is enough: 10^6 candidates at a second each is a
+ * fortnight on one core, and a GPU farm makes it an afternoon. So the PIN's
+ * security does not come from here at all. It comes from the 32-byte
+ * server-held pepper that `HKDF(pinKey ‖ pepper)` mixes in — without which the
+ * wrap is not attackable at any cost — and from the five-attempt counter that
+ * releases it (spec §13.3).
+ *
+ * What the stretch still buys is the case where the pepper *is* known: a
+ * compromised server colluding with whoever holds the device. There the PIN is
+ * all that is left, and a memory-hard KDF turns a trivial enumeration into a
+ * paid one. Light parameters are the honest choice for that job, because a PIN
+ * is typed several times a day on whatever phone is to hand and a second of
+ * Argon2id per entry would simply stop the feature being used.
+ *
+ * `m` is the OWASP 2025 floor, which is also {@link parseKdfParams}'s lower
+ * bound — so these parameters are the cheapest this client will run at all.
+ */
+export const DEVICE_PIN_KDF_PARAMS: Readonly<Argon2idParams> = Object.freeze({
+  alg: 'argon2id',
+  v: ARGON2_VERSION,
+  m: 19_456,
+  t: 2,
+  p: 1,
+  len: 32,
+});
+
+/**
  * Accepted ranges. The lower bound on `m` is the OWASP 2025 floor; a record
  * below it is either corrupt or hostile, and refusing is correct either way.
  */

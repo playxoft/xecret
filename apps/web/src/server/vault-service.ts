@@ -1,5 +1,5 @@
 import {
-  DEFAULT_AUTO_LOCK_MINUTES,
+  clampAutoLockMinutes,
   clearedUnlockFailures,
   evaluateUnlockLockout,
   hashUnlockVerifier,
@@ -10,39 +10,47 @@ import {
 } from '@xecret/core/auth';
 import { IdentityVerificationError } from '@xecret/core/auth';
 import type { UnlockAttemptState, VerifiedIdentity } from '@xecret/core/auth';
-import { fromBase64Url } from '@xecret/core/crypto';
+import { fromBase64Url, toBase64Url } from '@xecret/core/crypto';
+import { generatePinPepper } from '@xecret/core/crypto/client';
 import {
+  attemptPinUnlock,
   changePassphrase as changePassphraseRows,
   completeRecovery as completeRecoveryRows,
   createVault as createVaultRows,
+  disablePinPepper,
   enrollPasskey as enrollPasskeyRows,
   findRecoveryWrap,
   findUserByFirebaseUid,
   findVaultKeys,
   listOrganizationsForUser,
   listPasskeys,
+  listPinPeppers,
   lockSessions,
   loadVault,
   markSessionUnlocked,
+  mintPinPepper,
   recordRecoveryAttempt,
   recordUnlockAttempt,
   regenerateRecoveryCodes as regenerateRecoveryCodeRows,
   removePasskey as removePasskeyRow,
   RepositoryError,
   resetVault as resetVaultRows,
+  revokeAllPinPeppers,
   setAutoLockMinutes,
   toBytes,
 } from '@xecret/db/repositories';
 import type { VaultKeyRecord } from '@xecret/db/repositories';
+import { vaultUnlockStateOf } from './actor';
 import type { Principal } from './actor';
 import type { ServiceContext } from './context';
 import { errors } from './errors';
 import { CLOCK_SKEW_SECONDS, firebaseIdentityProvider } from './firebase';
 import { requeueKeySharesAfterVaultReset } from './member-keys';
-import { decodeBlob, encodeBlob, toPasskey, toVaultMaterial } from './schemas/vault';
+import { decodeBlob, encodeBlob, toPasskey, toPinDevice, toVaultMaterial } from './schemas/vault';
 import { VAULT_RESET_MAX_AUTH_AGE_SECONDS } from './schemas/vault';
 import type {
   PasskeyPayload,
+  PinDevicePayload,
   VaultCreateRequest,
   VaultMaterialPayload,
   VaultStatusPayload,
@@ -120,27 +128,37 @@ export async function vaultStatus(
   }
 
   const keys = await findVaultKeys(services.db, principal.user.id);
-  return statusFrom(keys, principal.vaultUnlockedAt, now);
+  return statusFrom(keys, principal, now);
 }
 
 function statusFrom(
   keys: VaultKeyRecord | null,
-  vaultUnlockedAt: Date | null,
+  principal: Extract<Principal, { kind: 'user' }>,
   now: Date,
 ): VaultStatusPayload {
+  // The preference comes from the freshly read vault row rather than from the
+  // principal's copy, which the session lookup took at the start of the request.
+  // They differ on exactly one path — the PATCH below, which answers with the
+  // status it has just written — and answering with the stale number there would
+  // hand the client back the value it had asked to change.
+  const state = {
+    ...vaultUnlockStateOf(principal),
+    autoLockMinutes: keys?.autoLockMinutes ?? null,
+  };
+
   // A session cannot be unlocked into a vault that does not exist. Without this
   // conjunction a user who deleted and re-created a vault would carry the old
   // session's timestamp into the new one, skipping the unlock entirely.
-  const unlocked = keys !== null && isVaultUnlocked(vaultUnlockedAt, now);
+  const unlocked = keys !== null && isVaultUnlocked(state, now);
 
   return {
     configured: keys !== null,
     unlocked,
-    unlockedUntil:
-      unlocked && vaultUnlockedAt !== null
-        ? vaultUnlockExpiryFrom(vaultUnlockedAt).toISOString()
-        : null,
-    autoLockMinutes: keys?.autoLockMinutes ?? DEFAULT_AUTO_LOCK_MINUTES,
+    unlockedUntil: unlocked ? vaultUnlockExpiryFrom(state).toISOString() : null,
+    // Resolved, never raw. The client schedules a timer against this number and
+    // has no business re-implementing what a `null` means — there is one
+    // definition of that, and it is `clampAutoLockMinutes`.
+    autoLockMinutes: clampAutoLockMinutes(keys?.autoLockMinutes ?? null),
   };
 }
 
@@ -263,7 +281,15 @@ export async function unlockVault(
   const now = new Date();
   await markSessionUnlocked(services.db, user.sessionId, now);
 
-  return { unlockedUntil: vaultUnlockExpiryFrom(now).toISOString(), method };
+  // `markSessionUnlocked` writes both timestamps, so the idle allowance starts
+  // here rather than from whenever this session last made a request.
+  const unlockedUntil = vaultUnlockExpiryFrom({
+    vaultUnlockedAt: now,
+    lastSeenAt: now,
+    autoLockMinutes: keys.autoLockMinutes,
+  });
+
+  return { unlockedUntil: unlockedUntil.toISOString(), method };
 }
 
 /**
@@ -522,6 +548,201 @@ export async function removePasskey(
   if (!removed) throw errors.notFound('no such passkey');
 }
 
+/* ─────────────────────────────── device PIN ─────────────────────────────── */
+
+/** The pepper, handed over once, and the row it now belongs to. */
+export interface PinEnrolmentPayload {
+  device: PinDevicePayload;
+  /** 32 bytes, base64url. The client wraps with it and never stores it. */
+  pepper: string;
+}
+
+/**
+ * Enrols this browser's six-digit PIN, or re-enrols it under a new one.
+ *
+ * ── What the server contributes, and why it is the whole of the security ──
+ * A pepper: 32 bytes of CSPRNG output, minted here and **never derivable by the
+ * browser**. The wrap the browser then builds is encrypted under
+ * `HKDF(pinKey ‖ pepper)`, so the ciphertext it keeps in `localStorage` is not
+ * attackable at any cost without this row — which is what makes it safe to
+ * protect a User Key with six digits at all.
+ *
+ * The pepper crosses the wire exactly once, in this response. It is never
+ * persisted by the client and is fetched again, one attempt at a time and under
+ * a counter, by {@link attemptDevicePin}.
+ *
+ * ── Why the route that calls this requires an unlocked session ──
+ * Because enrolment wraps the User Key, and a browser that cannot decrypt has no
+ * User Key to wrap. A locked session reaching here could only produce a wrap of
+ * nothing, and an enrolment row for a wrap that opens nothing is worse than no
+ * enrolment: it suppresses the offer to set one up.
+ */
+export async function enrolDevicePin(
+  services: ServiceContext,
+  user: Extract<Principal, { kind: 'user' }>,
+  body: { deviceId: string; verifier: string },
+): Promise<PinEnrolmentPayload> {
+  await requireVault(services, user.user.id);
+
+  const pepper = generatePinPepper();
+  const device = await mintPinPepper(services.db, {
+    userId: user.user.id,
+    deviceId: body.deviceId,
+    pepper,
+    // The digest, never the verifier. A column holding the verifier verbatim
+    // would let a database dump release peppers, which is the one thing this
+    // table's secrecy is for.
+    verifierHash: await hashUnlockVerifier(fromBase64Url(body.verifier)),
+  });
+
+  return { device: toPinDevice(device), pepper: toBase64Url(pepper) };
+}
+
+/**
+ * What one PIN attempt resolved to, in the client's terms.
+ *
+ * ── Why three of the four are not errors ──
+ * The caller is authenticated; what is being decided is whether to release a
+ * pepper, and every outcome below is state the browser must *act* on rather than
+ * merely report. A wrong PIN leaves a working enrolment and a number to show; a
+ * burn and an unknown device both mean the local wrap is now dead and has to be
+ * cleared before the passphrase form is offered. Collapsing them into one 401
+ * would leave a dead wrap in `localStorage` suppressing the PIN option forever,
+ * or clear a perfectly good one on the first typo — and, because `lib/api.ts`
+ * sends a 401 to the sign-in page, would sign somebody out for mistyping four
+ * digits of six.
+ *
+ * The refusals that *are* errors stay errors: an unauthenticated caller never
+ * reaches this, and the edge rate limiter throws before it does.
+ */
+export type PinAttemptResult =
+  | {
+      outcome: 'unlocked';
+      /** The pepper this wrap was built under. Already superseded on the row. */
+      pepper: string;
+      /** The pepper the next wrap must be built under. The client re-wraps now. */
+      nextPepper: string;
+      unlockedUntil: string;
+    }
+  | { outcome: 'wrong'; attemptsRemaining: number }
+  | { outcome: 'burned' }
+  | { outcome: 'unknown' };
+
+/**
+ * Compares a presented PIN verifier, counts the attempt, and — on a match —
+ * releases the pepper and unlocks the session.
+ *
+ * ── The counting is the control ──
+ * Six digits is 10^6 candidates, so the only thing standing between a guesser
+ * and a User Key is that the guesses are *online* and finite. The compare and
+ * the increment happen inside one transaction on the row
+ * (`attemptPinUnlock`), because a read-then-write would hand a scripted attacker
+ * as many guesses per round trip as they cared to open connections. At five the
+ * row is deleted rather than locked out: the pepper is gone, the browser's wrap
+ * stops being openable by anybody who never saw its pepper, and the passphrase
+ * is the only way back in.
+ *
+ * ── Why the session is unlocked here rather than after the unwrap ──
+ * It has to be. Unlike the passphrase and passkey paths, this client cannot
+ * prove it can open anything *before* the request — the pepper it needs is what
+ * the request is for. So the verifier is the proof, exactly as it is for a
+ * passphrase, and the session is marked unlocked on the same terms. A browser
+ * whose wrap then fails to open calls `lockVault` itself rather than sitting on
+ * an unlocked session it cannot use.
+ *
+ * ── Why a success hands back two peppers ──
+ * Because a pepper that never changes is a pepper that only has to be captured
+ * once. It crosses the wire on every unlock, so an attacker who saw one — a
+ * compromised extension, a debug proxy, a heap dump — plus a copy of that
+ * browser's `localStorage` would hold a pair that no longer needs this server,
+ * and revoking the enrolment afterwards would not take it away from them. So the
+ * row is given a fresh pepper inside the same transaction that released the old
+ * one, and the client, which is holding the User Key at exactly that moment,
+ * re-wraps under the new one. The verifier is untouched: the same PIN and the
+ * same salt, so nothing the user does changes.
+ */
+export async function attemptDevicePin(
+  services: ServiceContext,
+  user: Extract<Principal, { kind: 'user' }>,
+  body: { deviceId: string; verifier: string },
+): Promise<PinAttemptResult> {
+  const keys = await requireVault(services, user.user.id);
+  const presented = fromBase64Url(body.verifier);
+
+  const nextPepper = generatePinPepper();
+  const outcome = await attemptPinUnlock(services.db, {
+    userId: user.user.id,
+    deviceId: body.deviceId,
+    // Constant-time, and run inside the row lock so the count cannot be raced.
+    matches: (verifierHash) => unlockVerifierMatches(presented, toBytes(verifierHash)),
+    // Minted per request rather than per success: the row lock is where the
+    // decision is made, and generating 32 bytes that a miss throws away is
+    // cheaper than reaching back out of the transaction to ask for them.
+    nextPepper,
+  });
+
+  if (outcome.status !== 'ok') {
+    services.log.at('attemptDevicePin').warn(
+      `Rejected a device PIN (${outcome.status}) — five wrong tries destroy the enrolment and ` +
+        'leave the passphrase as the only way in',
+      // The outcome, never the verifier and never the PIN. The user id is on
+      // the line already, bound by the route wrapper.
+      { reason: outcome.status },
+    );
+
+    return outcome.status === 'wrong'
+      ? { outcome: 'wrong', attemptsRemaining: outcome.attemptsRemaining }
+      : { outcome: outcome.status };
+  }
+
+  const now = new Date();
+  await markSessionUnlocked(services.db, user.sessionId, now);
+
+  return {
+    outcome: 'unlocked',
+    pepper: toBase64Url(toBytes(outcome.pepper)),
+    nextPepper: toBase64Url(nextPepper),
+    unlockedUntil: vaultUnlockExpiryFrom({
+      vaultUnlockedAt: now,
+      lastSeenAt: now,
+      autoLockMinutes: keys.autoLockMinutes,
+    }).toISOString(),
+  };
+}
+
+/** Every browser this account has enrolled. Never a pepper, never a digest. */
+export async function listDevicePins(
+  services: ServiceContext,
+  user: Extract<Principal, { kind: 'user' }>,
+): Promise<PinDevicePayload[]> {
+  return (await listPinPeppers(services.db, user.user.id)).map(toPinDevice);
+}
+
+/**
+ * Turns off one browser's PIN — this one, or another the account owns.
+ *
+ * The repository scopes by user, so a device id belonging to somebody else is
+ * indistinguishable here from one belonging to nobody, and both answer the same
+ * 404 (threat T2). It can never strand an account: the passphrase wrap always
+ * exists and has no removal path.
+ */
+export async function disableDevicePin(
+  services: ServiceContext,
+  user: Extract<Principal, { kind: 'user' }>,
+  deviceId: string,
+): Promise<void> {
+  const removed = await disablePinPepper(services.db, user.user.id, deviceId);
+  if (!removed) throw errors.notFound('no such pin enrolment');
+}
+
+/** Turns off every PIN this account has. Returns how many browsers lost one. */
+export async function revokeDevicePins(
+  services: ServiceContext,
+  user: Extract<Principal, { kind: 'user' }>,
+): Promise<number> {
+  return revokeAllPinPeppers(services.db, user.user.id);
+}
+
 /**
  * Destroys the vault, so an account with no way into it can start again.
  *
@@ -640,18 +861,37 @@ export async function assertRecentAccountOwner(
   if (ageSeconds < -CLOCK_SKEW_SECONDS) return refuse('dated in the future');
 }
 
-/** Changes how long the dashboard may sit idle before locking itself. */
+/**
+ * Changes how long a vault may sit idle before it locks.
+ *
+ * `null` clears the preference back to the default rather than storing the
+ * default's current value — the two are different facts, and only the first
+ * follows the default if it is ever reconsidered.
+ *
+ * Anything else is **clamped, not refused**. The floor and the ceiling are a
+ * security decision this server owns, and a 422 would be the wrong answer to a
+ * request that expresses a perfectly clear intention ("lock me quickly"): it
+ * would leave the account on whatever it had before, which is looser than what
+ * was asked for. Failing towards the safer number is the only direction worth
+ * having. The stored value is checked again by the table's CHECK.
+ */
 export async function setAutoLock(
   services: ServiceContext,
   user: Extract<Principal, { kind: 'user' }>,
-  minutes: number,
-): Promise<void> {
-  const updated = await setAutoLockMinutes(services.db, user.user.id, minutes);
+  minutes: number | null,
+): Promise<number> {
+  const stored = minutes === null ? null : clampAutoLockMinutes(minutes);
+  const updated = await setAutoLockMinutes(services.db, user.user.id, stored);
   // No vault row: there is nothing an idle lock could ask for. The setup
   // ceremony is the answer, not a silently created preference.
   if (updated === null) {
     throw errors.badRequest('Set up your vault first; auto-lock protects it.');
   }
+
+  // The effective number, for the audit record and the response — the caller
+  // asked for something that may have been clamped, and reporting what it asked
+  // for would put a figure in the audit log that no gate ever used.
+  return clampAutoLockMinutes(updated.autoLockMinutes);
 }
 
 async function requireVault(services: ServiceContext, userId: string): Promise<VaultKeyRecord> {

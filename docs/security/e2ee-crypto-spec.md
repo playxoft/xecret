@@ -126,6 +126,7 @@ in §4; `HKDF` info strings in §3.
 | 9 | Secret value ciphertext | `secret_versions.ciphertext` | `xk2.gcm.` | `EDK` | `secret-value` |
 | 10 | Secret note ciphertext | `secrets.encNote` | `xk2.gcm.` | `EDK` | `secret-note` |
 | 11 | CLI hand-off UK wrap | **nowhere** — loopback URL only (§13.2) | `xk2.x25519.` | sealed box to the CLI's ephemeral X25519 public key | `cli-handoff` |
+| 12 | Device PIN UK wrap | **one browser's `localStorage`** only (§13.3) — never this server | `xk2.gcm.` | `HKDF(pinKey ‖ pepper, "xecret.v2.pin-wrap", 32)` | `pin-wrap` |
 
 Types 6 and 7 are the same construction to the same public key with different AAD and
 different plaintext. They are stored in separate columns rather than as one sealed pair
@@ -135,7 +136,9 @@ because the EHK is re-sealed unchanged across an EDK rotation while the EDK is r
 (the X25519 scalar, and the Ed25519 32-byte seed respectively — not the 64-byte expanded
 form). Type 6 encrypts the 32-byte EDK, type 7 the 32-byte EHK. Types 9–10 encrypt the
 NFC-normalised UTF-8 bytes of the value or note. Type 11 encrypts the 32-byte UK, like types
-1–3, but asymmetrically and to a key that exists for one login and is then discarded.
+1–3, but asymmetrically and to a key that exists for one login and is then discarded. Type 12
+encrypts the 32-byte UK as well, and is the only blob in this table that is never transmitted to
+or stored by the server at all.
 
 **A plaintext that authenticates and is not valid UTF-8 is a format error.** Types 9–10 are
 defined as UTF-8, so a decryptor MUST validate the recovered bytes and MUST NOT substitute
@@ -249,6 +252,8 @@ appear here**, and every string is written exactly as shown, ASCII, no trailing 
 | `xecret.v2.uk-unlock-verifier` | `UK` (32B) | empty | 32 | `ukUnlockVerifier`, sent to the server by an unlock that opened the UK without a passphrase (§8.2) |
 | `xecret.v2.recovery-wrap` | `codeBytes` (16B, §7) | empty | 32 | `RCK`, the AES-256-GCM key wrapping the UK in one **recovery** wrap (blob type 2) |
 | `xecret.v2.prf-wrap` | WebAuthn PRF output (32B) | empty | 32 | `PK`, the AES-256-GCM key wrapping the UK in the **passkey** wrap (blob type 3) |
+| `xecret.v2.pin-verifier` | `pinKey` (32B, §13.3) | empty | 32 | `pinVerifier`, sent to the server at PIN enrolment and at every PIN attempt (§13.3) |
+| `xecret.v2.pin-wrap` | `pinKey ‖ pepper` (64B, §13.3) | empty | 32 | The AES-256-GCM key wrapping the UK in a **device PIN** wrap (blob type 12) |
 | `xecret.v2.value-hmac` | `EHK` (32B) | empty | 32 | HMAC-SHA256 key for `valueHmac` (§9) |
 | `xecret.v2.invite-key` | invite fragment seed (16B, §10) | empty | 32 | The invite keypair's X25519 private scalar |
 | *(the blob's full AAD string)* | X25519 shared secret (32B) | `ephemeralPub ‖ recipientPub` (64B) | 32 | AES-256-GCM key for one sealed box (§5) |
@@ -282,6 +287,14 @@ apart. Distinct info strings mean the two verifiers hash to distinct stored colu
 (`unlock_verifier_hash` and `uk_unlock_verifier_hash`), so a value captured from one path can
 never be replayed down the other, and an implementation that confuses them fails closed at the
 comparison rather than silently accepting the wrong proof.
+
+`xecret.v2.pin-wrap` is the only branch in this table whose input keying material is a
+**concatenation**, and the only one whose two halves are held by different parties. It needs no
+length prefix because both operands are fixed at 32 bytes: `pinKey` is an Argon2id output of
+`len = 32` and `pepper` is 32 random bytes, so no other split of the 64-byte input is reachable.
+Its sibling `xecret.v2.pin-verifier` takes `pinKey` alone, and the separation carries the same
+weight it does for `SK`: the verifier is handed to the server, which also holds the pepper, so a
+verifier from which the wrap key could be derived would hand that server both halves at once.
 
 The UK is otherwise never HKDF input. Any further use would need a new registered branch and a
 change to this table.
@@ -332,6 +345,7 @@ no separators, and MUST be non-negative.
 | `privkey-enc` | `xecret.aad.v2.privkey-enc\|<userId>` | 4 |
 | `privkey-sign` | `xecret.aad.v2.privkey-sign\|<userId>` | 5 |
 | `cli-handoff` | `xecret.aad.v2.cli-handoff\|<codeChallengeB64Url>\|<handoffPublicKeyB64Url>` | 11 |
+| `pin-wrap` | `xecret.aad.v2.pin-wrap\|<userId>\|<deviceId>` | 12 |
 
 Notes on the less obvious choices:
 
@@ -346,6 +360,11 @@ Notes on the less obvious choices:
 - **Recovery wraps are bound to their own code** via `lookupHashHex` (lowercase hex, §7). All
   five recovery wraps hold the same UK, so without this a row swap would go undetected; with
   it, a swapped row fails loudly. `credentialIdB64Url` plays the same role for passkey wraps.
+- **`pin-wrap` is not a `wrapKind` of `uk-wrap`.** That purpose names rows of `user_key_wraps`,
+  and a device PIN wrap is never stored on the server at all; giving it a kind there would put a
+  fourth value into a column CHECK for a ciphertext that column will never hold. Its `deviceId`
+  is what stops a wrap being copied between two enrolments of the *same* account, where the PIN
+  may well be identical — `userId` alone would not catch that.
 - **The `orgId` in `secret-value` and `secret-note`** is redundant given `environmentId`, and
   is included anyway to match `xecret.aad.v1.secret` exactly. The v1 AAD binds the org, and
   dropping it in v2 would make the migration's before/after comparison harder to reason about
@@ -1126,6 +1145,92 @@ prohibition is untouched — nothing is *sent* anywhere.
 `server`-mode environments; it simply cannot open a member grant. The consent screen omits the
 parameter when the CLI did not ask for one, and never treats its absence as an error.
 
+### 13.3 The device PIN
+
+A six-digit PIN that opens the vault on **one browser**, opt-in per browser, and the only
+credential in this specification whose security depends on the server behaving. Everything below
+follows from a single arithmetic fact: 10^6 candidates is not a secret. It is enumerable offline
+at any Argon2id cost anybody would accept typing several times a day, so the PIN is never given a
+wrap of its own to protect. It is given *half* of one.
+
+**Enrolment**, from a client that currently holds the UK:
+
+```
+deviceId = uuid                                   // minted by the browser, once
+salt     = 16 random bytes                        // stored beside the wrap, in the clear
+pinKey   = Argon2id(pin, salt, m = 19456 KiB, t = 2, p = 1, len = 32)
+pinVerifier = HKDF(ikm = pinKey, salt = "", info = "xecret.v2.pin-verifier", L = 32)
+
+→ server: { deviceId, pinVerifier }
+← server: { pepper }                              // 32 random bytes, minted server-side
+
+wrapKey  = HKDF(ikm = pinKey ‖ pepper, salt = "", info = "xecret.v2.pin-wrap", L = 32)
+blob     = xk2.gcm of UK under wrapKey, AAD = pin-wrap|<userId>|<deviceId>
+```
+
+The server stores `{ userId, deviceId, pepper, SHA-256(pinVerifier), attempts, createdAt,
+lastUsedAt }` and nothing else. The browser stores `{ version, deviceId, salt, blob }` in
+`localStorage` and nothing else. **The pepper is never persisted by the client, and the blob is
+never transmitted to the server.**
+
+**Unlock:**
+
+```
+pinKey      = Argon2id(pin, salt, …)              // salt from localStorage
+pinVerifier = HKDF(pinKey, "xecret.v2.pin-verifier")
+
+→ server: { deviceId, pinVerifier }
+    SHA-256(pinVerifier) == stored ?  attempts := 0, lastUsedAt := now,
+                                      nextPepper := 32 random bytes,
+                                      return { pepper, nextPepper },
+                                      pepper := nextPepper      // same transaction
+                            else   :  attempts := attempts + 1
+                                      if attempts == 5: DELETE the row
+← client: { pepper, nextPepper }, or a countable refusal
+
+UK   = open(blob) under HKDF(pinKey ‖ pepper, "xecret.v2.pin-wrap"), AAD as above
+blob := xk2.gcm of UK under HKDF(pinKey ‖ nextPepper, "xecret.v2.pin-wrap")
+```
+
+The re-wrap is not optional and it is not deferred: the pepper the browser just used is already
+dead on the row, so the blob beside it is dead too until it is replaced. The client holds the UK
+at exactly that moment, which is the only moment it can do this. If the write fails, the client
+MUST erase the record rather than keep it — a wrap nothing can open is worse than no wrap,
+because it goes on offering a PIN box that can only fail. `salt`, `deviceId` and the verifier are
+untouched, so the same six digits keep working and the enrolment keeps its identity.
+
+**The five-attempt limit is the entire security budget**, and it is spent rather than paused. At
+five the pepper row is deleted, which leaves the blob in that browser unopenable by anyone who
+never saw the pepper it was built under — the holder of the correct PIN included — and leaves the
+master passphrase as the only way in. The qualification is load-bearing: a pepper is released to
+the client on every successful unlock, so the server MUST replace it in the same transaction and
+the client MUST re-wrap the User Key under the replacement before reporting success. Without that
+rotation, a single interception of a pepper, paired with a copy of the browser's `localStorage`,
+would survive both the five-attempt burn and an explicit revocation. A timed lockout would be the wrong control here: it implies the credential becomes usable
+again, and "wait an hour and keep guessing" is not a budget for six digits. Compare §8, where the
+escalating backoff guards a credential with real entropy and only has to make guessing slow.
+
+The compare and the increment MUST happen in one transaction under a row lock. A read-then-write
+gives a scripted attacker as many guesses per round trip as they care to open connections, which
+is the one failure a six-digit credential cannot survive.
+
+**What this concedes, stated plainly.** A server that colludes with whoever holds the device can
+enumerate the six digits: it has the pepper, they have the blob, and only the Argon2id cost stands
+in the way. Every other credential in this specification is safe against a compromised server by
+construction; this one is not. That is why it is opt-in per browser, why the passphrase wrap
+always exists and cannot be removed, why nothing enables it by default, and why the settings UI
+states the trade in the same words. What it does *not* concede is anything to a server acting
+alone — the blob never reaches it — or to anyone holding the device alone, for whom the blob is a
+ciphertext with nothing to attack.
+
+**Revocation.** A passphrase change, a recovery and a vault reset each destroy every pepper row
+for the account, in the same transaction as the rotation. A reset replaces the UK outright, so
+every PIN blob becomes a ciphertext of a key that no longer exists; the server cannot delete those
+blobs, and removing the pepper is the only act available that makes them unopenable. For a
+passphrase change and a recovery the UK is unchanged and the blobs would still open — the
+revocation there is policy, on the grounds that both acts are somebody re-deciding who may reach
+the account.
+
 ---
 
 ## 14. Review log
@@ -1138,4 +1243,5 @@ parameter when the CLI did not ask for one, and never treats its absence as an e
 | 2026-09-08 | Phase 2b (passkey unlock). Adds `xecret.v2.uk-unlock-verifier` to §3.3 — the first and only HKDF branch taking the UK as input keying material — and splits §8 into the two verifiers, with one shared attempt counter across both. Closes a gap the client half surfaced: a passkey unlock opens blob type 3 and therefore holds the UK, never `SK`, so it could decrypt everything and still not prove an unlock. No existing format, derivation, or byte layout changed; the new branch is additive. |
 | 2026-09-08 | Phase 4 (Go CLI and service-token E2EE). Adds §13, which specifies two strings the earlier phases had no headless client to need: the service token's `xst_<env>_<43>k<43>` layout, parsed by offset because `k` is in the base64url alphabet, with only the auth half ever transmitted; and the CLI hand-off wrap that carries the User Key from an unlocked browser to a `xecret login` process over the loopback redirect. The hand-off adds blob type 11 to §2.2 and the `cli-handoff` purpose to §4.2, both reusing the §5 sealed box unchanged. No existing format, derivation, or byte layout changed; the additions are additive, the legacy service-token shape stays valid, and no new HKDF branch was introduced — the token's key half is the X25519 scalar directly, precisely so §3.3's closed registry did not have to grow. |
 | 2026-09-10 | Review fixes, second batch — lifecycle. §10 moves invite-grant consumption from acceptance to the write that stores the re-sealed grant, per environment and in one transaction, and states the residual window that buys: deleting the grants on the acceptance response bounded a leaked fragment but destroyed the flow for the people it exists for, who arrive with no vault and therefore no key to re-seal to. §7.1 enumerates the whitespace class a parser must strip, because JavaScript's `\s` and Go's `unicode.IsSpace` miss opposite halves of it (U+FEFF and U+0085) and a recovery code that one side prints and the other refuses has nothing on screen to explain itself. §2.2 assigns authenticated-but-invalid-UTF-8 to the format-error class and forbids U+FFFD substitution. §13.2 states what the hand-off AAD does *not* bind — which process holds the recipient key — specifies the fingerprint both sides display so a person can compare them, records that the sealed blob persists in browser history, and documents the vault material the CLI keeps in the OS keyring so that `--offline` is offline. No format, no derivation, and no byte layout changed; the fingerprint is a display format and everything else is prose about existing bytes. |
+| 2026-09-11 | Phase 3 of the unlock-convenience work (device PIN). Adds §13.3, blob type 12 to §2.2, two branches to §3.3 and the `pin-wrap` purpose to §4.2. The one construction here that is new in kind is a wrap key whose input keying material is split between two parties — `HKDF(pinKey ‖ pepper)`, with the pepper held only by the server and released only under a five-attempt counter — which is what makes it defensible to wrap a User Key under six digits. §13.3 states the concession this makes and the exact adversary it makes it to: a server colluding with whoever holds the device, and nobody else. No existing format, derivation, or byte layout changed; the additions are additive, and blob type 12 is the first in §2.2 that is never stored by or transmitted to this server. |
 | 2026-09-10 | Review fixes. Adds §4.3, the client-write contract: every client-encrypted write states the `secretId` and version its ciphertext is bound to, and the server refuses rather than substitutes — closing a class of silent, unrepairable data loss reachable from an ordinary double-restore or an import planned against a truncated listing. §6.1 now requires `recipientPublicKey` to be stored on the grant row, because every other source for it is mutable and a deferred verifier reading one would report honest grants as forged. §13.1 states where a service token is split, after a client was found sending both halves in the `Authorization` header. No format, no derivation, and no byte layout changed; the additions are request fields and one column. |

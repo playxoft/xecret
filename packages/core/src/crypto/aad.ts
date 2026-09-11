@@ -231,6 +231,30 @@ export function userKeyWrapAad(
   return head;
 }
 
+/**
+ * Binds a browser's device-PIN wrap of the User Key to its owner and to that
+ * browser.
+ *
+ * Both components are load-bearing and for different reasons. `userId` is the
+ * ordinary one: the wrap holds that account's User Key and must not open as
+ * anybody else's. `deviceId` is what stops a wrap being moved between two
+ * enrolments of the *same* account — two browsers hold two wraps of one User
+ * Key, each with its own pepper row, and without the discriminator a wrap
+ * copied from one `localStorage` to another would open against the other's
+ * pepper as soon as the same PIN was typed.
+ *
+ * Not a `wrapKind` of {@link userKeyWrapAad}, deliberately. That purpose names
+ * rows of `user_key_wraps`, and a PIN wrap is never stored on this server at
+ * all (spec §13.3) — giving it a kind there would put a fourth value into a
+ * column's CHECK for a ciphertext that column will never hold.
+ */
+export function devicePinWrapAad(params: { userId: string; deviceId: string }): string {
+  assertUuid(params.userId, 'userId');
+  assertUuid(params.deviceId, 'deviceId');
+
+  return `${AAD_PREFIX_V2}.pin-wrap|${params.userId}|${params.deviceId}`;
+}
+
 /** Binds a user's encrypted X25519 private key to its owner. */
 export function privateKeyEncAad(userId: string): string {
   assertUuid(userId, 'userId');

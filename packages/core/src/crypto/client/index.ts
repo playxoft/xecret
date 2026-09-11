@@ -49,6 +49,7 @@ export type { HkdfInfo } from './hkdf';
 export {
   ARGON2_VERSION,
   CURRENT_KDF_PARAMS,
+  DEVICE_PIN_KDF_PARAMS,
   deriveStretchedKey,
   generateKdfSalt,
   KDF_SALT_BYTES,
@@ -121,6 +122,19 @@ export {
 } from './wraps';
 export type { GrantRecipient, PrivateKeyPurpose, SealedGrant, UserKeyWrapContext } from './wraps';
 
+export {
+  DEVICE_PIN_LENGTH,
+  DEVICE_PIN_PEPPER_BYTES,
+  derivePinKey,
+  derivePinVerifier,
+  derivePinWrapKey,
+  generatePinPepper,
+  isDevicePin,
+  unwrapUserKeyWithPin,
+  wrapUserKeyWithPin,
+} from './pin-wrap';
+export type { DevicePinContext } from './pin-wrap';
+
 export { computeValueHmac, decryptSecret, encryptSecret, MAX_SECRET_BLOB_LENGTH } from './secret';
 export type { SecretContext, SecretField } from './secret';
 
@@ -152,6 +166,7 @@ export type { Bytes } from '../types';
 export {
   AAD_PREFIX_V2,
   cliHandoffAad,
+  devicePinWrapAad,
   edkGrantAad,
   ehkGrantAad,
   isAadV2,

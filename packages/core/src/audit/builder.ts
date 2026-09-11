@@ -376,6 +376,16 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   // these two were added to the contract and the decision was never made, which
   // is the failure mode that argument predicts rather than an exception to it.
   if (metadata.principalKind !== undefined) clean.principalKind = metadata.principalKind;
+  // `wrapKind` and `method` were the same oversight, found the same way: the
+  // device-PIN work needed `method: 'pin'` to distinguish a PIN unlock from a
+  // passphrase one in the trail, and discovered that no unlock had ever recorded
+  // a method at all. `recoveryCodeCount` is the third — a number the recovery
+  // and regeneration records were written to carry and never did.
+  if (metadata.wrapKind !== undefined) clean.wrapKind = metadata.wrapKind;
+  if (metadata.method !== undefined) clean.method = metadata.method;
+  if (metadata.recoveryCodeCount !== undefined && Number.isFinite(metadata.recoveryCodeCount)) {
+    clean.recoveryCodeCount = metadata.recoveryCodeCount;
+  }
 
   return clean;
 }

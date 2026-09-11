@@ -368,7 +368,14 @@ async function main(): Promise<void> {
         'unlocking is recorded on the session',
         unlocked?.vaultUnlockedAt !== null &&
           unlocked !== null &&
-          isVaultUnlocked(unlocked.vaultUnlockedAt, new Date()),
+          isVaultUnlocked(
+            {
+              vaultUnlockedAt: unlocked.vaultUnlockedAt,
+              lastSeenAt: unlocked.lastSeenAt,
+              autoLockMinutes: unlocked.vaultAutoLockMinutes,
+            },
+            new Date(),
+          ),
         'the same session, now unlocked — not a new one',
       );
 

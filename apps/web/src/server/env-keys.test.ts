@@ -189,6 +189,8 @@ const ownerPrincipal: Principal = {
     emailVerified: true,
   },
   vaultUnlockedAt: new Date(),
+  lastSeenAt: new Date(),
+  vaultAutoLockMinutes: null,
 };
 
 const developerPrincipal: Principal = {

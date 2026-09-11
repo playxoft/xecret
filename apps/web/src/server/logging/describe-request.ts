@@ -157,6 +157,15 @@ function describeAuth(verb: string, rest: readonly string[]): RequestAction {
         return verb === 'DELETE'
           ? action('auth.vault_passkey', 'Removed', 'remove', 'a passkey from the vault')
           : action('auth.vault_passkey', 'Listed', 'list', "the vault's passkeys");
+      case 'pin':
+        if (rest[2] === 'attempt') {
+          return action('auth.vault_pin', 'Unlocked', 'unlock', "the session's vault with a PIN");
+        }
+        return verb === 'DELETE'
+          ? action('auth.vault_pin', 'Turned', 'turn', 'off a device PIN')
+          : verb === 'POST'
+            ? action('auth.vault_pin', 'Enrolled', 'enrol', 'a device PIN for this browser')
+            : action('auth.vault_pin', 'Listed', 'list', "the vault's device PINs");
       default:
         return verb === 'POST'
           ? action('auth.vault_create', 'Created', 'create', "the account's vault")

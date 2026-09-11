@@ -13,8 +13,15 @@ import type { ReactNode } from 'react';
 
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import { useApiResource } from '@/app/(dashboard)/_lib/use-api-resource';
-import { readVaultKeys, releaseVaultKeys, subscribeVaultKeys } from './key-store';
+import {
+  readVaultKeys,
+  releaseVaultKeys,
+  restoreVaultKeys,
+  shouldReleaseForServerVerdict,
+  subscribeVaultKeys,
+} from './key-store';
 import type { VaultKeyMaterial } from './key-store';
+import { installVaultChannel } from './vault-channel';
 import { lockVault } from './vault-client';
 import type { VaultMaterial, VaultResponse, VaultStatus } from './vault-client';
 
@@ -43,6 +50,21 @@ import type { VaultMaterial, VaultResponse, VaultStatus } from './vault-client';
  * lockVault} this context's `lock` does — which zeroizes in a `finally`. Adding
  * a second timer would mean two things could disagree about when a laptop went
  * idle.
+ *
+ * ── What mounting this provider does to the key store ──
+ * Two things, and both are about not asking for a passphrase that buys nothing.
+ * It **restores** this tab's `sessionStorage` mirror during its first render, so
+ * a reload does not land on the lock screen (`session-mirror.ts` argues the
+ * trade), and it **joins the cross-tab channel**, so a second tab can be handed
+ * the keys by the first and a lock anywhere locks everywhere
+ * (`vault-channel.ts`). `userId` is required for both: a mirror or an offer
+ * belonging to a different account must be refused, and this is the first place
+ * that knows which account is expected.
+ *
+ * Unless the host passes `locked`, which inverts both: the mirror is *released*
+ * rather than adopted and nothing is asked of other tabs. A shell that has
+ * already read `unlocked: false` from the server and chosen to draw a lock
+ * screen must not have live keys sitting underneath it.
  */
 
 export interface VaultContextValue {
@@ -104,8 +126,69 @@ interface VaultOverlay {
   material?: VaultMaterial;
 }
 
-export function VaultProvider({ children }: { children: ReactNode }) {
+export function VaultProvider({
+  userId,
+  locked = false,
+  children,
+}: {
+  userId: string;
+  /**
+   * That the host has already decided this session is locked.
+   *
+   * `DashboardChrome` mounts this provider in its lock-screen branch too — the
+   * unlock forms need the wraps — and that branch is reached precisely because
+   * the *server* answered `unlocked: false`. Restoring a mirror underneath it
+   * would put live keys in the store behind a lock screen, which is a tab that
+   * decrypts nothing itself and still answers other tabs' handoff requests with
+   * the full key set. So the host says so, and the restore becomes a release.
+   */
+  locked?: boolean;
+  children: ReactNode;
+}) {
+  // ── Restored during the first render, not in an effect ──
+  //
+  // An effect runs after the tree has painted, so the whole dashboard would
+  // render once as a vault holding nothing — empty secret tables, "unlock to
+  // see this" placeholders — and then again a frame later with the keys. On a
+  // reload that is a visible flash of the locked product, which is precisely
+  // the experience the mirror exists to remove.
+  //
+  // `useState`'s initialiser is the idiom for "once, synchronously, on mount",
+  // and it runs before the `useSyncExternalStore` below reads the store, so the
+  // very first snapshot this provider produces already has the keys in it.
+  // `restoreVaultKeys` is idempotent and answers `false` when there is nothing
+  // to restore, which is what decides whether to ask other tabs.
+  const [restored] = useState(() => {
+    if (locked) {
+      // Not merely "do not restore". Anything already resident — a mirror an
+      // earlier mount adopted, keys handed over by another tab — is material
+      // this session is no longer entitled to, and the mirror behind it has to
+      // go with it or the next reload adopts it again.
+      releaseVaultKeys();
+      return false;
+    }
+    return restoreVaultKeys(userId);
+  });
+
   const keys = useVaultKeys();
+
+  // ── The cross-tab channel ──
+  //
+  // In an effect, because unlike the restore it is inherently asynchronous —
+  // another tab has to hear the request and answer it — and because it owns a
+  // resource that has to be released on unmount. Installed even when this tab
+  // already holds keys: the *listening* half is what makes a lock anywhere lock
+  // everywhere, and the *answering* half is what lets the next tab open without
+  // a passphrase. Only the asking is conditional.
+  //
+  // A provider the host has told is `locked` asks for nothing: the session it
+  // belongs to is one the server has already refused, so a handoff into it would
+  // put keys behind a lock screen — the exact state this provider now releases
+  // at mount to avoid.
+  useEffect(() => {
+    const channel = installVaultChannel({ userId, request: !restored && !locked });
+    return () => channel.close();
+  }, [userId, restored, locked]);
 
   // The dashboard's own fetch hook, for the same reasons every other screen
   // uses it: one place that handles the abort on unmount, the 401 redirect, and
@@ -152,24 +235,39 @@ export function VaultProvider({ children }: { children: ReactNode }) {
    * that says `unlocked: false`, and a browser holding decrypted keys against a
    * session the API refuses is worth an effect to reconcile.
    *
-   * ── Why this watches a *transition*, and only the server's own answer ──
-   * A level check — "the status says locked, so release" — is wrong here, and
-   * wrong in the direction that loses a working unlock. Unlocking does not
-   * change the server answer this provider is holding: `unlockWithPassphrase`
-   * hands the keys to the store and the fresh status to its caller, and the
-   * cached `/api/auth/vault` response still reads `unlocked: false` until
-   * something reloads it. A level check would therefore fire on the very render
-   * that the newly held keys cause, and wipe them microseconds after a correct
-   * passphrase.
+   * ── Which answers count, and why it is neither a level nor a plain edge ──
+   * {@link shouldReleaseForServerVerdict} holds the rule and the argument for
+   * it: a level check wipes a passphrase that has just been accepted, and a pure
+   * `true → false` edge never fires on the *first* answer, which is exactly the
+   * answer a reloaded tab that restored its mirror gets.
    *
-   * So it fires only on `true → false`, and only on `answer` — the resource's
-   * own data — never on the overlay, whose optimistic lock is already
-   * accompanied by the zeroization inside `lockVault`.
+   * It reads `answer` — the resource's own data — never the overlay, whose
+   * optimistic lock is already accompanied by the zeroization inside
+   * `lockVault`.
    */
   const serverUnlocked = answer === undefined || answer === null ? null : answer.vault.unlocked;
   const previousServerUnlocked = useRef<boolean | null>(null);
+
+  // Set when this tab obtains keys it did not mount with: a passphrase, a
+  // passkey, a PIN, or a handoff from another tab. All of those are newer than
+  // any `/api/auth/vault` answer still in flight when they happened.
+  const unlockedSinceMount = useRef(false);
+  const mountedHolding = useRef(restored);
   useEffect(() => {
-    if (previousServerUnlocked.current === true && serverUnlocked === false) releaseVaultKeys();
+    if (keys !== null && !mountedHolding.current) unlockedSinceMount.current = true;
+    if (keys === null) mountedHolding.current = false;
+  }, [keys]);
+
+  useEffect(() => {
+    if (
+      shouldReleaseForServerVerdict({
+        previous: previousServerUnlocked.current,
+        current: serverUnlocked,
+        unlockedSinceMount: unlockedSinceMount.current,
+      })
+    ) {
+      releaseVaultKeys();
+    }
     previousServerUnlocked.current = serverUnlocked;
   }, [serverUnlocked]);
 

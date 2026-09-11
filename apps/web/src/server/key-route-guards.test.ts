@@ -107,6 +107,8 @@ const runtimeDeferred: Promise<unknown>[] = [];
 const sessionPrincipal = {
   kind: 'user' as const,
   vaultUnlockedAt: new Date(),
+  lastSeenAt: new Date(),
+  vaultAutoLockMinutes: null,
   sessionId: uuidv7(),
   user: {
     id: USER_ID,
