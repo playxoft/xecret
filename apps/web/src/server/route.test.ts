@@ -102,6 +102,8 @@ const principal = {
   // Unlocked. The lock gate lives in `authenticatedRoute`, and these fixtures
   // exercise what happens *past* it.
   vaultUnlockedAt: new Date(),
+  lastSeenAt: new Date(),
+  vaultAutoLockMinutes: null,
   sessionId: uuidv7(),
   user: {
     id: uuidv7(),

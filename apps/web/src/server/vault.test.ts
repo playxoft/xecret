@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ZodMiniType } from 'zod/mini';
 import {
+  DEFAULT_AUTO_LOCK_MINUTES,
   IdentityVerificationError,
+  MAX_AUTO_LOCK_MINUTES,
+  MIN_AUTO_LOCK_MINUTES,
   VAULT_FREE_ATTEMPTS,
   VAULT_LOCKOUT_BASE_MS,
   hashUnlockVerifier,
@@ -373,9 +376,19 @@ describe('the remaining request schemas', () => {
     ).toBe('validation_failed');
   });
 
-  it('restricts auto-lock to the menu the settings screen offers', () => {
-    expect(parseWith(autoLockSchema, { autoLockMinutes: 0 })).toEqual({ autoLockMinutes: 0 });
-    for (const minutes of [1, 43, 61, -5]) {
+  it('accepts any plausible auto-lock interval, and null for “use the default”', () => {
+    // Deliberately not restricted to the four on the menu. The bounds are the
+    // security decision and `clampAutoLockMinutes` is what a value is held to;
+    // refusing an off-menu number would turn "lock me after five minutes" — an
+    // unmistakable, *safer* intention — into a 422 that leaves the looser
+    // setting in place.
+    expect(parseWith(autoLockSchema, { autoLockMinutes: 15 })).toEqual({ autoLockMinutes: 15 });
+    expect(parseWith(autoLockSchema, { autoLockMinutes: 5 })).toEqual({ autoLockMinutes: 5 });
+    expect(parseWith(autoLockSchema, { autoLockMinutes: null })).toEqual({ autoLockMinutes: null });
+  });
+
+  it('refuses an auto-lock value that is not a plain count of minutes', () => {
+    for (const minutes of [-5, 0.5, 1_000_000, '30', true]) {
       expect(rejected(autoLockSchema, { autoLockMinutes: minutes }).code).toBe('validation_failed');
     }
   });
@@ -399,7 +412,7 @@ describe('the vault material serialiser', () => {
       lockedUntil: null,
       recoveryFailedAttempts: 1,
       recoveryLockedUntil: null,
-      autoLockMinutes: 10,
+      autoLockMinutes: null,
       createdAt: new Date(0),
       rotatedAt: null,
     },
@@ -446,15 +459,73 @@ describe('the vault material serialiser', () => {
 describe('the lock gate', () => {
   const now = new Date('2026-09-08T12:00:00.000Z');
 
+  const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
+
   it('reads the session’s vault unlock, not merely its existence', () => {
     expect(isUnlocked(userPrincipal({ vaultUnlockedAt: null }), now)).toBe(false);
     expect(
       isUnlocked(userPrincipal({ vaultUnlockedAt: new Date(now.getTime() - 1000) }), now),
     ).toBe(true);
-    // Past the eight-hour window.
+    // Past the eight-hour ceiling, which no preference can lift.
+    expect(
+      isUnlocked(userPrincipal({ vaultUnlockedAt: minutesAgo(9 * 60), lastSeenAt: now }), now),
+    ).toBe(false);
+  });
+
+  it('measures the idle window against the account’s own preference', () => {
+    // The point of carrying `vaultAutoLockMinutes` on the principal at all: the
+    // browser's timer and this gate are the same number, so a tight setting is
+    // tight on both sides. Before this, the gate counted a fixed eight hours and
+    // a client that never ran its timer kept a session the server still
+    // considered unlocked for the rest of the day.
+    const idleTwoHours = { vaultUnlockedAt: minutesAgo(120), lastSeenAt: minutesAgo(120) };
+
+    expect(isUnlocked(userPrincipal({ ...idleTwoHours, vaultAutoLockMinutes: 15 }), now)).toBe(
+      false,
+    );
+    expect(isUnlocked(userPrincipal({ ...idleTwoHours, vaultAutoLockMinutes: 240 }), now)).toBe(
+      true,
+    );
+  });
+
+  it('resolves “no preference” to the default rather than to “forever”', () => {
     expect(
       isUnlocked(
-        userPrincipal({ vaultUnlockedAt: new Date(now.getTime() - 9 * 60 * 60 * 1000) }),
+        userPrincipal({
+          vaultUnlockedAt: minutesAgo(DEFAULT_AUTO_LOCK_MINUTES + 1),
+          lastSeenAt: minutesAgo(DEFAULT_AUTO_LOCK_MINUTES + 1),
+          vaultAutoLockMinutes: null,
+        }),
+        now,
+      ),
+    ).toBe(false);
+  });
+
+  it('does not lock a session that is being used, however tight the preference', () => {
+    // An absolute timer wearing an idle timer's name would throw somebody who
+    // chose fifteen minutes back to the lock screen four times an hour while
+    // they were typing.
+    expect(
+      isUnlocked(
+        userPrincipal({
+          vaultUnlockedAt: minutesAgo(180),
+          lastSeenAt: minutesAgo(1),
+          vaultAutoLockMinutes: 15,
+        }),
+        now,
+      ),
+    ).toBe(true);
+  });
+
+  it('clamps a preference that is outside the range the gate assumes', () => {
+    // A hand-edited row must not buy an unlock longer than the ceiling.
+    expect(
+      isUnlocked(
+        userPrincipal({
+          vaultUnlockedAt: minutesAgo(9 * 60),
+          lastSeenAt: now,
+          vaultAutoLockMinutes: 100_000,
+        }),
         now,
       ),
     ).toBe(false);
@@ -1301,12 +1372,47 @@ describe('the vault service', () => {
   });
 
   describe('the auto-lock interval', () => {
+    const stored = () => repo.setAutoLockMinutes.mock.calls[0]?.[2];
+
     it('refuses to invent a vault to hang a preference on', async () => {
       repo.setAutoLockMinutes.mockResolvedValue(null);
 
       await expect(service.setAutoLock(services(), userPrincipal(), 30)).rejects.toMatchObject({
         code: 'bad_request',
       });
+    });
+
+    it('stores a value inside the range the gate assumes, whatever was asked for', async () => {
+      // The gate reads this column on every request. A row outside the range
+      // would be a window nothing else in the system believes in.
+      repo.setAutoLockMinutes.mockImplementation(
+        async (_db: unknown, _userId: string, minutes: number | null) =>
+          await vaultKeys({ verifier: randomBytes(32), autoLockMinutes: minutes }),
+      );
+
+      await expect(service.setAutoLock(services(), userPrincipal(), 1)).resolves.toBe(
+        MIN_AUTO_LOCK_MINUTES,
+      );
+      expect(stored()).toBe(MIN_AUTO_LOCK_MINUTES);
+
+      repo.setAutoLockMinutes.mockClear();
+      await expect(service.setAutoLock(services(), userPrincipal(), 100_000)).resolves.toBe(
+        MAX_AUTO_LOCK_MINUTES,
+      );
+      expect(stored()).toBe(MAX_AUTO_LOCK_MINUTES);
+    });
+
+    it('clears the preference on null rather than pinning today’s default into the row', async () => {
+      // "Never chose" and "chose an hour" are different facts, and only the
+      // first follows the default if it is ever reconsidered.
+      repo.setAutoLockMinutes.mockResolvedValue(
+        await vaultKeys({ verifier: randomBytes(32), autoLockMinutes: null }),
+      );
+
+      await expect(service.setAutoLock(services(), userPrincipal(), null)).resolves.toBe(
+        DEFAULT_AUTO_LOCK_MINUTES,
+      );
+      expect(stored()).toBeNull();
     });
   });
 
@@ -1362,6 +1468,8 @@ async function vaultKeys(overrides: {
   lockedUntil?: Date | null;
   recoveryFailedAttempts?: number;
   recoveryLockedUntil?: Date | null;
+  /** `null` — no preference — is the shape the column actually defaults to. */
+  autoLockMinutes?: number | null;
 }) {
   return {
     userId: USER_ID,
@@ -1381,7 +1489,7 @@ async function vaultKeys(overrides: {
     lockedUntil: overrides.lockedUntil ?? null,
     recoveryFailedAttempts: overrides.recoveryFailedAttempts ?? 0,
     recoveryLockedUntil: overrides.recoveryLockedUntil ?? null,
-    autoLockMinutes: 10,
+    autoLockMinutes: overrides.autoLockMinutes ?? null,
     createdAt: new Date(0),
     rotatedAt: null,
   };
@@ -1396,12 +1504,25 @@ async function wholeVault() {
   };
 }
 
-function userPrincipal(overrides: { vaultUnlockedAt?: Date | null } = {}) {
+function userPrincipal(
+  overrides: {
+    vaultUnlockedAt?: Date | null;
+    lastSeenAt?: Date;
+    vaultAutoLockMinutes?: number | null;
+  } = {},
+) {
+  const unlockedAt =
+    'vaultUnlockedAt' in overrides ? (overrides.vaultUnlockedAt ?? null) : new Date();
+
   return {
     kind: 'user' as const,
     sessionId: SESSION_ID,
-    vaultUnlockedAt:
-      'vaultUnlockedAt' in overrides ? (overrides.vaultUnlockedAt ?? null) : new Date(),
+    vaultUnlockedAt: unlockedAt,
+    // Defaults to the unlock itself, so a fixture that says nothing about
+    // activity describes a session that has made no request since it unlocked —
+    // the case where the idle window is measured from `vaultUnlockedAt`.
+    lastSeenAt: overrides.lastSeenAt ?? unlockedAt ?? new Date(),
+    vaultAutoLockMinutes: overrides.vaultAutoLockMinutes ?? null,
     user: {
       id: USER_ID,
       email: 'nitheesh@playxoft.com',

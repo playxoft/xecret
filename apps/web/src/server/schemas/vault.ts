@@ -1,5 +1,4 @@
 import * as z from 'zod/mini';
-import { isAutoLockMinutes } from '@xecret/core/auth';
 import { toBase64Url } from '@xecret/core/crypto';
 import { toBytes } from '@xecret/db/repositories';
 import type { PasskeyRecord, VaultRecord } from '@xecret/db/repositories';
@@ -392,12 +391,28 @@ export const passkeyEnrollSchema = z.strictObject(
   UNEXPECTED_FIELD,
 );
 
+/**
+ * The auto-lock preference, as a request may express it.
+ *
+ * ── Why this accepts any integer rather than the four on the menu ──
+ * The menu is a product decision; the floor and the ceiling are the security
+ * one, and `clampAutoLockMinutes` in the service is what a value is actually
+ * held to. A schema that refused anything off-menu would turn "lock me after
+ * five minutes" — a request whose intention is unmistakable and *safer* than
+ * what the account currently has — into a 422 that leaves the looser setting in
+ * place. Failing towards the tighter number is the only direction worth having,
+ * and the bounds below exist so the clamp is never handed something absurd to
+ * round.
+ *
+ * `null` is a distinct, meaningful value: clear the preference, and follow
+ * whatever the default is. It is not the same as sending the default's current
+ * number, which would pin the account to today's answer forever.
+ */
 export const autoLockSchema = z.strictObject(
   {
-    /** One of `AUTO_LOCK_MINUTES_OPTIONS`; `0` disables the idle lock. */
-    autoLockMinutes: z
-      .int()
-      .check(z.refine(isAutoLockMinutes, 'Choose one of the offered auto-lock intervals.')),
+    autoLockMinutes: z.nullable(
+      z.int().check(z.minimum(0, 'That is not a number of minutes.'), z.maximum(100_000)),
+    ),
   },
   UNEXPECTED_FIELD,
 );
@@ -410,9 +425,13 @@ export interface VaultStatusPayload {
   /** When the current unlock lapses. `null` when locked. */
   unlockedUntil: string | null;
   /**
-   * Minutes of idleness before the dashboard locks itself; `0` never. The timer
-   * runs in the client — idleness is a fact only the client can observe — but
-   * the lock it triggers is the server-side one.
+   * Minutes of idleness before the vault locks, already resolved and clamped.
+   *
+   * The timer runs in the client — idleness is a fact only the client can
+   * observe — but this is the same number the *server's* gate measures
+   * `vault_unlocked_at` against, which is what stops the two from disagreeing.
+   * Never `null` on the wire: a client scheduling a timer has no business
+   * re-implementing what "no preference" resolves to.
    */
   autoLockMinutes: number;
 }

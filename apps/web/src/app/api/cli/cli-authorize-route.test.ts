@@ -91,6 +91,8 @@ const CHALLENGE = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
 const userPrincipal = {
   kind: 'user' as const,
   vaultUnlockedAt: new Date(),
+  lastSeenAt: new Date(),
+  vaultAutoLockMinutes: null,
   sessionId: uuidv7(),
   user: {
     id: USER_ID,

@@ -567,6 +567,7 @@ users ──┬──< sessions
         ├──< cli_tokens
         ├──< user_keys ──< user_key_wraps        (the vault — ADR 0009)
         ├──< user_passkeys                       │
+        ├──< vault_pin_peppers                   │
         └──< org_members >── organizations ──┬──< projects ──< environments
                     │                        │                     │
                     │                        ├──< org_keys ──< env_keys       (server mode)
@@ -607,6 +608,9 @@ audit_logs — no FKs by design; references are soft
 0013  environment data keys (env_data_keys, env_hmac_keys, env_key_grants,
       pending_key_grants), environments.encryption_mode, the dual-mode
       secret_versions columns, service_tokens.public_key, invitations.invite_public_key
+0014  env_key_grants.recipient_public_key — the one signed field the row did not carry
+0015  unlock convenience: user_keys.auto_lock_minutes becomes nullable and
+      range-checked [15, 720]; vault_pin_peppers (the server half of a device PIN)
 ```
 
 Migration 0013 drops nothing and loses nothing. Every existing environment keeps its `env_keys`
@@ -623,6 +627,16 @@ the first migration in the project to drop a table, and the reasoning is at the 
 `sessions.pin_verified_at` became `sessions.vault_unlocked_at` in the same migration, as an
 add-then-drop rather than a rename: the old values are wrong under the new model, because a session
 that entered a PIN has not unlocked a vault.
+
+Migration 0015 reshapes a column rather than adding one. `user_keys.auto_lock_minutes` has existed
+since 0008 (as `user_pins.auto_lock_minutes`) and drove only a timer in the browser; from 0015 it is
+also what the *server's* unlock gate measures `sessions.vault_unlocked_at` against, so the client
+timer and the API cannot disagree. It becomes nullable — `NULL` is "no preference", which follows
+`DEFAULT_AUTO_LOCK_MINUTES` — and its CHECK becomes the range `[15, 720]` rather than the old menu.
+The value `0`, "never", is deliberately no longer expressible: a window the server honours cannot be
+infinite. Live rows are remapped to the nearest offered interval, and `0` becomes `NULL`.
+`vault_pin_peppers` is created empty and is not catalogued above; the device-PIN flows that use it
+arrive with the client that enrols them.
 
 Migration `0002` is not optional. The application role gets `SELECT`/`INSERT`/`UPDATE`/
 `DELETE` on tenant tables, `SELECT`/`INSERT` only on `audit_logs`, and no DDL rights

@@ -98,6 +98,8 @@ const ORG_ID = uuidv7();
 const userPrincipal = {
   kind: 'user' as const,
   vaultUnlockedAt: new Date(),
+  lastSeenAt: new Date(),
+  vaultAutoLockMinutes: null,
   sessionId: uuidv7(),
   user: {
     id: USER_ID,

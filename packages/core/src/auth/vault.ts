@@ -37,20 +37,85 @@ import type { Bytes } from '../crypto/types';
  */
 
 /**
- * How long a session may sit idle before the dashboard locks itself, in
- * minutes. `0` means never. A fixed menu rather than a free number: the choice
- * is a security posture, and "43 minutes" is not a posture anyone holds — it
- * is a typo waiting to be enforced. One list feeds the settings menu, the
- * request schema, and the database CHECK, so they cannot drift.
+ * How long a vault may sit idle before it locks, in minutes.
+ *
+ * ── One number, honoured on both sides ──
+ * This drives the browser's idle timer *and* {@link isVaultUnlocked}, which is
+ * what the route wrapper gates every request on. They were separate until the
+ * unlock-convenience work: the timer read the account's preference while the
+ * server counted a fixed eight hours, so a client that simply never ran its
+ * timer kept a session the server still considered unlocked for the rest of the
+ * day. One number cannot disagree with itself.
+ *
+ * ── Why there is no "never" any more ──
+ * There used to be a `0`. A preference the *server* honours cannot be allowed to
+ * say "this session stays unlocked forever" — that is not an idle timer, it is
+ * an indefinitely replayable cookie. The loosest option is
+ * {@link MAX_AUTO_LOCK_MINUTES}, half a day, and what really ends it is the tab
+ * dying: the key material this convenience keeps alive lives in `sessionStorage`
+ * and nowhere more durable.
+ *
+ * ── A menu on screen, a range in the database ──
+ * The four options are a product decision and may grow. The floor and the
+ * ceiling are the security decision, and {@link clampAutoLockMinutes} is what a
+ * request is held to — so a hand-crafted body asking for one minute gets fifteen
+ * rather than a 422, and no stored row can ever be outside the range the gate
+ * assumes.
  */
-export const AUTO_LOCK_MINUTES_OPTIONS = [0, 5, 10, 20, 30, 45, 60] as const;
+export const AUTO_LOCK_MINUTES_OPTIONS = [15, 60, 240, 720] as const;
 
 export type AutoLockMinutes = (typeof AUTO_LOCK_MINUTES_OPTIONS)[number];
 
-export const DEFAULT_AUTO_LOCK_MINUTES: AutoLockMinutes = 10;
+/**
+ * The floor: tight enough to be a real posture, loose enough that choosing it is
+ * not a denial of service against its own owner. Below about a quarter of an
+ * hour, the server gate's resolution — `last_seen_at`, written at most once per
+ * `SESSION_TOUCH_INTERVAL_MS` — would start to dominate the preference.
+ */
+export const MIN_AUTO_LOCK_MINUTES = 15;
 
+/** The ceiling: half a day. What "until this browser closes" stores. */
+export const MAX_AUTO_LOCK_MINUTES = 720;
+
+/** What a row with no preference resolves to. An hour of idleness. */
+export const DEFAULT_AUTO_LOCK_MINUTES: AutoLockMinutes = 60;
+
+/**
+ * The effective allowance for a stored preference.
+ *
+ * `null` — the account never chose — resolves to the default, which is why the
+ * column is nullable rather than defaulted: the default may be reconsidered
+ * later without rewriting anybody's row. Everything else is clamped rather than
+ * refused, so this function has one failure mode (none) and every caller gets a
+ * number the gate and the database CHECK both accept.
+ */
+export function clampAutoLockMinutes(minutes: number | null | undefined): number {
+  if (minutes === null || minutes === undefined || !Number.isFinite(minutes)) {
+    return DEFAULT_AUTO_LOCK_MINUTES;
+  }
+  return Math.min(Math.max(Math.round(minutes), MIN_AUTO_LOCK_MINUTES), MAX_AUTO_LOCK_MINUTES);
+}
+
+/** Whether a value is one of the intervals the settings menu actually offers. */
 export function isAutoLockMinutes(value: number): value is AutoLockMinutes {
   return (AUTO_LOCK_MINUTES_OPTIONS as readonly number[]).includes(value);
+}
+
+/**
+ * The offered option closest to a stored value.
+ *
+ * The menu is a set and the column is a range, so the two can legitimately
+ * disagree: a row remapped by migration 0015, or a hand-crafted PATCH of 37
+ * minutes, is a perfectly valid preference that names no menu item. A picker
+ * asked to display it would render blank — which reads as "auto-lock is off" on
+ * the one screen where that must never be a guess. This answers with the item
+ * to highlight, and the caller still saves the exact number it was given.
+ */
+export function nearestAutoLockOption(minutes: number | null | undefined): AutoLockMinutes {
+  const effective = clampAutoLockMinutes(minutes);
+  return AUTO_LOCK_MINUTES_OPTIONS.reduce((best, option) =>
+    Math.abs(option - effective) < Math.abs(best - effective) ? option : best,
+  );
 }
 
 /** Free attempts before the escalating delay starts. */
@@ -70,13 +135,17 @@ export const VAULT_LOCKOUT_BASE_MS = 60 * 1000;
 export const VAULT_LOCKOUT_MAX_MS = 60 * 60 * 1000;
 
 /**
- * How long one unlock lasts.
+ * The ceiling on one unlock, whatever the preference says.
  *
- * A working day. Long enough that nobody types a master passphrase twice in a
- * morning, short enough that a laptop left in a hotel room re-locks itself
- * overnight without anyone remembering to do anything.
+ * A working day. The idle allowance below can slide indefinitely — a session
+ * that makes a request every ten minutes never goes idle — so without an
+ * absolute limit a stolen cookie replayed on a timer would stay unlocked
+ * forever. This is the line that says a passphrase is typed at least once a day,
+ * and it is why the loosest preference is described as "until this browser
+ * closes" rather than as twelve hours: for anyone who picks that, this is what
+ * ends the unlock if the tab outlives the day.
  */
-export const VAULT_UNLOCK_MS = 8 * 60 * 60 * 1000;
+export const VAULT_UNLOCK_MAX_MS = 8 * 60 * 60 * 1000;
 
 /**
  * What the database records about recent attempts against one surface.
@@ -141,20 +210,65 @@ export function clearedUnlockFailures(): UnlockAttemptState {
 }
 
 /**
- * Whether a session is currently unlocked.
+ * Everything the gate needs about one session's unlock.
  *
- * `null` means it has never been unlocked, which is the state a session is in
- * the moment it is created — so a fresh sign-in still passes through the unlock
- * screen, and the cookie alone is never enough to reach key material.
+ * A record rather than three positional arguments, because two of the three are
+ * `Date`s and a call site that swapped them would compile, run, and be wrong in
+ * the direction that keeps a vault unlocked.
  */
-export function isVaultUnlocked(vaultUnlockedAt: Date | null, now: Date): boolean {
-  if (vaultUnlockedAt === null) return false;
-  return now.getTime() - vaultUnlockedAt.getTime() < VAULT_UNLOCK_MS;
+export interface VaultUnlockState {
+  /** `null` — never unlocked — is the state every session is created in. */
+  vaultUnlockedAt: Date | null;
+  /**
+   * The last request this session made: the server's only view of activity.
+   *
+   * Written at most once per `SESSION_TOUCH_INTERVAL_MS`, so it lags real
+   * activity by up to five minutes. That granularity is why
+   * {@link MIN_AUTO_LOCK_MINUTES} is fifteen and not two.
+   */
+  lastSeenAt: Date;
+  /** The account's preference in minutes; `null` means no preference. */
+  autoLockMinutes: number | null;
 }
 
-/** When the current unlock lapses, for the client to schedule a re-lock against. */
-export function vaultUnlockExpiryFrom(vaultUnlockedAt: Date): Date {
-  return new Date(vaultUnlockedAt.getTime() + VAULT_UNLOCK_MS);
+/**
+ * Whether a session is currently unlocked.
+ *
+ * ── Two limits, and why neither alone is enough ──
+ * The **idle allowance** is the account's own preference, measured from the
+ * later of the unlock and the last request. Measuring from the unlock alone
+ * would be an *absolute* timer wearing an idle timer's name: somebody who picked
+ * fifteen minutes and then worked steadily for an hour would be thrown back to
+ * the lock screen four times, while their browser's idle timer — which activity
+ * resets — never fired once. The two halves of the lock have to mean the same
+ * thing, which is the whole reason the preference is read here at all.
+ *
+ * The **ceiling**, {@link VAULT_UNLOCK_MAX_MS}, is measured from the unlock and
+ * never slides. Without it, a sliding window is a window that never closes: a
+ * stolen cookie replayed once an hour would hold an unlocked session for as long
+ * as the attacker cared to keep replaying it.
+ *
+ * `null` for `vaultUnlockedAt` means it has never been unlocked — the state a
+ * session is in the moment it is created, so a fresh sign-in still passes
+ * through the unlock screen and the cookie alone is never enough to reach key
+ * material.
+ */
+export function isVaultUnlocked(state: VaultUnlockState, now: Date): boolean {
+  if (state.vaultUnlockedAt === null) return false;
+  if (now.getTime() - state.vaultUnlockedAt.getTime() >= VAULT_UNLOCK_MAX_MS) return false;
+  return now.getTime() < vaultUnlockExpiryFrom(state).getTime();
+}
+
+/**
+ * When the current unlock lapses, for the client to schedule a re-lock against.
+ *
+ * The *idle* expiry, not the ceiling: it is what the client's own timer is
+ * counting down to, and reporting the ceiling would have the dashboard promise
+ * hours it is not going to give. `isVaultUnlocked` applies both.
+ */
+export function vaultUnlockExpiryFrom(state: VaultUnlockState): Date {
+  const anchor = Math.max(state.vaultUnlockedAt?.getTime() ?? 0, state.lastSeenAt.getTime());
+  return new Date(anchor + clampAutoLockMinutes(state.autoLockMinutes) * 60_000);
 }
 
 /**

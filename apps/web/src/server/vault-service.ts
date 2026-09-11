@@ -1,5 +1,5 @@
 import {
-  DEFAULT_AUTO_LOCK_MINUTES,
+  clampAutoLockMinutes,
   clearedUnlockFailures,
   evaluateUnlockLockout,
   hashUnlockVerifier,
@@ -34,6 +34,7 @@ import {
   toBytes,
 } from '@xecret/db/repositories';
 import type { VaultKeyRecord } from '@xecret/db/repositories';
+import { vaultUnlockStateOf } from './actor';
 import type { Principal } from './actor';
 import type { ServiceContext } from './context';
 import { errors } from './errors';
@@ -120,27 +121,37 @@ export async function vaultStatus(
   }
 
   const keys = await findVaultKeys(services.db, principal.user.id);
-  return statusFrom(keys, principal.vaultUnlockedAt, now);
+  return statusFrom(keys, principal, now);
 }
 
 function statusFrom(
   keys: VaultKeyRecord | null,
-  vaultUnlockedAt: Date | null,
+  principal: Extract<Principal, { kind: 'user' }>,
   now: Date,
 ): VaultStatusPayload {
+  // The preference comes from the freshly read vault row rather than from the
+  // principal's copy, which the session lookup took at the start of the request.
+  // They differ on exactly one path — the PATCH below, which answers with the
+  // status it has just written — and answering with the stale number there would
+  // hand the client back the value it had asked to change.
+  const state = {
+    ...vaultUnlockStateOf(principal),
+    autoLockMinutes: keys?.autoLockMinutes ?? null,
+  };
+
   // A session cannot be unlocked into a vault that does not exist. Without this
   // conjunction a user who deleted and re-created a vault would carry the old
   // session's timestamp into the new one, skipping the unlock entirely.
-  const unlocked = keys !== null && isVaultUnlocked(vaultUnlockedAt, now);
+  const unlocked = keys !== null && isVaultUnlocked(state, now);
 
   return {
     configured: keys !== null,
     unlocked,
-    unlockedUntil:
-      unlocked && vaultUnlockedAt !== null
-        ? vaultUnlockExpiryFrom(vaultUnlockedAt).toISOString()
-        : null,
-    autoLockMinutes: keys?.autoLockMinutes ?? DEFAULT_AUTO_LOCK_MINUTES,
+    unlockedUntil: unlocked ? vaultUnlockExpiryFrom(state).toISOString() : null,
+    // Resolved, never raw. The client schedules a timer against this number and
+    // has no business re-implementing what a `null` means — there is one
+    // definition of that, and it is `clampAutoLockMinutes`.
+    autoLockMinutes: clampAutoLockMinutes(keys?.autoLockMinutes ?? null),
   };
 }
 
@@ -263,7 +274,15 @@ export async function unlockVault(
   const now = new Date();
   await markSessionUnlocked(services.db, user.sessionId, now);
 
-  return { unlockedUntil: vaultUnlockExpiryFrom(now).toISOString(), method };
+  // `markSessionUnlocked` writes both timestamps, so the idle allowance starts
+  // here rather than from whenever this session last made a request.
+  const unlockedUntil = vaultUnlockExpiryFrom({
+    vaultUnlockedAt: now,
+    lastSeenAt: now,
+    autoLockMinutes: keys.autoLockMinutes,
+  });
+
+  return { unlockedUntil: unlockedUntil.toISOString(), method };
 }
 
 /**
@@ -640,18 +659,37 @@ export async function assertRecentAccountOwner(
   if (ageSeconds < -CLOCK_SKEW_SECONDS) return refuse('dated in the future');
 }
 
-/** Changes how long the dashboard may sit idle before locking itself. */
+/**
+ * Changes how long a vault may sit idle before it locks.
+ *
+ * `null` clears the preference back to the default rather than storing the
+ * default's current value — the two are different facts, and only the first
+ * follows the default if it is ever reconsidered.
+ *
+ * Anything else is **clamped, not refused**. The floor and the ceiling are a
+ * security decision this server owns, and a 422 would be the wrong answer to a
+ * request that expresses a perfectly clear intention ("lock me quickly"): it
+ * would leave the account on whatever it had before, which is looser than what
+ * was asked for. Failing towards the safer number is the only direction worth
+ * having. The stored value is checked again by the table's CHECK.
+ */
 export async function setAutoLock(
   services: ServiceContext,
   user: Extract<Principal, { kind: 'user' }>,
-  minutes: number,
-): Promise<void> {
-  const updated = await setAutoLockMinutes(services.db, user.user.id, minutes);
+  minutes: number | null,
+): Promise<number> {
+  const stored = minutes === null ? null : clampAutoLockMinutes(minutes);
+  const updated = await setAutoLockMinutes(services.db, user.user.id, stored);
   // No vault row: there is nothing an idle lock could ask for. The setup
   // ceremony is the answer, not a silently created preference.
   if (updated === null) {
     throw errors.badRequest('Set up your vault first; auto-lock protects it.');
   }
+
+  // The effective number, for the audit record and the response — the caller
+  // asked for something that may have been clamped, and reporting what it asked
+  // for would put a figure in the audit log that no gate ever used.
+  return clampAutoLockMinutes(updated.autoLockMinutes);
 }
 
 async function requireVault(services: ServiceContext, userId: string): Promise<VaultKeyRecord> {

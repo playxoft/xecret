@@ -54,7 +54,8 @@ export interface VaultKeyRecord extends UnlockAttemptState {
   /** The recovery-code attempt counter, kept apart from the passphrase one. */
   recoveryFailedAttempts: number;
   recoveryLockedUntil: Date | null;
-  autoLockMinutes: number;
+  /** The idle allowance in minutes; `null` when the account never chose one. */
+  autoLockMinutes: number | null;
   createdAt: Date;
   rotatedAt: Date | null;
 }
@@ -304,17 +305,22 @@ export async function recordRecoveryAttempt(
 }
 
 /**
- * Changes how long the dashboard may sit idle before locking itself.
+ * Changes how long a vault may sit idle before it locks.
  *
- * The value is validated by the caller against `AUTO_LOCK_MINUTES_OPTIONS` and
- * again by the table's CHECK; this module only stores, as ever. No row means no
- * vault — there is nothing an idle timer could lock — so the update refusing to
- * invent one is the correct answer rather than an error to paper over.
+ * `null` clears the preference rather than storing a number: the account goes
+ * back to whatever `DEFAULT_AUTO_LOCK_MINUTES` is *now*, which is the only state
+ * that can be redefined later without rewriting the row. Anything else has
+ * already been through `clampAutoLockMinutes` at the API boundary and is checked
+ * again by the table's CHECK; this module only stores, as ever.
+ *
+ * No row means no vault — there is nothing an idle timer could lock — so the
+ * update refusing to invent one is the correct answer rather than an error to
+ * paper over.
  */
 export async function setAutoLockMinutes(
   exec: Executor,
   userId: string,
-  minutes: number,
+  minutes: number | null,
 ): Promise<VaultKeyRecord | null> {
   const [row] = await exec
     .update(userKeys)

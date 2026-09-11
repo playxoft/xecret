@@ -5,11 +5,13 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import { MAX_AUTO_LOCK_MINUTES, MIN_AUTO_LOCK_MINUTES } from '@xecret/core/auth';
 import type { Argon2idParams } from '@xecret/core/crypto/client';
 import { bytea } from './columns';
 import { users } from './identity';
@@ -161,14 +163,28 @@ export const userKeys = pgTable(
     recoveryLockedUntil: timestamp('recovery_locked_until', { withTimezone: true }),
 
     /**
-     * Minutes of dashboard idleness before the client locks itself; `0` never.
+     * Minutes of idleness before the vault locks. `NULL` means "no preference".
      *
-     * Inherited from the retired `user_pins` table unchanged, including its
-     * menu: the idle timer is a property of the lock, and the vault lock is the
-     * lock now. The CHECK restates `AUTO_LOCK_MINUTES_OPTIONS` in
-     * `@xecret/core/auth`, so a row cannot hold an interval no client offers.
+     * ── One number, read by both halves of the lock ──
+     * The browser's idle timer counts against this, and so does the server's own
+     * gate: `isVaultUnlocked` measures `sessions.vault_unlocked_at` against this
+     * many minutes rather than against a constant nobody could see. That is why
+     * the column stopped being a convenience when 0015 reshaped it — a client
+     * that simply never ran its timer used to keep a session the server still
+     * considered unlocked for the rest of the working day.
+     *
+     * `NULL` rather than a `DEFAULT`, because "never chose" and "chose an hour"
+     * are different facts and only the first may be redefined later without
+     * rewriting everybody's row. `DEFAULT_AUTO_LOCK_MINUTES` in
+     * `@xecret/core/auth` is what a `NULL` resolves to.
+     *
+     * The CHECK is a range and not a set, matching `clampAutoLockMinutes`: the
+     * menu the settings page offers is a product decision that may grow, while
+     * the floor and the ceiling are the security ones. `0` — "never" — is
+     * deliberately not expressible: a preference the server honours cannot be
+     * allowed to mean "this session stays unlocked forever".
      */
-    autoLockMinutes: integer('auto_lock_minutes').notNull().default(10),
+    autoLockMinutes: integer('auto_lock_minutes'),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     /**
@@ -182,7 +198,10 @@ export const userKeys = pgTable(
     rotatedAt: timestamp('rotated_at', { withTimezone: true }),
   },
   (t) => [
-    check('user_keys_auto_lock_check', sql`${t.autoLockMinutes} in (0, 5, 10, 20, 30, 45, 60)`),
+    check(
+      'user_keys_auto_lock_check',
+      sql`${t.autoLockMinutes} is null or ${t.autoLockMinutes} between ${sql.raw(String(MIN_AUTO_LOCK_MINUTES))} and ${sql.raw(String(MAX_AUTO_LOCK_MINUTES))}`,
+    ),
   ],
 );
 
@@ -354,5 +373,77 @@ export const userKeyWraps = pgTable(
       .where(sql`${t.lookupHash} is not null`),
     // Every wrap for one account, which is what the vault status endpoint reads.
     index('user_key_wraps_user_idx').on(t.userId, t.kind),
+  ],
+);
+
+/**
+ * The server's half of a browser's six-digit device PIN.
+ *
+ * ── Why a six-digit secret is not a six-digit secret here ──
+ * 10^6 guesses is no protection offline, so the PIN never opens anything on its
+ * own. The wrap that actually holds the User Key lives in that browser's
+ * `localStorage` and **never reaches this server**, encrypted under
+ * `HKDF(pinKey ‖ pepper)` where `pepper` is the 32 random bytes below. Holding
+ * the device without the pepper is holding a ciphertext with nothing to attack;
+ * holding this whole table without the device is holding bytes that decrypt
+ * nothing, anywhere. The two meet only during an unlock, under
+ * {@link vaultPinPeppers.attempts} — which is what turns a million offline
+ * guesses into five online ones.
+ *
+ * ── The trade-off, stated rather than implied ──
+ * A server colluding with whoever holds the device *can* brute-force six digits:
+ * it has the pepper, they have the wrap. That is a genuine weakening of the
+ * zero-knowledge property, which is why enrolling is opt-in per browser, why the
+ * passphrase stays the root, and why nothing turns this on by default. The
+ * settings screen says the same thing to the person choosing.
+ *
+ * ── What is *not* here ──
+ * No wrap, no salt, no PIN, and nothing derived from the PIN that is reversible.
+ * `verifier_hash` is `SHA-256` of a sibling HKDF branch of the PIN key, the same
+ * construction — and the same argument — as `user_keys.unlock_verifier_hash`.
+ */
+export const vaultPinPeppers = pgTable(
+  'vault_pin_peppers',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /**
+     * The browser's own identifier, generated client-side at enrolment.
+     *
+     * Part of the primary key rather than the whole of it. A client-generated id
+     * is not a global name: two accounts enrolling on the same browser are two
+     * independent enrolments, and a single-column key would let the second
+     * collide with — or silently overwrite — the first.
+     */
+    deviceId: uuid('device_id').notNull(),
+    /** 32 random bytes. Half of the PIN wrap key, and the half the device lacks. */
+    pepper: bytea('pepper').notNull(),
+    /** `SHA-256(HKDF(pinKey, "xecret.v2.pin-verifier"))`, 32 bytes. Opens nothing. */
+    verifierHash: bytea('verifier_hash').notNull(),
+    /**
+     * Consecutive wrong PINs. At five the row is **deleted**, not locked out.
+     *
+     * Deletion rather than a lockout because there is nothing to come back to: the
+     * pepper is gone, so the wrap in that browser is permanently unopenable and
+     * the passphrase is the only way in. A timed lockout would imply the PIN
+     * becomes usable again, and for a credential whose entire security budget is
+     * this counter, "wait an hour and keep guessing" is not a budget.
+     */
+    attempts: integer('attempts').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.deviceId] }),
+    check(
+      'vault_pin_peppers_pepper_check',
+      sql`octet_length(${t.pepper}) = 32 and octet_length(${t.verifierHash}) = 32`,
+    ),
+    check('vault_pin_peppers_attempts_check', sql`${t.attempts} >= 0 and ${t.attempts} <= 5`),
+    // The settings list, and the revoke-everything sweep a passphrase change, a
+    // recovery and a vault reset each have to run: all three may rotate the User
+    // Key, and every stale wrap has to die server-side too.
+    index('vault_pin_peppers_user_idx').on(t.userId, t.createdAt.desc()),
   ],
 );

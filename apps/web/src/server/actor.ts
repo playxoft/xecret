@@ -11,6 +11,7 @@ import {
   splitServiceToken,
   verifyCsrf,
 } from '@xecret/core/auth';
+import type { VaultUnlockState } from '@xecret/core/auth';
 import type { AccessLevel } from '@xecret/core/authz';
 import {
   findCliTokenByHash,
@@ -59,6 +60,24 @@ export type Principal =
        * Firebase, which is the whole thing this design avoids.
        */
       vaultUnlockedAt: Date | null;
+      /**
+       * The last request this session made — the server's only view of activity.
+       *
+       * The unlock window is an *idle* allowance, so it has to be measured from
+       * something that moves while somebody is working. `vault_unlocked_at` does
+       * not move, and measuring from it alone would throw a user who chose
+       * fifteen minutes back to the lock screen four times an hour while they
+       * typed. See `isVaultUnlocked`.
+       */
+      lastSeenAt: Date;
+      /**
+       * The account's auto-lock preference in minutes; `null` for no preference.
+       *
+       * The same number the browser's idle timer counts against. Carried here so
+       * that the gate and the timer cannot disagree about when this session
+       * stopped being unlocked.
+       */
+      vaultAutoLockMinutes: number | null;
     }
   | {
       kind: 'cliToken';
@@ -155,6 +174,12 @@ async function principalFromSession(token: string, services: ServiceContext): Pr
     sessionId: session.id,
     user: session.user,
     vaultUnlockedAt: session.vaultUnlockedAt,
+    // The row's value, not the throttled write above: `touchSession` runs in
+    // `waitUntil` and may not have happened yet, and the gate must judge this
+    // request on what the database actually says rather than on what is about to
+    // be written to it.
+    lastSeenAt: resolution.session.lastSeenAt,
+    vaultAutoLockMinutes: session.vaultAutoLockMinutes,
   };
 }
 
@@ -179,7 +204,24 @@ async function principalFromSession(token: string, services: ServiceContext): Pr
  */
 export function isUnlocked(principal: Principal, now: Date): boolean {
   if (principal.kind !== 'user') return true;
-  return isVaultUnlocked(principal.vaultUnlockedAt, now);
+  return isVaultUnlocked(vaultUnlockStateOf(principal), now);
+}
+
+/**
+ * The three fields the unlock policy reads, out of a session principal.
+ *
+ * Exported because `vault-service.ts` builds the same record to compute
+ * `unlockedUntil`, and a second hand-assembled copy is how the gate and the
+ * expiry the client is shown come to disagree.
+ */
+export function vaultUnlockStateOf(
+  principal: Extract<Principal, { kind: 'user' }>,
+): VaultUnlockState {
+  return {
+    vaultUnlockedAt: principal.vaultUnlockedAt,
+    lastSeenAt: principal.lastSeenAt,
+    autoLockMinutes: principal.vaultAutoLockMinutes,
+  };
 }
 
 async function principalFromBearer(token: string, services: ServiceContext): Promise<Principal> {
