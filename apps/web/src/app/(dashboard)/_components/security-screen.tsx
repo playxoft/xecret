@@ -26,7 +26,12 @@ import {
   Skeleton,
   useToast,
 } from '@/components/ui';
-import { PasskeysSection, setAutoLockMinutes, VaultCard } from '@/components/vault';
+import {
+  DevicePinSection,
+  PasskeysSection,
+  setAutoLockMinutes,
+  VaultCard,
+} from '@/components/vault';
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState } from './resource-states';
@@ -317,6 +322,13 @@ function LockCard() {
         <Separator className="my-2" />
 
         <PasskeysSection user={user} />
+
+        <Separator className="my-2" />
+
+        {/* Below the passkeys, and that order is the recommendation: a passkey
+            is the stronger of the two and costs nothing to the threat model,
+            while a PIN trades some of it away for convenience. */}
+        <DevicePinSection user={user} />
       </CardContent>
     </Card>
   );

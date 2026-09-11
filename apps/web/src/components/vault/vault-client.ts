@@ -6,6 +6,8 @@ import {
   decodePublicKey,
   derivePasskeyWrapKey,
   derivePassphraseWrapKey,
+  derivePinKey,
+  derivePinVerifier,
   deriveRecoveryKey,
   deriveStretchedKey,
   deriveUkUnlockVerifier,
@@ -24,15 +26,25 @@ import {
   toBase64Url,
   unwrapPrivateKey,
   unwrapUserKey,
+  unwrapUserKeyWithPin,
   wrapPrivateKey,
   wrapUserKey,
+  wrapUserKeyWithPin,
   zeroize,
 } from '@xecret/core/crypto/client';
 import type { Argon2idProvider, Bytes, RecoveryCode } from '@xecret/core/crypto/client';
+import { uuidv7 } from '@xecret/core/ids';
 
 import { api, isApiError } from '@/lib/api';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import { argon2idProvider } from './argon2';
+import {
+  clearDevicePinWrap,
+  DEVICE_PIN_WRAP_VERSION,
+  devicePinStorage,
+  readDevicePinWrap,
+  writeDevicePinWrap,
+} from './device-pin';
 import { PasskeyCancelledError, PasskeyUnsupportedError } from './passkey';
 import { holdVaultKeys, releaseVaultKeys } from './key-store';
 import type { VaultKeyMaterial } from './key-store';
@@ -919,6 +931,269 @@ export async function enrollPasskeyWrap(params: {
 
 export function removeVaultPasskey(passkeyId: string): Promise<void> {
   return api.delete<void>(`${apiPath.vaultPasskeys()}/${encodeURIComponent(passkeyId)}`);
+}
+
+/* ─────────────────────────────── device PIN ─────────────────────────────── */
+
+/** One enrolled browser, as the settings list sees it. */
+export interface PinDevice {
+  deviceId: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+/**
+ * Whether this browser holds a PIN wrap.
+ *
+ * The probe the lock screen and the settings block both ask, and a stricter one
+ * than `hasDevicePinWrap` in `unlock-nudge.ts`: that one checks the key is
+ * present, which is all a nudge needs, while this one requires a record this
+ * version can actually read. A wrap written by a later shape suppresses the
+ * nudge and still sends somebody to the passphrase, which is the right way round
+ * — offering a PIN entry that cannot work would be worse than not offering one.
+ */
+export function hasPinWrap(): boolean {
+  return readDevicePinWrap(devicePinStorage()) !== null;
+}
+
+/**
+ * This browser's enrolled device id, or `null` when it holds no PIN.
+ *
+ * What lets the settings list mark one row "this device". The id is not a
+ * secret — the server minted the pepper against it and lists it back — and
+ * nothing about it identifies the browser beyond "the one holding this wrap".
+ */
+export function pinDeviceId(): string | null {
+  return readDevicePinWrap(devicePinStorage())?.deviceId ?? null;
+}
+
+/**
+ * Enrols this browser's PIN, or re-enrols it under a new one.
+ *
+ * ── The order, and what each step is not allowed to leave behind ──
+ * The salt and the PIN key come first, locally. Then the server mints a pepper —
+ * the half this browser can never derive — and only with both in hand is the
+ * wrap built and written. Nothing is stored before the server has a row, because
+ * a wrap whose pepper does not exist is a ciphertext nothing will ever open,
+ * silently occupying the one slot this browser has.
+ *
+ * The reverse failure is handled rather than hoped away: if the write to
+ * `localStorage` fails after the row exists, the enrolment is disabled again. A
+ * pepper row with no wrap anywhere is a live credential nobody can use and
+ * nobody remembers creating, and it would sit in the settings list claiming this
+ * browser has a PIN.
+ *
+ * **A re-enrolment keeps the existing `deviceId`.** The server upserts on it, so
+ * minting a fresh one would leave the previous pepper row alive — an enrolment
+ * for a wrap that has just been overwritten, listed forever beside the real one.
+ */
+export async function enrolPin(params: {
+  userId: string;
+  userKey: Bytes;
+  pin: string;
+  argon2id?: Argon2idProvider;
+}): Promise<PinDevice> {
+  const storage = devicePinStorage();
+  const deviceId = readDevicePinWrap(storage)?.deviceId ?? uuidv7();
+  const salt = generateKdfSalt();
+
+  const pinKey = await derivePinKey({
+    pin: params.pin,
+    salt,
+    argon2id: params.argon2id ?? argon2idProvider,
+  });
+
+  try {
+    const verifier = await derivePinVerifier(pinKey);
+    const response = await api.post<{ pin: { device: PinDevice; pepper: string } }>(
+      apiPath.vaultPins(),
+      { deviceId, verifier: toBase64Url(verifier) },
+    );
+
+    const pepper = fromBase64Url(response.pin.pepper);
+    try {
+      const wrap = await wrapUserKeyWithPin({
+        pinKey,
+        pepper,
+        userKey: params.userKey,
+        context: { userId: params.userId, deviceId },
+      });
+
+      writeDevicePinWrap(storage, {
+        version: DEVICE_PIN_WRAP_VERSION,
+        deviceId,
+        salt: toBase64Url(salt),
+        wrap,
+      });
+    } catch (cause) {
+      // The row exists and nothing on this machine can use it. Undo it rather
+      // than leaving a credential in the settings list that no browser holds.
+      await api.delete<void>(apiPath.vaultPin(deviceId)).catch(() => undefined);
+      throw cause;
+    } finally {
+      // The pepper is the server's half of a key, and this browser's only
+      // legitimate use for it ended one line ago.
+      zeroize(pepper);
+    }
+
+    return response.pin.device;
+  } finally {
+    zeroize(pinKey);
+  }
+}
+
+/**
+ * What a PIN attempt did, in the terms the lock screen has to act on.
+ *
+ * `unknown` covers both "this browser has no readable wrap" and "the server has
+ * no such enrolment", because the browser does the same thing about each: forget
+ * the record and offer the passphrase. `mismatch` is the third way a wrap dies —
+ * the pepper came back and still did not open it — and it is kept apart because
+ * only that one leaves a session the server has already marked unlocked.
+ */
+export type PinUnlockOutcome =
+  | { outcome: 'unlocked'; vault: VaultStatus }
+  | { outcome: 'wrong'; attemptsRemaining: number }
+  | { outcome: 'burned' }
+  | { outcome: 'unknown' }
+  | { outcome: 'mismatch' };
+
+/**
+ * Opens the vault with this browser's PIN.
+ *
+ * ── Why the order is the opposite of the passphrase path's ──
+ * `unlockWithPassphrase` unwraps first and tells the server second, so a typo
+ * never spends an attempt. A PIN cannot: the pepper that opens its wrap *is*
+ * what the request returns, so the attempt has to come first and the browser's
+ * five tries are the server's five tries. That is not a weakening — it is the
+ * whole design, because six digits are only safe when the guesses are counted
+ * somewhere the guesser does not control.
+ *
+ * ── Every way this can fail leaves the browser in a coherent state ──
+ * A burn, an unknown enrolment and a wrap that does not open all clear the local
+ * record: each means the wrap is permanently unopenable, and a record left
+ * behind would suppress the offer to set a PIN up again while never working. The
+ * mismatch additionally locks the session, because the server unlocked it on the
+ * strength of a verifier this browser then could not make use of.
+ */
+export async function unlockWithPin(params: {
+  userId: string;
+  pin: string;
+  material: VaultMaterial;
+  argon2id?: Argon2idProvider;
+}): Promise<PinUnlockOutcome> {
+  const storage = devicePinStorage();
+  const stored = readDevicePinWrap(storage);
+  if (stored === null) return { outcome: 'unknown' };
+
+  const pinKey = await derivePinKey({
+    pin: params.pin,
+    salt: fromBase64Url(stored.salt),
+    argon2id: params.argon2id ?? argon2idProvider,
+  });
+
+  try {
+    const verifier = await derivePinVerifier(pinKey);
+    const response = await api.post<{ pin: PinAttemptBody; vault: VaultStatus }>(
+      apiPath.vaultPinAttempt(),
+      { deviceId: stored.deviceId, verifier: toBase64Url(verifier) },
+    );
+
+    if (response.pin.outcome !== 'unlocked') {
+      if (response.pin.outcome !== 'wrong') clearDevicePinWrap(storage);
+      return response.pin.outcome === 'wrong'
+        ? { outcome: 'wrong', attemptsRemaining: response.pin.attemptsRemaining }
+        : { outcome: response.pin.outcome };
+    }
+
+    const pepper = fromBase64Url(response.pin.pepper);
+    let userKey: Bytes;
+    try {
+      userKey = await unwrapUserKeyWithPin({
+        pinKey,
+        pepper,
+        blob: stored.wrap,
+        context: { userId: params.userId, deviceId: stored.deviceId },
+      });
+    } catch (cause) {
+      if (!(cause instanceof DecryptionError)) throw cause;
+
+      // The verifier matched and the wrap did not open, which means the two
+      // halves belong to different enrolments — a wrap left over from a vault
+      // that has since been reset, or copied from another profile. Nothing here
+      // is recoverable and the session must not stay open on the strength of it.
+      clearDevicePinWrap(storage);
+      zeroize(pepper);
+      await lockVault().catch(() => undefined);
+      return { outcome: 'mismatch' };
+    }
+    zeroize(pepper);
+
+    holdVaultKeys(await openPrivateKeys(params.userId, userKey, params.material));
+    // The session was unlocked by the attempt itself, so the status the server
+    // sent back with it is the current one rather than a value to re-fetch.
+    return { outcome: 'unlocked', vault: response.vault };
+  } finally {
+    zeroize(pinKey);
+  }
+}
+
+/** The attempt endpoint's answer. Mirrors `PinAttemptResult` in `vault-service.ts`. */
+type PinAttemptBody =
+  | { outcome: 'unlocked'; pepper: string; unlockedUntil: string }
+  | { outcome: 'wrong'; attemptsRemaining: number }
+  | { outcome: 'burned' }
+  | { outcome: 'unknown' };
+
+/**
+ * Turns off the PIN on this browser: the server's pepper, then the local wrap.
+ *
+ * The local record goes in a `finally`, so a failed request still leaves this
+ * browser without a PIN. That direction is the only safe one — the person asked
+ * for it to be off here, and a wrap kept because the network was down is a wrap
+ * that keeps working. The row it leaves behind is visible in the device list and
+ * revocable from anywhere.
+ */
+export async function disablePinHere(): Promise<void> {
+  const storage = devicePinStorage();
+  const stored = readDevicePinWrap(storage);
+
+  try {
+    if (stored !== null) await api.delete<void>(apiPath.vaultPin(stored.deviceId));
+  } catch (cause) {
+    // A 404 means it was already gone — revoked from another device, or burned.
+    // That is the state this call was asking for, not a failure.
+    if (!isApiError(cause) || cause.code !== 'not_found') throw cause;
+  } finally {
+    clearDevicePinWrap(storage);
+  }
+}
+
+/** Every browser this account has enrolled. */
+export async function listPinDevices(): Promise<PinDevice[]> {
+  return (await api.get<{ devices: PinDevice[] }>(apiPath.vaultPins())).devices;
+}
+
+/**
+ * Revokes one enrolment, whichever browser it belongs to.
+ *
+ * Clears this browser's record when the id is its own, so revoking "this device"
+ * from the list behaves exactly like turning it off here — the alternative is a
+ * settings page that reports success while the PIN box is still on the lock
+ * screen.
+ */
+export async function revokePinDevice(deviceId: string): Promise<void> {
+  await api.delete<void>(apiPath.vaultPin(deviceId));
+
+  const storage = devicePinStorage();
+  if (readDevicePinWrap(storage)?.deviceId === deviceId) clearDevicePinWrap(storage);
+}
+
+/** Revokes every enrolment, this browser's included. Returns how many died. */
+export async function revokeAllPinDevices(): Promise<number> {
+  const response = await api.delete<{ revoked: number }>(apiPath.vaultPins());
+  clearDevicePinWrap(devicePinStorage());
+  return response.revoked;
 }
 
 /**

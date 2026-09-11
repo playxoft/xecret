@@ -23,9 +23,11 @@ import {
 import { appPath } from '@/app/(dashboard)/_lib/paths';
 import { kitConfirmationProblem, promptedCodeIndex } from './emergency-kit';
 import { assertPasskeyPrf, currentPasskeyAvailability } from './passkey';
+import { PinUnlock } from './pin-unlock';
 import { PassphraseFields, usePassphraseStrength } from './passphrase-fields';
 import { passphraseProblem } from './passphrase';
 import { RecoveryKitPanel } from './recovery-kit-panel';
+import { useDevicePinId } from './device-pin';
 import {
   hasDevicePinWrap,
   nudgeStorage,
@@ -234,6 +236,19 @@ function UnlockForm({
    */
   const [passkeyUnavailable, setPasskeyUnavailable] = useState<string | null>(null);
 
+  /**
+   * Whether this browser holds a PIN wrap, and what killed it if one did.
+   *
+   * Subscribed rather than read once: `unlockWithPin` clears the record on a
+   * burn, on an unknown enrolment and on a wrap that does not open, and this
+   * form has to disappear when it does. `useDevicePinId` also answers `null`
+   * during server rendering, which is what keeps the two credential forms from
+   * swapping places at hydration.
+   */
+  const pinDeviceId = useDevicePinId();
+  const [pinGone, setPinGone] = useState<string | null>(null);
+  const pinOffered = pinDeviceId !== null;
+
   // Read once. It cannot change while this screen is mounted, and re-reading it
   // per render would make the button flicker on a browser that answers slowly.
   const availability = useMemo(() => currentPasskeyAvailability(), []);
@@ -418,6 +433,35 @@ function UnlockForm({
         </Alert>
       ) : null}
 
+      {pinOffered ? (
+        <div className="flex flex-col gap-3">
+          <PinUnlock
+            user={user}
+            material={material}
+            onUnlocked={onUnlocked}
+            // The form withdraws itself: `unlockWithPin` has already cleared the
+            // local record, so `useDevicePinId` answers `null` on the next
+            // render. All this has to add is the sentence explaining why —
+            // withdrawing rather than disabling, the same call the passkey path
+            // makes, because a permanently failing entry box is worse than none.
+            onGone={setPinGone}
+            disabled={busy || passkeyBusy}
+          />
+
+          <div className="flex items-center gap-3">
+            <Separator className="flex-1" />
+            <span className="text-fg-subtle text-xs uppercase">or</span>
+            <Separator className="flex-1" />
+          </div>
+        </div>
+      ) : null}
+
+      {pinGone !== null ? (
+        <Alert tone="warning" title="Your PIN is off on this browser">
+          {pinGone}
+        </Alert>
+      ) : null}
+
       {material.passkeys.length > 0 &&
       availability !== 'available' &&
       passkeyUnavailable === null ? (
@@ -448,11 +492,11 @@ function UnlockForm({
 
         <Button
           type="submit"
-          // Secondary only when a passkey is offered above it — two primary
-          // buttons would put the emphasis nowhere. Still a full-width button
-          // and still the first thing in the form: the demotion is about
+          // Secondary only when a faster unlock is offered above it — two
+          // primary buttons would put the emphasis nowhere. Still a full-width
+          // button and still the first thing in the form: the demotion is about
           // prominence between two working options, not about hiding one.
-          variant={passkeyOffered ? 'secondary' : 'primary'}
+          variant={passkeyOffered || pinOffered ? 'secondary' : 'primary'}
           size="lg"
           loading={busy}
           disabled={passphrase.length === 0 || passkeyBusy}

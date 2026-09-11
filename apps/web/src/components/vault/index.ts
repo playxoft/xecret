@@ -41,5 +41,14 @@ export {
 } from './key-store';
 export type { VaultKeyMaterial } from './key-store';
 
-export { fetchVault, lockVault, setAutoLockMinutes } from './vault-client';
-export type { VaultMaterial, VaultPasskey, VaultStatus } from './vault-client';
+export { DevicePinSection } from './device-pin-section';
+export type { DevicePinSectionProps } from './device-pin-section';
+
+export { fetchVault, hasPinWrap, lockVault, setAutoLockMinutes } from './vault-client';
+export type {
+  PinDevice,
+  PinUnlockOutcome,
+  VaultMaterial,
+  VaultPasskey,
+  VaultStatus,
+} from './vault-client';
