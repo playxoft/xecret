@@ -158,8 +158,9 @@ export const VAULT_UNLOCK_MAX_MS = 8 * 60 * 60 * 1000;
  * needs and four more than a guesser deserves.
  *
  * At five the pepper row is **deleted**, not locked out. There is nothing to
- * come back to: the pepper is gone, so the wrap in that browser is permanently
- * unopenable and the passphrase is the only way in. A timed lockout would imply
+ * come back to: the pepper is gone, so the wrap in that browser cannot be opened
+ * by anybody who never saw the pepper it was built under — the correct PIN
+ * included — and the passphrase is the only way in. A timed lockout would imply
  * the PIN becomes usable again, and "wait an hour and keep guessing" is not a
  * budget for a credential whose entire budget is this counter.
  *

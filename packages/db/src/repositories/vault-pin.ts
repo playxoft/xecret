@@ -18,11 +18,17 @@ import type { Executor } from './shared';
  * ── Why the attempt counter is the whole of the design ──
  * The pepper is released only to a caller that presents the matching verifier,
  * and {@link attemptPinUnlock} counts every caller that does not. Five failures
- * destroy the row, and with it the only copy of the pepper — so the wrap in that
- * browser becomes permanently unopenable and the passphrase is the only way back
+ * destroy the row, and with it this server's only copy of the pepper — so the
+ * wrap in that browser can no longer be opened by anybody who has not already
+ * seen the pepper it was built under, and the passphrase is the only way back
  * in. That is what turns 10^6 offline guesses into five online ones, and it is
  * why the counter lives in a column rather than in a Worker isolate an attacker
  * resets by waiting.
+ *
+ * The qualification is not pedantry. A pepper is handed to the client on every
+ * successful unlock, so "unopenable" is a claim about everybody who never
+ * intercepted one — which is why {@link attemptPinUnlock} replaces it each time
+ * and the client re-wraps under the new one.
  *
  * ── Why the comparison is a callback ──
  * The count and the comparison have to happen in one transaction, or two
@@ -152,7 +158,11 @@ export function pinDevicesQuery(exec: Executor, userId: string) {
 
 /** What one attempt resolved to. Every branch is a different thing to tell the user. */
 export type PinAttemptOutcome =
-  /** The verifier matched. The pepper is released exactly once, here. */
+  /**
+   * The verifier matched. The pepper is released exactly once, here — and the
+   * row has already been given a different one, so this is the *last* time this
+   * value opens anything.
+   */
   | { status: 'ok'; pepper: Uint8Array }
   /** Wrong, and the enrolment survives. */
   | { status: 'wrong'; attemptsRemaining: number }
@@ -181,6 +191,21 @@ export type PinAttemptOutcome =
  * revoked from another device, or burned in another tab — and gets the same
  * treatment as a burn on the client. It is reported separately so the audit log
  * can tell "somebody guessed five times" from "somebody used a stale wrap".
+ *
+ * ── Why the pepper is replaced on the way out ──
+ * Because otherwise it is permanent. A pepper is released to the client on every
+ * successful unlock, which means it passes through a browser, a TLS session and
+ * this server's memory each time — and anyone who captured one of those, *once*,
+ * together with a copy of that browser's `localStorage`, could open the wrap for
+ * as long as the enrolment lived. Revoking the enrolment afterwards would not
+ * help: the stolen pair no longer needs this server.
+ *
+ * Rotating narrows that to a single unlock. The caller mints the replacement and
+ * it is written inside the same row lock as the read, so the old value is dead
+ * the instant it is handed over. The verifier is untouched — the same six digits
+ * and the same salt still derive the same `pinKey` — so what the client has to
+ * do afterwards is re-wrap the User Key it now holds, which is exactly the
+ * moment it holds it.
  */
 export async function attemptPinUnlock(
   exec: Executor,
@@ -189,6 +214,13 @@ export async function attemptPinUnlock(
     deviceId: string;
     /** Constant-time comparison against the stored digest. Runs inside the lock. */
     matches: (verifierHash: Uint8Array) => Promise<boolean>;
+    /**
+     * The pepper this row will hold from now on, on a match. 32 bytes.
+     *
+     * Passed in rather than generated here for the reason `matches` is passed
+     * in: this layer stores, and does not own the CSPRNG or the length policy.
+     */
+    nextPepper: Uint8Array;
   },
 ): Promise<PinAttemptOutcome> {
   return exec.transaction(async (tx) => {
@@ -199,7 +231,10 @@ export async function attemptPinUnlock(
     if (await params.matches(row.verifierHash)) {
       await tx
         .update(vaultPinPeppers)
-        .set({ attempts: 0, lastUsedAt: new Date() })
+        // The rotation rides the write that was already happening. A separate
+        // statement — or worse, a separate transaction — would leave a window in
+        // which the released pepper and the stored one disagree.
+        .set({ attempts: 0, lastUsedAt: new Date(), pepper: params.nextPepper })
         .where(forDevice(params.userId, params.deviceId));
 
       return { status: 'ok', pepper: row.pepper };
@@ -234,6 +269,10 @@ export async function attemptPinUnlock(
  *
  * This can never strand an account. The passphrase wrap always exists and has no
  * removal path, so the last PIN is still not the last way in.
+ *
+ * What it does *not* do is reach into the browser and delete the ciphertext —
+ * this server cannot. It removes the pepper, which leaves the wrap unopenable by
+ * anyone who has not separately captured the pepper it was built under.
  */
 export async function disablePinPepper(
   exec: Executor,
@@ -264,8 +303,8 @@ export async function listPinPeppers(exec: Executor, userId: string): Promise<Pi
  * browser offering a PIN unlock that can only ever fail.
  *
  * The wraps themselves are in browsers this server cannot reach, so it cannot
- * delete them; what it can do is make them permanently unopenable, which is
- * exactly what removing the pepper does.
+ * delete them; what it can do is drop the half of the key it holds, which leaves
+ * each wrap unopenable by anyone who never saw its pepper.
  */
 export async function revokeAllPinPeppers(exec: Executor, userId: string): Promise<number> {
   const removed = await exec

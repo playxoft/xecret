@@ -119,7 +119,7 @@ export type AuditAction =
    * The security event of the whole feature. A PIN's entire budget is five
    * attempts, so this record is the moment that budget was spent, and a burst of
    * them across an account is the shape of somebody working through a stolen
-   * laptop. The wrap in that browser is permanently unopenable afterwards.
+   * laptop. Afterwards that wrap opens for nobody who never saw its pepper.
    */
   | 'vault.pin_burned'
   /** A session was locked without being revoked — the user is still signed in. */

@@ -1069,6 +1069,14 @@ export type PinUnlockOutcome =
  * whole design, because six digits are only safe when the guesses are counted
  * somewhere the guesser does not control.
  *
+ * ── Why a success rewrites the record it just read ──
+ * The pepper that opened this wrap is dead the moment the server hands it over:
+ * the attempt replaced it in the same transaction, precisely so that a pepper
+ * intercepted once does not open this browser's wrap for ever. That leaves the
+ * blob on disk stale, and this is the one instant in which it can be replaced —
+ * the User Key is in hand and the new pepper is on the wire. The PIN, the salt
+ * and the device id do not change, so nothing the person types is different.
+ *
  * ── Every way this can fail leaves the browser in a coherent state ──
  * A burn, an unknown enrolment and a wrap that does not open all clear the local
  * record: each means the wrap can no longer be opened here, and a record left
@@ -1110,6 +1118,7 @@ export async function unlockWithPin(params: {
     }
 
     const pepper = fromBase64Url(response.pin.pepper);
+    const nextPepper = fromBase64Url(response.pin.nextPepper);
     try {
       const userKey = await unwrapUserKeyWithPin({
         pinKey,
@@ -1117,6 +1126,27 @@ export async function unlockWithPin(params: {
         blob: stored.wrap,
         context: { userId: params.userId, deviceId: stored.deviceId },
       });
+
+      // The pepper that just opened this wrap is already dead server-side, so
+      // the wrap on disk is dead with it and has to be replaced before anything
+      // else can go wrong. This is the only moment the browser holds both the
+      // User Key and the new pepper. A failure here is not a failed unlock —
+      // the keys are in hand — so it falls back to clearing the record and
+      // asking the user to enrol again, rather than leaving a wrap that will
+      // look fine on the lock screen and open nothing.
+      try {
+        writeDevicePinWrap(storage, {
+          ...stored,
+          wrap: await wrapUserKeyWithPin({
+            pinKey,
+            pepper: nextPepper,
+            userKey,
+            context: { userId: params.userId, deviceId: stored.deviceId },
+          }),
+        });
+      } catch {
+        clearDevicePinWrap(storage);
+      }
 
       // Inside the same guard as the unwrap, and that is the point of the shape.
       // The server marked this session unlocked *before* it released the pepper,
@@ -1138,7 +1168,10 @@ export async function unlockWithPin(params: {
       await lockVault().catch(() => undefined);
       return { outcome: 'mismatch' };
     } finally {
+      // Both halves of the server's contribution, and this browser's legitimate
+      // use for either ended above.
       zeroize(pepper);
+      zeroize(nextPepper);
     }
 
     // The session was unlocked by the attempt itself, so the status the server
@@ -1151,7 +1184,7 @@ export async function unlockWithPin(params: {
 
 /** The attempt endpoint's answer. Mirrors `PinAttemptResult` in `vault-service.ts`. */
 type PinAttemptBody =
-  | { outcome: 'unlocked'; pepper: string; unlockedUntil: string }
+  | { outcome: 'unlocked'; pepper: string; nextPepper: string; unlockedUntil: string }
   | { outcome: 'wrong'; attemptsRemaining: number }
   | { outcome: 'burned' }
   | { outcome: 'unknown' };

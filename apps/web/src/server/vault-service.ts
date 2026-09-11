@@ -616,7 +616,14 @@ export async function enrolDevicePin(
  * reaches this, and the edge rate limiter throws before it does.
  */
 export type PinAttemptResult =
-  | { outcome: 'unlocked'; pepper: string; unlockedUntil: string }
+  | {
+      outcome: 'unlocked';
+      /** The pepper this wrap was built under. Already superseded on the row. */
+      pepper: string;
+      /** The pepper the next wrap must be built under. The client re-wraps now. */
+      nextPepper: string;
+      unlockedUntil: string;
+    }
   | { outcome: 'wrong'; attemptsRemaining: number }
   | { outcome: 'burned' }
   | { outcome: 'unknown' };
@@ -632,7 +639,8 @@ export type PinAttemptResult =
  * (`attemptPinUnlock`), because a read-then-write would hand a scripted attacker
  * as many guesses per round trip as they cared to open connections. At five the
  * row is deleted rather than locked out: the pepper is gone, the browser's wrap
- * is permanently unopenable, and the passphrase is the only way back in.
+ * stops being openable by anybody who never saw its pepper, and the passphrase
+ * is the only way back in.
  *
  * ── Why the session is unlocked here rather than after the unwrap ──
  * It has to be. Unlike the passphrase and passkey paths, this client cannot
@@ -641,6 +649,17 @@ export type PinAttemptResult =
  * passphrase, and the session is marked unlocked on the same terms. A browser
  * whose wrap then fails to open calls `lockVault` itself rather than sitting on
  * an unlocked session it cannot use.
+ *
+ * ── Why a success hands back two peppers ──
+ * Because a pepper that never changes is a pepper that only has to be captured
+ * once. It crosses the wire on every unlock, so an attacker who saw one — a
+ * compromised extension, a debug proxy, a heap dump — plus a copy of that
+ * browser's `localStorage` would hold a pair that no longer needs this server,
+ * and revoking the enrolment afterwards would not take it away from them. So the
+ * row is given a fresh pepper inside the same transaction that released the old
+ * one, and the client, which is holding the User Key at exactly that moment,
+ * re-wraps under the new one. The verifier is untouched: the same PIN and the
+ * same salt, so nothing the user does changes.
  */
 export async function attemptDevicePin(
   services: ServiceContext,
@@ -650,11 +669,16 @@ export async function attemptDevicePin(
   const keys = await requireVault(services, user.user.id);
   const presented = fromBase64Url(body.verifier);
 
+  const nextPepper = generatePinPepper();
   const outcome = await attemptPinUnlock(services.db, {
     userId: user.user.id,
     deviceId: body.deviceId,
     // Constant-time, and run inside the row lock so the count cannot be raced.
     matches: (verifierHash) => unlockVerifierMatches(presented, toBytes(verifierHash)),
+    // Minted per request rather than per success: the row lock is where the
+    // decision is made, and generating 32 bytes that a miss throws away is
+    // cheaper than reaching back out of the transaction to ask for them.
+    nextPepper,
   });
 
   if (outcome.status !== 'ok') {
@@ -677,6 +701,7 @@ export async function attemptDevicePin(
   return {
     outcome: 'unlocked',
     pepper: toBase64Url(toBytes(outcome.pepper)),
+    nextPepper: toBase64Url(nextPepper),
     unlockedUntil: vaultUnlockExpiryFrom({
       vaultUnlockedAt: now,
       lastSeenAt: now,

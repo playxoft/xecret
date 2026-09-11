@@ -20,6 +20,7 @@ import {
   useToast,
 } from '@/components/ui';
 import { pinProblem, useDevicePinId } from './device-pin';
+import { withVaultKeys } from './key-store';
 import { disablePinHere, enrolPin, revokeAllPinDevices, revokePinDevice } from './vault-client';
 import type { PinDevice } from './vault-client';
 import { useVault } from './vault-keys';
@@ -98,7 +99,8 @@ export function DevicePinSection({ user }: DevicePinSectionProps) {
     // The User Key is what is being wrapped, so there has to be one. The button
     // is hidden while locked; this is the guard for the race where the vault
     // locks with the form open.
-    if (vault.keys === null) {
+    const keys = vault.keys;
+    if (keys === null) {
       setProblem('Your vault locked. Unlock it and try again.');
       return;
     }
@@ -106,7 +108,19 @@ export function DevicePinSection({ user }: DevicePinSectionProps) {
     setSaving(true);
     setProblem(null);
     try {
-      await enrolPin({ userId: user.id, userKey: vault.keys.userKey, pin });
+      // ── Under a lease, and it is not a formality ──
+      //
+      // Enrolment is Argon2id, a round trip for the pepper, and an AES-GCM
+      // wrap, in that order — hundreds of milliseconds during which this
+      // function is holding the very `Uint8Array` a lock would overwrite in
+      // place. AES-GCM under a key of thirty-two zero bytes does not fail: it
+      // produces a well-formed blob, `localStorage` accepts it, the toast says
+      // the PIN is set up, and the ciphertext opens nothing for ever.
+      //
+      // `withVaultKeys` also re-checks identity after taking the lease, so a
+      // lock that landed a moment ago throws here rather than wrapping material
+      // the store has already given up.
+      await withVaultKeys(keys, () => enrolPin({ userId: user.id, userKey: keys.userKey, pin }));
       closeFlow();
       devices.reload();
       toast({

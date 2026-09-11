@@ -429,10 +429,16 @@ export const vaultPinPeppers = pgTable(
      * Consecutive wrong PINs. At five the row is **deleted**, not locked out.
      *
      * Deletion rather than a lockout because there is nothing to come back to: the
-     * pepper is gone, so the wrap in that browser is permanently unopenable and
-     * the passphrase is the only way in. A timed lockout would imply the PIN
-     * becomes usable again, and for a credential whose entire security budget is
-     * this counter, "wait an hour and keep guessing" is not a budget.
+     * pepper is gone, so the wrap in that browser can no longer be opened by
+     * anybody who never saw its pepper, and the passphrase is the only way in. A
+     * timed lockout would imply the PIN becomes usable again, and for a credential
+     * whose entire security budget is this counter, "wait an hour and keep
+     * guessing" is not a budget.
+     *
+     * `pepper` is also rewritten on every *successful* attempt. The value is
+     * released to the client each time the wrap is opened, so one interception
+     * would otherwise survive any later revocation; rotating narrows that to a
+     * single unlock. The verifier is untouched — the same PIN still works.
      */
     attempts: integer('attempts').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

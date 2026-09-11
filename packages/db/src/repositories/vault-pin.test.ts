@@ -3,7 +3,7 @@ import { getTableName } from 'drizzle-orm';
 import { DEVICE_PIN_MAX_ATTEMPTS, nextPinFailure } from '@xecret/core/auth';
 import { uuidv7 } from '@xecret/core/ids';
 import { createDatabase } from '../client';
-import { pinDeviceQuery, pinDevicesQuery } from './vault-pin';
+import { attemptPinUnlock, pinDeviceQuery, pinDevicesQuery } from './vault-pin';
 
 /**
  * The two collaborators the reset reaches that have nothing to do with PINs.
@@ -116,6 +116,124 @@ describe('what the repository does with a failed attempt', () => {
       expect(outcome.attempts, String(attempts)).toBeLessThanOrEqual(DEVICE_PIN_MAX_ATTEMPTS);
       expect(outcome.attempts, String(attempts)).toBeGreaterThanOrEqual(0);
     }
+  });
+});
+
+/**
+ * A stand-in that answers one row and records what was written to it.
+ *
+ * Narrower than `recordingExecutor` below on purpose: what these tests need to
+ * see is the *payload* of the update, not which table it addressed.
+ */
+function pepperRowExecutor(row: {
+  pepper: Uint8Array;
+  verifierHash: Uint8Array;
+  attempts: number;
+}) {
+  const writes: Record<string, unknown>[] = [];
+  const deletes: number[] = [];
+
+  const selectChain = {
+    from: () => selectChain,
+    where: () => selectChain,
+    limit: () => selectChain,
+    for: () => selectChain,
+    then: (resolve: (value: unknown[]) => unknown) => Promise.resolve([row]).then(resolve),
+  };
+
+  const exec = {
+    transaction: (run: (tx: unknown) => Promise<unknown>) => run(exec),
+    select: () => selectChain,
+    update: () => ({
+      set: (payload: Record<string, unknown>) => {
+        writes.push(payload);
+        return { where: () => Promise.resolve({ count: 1 }) };
+      },
+    }),
+    delete: () => ({
+      where: () => {
+        deletes.push(1);
+        return Promise.resolve({ count: 1 });
+      },
+    }),
+  };
+
+  return { exec, writes, deletes };
+}
+
+describe('what a successful attempt does to the pepper it just released', () => {
+  const stored = new Uint8Array(32).fill(1);
+  const replacement = new Uint8Array(32).fill(2);
+
+  it('hands back the old pepper and stores the new one in the same statement', async () => {
+    // A pepper is released to the client on every unlock, so one that never
+    // changes only has to be intercepted once — and the pair it forms with a
+    // copy of that browser's `localStorage` needs no server afterwards, which is
+    // what makes revocation unable to take it back. Rotating narrows the
+    // exposure of any single pepper to one unlock.
+    const { exec, writes } = pepperRowExecutor({
+      pepper: stored,
+      verifierHash: new Uint8Array(32).fill(9),
+      attempts: 3,
+    });
+
+    const outcome = await attemptPinUnlock(exec as never, {
+      userId: USER_ID,
+      deviceId: DEVICE_ID,
+      matches: () => Promise.resolve(true),
+      nextPepper: replacement,
+    });
+
+    // The wrap on that browser was built under the *old* one, so that is what
+    // has to come back — it is the last time this value opens anything.
+    expect(outcome).toEqual({ status: 'ok', pepper: stored });
+
+    // One write, carrying the rotation alongside the reset. A second statement
+    // would leave a window in which the released pepper and the stored one
+    // disagree.
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ attempts: 0, pepper: replacement });
+    expect(writes[0]?.['lastUsedAt']).toBeInstanceOf(Date);
+  });
+
+  it('leaves the stored pepper alone on a miss', async () => {
+    // A wrong PIN spends an attempt and nothing else. Rotating here would
+    // destroy a working enrolment on a typo.
+    const { exec, writes } = pepperRowExecutor({
+      pepper: stored,
+      verifierHash: new Uint8Array(32).fill(9),
+      attempts: 1,
+    });
+
+    const outcome = await attemptPinUnlock(exec as never, {
+      userId: USER_ID,
+      deviceId: DEVICE_ID,
+      matches: () => Promise.resolve(false),
+      nextPepper: replacement,
+    });
+
+    expect(outcome).toEqual({ status: 'wrong', attemptsRemaining: 3 });
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).not.toHaveProperty('pepper');
+  });
+
+  it('deletes rather than rotates on the fifth failure', async () => {
+    const { exec, writes, deletes } = pepperRowExecutor({
+      pepper: stored,
+      verifierHash: new Uint8Array(32).fill(9),
+      attempts: DEVICE_PIN_MAX_ATTEMPTS - 1,
+    });
+
+    const outcome = await attemptPinUnlock(exec as never, {
+      userId: USER_ID,
+      deviceId: DEVICE_ID,
+      matches: () => Promise.resolve(false),
+      nextPepper: replacement,
+    });
+
+    expect(outcome).toEqual({ status: 'burned' });
+    expect(deletes).toHaveLength(1);
+    expect(writes).toHaveLength(0);
   });
 });
 

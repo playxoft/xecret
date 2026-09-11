@@ -59,19 +59,28 @@ afterEach(() => {
 });
 
 describe('deciding what to do about a message', () => {
-  const unlocked = { held: true, pendingNonce: null };
-  const waiting = { held: false, pendingNonce: 'nonce-1' };
+  const unlocked = { held: true, pendingNonce: null, userId: 'user-1' };
+  const waiting = { held: false, pendingNonce: 'nonce-1', userId: 'user-1' };
+  const asking = { type: 'handoff-request', nonce: 'n', userId: 'user-1' };
 
   it('answers a handoff request only when it has something to answer with', () => {
-    expect(decideVaultChannelAction({ type: 'handoff-request', nonce: 'n' }, unlocked)).toEqual({
-      kind: 'offer',
-      nonce: 'n',
-    });
+    expect(decideVaultChannelAction(asking, unlocked)).toEqual({ kind: 'offer', nonce: 'n' });
     // A locked tab answering would send an empty offer the requester would have
     // to tell apart from silence.
-    expect(decideVaultChannelAction({ type: 'handoff-request', nonce: 'n' }, waiting)).toEqual({
-      kind: 'ignore',
-    });
+    expect(decideVaultChannelAction(asking, waiting)).toEqual({ kind: 'ignore' });
+  });
+
+  it('refuses to build an offer for a request that names another account', () => {
+    // The keys on this tab belong to exactly one account, and the receiving
+    // side's own account check is the *requester's* — which is not the party to
+    // rely on when the thing being sent is a User Key. Without this, any script
+    // on the origin could compose three fields and be handed the whole set.
+    expect(
+      decideVaultChannelAction(
+        { type: 'handoff-request', nonce: 'n', userId: 'somebody-else' },
+        unlocked,
+      ),
+    ).toEqual({ kind: 'ignore' });
   });
 
   it('adopts only the offer it asked for', () => {
@@ -88,7 +97,7 @@ describe('deciding what to do about a message', () => {
     expect(
       decideVaultChannelAction(
         { type: 'handoff-offer', nonce: 'nonce-1', blob: 'b' },
-        { held: false, pendingNonce: null },
+        { held: false, pendingNonce: null, userId: 'user-1' },
       ),
     ).toEqual({ kind: 'ignore' });
 
@@ -97,8 +106,26 @@ describe('deciding what to do about a message', () => {
     expect(
       decideVaultChannelAction(
         { type: 'handoff-offer', nonce: 'nonce-1', blob: 'b' },
-        { held: true, pendingNonce: 'nonce-1' },
+        { held: true, pendingNonce: 'nonce-1', userId: 'user-1' },
       ),
+    ).toEqual({ kind: 'ignore' });
+  });
+
+  it('asks again when another tab says it has just been unlocked', () => {
+    // The gap this closes: a request posted at install is heard only by tabs
+    // that are unlocked at that instant, so a second tab opened before the first
+    // was unlocked heard silence and then nothing, for ever.
+    expect(decideVaultChannelAction({ type: 'unlocked', userId: 'user-1' }, waiting)).toEqual({
+      kind: 'ask',
+    });
+
+    // A tab that already has keys has nothing to ask for, and one signed in as
+    // somebody else has nothing to ask *this* answerer for.
+    expect(decideVaultChannelAction({ type: 'unlocked', userId: 'user-1' }, unlocked)).toEqual({
+      kind: 'ignore',
+    });
+    expect(
+      decideVaultChannelAction({ type: 'unlocked', userId: 'somebody-else' }, waiting),
     ).toEqual({ kind: 'ignore' });
   });
 
@@ -122,6 +149,11 @@ describe('deciding what to do about a message', () => {
       { type: 'unknown' },
       { type: 'handoff-request' },
       { type: 'handoff-request', nonce: '' },
+      // No account named at all: the shape a build that predates the check
+      // sends, and one an attacker's script sends by omission.
+      { type: 'handoff-request', nonce: 'n' },
+      { type: 'unlocked' },
+      { type: 'unlocked', userId: 'somebody-else' },
       { type: 'handoff-offer', nonce: 'nonce-1' },
       { type: 'handoff-offer', nonce: 'nonce-1', blob: '' },
     ]) {
@@ -160,11 +192,22 @@ describe('a tab on the channel', () => {
     holdVaultKeys(material(5));
     const channel = installVaultChannel({ userId: 'user-1', port, request: false });
 
-    port.deliver({ type: 'handoff-request', nonce: 'nonce-1' });
+    port.deliver({ type: 'handoff-request', nonce: 'nonce-1', userId: 'user-1' });
 
     expect(port.sent).toEqual([
       { type: 'handoff-offer', nonce: 'nonce-1', blob: expect.any(String) },
     ]);
+    channel.close();
+  });
+
+  it('does not hand the keys to a request naming a different account', () => {
+    const port = fakePort();
+    holdVaultKeys(material(5));
+    const channel = installVaultChannel({ userId: 'user-1', port, request: false });
+
+    port.deliver({ type: 'handoff-request', nonce: 'nonce-1', userId: 'somebody-else' });
+
+    expect(port.sent).toHaveLength(0);
     channel.close();
   });
 
@@ -210,13 +253,55 @@ describe('a tab on the channel', () => {
     channel.close();
   });
 
-  it('does not announce an unlock', () => {
+  it('announces an unlock, so a tab that heard silence can ask again', () => {
     const port = fakePort();
     const channel = installVaultChannel({ userId: 'user-1', port, request: false });
 
     holdVaultKeys(material(5));
 
-    // Announcing it would be announcing that this tab is holding a User Key.
+    // No material travels with it, and nothing it says is a secret from a
+    // script on this origin — which can read the key store directly.
+    expect(port.sent).toEqual([{ type: 'unlocked', userId: 'user-1' }]);
+    channel.close();
+  });
+
+  it('announces it once, not on every subsequent hold', () => {
+    // Only the not-held → held edge. A passphrase change supersedes its own
+    // keys through `holdVaultKeys`, and that is not news to anybody.
+    const port = fakePort();
+    const channel = installVaultChannel({ userId: 'user-1', port, request: false });
+
+    holdVaultKeys(material(5));
+    holdVaultKeys(material(7));
+
+    expect(port.sent).toHaveLength(1);
+    channel.close();
+  });
+
+  it('asks again when it hears that another tab has keys', () => {
+    const port = fakePort();
+    const channel = installVaultChannel({ userId: 'user-1', port });
+    const first = (port.sent[0] as { nonce: string }).nonce;
+
+    port.deliver({ type: 'unlocked', userId: 'user-1' });
+
+    expect(port.sent).toHaveLength(2);
+    expect(port.sent[1]?.type).toBe('handoff-request');
+    // A fresh nonce, so a stale offer to the first request is refused by the
+    // same check that refuses an offer meant for another tab.
+    expect((port.sent[1] as { nonce: string }).nonce).not.toBe(first);
+    channel.close();
+  });
+
+  it('still does not ask when it was told not to', () => {
+    // The lock-screen provider. Its session is one the server has already
+    // refused, so a handoff into it would put live keys behind a lock screen —
+    // at install or at any point afterwards.
+    const port = fakePort();
+    const channel = installVaultChannel({ userId: 'user-1', port, request: false });
+
+    port.deliver({ type: 'unlocked', userId: 'user-1' });
+
     expect(port.sent).toHaveLength(0);
     channel.close();
   });

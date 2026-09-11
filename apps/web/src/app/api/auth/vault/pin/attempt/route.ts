@@ -28,7 +28,8 @@ import {
  *    `attemptPinUnlock`. That one is the actual defence, and for a PIN it is the
  *    *only* defence: 10^6 candidates means the guesses have to be finite rather
  *    than merely slow. At five the pepper row is deleted, the browser's wrap
- *    becomes permanently unopenable, and the passphrase is the only way in.
+ *    stops being openable by anybody who never saw its pepper, and the
+ *    passphrase is the only way in.
  *
  * Neither substitutes for the other. The first protects the service; the second
  * protects the account — and unlike an isolate-local counter, it survives a

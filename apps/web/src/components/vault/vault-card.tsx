@@ -30,6 +30,7 @@ import {
 import { kitConfirmationProblem, promptedCodeIndex } from './emergency-kit';
 import { passphraseProblem } from './passphrase';
 import { PassphraseFields, usePassphraseStrength } from './passphrase-fields';
+import { withVaultKeys } from './key-store';
 import { RecoveryKitPanel } from './recovery-kit-panel';
 import { changePassphrase, regenerateRecoveryCodes } from './vault-client';
 import { useVault } from './vault-keys';
@@ -131,7 +132,9 @@ function ChangePassphraseSection({ user }: VaultCardProps) {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (busy || vault.keys === null || vault.material === null) return;
+    const keys = vault.keys;
+    const material = vault.material;
+    if (busy || keys === null || material === null) return;
 
     const failure = passphraseProblem({ passphrase, confirm, score: strength?.score ?? null });
     if (failure !== null) {
@@ -146,13 +149,19 @@ function ChangePassphraseSection({ user }: VaultCardProps) {
     setBusy(true);
     setProblem(null);
     try {
-      const result = await changePassphrase({
-        userId: user.id,
-        userKey: vault.keys.userKey,
-        material: vault.material,
-        currentPassphrase: current,
-        newPassphrase: passphrase,
-      });
+      // Under a lease: this re-derives the wrap key with Argon2id and then
+      // re-encrypts the User Key, holding that array across both. An idle timer
+      // firing between them would zeroize it in place and store a wrap of
+      // thirty-two zero bytes as a success. See `key-store.ts`.
+      const result = await withVaultKeys(keys, () =>
+        changePassphrase({
+          userId: user.id,
+          userKey: keys.userKey,
+          material: material,
+          currentPassphrase: current,
+          newPassphrase: passphrase,
+        }),
+      );
       // The wrap this page was holding is now superseded; a client still using
       // it would fail its next unlock against a row that has moved on.
       vault.adopt({ vault: result.vault, material: result.material });
@@ -246,7 +255,9 @@ function RecoveryCodesSection({ user }: VaultCardProps) {
 
   async function regenerate(event: React.FormEvent) {
     event.preventDefault();
-    if (busy || vault.keys === null || vault.material === null) return;
+    const keys = vault.keys;
+    const material = vault.material;
+    if (busy || keys === null || material === null) return;
     if (passphrase.length === 0) {
       setProblem('Type your passphrase to confirm this is you.');
       return;
@@ -255,12 +266,15 @@ function RecoveryCodesSection({ user }: VaultCardProps) {
     setBusy(true);
     setProblem(null);
     try {
-      const result = await regenerateRecoveryCodes({
-        userId: user.id,
-        userKey: vault.keys.userKey,
-        material: vault.material,
-        passphrase,
-      });
+      // Under a lease, for the reason the passphrase change above is.
+      const result = await withVaultKeys(keys, () =>
+        regenerateRecoveryCodes({
+          userId: user.id,
+          userKey: keys.userKey,
+          material: material,
+          passphrase,
+        }),
+      );
 
       setPassphrase('');
       setIssued(result.codes);
@@ -270,7 +284,7 @@ function RecoveryCodesSection({ user }: VaultCardProps) {
       setTypedCode('');
       setShowKitProblem(false);
       vault.adopt({
-        material: { ...vault.material, recoveryCodesRemaining: result.remaining },
+        material: { ...material, recoveryCodesRemaining: result.remaining },
       });
     } catch (cause) {
       setProblem(errorMessage(cause));

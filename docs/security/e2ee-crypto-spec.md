@@ -1180,18 +1180,33 @@ pinKey      = Argon2id(pin, salt, …)              // salt from localStorage
 pinVerifier = HKDF(pinKey, "xecret.v2.pin-verifier")
 
 → server: { deviceId, pinVerifier }
-    SHA-256(pinVerifier) == stored ?  attempts := 0, lastUsedAt := now, return pepper
+    SHA-256(pinVerifier) == stored ?  attempts := 0, lastUsedAt := now,
+                                      nextPepper := 32 random bytes,
+                                      return { pepper, nextPepper },
+                                      pepper := nextPepper      // same transaction
                             else   :  attempts := attempts + 1
                                       if attempts == 5: DELETE the row
-← client: pepper, or a countable refusal
+← client: { pepper, nextPepper }, or a countable refusal
 
-UK = open(blob) under HKDF(pinKey ‖ pepper, "xecret.v2.pin-wrap"), AAD as above
+UK   = open(blob) under HKDF(pinKey ‖ pepper, "xecret.v2.pin-wrap"), AAD as above
+blob := xk2.gcm of UK under HKDF(pinKey ‖ nextPepper, "xecret.v2.pin-wrap")
 ```
 
+The re-wrap is not optional and it is not deferred: the pepper the browser just used is already
+dead on the row, so the blob beside it is dead too until it is replaced. The client holds the UK
+at exactly that moment, which is the only moment it can do this. If the write fails, the client
+MUST erase the record rather than keep it — a wrap nothing can open is worse than no wrap,
+because it goes on offering a PIN box that can only fail. `salt`, `deviceId` and the verifier are
+untouched, so the same six digits keep working and the enrolment keeps its identity.
+
 **The five-attempt limit is the entire security budget**, and it is spent rather than paused. At
-five the pepper row is deleted, which makes the blob in that browser permanently unopenable — by
-anyone, including whoever knows the correct PIN — and leaves the master passphrase as the only way
-in. A timed lockout would be the wrong control here: it implies the credential becomes usable
+five the pepper row is deleted, which leaves the blob in that browser unopenable by anyone who
+never saw the pepper it was built under — the holder of the correct PIN included — and leaves the
+master passphrase as the only way in. The qualification is load-bearing: a pepper is released to
+the client on every successful unlock, so the server MUST replace it in the same transaction and
+the client MUST re-wrap the User Key under the replacement before reporting success. Without that
+rotation, a single interception of a pepper, paired with a copy of the browser's `localStorage`,
+would survive both the five-attempt burn and an explicit revocation. A timed lockout would be the wrong control here: it implies the credential becomes usable
 again, and "wait an hour and keep guessing" is not a budget for six digits. Compare §8, where the
 escalating backoff guards a credential with real entropy and only has to make guessing slow.
 

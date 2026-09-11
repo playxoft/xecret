@@ -333,6 +333,31 @@ describe('POST /api/auth/vault/pin/attempt — one guess', () => {
     expect(repository.markSessionUnlocked).toHaveBeenCalledOnce();
   });
 
+  it('spends the released pepper: a fresh one goes to the row and to the client', async () => {
+    // A pepper crosses the wire on every unlock. Without rotation, one
+    // interception plus a copy of that browser's `localStorage` would open the
+    // User Key for as long as the enrolment lived — and would survive a
+    // revocation, because the pair no longer needs this server.
+    const pepper = randomBytes(32);
+    outcome({ status: 'ok', pepper });
+
+    const response = await attempt.POST(
+      attemptRequest({ deviceId: DEVICE_ID, verifier: verifier() }),
+    );
+
+    const payload = (await body(response))['pin'] as { pepper: string; nextPepper: string };
+    expect(payload.nextPepper).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(payload.nextPepper).not.toBe(payload.pepper);
+
+    // The same 32 bytes the client is told to re-wrap under are the ones the
+    // repository was told to store, in the transaction that released the old.
+    const handed = repository.attemptPinUnlock.mock.calls[0]?.[1] as {
+      nextPepper: Uint8Array<ArrayBuffer>;
+    };
+    expect(handed.nextPepper).toHaveLength(32);
+    expect(toBase64Url(handed.nextPepper)).toBe(payload.nextPepper);
+  });
+
   it('is reachable from a locked session — every caller of it is at a lock screen', async () => {
     actor.isUnlocked.mockReturnValue(false);
     outcome({ status: 'ok', pepper: randomBytes(32) });
