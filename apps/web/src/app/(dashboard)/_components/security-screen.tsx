@@ -188,16 +188,21 @@ function PasswordCard() {
  * How each offered interval is described.
  *
  * Written out rather than computed from the number, because the last one is not
- * a duration at heart: twelve hours is what the *server* will honour, while what
- * actually ends that unlock in practice is the tab closing — the key material
- * lives in `sessionStorage` and dies with it. "After 720 minutes idle" would be
- * a true sentence about the wrong mechanism.
+ * a duration at heart: what actually ends that unlock in practice is the *tab*
+ * closing, since the key material lives in `sessionStorage` and dies with it.
+ * "After 720 minutes idle" would be a true sentence about the wrong mechanism.
+ *
+ * It says "tab" rather than "browser" because `sessionStorage` is per tab, and
+ * it names the eight hours because that is the ceiling the server enforces
+ * whatever this preference says — a caption that implied an unlock lasting as
+ * long as the window stayed open would be promising something the gate does not
+ * honour. The sentence under the picker explains the same thing at length.
  */
 const AUTO_LOCK_LABELS: Record<number, string> = {
   15: 'After 15 minutes idle',
   60: 'After 1 hour idle',
   240: 'After 4 hours idle',
-  720: 'Until this browser closes',
+  720: 'Until this tab closes (up to 8 hours)',
 };
 
 /**
@@ -313,9 +318,10 @@ function LockCard() {
         </Field>
 
         {selected === 720 ? (
-          <Alert tone="info" title="“Until this browser closes” has a ceiling">
-            Closing the tab clears the keys, and so does eight hours — the longest any single unlock
-            lasts, however busy the session is.
+          <Alert tone="info" title="“Until this tab closes” has a ceiling">
+            Each tab holds its own copy of your keys, so closing <em>this</em> tab clears them here
+            — other tabs you have open keep theirs until they close too. Eight hours ends every
+            unlock regardless, however busy the session is.
           </Alert>
         ) : null}
 

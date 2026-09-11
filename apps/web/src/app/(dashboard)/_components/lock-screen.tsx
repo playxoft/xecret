@@ -28,10 +28,14 @@ import type { SessionUser, VaultStatus } from './session';
  *
  * ── What this screen must never do ──
  * It must not offer "remember this device", because a lock you can permanently
- * dismiss is not a lock. It must not show how many attempts remain — that would
- * tell somebody guessing exactly how much room they have left, and the person
- * who knows their own passphrase does not need a countdown. And it must always
- * offer a way out, which is the `Footer` below.
+ * dismiss is not a lock. It must not show how many *passphrase* attempts remain
+ * — that would tell somebody guessing exactly how much room they have left, and
+ * the person who knows their own passphrase does not need a countdown. The
+ * device-PIN form is the one exception, argued in full in
+ * `components/vault/pin-unlock.tsx`: five is that credential's whole budget, so
+ * the number is the difference between "try again" and "you are about to lose
+ * this". And this screen must always offer a way out, which is the `Footer`
+ * below.
  */
 
 export interface LockScreenProps {

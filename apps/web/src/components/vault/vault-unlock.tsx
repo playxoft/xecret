@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { fromBase64Url, zeroize } from '@xecret/core/crypto/client';
 import type { Bytes, RecoveryCode } from '@xecret/core/crypto/client';
 
@@ -58,11 +58,14 @@ import { useVault } from './vault-keys';
  *
  * ── What this screen must never do ──
  * It must not offer "remember this device": a lock you can permanently dismiss
- * is not a lock. It must not show how many attempts remain — that tells somebody
- * guessing exactly how much room they have, and the person who knows their own
- * passphrase has no use for a countdown. And it must always offer a way out,
- * which is why sign-out is rendered by every caller and why the recovery flow
- * below is reachable in one click rather than buried.
+ * is not a lock. It must not show how many *passphrase* attempts remain — that
+ * tells somebody guessing exactly how much room they have, and the person who
+ * knows their own passphrase has no use for a countdown. The PIN form below is a
+ * deliberate exception and not a drift: five is that credential's entire budget
+ * rather than a sample of a search space, and the guesser is holding the device
+ * anyway — `pin-unlock.tsx` makes the whole argument. And this screen must
+ * always offer a way out, which is why sign-out is rendered by every caller and
+ * why the recovery flow below is reachable in one click rather than buried.
  *
  * ── The order of the offers ──
  * Passkey first when one is enrolled, then the passphrase, per plan §4.2 —
@@ -248,6 +251,17 @@ function UnlockForm({
   const pinDeviceId = useDevicePinId();
   const [pinGone, setPinGone] = useState<string | null>(null);
   const pinOffered = pinDeviceId !== null;
+
+  /**
+   * The passphrase field, so the caret can be handed back to it.
+   *
+   * Needed for exactly one moment: the PIN form withdrawing itself after a burn
+   * or a revocation. Focus is inside a subtree that is about to unmount, and a
+   * browser given no instruction drops it on `document.body` — which leaves
+   * somebody who has just been told their PIN is gone with a keyboard that types
+   * nowhere, on a screen whose only remaining control is the field below.
+   */
+  const passphraseRef = useRef<HTMLInputElement>(null);
 
   // Read once. It cannot change while this screen is mounted, and re-reading it
   // per render would make the button flicker on a browser that answers slowly.
@@ -444,7 +458,12 @@ function UnlockForm({
             // render. All this has to add is the sentence explaining why —
             // withdrawing rather than disabling, the same call the passkey path
             // makes, because a permanently failing entry box is worse than none.
-            onGone={setPinGone}
+            onGone={(message) => {
+              setPinGone(message);
+              // Synchronously, while this subtree is still mounted. The next
+              // render withdraws it — `useDevicePinId` already answers `null`.
+              passphraseRef.current?.focus();
+            }}
             disabled={busy || passkeyBusy}
           />
 
@@ -481,11 +500,19 @@ function UnlockForm({
 
         <Field label="Master passphrase">
           <Input
+            ref={passphraseRef}
             type="password"
             value={passphrase}
             onChange={(event) => setPassphrase(event.target.value)}
             autoComplete="current-password"
-            autoFocus
+            // Only when it is the first thing to reach for. The PIN box above
+            // autofocuses too and is rendered later in the tree, so two
+            // unconditional `autoFocus` attributes meant the passphrase won the
+            // caret off a form somebody was about to type six digits into. The
+            // passkey button is not a text field, but it is the primary action
+            // when it is offered, and stealing focus past it is the same
+            // mistake in the other direction.
+            autoFocus={!pinOffered && !passkeyOffered}
             spellCheck={false}
           />
         </Field>

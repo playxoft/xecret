@@ -33,15 +33,24 @@
 -- mapped to the nearest option the new menu actually offers, so that the settings
 -- page can render every stored value as one of its own items:
 --
---   0  (never)  → NULL   the only value with no honest equivalent; it becomes
---                        "no preference", which is the default hour
---   5, 10, 20   → 15     the tightest option there is
---   30, 45, 60  → 60
+--   0  (never)    → NULL   the only value with no honest equivalent; it becomes
+--                          "no preference", which is the default hour
+--   5, 10, 20, 30 → 15     everything closer to a quarter of an hour than to one
+--   45            → 60
+--   60            → 60     (already a menu item; the WHERE below skips it)
+--
+-- "Nearest" is measured, not eyeballed: 37 is the midpoint of 15 and 60, so the
+-- boundary sits there. That is what puts 30 with 15 rather than with 60 — it is
+-- fifteen minutes from one and thirty from the other — and it is the same answer
+-- `nearestAutoLockOption` gives, which is what the settings picker will render
+-- the row as. The two disagreeing would mean a page that highlights one interval
+-- while the gate enforces another.
 --
 -- Anything outside the old menu — impossible under the old CHECK, but a
 -- hand-edited row is not impossible — is clamped into range instead of being
 -- rejected, because failing a migration over one row is worse than storing the
--- nearest legal value.
+-- nearest legal value. Tightening is the safe direction to round in, which is
+-- the other reason the boundary is a midpoint rather than a ceiling.
 --
 -- ── Order ──
 -- The CHECK is dropped before the values move, because the intermediate state
@@ -61,7 +70,7 @@ ALTER TABLE user_keys ALTER COLUMN auto_lock_minutes DROP NOT NULL;
 UPDATE user_keys
 	SET auto_lock_minutes = CASE
 		WHEN auto_lock_minutes = 0 THEN NULL
-		WHEN auto_lock_minutes <= 20 THEN 15
+		WHEN auto_lock_minutes <= 37 THEN 15
 		WHEN auto_lock_minutes <= 720 THEN greatest(auto_lock_minutes, 60)
 		ELSE 720
 	END
