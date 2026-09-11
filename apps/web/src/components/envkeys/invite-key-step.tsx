@@ -276,7 +276,7 @@ export function InviteKeyStep({
             </p>
           </div>
 
-          <VaultProvider>
+          <VaultProvider userId={vaultGate.user.id}>
             {vaultGate.configured ? (
               <VaultUnlock user={vaultGate.user} onUnlocked={vaultGate.onChanged} />
             ) : (

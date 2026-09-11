@@ -165,7 +165,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     // remount either way, and the keys survive it because they live in a module
     // singleton rather than in this tree.
     return (
-      <VaultProvider>
+      <VaultProvider userId={user.id}>
         <LockScreen status={vault} user={user} onUnlocked={session.reload} />
       </VaultProvider>
     );
@@ -235,7 +235,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
         createOrganization: openCreateOrganization,
       }}
     >
-      <VaultProvider>
+      <VaultProvider userId={user.id}>
         <AppShell
           nav={nav}
           organizations={shellOrganizations}

@@ -4,9 +4,13 @@ import {
   holdVaultKeys,
   readVaultKeys,
   releaseVaultKeys,
+  restoreVaultKeys,
+  setMirrorStorage,
   subscribeVaultKeys,
   vaultKeysHeld,
 } from './key-store';
+import { VAULT_SESSION_MIRROR_KEY } from './session-mirror';
+import type { MirrorStorage } from './session-mirror';
 
 /**
  * The lock's actual semantics.
@@ -30,8 +34,24 @@ function material(fill: number) {
   };
 }
 
+/** A `sessionStorage` that can be inspected. These tests run without a DOM. */
+function fakeStorage(): MirrorStorage & { entries: Map<string, string> } {
+  const entries = new Map<string, string>();
+  return {
+    entries,
+    getItem: (key) => entries.get(key) ?? null,
+    setItem: (key, value) => {
+      entries.set(key, value);
+    },
+    removeItem: (key) => {
+      entries.delete(key);
+    },
+  };
+}
+
 afterEach(() => {
   releaseVaultKeys();
+  setMirrorStorage(null);
 });
 
 describe('holding keys', () => {
@@ -105,6 +125,91 @@ describe('replacing keys', () => {
 
     expect([...first.userKey]).toEqual(Array<number>(32).fill(0));
     expect(readVaultKeys()?.userKey[0]).toBe(9);
+  });
+});
+
+describe('the session mirror', () => {
+  it('survives a reload: the same bytes come back, in new arrays', () => {
+    const storage = fakeStorage();
+    setMirrorStorage(storage);
+
+    const keys = material(11);
+    holdVaultKeys(keys);
+    const blob = storage.entries.get(VAULT_SESSION_MIRROR_KEY) as string;
+    expect(blob).toBeTypeOf('string');
+
+    // What a reload really is, from this module's point of view: the singleton
+    // is gone and the storage is not. (The lock below clears the mirror, which
+    // closing a tab does not, so the blob is put back.)
+    releaseVaultKeys();
+    storage.entries.set(VAULT_SESSION_MIRROR_KEY, blob);
+
+    expect(restoreVaultKeys('user-1')).toBe(true);
+    expect(readVaultKeys()?.userKey[0]).toBe(11);
+    // Not the caller's arrays, which the lock above already overwrote.
+    expect(readVaultKeys()?.userKey).not.toBe(keys.userKey);
+  });
+
+  it('restores nothing when there is nothing mirrored', () => {
+    setMirrorStorage(fakeStorage());
+
+    expect(restoreVaultKeys('user-1')).toBe(false);
+    expect(vaultKeysHeld()).toBe(false);
+  });
+
+  it('refuses a mirror belonging to another account', () => {
+    // An expired session is a redirect to sign-in with no lock in between, so
+    // the blob outlives its own account inside one tab.
+    const storage = fakeStorage();
+    setMirrorStorage(storage);
+    holdVaultKeys(material(11));
+    const blob = storage.entries.get(VAULT_SESSION_MIRROR_KEY) as string;
+
+    releaseVaultKeys();
+    storage.entries.set(VAULT_SESSION_MIRROR_KEY, blob);
+
+    expect(restoreVaultKeys('somebody-else')).toBe(false);
+    expect(vaultKeysHeld()).toBe(false);
+  });
+
+  it('leaves a tab that already holds keys alone', () => {
+    // A tab that is unlocked has newer material than anything in storage — an
+    // unlock that landed between the reload and this call, say.
+    const storage = fakeStorage();
+    setMirrorStorage(storage);
+    holdVaultKeys(material(11));
+    const current = readVaultKeys();
+
+    expect(restoreVaultKeys('user-1')).toBe(true);
+    expect(readVaultKeys()).toBe(current);
+  });
+
+  it('is cleared by a lock, so the next reload lands on the lock screen', () => {
+    const storage = fakeStorage();
+    setMirrorStorage(storage);
+    holdVaultKeys(material(11));
+
+    releaseVaultKeys();
+
+    expect(storage.entries.size).toBe(0);
+    expect(restoreVaultKeys('user-1')).toBe(false);
+  });
+
+  it('is cleared by a lock even when this tab was holding nothing', () => {
+    // A reloaded tab that has not restored yet holds no keys and still has a
+    // mirror. The idle timer firing there, or a lock broadcast from another
+    // tab, has to remove it — otherwise the next reload adopts it.
+    const storage = fakeStorage();
+    setMirrorStorage(storage);
+    holdVaultKeys(material(11));
+    const blob = storage.entries.get(VAULT_SESSION_MIRROR_KEY) as string;
+    releaseVaultKeys();
+    storage.entries.set(VAULT_SESSION_MIRROR_KEY, blob);
+
+    expect(vaultKeysHeld()).toBe(false);
+    releaseVaultKeys();
+
+    expect(storage.entries.size).toBe(0);
   });
 });
 

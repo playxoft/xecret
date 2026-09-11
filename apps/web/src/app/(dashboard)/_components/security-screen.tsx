@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 
-import { AUTO_LOCK_MINUTES_OPTIONS } from '@xecret/core/auth';
+import { AUTO_LOCK_MINUTES_OPTIONS, nearestAutoLockOption } from '@xecret/core/auth';
 import { api, errorMessage } from '@/lib/api';
 import { formatAbsoluteTime, formatRelativeTime, pluralize, toIsoString } from '@/lib/format';
 import {
@@ -25,7 +25,7 @@ import {
   Skeleton,
   useToast,
 } from '@/components/ui';
-import { VaultCard } from '@/components/vault';
+import { setAutoLockMinutes, VaultCard } from '@/components/vault';
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState } from './resource-states';
@@ -178,26 +178,49 @@ function PasswordCard() {
   );
 }
 
+/**
+ * How each offered interval is described.
+ *
+ * Written out rather than computed from the number, because the last one is not
+ * a duration at heart: twelve hours is what the *server* will honour, while what
+ * actually ends that unlock in practice is the tab closing — the key material
+ * lives in `sessionStorage` and dies with it. "After 720 minutes idle" would be
+ * a true sentence about the wrong mechanism.
+ */
+const AUTO_LOCK_LABELS: Record<number, string> = {
+  15: 'After 15 minutes idle',
+  60: 'After 1 hour idle',
+  240: 'After 4 hours idle',
+  720: 'Until this browser closes',
+};
+
 function LockCard() {
   const { vault, lock, refresh } = useSession();
   const { toast } = useToast();
   const [lockingEverywhere, setLockingEverywhere] = useState(false);
   const [savingAutoLock, setSavingAutoLock] = useState(false);
 
+  // The item to highlight, not the raw number. A row remapped by migration 0015
+  // — or, in principle, a hand-crafted PATCH — is a valid preference that names
+  // no menu item, and a `Select` handed one of those renders blank, which reads
+  // as "auto-lock is off" on the one screen where that must never be a guess.
+  const selected = nearestAutoLockOption(vault.autoLockMinutes);
+
   async function changeAutoLock(minutes: number) {
-    if (minutes === vault.autoLockMinutes || savingAutoLock) return;
+    if (minutes === selected || savingAutoLock) return;
     setSavingAutoLock(true);
     try {
-      await api.patch(apiPath.vault(), { autoLockMinutes: minutes });
+      // Through the vault client rather than a bare PATCH from here: that module
+      // is the one place that knows this endpoint's shape, and a second caller
+      // spelling the body out by hand is how the two come to disagree.
+      await setAutoLockMinutes(minutes);
       toast({
         variant: 'success',
-        title:
-          minutes === 0
-            ? 'Auto-lock turned off'
-            : `Auto-lock set to ${pluralize(minutes, 'minute')}`,
+        title: `Auto-lock set to ${(AUTO_LOCK_LABELS[minutes] ?? `${pluralize(minutes, 'minute')} idle`).toLowerCase()}`,
       });
-      // The idle timer runs in the shell off the session's copy of this value;
-      // re-reading is what makes the new interval take effect immediately.
+      // The idle timer runs in the shell off the session's copy of this value,
+      // and so does the server's own unlock window; re-reading is what makes the
+      // new interval take effect immediately rather than at the next navigation.
       refresh();
     } catch (cause) {
       toast({
@@ -233,7 +256,7 @@ function LockCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Lock</CardTitle>
+        <CardTitle>Unlock &amp; auto-lock</CardTitle>
         <CardDescription>
           Locking asks for your master passphrase again without signing anything out — the control
           for stepping away from a machine, or for a device you cannot reach right now.
@@ -251,10 +274,10 @@ function LockCard() {
 
         <Field
           label="Auto-lock"
-          hint="Locks the dashboard after this long without activity, on every device you use. Your passphrase opens it again."
+          hint="Locks your vault after this long without activity, on every device you use — the browser counts the idle time and the server enforces the same allowance. Your passphrase opens it again."
         >
           <Select
-            value={String(vault.autoLockMinutes)}
+            value={String(selected)}
             onValueChange={(next) => void changeAutoLock(Number(next))}
             disabled={savingAutoLock}
           >
@@ -262,18 +285,23 @@ function LockCard() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {/* Intervals first, "Never" last — the menu reads as an
-                  escalation ending at the option that opts out. */}
-              {[...AUTO_LOCK_MINUTES_OPTIONS.filter((minutes) => minutes !== 0), 0].map(
-                (minutes) => (
-                  <SelectItem key={minutes} value={String(minutes)}>
-                    {minutes === 0 ? 'Never' : `After ${pluralize(minutes, 'minute')} idle`}
-                  </SelectItem>
-                ),
-              )}
+              {/* Tightest first: the menu reads as a relaxation, ending at the
+                  option that gives up the idle timer and relies on the tab. */}
+              {AUTO_LOCK_MINUTES_OPTIONS.map((minutes) => (
+                <SelectItem key={minutes} value={String(minutes)}>
+                  {AUTO_LOCK_LABELS[minutes] ?? `After ${pluralize(minutes, 'minute')} idle`}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </Field>
+
+        {selected === 720 ? (
+          <Alert tone="info" title="“Until this browser closes” has a ceiling">
+            Closing the tab clears the keys, and so does eight hours — the longest any single unlock
+            lasts, however busy the session is.
+          </Alert>
+        ) : null}
       </CardContent>
     </Card>
   );

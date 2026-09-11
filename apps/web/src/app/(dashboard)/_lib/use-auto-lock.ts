@@ -6,13 +6,24 @@ import { useEffect, useRef } from 'react';
  * Locks the session after a period of idleness.
  *
  * The timer lives in the client because idleness is a fact only the client can
- * observe — the server sees requests, and reading a long secret list makes no
- * requests at all. What the timer *triggers* is the real, server-side lock:
- * the same `POST /api/auth/vault/lock` the menu uses, after which every gated
- * route refuses the session until the vault is unlocked again. A client that
- * suppressed this hook would gain only a screen that fails at the 8-hour
- * server ceiling; the hook is the courtesy that locks a forgotten laptop in
- * minutes instead.
+ * observe at any resolution — the server sees requests, and reading a long
+ * secret list makes no requests at all. What the timer *triggers* is the real,
+ * server-side lock: the same `POST /api/auth/vault/lock` the menu uses, after
+ * which every gated route refuses the session until the vault is unlocked
+ * again. It also broadcasts, so every other tab of this account zeroizes too —
+ * see `vault-channel.ts`.
+ *
+ * ── The server counts the same allowance, from a coarser clock ──
+ * `minutes` is the account's own preference, and `isVaultUnlocked` measures
+ * `sessions.vault_unlocked_at` against exactly the same number, anchored on the
+ * session's `last_seen_at`. So a client that suppressed this hook no longer
+ * buys itself the rest of the working day; it buys the same allowance measured
+ * in requests rather than in keystrokes. This hook is what makes the lock land
+ * on a forgotten laptop that is making no requests at all.
+ *
+ * `0` is not a user-selectable interval — there is no "never" — and arrives
+ * only as the placeholder the shell passes before the session has loaded, or
+ * for a principal with no screen to lock.
  *
  * ── Mechanics ──
  * Activity bumps a timestamp in a ref — a ref, because pointer movement at

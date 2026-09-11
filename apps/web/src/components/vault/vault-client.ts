@@ -921,7 +921,18 @@ export function removeVaultPasskey(passkeyId: string): Promise<void> {
   return api.delete<void>(`${apiPath.vaultPasskeys()}/${encodeURIComponent(passkeyId)}`);
 }
 
-export async function setAutoLockMinutes(minutes: number): Promise<VaultStatus> {
+/**
+ * Changes how long this account's vault may sit idle before it locks.
+ *
+ * `null` clears the preference rather than sending the default's number, which
+ * is the difference between "I have no view" and "I want exactly an hour" — only
+ * the first follows the default if it is ever reconsidered.
+ *
+ * The answer is the *effective* status: the server clamps to the range its own
+ * unlock gate assumes, so what comes back is what will actually be enforced
+ * rather than what was asked for.
+ */
+export async function setAutoLockMinutes(minutes: number | null): Promise<VaultStatus> {
   const response = await api.patch<{ vault: VaultStatus }>(apiPath.vault(), {
     autoLockMinutes: minutes,
   });

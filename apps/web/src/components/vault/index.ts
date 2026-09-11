@@ -29,7 +29,13 @@ export type { RecoveryKitPanelProps } from './recovery-kit-panel';
 export { useVault, useVaultKeys, VaultProvider } from './vault-keys';
 export type { VaultContextValue } from './vault-keys';
 
-export { readVaultKeys, releaseVaultKeys, subscribeVaultKeys, vaultKeysHeld } from './key-store';
+export {
+  readVaultKeys,
+  releaseVaultKeys,
+  restoreVaultKeys,
+  subscribeVaultKeys,
+  vaultKeysHeld,
+} from './key-store';
 export type { VaultKeyMaterial } from './key-store';
 
 export { fetchVault, lockVault, setAutoLockMinutes } from './vault-client';

@@ -13,8 +13,9 @@ import type { ReactNode } from 'react';
 
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import { useApiResource } from '@/app/(dashboard)/_lib/use-api-resource';
-import { readVaultKeys, releaseVaultKeys, subscribeVaultKeys } from './key-store';
+import { readVaultKeys, releaseVaultKeys, restoreVaultKeys, subscribeVaultKeys } from './key-store';
 import type { VaultKeyMaterial } from './key-store';
+import { installVaultChannel } from './vault-channel';
 import { lockVault } from './vault-client';
 import type { VaultMaterial, VaultResponse, VaultStatus } from './vault-client';
 
@@ -43,6 +44,16 @@ import type { VaultMaterial, VaultResponse, VaultStatus } from './vault-client';
  * lockVault} this context's `lock` does — which zeroizes in a `finally`. Adding
  * a second timer would mean two things could disagree about when a laptop went
  * idle.
+ *
+ * ── What mounting this provider does to the key store ──
+ * Two things, and both are about not asking for a passphrase that buys nothing.
+ * It **restores** this tab's `sessionStorage` mirror during its first render, so
+ * a reload does not land on the lock screen (`session-mirror.ts` argues the
+ * trade), and it **joins the cross-tab channel**, so a second tab can be handed
+ * the keys by the first and a lock anywhere locks everywhere
+ * (`vault-channel.ts`). `userId` is required for both: a mirror or an offer
+ * belonging to a different account must be refused, and this is the first place
+ * that knows which account is expected.
  */
 
 export interface VaultContextValue {
@@ -104,8 +115,36 @@ interface VaultOverlay {
   material?: VaultMaterial;
 }
 
-export function VaultProvider({ children }: { children: ReactNode }) {
+export function VaultProvider({ userId, children }: { userId: string; children: ReactNode }) {
+  // ── Restored during the first render, not in an effect ──
+  //
+  // An effect runs after the tree has painted, so the whole dashboard would
+  // render once as a vault holding nothing — empty secret tables, "unlock to
+  // see this" placeholders — and then again a frame later with the keys. On a
+  // reload that is a visible flash of the locked product, which is precisely
+  // the experience the mirror exists to remove.
+  //
+  // `useState`'s initialiser is the idiom for "once, synchronously, on mount",
+  // and it runs before the `useSyncExternalStore` below reads the store, so the
+  // very first snapshot this provider produces already has the keys in it.
+  // `restoreVaultKeys` is idempotent and answers `false` when there is nothing
+  // to restore, which is what decides whether to ask other tabs.
+  const [restored] = useState(() => restoreVaultKeys(userId));
+
   const keys = useVaultKeys();
+
+  // ── The cross-tab channel ──
+  //
+  // In an effect, because unlike the restore it is inherently asynchronous —
+  // another tab has to hear the request and answer it — and because it owns a
+  // resource that has to be released on unmount. Installed even when this tab
+  // already holds keys: the *listening* half is what makes a lock anywhere lock
+  // everywhere, and the *answering* half is what lets the next tab open without
+  // a passphrase. Only the asking is conditional.
+  useEffect(() => {
+    const channel = installVaultChannel({ userId, request: !restored });
+    return () => channel.close();
+  }, [userId, restored]);
 
   // The dashboard's own fetch hook, for the same reasons every other screen
   // uses it: one place that handles the abort on unmount, the 401 redirect, and

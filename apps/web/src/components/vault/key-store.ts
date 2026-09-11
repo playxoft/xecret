@@ -2,6 +2,8 @@
 
 import { zeroize } from '@xecret/core/crypto/client';
 import type { Bytes } from '@xecret/core/crypto/client';
+import { clearMirror, readMirror, sessionMirrorStorage, writeMirror } from './session-mirror';
+import type { MirrorStorage } from './session-mirror';
 
 /**
  * The only place decrypted key material lives in the browser.
@@ -19,10 +21,18 @@ import type { Bytes } from '@xecret/core/crypto/client';
  * second copy of it. `useSyncExternalStore` reads the same object.
  *
  * ── What is never done here ──
- * Nothing is written to `localStorage`, `sessionStorage`, IndexedDB, a cookie or
- * a service worker cache. There is no "remember this device". A vault that
- * survives a page reload is a vault whose keys are sitting on disk, and the
- * whole of ADR 0009 is an argument that they must not be.
+ * Nothing is written to `localStorage`, IndexedDB, a cookie, a service worker
+ * cache, or any server. There is no "remember this device": every one of those
+ * survives the tab, and a User Key that survives the tab is a User Key that
+ * outlives the person sitting at the machine.
+ *
+ * One exception, added deliberately and argued in full in `session-mirror.ts`:
+ * an unlocked key set is mirrored into **`sessionStorage`**, which is scoped to
+ * this tab and dies with it. That is what makes a page reload — a deploy, an
+ * accidental ⌘R, a crash — stop costing a master passphrase. The mirror is
+ * written by {@link holdVaultKeys}, read only by {@link restoreVaultKeys}
+ * against the account it belongs to, and removed by {@link releaseVaultKeys}
+ * before the in-memory wipe is even scheduled.
  *
  * ── What zeroization does and does not buy ──
  * {@link releaseVaultKeys} overwrites every byte it holds. That is worth doing
@@ -191,8 +201,53 @@ export function vaultKeysHeld(): boolean {
 export function holdVaultKeys(keys: VaultKeyMaterial): void {
   const superseded = held;
   held = keys;
+  writeMirror(storage(), keys);
   notify();
   if (superseded !== null) deferWipe(() => wipe(superseded));
+}
+
+/**
+ * Re-adopts the key set this tab mirrored before it was reloaded.
+ *
+ * ── Why this is a separate function and not something `readVaultKeys` does ──
+ * Because it needs to know *whose* keys are expected, and the store deliberately
+ * does not: a session that expires is a redirect to sign-in with no lock in
+ * between, so the mirror can outlive its own account inside one tab. The caller
+ * — `VaultProvider`, which always mounts below a resolved session — is the first
+ * place that knows the answer, and passing it in is what turns "there is a blob
+ * here" into "there is *your* blob here".
+ *
+ * Idempotent and safe to call while unlocked: a tab that already holds keys is a
+ * tab whose keys are newer than anything in storage, so nothing happens. The
+ * return value says whether anything was adopted, for a caller that wants to
+ * know whether to ask other tabs instead.
+ */
+export function restoreVaultKeys(expectedUserId: string): boolean {
+  if (held !== null) return true;
+
+  const restored = readMirror(storage(), expectedUserId);
+  if (restored === null) return false;
+
+  holdVaultKeys(restored);
+  return true;
+}
+
+/**
+ * Swaps in a different storage for the mirror. Test-facing, and only that.
+ *
+ * The tests run without a DOM, and the ones worth having are about the round
+ * trip — that a restore hands back the same bytes, that a lock leaves nothing
+ * behind — which needs a storage that can be inspected. Passing `null` restores
+ * the real `sessionStorage` lookup.
+ */
+export function setMirrorStorage(next: MirrorStorage | null): void {
+  overriddenStorage = next;
+}
+
+let overriddenStorage: MirrorStorage | null = null;
+
+function storage(): MirrorStorage | null {
+  return overriddenStorage ?? sessionMirrorStorage();
 }
 
 /**
@@ -204,6 +259,13 @@ export function holdVaultKeys(keys: VaultKeyMaterial): void {
  * callers write a guard they would eventually get wrong.
  */
 export function releaseVaultKeys(): void {
+  // Unconditionally, and before the early return: a mirror with nothing held is
+  // exactly the state a *reloaded* tab is in, and a lock arriving in that state
+  // — the idle timer firing before anything restored, a lock broadcast from
+  // another tab — has to be able to remove it. Returning early would leave the
+  // blob for the next reload to adopt.
+  clearMirror(storage());
+
   if (held === null) return;
   const orphaned = held;
   // Locked *now*, whatever the bytes are doing: every reader sees `null` from

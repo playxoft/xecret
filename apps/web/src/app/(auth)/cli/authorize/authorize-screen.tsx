@@ -475,7 +475,7 @@ function VaultGate({
         </p>
       </div>
 
-      <VaultProvider>
+      <VaultProvider userId={user.id}>
         {mode === 'unlock' ? (
           <VaultUnlock user={user} onUnlocked={onUnlocked} />
         ) : (
