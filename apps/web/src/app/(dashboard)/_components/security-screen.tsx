@@ -22,10 +22,11 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Separator,
   Skeleton,
   useToast,
 } from '@/components/ui';
-import { setAutoLockMinutes, VaultCard } from '@/components/vault';
+import { PasskeysSection, setAutoLockMinutes, VaultCard } from '@/components/vault';
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState } from './resource-states';
@@ -194,8 +195,17 @@ const AUTO_LOCK_LABELS: Record<number, string> = {
   720: 'Until this browser closes',
 };
 
+/**
+ * Everything about getting back in: what unlocks this browser, and how long it
+ * stays unlocked.
+ *
+ * The passkeys used to sit in the vault card above, beside the passphrase they
+ * share their cryptography with. They belong here instead, because a person
+ * arriving at this page has one of two questions — "why does it keep asking
+ * me?" or "can it stop asking me?" — and the answer to both is in this card.
+ */
 function LockCard() {
-  const { vault, lock, refresh } = useSession();
+  const { user, vault, lock, refresh } = useSession();
   const { toast } = useToast();
   const [lockingEverywhere, setLockingEverywhere] = useState(false);
   const [savingAutoLock, setSavingAutoLock] = useState(false);
@@ -258,8 +268,9 @@ function LockCard() {
       <CardHeader>
         <CardTitle>Unlock &amp; auto-lock</CardTitle>
         <CardDescription>
-          Locking asks for your master passphrase again without signing anything out — the control
-          for stepping away from a machine, or for a device you cannot reach right now.
+          How this browser opens your vault, and how long it stays open. Locking asks for your
+          master passphrase again without signing anything out — the control for stepping away from
+          a machine, or for a device you cannot reach right now.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -302,6 +313,10 @@ function LockCard() {
             lasts, however busy the session is.
           </Alert>
         ) : null}
+
+        <Separator className="my-2" />
+
+        <PasskeysSection user={user} />
       </CardContent>
     </Card>
   );

@@ -10,12 +10,29 @@ import {
   reauthenticateWithGoogle,
   reauthenticateWithPassword,
 } from '@/lib/firebase';
-import { Alert, Button, Field, Input, KeyIcon, Separator, Skeleton } from '@/components/ui';
+import {
+  Alert,
+  Button,
+  Field,
+  Input,
+  KeyIcon,
+  Separator,
+  Skeleton,
+  useToast,
+} from '@/components/ui';
+import { appPath } from '@/app/(dashboard)/_lib/paths';
 import { kitConfirmationProblem, promptedCodeIndex } from './emergency-kit';
 import { assertPasskeyPrf, currentPasskeyAvailability } from './passkey';
 import { PassphraseFields, usePassphraseStrength } from './passphrase-fields';
 import { passphraseProblem } from './passphrase';
 import { RecoveryKitPanel } from './recovery-kit-panel';
+import {
+  hasDevicePinWrap,
+  nudgeStorage,
+  readNudgeDismissedAt,
+  rememberNudge,
+  shouldNudge,
+} from './unlock-nudge';
 import {
   beginRecovery,
   completeRecovery,
@@ -202,6 +219,7 @@ function UnlockForm({
   onForgot: () => void;
 }) {
   const vault = useVault();
+  const { toast } = useToast();
   const [passphrase, setPassphrase] = useState('');
   const [busy, setBusy] = useState(false);
   const [passkeyBusy, setPasskeyBusy] = useState(false);
@@ -263,12 +281,61 @@ function UnlockForm({
     try {
       await unlockWithPassphrase({ userId: user.id, passphrase, material });
       setPassphrase('');
+      offerAFasterUnlock();
       onUnlocked();
     } catch (cause) {
       setFailure(await explainFailure(cause));
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * The offer of a one-touch unlock, made at the one moment it is about
+   * something the person has just felt.
+   *
+   * ── Why here and not in the provider ──
+   * Because this is the only seam that knows *what* opened the vault. The keys
+   * arrive in the store identically whether they were derived from a
+   * passphrase, unwrapped by an authenticator, or found in this tab's own
+   * mirror after a reload — and only the first of those is somebody paying the
+   * cost this offer would remove. A nudge hung off the store's `unlocked`
+   * transition would fire on every refresh of an already-open tab, which is the
+   * behaviour that makes people stop reading notifications.
+   *
+   * The availability check is the call site's rather than {@link shouldNudge}'s
+   * because it is not a rule about nagging: on a browser without WebAuthn, or
+   * on plain HTTP in development, there is nothing on the other end of the link
+   * to set up.
+   *
+   * Fired before `onUnlocked`, which unmounts this screen. The toast outlives
+   * it — `Toaster` is mounted at the root layout, above every route — so the
+   * message lands on the dashboard the unlock just revealed.
+   */
+  function offerAFasterUnlock() {
+    if (availability !== 'available') return;
+
+    const storage = nudgeStorage();
+    const now = Date.now();
+
+    const nudge = shouldNudge({
+      cause: 'passphrase',
+      hasPasskey: material.passkeys.length > 0,
+      hasPinWrap: hasDevicePinWrap(storage),
+      dismissedAt: readNudgeDismissedAt(storage),
+      now,
+    });
+    if (!nudge) return;
+
+    rememberNudge(storage, now);
+    toast({
+      title: 'Unlock with your fingerprint or face next time — set it up in seconds',
+      action: { label: 'Set it up', href: appPath.settingsSecurity() },
+      // Until dismissed. Five seconds is long enough to notice a message and
+      // too short to decide on one, and this is the only toast in the product
+      // carrying a link somebody is meant to reach for.
+      duration: 0,
+    });
   }
 
   /**

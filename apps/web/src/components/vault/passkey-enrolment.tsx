@@ -36,6 +36,14 @@ import type { VaultMaterial, VaultPasskey } from './vault-client';
  * session — there would be nothing to wrap. That is also the mechanism that
  * enforces "a passkey is never the only wrap": the passphrase must already exist
  * for the vault to be open at all.
+ *
+ * ── The two framings, and why the words differ ──
+ * In the setup ceremony this is the step's whole content and the thing the
+ * screen is asking for, so it is the one primary button on it and it is named
+ * after what the person will actually be shown by their machine. On the
+ * security page it is the last control in a list of enrolled passkeys, where
+ * "Add a passkey" is the only accurate label and a second primary button would
+ * put the emphasis nowhere. Same act, same failures, different prominence.
  */
 
 export interface PasskeyEnrolmentProps {
@@ -43,9 +51,20 @@ export interface PasskeyEnrolmentProps {
   material: VaultMaterial | null;
   keys: VaultKeyMaterial | null;
   onEnrolled: (passkey: VaultPasskey) => void;
+  /**
+   * `'offer'` is the ceremony's framing — the primary action on its screen.
+   * `'manage'`, the default, is the settings list's. See the header.
+   */
+  framing?: 'offer' | 'manage';
 }
 
-export function PasskeyEnrolment({ user, material, keys, onEnrolled }: PasskeyEnrolmentProps) {
+export function PasskeyEnrolment({
+  user,
+  material,
+  keys,
+  onEnrolled,
+  framing = 'manage',
+}: PasskeyEnrolmentProps) {
   const availability = useMemo(() => currentPasskeyAvailability(), []);
 
   const [label, setLabel] = useState('');
@@ -76,6 +95,29 @@ export function PasskeyEnrolment({ user, material, keys, onEnrolled }: PasskeyEn
   }
 
   const ready = keys !== null && material !== null;
+
+  // The ceremony's step has nothing else on it to confirm that the tap worked,
+  // where the settings card announces it with a toast and grows a row in the
+  // list above. `material` is the adopted copy, so this follows the enrolment
+  // without any state of its own.
+  const enrolledHere = framing === 'offer' && (material?.passkeys.length ?? 0) > 0;
+
+  /**
+   * The words on the button, and why the ceremony's are not "Add a passkey".
+   *
+   * They name what the machine is about to put in front of the person rather
+   * than the word for the credential. "Use Windows Hello" is a sentence
+   * somebody recognises before they have learned what a passkey is, which is
+   * exactly the state they are in the first time this is offered. On the
+   * settings page, among a list of enrolled passkeys, the word is the accurate
+   * one and the sentence would be the odd one out.
+   */
+  const prominent = framing === 'offer' && !enrolledHere;
+  const enrolLabel = prominent
+    ? 'Use Windows Hello, Touch ID or a security key'
+    : enrolledHere
+      ? 'Add another passkey'
+      : 'Add a passkey';
 
   async function enrol() {
     if (!ready || busy) return;
@@ -131,6 +173,12 @@ export function PasskeyEnrolment({ user, material, keys, onEnrolled }: PasskeyEn
         </Alert>
       ) : null}
 
+      {enrolledHere ? (
+        <Alert tone="success" title="This device can open your vault">
+          Next time you are asked to unlock, your authenticator is one tap away.
+        </Alert>
+      ) : null}
+
       <Field
         label="Name this passkey"
         optional
@@ -145,9 +193,20 @@ export function PasskeyEnrolment({ user, material, keys, onEnrolled }: PasskeyEn
       </Field>
 
       <div>
-        <Button variant="secondary" loading={busy} disabled={!ready} onClick={() => void enrol()}>
-          <KeyIcon className="size-4" />
-          Add a passkey
+        <Button
+          // Primary and full-width only where it is the screen's own request.
+          variant={prominent ? 'primary' : 'secondary'}
+          size={prominent ? 'lg' : 'md'}
+          // The label is a sentence rather than a word, and a phone is 320px
+          // wide: the default `whitespace-nowrap` and fixed height would push
+          // it off the side of the panel instead of on to a second line.
+          className={prominent ? 'h-auto min-h-11 w-full py-2.5 whitespace-normal' : undefined}
+          loading={busy}
+          disabled={!ready}
+          onClick={() => void enrol()}
+        >
+          <KeyIcon className="size-4 shrink-0" />
+          {enrolLabel}
         </Button>
       </div>
 

@@ -23,6 +23,9 @@ export type { VaultCardProps } from './vault-card';
 export { PasskeyEnrolment } from './passkey-enrolment';
 export type { PasskeyEnrolmentProps } from './passkey-enrolment';
 
+export { PasskeysSection } from './passkeys-section';
+export type { PasskeysSectionProps } from './passkeys-section';
+
 export { RecoveryKitPanel } from './recovery-kit-panel';
 export type { RecoveryKitPanelProps } from './recovery-kit-panel';
 

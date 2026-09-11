@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { createContext, use, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
@@ -14,6 +15,16 @@ export interface ToastOptions {
   variant?: ToastVariant;
   /** Milliseconds on screen. `0` keeps it until dismissed. */
   duration?: number;
+  /**
+   * One in-app link to the place the message is about.
+   *
+   * A link rather than a callback, and exactly one of them: a toast is
+   * information the user can afford to miss — it disappears on a timer — so
+   * anything behind it has to be reachable by navigating there anyway. A button
+   * that performed an action from here would be an action that vanishes while
+   * somebody reaches for it.
+   */
+  action?: { label: string; href: string };
 }
 
 interface ToastRecord extends ToastOptions {
@@ -164,6 +175,18 @@ export function Toaster({ children }: { children?: ReactNode }) {
                   <p className="text-fg-muted mt-0.5 text-sm leading-5 break-words">
                     {item.description}
                   </p>
+                ) : null}
+                {item.action ? (
+                  // Dismissed on click: the toast has done its job the moment
+                  // it is followed, and leaving it hanging over the page it
+                  // just navigated to would be the same message twice.
+                  <Link
+                    href={item.action.href}
+                    onClick={() => dismiss(item.id)}
+                    className="text-accent-text mt-1.5 inline-block text-sm font-medium underline underline-offset-4"
+                  >
+                    {item.action.label}
+                  </Link>
                 ) : null}
               </div>
               <button
