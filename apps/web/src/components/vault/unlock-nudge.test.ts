@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { DEVICE_PIN_WRAP_KEY } from './device-pin';
 import {
-  DEVICE_PIN_WRAP_KEY,
   hasDevicePinWrap,
   readNudgeDismissedAt,
   rememberNudge,

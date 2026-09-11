@@ -18,6 +18,7 @@ import {
   findServiceTokenByHash,
   findSessionByTokenHash,
   isIpAllowed,
+  lockSessions,
   touchCliTokenUsage,
   touchServiceTokenUsage,
   touchSession,
@@ -222,6 +223,34 @@ export function vaultUnlockStateOf(
     lastSeenAt: principal.lastSeenAt,
     autoLockMinutes: principal.vaultAutoLockMinutes,
   };
+}
+
+/**
+ * Makes a refusal by {@link isUnlocked} stick, by clearing the unlock it judged.
+ *
+ * ── The lock that lasted exactly one request ──
+ * Without this, the gate was self-healing. The window is measured from the later
+ * of `vault_unlocked_at` and `last_seen_at` (see `isVaultUnlocked`), and
+ * `authenticate` touches `last_seen_at` on every request *before* the gate runs.
+ * So an idled-out session was refused once — and that very refusal slid the
+ * anchor to now, leaving the next request inside the window again. A fifteen
+ * minute preference produced one 423 and then carried on as though nothing had
+ * happened, re-arming itself every five minutes until the eight-hour ceiling.
+ *
+ * Clearing the timestamp is what `POST /api/auth/vault/lock` does, through the
+ * same repository call, and it means the same thing here: the session stays
+ * signed in for its thirty days and simply has to prove presence again. The
+ * write is deferred past the response because the caller is being refused
+ * either way and must not wait for the bookkeeping that records it.
+ *
+ * Only for a session that *had* an unlock to clear. A principal already at
+ * `null` is a fresh sign-in on its way to the unlock screen, and issuing an
+ * UPDATE per refused request for it would be a write on the one path that is
+ * meant to be cheap. CLI and service tokens are never locked at all.
+ */
+export function latchVaultLock(principal: Principal, services: ServiceContext): void {
+  if (principal.kind !== 'user' || principal.vaultUnlockedAt === null) return;
+  services.waitUntil(lockSessions(services.db, { sessionId: principal.sessionId }));
 }
 
 async function principalFromBearer(token: string, services: ServiceContext): Promise<Principal> {

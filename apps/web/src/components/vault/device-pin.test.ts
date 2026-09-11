@@ -3,6 +3,7 @@ import { uuidv7 } from '@xecret/core/ids';
 
 import {
   clearDevicePinWrap,
+  DEVICE_PIN_WRAP_KEY,
   DEVICE_PIN_WRAP_VERSION,
   parseDevicePinWrap,
   pinProblem,
@@ -10,7 +11,7 @@ import {
   writeDevicePinWrap,
 } from './device-pin';
 import type { DevicePinStorage, DevicePinWrap } from './device-pin';
-import { DEVICE_PIN_WRAP_KEY, hasDevicePinWrap } from './unlock-nudge';
+import { hasDevicePinWrap } from './unlock-nudge';
 
 /**
  * The record a device PIN leaves on disk, and every way it can be wrong.

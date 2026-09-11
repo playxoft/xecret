@@ -1,7 +1,15 @@
 import { BufferedAuditRecorder, createAuditBuilder } from '@xecret/core/audit';
 import type { AuditBuilder, AuditRecord } from '@xecret/core/audit';
 import { AuthorizationError } from '@xecret/core/authz';
-import { actorId, actorLabel, actorType, assertCsrf, authenticate, isUnlocked } from './actor';
+import {
+  actorId,
+  actorLabel,
+  actorType,
+  assertCsrf,
+  authenticate,
+  isUnlocked,
+  latchVaultLock,
+} from './actor';
 import type { CredentialSource, Principal } from './actor';
 import { DatabaseAuditSink } from './audit-sink';
 import { MissingBindingError, publicOrigin } from './bindings';
@@ -213,6 +221,11 @@ export function authenticatedRoute<Params = Record<string, never>>(
       assertCsrf(request, source);
 
       if (options.allowLocked !== true && !isUnlocked(principal, new Date())) {
+        // Latched before the throw, or the refusal would not survive itself:
+        // this request has already scheduled a `last_seen_at` touch, and that
+        // touch slides the very anchor the gate just measured against. See
+        // `latchVaultLock`.
+        latchVaultLock(principal, services);
         throw errors.locked('session not unlocked');
       }
 

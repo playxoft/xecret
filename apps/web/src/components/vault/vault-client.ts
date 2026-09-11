@@ -1071,10 +1071,13 @@ export type PinUnlockOutcome =
  *
  * ── Every way this can fail leaves the browser in a coherent state ──
  * A burn, an unknown enrolment and a wrap that does not open all clear the local
- * record: each means the wrap is permanently unopenable, and a record left
+ * record: each means the wrap can no longer be opened here, and a record left
  * behind would suppress the offer to set a PIN up again while never working. The
  * mismatch additionally locks the session, because the server unlocked it on the
- * strength of a verifier this browser then could not make use of.
+ * strength of a verifier this browser then could not make use of — and that
+ * guard covers *everything* after the attempt, not only the unwrap. A session
+ * left server-unlocked with no keys in the browser is the worst of the possible
+ * states: the dashboard renders, no lock screen appears, and nothing decrypts.
  */
 export async function unlockWithPin(params: {
   userId: string;
@@ -1107,29 +1110,37 @@ export async function unlockWithPin(params: {
     }
 
     const pepper = fromBase64Url(response.pin.pepper);
-    let userKey: Bytes;
     try {
-      userKey = await unwrapUserKeyWithPin({
+      const userKey = await unwrapUserKeyWithPin({
         pinKey,
         pepper,
         blob: stored.wrap,
         context: { userId: params.userId, deviceId: stored.deviceId },
       });
-    } catch (cause) {
-      if (!(cause instanceof DecryptionError)) throw cause;
 
-      // The verifier matched and the wrap did not open, which means the two
-      // halves belong to different enrolments — a wrap left over from a vault
-      // that has since been reset, or copied from another profile. Nothing here
-      // is recoverable and the session must not stay open on the strength of it.
+      // Inside the same guard as the unwrap, and that is the point of the shape.
+      // The server marked this session unlocked *before* it released the pepper,
+      // so from here until the keys are held there is a window in which a throw
+      // leaves a browser with no key material and an API that says
+      // `unlocked: true` — the dashboard renders, the lock screen does not, and
+      // nothing on the page decrypts. Unwrapping the private keys can fail on
+      // its own (material from a vault this User Key no longer belongs to), so
+      // it has to be covered too rather than assumed.
+      holdVaultKeys(await openPrivateKeys(params.userId, userKey, params.material));
+    } catch {
+      // Every way this can fail has one remedy, which is why they share one
+      // branch. The verifier matched and something downstream of it did not:
+      // a wrap left over from a vault that has since been reset, a blob copied
+      // from another profile, material that has moved on. None of it is
+      // recoverable here, the local record is dead, and the session must not
+      // stay open on the strength of a proof this browser could not use.
       clearDevicePinWrap(storage);
-      zeroize(pepper);
       await lockVault().catch(() => undefined);
       return { outcome: 'mismatch' };
+    } finally {
+      zeroize(pepper);
     }
-    zeroize(pepper);
 
-    holdVaultKeys(await openPrivateKeys(params.userId, userKey, params.material));
     // The session was unlocked by the attempt itself, so the status the server
     // sent back with it is the current one rather than a value to re-fetch.
     return { outcome: 'unlocked', vault: response.vault };
@@ -1252,6 +1263,34 @@ export function describeUnlockFailure(cause: unknown): string {
   }
 
   return 'Your vault could not be unlocked. Please try again.';
+}
+
+/**
+ * The same job for a PIN, in the PIN's own words.
+ *
+ * ── Why this is not {@link describeUnlockFailure} ──
+ * That function's first branch says "that passphrase did not open your vault",
+ * and the PIN form used to render it under a heading about a PIN — telling
+ * somebody who has just typed six digits to check a passphrase for typos. The
+ * wording is not cosmetic either: the two credentials fail for different reasons
+ * and have different remedies. A wrong PIN never reaches this function at all —
+ * the server answers `wrong` with a count, and the form shows the count — so
+ * everything here is a *throw*, which means the attempt did not complete rather
+ * than that six digits were guessed badly.
+ *
+ * The server's own words are passed through for anything it answered, exactly as
+ * the passphrase path does, because the rate limiter's backoff is computed from
+ * a real budget and must not be paraphrased.
+ */
+export function describePinUnlockFailure(cause: unknown): string {
+  if (isApiError(cause)) {
+    if (cause.code === 'network_error') {
+      return 'Could not reach xecret, so your PIN was not checked. Your vault was not unlocked — check your connection and try again.';
+    }
+    return cause.message;
+  }
+
+  return 'Your PIN could not be checked. Try again, or use your master passphrase below.';
 }
 
 /**

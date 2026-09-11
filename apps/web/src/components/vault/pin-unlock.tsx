@@ -5,7 +5,7 @@ import { DEVICE_PIN_LENGTH } from '@xecret/core/crypto/client';
 
 import { pluralize } from '@/lib/format';
 import { Alert, Button, Field, Input } from '@/components/ui';
-import { describeUnlockFailure, unlockWithPin } from './vault-client';
+import { describePinUnlockFailure, unlockWithPin } from './vault-client';
 import type { VaultMaterial } from './vault-client';
 
 /**
@@ -105,7 +105,7 @@ export function PinUnlock({
       }
     } catch (cause) {
       setPin('');
-      setFailure(describeUnlockFailure(cause));
+      setFailure(describePinUnlockFailure(cause));
     } finally {
       setBusy(false);
     }

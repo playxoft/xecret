@@ -475,7 +475,9 @@ function VaultGate({
         </p>
       </div>
 
-      <VaultProvider userId={user.id}>
+      {/* `key`: an account switch in this tab has to remount the provider, or
+          the restore — and the account check inside it — never runs again. */}
+      <VaultProvider key={user.id} userId={user.id}>
         {mode === 'unlock' ? (
           <VaultUnlock user={user} onUnlocked={onUnlocked} />
         ) : (

@@ -164,8 +164,14 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     // each branch rather than around both: the transition between them is a
     // remount either way, and the keys survive it because they live in a module
     // singleton rather than in this tree.
+    //
+    // `locked` is what makes that survival conditional. Reaching this branch
+    // means the *server* answered `unlocked: false`, and a provider that
+    // restored its `sessionStorage` mirror underneath a lock screen would leave
+    // this tab holding a User Key it may not use — and still answering other
+    // tabs' handoff requests with it.
     return (
-      <VaultProvider userId={user.id}>
+      <VaultProvider key={user.id} userId={user.id} locked>
         <LockScreen status={vault} user={user} onUnlocked={session.reload} />
       </VaultProvider>
     );
@@ -235,7 +241,12 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
         createOrganization: openCreateOrganization,
       }}
     >
-      <VaultProvider userId={user.id}>
+      {/* `key`, so that signing in as somebody else in the same tab remounts
+          the provider rather than re-rendering it. Without it the restore in the
+          initialiser never runs again, and the account check inside it — the one
+          thing standing between the new dashboard and the previous account's
+          User Key — is never consulted. */}
+      <VaultProvider key={user.id} userId={user.id}>
         <AppShell
           nav={nav}
           organizations={shellOrganizations}

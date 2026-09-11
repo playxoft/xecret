@@ -6,6 +6,7 @@ import {
   releaseVaultKeys,
   restoreVaultKeys,
   setMirrorStorage,
+  shouldReleaseForServerVerdict,
   subscribeVaultKeys,
   vaultKeysHeld,
 } from './key-store';
@@ -23,9 +24,9 @@ import type { MirrorStorage } from './session-mirror';
  * than reviewed.
  */
 
-function material(fill: number) {
+function material(fill: number, userId = 'user-1') {
   return {
-    userId: 'user-1',
+    userId,
     userKey: new Uint8Array(32).fill(fill),
     encPrivateKey: new Uint8Array(32).fill(fill + 1),
     encPublicKey: new Uint8Array(32).fill(fill + 2),
@@ -172,6 +173,24 @@ describe('the session mirror', () => {
     expect(vaultKeysHeld()).toBe(false);
   });
 
+  it('releases keys held for a different account rather than answering yes', () => {
+    // The store is a module singleton and the account is not. Signing out and
+    // back in as somebody else never unmounts the page, so the previous
+    // account's User Key can still be resident when this provider mounts for
+    // the next one — and "something is held" is not "your keys are held".
+    const storage = fakeStorage();
+    setMirrorStorage(storage);
+    const previous = material(11, 'user-1');
+    holdVaultKeys(previous);
+
+    expect(restoreVaultKeys('user-2')).toBe(false);
+    expect(vaultKeysHeld()).toBe(false);
+    // Released, not merely forgotten: the bytes are gone and so is the mirror
+    // that would otherwise hand them to the next reload.
+    expect(previous.userKey.every((byte) => byte === 0)).toBe(true);
+    expect(storage.entries.size).toBe(0);
+  });
+
   it('leaves a tab that already holds keys alone', () => {
     // A tab that is unlocked has newer material than anything in storage — an
     // unlock that landed between the reload and this call, say.
@@ -210,6 +229,71 @@ describe('the session mirror', () => {
     releaseVaultKeys();
 
     expect(storage.entries.size).toBe(0);
+  });
+});
+
+/**
+ * Reconciling with the server's own answer.
+ *
+ * Three rules that pull against each other, which is why the decision is a
+ * function rather than a condition at a call site: the answer has to be honoured
+ * when it arrives late, ignored when it is older than a passphrase the user has
+ * just typed, and — the case this was written for — honoured on the *first*
+ * answer a reloaded tab receives.
+ */
+describe('what a server verdict of locked does to a tab', () => {
+  const held = { previous: true, unlockedSinceMount: false };
+
+  it('releases on a true → false transition', () => {
+    // A lock pressed on a phone, a session revoked elsewhere, the eight-hour
+    // ceiling: all of them reach this tab as a status that used to say unlocked.
+    expect(shouldReleaseForServerVerdict({ ...held, current: false })).toBe(true);
+  });
+
+  it('releases on the very first answer, which is what a reloaded tab gets', () => {
+    // The regression. A reloaded tab restores its mirror during its first
+    // render, so it holds live keys before any status has arrived. Under a pure
+    // transition check the first `unlocked: false` was a no-op — the lock screen
+    // rendered over a key store that was still handing the full key set to any
+    // tab that asked for it.
+    expect(
+      shouldReleaseForServerVerdict({
+        previous: null,
+        current: false,
+        unlockedSinceMount: false,
+      }),
+    ).toBe(true);
+  });
+
+  it('does not release an unlock this tab performed while the first answer was in flight', () => {
+    // Why this is not simply a level check. `unlockWithPassphrase` hands the
+    // keys to the store and does not touch the cached `/api/auth/vault`
+    // response, so the answer that lands a moment later still reads locked —
+    // and acting on it would wipe a correct passphrase microseconds after it
+    // was accepted.
+    expect(
+      shouldReleaseForServerVerdict({ previous: null, current: false, unlockedSinceMount: true }),
+    ).toBe(false);
+    expect(
+      shouldReleaseForServerVerdict({ previous: false, current: false, unlockedSinceMount: true }),
+    ).toBe(false);
+  });
+
+  it('ignores an answer that says unlocked, and the absence of one', () => {
+    expect(shouldReleaseForServerVerdict({ ...held, current: true })).toBe(false);
+    expect(shouldReleaseForServerVerdict({ ...held, current: null })).toBe(false);
+    expect(
+      shouldReleaseForServerVerdict({ previous: null, current: null, unlockedSinceMount: false }),
+    ).toBe(false);
+  });
+
+  it('does not release twice on a verdict that has not changed', () => {
+    // `false → false` is the steady state of a locked tab polling its status.
+    // Releasing on each one is harmless but says the rule is a level check,
+    // which is the thing the test above rules out.
+    expect(
+      shouldReleaseForServerVerdict({ previous: false, current: false, unlockedSinceMount: false }),
+    ).toBe(false);
   });
 });
 

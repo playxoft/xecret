@@ -2,7 +2,6 @@
 
 import { useSyncExternalStore } from 'react';
 import { DEVICE_PIN_LENGTH, isDevicePin } from '@xecret/core/crypto/client';
-import { DEVICE_PIN_WRAP_KEY } from './unlock-nudge';
 
 /**
  * The one thing a device PIN leaves on disk, and the rules for reading it back.
@@ -26,6 +25,20 @@ import { DEVICE_PIN_WRAP_KEY } from './unlock-nudge';
  * here costs one passphrase entry and is cleared; a *mis*read one would derive
  * the wrong key and spend an attempt from a five-attempt budget.
  */
+
+/**
+ * Where the record lives, in this browser's `localStorage`.
+ *
+ * Declared by the module that writes it, reads it and erases it. `unlock-nudge.ts`
+ * imports it for one question — "does this browser already have a faster way
+ * in?" — and having the constant live at that call site made the nudge the
+ * apparent owner of a key it only ever peeks at.
+ *
+ * Versioned in the name for the same reason the `xk2.` blob format is: a record
+ * written by a later shape must fail to be read rather than be misread as this
+ * one.
+ */
+export const DEVICE_PIN_WRAP_KEY = 'xecret.pin.v1';
 
 /** The shape below. Bumped when the record's fields change, never silently. */
 export const DEVICE_PIN_WRAP_VERSION = 1;

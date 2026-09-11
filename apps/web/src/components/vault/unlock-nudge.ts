@@ -1,5 +1,7 @@
 'use client';
 
+import { DEVICE_PIN_WRAP_KEY } from './device-pin';
+
 /**
  * The one-line offer of a faster unlock, and the rules that stop it becoming
  * nagging.
@@ -42,17 +44,6 @@ export const UNLOCK_NUDGE_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000;
  * `session-mirror.ts` for that boundary).
  */
 export const UNLOCK_NUDGE_KEY = 'xecret.nudge.unlock.v1';
-
-/**
- * Where a browser-local PIN wrap lives, when this browser has one.
- *
- * Read here and written nowhere yet: the nudge is the first thing that needs
- * the answer, because offering a faster unlock to somebody who already has one
- * is nagging about a problem they have solved. It is a `const` rather than a
- * literal so that whatever comes to own the wrap uses the same name by
- * importing it, instead of by spelling it the same way twice.
- */
-export const DEVICE_PIN_WRAP_KEY = 'xecret.pin.v1';
 
 /**
  * What just opened the vault in this browser.
@@ -157,7 +148,16 @@ export function rememberNudge(storage: NudgeStorage | null, now: number): void {
   }
 }
 
-/** Whether this browser holds a PIN wrap. See {@link DEVICE_PIN_WRAP_KEY}. */
+/**
+ * Whether this browser holds a PIN wrap.
+ *
+ * Deliberately looser than `device-pin.ts`'s own `readDevicePinWrap`: all this
+ * needs to know is whether there is something under the key, because offering a
+ * faster unlock to somebody who already has one is nagging about a problem they
+ * have solved. The lock screen is stricter — it needs a record *this* version
+ * can parse — so a wrap written by a later shape suppresses the nudge and still
+ * routes to the passphrase, which is the correct direction for both.
+ */
 export function hasDevicePinWrap(storage: NudgeStorage | null): boolean {
   if (storage === null) return false;
   try {
