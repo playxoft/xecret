@@ -3,6 +3,7 @@ import { randomBytes } from '../crypto/encoding';
 import {
   AUTO_LOCK_MINUTES_OPTIONS,
   DEFAULT_AUTO_LOCK_MINUTES,
+  DEVICE_PIN_MAX_ATTEMPTS,
   MAX_AUTO_LOCK_MINUTES,
   MIN_AUTO_LOCK_MINUTES,
   UNLOCK_VERIFIER_BYTES,
@@ -17,6 +18,7 @@ import {
   isAutoLockMinutes,
   isVaultUnlocked,
   nearestAutoLockOption,
+  nextPinFailure,
   nextUnlockFailure,
   unlockVerifierMatches,
   vaultUnlockExpiryFrom,
@@ -226,6 +228,39 @@ describe('displaying a stored preference', () => {
     for (const minutes of [-10, 0, 1, 14, 15, 16, 300, 719, 721, 5000]) {
       expect(AUTO_LOCK_MINUTES_OPTIONS).toContain(nearestAutoLockOption(minutes));
     }
+  });
+});
+
+describe('the device-PIN attempt budget', () => {
+  it('counts down from five and never hands out a sixth try', () => {
+    // The whole security of a six-digit PIN is that this number is finite and
+    // the guesser does not control it.
+    expect(DEVICE_PIN_MAX_ATTEMPTS).toBe(5);
+
+    expect(nextPinFailure(0)).toEqual({ attempts: 1, burned: false, attemptsRemaining: 4 });
+    expect(nextPinFailure(1)).toEqual({ attempts: 2, burned: false, attemptsRemaining: 3 });
+    expect(nextPinFailure(2)).toEqual({ attempts: 3, burned: false, attemptsRemaining: 2 });
+    expect(nextPinFailure(3)).toEqual({ attempts: 4, burned: false, attemptsRemaining: 1 });
+    expect(nextPinFailure(4)).toEqual({ attempts: 5, burned: true, attemptsRemaining: 0 });
+  });
+
+  it('burns rather than escalating — unlike the passphrase lockout beside it', () => {
+    // A passphrase is up against real entropy, so its lockout only has to make
+    // guessing slow. A PIN's has to make guessing *end*: there is nothing to
+    // come back to once the pepper is deleted.
+    expect(nextPinFailure(4).burned).toBe(true);
+    expect(nextUnlockFailure({ failedAttempts: 4, lockedUntil: null }, NOW).lockedUntil).toBeNull();
+  });
+
+  it('treats a corrupt counter as at least one failure, never as a fresh start', () => {
+    // A row hand-edited below zero, or carrying a fraction, must not buy extra
+    // guesses. Every input answers with a count that has moved forward.
+    for (const stored of [-5, -1, 0.4, 3.9]) {
+      expect(nextPinFailure(stored).attempts, String(stored)).toBeGreaterThanOrEqual(1);
+    }
+    // And one past the ceiling still burns rather than storing an illegal value
+    // the table's CHECK would refuse.
+    expect(nextPinFailure(99)).toEqual({ attempts: 5, burned: true, attemptsRemaining: 0 });
   });
 });
 

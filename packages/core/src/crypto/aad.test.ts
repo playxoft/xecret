@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { uuidv7 } from '../ids/uuid-v7';
 import {
+  devicePinWrapAad,
   edkGrantAad,
   ehkGrantAad,
   envKeyAad,
@@ -89,6 +90,7 @@ describe('AAD input validation', () => {
 const userId = uuidv7();
 const recipientId = uuidv7();
 const lookupHashHex = 'a'.repeat(64);
+const deviceId = uuidv7();
 
 const allV2 = () => [
   secretValueAad(context),
@@ -100,6 +102,7 @@ const allV2 = () => [
   userKeyWrapAad({ userId, wrapKind: 'prf', credentialIdB64Url: 'Y3JlZC1pZA' }),
   privateKeyEncAad(userId),
   privateKeySignAad(userId),
+  devicePinWrapAad({ userId, deviceId }),
 ];
 
 describe('AAD v2 construction', () => {
@@ -117,6 +120,23 @@ describe('AAD v2 construction', () => {
     );
     expect(privateKeyEncAad(userId)).toMatch(/^xecret\.aad\.v2\.privkey-enc\|/);
     expect(privateKeySignAad(userId)).toMatch(/^xecret\.aad\.v2\.privkey-sign\|/);
+    expect(devicePinWrapAad({ userId, deviceId })).toMatch(/^xecret\.aad\.v2\.pin-wrap\|/);
+  });
+
+  it('binds a device PIN wrap to one account and one browser', () => {
+    // Two browsers hold two wraps of one User Key, each with its own pepper
+    // row. Without the device component a wrap copied from one profile to
+    // another would open against the other's pepper the moment the same PIN was
+    // typed — and the same PIN on two devices is the likely case, not the rare
+    // one.
+    const other = uuidv7();
+
+    expect(devicePinWrapAad({ userId, deviceId })).not.toBe(
+      devicePinWrapAad({ userId, deviceId: other }),
+    );
+    expect(devicePinWrapAad({ userId, deviceId })).not.toBe(
+      devicePinWrapAad({ userId: other, deviceId }),
+    );
   });
 
   it('never collides across purposes for the same identifiers', () => {
@@ -202,6 +222,8 @@ describe('AAD v2 input validation', () => {
     expect(() => userKeyWrapAad({ userId: 'nope', wrapKind: 'passphrase' })).toThrow(TypeError);
     expect(() => privateKeyEncAad('nope')).toThrow(TypeError);
     expect(() => privateKeySignAad('nope')).toThrow(TypeError);
+    expect(() => devicePinWrapAad({ userId, deviceId: 'nope' })).toThrow(TypeError);
+    expect(() => devicePinWrapAad({ userId: 'nope', deviceId })).toThrow(TypeError);
   });
 
   it('rejects an unknown recipient or wrap kind', () => {

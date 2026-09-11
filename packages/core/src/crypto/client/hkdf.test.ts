@@ -10,10 +10,12 @@ const ikm = randomBytes(32);
 describe('the info registry', () => {
   // The table in spec §3.3 is exhaustive. Adding a string is a spec change, and
   // this test is what makes that true rather than aspirational.
-  it('holds exactly the seven fixed info strings', () => {
+  it('holds exactly the nine fixed info strings', () => {
     expect(Object.values(HKDF_INFO).sort()).toEqual(
       [
         'xecret.v2.invite-key',
+        'xecret.v2.pin-verifier',
+        'xecret.v2.pin-wrap',
         'xecret.v2.prf-wrap',
         'xecret.v2.recovery-wrap',
         'xecret.v2.uk-unlock-verifier',

@@ -148,6 +148,56 @@ export const VAULT_LOCKOUT_MAX_MS = 60 * 60 * 1000;
 export const VAULT_UNLOCK_MAX_MS = 8 * 60 * 60 * 1000;
 
 /**
+ * How many wrong device PINs a browser gets before its enrolment is destroyed.
+ *
+ * ── Why this is the whole budget, and why it is spent rather than paused ──
+ * A six-digit PIN is 10^6 candidates. Everything that makes it safe to wrap a
+ * User Key under one is on this line: the wrap cannot be attacked without the
+ * server's pepper, and the pepper is released only by a correct verifier, so the
+ * attacker's guesses are *online* and countable. Five is what an honest owner
+ * needs and four more than a guesser deserves.
+ *
+ * At five the pepper row is **deleted**, not locked out. There is nothing to
+ * come back to: the pepper is gone, so the wrap in that browser is permanently
+ * unopenable and the passphrase is the only way in. A timed lockout would imply
+ * the PIN becomes usable again, and "wait an hour and keep guessing" is not a
+ * budget for a credential whose entire budget is this counter.
+ *
+ * Deliberately unlike {@link VAULT_FREE_ATTEMPTS}, whose escalating backoff suits
+ * a master passphrase: an attacker there is up against real entropy and the
+ * lockout only has to make guessing slow. Here it has to make guessing *end*.
+ */
+export const DEVICE_PIN_MAX_ATTEMPTS = 5;
+
+/** What one more wrong PIN costs the enrolment that took it. */
+export interface DevicePinFailure {
+  /** The counter to store. Meaningless when `burned` — the row is deleted. */
+  attempts: number;
+  /** Whether this failure spent the last attempt. */
+  burned: boolean;
+  /** What the screen may say. `0` once burned. */
+  attemptsRemaining: number;
+}
+
+/**
+ * The state after one more wrong PIN.
+ *
+ * Pure, and separated from the repository for the same reason the unlock backoff
+ * is: "how many tries are left" is a number the settings copy, the lock screen
+ * and the database CHECK all restate, and three restatements of a rule that
+ * lives nowhere is how they come to disagree.
+ */
+export function nextPinFailure(attempts: number): DevicePinFailure {
+  const next = Math.max(0, Math.trunc(attempts)) + 1;
+
+  if (next >= DEVICE_PIN_MAX_ATTEMPTS) {
+    return { attempts: DEVICE_PIN_MAX_ATTEMPTS, burned: true, attemptsRemaining: 0 };
+  }
+
+  return { attempts: next, burned: false, attemptsRemaining: DEVICE_PIN_MAX_ATTEMPTS - next };
+}
+
+/**
  * What the database records about recent attempts against one surface.
  *
  * Two independent instances of this state exist per user — one for passphrase
