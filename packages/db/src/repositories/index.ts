@@ -85,6 +85,17 @@ export type {
 } from './vault';
 
 export {
+  attemptPinUnlock,
+  disablePinPepper,
+  listPinPeppers,
+  mintPinPepper,
+  pinDeviceQuery,
+  pinDevicesQuery,
+  revokeAllPinPeppers,
+} from './vault-pin';
+export type { MintPinPepperParams, PinAttemptOutcome, PinDeviceRecord } from './vault-pin';
+
+export {
   accountLockQuery,
   countOrganizationsHeldBy,
   findOrganizationById,

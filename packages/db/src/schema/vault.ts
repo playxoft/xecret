@@ -11,7 +11,11 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-import { MAX_AUTO_LOCK_MINUTES, MIN_AUTO_LOCK_MINUTES } from '@xecret/core/auth';
+import {
+  DEVICE_PIN_MAX_ATTEMPTS,
+  MAX_AUTO_LOCK_MINUTES,
+  MIN_AUTO_LOCK_MINUTES,
+} from '@xecret/core/auth';
 import type { Argon2idParams } from '@xecret/core/crypto/client';
 import { bytea } from './columns';
 import { users } from './identity';
@@ -440,7 +444,10 @@ export const vaultPinPeppers = pgTable(
       'vault_pin_peppers_pepper_check',
       sql`octet_length(${t.pepper}) = 32 and octet_length(${t.verifierHash}) = 32`,
     ),
-    check('vault_pin_peppers_attempts_check', sql`${t.attempts} >= 0 and ${t.attempts} <= 5`),
+    check(
+      'vault_pin_peppers_attempts_check',
+      sql`${t.attempts} >= 0 and ${t.attempts} <= ${sql.raw(String(DEVICE_PIN_MAX_ATTEMPTS))}`,
+    ),
     // The settings list, and the revoke-everything sweep a passphrase change, a
     // recovery and a vault reset each have to run: all three may rotate the User
     // Key, and every stale wrap has to die server-side too.

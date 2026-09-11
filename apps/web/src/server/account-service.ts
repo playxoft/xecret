@@ -3,6 +3,7 @@ import {
   deleteVault,
   removeMember,
   revokeAllCliTokensForUser,
+  revokeAllPinPeppers,
   revokeAllUserSessions,
   softDeleteOrganization,
   softDeleteUser,
@@ -114,6 +115,10 @@ export async function deleteAccount(
     const revokedSessions = await revokeAllUserSessions(tx, userId);
     const revokedCliTokens = await revokeAllCliTokensForUser(tx, userId);
     await deleteVault(tx, userId);
+    // The `users` row survives a soft delete, and `vault_pin_peppers` cascades
+    // from it rather than from `user_keys` — so without this line a deleted
+    // account would leave peppers behind for wraps whose vault has just gone.
+    await revokeAllPinPeppers(tx, userId);
     await softDeleteUser(tx, userId);
 
     return {

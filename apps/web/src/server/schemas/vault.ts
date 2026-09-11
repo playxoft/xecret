@@ -1,7 +1,8 @@
 import * as z from 'zod/mini';
 import { toBase64Url } from '@xecret/core/crypto';
 import { toBytes } from '@xecret/db/repositories';
-import type { PasskeyRecord, VaultRecord } from '@xecret/db/repositories';
+import type { PasskeyRecord, PinDeviceRecord, VaultRecord } from '@xecret/db/repositories';
+import { uuidField } from './ids';
 
 /**
  * The request schemas and response shapes of the vault routes.
@@ -390,6 +391,70 @@ export const passkeyEnrollSchema = z.strictObject(
   },
   UNEXPECTED_FIELD,
 );
+
+/**
+ * The browser a device PIN belongs to.
+ *
+ * Minted client-side, which is why it is half of a composite primary key rather
+ * than a global name: two accounts enrolling on one browser are two independent
+ * enrolments. Held to the uuid shape here so a hostile value cannot reach a
+ * `uuid` column and surface as a 500 — see `schemas/ids.ts`.
+ */
+const deviceIdSchema = uuidField('A device is named by a UUID.');
+
+/**
+ * `HKDF(pinKey, "", "xecret.v2.pin-verifier", 32)` — never the PIN, never the
+ * wrap, and never the wrap key.
+ *
+ * The same shape as an unlock verifier and the same argument: it is a sibling
+ * HKDF branch of the key that opens the wrap, so the server storing its digest
+ * learns nothing it could open anything with (crypto spec §3.3, §13.3).
+ */
+const pinVerifierSchema = base64UrlBytes(32, 'A PIN verifier is 32 bytes, base64url encoded.');
+
+/**
+ * Enrolling this browser's PIN, or re-enrolling it under a new one.
+ *
+ * One body for both, because they are one act: the browser already has a
+ * `deviceId` and keeps it, and what changes is the pepper and the digest. The
+ * salt the PIN was stretched with is deliberately **absent** — it lives beside
+ * the wrap in that browser's `localStorage`, and a server that held it would
+ * hold one more piece of an offline attack on six digits than it needs to.
+ */
+export const pinEnrollSchema = z.strictObject(
+  { deviceId: deviceIdSchema, verifier: pinVerifierSchema },
+  UNEXPECTED_FIELD,
+);
+
+/** One PIN attempt: which browser, and the proof. */
+export const pinAttemptSchema = z.strictObject(
+  { deviceId: deviceIdSchema, verifier: pinVerifierSchema },
+  UNEXPECTED_FIELD,
+);
+
+/**
+ * One enrolled browser, as the settings list sees it.
+ *
+ * No label and no user agent, and that absence is a decision rather than an
+ * omission. A PIN enrolment is made by a browser, not by a person naming a
+ * device, and inventing a name from the `User-Agent` of whichever request
+ * happened to carry it would put a confident, frequently wrong label on the row
+ * somebody uses to decide what to revoke. The dates and the short id are what
+ * the row honestly knows.
+ */
+export interface PinDevicePayload {
+  deviceId: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+export function toPinDevice(device: PinDeviceRecord): PinDevicePayload {
+  return {
+    deviceId: device.deviceId,
+    createdAt: device.createdAt.toISOString(),
+    lastUsedAt: device.lastUsedAt?.toISOString() ?? null,
+  };
+}
 
 /**
  * The auto-lock preference, as a request may express it.

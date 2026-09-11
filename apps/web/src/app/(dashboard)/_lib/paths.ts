@@ -90,6 +90,19 @@ export const apiPath = {
   vaultRecoveryComplete: (): string => '/api/auth/vault/recovery/complete',
   /** Passkey wraps for one-touch unlock. `DELETE` takes `/{passkeyId}`. */
   vaultPasskeys: (): string => '/api/auth/vault/prf',
+  /**
+   * Device PINs. `GET` lists them, `POST` enrols this browser, `DELETE` revokes
+   * every one.
+   */
+  vaultPins: (): string => '/api/auth/vault/pin',
+  /**
+   * One PIN attempt. A sibling of `/api/auth/vault/pin/{deviceId}` rather than a
+   * nested route, which is unambiguous because a device id is always a uuid and
+   * `attempt` is not one — the same arrangement `/api/orgs/availability` has
+   * beside `/api/orgs/{orgSlug}`.
+   */
+  vaultPinAttempt: (): string => '/api/auth/vault/pin/attempt',
+  vaultPin: (deviceId: string): string => `${apiPath.vaultPins()}/${segment(deviceId)}`,
   /** Destroys the vault when the passphrase and every recovery code are gone. */
   vaultReset: (): string => '/api/auth/vault/reset',
   orgs: (): string => '/api/orgs',
