@@ -44,6 +44,9 @@ export type { VaultKeyMaterial } from './key-store';
 export { DevicePinSection } from './device-pin-section';
 export type { DevicePinSectionProps } from './device-pin-section';
 
+export { PinInput } from './pin-input';
+export type { PinInputProps } from './pin-input';
+
 export { fetchVault, hasPinWrap, lockVault, setAutoLockMinutes } from './vault-client';
 export type {
   PinDevice,

@@ -127,6 +127,18 @@ export type AuditAction =
   /** The idle auto-lock interval was changed. `reason` carries the new value. */
   | 'auth.autolock_changed'
   /**
+   * The account changed its own display name.
+   *
+   * Worth a record for one reason: this name is what a teammate reading a member
+   * list sees, so changing it changes how every other member of every shared
+   * organisation identifies this person. `reason` carries the new name — never
+   * the old one, which would put a name somebody has deliberately stopped using
+   * into a log that cannot be edited. The actor is identified by email
+   * throughout the log regardless, so nothing here depends on the name being
+   * stable.
+   */
+  | 'auth.profile_updated'
+  /**
    * The account deleted itself: memberships removed, solo organisations
    * soft-deleted, every session and CLI token revoked, the user row
    * soft-deleted. Terminal — the same identity can never sign in to it again.

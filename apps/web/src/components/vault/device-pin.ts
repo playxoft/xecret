@@ -235,3 +235,87 @@ export function pinProblem(pin: string, confirm?: string): string | null {
   if (confirm !== undefined && pin !== confirm) return 'Those two PINs do not match.';
   return null;
 }
+
+/** One sentence, and it says what to do rather than what was wrong. */
+const WEAK_PIN = 'That PIN is too easy to guess — pick something less predictable.';
+
+/**
+ * Why a PIN is too obvious to enrol, or `null` when it is not.
+ *
+ * ── Which PINs, and why only these ──
+ * Six repeated digits and the straight runs — `123456`, `654321`, `012345`,
+ * `987654` and the rest. Twenty values out of a million: the rule costs 0.002%
+ * of the search space and removes the handful of PINs that sit at the top of
+ * every leaked-credential list, which is a ratio no longer blocklist comes
+ * close to. That ratio is the entire argument. A longer list — birth years,
+ * `1010`, keypad
+ * shapes — starts rejecting PINs somebody has a reason for, and a rejection
+ * whose reason is not obvious on sight is how people end up writing the PIN
+ * they settled for on a sticky note.
+ *
+ * ── Why it is an enrolment rule and never an unlock rule ──
+ * The thing that opens the wrap is whatever was enrolled. Somebody whose PIN was
+ * set before this rule existed, or on a build that did not have it, must still
+ * be able to get in — a validator on the lock screen would not be security, it
+ * would be a lockout with five attempts already spent. So `pinProblem` is left
+ * alone and this is composed on top of it by the one screen that chooses a PIN.
+ * See {@link enrolmentPinProblem}.
+ *
+ * Assumes nothing: a value that is not six digits is not this function's
+ * complaint, and it answers `null` so the length message is the one shown.
+ */
+export function weakPinProblem(pin: string): string | null {
+  if (!isDevicePin(pin)) return null;
+
+  const [first, ...rest] = [...pin].map((character) => character.charCodeAt(0) - 48);
+
+  // One pass, three questions: is every step 0 (a repeat), +1 (ascending) or
+  // −1 (descending)? Written as steps rather than as a list of twenty strings
+  // because the list would have to be rewritten if `DEVICE_PIN_LENGTH` ever
+  // moved, and a stale list here fails open.
+  let repeated = true;
+  let ascending = true;
+  let descending = true;
+  let previous = first ?? 0;
+  for (const digit of rest) {
+    const step = digit - previous;
+    if (step !== 0) repeated = false;
+    if (step !== 1) ascending = false;
+    if (step !== -1) descending = false;
+    previous = digit;
+  }
+
+  return repeated || ascending || descending ? WEAK_PIN : null;
+}
+
+/** Which of the two fields a rejected enrolment is about. */
+export interface EnrolmentPinProblem {
+  field: 'pin' | 'confirm';
+  message: string;
+}
+
+/**
+ * Everything the settings form checks before it will encrypt anything.
+ *
+ * Ordered the way somebody fills the form in — length, then whether the PIN is
+ * worth having, then whether it was typed twice the same — and each answer
+ * carries the field it belongs under. A "too easy to guess" message under the
+ * confirmation box would send somebody to retype the box that was not the
+ * problem; "those do not match" under the first one does the same in reverse.
+ *
+ * Pure, and the whole of the client-side gate: the enrolment path calls this
+ * before `enrolPin`, so a rejected PIN costs no Argon2id, no pepper request and
+ * no round trip.
+ */
+export function enrolmentPinProblem(pin: string, confirm: string): EnrolmentPinProblem | null {
+  const entry = pinProblem(pin);
+  if (entry !== null) return { field: 'pin', message: entry };
+
+  const weak = weakPinProblem(pin);
+  if (weak !== null) return { field: 'pin', message: weak };
+
+  const mismatch = pinProblem(pin, confirm);
+  if (mismatch !== null) return { field: 'confirm', message: mismatch };
+
+  return null;
+}

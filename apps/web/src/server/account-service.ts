@@ -5,10 +5,12 @@ import {
   revokeAllCliTokensForUser,
   revokeAllPinPeppers,
   revokeAllUserSessions,
+  RepositoryError,
   softDeleteOrganization,
   softDeleteUser,
+  updateUserProfile,
 } from '@xecret/db/repositories';
-import type { AccountMembership } from '@xecret/db/repositories';
+import type { AccountMembership, User } from '@xecret/db/repositories';
 import { errors } from './errors';
 import type { ServiceContext } from './context';
 
@@ -72,6 +74,35 @@ export function planAccountDeletion(
   }
 
   return plan;
+}
+
+/**
+ * Renames the account, or clears the name back to the email address.
+ *
+ * ── Why this is a service function and not two lines in the route ──
+ * Not for the transaction — there is one statement — but for the mapping. A
+ * missing row here is a soft-deleted account holding a live session, which is a
+ * 404 to the caller and not a 500, and a route that reached for the repository
+ * directly would be the second place in the codebase that has to remember that.
+ *
+ * The provider no longer overwrites this field once the row exists
+ * (`upsertUserFromIdentity`), which is what makes the change outlive the next
+ * sign-in. Everything else on the profile — the email address, the verified
+ * flag, the avatar — is still mirrored and still not editable here.
+ */
+export async function updateDisplayName(
+  services: ServiceContext,
+  userId: string,
+  displayName: string | null,
+): Promise<User> {
+  try {
+    return await updateUserProfile(services.db, userId, { displayName });
+  } catch (cause) {
+    if (cause instanceof RepositoryError && cause.code === 'notFound') {
+      throw errors.notFound('The account no longer exists.');
+    }
+    throw cause;
+  }
 }
 
 export interface AccountDeletionResult {

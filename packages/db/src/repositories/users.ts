@@ -110,19 +110,28 @@ export async function findUserByEmail(exec: Executor, email: string): Promise<Us
  * prevents a duplicate account; `ON CONFLICT` is how the loser of that race
  * turns into a successful login instead of a 500.
  *
- * Profile fields are taken from the provider verbatim, including when they are
- * absent — the provider is authoritative for them, so an avatar cleared upstream
- * clears here too.
+ * Most profile fields are taken from the provider verbatim, including when they
+ * are absent — the provider is authoritative for them, so an avatar cleared
+ * upstream clears here too.
+ *
+ * ── Except the display name, which the account owns ──
+ * It seeds from the provider on the row's *first* write and is never overwritten
+ * afterwards. That is the whole of what makes {@link updateUserProfile} mean
+ * anything: a name edited in xecret and then re-mirrored from Google on the next
+ * sign-in is not an editable field, it is a field that silently reverts — and
+ * the revert would land at a sign-in, hours later, where nobody would connect it
+ * to the edit. Nothing is lost in the other direction either: an account that
+ * has never renamed itself here still has exactly the provider's name, because
+ * that is what was inserted.
  */
 export async function upsertUserFromIdentity(
   exec: Executor,
   identity: VerifiedIdentity,
 ): Promise<User> {
   const now = new Date();
-  const profile = {
+  const mirrored = {
     email: identity.email,
     emailVerified: identity.emailVerified,
-    displayName: identity.displayName ?? null,
     avatarUrl: identity.avatarUrl ?? null,
   };
 
@@ -131,14 +140,15 @@ export async function upsertUserFromIdentity(
     .values({
       id: uuidv7(),
       firebaseUid: identity.subject,
-      ...profile,
+      ...mirrored,
+      displayName: identity.displayName ?? null,
       createdAt: now,
       updatedAt: now,
       lastLoginAt: now,
     })
     .onConflictDoUpdate({
       target: users.firebaseUid,
-      set: { ...profile, updatedAt: now, lastLoginAt: now },
+      set: { ...mirrored, updatedAt: now, lastLoginAt: now },
       // A soft-deleted account is not revived by signing in again. The Firebase
       // account may well still exist after the xecret account was deleted, and
       // silently restoring the row would restore its memberships and grants with
@@ -154,6 +164,46 @@ export async function upsertUserFromIdentity(
     throw new RepositoryError('notFound', 'No active account exists for this identity.');
   }
 
+  return row;
+}
+
+/** What an account may change about its own profile. */
+export interface UserProfilePatch {
+  /** `null` clears it, which puts the account back to being named by its email. */
+  displayName?: string | null | undefined;
+}
+
+/**
+ * Changes the profile fields an account owns rather than mirrors.
+ *
+ * `updated_at` moves, unlike {@link touchLastLogin}: this *is* a change to the
+ * record, and it is the one the column exists to date.
+ *
+ * A patch with nothing in it re-reads and returns the row rather than issuing an
+ * empty `SET`, which Postgres rejects — the same shape `updateOrganization`
+ * keeps, so a caller that validated "at least one field" upstream and a caller
+ * that did not both behave.
+ */
+export async function updateUserProfile(
+  exec: Executor,
+  userId: string,
+  patch: UserProfilePatch,
+): Promise<User> {
+  if (patch.displayName === undefined) {
+    const current = await findUserById(exec, userId);
+    if (!current) throw new RepositoryError('notFound', 'No active account.');
+    return current;
+  }
+
+  const [row] = await exec
+    .update(users)
+    .set({ displayName: patch.displayName, updatedAt: new Date() })
+    // The soft-delete predicate every read here carries. A deleted account must
+    // not be renameable by a session that was issued before it went.
+    .where(and(eq(users.id, userId), isNull(users.deletedAt)))
+    .returning();
+
+  if (!row) throw new RepositoryError('notFound', 'No active account.');
   return row;
 }
 

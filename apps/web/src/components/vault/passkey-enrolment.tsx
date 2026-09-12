@@ -192,7 +192,9 @@ export function PasskeyEnrolment({
         />
       </Field>
 
-      <div>
+      {/* Right-aligned in a settings section, where it is one action at the end
+          of a block of prose; full-width where the screen is asking for it. */}
+      <div className={prominent ? undefined : 'flex justify-end'}>
         <Button
           // Primary and full-width only where it is the screen's own request.
           variant={prominent ? 'primary' : 'secondary'}

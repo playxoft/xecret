@@ -63,7 +63,7 @@ export type { FieldProps } from './field';
 
 export * from './icons';
 
-export { Input } from './input';
+export { Input, INPUT_BASE } from './input';
 export type { InputProps } from './input';
 
 export { ariaKeyShortcuts, ariaModKey, Kbd, Shortcut, useModKey } from './kbd';

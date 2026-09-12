@@ -13,6 +13,8 @@ import {
 import {
   Alert,
   Button,
+  EyeIcon,
+  EyeOffIcon,
   Field,
   Input,
   KeyIcon,
@@ -68,12 +70,48 @@ import { useVault } from './vault-keys';
  * why the recovery flow below is reachable in one click rather than buried.
  *
  * ── The order of the offers ──
- * Passkey first when one is enrolled, then the passphrase, per plan §4.2 —
- * prominence in the order somebody will reach for them, not in the order they
- * were built. The passphrase form is always rendered underneath, never behind a
- * "use another method" link: a passkey is an extra door and the authenticator
- * that opens it can be at home, flat, or reset, and a screen that hid the
- * passphrase would turn each of those into being locked out.
+ * Passkey first when one is enrolled, then the credential this browser is set up
+ * for, per plan §4.2 — prominence in the order somebody will reach for them, not
+ * in the order they were built.
+ *
+ * ── One credential per screen, on a browser that has a PIN ──
+ * The rule used to be that the passphrase form is *always* rendered underneath,
+ * never behind a "use another method" link. That was written when the only thing
+ * above it was a passkey button, and it stopped being right the moment a second
+ * entry field appeared: two credential forms stacked on one panel asks somebody
+ * to choose before they have read either, and the six boxes they will use
+ * ninety-nine times out of a hundred were the ones below the fold.
+ *
+ * So an enrolled browser is shown its PIN and nothing else — plus the passkey
+ * button, which is not a form — and the passphrase is one ghost button away
+ * ({@link Stage} `passphrase`). The principle the old rule was protecting is
+ * untouched and is the constraint on everything here: **neither screen may ever
+ * be a dead end.** A passphrase that is one click away is not hidden; a
+ * passphrase behind a support article, an email, or a second unlock attempt
+ * would be. Concretely:
+ *
+ *  - The switch to the passphrase is always present and does not depend on the
+ *    PIN being wrong first. It is disabled for exactly one reason — an attempt
+ *    already in flight — because leaving mid-attempt is what orphans one.
+ *  - "Forgot your passphrase?" is on **both** screens. It is what somebody
+ *    reaches for who has lost the passphrase and is about to spend their last
+ *    PIN attempt, and putting it behind the passphrase form would be hiding
+ *    recovery behind the credential they have already lost.
+ *  - The passkey button is on both screens whenever a passkey is enrolled. A
+ *    burned PIN withdraws its own form and lands the screen on the passphrase;
+ *    hiding the passkey there took away the second door at the moment the first
+ *    one closed.
+ *  - A PIN that has just been burned, revoked or orphaned moves the screen to
+ *    the passphrase *by itself*, carrying the sentence that says why.
+ *
+ * A browser with no PIN wrap sees exactly what it always saw: the passphrase
+ * form, immediately.
+ *
+ * ── Why the PIN subtree is hidden rather than unmounted ──
+ * Because `PinUnlock` owns an attempt that has already been spent against a
+ * budget of five, and the "four tries left" that follows it. Unmounting threw
+ * both away — an in-flight attempt resolved into a dead component, a burn
+ * included, and coming back showed a clean form that had silently used a try.
  *
  * The passkey button is withdrawn — not disabled — when this browser or
  * authenticator turns out not to support the PRF extension, because there is
@@ -86,8 +124,15 @@ import { useVault } from './vault-keys';
  * Exported, because the host that titles and sizes the frame around it needs
  * the same list — and a hand-copied union there is a list that stops agreeing
  * with this one the first time a stage is added.
+ *
+ * `unlock` is whichever credential this browser leads with — the PIN when one is
+ * enrolled here, the passphrase otherwise. `passphrase` is the second screen
+ * only the first of those can reach, and it exists as a stage rather than as
+ * local state inside `UnlockForm` for one reason: the panel around this
+ * component titles itself from the stage, and "Your vault is locked" over a
+ * screen somebody deliberately navigated to is the wrong heading.
  */
-export type Stage = 'unlock' | 'code' | 'reset' | 'kit' | 'lost';
+export type Stage = 'unlock' | 'passphrase' | 'code' | 'reset' | 'kit' | 'lost';
 
 export interface VaultUnlockProps {
   user: { id: string; email: string; displayName: string | null };
@@ -152,7 +197,11 @@ export function VaultUnlock({ user, onUnlocked, onStageChange }: VaultUnlockProp
    * remains is the whole of the fix; `onUnlocked` re-reads the account, whose
    * `configured: false` moves the caller to the setup ceremony.
    */
-  if (vault.status?.configured === false && stage === 'unlock') {
+  // Both of the stages that render `UnlockForm`: a vault that no longer exists
+  // has nothing for either of them to open.
+  const unlocking = stage === 'unlock' || stage === 'passphrase';
+
+  if (vault.status?.configured === false && unlocking) {
     return (
       <div className="flex flex-col gap-4">
         <Alert tone="warning" title="Your vault was reset on another device">
@@ -196,12 +245,19 @@ export function VaultUnlock({ user, onUnlocked, onStageChange }: VaultUnlockProp
     );
   }
 
-  if (stage === 'unlock') {
+  if (unlocking) {
     return (
+      // One element for both stages, deliberately: React keeps the instance
+      // when the type and the position match, so stepping to the passphrase and
+      // back does not empty a half-typed field or lose the sentence explaining
+      // why the PIN went away.
       <UnlockForm
         user={user}
         material={vault.material}
         onUnlocked={onUnlocked}
+        passphraseOnly={stage === 'passphrase'}
+        onUsePassphrase={() => setStage('passphrase')}
+        onBackToPin={() => setStage('unlock')}
         onForgot={() => setStage('code')}
       />
     );
@@ -216,16 +272,24 @@ function UnlockForm({
   user,
   material,
   onUnlocked,
+  passphraseOnly,
+  onUsePassphrase,
+  onBackToPin,
   onForgot,
 }: {
   user: VaultUnlockProps['user'];
   material: VaultMaterial;
   onUnlocked: () => void;
+  /** The second screen: the passphrase, and the way back to the PIN. */
+  passphraseOnly: boolean;
+  onUsePassphrase: () => void;
+  onBackToPin: () => void;
   onForgot: () => void;
 }) {
   const vault = useVault();
   const { toast } = useToast();
   const [passphrase, setPassphrase] = useState('');
+  const [reveal, setReveal] = useState(false);
   const [busy, setBusy] = useState(false);
   const [passkeyBusy, setPasskeyBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -252,16 +316,75 @@ function UnlockForm({
   const [pinGone, setPinGone] = useState<string | null>(null);
   const pinOffered = pinDeviceId !== null;
 
+  /** Which of the two credentials this screen is currently asking for. */
+  const showingPassphrase = passphraseOnly || !pinOffered;
+
+  /**
+   * True while `PinUnlock` has an attempt with the server.
+   *
+   * Mirrored up here because this screen offers three credentials and only one
+   * of them may be spending an attempt at a time — and because leaving the PIN
+   * screen mid-attempt is what orphans one.
+   */
+  const [pinBusy, setPinBusy] = useState(false);
+
+  /** The PIN entry, so returning to it hands the caret back. */
+  const pinEntryRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * The two ways between the credential screens, and the one thing both must do.
+   *
+   * `failure` is shared — the passkey path and the passphrase path both report
+   * through it — so a message left on screen after a swap is a message about the
+   * form somebody has just walked away from. "That passphrase did not open your
+   * vault", above six PIN boxes, reads as a PIN that has already failed once.
+   */
+  function goToPassphrase() {
+    setFailure(null);
+    onUsePassphrase();
+  }
+
+  function goToPin() {
+    setFailure(null);
+    onBackToPin();
+  }
+
   /**
    * The passphrase field, so the caret can be handed back to it.
    *
-   * Needed for exactly one moment: the PIN form withdrawing itself after a burn
-   * or a revocation. Focus is inside a subtree that is about to unmount, and a
-   * browser given no instruction drops it on `document.body` — which leaves
-   * somebody who has just been told their PIN is gone with a keyboard that types
-   * nowhere, on a screen whose only remaining control is the field below.
+   * Needed whenever this screen arrives at the passphrase from the PIN — by the
+   * button, and by a burn or a revocation withdrawing the PIN on its own. Focus
+   * at that moment is inside a subtree that has just unmounted, and a browser
+   * given no instruction drops it on `document.body`, which leaves somebody who
+   * has just been told their PIN is gone with a keyboard that types nowhere.
+   *
+   * An effect rather than a call in the handler: the field does not exist yet
+   * when the stage changes, so there is nothing to focus until React has
+   * rendered it.
    */
   const passphraseRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * Whether the passphrase screen has been reached at least once.
+   *
+   * The flag is what keeps the effect below a *transition* rather than a rule
+   * about the current screen: `passphraseOnly` is false on the first render of
+   * either credential, so without it every mount would pull the caret into the
+   * PIN entry — including on a browser whose primary action is a passkey button.
+   */
+  const cameFromPassphrase = useRef(false);
+  useEffect(() => {
+    if (passphraseOnly) {
+      cameFromPassphrase.current = true;
+      passphraseRef.current?.focus();
+      return;
+    }
+    if (!cameFromPassphrase.current) return;
+    cameFromPassphrase.current = false;
+    // Returning to the PIN is not a mount — the subtree was only hidden — so
+    // `autoFocus` will not fire and the caret has to be handed back by hand.
+    pinEntryRef.current?.focus();
+  }, [passphraseOnly]);
 
   // Read once. It cannot change while this screen is mounted, and re-reading it
   // per render would make the button flicker on a browser that answers slowly.
@@ -270,7 +393,7 @@ function UnlockForm({
     material.passkeys.length > 0 && availability === 'available' && passkeyUnavailable === null;
 
   async function unlockWithPasskeyPrf() {
-    if (passkeyBusy || busy) return;
+    if (passkeyBusy || busy || pinBusy) return;
 
     setPasskeyBusy(true);
     setFailure(null);
@@ -303,7 +426,7 @@ function UnlockForm({
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (busy || passphrase.length === 0) return;
+    if (busy || pinBusy || passphrase.length === 0) return;
 
     setBusy(true);
     setFailure(null);
@@ -419,13 +542,23 @@ function UnlockForm({
 
   return (
     <div className="flex flex-col gap-5">
+      {/*
+        Offered on both screens, whenever it is offered at all.
+
+        It was hidden on the passphrase screen when this was written, on the
+        grounds that somebody who asked for the passphrase had chosen. That is
+        wrong in the one case it matters: a PIN that burns withdraws its own form
+        and lands the screen here, and a passkey user then had the passkey
+        *and* the way back to the PIN disappear together, leaving a passphrase
+        form as the only door on a browser that had two.
+      */}
       {passkeyOffered ? (
         <div className="flex flex-col gap-3">
           <Button
             variant="primary"
             size="lg"
             loading={passkeyBusy}
-            disabled={busy}
+            disabled={busy || pinBusy}
             onClick={() => void unlockWithPasskeyPrf()}
           >
             <KeyIcon className="size-4" />
@@ -447,40 +580,8 @@ function UnlockForm({
         </Alert>
       ) : null}
 
-      {pinOffered ? (
-        <div className="flex flex-col gap-3">
-          <PinUnlock
-            user={user}
-            material={material}
-            onUnlocked={onUnlocked}
-            // The form withdraws itself: `unlockWithPin` has already cleared the
-            // local record, so `useDevicePinId` answers `null` on the next
-            // render. All this has to add is the sentence explaining why —
-            // withdrawing rather than disabling, the same call the passkey path
-            // makes, because a permanently failing entry box is worse than none.
-            onGone={(message) => {
-              setPinGone(message);
-              // Synchronously, while this subtree is still mounted. The next
-              // render withdraws it — `useDevicePinId` already answers `null`.
-              passphraseRef.current?.focus();
-            }}
-            disabled={busy || passkeyBusy}
-          />
-
-          <div className="flex items-center gap-3">
-            <Separator className="flex-1" />
-            <span className="text-fg-subtle text-xs uppercase">or</span>
-            <Separator className="flex-1" />
-          </div>
-        </div>
-      ) : null}
-
-      {pinGone !== null ? (
-        <Alert tone="warning" title="Your PIN is off on this browser">
-          {pinGone}
-        </Alert>
-      ) : null}
-
+      {/* On both screens too: it explains why a button somebody expects is not
+          there, and the PIN screen is where they will first notice. */}
       {material.passkeys.length > 0 &&
       availability !== 'available' &&
       passkeyUnavailable === null ? (
@@ -491,60 +592,155 @@ function UnlockForm({
         </Alert>
       ) : null}
 
-      <form onSubmit={submit} noValidate className="flex flex-col gap-4">
-        {failure !== null ? (
-          <Alert tone="danger" title="Your vault did not open">
-            {failure}
-          </Alert>
-        ) : null}
-
-        <Field label="Master passphrase">
-          <Input
-            ref={passphraseRef}
-            type="password"
-            value={passphrase}
-            onChange={(event) => setPassphrase(event.target.value)}
-            autoComplete="current-password"
-            // Only when it is the first thing to reach for. The PIN box above
-            // autofocuses too and is rendered later in the tree, so two
-            // unconditional `autoFocus` attributes meant the passphrase won the
-            // caret off a form somebody was about to type six digits into. The
-            // passkey button is not a text field, but it is the primary action
-            // when it is offered, and stealing focus past it is the same
-            // mistake in the other direction.
-            autoFocus={!pinOffered && !passkeyOffered}
-            spellCheck={false}
-          />
-        </Field>
-
-        <Button
-          type="submit"
-          // Secondary only when a faster unlock is offered above it — two
-          // primary buttons would put the emphasis nowhere. Still a full-width
-          // button and still the first thing in the form: the demotion is about
-          // prominence between two working options, not about hiding one.
-          variant={passkeyOffered || pinOffered ? 'secondary' : 'primary'}
-          size="lg"
-          loading={busy}
-          disabled={passphrase.length === 0 || passkeyBusy}
-        >
-          Unlock with my passphrase
-        </Button>
-      </form>
-
-      {busy ? (
-        // The derivation runs in a worker, so this is a live region rather than
-        // a frozen one — but it is still a second in which nothing appears to
-        // happen, and an unexplained second on a passphrase form reads as a
-        // failure. See `argon2.ts`.
-        <p role="status" className="text-fg-subtle text-center text-sm">
-          Securing your vault… this takes a moment on purpose.
-        </p>
+      {pinGone !== null ? (
+        <Alert tone="warning" title="Your PIN is off on this browser">
+          {pinGone}
+        </Alert>
       ) : null}
 
-      <Button variant="ghost" onClick={onForgot}>
-        Forgot your passphrase?
-      </Button>
+      {/* Hoisted out of the form below: a passkey failure is reported through
+          the same state and has to be readable from the PIN screen too. It is
+          cleared when the screens swap — see `goToPassphrase` — because a message
+          about the credential somebody has just moved away from is a message
+          about the wrong form. */}
+      {failure !== null ? (
+        <Alert tone="danger" title="Your vault did not open">
+          {failure}
+        </Alert>
+      ) : null}
+
+      {/*
+        Hidden rather than unmounted.
+
+        `PinUnlock` owns the attempt in flight and the "four tries left" that
+        follows it, and both are about a budget of five that the server has
+        already spent from. Unmounting on the way to the passphrase threw them
+        away: an attempt in flight resolved into a dead component — its outcome,
+        including a burn, reaching nothing — and coming back showed a clean form
+        that had silently used a try. `hidden` keeps the component, its state and
+        its in-flight request alive, and takes it out of the tab order and the
+        accessibility tree while it is not on screen.
+      */}
+      {pinOffered ? (
+        <div hidden={showingPassphrase}>
+          <div className="flex flex-col gap-3">
+            <PinUnlock
+              user={user}
+              material={material}
+              entryRef={pinEntryRef}
+              onUnlocked={onUnlocked}
+              // The screen withdraws the form itself: `unlockWithPin` has
+              // already cleared the local record, so `useDevicePinId` answers
+              // `null` on the next render and `showingPassphrase` becomes true
+              // with or without the stage change. Moving the stage as well is
+              // what keeps the panel's title honest and the Back button away.
+              onGone={(message) => {
+                setPinGone(message);
+                goToPassphrase();
+              }}
+              onBusyChange={setPinBusy}
+              disabled={busy || passkeyBusy}
+            />
+
+            {/* The whole of the "never a dead end" rule, in two controls:
+                always present, and not conditional on the PIN having failed
+                first. Disabled only while this screen's own attempt is in
+                flight, so leaving cannot orphan one. */}
+            <Button variant="ghost" disabled={pinBusy} onClick={goToPassphrase}>
+              Unlock with my master passphrase
+            </Button>
+
+            {/* Recovery is reachable from here too. It is the way in for
+                somebody who has forgotten the passphrase *and* is about to
+                spend their last PIN attempt, and a screen that made them find
+                the passphrase form first would be hiding it behind the
+                credential they have already lost. */}
+            <Button variant="ghost" disabled={pinBusy} onClick={onForgot}>
+              Forgot your passphrase?
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {showingPassphrase ? (
+        <>
+          <form onSubmit={submit} noValidate className="flex flex-col gap-4">
+            <Field label="Master passphrase">
+              <Input
+                ref={passphraseRef}
+                type={reveal ? 'text' : 'password'}
+                value={passphrase}
+                onChange={(event) => setPassphrase(event.target.value)}
+                autoComplete="current-password"
+                endSlot={
+                  // The same eye the choose-a-passphrase fields carry. A long
+                  // passphrase typed blind on a screen whose only feedback is
+                  // "that did not open your vault" is how somebody comes to
+                  // doubt a credential that was never wrong — and this is the
+                  // one form in the product where a typo costs an attempt from
+                  // a lockout budget.
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="size-7"
+                    onClick={() => setReveal((current) => !current)}
+                    aria-pressed={reveal}
+                    aria-label={reveal ? 'Hide passphrase' : 'Show passphrase'}
+                  >
+                    {reveal ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
+                  </Button>
+                }
+                // Only when it is the first thing to reach for. Arriving here
+                // from the PIN screen is handled by the effect above instead,
+                // because `autoFocus` fires on mount and this subtree is
+                // already mounted by then. The passkey button is not a text
+                // field, but it is the primary action when it is offered, and
+                // stealing focus past it is the same mistake in reverse.
+                autoFocus={!pinOffered && !passkeyOffered}
+                spellCheck={false}
+              />
+            </Field>
+
+            <Button
+              type="submit"
+              // Secondary only when a faster unlock is offered above it — two
+              // primary buttons would put the emphasis nowhere. Still a
+              // full-width button and still the first thing in the form: the
+              // demotion is about prominence between two working options, not
+              // about hiding one.
+              variant={passkeyOffered ? 'secondary' : 'primary'}
+              size="lg"
+              loading={busy}
+              disabled={passphrase.length === 0 || passkeyBusy || pinBusy}
+            >
+              Unlock with my passphrase
+            </Button>
+          </form>
+
+          {busy ? (
+            // The derivation runs in a worker, so this is a live region rather
+            // than a frozen one — but it is still a second in which nothing
+            // appears to happen, and an unexplained second on a passphrase form
+            // reads as a failure. See `argon2.ts`.
+            <p role="status" className="text-fg-subtle text-center text-sm">
+              Securing your vault… this takes a moment on purpose.
+            </p>
+          ) : null}
+
+          {/* Only when there is a PIN to go back to. A browser that has just
+              lost its enrolment is offered the recovery link and nothing that
+              leads to an entry box which can no longer work. */}
+          {pinOffered ? (
+            <Button variant="ghost" disabled={busy} onClick={goToPin}>
+              Back to my PIN
+            </Button>
+          ) : null}
+
+          <Button variant="ghost" onClick={onForgot}>
+            Forgot your passphrase?
+          </Button>
+        </>
+      ) : null}
     </div>
   );
 }
