@@ -514,6 +514,17 @@
   [data-scroll-region] {
     overscroll-behavior-x: contain;
   }
+
+  /* A section somebody can link to — the settings cards, and anything else that
+     carries an anchor the contents list in `settings-toc.tsx` builds from.
+     Without this, `#devices` scrolls the card's top edge to the top of the
+     viewport, which is underneath the sticky top bar: the heading you navigated
+     to is the one thing the jump hides. The same expression the contents list
+     measures its active-section band against, so the link and the highlight
+     agree on where the page begins. */
+  [data-settings-section] {
+    scroll-margin-top: calc(var(--topbar-height) + var(--settings-header-height, 0px) + 1rem);
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
