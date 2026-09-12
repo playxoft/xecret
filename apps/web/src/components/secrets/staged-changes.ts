@@ -64,6 +64,16 @@ export type DraftField = 'name' | 'value';
 export interface DraftError {
   field: DraftField;
   message: string;
+  /**
+   * Which environment's value box the message belongs under, when the row has
+   * more than one and the failure is about a specific one of them.
+   *
+   * `undefined` means the box for the environment the page is about. A row in
+   * the multi-environment view carries a box per environment, and a message
+   * about production's value printed under dev's was not a smaller version of
+   * the right message — it named a value the reader could see was fine.
+   */
+  slug?: string | undefined;
 }
 
 /**
@@ -101,10 +111,19 @@ export interface Draft {
    */
   extraValues: Readonly<Record<string, string>>;
   /**
-   * Environments this row failed to write to on the last save, by name, for the
-   * message under it. Cleared when the row is edited again.
+   * Environments this row failed to write to on the last save: slug → why.
+   *
+   * Keyed by slug rather than listed by name because the row renders a box per
+   * environment and each failure belongs under its own box — "Not written to
+   * Production — a secret with this name already exists in Production" under
+   * production's box, while dev's box, which saved, says nothing. The old
+   * array of names had no box to find and was never rendered at all; the whole
+   * batch reported one sentence built from the *first* reason, under the value
+   * field for this environment, which was usually the one that worked.
+   *
+   * Cleared when the row is edited again.
    */
-  failedIn?: readonly string[] | undefined;
+  failedIn?: Readonly<Record<string, string>> | undefined;
   /** From the last save attempt; cleared as soon as the row is edited again. */
   error: DraftError | null;
 }
@@ -180,6 +199,17 @@ export interface SaveTarget {
   slug: string;
   name: string;
   io: SecretIo | null;
+  /**
+   * What that environment already holds, keyed by name.
+   *
+   * Read for one question: does this row's name already exist *there*. Two new
+   * rows both giving production a `STRIPE_KEY`, or one row naming a key
+   * production already has, used to be found out by the unique index — a 409
+   * per row, arriving after the write had been attempted, reading like a server
+   * fault rather than the typo it is. The environment on screen already has its
+   * listing; this is it.
+   */
+  byName: ReadonlyMap<string, SecretSummary>;
 }
 
 export interface SaveOutcome {
@@ -188,6 +218,17 @@ export interface SaveOutcome {
   /** Submitted a value the server already held, so no version was appended. */
   unchanged: number;
   failed: number;
+  /**
+   * Rows and writes the batch gave up on after the server began refusing.
+   *
+   * A subset of `failed`: they are not saved, so they count as failures, but
+   * nothing about them was wrong and nothing about them was attempted. Counted
+   * separately so the report can say "rate limited — four rows not attempted"
+   * rather than "four rows could not be saved", which reads like four mistakes.
+   */
+  notAttempted: number;
+  /** Whether the batch stopped early because the server was rate limiting. */
+  rateLimited: boolean;
   /**
    * Whether anything at all reached the server, including from a row that then
    * failed halfway.
@@ -487,13 +528,22 @@ export function lowerFirst(message: string): string {
   return first.toLowerCase() + message.slice(1);
 }
 
-function describeWriteFailure(cause: unknown): DraftError {
+/**
+ * @param environmentName Which environment refused, when it is not the one the
+ *   page is about. A 409 from a compared write used to say "already exists in
+ *   this environment" under a row on a page about a *different* environment —
+ *   a sentence that is both wrong and, in a product where the answer decides
+ *   whether somebody goes and overwrites production by hand, dangerous.
+ */
+export function describeWriteFailure(cause: unknown, environmentName?: string): DraftError {
+  const where = environmentName ?? 'this environment';
+
   if (!isApiError(cause)) return { field: 'value', message: 'Could not save this secret.' };
 
   if (cause.code === 'conflict') {
     return {
       field: 'name',
-      message: 'A secret with this name already exists in this environment.',
+      message: `A secret with this name already exists in ${where}.`,
     };
   }
 
@@ -507,14 +557,38 @@ function describeWriteFailure(cause: unknown): DraftError {
 }
 
 /**
+ * What one other environment on screen already holds, as the save loop needs it.
+ *
+ * The set grows as the batch proceeds, which is what stops two rows both
+ * claiming the same name in the same environment: the first one writes it, and
+ * the second is refused here rather than by the unique index.
+ */
+export interface TargetClaims {
+  slug: string;
+  name: string;
+  claimed: Set<string>;
+}
+
+/**
  * What is wrong with a draft at save time.
  *
  * Extracted from the save loop because it grew a fourth clause and a nested
  * ternary chain that long stops being readable as a list of rules. The order is
  * the order a person would check in: is there a name, is there a value, is the
  * name free, is the name legal, is the value the shape it says it is.
+ *
+ * Every answer about one of the other environments carries that environment's
+ * `slug`, so the row can print it under the box it is about. A row with four
+ * boxes and one message at the bottom of the cell made the reader guess which
+ * value the complaint was about — and the obvious guess, the one they had just
+ * typed into, was usually wrong.
  */
-function draftProblem(draft: Draft, name: string, claimed: ReadonlySet<string>): DraftError | null {
+export function draftProblem(
+  draft: Draft,
+  name: string,
+  claimed: ReadonlySet<string>,
+  targetClaims: readonly TargetClaims[] = [],
+): DraftError | null {
   if (name.length === 0) return { field: 'name', message: 'Enter a name.' };
 
   const valueType = toSecretValueType(draft.valueType);
@@ -538,20 +612,60 @@ function draftProblem(draft: Draft, name: string, claimed: ReadonlySet<string>):
     return { field: 'name', message: nameCheck.message ?? 'That name cannot be used.' };
   }
 
+  // And the same question, asked of each environment this row is also going to.
+  // Two rows that both give production a `STRIPE_KEY` are a typo, and finding
+  // that out from a 409 after the first one has already landed there is the
+  // worst possible moment to find it out.
+  for (const target of targets) {
+    const claims = targetClaims.find((entry) => entry.slug === target.slug);
+    if (claims !== undefined && claims.claimed.has(name)) {
+      return {
+        field: 'value',
+        slug: target.slug,
+        message: `${claims.name} already has a secret called ${name}.`,
+      };
+    }
+  }
+
   // The declared type describes the key, so every value written under it has to
-  // match — including the ones going to the other environments.
-  for (const value of [
-    ...(draft.value.length > 0 ? [draft.value] : []),
-    ...targets.map((target) => target.value),
-  ]) {
-    const shape = checkSecretValue(value, valueType);
+  // match — including the ones going to the other environments, each reported
+  // against its own box.
+  if (draft.value.length > 0) {
+    const shape = checkSecretValue(draft.value, valueType);
     if (!shape.valid) {
       return { field: 'value', message: shape.message ?? 'That value does not match its type.' };
     }
   }
 
+  for (const target of targets) {
+    const shape = checkSecretValue(target.value, valueType);
+    if (!shape.valid) {
+      return {
+        field: 'value',
+        slug: target.slug,
+        message: shape.message ?? 'That value does not match its type.',
+      };
+    }
+  }
+
   return null;
 }
+
+/**
+ * Whether the server has started refusing writes for volume rather than for
+ * anything about the row.
+ *
+ * The distinction the batch turns on: every other failure is about one row and
+ * the next row deserves its attempt, while this one is about the *batch* and
+ * every further attempt makes it worse.
+ */
+function isRateLimited(cause: unknown): boolean {
+  return isApiError(cause) && cause.code === 'rate_limited';
+}
+
+/** What a row that was never tried says about itself. */
+const NOT_ATTEMPTED =
+  'Not attempted: the server was refusing writes by the time this row came up. Nothing here is lost — save again in a moment.';
 
 export function useStagedChanges(io: SecretIo | null): StagedChanges {
   const [drafts, setDrafts] = useState<readonly Draft[]>([]);
@@ -892,6 +1006,8 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
         updated: 0,
         unchanged: 0,
         failed: 0,
+        notAttempted: 0,
+        rateLimited: false,
         wrote: false,
       };
       const survivingDrafts: Draft[] = [];
@@ -901,6 +1017,27 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
       // both be attempted. Without it the second would race the unique index and
       // come back as a 409 that reads like a server fault rather than a typo.
       const claimed = new Set(stored.keys());
+
+      // The same accounting for each of the other environments on screen. One
+      // set per target, because a name being taken in production says nothing
+      // about dev — that is the whole reason environments exist.
+      const targetClaims: TargetClaims[] = extras.map((target) => ({
+        slug: target.slug,
+        name: target.name,
+        claimed: new Set(target.byName.keys()),
+      }));
+
+      /**
+       * Whether the server has begun refusing writes for volume.
+       *
+       * Once set, nothing further is attempted. A rate limit is a statement
+       * about the batch, not about the row that happened to hit it, and the
+       * loop below used to answer it by carrying straight on — turning one 429
+       * into one per remaining row, each of them extending the window that was
+       * refusing them. The rows that were not tried keep everything they hold
+       * and say so.
+       */
+      let rateLimited = false;
 
       // Wrapped so the two `set` calls and `setSaving(false)` happen on every
       // exit. Each write below already handles its own failure, so nothing is
@@ -931,13 +1068,28 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
 
         // Sequential, not `Promise.all`. Each write is a separate audited
         // mutation against the `RL_MUTATION` bucket, and firing thirty at once
-        // would trip the rate limit and leave a partial save nobody asked for.
-        // Slower, and the outcome is always describable.
+        // would trip the rate limit at the very start and leave a partial save
+        // nobody asked for. Going one at a time does not make a large batch
+        // immune to that limit — a hundred rows can still reach it part way
+        // through, which is what `rateLimited` above is for — but it does keep
+        // the outcome describable: what was written, what was not, and where the
+        // batch stopped.
         for (const draft of drafts) {
           if (isBlankDraft(draft)) continue;
 
+          if (rateLimited) {
+            survivingDrafts.push({
+              ...draft,
+              failedIn: undefined,
+              error: { field: 'value', message: NOT_ATTEMPTED },
+            });
+            outcome.failed += 1;
+            outcome.notAttempted += 1;
+            continue;
+          }
+
           const name = draft.name.trim();
-          const localProblem = draftProblem(draft, name, claimed);
+          const localProblem = draftProblem(draft, name, claimed, targetClaims);
 
           if (localProblem !== null) {
             survivingDrafts.push({ ...draft, error: localProblem });
@@ -967,6 +1119,7 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
               herePending = false;
             } catch (cause) {
               hereProblem = describeWriteFailure(cause);
+              if (isRateLimited(cause)) rateLimited = true;
             }
           }
 
@@ -980,71 +1133,110 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
           // separate environments with separate keys and separate grants — a
           // rejection here says nothing about staging, and abandoning the rest of
           // the row would quietly drop values the user had typed.
+          //
+          // With one exception, and it is the one failure that *is* about the
+          // whole batch rather than about this environment: a rate limit. Past
+          // that point every further attempt only extends the window refusing
+          // them, so the remaining boxes are kept and marked not attempted.
           const survivingValues: Record<string, string> = {};
-          const failedIn: string[] = [];
           /**
-           * Why the first of them refused.
+           * Why each environment refused, slug by slug.
            *
-           * One reason rather than one per environment: they are almost always
-           * the same reason — the key already exists there, the grant is missing
-           * — and a row carrying three messages is a row nobody reads. It comes
-           * from `describeWriteFailure`, which is the same mapping the write to
-           * this environment reports through, so "already exists" reads the same
-           * wherever it happened.
+           * One reason per environment rather than the first of them, because
+           * the row has a box per environment and each box is where its own
+           * reason belongs. The reasons come from `describeWriteFailure`, the
+           * same mapping the write to this environment reports through, so
+           * "already exists" reads the same wherever it happened — and now
+           * names *where* it happened.
            */
-          let firstReason: string | null = null;
+          const failedIn: Record<string, string> = {};
+          /**
+           * Environments that were dropped from the page between typing and
+           * saving.
+           *
+           * Kept apart from `failedIn`, because these have no box left to print
+           * under: the row renders one per environment *on screen*, and this one
+           * is not. It goes on the row's own message instead, which is the only
+           * place left that the reader will see.
+           */
+          const offscreen: string[] = [];
+          /** Whether any box on this row was given up on rather than refused. */
+          let skipped = false;
 
           for (const target of draftTargets(draft)) {
-            const environment = extras.find((entry) => entry.slug === target.slug);
-            // Gone from the screen between typing and saving, or a key this
-            // browser cannot encrypt with. Either way the value is kept rather
-            // than thrown away with a success message over it.
-            if (environment === undefined || environment.io === null) {
+            if (rateLimited) {
               survivingValues[target.slug] = target.value;
-              failedIn.push(environment?.name ?? target.slug);
-              firstReason ??=
-                environment === undefined
-                  ? 'it is no longer on this page'
-                  : 'its key is not available here';
+              failedIn[target.slug] = NOT_ATTEMPTED;
+              skipped = true;
+              continue;
+            }
+
+            const environment = extras.find((entry) => entry.slug === target.slug);
+            // Gone from the screen between typing and saving. The value is kept
+            // rather than thrown away with a success message over it.
+            if (environment === undefined) {
+              survivingValues[target.slug] = target.value;
+              offscreen.push(target.slug);
+              continue;
+            }
+
+            // A key this browser cannot encrypt with. The box is still on
+            // screen, disabled, and this is what it says.
+            if (environment.io === null) {
+              survivingValues[target.slug] = target.value;
+              failedIn[target.slug] = `${environment.name}’s key is not available here.`;
               continue;
             }
 
             try {
               await environment.io.create({ ...shared, value: target.value });
+              // Claimed there too, so a later row in this same batch cannot try
+              // the same name against the same environment.
+              targetClaims.find((entry) => entry.slug === target.slug)?.claimed.add(name);
               outcome.created += 1;
               outcome.wrote = true;
             } catch (cause) {
               survivingValues[target.slug] = target.value;
-              failedIn.push(environment.name);
               // The message only — `describeWriteFailure` maps the API's error
               // to a sentence and never reads a response body. See the note at
               // the top of `lib/api.ts` about why that matters here.
-              firstReason ??= describeWriteFailure(cause).message;
+              failedIn[target.slug] = describeWriteFailure(cause, environment.name).message;
+              if (isRateLimited(cause)) rateLimited = true;
             }
           }
 
+          const failedCount = Object.keys(failedIn).length + offscreen.length;
+
           // Nothing left to do: the row is dropped, which is what drops the
           // plaintexts it was holding.
-          if (!herePending && hereProblem === null && failedIn.length === 0) continue;
+          if (!herePending && hereProblem === null && failedCount === 0) continue;
+
+          // The environments with no box to report into. Appended to whatever
+          // this environment's own failure was rather than replacing it — the
+          // two are separate facts about one row, and the `??` this used to be
+          // discarded the second whenever there was a first.
+          const offscreenMessage =
+            offscreen.length === 0
+              ? null
+              : `Not written to ${offscreen.join(', ')} — ${
+                  offscreen.length === 1 ? 'it is' : 'they are'
+                } no longer on this page. Those values are still here.`;
 
           survivingDrafts.push({
             ...draft,
             // Emptied where it landed, so a retry cannot write it twice.
             value: hereProblem === null && !herePending ? '' : draft.value,
             extraValues: survivingValues,
-            ...(failedIn.length === 0 ? {} : { failedIn }),
+            ...(Object.keys(failedIn).length === 0 ? {} : { failedIn }),
             error:
-              hereProblem ??
-              (failedIn.length === 0
-                ? null
-                : {
-                    field: 'value',
-                    message: `Not written to ${failedIn.join(', ')}${
-                      firstReason === null ? '' : ` — ${lowerFirst(firstReason)}`
-                    }. Those values are still here.`,
-                  }),
+              offscreenMessage === null
+                ? hereProblem
+                : hereProblem === null
+                  ? { field: 'value', message: offscreenMessage }
+                  : { ...hereProblem, message: `${hereProblem.message} ${offscreenMessage}` },
           });
           outcome.failed += 1;
+          if (skipped) outcome.notAttempted += 1;
         }
 
         for (const [name, edit] of edits) {
@@ -1057,6 +1249,16 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
           // silently is right: the user opened a row, thought better of it, and
           // does not need an error for having changed their mind.
           if (!hasValue && edit.valueType === undefined && !hasMeta) continue;
+
+          // The batch has already been refused once. Everything this row holds
+          // stays exactly where it is, including the value, so saving again
+          // writes it — see `rateLimited`.
+          if (rateLimited) {
+            survivingEdits.set(name, { ...edit, error: NOT_ATTEMPTED });
+            outcome.failed += 1;
+            outcome.notAttempted += 1;
+            continue;
+          }
 
           // Checked here as well as on the server, so a bad new name or a value
           // of the wrong shape is reported against its own row instead of
@@ -1155,6 +1357,7 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
             // cheaper than a row silently losing half of what it staged.
             survivingEdits.set(name, { ...edit, error: describeWriteFailure(cause).message });
             outcome.failed += 1;
+            if (isRateLimited(cause)) rateLimited = true;
             // The value write goes first, so a metadata failure lands on a row
             // whose value is already stored. The row reports only `failed`, and
             // without this the caller would keep a decrypted snapshot of an
@@ -1163,6 +1366,7 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
           }
         }
 
+        outcome.rateLimited = rateLimited;
         return outcome;
       } finally {
         setDrafts(survivingDrafts);

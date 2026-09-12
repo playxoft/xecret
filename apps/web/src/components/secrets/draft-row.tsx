@@ -26,7 +26,7 @@ import {
 import { EnvironmentLabel } from './value-field';
 import { ValueTypeMenu } from './value-type-menu';
 import { looksLikeAssignments, parsePastedSecrets } from './paste-secrets';
-import { draftNameProblem, isBlankDraft } from './staged-changes';
+import { draftNameProblem, isBlankDraft, lowerFirst } from './staged-changes';
 import type { Draft, DraftSeed } from './staged-changes';
 
 const NOTE_MAX_LENGTH = 1024;
@@ -49,10 +49,17 @@ export interface DraftRowProps {
     name: string;
     isProduction: boolean;
     /**
-     * Whether this browser can write there — false for an end-to-end encrypted
-     * environment whose key it has not opened. The box is still drawn, disabled:
-     * leaving it out would read as "that environment does not exist", and the
-     * truth is that the key does not.
+     * Whether this browser holds what it would need to encrypt for that
+     * environment — false for an end-to-end encrypted one whose key it has not
+     * opened. The box is still drawn, disabled: leaving it out would read as
+     * "that environment does not exist", and the truth is that the key does not.
+     *
+     * Necessary, not sufficient. Whether this person may *write* there is the
+     * server's answer and only the server's: a grant can be absent while the key
+     * is perfectly openable, and such a box is offered and then refused with the
+     * reason under it. Enabling on the key alone is the deliberate choice —
+     * hiding every box a write might be refused for would mean asking the server
+     * about every environment before the row could be typed into.
      */
     writable: boolean;
   }[];
@@ -155,9 +162,33 @@ export function DraftRow({
   const shape = checkSecretValue(draft.value, valueType);
   const valueError = !shape.valid
     ? (shape.message ?? null)
-    : draft.error?.field === 'value'
+    : // `slug === undefined` is "the box for the environment this page is
+      // about". A message about production's value has its own box to sit
+      // under and must not also appear here, where it would name a value the
+      // reader can see is fine.
+      draft.error?.field === 'value' && draft.error.slug === undefined
       ? draft.error.message
       : null;
+
+  /**
+   * The same three questions, for one of the other environments' boxes.
+   *
+   * The live shape check first, because it describes what is in the box now;
+   * then the last save's local refusal, if it was about this box; then what the
+   * write to that environment actually said. Each box answers for itself —
+   * "Not written to Production — a secret with this name already exists in
+   * Production" belongs under production's value, not under the one that saved.
+   */
+  function extraValueError(slug: string, name: string, value: string): string | null {
+    const extraShape = checkSecretValue(value, valueType);
+    if (!extraShape.valid) return extraShape.message ?? 'That value does not match its type.';
+
+    if (draft.error?.field === 'value' && draft.error.slug === slug) return draft.error.message;
+
+    const reason = draft.failedIn?.[slug];
+    if (reason === undefined) return null;
+    return `Not written to ${name} — ${lowerFirst(reason)} This value is still here.`;
+  }
 
   // Offered only when the validator can derive a legal name from an illegal
   // one (`my-api-key` → `MY_API_KEY`). Faster and less error-prone than
@@ -236,7 +267,12 @@ export function DraftRow({
       else onAddNext();
       return;
     }
-    if (event.key === 'Escape' && draft.name === '' && draft.value === '') {
+    // `isBlankDraft`, the same question the name field asks. Checking this
+    // environment's two boxes alone discarded a row whose only work was a value
+    // typed for another environment on screen — "staging needs this key,
+    // production does not yet" is a row with an empty box here, and Escape in
+    // that empty box threw the staging value away.
+    if (event.key === 'Escape' && isBlankDraft(draft)) {
       event.preventDefault();
       onRemove();
     }
@@ -422,32 +458,50 @@ export function DraftRow({
             {/* One box per other environment on screen. An empty one writes
                 nothing: a key that belongs in staging and not yet in production
                 is a row with production left blank, not a row to save twice. */}
-            {otherEnvironments.map((other) => (
-              <div key={other.slug} className="flex min-w-0 items-center gap-2">
-                <EnvironmentLabel environment={other} />
-                <Textarea
-                  value={draft.extraValues[other.slug] ?? ''}
-                  onChange={(event) => onPatchValueIn?.(other.slug, event.target.value)}
-                  onKeyDown={handleValueKeyDown}
-                  disabled={disabled || !other.writable || onPatchValueIn === undefined}
-                  rows={1}
-                  placeholder={
-                    other.writable
-                      ? `Value for ${other.name}, or leave it empty`
-                      : `${other.name}'s key is not available here`
-                  }
-                  aria-label={`Secret value for ${other.name}`}
-                  autoComplete="off"
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  spellCheck={false}
-                  className={cn(
-                    'block field-sizing-content max-h-64 min-h-9 min-w-0 flex-1 py-[7px] font-mono text-sm leading-5 break-all',
-                    'focus-visible:border-accent focus-visible:outline-none',
-                  )}
-                />
-              </div>
-            ))}
+            {otherEnvironments.map((other) => {
+              const value = draft.extraValues[other.slug] ?? '';
+              const problem = extraValueError(other.slug, other.name, value);
+              return (
+                <div key={other.slug} className="flex min-w-0 flex-col gap-1">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <EnvironmentLabel environment={other} />
+                    <Textarea
+                      value={value}
+                      onChange={(event) => onPatchValueIn?.(other.slug, event.target.value)}
+                      onKeyDown={handleValueKeyDown}
+                      disabled={disabled || !other.writable || onPatchValueIn === undefined}
+                      rows={1}
+                      placeholder={
+                        other.writable
+                          ? `Value for ${other.name}, or leave it empty`
+                          : `${other.name}'s key is not available here`
+                      }
+                      aria-label={`Secret value for ${other.name}`}
+                      aria-invalid={problem !== null ? true : undefined}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      className={cn(
+                        'block field-sizing-content max-h-64 min-h-9 min-w-0 flex-1 py-[7px] font-mono text-sm leading-5 break-all',
+                        'focus-visible:border-accent focus-visible:outline-none',
+                        // `aria-invalid` paints the border everywhere else in
+                        // this file; see the note on the box above.
+                        problem !== null && 'border-danger',
+                      )}
+                    />
+                  </div>
+
+                  {/* Under the box it is about, indented past the label so it
+                      lines up with the value rather than with the environment
+                      name. A message at the bottom of the cell made the reader
+                      guess which of four values it meant. */}
+                  {problem !== null ? (
+                    <p className="text-danger-text pl-2 text-sm leading-5">{problem}</p>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
 
           <span className="flex shrink-0">

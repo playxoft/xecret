@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
+import { ApiError } from '@/lib/api';
 import {
+  describeWriteFailure,
   draftNameProblem,
+  draftProblem,
   draftTargets,
   dropSeeds,
   lowerFirst,
@@ -10,7 +13,7 @@ import {
   isTouched,
   wantsRename,
 } from './staged-changes';
-import type { Draft, PendingEdit } from './staged-changes';
+import type { Draft, PendingEdit, TargetClaims } from './staged-changes';
 
 /**
  * The validation the inline editor runs as the user types.
@@ -209,6 +212,128 @@ describe('draftNameProblem', () => {
     expect(draftNameProblem(second, [second], new Set(['API_KEY']))).toMatch(
       /already has a secret/,
     );
+  });
+});
+
+/**
+ * What a row is refused for at save time, and — in the multi-environment view —
+ * *which box* it is refused for.
+ *
+ * A row there carries one value field per environment on screen. A single
+ * message at the bottom of the cell made the reader guess which of four values
+ * the complaint was about, and the obvious guess — the one they had just typed
+ * into — was usually wrong.
+ */
+describe('draftProblem', () => {
+  function claims(patch: Partial<TargetClaims> = {}): TargetClaims {
+    return { slug: 'production', name: 'Production', claimed: new Set(), ...patch };
+  }
+
+  it('asks for a name before anything else', () => {
+    expect(draftProblem(draft({ value: 'x' }), '', NO_NAMES)).toEqual({
+      field: 'name',
+      message: 'Enter a name.',
+    });
+  });
+
+  it('accepts a row with a value only for another environment', () => {
+    // "Staging needs this key, production does not yet" is a deliberate state,
+    // and refusing it would make the other boxes unusable.
+    const row = draft({ name: 'API_KEY', extraValues: { staging: 'x' } });
+    expect(draftProblem(row, 'API_KEY', NO_NAMES)).toBeNull();
+  });
+
+  it('refuses a row with no value anywhere', () => {
+    expect(draftProblem(draft({ name: 'API_KEY' }), 'API_KEY', NO_NAMES)).toEqual({
+      field: 'value',
+      message: 'Enter a value.',
+    });
+  });
+
+  it('reports this environment’s own bad value with no slug', () => {
+    // `undefined` is how the row knows the message belongs under the box for
+    // the environment the page is about.
+    const row = draft({ name: 'PORT', value: 'abc', valueType: 'int' });
+    const problem = draftProblem(row, 'PORT', NO_NAMES);
+
+    expect(problem?.field).toBe('value');
+    expect(problem?.slug).toBeUndefined();
+  });
+
+  it('names the environment whose value is the wrong shape', () => {
+    // The bug: this used to check every value in one loop and report the
+    // failure against this environment's field, which was showing a perfectly
+    // good integer.
+    const row = draft({
+      name: 'PORT',
+      value: '8080',
+      valueType: 'int',
+      extraValues: { production: 'not-a-number' },
+    });
+    const problem = draftProblem(row, 'PORT', NO_NAMES);
+
+    expect(problem?.field).toBe('value');
+    expect(problem?.slug).toBe('production');
+  });
+
+  it('blocks a name the target environment already holds, before the 409', () => {
+    const row = draft({ name: 'API_KEY', extraValues: { production: 'x' } });
+    const problem = draftProblem(row, 'API_KEY', NO_NAMES, [
+      claims({ claimed: new Set(['API_KEY']) }),
+    ]);
+
+    expect(problem?.slug).toBe('production');
+    expect(problem?.message).toMatch(/Production already has a secret called API_KEY/);
+  });
+
+  it('says nothing about a name taken only in an environment this row skips', () => {
+    // Production holding `API_KEY` is not a problem for a row that writes to
+    // staging. That is what environments are.
+    const row = draft({ name: 'API_KEY', extraValues: { staging: 'x' } });
+    expect(
+      draftProblem(row, 'API_KEY', NO_NAMES, [claims({ claimed: new Set(['API_KEY']) })]),
+    ).toBeNull();
+  });
+
+  it('still refuses a name this environment already holds', () => {
+    const row = draft({ name: 'API_KEY', value: 'x' });
+    expect(draftProblem(row, 'API_KEY', new Set(['API_KEY']))).toEqual({
+      field: 'name',
+      message: 'That name is already taken in this environment.',
+    });
+  });
+});
+
+describe('describeWriteFailure', () => {
+  const conflict = new ApiError({
+    code: 'conflict',
+    message: 'already exists',
+    status: 409,
+    requestId: null,
+  });
+
+  it('names the environment that refused', () => {
+    // A compared write is a write to somewhere else. "This environment" on a
+    // page about dev, describing a 409 from production, is a sentence that
+    // sends somebody to check the wrong environment by hand.
+    expect(describeWriteFailure(conflict, 'Production').message).toBe(
+      'A secret with this name already exists in Production.',
+    );
+  });
+
+  it('falls back to the environment the page is about', () => {
+    expect(describeWriteFailure(conflict).message).toBe(
+      'A secret with this name already exists in this environment.',
+    );
+  });
+
+  it('keeps nothing from a non-API failure', () => {
+    // An arbitrary exception's message may have been built from the request
+    // payload, which on this path is a credential.
+    expect(describeWriteFailure(new Error('postgres://user:hunter2@host'))).toEqual({
+      field: 'value',
+      message: 'Could not save this secret.',
+    });
   });
 });
 

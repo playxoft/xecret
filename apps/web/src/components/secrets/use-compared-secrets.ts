@@ -106,8 +106,31 @@ const EMPTY: Entry = {
 
 export interface ComparedSecrets {
   environments: readonly ComparedEnvironment[];
-  /** Refetches everything — called after a compared value has been written. */
+  /**
+   * Refetches every compared listing, keeping the plaintexts already pulled.
+   *
+   * For a refetch that does not invalidate what was decrypted — a batch that
+   * created keys elsewhere, a listing that has to catch up with a version chip.
+   * **After a write to a compared value, use `reloadFresh`**: the snapshot is
+   * deliberately preserved across a reload here, so a `reload` on its own leaves
+   * the replaced credential on screen.
+   */
   reload: () => void;
+  /**
+   * Forgets every compared plaintext and then refetches.
+   *
+   * What a compared *write* calls. The snapshot survives an ordinary reload on
+   * purpose — re-masking an environment somebody is reading because they saved a
+   * value in a different one is its own bug — but that is exactly wrong once the
+   * value being described has been replaced: `ValueField` prefers the supplied
+   * plaintext over anything it holds, and the compared editor seeds its next
+   * edit from it, so the superseded credential was displayed, copied and written
+   * straight back over the one that had just landed.
+   *
+   * One call rather than two at each site, because the two halves are one act
+   * and a site that remembered only the second half is the bug itself.
+   */
+  reloadFresh: () => void;
   /**
    * Decrypts every compared environment, once each.
    *
@@ -192,11 +215,12 @@ export function useComparedSecrets(
               loading: false,
               error: null,
               byName,
-              // The snapshot is kept across a refetch: `reload()` runs after
-              // every compared write, and dropping the plaintexts here would
+              // The snapshot is kept across a refetch: a reload runs after any
+              // write on this page, and dropping the plaintexts here would
               // re-mask an environment the user is reading because they saved a
-              // value in a different one. What makes a snapshot *wrong* calls
-              // `forgetValues`, which is the write path's job and not this one's.
+              // value in a different one. What makes a snapshot *wrong* is a
+              // write to the value it describes, and that path calls
+              // `reloadFresh`, which forgets first.
               values: current[slug]?.values ?? null,
               truncated: response.nextCursor !== null,
             },
@@ -205,7 +229,7 @@ export function useComparedSecrets(
         .catch(() => {
           if (controller.signal.aborted) return;
           setEntries((current) => {
-            // A refetch that fails must not take the listing with it. `reload()`
+            // A refetch that fails must not take the listing with it. A reload
             // re-reads *every* compared environment after any compared write, so
             // one transient 5xx on an environment the user never touched used to
             // replace all of its cells with an error — data that was on screen a
@@ -314,9 +338,20 @@ export function useComparedSecrets(
     [environments, entries],
   );
 
+  const reload = useCallback(() => setAttempt((current) => current + 1), []);
+
+  // Both in one call, so the two updates land in one render and there is never a
+  // frame where the listing is being refetched while the old plaintexts are
+  // still on screen and still clickable into an editor.
+  const reloadFresh = useCallback(() => {
+    forgetValues();
+    reload();
+  }, [forgetValues, reload]);
+
   return {
     environments: compared,
-    reload: useCallback(() => setAttempt((current) => current + 1), []),
+    reload,
+    reloadFresh,
     loadValues,
     forgetValues,
   };

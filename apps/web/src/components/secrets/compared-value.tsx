@@ -322,11 +322,17 @@ export function ComparedValue({
         secretName={secretName}
         valueType={toSecretValueType(secret?.valueType ?? 'string')}
         environment={{ name: environment.name, isProduction: environment.isProduction }}
-        // Writable where there is genuinely nothing here and something could be
-        // put: a listing read to the end, and a key this browser can encrypt
-        // with. Past the first page "not set" is a horizon rather than a fact,
+        // Offered where there is genuinely nothing here and this browser holds
+        // the key to put something: a listing read to the end, and an openable
+        // key. Past the first page "not set" is a horizon rather than a fact,
         // and offering to create over it would race a key that may already
         // exist — a 409 the reader could not have predicted.
+        //
+        // It does not mean the write will be *allowed*. The grant is the
+        // server's to decide and it is not consulted here; a cell offered to
+        // somebody without one is refused on save, with the reason under the
+        // field. That is the deliberate trade — the alternative is an access
+        // check per environment per row before anything can be clicked.
         creatable={!environment.truncated && environment.io !== null}
         // This listing is one page deep. Past that, "not set" is a claim about
         // an environment only part of which has been read, and a confident wrong

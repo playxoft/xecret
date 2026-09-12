@@ -105,6 +105,15 @@ export interface SecretTableProps {
   /** Present when the environment holds more than one page. */
   onLoadMore: (() => void) | null;
   loadingMore: boolean;
+  /**
+   * Why the last attempt at the next page failed, or `null`.
+   *
+   * Set, the table stops asking for more on scroll and offers a Retry at the
+   * end of the rows instead. Without it the sentinel sat in the viewport, was
+   * re-observed on every `loadingMore` transition, and each fresh observer
+   * fired immediately — so one 429 became a page request per frame.
+   */
+  loadMoreError: unknown;
   onChanged: () => void;
   /** Opens the import and export dialogs, which the environment screen owns. */
   onImport?: (() => void) | undefined;
@@ -153,6 +162,7 @@ export function SecretTable({
   secrets,
   onLoadMore,
   loadingMore,
+  loadMoreError,
   onChanged,
   onImport,
   onExport,
@@ -171,6 +181,9 @@ export function SecretTable({
     onLoadMore: () => onLoadMore?.(),
     hasMore: onLoadMore !== null,
     loading: loadingMore,
+    // Asking again is the reader's decision once a page has failed; see the
+    // Retry at the sentinel below.
+    blocked: loadMoreError !== null,
   });
   const scrollLoads = infiniteScrollSupported();
 
@@ -509,13 +522,24 @@ export function SecretTable({
     for (const environment of compared.environments) {
       for (const name of environment.byName.keys()) {
         if (existingNames.has(name)) continue;
-        if (needle.length > 0 && !name.toLowerCase().includes(needle)) continue;
+        // The same escape the stored rows have. Every cell of an absent row is
+        // its own editor, and filtering the row away unmounts all of them — so
+        // a credential typed into one and not yet saved went with it, and the
+        // cleanup reported `dirty: false` on the way out, which disarmed the
+        // leave guard as well. The filter does not get to do that.
+        if (
+          needle.length > 0 &&
+          !name.toLowerCase().includes(needle) &&
+          !comparedDirtyNames.has(name)
+        ) {
+          continue;
+        }
         names.add(name);
       }
     }
 
     return [...names];
-  }, [compared.environments, existingNames, onLoadMore, query]);
+  }, [compared.environments, comparedDirtyNames, existingNames, onLoadMore, query]);
 
   /**
    * The rows to draw: this environment's, and the absent keys, in one order.
@@ -805,6 +829,22 @@ export function SecretTable({
         variant: wrote === 0 ? 'info' : 'success',
         title: wrote === 0 ? 'Nothing to save' : 'Saved',
         ...(parts.length > 0 ? { description: `${parts.join(', ')}.` } : {}),
+      });
+      return;
+    }
+
+    // A batch the server stopped is not a batch of mistakes. Reporting "nine
+    // rows could not be saved" for one rate limit and eight rows nobody tried
+    // sends somebody hunting through nine rows for a problem that is in none of
+    // them — and the honest headline is also the actionable one: wait, save
+    // again.
+    if (outcome.rateLimited) {
+      toast({
+        variant: 'error',
+        title: 'Rate limited — the save stopped part way',
+        description: `${
+          parts.length > 0 ? `${parts.join(', ')}. ` : ''
+        }${pluralize(outcome.notAttempted, 'row')} not attempted. Everything still in the table can be saved again in a moment.`,
       });
       return;
     }
@@ -1102,9 +1142,14 @@ export function SecretTable({
                           // Created in this environment: the row becomes an
                           // ordinary one as soon as the listing catches up.
                           // Created elsewhere: that environment's listing is what
-                          // needs rereading.
+                          // needs rereading — and its decrypted snapshot has to
+                          // go with it. `reloadFresh`, not `reload`: the snapshot
+                          // survives an ordinary refetch by design, and the cell
+                          // prefers it over anything it holds, so the value that
+                          // has just been replaced would stay on screen, on the
+                          // clipboard, and in the next edit's seed.
                           if (slug === envSlug) onChanged();
-                          else compared.reload();
+                          else compared.reloadFresh();
                         }}
                         onHistory={(slug) =>
                           setHistory(slug === envSlug ? null : comparedHistory(slug, row.name))
@@ -1176,7 +1221,10 @@ export function SecretTable({
                       }
                       onDelete={() => setDeleting(secret)}
                       onCommit={saveStaged}
-                      onComparedSaved={compared.reload}
+                      // The write landed in *that* environment, so that
+                      // environment's plaintexts are the ones now describing a
+                      // value nobody holds any more. See `reloadFresh`.
+                      onComparedSaved={compared.reloadFresh}
                     />
                   );
                 })}
@@ -1227,8 +1275,20 @@ export function SecretTable({
             // either way — an observer cannot watch something that is not in the
             // document — and holds the button only where there is no observer to
             // do the watching. See `use-infinite-scroll.ts`.
-            <div ref={loadMoreSentinel} className="flex min-h-10 items-center justify-center">
-              {scrollLoads ? (
+            <div ref={loadMoreSentinel} className="flex min-h-10 flex-col items-center gap-2">
+              {loadMoreError !== null ? (
+                // At the end of the rows, where the reader is looking for the
+                // next ones. The rows already read stay exactly where they are,
+                // and so does everything staged against them.
+                <>
+                  <p role="status" className="text-danger-text text-sm">
+                    Couldn’t load more — {errorMessage(loadMoreError)}
+                  </p>
+                  <Button variant="secondary" onClick={onLoadMore} loading={loadingMore}>
+                    Retry
+                  </Button>
+                </>
+              ) : scrollLoads ? (
                 <p role="status" className="text-fg-subtle text-sm">
                   {loadingMore ? 'Loading more secrets…' : ''}
                 </p>
@@ -1259,11 +1319,16 @@ export function SecretTable({
         open={confirmStopComparing}
         onOpenChange={(open) => (open ? undefined : setConfirmStopComparing(false))}
         title="Show only this environment?"
+        // Not "in another environment": a key none of the environments on
+        // screen share gets a row of its own, and every column in it — this
+        // environment's included — is an editor that closing the comparison
+        // takes down. Saying "another environment" told somebody their own
+        // unsaved work was somebody else's.
         description={`${pluralize(comparedDirty.size, 'value')} you have not saved ${
           comparedDirty.size === 1 ? 'is' : 'are'
-        } still open in another environment. Closing it discards ${
-          comparedDirty.size === 1 ? 'that one' : 'them'
-        }.`}
+        } still open in the cells this closes, including any in ${
+          currentEnvironment?.name ?? 'this environment'
+        }. Closing them discards ${comparedDirty.size === 1 ? 'that one' : 'them'}.`}
         confirmLabel="Close and discard"
         cancelLabel="Keep them open"
         onConfirm={() => {
@@ -1276,9 +1341,13 @@ export function SecretTable({
         open={confirmProductionSave.length > 0}
         onOpenChange={(open) => (open ? undefined : setConfirmProductionSave([]))}
         title={`Write to ${confirmProductionSave.join(' and ')}?`}
+        // The environment's name, not its slug: every other environment in this
+        // sentence is named, and a dialog that reads "in Production as well as
+        // in dev" mixes two vocabularies in one line — the one the switcher
+        // shows and the one the URL uses.
         description={`This save creates keys in ${confirmProductionSave.join(
           ' and ',
-        )} as well as in ${envSlug}. Those writes land immediately and cannot be undone from here.`}
+        )} as well as in ${currentEnvironment?.name ?? envSlug}. Those writes land immediately and cannot be undone from here.`}
         confirmLabel="Save everywhere"
         confirmVariant="primary"
         onConfirm={async () => {
@@ -1310,7 +1379,10 @@ export function SecretTable({
           // listing, not this one's.
           onRestored={() => {
             if (history.envSlug !== envSlug) {
-              compared.reload();
+              // A restore replaces that environment's current value, so its
+              // snapshot describes a version that is no longer current — the
+              // same reason a compared save uses this rather than `reload`.
+              compared.reloadFresh();
               return;
             }
             forgetDecrypted();
