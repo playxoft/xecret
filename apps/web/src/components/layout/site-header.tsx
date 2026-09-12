@@ -5,11 +5,18 @@ import Link from 'next/link';
 // barrel would drag the dashboard's dependencies onto them.
 import { Button } from '@/components/ui/button';
 import { GitHubIcon } from '@/components/ui/icons';
+// `Shortcut` is a Client Component, which a Server Component may render; the
+// two `aria-` helpers are plain functions, and they come from the module that is
+// *not* `'use client'` — calling one that is, from here, fails at render.
+import { ariaKeyShortcuts } from '@/components/ui/aria-shortcuts';
+import { Shortcut } from '@/components/ui/kbd';
 import { cn } from '@/lib/cn';
-import { REPO_URL, SITE_NAV } from '@/lib/site';
+import { SIGN_IN_PATH } from '@/lib/session-hint';
+import { REPO_URL, SIGN_IN_SHORTCUT_KEYS, SITE_NAV } from '@/lib/site';
 import type { NavKey } from '@/lib/site';
 import { Wordmark } from './logo';
 import { MobileNav } from './mobile-nav';
+import { SignInLink, SignInShortcut } from './sign-in-shortcut';
 import { ThemeToggle } from './theme-toggle';
 
 /**
@@ -27,22 +34,32 @@ import { ThemeToggle } from './theme-toggle';
  *
  * ── What ships to the browser ──
  * This is a Server Component, so the five nav links cost nothing but markup.
- * The two things that genuinely need a client — the theme toggle and the
- * mobile drawer — are separate components, and they are the only JavaScript a
- * reader downloads for the chrome of a static page.
+ * The things that genuinely need a client — the theme toggle, the mobile
+ * drawer, and on the landing page alone the sign-in shortcut and its key cap —
+ * are separate components, and they are the only JavaScript a reader downloads
+ * for the chrome of a static page.
  *
  * @param current Which nav entry to mark with `aria-current`. Passed by each
  *   page rather than derived from `usePathname`, which would make the whole
  *   header a client component to underline one link.
  * @param wide Widens the pill to the documentation's container. The default
  *   matches the marketing pages' measure.
+ * @param signInShortcut Binds `S` to sign-in and prints the cap on the button.
+ *   Off by default, and on only on the landing page: a key cap is a promise,
+ *   and advertising one on a page somebody arrived at to *read* — a blog post,
+ *   a docs article — claims a letter they have better uses for. It is also the
+ *   only thing on this header that costs a reader any JavaScript beyond the
+ *   theme toggle and the drawer, which is reason enough not to ship it
+ *   site-wide. See `SignInShortcut`.
  */
 export function SiteHeader({
   current,
   wide = false,
+  signInShortcut = false,
 }: {
   current?: NavKey | undefined;
   wide?: boolean;
+  signInShortcut?: boolean;
 }) {
   return (
     <header className="sticky top-0 z-40 px-4 pt-4">
@@ -103,9 +120,29 @@ export function SiteHeader({
             <GitHubIcon className="size-[1.05rem]" />
           </a>
 
+          {/* `aria-keyshortcuts` on the control, caps beside the label: the
+              caps are `aria-hidden`, because read aloud they turn this
+              button's name into "Sign in S". `components/ui/kbd.tsx` has the
+              long version of that. The caps are hidden below `sm` — on a
+              360px bar they crowd the one button that matters, and nobody
+              holding a phone has an `S` key to press. */}
           <Button asChild variant="primary" size="sm" className="ml-1 rounded-full">
-            <Link href="/sign-in">Sign in</Link>
+            {/* Where the shortcut is bound, the button resolves its destination
+                the same way the key does — `SignInLink` reads the session hint
+                after mount. Everywhere else this stays a plain server-rendered
+                anchor costing no JavaScript, which is the whole reason the
+                shortcut is opt-in in the first place. */}
+            {signInShortcut ? (
+              <SignInLink aria-keyshortcuts={ariaKeyShortcuts(SIGN_IN_SHORTCUT_KEYS)}>
+                Sign in
+                <Shortcut keys={SIGN_IN_SHORTCUT_KEYS} className="-mr-0.5 hidden sm:inline-flex" />
+              </SignInLink>
+            ) : (
+              <Link href={SIGN_IN_PATH}>Sign in</Link>
+            )}
           </Button>
+
+          {signInShortcut ? <SignInShortcut /> : null}
 
           <MobileNav current={current} />
         </div>

@@ -240,7 +240,7 @@ export default function LandingPage() {
   const structuredData = graph(softwareApplicationSchema(), faqSchema(FAQ));
 
   return (
-    <PublicPage>
+    <PublicPage signInShortcut>
       <JsonLd data={structuredData} />
 
       {/* ── Hero ──────────────────────────────────────────────────────────

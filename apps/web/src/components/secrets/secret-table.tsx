@@ -8,6 +8,10 @@ import { api, errorMessage, isApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { pluralize } from '@/lib/format';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
+import {
+  infiniteScrollSupported,
+  useInfiniteScroll,
+} from '@/app/(dashboard)/_lib/use-infinite-scroll';
 import { useGlobalShortcut } from '@/components/layout';
 import {
   Alert,
@@ -43,13 +47,15 @@ import {
 } from '@/components/ui';
 import type { SecretIo } from '@/components/envkeys';
 import type { EnvironmentTarget } from './environment-target';
+import { AbsentRow } from './absent-row';
 import { useComparedSecrets } from './use-compared-secrets';
+import type { ComparedEnvironment } from './use-compared-secrets';
 import { usePlaintextCache } from './use-plaintext-cache';
 import { REVEAL_DURATION_MS, useRevealAll } from './use-reveal-all';
 import type { RevealAll } from './use-reveal-all';
 import { DraftRow } from './draft-row';
 import { SecretRow } from './secret-row';
-import { useStagedChanges } from './staged-changes';
+import { draftTargets, useStagedChanges } from './staged-changes';
 import type { SaveOutcome } from './staged-changes';
 import { VersionHistoryDialog } from './version-history-dialog';
 import type { SecretSummary } from './types';
@@ -99,6 +105,15 @@ export interface SecretTableProps {
   /** Present when the environment holds more than one page. */
   onLoadMore: (() => void) | null;
   loadingMore: boolean;
+  /**
+   * Why the last attempt at the next page failed, or `null`.
+   *
+   * Set, the table stops asking for more on scroll and offers a Retry at the
+   * end of the rows instead. Without it the sentinel sat in the viewport, was
+   * re-observed on every `loadingMore` transition, and each fresh observer
+   * fired immediately — so one 429 became a page request per frame.
+   */
+  loadMoreError: unknown;
   onChanged: () => void;
   /** Opens the import and export dialogs, which the environment screen owns. */
   onImport?: (() => void) | undefined;
@@ -147,6 +162,7 @@ export function SecretTable({
   secrets,
   onLoadMore,
   loadingMore,
+  loadMoreError,
   onChanged,
   onImport,
   onExport,
@@ -157,6 +173,19 @@ export function SecretTable({
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+
+  // Pages in the rest of the table as the reader scrolls. Declared here, beside
+  // the other table-wide machinery, because the sentinel it returns goes on the
+  // element below the table body.
+  const loadMoreSentinel = useInfiniteScroll<HTMLDivElement>({
+    onLoadMore: () => onLoadMore?.(),
+    hasMore: onLoadMore !== null,
+    loading: loadingMore,
+    // Asking again is the reader's decision once a page has failed; see the
+    // Retry at the sentinel below.
+    blocked: loadMoreError !== null,
+  });
+  const scrollLoads = infiniteScrollSupported();
 
   const revealAll = useRevealAll(orgSlug, projectSlug, envSlug, io);
   /**
@@ -190,6 +219,12 @@ export function SecretTable({
 
   /** Raised when "Stop comparing" would take unsaved work down with it. */
   const [confirmStopComparing, setConfirmStopComparing] = useState(false);
+
+  /**
+   * Production environments a staged save is about to write to from here, or
+   * empty while nothing is being asked. See `productionElsewhere`.
+   */
+  const [confirmProductionSave, setConfirmProductionSave] = useState<readonly string[]>([]);
 
   const markComparedDirty = useCallback((slug: string, name: string, dirty: boolean) => {
     setComparedDirty((current) => {
@@ -237,6 +272,12 @@ export function SecretTable({
    */
   function forgetDecrypted() {
     revealAll.forget();
+    // The other environments on screen hold snapshots of their own, on exactly
+    // the same terms: a write here can be a write *there* — a compared cell
+    // saving, a key created in three environments at once — and a snapshot that
+    // outlives what it describes is what puts a replaced credential back on the
+    // clipboard.
+    compared.forgetValues();
     // The other place this screen holds plaintext for the environment that has
     // just been written behind its back. An import that overwrites a key whose
     // editor is open leaves that editor displaying the pre-import value as
@@ -402,6 +443,150 @@ export function SecretTable({
     return filtered;
   }, [secrets, query, sortKey, sortDirection, comparedDirtyNames]);
 
+  /**
+   * This environment, described the way the compared ones are.
+   *
+   * Used by the rows for keys this environment does not hold: from such a row's
+   * point of view the page's environment is just another column that may or may
+   * not have the key, with its own IO and its own production status, and giving
+   * it the same shape means one cell component serves every column.
+   *
+   * `values` is deliberately `null`. The snapshot lives in `useRevealAll`, and
+   * what is *on screen* is decided by `shownValueIn` above — a second copy here
+   * would be a second answer to the same question.
+   */
+  const selfAsCompared = useMemo<ComparedEnvironment | null>(
+    () =>
+      currentEnvironment === undefined
+        ? null
+        : {
+            slug: currentEnvironment.slug,
+            name: currentEnvironment.name,
+            isProduction: currentEnvironment.isProduction,
+            io,
+            loading: false,
+            error: null,
+            byName: storedByName,
+            values: null,
+            // A page of this environment still unread is the same horizon the
+            // compared environments admit to: "not set here" cannot be claimed
+            // while there are more rows to fetch.
+            truncated: onLoadMore !== null,
+          },
+    [currentEnvironment, io, storedByName, onLoadMore],
+  );
+
+  /**
+   * The other environments on screen, as the draft rows need them.
+   *
+   * Narrowed to what a new row has to know — a label, a slug, and whether this
+   * browser holds the key to write there — so a draft cannot accidentally be
+   * given a listing or an IO it has no business reading.
+   */
+  const draftEnvironments = useMemo(
+    () =>
+      compared.environments.map((environment) => ({
+        slug: environment.slug,
+        name: environment.name,
+        isProduction: environment.isProduction,
+        writable: environment.io !== null,
+      })),
+    [compared.environments],
+  );
+
+  /** Every environment on screen, this one first. */
+  const shownEnvironments = useMemo(
+    () => (selfAsCompared === null ? [] : [selfAsCompared, ...compared.environments]),
+    [selfAsCompared, compared.environments],
+  );
+
+  /**
+   * Keys another environment on screen holds and this one does not.
+   *
+   * The point of having several environments on screen is to see where they
+   * disagree, and the sharpest disagreement — "staging has it, production does
+   * not" — was the one case the table could not show: every row came from this
+   * environment's listing, so a key absent from it had nowhere to appear and was
+   * reduced to a count in the banner.
+   *
+   * Only once this environment is read to the end. While there are more pages,
+   * "this environment does not have that key" is a statement about the part that
+   * has been read, and a row asserting it would be wrong in the direction that
+   * ends in an outage. The banner still reports the counts in that state.
+   */
+  const absentNames = useMemo(() => {
+    if (compared.environments.length === 0 || onLoadMore !== null) return [];
+
+    const needle = query.trim().toLowerCase();
+    const names = new Set<string>();
+    for (const environment of compared.environments) {
+      for (const name of environment.byName.keys()) {
+        if (existingNames.has(name)) continue;
+        // The same escape the stored rows have. Every cell of an absent row is
+        // its own editor, and filtering the row away unmounts all of them — so
+        // a credential typed into one and not yet saved went with it, and the
+        // cleanup reported `dirty: false` on the way out, which disarmed the
+        // leave guard as well. The filter does not get to do that.
+        if (
+          needle.length > 0 &&
+          !name.toLowerCase().includes(needle) &&
+          !comparedDirtyNames.has(name)
+        ) {
+          continue;
+        }
+        names.add(name);
+      }
+    }
+
+    return [...names];
+  }, [compared.environments, comparedDirtyNames, existingNames, onLoadMore, query]);
+
+  /**
+   * The rows to draw: this environment's, and the absent keys, in one order.
+   *
+   * Merged rather than appended, so the table reads as one list of keys. An
+   * absent row sorts by the most recent time *any* environment on screen touched
+   * it, which is the only date it has — it has none of its own here.
+   */
+  const rows = useMemo(() => {
+    const stored = visible.map((secret) => ({ name: secret.name, secret }));
+    if (absentNames.length === 0) return stored;
+
+    const sortedAt = (name: string): string => {
+      let latest = '';
+      for (const environment of compared.environments) {
+        const row = environment.byName.get(name);
+        if (row !== undefined && row.updatedAt > latest) latest = row.updatedAt;
+      }
+      return latest;
+    };
+
+    const merged = [
+      ...stored.map((row) => ({ ...row, at: row.secret.updatedAt })),
+      ...absentNames.map((name) => ({ name, secret: null, at: sortedAt(name) })),
+    ];
+
+    // The same comparator the listing is sorted by, so inserting these rows
+    // cannot produce a table that is sorted two different ways down its length.
+    merged.sort((a, b) => {
+      const order =
+        sortKey === 'name'
+          ? a.name < b.name
+            ? -1
+            : a.name > b.name
+              ? 1
+              : 0
+          : a.at < b.at
+            ? -1
+            : a.at > b.at
+              ? 1
+              : 0;
+      return sortDirection === 'asc' ? order : -order;
+    });
+
+    return merged.map(({ name, secret }) => ({ name, secret }));
+  }, [visible, absentNames, compared.environments, sortKey, sortDirection]);
+
   // Selection is tracked by name and intersected with what is on screen, so a
   // row that is filtered out or deleted cannot stay silently selected and be
   // included in the next bulk action.
@@ -459,6 +644,20 @@ export function SecretTable({
     setHoverRevealed(new Set());
   }
 
+  /**
+   * Reveals every value on screen — in every environment on screen.
+   *
+   * "Reveal all" used to mean this environment only, which on a page showing
+   * three of them read as a broken button: two thirds of the values it was
+   * pointed at stayed masked. One pull per environment, so one `secret.read`
+   * record per environment, which is the honest accounting — three environments
+   * were decrypted, and the log says so.
+   */
+  function revealEverything() {
+    revealAll.reveal();
+    compared.loadValues();
+  }
+
   function toggleHoverReveal() {
     setHoverRevealed(new Set());
     if (hoverArmed) {
@@ -467,14 +666,33 @@ export function SecretTable({
     }
     setHoverReveal(true);
     revealAll.load();
+    // Hover mode un-masks a *row*, and a row is every environment in it.
+    compared.loadValues();
   }
 
   /** The plaintext this row should show, if it should be showing one at all. */
   function shownValue(name: string): string | undefined {
-    const plaintext = revealAll.values?.[name];
+    return gateValue(revealAll.values?.[name], name);
+  }
+
+  /**
+   * The same gate, for any environment's snapshot.
+   *
+   * One rule for everything on screen: the reveal window and the hover set
+   * govern what is *visible*, wherever the plaintext came from, so three
+   * environments mask together on one clock rather than each keeping its own.
+   */
+  function gateValue(plaintext: string | undefined, name: string): string | undefined {
     if (plaintext === undefined) return undefined;
     if (revealAll.revealed) return plaintext;
     return hoverArmed && hoverRevealed.has(name) ? plaintext : undefined;
+  }
+
+  /** What a given environment's cell in a given row should be showing. */
+  function shownValueIn(slug: string, name: string): string | undefined {
+    if (slug === envSlug) return shownValue(name);
+    const environment = compared.environments.find((entry) => entry.slug === slug);
+    return gateValue(environment?.values?.[name], name);
   }
 
   function toggleOne(name: string, checked: boolean) {
@@ -535,11 +753,50 @@ export function SecretTable({
     });
   }
 
+  /**
+   * The production environments a save would write to that are *not* this one.
+   *
+   * The save bar is the beat before a write to the environment the page is
+   * about: it is production-toned, it counts what it holds, and it can be
+   * discarded. It says nothing about a draft row with a value typed into another
+   * environment's box — so a new key could reach production from a page about
+   * dev with no moment in between. `ComparedValue` confirms such a write for the
+   * same reason; this is the batch's version of that dialog.
+   */
+  function productionElsewhere(): readonly string[] {
+    const names: string[] = [];
+    for (const draft of staged.drafts) {
+      for (const target of draftTargets(draft)) {
+        const environment = compared.environments.find((entry) => entry.slug === target.slug);
+        if (environment?.isProduction === true && !names.includes(environment.name)) {
+          names.push(environment.name);
+        }
+      }
+    }
+    return names;
+  }
+
   async function saveStaged() {
     if (staged.pendingCount === 0 || staged.saving) return;
+
+    const production = productionElsewhere();
+    if (production.length > 0) {
+      setConfirmProductionSave(production);
+      return;
+    }
+
+    await writeStaged();
+  }
+
+  async function writeStaged() {
     setActionError(null);
 
-    const outcome = await staged.save(storedByName);
+    // The other environments on screen, so a row carrying a value for one of them
+    // can be written there in the same save. Resolved at save time rather than
+    // held in the hook: an environment removed from the view between typing and
+    // saving must not be written to, and this list is the one that says which are
+    // still on screen.
+    const outcome = await staged.save(storedByName, compared.environments);
     // Always, even on a total failure: a partial batch has already changed the
     // environment, and leaving the table showing the old versions would make the
     // next save operate on stale version numbers.
@@ -554,6 +811,9 @@ export function SecretTable({
     // metadata as two requests, so a rename rejected after the value has landed
     // counts only as `failed` while having changed the environment all the same.
     if (outcome.wrote) forgetDecrypted();
+    // A batch may have created keys in the other environments on screen; their
+    // listings are what those cells are drawn from.
+    if (outcome.wrote && compared.environments.length > 0) compared.reload();
     announce(outcome);
   }
 
@@ -573,6 +833,22 @@ export function SecretTable({
       return;
     }
 
+    // A batch the server stopped is not a batch of mistakes. Reporting "nine
+    // rows could not be saved" for one rate limit and eight rows nobody tried
+    // sends somebody hunting through nine rows for a problem that is in none of
+    // them — and the honest headline is also the actionable one: wait, save
+    // again.
+    if (outcome.rateLimited) {
+      toast({
+        variant: 'error',
+        title: 'Rate limited — the save stopped part way',
+        description: `${
+          parts.length > 0 ? `${parts.join(', ')}. ` : ''
+        }${pluralize(outcome.notAttempted, 'row')} not attempted. Everything still in the table can be saved again in a moment.`,
+      });
+      return;
+    }
+
     toast({
       variant: 'error',
       title: `${pluralize(outcome.failed, 'row')} could not be saved`,
@@ -588,7 +864,9 @@ export function SecretTable({
 
   const allVisibleSelected = visible.length > 0 && selectedVisible.length === visible.length;
   const someVisibleSelected = selectedVisible.length > 0 && !allVisibleSelected;
-  const hasRows = visible.length > 0 || staged.drafts.length > 0;
+  // Absent keys count: a filter that matches only keys this environment lacks
+  // must show those rows rather than the "nothing matches" state.
+  const hasRows = rows.length > 0 || staged.drafts.length > 0;
 
   /**
    * The four things this table does, under the keyboard.
@@ -607,7 +885,7 @@ export function SecretTable({
   useGlobalShortcut('shift:KeyR', () => {
     if (secrets.length === 0) return;
     if (anythingShown) hideAll();
-    else revealAll.reveal();
+    else revealEverything();
   });
   useGlobalShortcut('shift:KeyH', () => {
     if (secrets.length === 0) return;
@@ -633,6 +911,7 @@ export function SecretTable({
         onAddDraft={() => staged.addDraft(undefined, 'start')}
         disabled={staged.saving}
         revealAll={revealAll}
+        onRevealAll={revealEverything}
         onHideAll={hideAll}
         anythingShown={anythingShown}
         filterRef={filterRef}
@@ -648,17 +927,24 @@ export function SecretTable({
         <div className="border-line bg-canvas-inset flex flex-wrap items-center gap-3 rounded-lg border px-3.5 py-2.5">
           <ColumnsIcon aria-hidden="true" className="text-fg-subtle size-4" />
           <p role="status" aria-live="polite" className="text-fg text-sm font-medium">
-            Comparing {comparedEnvironments.map((environment) => environment.name).join(', ')}
+            {/* "Viewing", not "Comparing". Putting several environments on one
+                page is not a report you read and leave — it is where the work
+                gets done: every value can be revealed, written, created and
+                annotated from here, in whichever environment it belongs to. */}
+            Viewing{' '}
+            {shownEnvironments.length > 0
+              ? shownEnvironments.map((environment) => environment.name).join(', ')
+              : comparedEnvironments.map((environment) => environment.name).join(', ')}
           </p>
           <p className="text-fg-subtle hidden text-sm sm:block">
             {comparedOnly.length > 0
               ? comparedOnly
                   .map(
                     (entry) =>
-                      `${entry.name} has ${pluralize(entry.count, 'key')} this environment does not, not shown here.`,
+                      `${entry.name} has ${pluralize(entry.count, 'key')} this environment does not — loading the rest of this page will list them.`,
                   )
                   .join(' ')
-              : 'Their values are masked until you ask for one, exactly like this environment’s. Editing one there saves to that environment on its own.'}
+              : 'Every key in any of them has a row, empty where an environment does not hold it. Values are masked until you ask, and each cell saves to its own environment.'}
           </p>
           <span className="flex-1" />
           <Button
@@ -672,7 +958,7 @@ export function SecretTable({
               comparedDirty.size > 0 ? setConfirmStopComparing(true) : onStopComparing()
             }
           >
-            Stop comparing
+            Show only {currentEnvironment?.name ?? 'this environment'}
           </Button>
         </div>
       ) : null}
@@ -829,7 +1115,12 @@ export function SecretTable({
                     drafts={staged.drafts}
                     existingNames={existingNames}
                     disabled={staged.saving}
+                    otherEnvironments={draftEnvironments}
+                    {...(currentEnvironment === undefined
+                      ? {}
+                      : { environment: currentEnvironment })}
                     onPatch={(patch) => staged.patchDraft(draft.id, patch)}
+                    onPatchValueIn={(slug, value) => staged.setDraftValueIn(draft.id, slug, value)}
                     onExpand={(seeds) => staged.expandDraft(draft.id, seeds)}
                     onRemove={() => staged.removeDraft(draft.id)}
                     onAddNext={() => staged.addDraft(undefined, draft.placement)}
@@ -837,7 +1128,38 @@ export function SecretTable({
                   />
                 ))}
 
-                {visible.map((secret) => {
+                {rows.map((row) => {
+                  // A key one of the other environments on screen holds and this
+                  // one does not. Its own row type — see `AbsentRow` for why.
+                  if (row.secret === null) {
+                    return (
+                      <AbsentRow
+                        key={`absent:${row.name}`}
+                        secretName={row.name}
+                        environments={shownEnvironments}
+                        revealedIn={(slug) => shownValueIn(slug, row.name)}
+                        onCreated={(slug) => {
+                          // Created in this environment: the row becomes an
+                          // ordinary one as soon as the listing catches up.
+                          // Created elsewhere: that environment's listing is what
+                          // needs rereading — and its decrypted snapshot has to
+                          // go with it. `reloadFresh`, not `reload`: the snapshot
+                          // survives an ordinary refetch by design, and the cell
+                          // prefers it over anything it holds, so the value that
+                          // has just been replaced would stay on screen, on the
+                          // clipboard, and in the next edit's seed.
+                          if (slug === envSlug) onChanged();
+                          else compared.reloadFresh();
+                        }}
+                        onHistory={(slug) =>
+                          setHistory(slug === envSlug ? null : comparedHistory(slug, row.name))
+                        }
+                        onDirtyChange={(slug, dirty) => markComparedDirty(slug, row.name, dirty)}
+                      />
+                    );
+                  }
+
+                  const secret = row.secret;
                   const plaintext = shownValue(secret.name);
                   return (
                     <SecretRow
@@ -853,6 +1175,9 @@ export function SecretTable({
                       plaintexts={plaintexts}
                       compare={compared.environments}
                       {...(plaintext === undefined ? {} : { revealed: plaintext })}
+                      // What each compared cell in this row may show, on the same
+                      // gate as the value above them.
+                      comparedRevealed={(slug) => shownValueIn(slug, secret.name)}
                       {...(hoverArmed
                         ? {
                             // Only the arrival is interesting. Leaving used to
@@ -896,7 +1221,10 @@ export function SecretTable({
                       }
                       onDelete={() => setDeleting(secret)}
                       onCommit={saveStaged}
-                      onComparedSaved={compared.reload}
+                      // The write landed in *that* environment, so that
+                      // environment's plaintexts are the ones now describing a
+                      // value nobody holds any more. See `reloadFresh`.
+                      onComparedSaved={compared.reloadFresh}
                     />
                   );
                 })}
@@ -910,7 +1238,12 @@ export function SecretTable({
                     drafts={staged.drafts}
                     existingNames={existingNames}
                     disabled={staged.saving}
+                    otherEnvironments={draftEnvironments}
+                    {...(currentEnvironment === undefined
+                      ? {}
+                      : { environment: currentEnvironment })}
                     onPatch={(patch) => staged.patchDraft(draft.id, patch)}
+                    onPatchValueIn={(slug, value) => staged.setDraftValueIn(draft.id, slug, value)}
                     onExpand={(seeds) => staged.expandDraft(draft.id, seeds)}
                     onRemove={() => staged.removeDraft(draft.id)}
                     onAddNext={() => staged.addDraft(undefined, draft.placement)}
@@ -937,10 +1270,33 @@ export function SecretTable({
           </TableContainer>
 
           {onLoadMore !== null ? (
-            <div className="flex justify-center">
-              <Button variant="secondary" onClick={onLoadMore} loading={loadingMore}>
-                Load more
-              </Button>
+            // The next page arrives when the reader reaches the end of this one,
+            // rather than when they find a button. The element stays mounted
+            // either way — an observer cannot watch something that is not in the
+            // document — and holds the button only where there is no observer to
+            // do the watching. See `use-infinite-scroll.ts`.
+            <div ref={loadMoreSentinel} className="flex min-h-10 flex-col items-center gap-2">
+              {loadMoreError !== null ? (
+                // At the end of the rows, where the reader is looking for the
+                // next ones. The rows already read stay exactly where they are,
+                // and so does everything staged against them.
+                <>
+                  <p role="status" className="text-danger-text text-sm">
+                    Couldn’t load more — {errorMessage(loadMoreError)}
+                  </p>
+                  <Button variant="secondary" onClick={onLoadMore} loading={loadingMore}>
+                    Retry
+                  </Button>
+                </>
+              ) : scrollLoads ? (
+                <p role="status" className="text-fg-subtle text-sm">
+                  {loadingMore ? 'Loading more secrets…' : ''}
+                </p>
+              ) : (
+                <Button variant="secondary" onClick={onLoadMore} loading={loadingMore}>
+                  Load more
+                </Button>
+              )}
             </div>
           ) : null}
         </>
@@ -962,17 +1318,45 @@ export function SecretTable({
       <ConfirmDialog
         open={confirmStopComparing}
         onOpenChange={(open) => (open ? undefined : setConfirmStopComparing(false))}
-        title="Stop comparing?"
-        description={`${pluralize(comparedDirty.size, 'compared value')} you have not saved ${
+        title="Show only this environment?"
+        // Not "in another environment": a key none of the environments on
+        // screen share gets a row of its own, and every column in it — this
+        // environment's included — is an editor that closing the comparison
+        // takes down. Saying "another environment" told somebody their own
+        // unsaved work was somebody else's.
+        description={`${pluralize(comparedDirty.size, 'value')} you have not saved ${
           comparedDirty.size === 1 ? 'is' : 'are'
-        } still open. Closing the comparison discards ${comparedDirty.size === 1 ? 'it' : 'them'}.`}
-        confirmLabel="Stop and discard"
-        cancelLabel="Keep comparing"
+        } still open in the cells this closes, including any in ${
+          currentEnvironment?.name ?? 'this environment'
+        }. Closing them discards ${comparedDirty.size === 1 ? 'that one' : 'them'}.`}
+        confirmLabel="Close and discard"
+        cancelLabel="Keep them open"
         onConfirm={() => {
           setConfirmStopComparing(false);
           onStopComparing();
         }}
       />
+
+      <ConfirmDialog
+        open={confirmProductionSave.length > 0}
+        onOpenChange={(open) => (open ? undefined : setConfirmProductionSave([]))}
+        title={`Write to ${confirmProductionSave.join(' and ')}?`}
+        // The environment's name, not its slug: every other environment in this
+        // sentence is named, and a dialog that reads "in Production as well as
+        // in dev" mixes two vocabularies in one line — the one the switcher
+        // shows and the one the URL uses.
+        description={`This save creates keys in ${confirmProductionSave.join(
+          ' and ',
+        )} as well as in ${currentEnvironment?.name ?? envSlug}. Those writes land immediately and cannot be undone from here.`}
+        confirmLabel="Save everywhere"
+        confirmVariant="primary"
+        onConfirm={async () => {
+          setConfirmProductionSave([]);
+          await writeStaged();
+        }}
+      >
+        <Badge tone="production">Production</Badge>
+      </ConfirmDialog>
 
       <UnsavedChangesGuard
         when={staged.pendingCount > 0 || comparedDirty.size > 0}
@@ -995,7 +1379,10 @@ export function SecretTable({
           // listing, not this one's.
           onRestored={() => {
             if (history.envSlug !== envSlug) {
-              compared.reload();
+              // A restore replaces that environment's current value, so its
+              // snapshot describes a version that is no longer current — the
+              // same reason a compared save uses this rather than `reload`.
+              compared.reloadFresh();
               return;
             }
             forgetDecrypted();
@@ -1042,6 +1429,7 @@ function Toolbar({
   onAddDraft,
   disabled,
   revealAll,
+  onRevealAll,
   onHideAll,
   anythingShown,
   hoverReveal,
@@ -1058,6 +1446,15 @@ function Toolbar({
   onAddDraft: () => void;
   disabled: boolean;
   revealAll: RevealAll;
+  /**
+   * Reveals every environment on screen, not only `revealAll`'s own.
+   *
+   * `revealAll` is still passed whole for its loading and error state, which
+   * belong to this environment's pull — but the button must not call
+   * `revealAll.reveal` directly: on a page showing three environments that
+   * un-masked one column and left the other two masked beside it.
+   */
+  onRevealAll: () => void;
   /** Masks the "Reveal all" set *and* the rows hover mode has stuck open. */
   onHideAll: () => void;
   /**
@@ -1118,7 +1515,7 @@ function Toolbar({
             <Button
               variant={anythingShown ? 'secondary' : 'ghost'}
               size="sm"
-              onClick={anythingShown ? onHideAll : revealAll.reveal}
+              onClick={anythingShown ? onHideAll : onRevealAll}
               loading={revealAll.loading && !hoverLoading}
               aria-pressed={anythingShown}
               aria-keyshortcuts={ariaKeyShortcuts(['Shift', 'R'])}

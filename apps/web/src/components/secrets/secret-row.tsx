@@ -80,8 +80,17 @@ export interface SecretRowProps {
    * audit record rather than three of each.
    */
   plaintexts: PlaintextCache;
-  /** The other environments shift-clicked into this row. Empty is the normal case. */
+  /** The other environments on screen beside this one. Empty is the normal case. */
   compare: readonly ComparedEnvironment[];
+  /**
+   * Plaintext already decrypted for another environment's cell in this row, if
+   * it is one the reveal window says may be on screen.
+   *
+   * The table owns the gate — one reveal window and one hover set for everything
+   * visible — so the row only forwards the answer. Without it a "Reveal all"
+   * un-masked this environment's column and left the others masked beside it.
+   */
+  comparedRevealed?: ((slug: string) => string | undefined) | undefined;
   /**
    * Reports the pointer entering and leaving this row, for "Reveal on hover".
    *
@@ -165,6 +174,7 @@ export function SecretRow({
   revealed,
   plaintexts,
   compare,
+  comparedRevealed,
   onHoverChange,
   onSelectedChange,
   onEditOpen,
@@ -442,6 +452,10 @@ export function SecretRow({
               environment={compared}
               secretName={secret.name}
               secret={compared.byName.get(secret.name) ?? null}
+              {...(() => {
+                const shown = comparedRevealed?.(compared.slug);
+                return shown === undefined ? {} : { revealed: shown };
+              })()}
               onDirtyChange={(dirty) => onComparedDirtyChange?.(compared.slug, dirty)}
               // Not `disabled` — that is this environment's save in flight, and
               // it has nothing to do with a field that writes to another one.

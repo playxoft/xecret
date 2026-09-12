@@ -227,6 +227,7 @@ export function EnvironmentScreen({
           secrets={secrets.data}
           onLoadMore={secrets.loadMore}
           loadingMore={secrets.loadingMore}
+          loadMoreError={secrets.loadMoreError}
           onChanged={secrets.reload}
           onImport={() => setImporting(true)}
           onExport={() => setExporting(true)}
@@ -282,6 +283,17 @@ interface SecretList {
   data: readonly SecretSummary[] | null;
   error: unknown;
   loadingMore: boolean;
+  /**
+   * Why the last "next page" failed, or `null`.
+   *
+   * Separate from `error`, which replaces the whole table with a retry state.
+   * That is right for a first page nobody could read and wrong for a second: the
+   * rows already on screen are still good, and losing them — along with every
+   * staged change the table was holding — over a transient 429 on page two is a
+   * far worse failure than the missing rows. The table reports this one beside
+   * the sentinel instead, and stops asking until somebody presses Retry.
+   */
+  loadMoreError: unknown;
   /** `null` once every page has been read. */
   loadMore: (() => void) | null;
   reload: () => void;
@@ -305,6 +317,8 @@ interface SecretListState {
   items: readonly SecretSummary[] | null;
   cursor: string | null;
   error: unknown;
+  /** From the last `loadMore`; see `SecretList.loadMoreError`. */
+  loadMoreError: unknown;
 }
 
 function useSecretList(orgSlug: string, projectSlug: string, envSlug: string): SecretList {
@@ -313,6 +327,7 @@ function useSecretList(orgSlug: string, projectSlug: string, envSlug: string): S
     items: null,
     cursor: null,
     error: null,
+    loadMoreError: null,
   });
   const [loadingMore, setLoadingMore] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -332,11 +347,17 @@ function useSecretList(orgSlug: string, projectSlug: string, envSlug: string): S
       })
       .then((response) => {
         if (controller.signal.aborted) return;
-        setState({ path, items: response.data, cursor: response.nextCursor, error: null });
+        setState({
+          path,
+          items: response.data,
+          cursor: response.nextCursor,
+          error: null,
+          loadMoreError: null,
+        });
       })
       .catch((cause: unknown) => {
         if (controller.signal.aborted) return;
-        setState({ path, items: null, cursor: null, error: cause });
+        setState({ path, items: null, cursor: null, error: cause, loadMoreError: null });
       });
 
     return () => controller.abort();
@@ -362,13 +383,21 @@ function useSecretList(orgSlug: string, projectSlug: string, envSlug: string): S
                 items: [...(current.items ?? []), ...response.data],
                 cursor: response.nextCursor,
                 error: null,
+                loadMoreError: null,
               }
             : current,
         );
         setLoadingMore(false);
       })
       .catch((cause: unknown) => {
-        setState((current) => (current.path === path ? { ...current, error: cause } : current));
+        // Reported beside the sentinel rather than as this screen's `error`,
+        // which would replace the table — and every staged change in it — with
+        // a retry state over a transient failure on page two. The cursor is
+        // kept, so the offer of more survives; what stops is the table asking
+        // for it on its own. See `SecretList.loadMoreError`.
+        setState((current) =>
+          current.path === path ? { ...current, loadMoreError: cause } : current,
+        );
         setLoadingMore(false);
       });
   }, [path, cursor, loadingMore]);
@@ -376,6 +405,7 @@ function useSecretList(orgSlug: string, projectSlug: string, envSlug: string): S
   return {
     data: describesCurrentEnvironment ? state.items : null,
     error: describesCurrentEnvironment ? state.error : null,
+    loadMoreError: describesCurrentEnvironment ? state.loadMoreError : null,
     loadingMore,
     loadMore: cursor === null ? null : loadMore,
     reload: useCallback(() => setAttempt((current) => current + 1), []),

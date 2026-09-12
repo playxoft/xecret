@@ -876,7 +876,7 @@ set rather than blocking for ever on a credential nobody can re-key.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/orgs/{orgSlug}/audit` | `audit.read` (owners and admins). Filters: `actorId`, `action`, `projectSlug` (+`environmentSlug` within it), `outcome`, `from`, `to`. Keyset pagination over `(created_at, id)` behind an opaque cursor — §5's prescription, on the one table where offset pagination would corrupt under its own write load. The response includes the `window` actually scanned, because the range is clamped to 90 days and a UI showing less than it was asked for must say so. |
+| `GET` | `/api/orgs/{orgSlug}/audit` | `audit.read` (owners and admins). Filters: `actorId` (or `actorIds=a,b` for several, up to 50 — a repeated parameter would collapse to its last value), `action`, `projectSlug` (+`environmentSlug` within it), `outcome`, `from`, `to`. Keyset pagination over `(created_at, id)` behind an opaque cursor — §5's prescription, on the one table where offset pagination would corrupt under its own write load. The response includes the `window` actually scanned, because the range is clamped to 90 days and a UI showing less than it was asked for must say so. |
 
 ---
 

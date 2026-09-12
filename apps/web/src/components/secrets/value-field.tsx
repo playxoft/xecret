@@ -16,6 +16,7 @@ import {
   EyeOffIcon,
   InfoIcon,
   PencilIcon,
+  PlusIcon,
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -106,6 +107,17 @@ export interface ValueFieldProps {
    * "not set" about an environment it has read only the first page of.
    */
   missingLabel?: string | undefined;
+  /**
+   * Lets the reader write the value that is not there yet.
+   *
+   * Off by default, because "no such secret" is not always an invitation: a
+   * listing only one page deep cannot promise the key is absent, and an
+   * environment whose key this browser cannot open has nothing to encrypt with.
+   * Where it is on, the empty box becomes the same edit affordance a stored
+   * value has — clicking it opens an empty editor, and saving it creates the
+   * secret in that environment.
+   */
+  creatable?: boolean | undefined;
   disabled: boolean;
   /** Plaintext a "Reveal all" or hover reveal already fetched and had audited. */
   revealed?: string | undefined;
@@ -175,6 +187,7 @@ export function ValueField({
   valueType,
   environment,
   missingLabel,
+  creatable = false,
   disabled,
   revealed: external,
   onReveal,
@@ -841,11 +854,34 @@ export function ValueField({
               ) : null}
             </div>
           ) : secret === null ? (
-            <div className="border-line-subtle bg-canvas-inset/60 text-fg-subtle flex h-9 w-full items-center rounded-md border border-dashed px-2.5 text-sm leading-5">
-              <span className="truncate">
-                {missingLabel ?? `Not set in ${environment?.name ?? 'this environment'}`}
-              </span>
-            </div>
+            // Dashed either way — there is nothing stored here — but a button
+            // when the caller says one may be written. A multi-environment view
+            // exists to *work* in, and the most common thing to want from an
+            // empty cell is to fill it; reading "Not set in staging" and having
+            // to navigate to staging to act on it is the long way round.
+            creatable ? (
+              <button
+                type="button"
+                onClick={() => onEditOpen()}
+                disabled={disabled}
+                className={cn(
+                  'border-line-control text-fg-subtle hover:border-fg-subtle hover:text-fg-muted',
+                  'bg-canvas-inset/60 flex min-h-9 w-full cursor-text items-center gap-1.5 rounded-md border border-dashed px-2.5 py-[7px] text-left text-sm leading-5 transition-colors',
+                  'disabled:cursor-not-allowed disabled:opacity-60',
+                )}
+              >
+                <PlusIcon aria-hidden="true" className="size-3.5 shrink-0" />
+                <span className="truncate">
+                  {missingLabel ?? `Not set in ${environment?.name ?? 'this environment'}`}
+                </span>
+              </button>
+            ) : (
+              <div className="border-line-subtle bg-canvas-inset/60 text-fg-subtle flex h-9 w-full items-center rounded-md border border-dashed px-2.5 text-sm leading-5">
+                <span className="truncate">
+                  {missingLabel ?? `Not set in ${environment?.name ?? 'this environment'}`}
+                </span>
+              </div>
+            )
           ) : (
             // The field itself is the edit affordance. Clicking a value is the
             // thing people try first, and a box that looks like an input and
@@ -964,6 +1000,56 @@ export function EnvironmentLabel({
 }
 
 /**
+ * What the ⓘ says on hover: everything the panel says, minus what it lets you
+ * *do*.
+ *
+ * The hover hint started as the note alone — which is the one thing on this
+ * panel somebody might already know, while the version, the age and the author
+ * are the things they came to check. A key's note is often empty, and a tooltip
+ * that then read "Details and note" answered nothing at all.
+ *
+ * So it is the same facts in the same order as the panel's list, compressed to
+ * three lines. Opening the panel is still what you do to *write* a note or to
+ * copy a full timestamp; the hint is for the question you can answer without
+ * clicking — "is this the old value, and who put it here".
+ *
+ * Relative times, with no `title` to hover: you cannot hover a tooltip. The
+ * panel carries the absolute timestamps.
+ */
+function DetailsHint({
+  secret,
+  note,
+  environmentName,
+}: {
+  secret: SecretSummary;
+  note: string | null;
+  environmentName?: string | undefined;
+}) {
+  const hasNote = note !== null && note.length > 0;
+
+  return (
+    <span className="flex flex-col gap-1">
+      <span className={cn('block', hasNote ? 'text-fg' : 'text-fg-subtle')}>
+        {hasNote ? note : 'No note on this key.'}
+      </span>
+
+      <span className="text-fg-subtle block text-xs">
+        {/* The environment first, because in a stack of three cells that is
+            which one this is. */}
+        {environmentName === undefined ? '' : `${environmentName} · `}v{secret.version} · updated{' '}
+        {formatRelativeTime(secret.updatedAt)}
+      </span>
+
+      <span className="text-fg-subtle block text-xs">
+        Created by{' '}
+        <Actor userId={secret.createdBy} serviceTokenId={secret.createdByServiceTokenId} />,{' '}
+        {formatRelativeTime(secret.createdAt)}
+      </span>
+    </span>
+  );
+}
+
+/**
  * Everything said *about* this value: its note, and where it came from.
  *
  * ── Why the note lives here ──
@@ -976,10 +1062,21 @@ export function EnvironmentLabel({
  * A popover and not a dropdown menu, because none of this is a *command*:
  * Radix's menu would render `role="menu"` around a description list with no
  * items in it, install roving focus over nothing, and swallow printable keys for
- * typeahead. And no tooltip on the trigger — a tooltip trigger writes its own
- * `data-state` onto the same element and would overwrite the popover's, which is
- * what the toolbar reads to stay visible while this is open. The note is on the
- * trigger's `title` instead, which is the one hover hint that survives there.
+ * typeahead.
+ *
+ * ── The tooltip, and the wrapper it needs ──
+ * Both Radix triggers write `data-state` onto the element they are given, so
+ * putting them on the same button means the tooltip's state overwrites the
+ * popover's — and the floating toolbar reads exactly that attribute through
+ * `has-[[data-state=open]]` to stay on screen while this panel is up. With one
+ * trigger per element each keeps its own: the wrapper carries the tooltip's
+ * `delayed-open`, which that selector does not match, and the button keeps the
+ * popover's `open`, which it does.
+ *
+ * The hint is also suppressed while the panel is open. Radix closes a tooltip on
+ * pointer-down, but the pointer is still over the trigger afterwards and a small
+ * movement brings the hint back — over the panel it just opened, describing the
+ * button underneath it.
  */
 function FieldDetails({
   secret,
@@ -1008,6 +1105,10 @@ function FieldDetails({
    * a `role="alert"` under a note that saved perfectly well.
    */
   const [errorVisible, setErrorVisible] = useState(true);
+
+  /** Whether the panel is up, which is when the tooltip must stay down. */
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [hintOpen, setHintOpen] = useState(false);
 
   const hasNote = note !== null && note.length > 0;
 
@@ -1044,6 +1145,7 @@ function FieldDetails({
   return (
     <Popover
       onOpenChange={(open) => {
+        setPanelOpen(open);
         if (open) return;
         // Escape and outside clicks dismiss a Radix popover, and closing the
         // editor with them re-seeds `beginNote` from the *stored* note — the
@@ -1054,21 +1156,36 @@ function FieldDetails({
         setEditingNote(false);
       }}
     >
-      <PopoverTrigger asChild>
-        <Button
-          size="icon"
-          variant="ghost"
-          className={cn('size-8 shrink-0', hasNote && 'text-accent-text')}
-          title={hasNote ? note : 'Details'}
-          aria-label={
-            environmentName === undefined
-              ? `Details and note for ${secret.name}`
-              : `Details and note for ${secret.name} in ${environmentName}`
-          }
-        >
-          <InfoIcon className="size-4.5" />
-        </Button>
-      </PopoverTrigger>
+      <Tooltip
+        content={
+          <DetailsHint
+            secret={secret}
+            note={note}
+            {...(environmentName === undefined ? {} : { environmentName })}
+          />
+        }
+        open={hintOpen && !panelOpen}
+        onOpenChange={setHintOpen}
+      >
+        {/* The wrapper is the tooltip's trigger and the button is the popover's;
+            see the note above for why they cannot be the same element. */}
+        <span className="inline-flex shrink-0">
+          <PopoverTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              className={cn('size-8 shrink-0', hasNote && 'text-accent-text')}
+              aria-label={
+                environmentName === undefined
+                  ? `Details and note for ${secret.name}`
+                  : `Details and note for ${secret.name} in ${environmentName}`
+              }
+            >
+              <InfoIcon className="size-4.5" />
+            </Button>
+          </PopoverTrigger>
+        </span>
+      </Tooltip>
 
       {/* Radix gives this `role="dialog"`, and a dialog without a name is
           announced as "dialog" and nothing else. */}

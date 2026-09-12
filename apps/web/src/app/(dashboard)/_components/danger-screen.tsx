@@ -86,7 +86,7 @@ function DeleteProjectCard() {
 
   if (adminOrgs.length === 0) {
     return (
-      <Card>
+      <Card id="delete-project" data-settings-section>
         <CardHeader>
           <CardTitle>Delete a project</CardTitle>
           <CardDescription>
@@ -102,7 +102,10 @@ function DeleteProjectCard() {
 
   return (
     <>
-      <Card>
+      {/* The same `id` as the notice above, which is the one this replaces:
+          only ever one of the two is on the page, and `…/danger#delete-project`
+          has to reach whichever it is. */}
+      <Card id="delete-project" data-settings-section>
         <CardHeader>
           <CardTitle>Delete a project</CardTitle>
           <CardDescription>
@@ -227,7 +230,7 @@ function DeleteAccountCard() {
 
   return (
     <>
-      <Card className="border-danger/40">
+      <Card id="delete-account" data-settings-section className="border-danger/40">
         <CardHeader>
           <CardTitle>Delete this account</CardTitle>
           <CardDescription>

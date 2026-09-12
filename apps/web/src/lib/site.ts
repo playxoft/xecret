@@ -186,6 +186,17 @@ export const SITE_NAV = [
   { href: '/about', label: 'About', key: 'about' },
 ] as const;
 
+/**
+ * The chord the landing page advertises beside its sign-in button.
+ *
+ * Here rather than beside the listener that binds it, for the same reason
+ * `SITE_NAV` is here: the header that draws the key cap is a Server Component,
+ * and a constant exported from a `'use client'` module reaches it as a client
+ * reference rather than as an array. One declaration, read by the cap, by
+ * `aria-keyshortcuts`, and by `SignInShortcut`.
+ */
+export const SIGN_IN_SHORTCUT_KEYS = ['S'] as const;
+
 /** Which nav entry a page marks as current. */
 export type NavKey = (typeof SITE_NAV)[number]['key'];
 

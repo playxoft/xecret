@@ -71,7 +71,10 @@ export function VaultCard({ user }: VaultCardProps) {
 
   if (vault.loading && vault.material === null) {
     return (
-      <Card>
+      // The id and the marker are on the skeleton too: the settings contents
+      // list reads them, and a card that acquires its anchor only once loaded
+      // would make the list grow an entry under the reader's cursor.
+      <Card id="vault" data-settings-section>
         <CardHeader>
           <CardTitle>Vault</CardTitle>
         </CardHeader>
@@ -86,7 +89,7 @@ export function VaultCard({ user }: VaultCardProps) {
   }
 
   return (
-    <Card>
+    <Card id="vault" data-settings-section>
       <CardHeader>
         <CardTitle>Vault</CardTitle>
         <CardDescription>
@@ -220,7 +223,7 @@ function ChangePassphraseSection({ user }: VaultCardProps) {
         labels={{ passphrase: 'New passphrase', confirm: 'Confirm new passphrase' }}
       />
 
-      <div>
+      <div className="flex justify-end">
         <Button
           type="submit"
           variant="primary"
@@ -348,7 +351,7 @@ function RecoveryCodesSection({ user }: VaultCardProps) {
           />
         </Field>
 
-        <div>
+        <div className="flex justify-end">
           <Button
             type="submit"
             variant="secondary"

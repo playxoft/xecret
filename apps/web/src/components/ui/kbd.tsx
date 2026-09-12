@@ -4,6 +4,11 @@ import { useSyncExternalStore } from 'react';
 import type { HTMLAttributes } from 'react';
 
 import { cn } from '@/lib/cn';
+// Re-exported rather than declared here: a Server Component cannot call a
+// function exported from a `'use client'` module — it receives a client
+// reference instead of the value — and the public site header is one. See
+// `aria-shortcuts.ts`. Client callers keep importing them from here.
+export { ariaKeyShortcuts, ariaModKey } from './aria-shortcuts';
 
 /**
  * The glyphs a key cap shows instead of its name.
@@ -48,35 +53,6 @@ const GLYPHS: Record<string, string> = {
 function glyphFor(key: string): string {
   const name = key.toLowerCase();
   return (Object.hasOwn(GLYPHS, name) ? GLYPHS[name] : undefined) ?? key;
-}
-
-/**
- * The same chord as an `aria-keyshortcuts` value — `['Shift','1']` → `Shift+1`.
- *
- * This, on the control itself, is how a shortcut is announced. The caps are
- * decorative: read individually they come out as "up-pointing triangle, one",
- * and read as part of a link's name they turn "Projects" into "Projects
- * Shortcut Shift 1". `aria-keyshortcuts` is the attribute the platform already
- * has for this, and screen readers announce it separately from the name.
- *
- * The attribute's grammar is a space-separated list of `+`-joined tokens, so a
- * chord that itself contains a space would be two shortcuts; there is no such
- * key, but the join is written to be obvious about that.
- */
-export function ariaKeyShortcuts(keys: readonly string[]): string {
-  return keys.join('+');
-}
-
-/**
- * The `aria-keyshortcuts` name for the modifier `useModKey` prints.
- *
- * The cap and the attribute speak different vocabularies: a cap draws `⌘`,
- * while the attribute's grammar is written in `KeyboardEvent.key` names, where
- * that key is `Meta`. Derived from the value the cap is drawn from so the two
- * can never announce a different key than the one printed beside them.
- */
-export function ariaModKey(mod: string): string {
-  return mod === '⌘' ? 'Meta' : 'Control';
 }
 
 export interface KbdProps extends HTMLAttributes<HTMLElement> {

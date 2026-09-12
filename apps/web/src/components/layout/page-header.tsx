@@ -19,6 +19,16 @@ export interface PageHeaderProps {
   badge?: ReactNode;
   /** Primary and secondary actions for the page. */
   actions?: ReactNode;
+  /**
+   * `'lg'` gives the heading block more presence: a larger title and a
+   * description at the size the prose on the page is set in.
+   *
+   * For the screens that are an *area* rather than a page — the settings frame,
+   * where this header sits above a tab strip and stays pinned while three
+   * different screens scroll under it. At the default size it read as the
+   * heading of whichever card happened to be beneath it.
+   */
+  size?: 'md' | 'lg';
   className?: string;
 }
 
@@ -35,6 +45,7 @@ export function PageHeader({
   description,
   badge,
   actions,
+  size = 'md',
   className,
 }: PageHeaderProps) {
   return (
@@ -46,7 +57,12 @@ export function PageHeader({
     >
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2.5">
-          <h1 className="text-fg truncate text-xl font-semibold tracking-tight">
+          <h1
+            className={cn(
+              'text-fg truncate font-semibold tracking-tight',
+              size === 'lg' ? 'text-2xl' : 'text-xl',
+            )}
+          >
             {titleLoading ? (
               <>
                 {/* A `<span>` carrying the skeleton's styling rather than the
@@ -65,7 +81,14 @@ export function PageHeader({
           {titleLoading ? null : badge}
         </div>
         {description ? (
-          <p className="text-fg-muted mt-1.5 max-w-2xl text-sm leading-6">{description}</p>
+          <p
+            className={cn(
+              'text-fg-muted mt-1.5 max-w-2xl leading-6',
+              size === 'lg' ? 'text-[0.9375rem]' : 'text-sm',
+            )}
+          >
+            {description}
+          </p>
         ) : null}
       </div>
       {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}

@@ -127,7 +127,7 @@ function PasswordCard() {
   }
 
   return (
-    <Card>
+    <Card id="password" data-settings-section>
       <form onSubmit={handleSubmit} noValidate>
         <CardHeader>
           <CardTitle>Password</CardTitle>
@@ -168,7 +168,7 @@ function PasswordCard() {
             />
           </Field>
 
-          <div>
+          <div className="flex justify-end">
             <Button
               type="submit"
               variant="primary"
@@ -274,7 +274,7 @@ function LockCard() {
   if (!vault.configured) return null;
 
   return (
-    <Card>
+    <Card id="unlock" data-settings-section>
       <CardHeader>
         <CardTitle>Unlock &amp; auto-lock</CardTitle>
         <CardDescription>
@@ -284,7 +284,7 @@ function LockCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap justify-end gap-3">
           <Button variant="secondary" onClick={() => void lock()}>
             Lock this device
           </Button>
@@ -362,7 +362,7 @@ function DevicesCard() {
 
   return (
     <>
-      <Card>
+      <Card id="devices" data-settings-section>
         <CardHeader>
           <CardTitle>Signed-in devices</CardTitle>
           <CardDescription>
@@ -410,7 +410,7 @@ function DevicesCard() {
               </ul>
 
               {others.length > 0 ? (
-                <div>
+                <div className="flex justify-end">
                   <Button variant="danger" onClick={() => setSigningOutOthers(true)}>
                     Sign out {pluralize(others.length, 'other device')}
                   </Button>

@@ -255,11 +255,11 @@ export function EnvironmentSwitcher({
                     onCompare(environment.slug);
                   },
                   'aria-description': compared
-                    ? 'Being compared here. Shift-click to stop.'
-                    : 'Shift-click to compare it on this page.',
+                    ? 'Shown on this page. Shift-click to remove it.'
+                    : 'Shift-click to show it on this page as well.',
                   title: compared
-                    ? `${environment.name} is being compared here — shift-click to stop`
-                    : `Open ${environment.name}, or shift-click to compare it here`,
+                    ? `${environment.name} is shown on this page — shift-click to remove it`
+                    : `Open ${environment.name}, or shift-click to show it here as well`,
                 })}
             className={cn(
               'relative rounded-md px-2.5 py-1 text-sm whitespace-nowrap transition-colors',
@@ -347,7 +347,10 @@ export function EnvironmentSwitcher({
             {onCompare ? (
               <>
                 {overflow.length > 0 ? <DropdownMenuSeparator /> : null}
-                <DropdownMenuLabel>Compare on this page</DropdownMenuLabel>
+                {/* "Show", not "Compare": the page puts these environments side
+                    by side to be *worked* in — revealed, edited, filled in —
+                    not only to be read against each other. */}
+                <DropdownMenuLabel>Show on this page</DropdownMenuLabel>
                 {environments.map((environment, index) => {
                   if (environment.slug === currentSlug) return null;
                   // The digit follows the environment's position in the
@@ -359,8 +362,8 @@ export function EnvironmentSwitcher({
                     <DropdownMenuCheckboxItem
                       key={`compare-${environment.slug}`}
                       // Checkboxes, not radio items: several environments can be
-                      // compared at once, so each entry is on or off rather than
-                      // one of them being the choice.
+                      // on screen at once, so each entry is on or off rather
+                      // than one of them being the choice.
                       checked={comparing?.has(environment.slug) ?? false}
                       onCheckedChange={() => onCompare(environment.slug)}
                       // Kept open, because the point of the list is to turn on
@@ -382,10 +385,10 @@ export function EnvironmentSwitcher({
                           })}
                     >
                       <span className="min-w-0 flex-1 truncate">{environment.name}</span>
-                      {/* This menu is where comparing is discovered — the
-                          capsules only ever hint at it through a shift-click
-                          nobody can see — so it is also where its chord is
-                          advertised. */}
+                      {/* This menu is where the multi-environment view is
+                          discovered — the capsules only ever hint at it through a
+                          shift-click nobody can see — so it is also where its
+                          chord is advertised. */}
                       {digit !== null && mod !== null ? (
                         <Shortcut keys={[mod, 'Shift', digit]} />
                       ) : null}

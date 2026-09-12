@@ -4,6 +4,7 @@ import { errors } from '@/server/errors';
 import { json, parseQuery } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
 import {
+  ACTOR_FILTER_LIMIT,
   auditQuerySchema,
   decodeAuditCursor,
   encodeAuditCursor,
@@ -28,6 +29,12 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  * as everything else. A slug that resolves to nothing is an ordinary empty
  * result, not an error: the rows may reference projects that have since been
  * deleted, and the filter's job is to narrow, not to validate history.
+ *
+ * The actor filter takes several ids at once (`actorIds=a,b`), which the
+ * organisation's own audit screen uses to answer "what did these two people
+ * do". One query rather than one per person is not an optimisation: keyset
+ * pages over different result sets cannot be interleaved into one chronology
+ * afterwards.
  */
 
 type Params = { orgSlug: string };
@@ -59,9 +66,28 @@ export const GET = authenticatedRoute<Params>(async ({ request, params, principa
     throw errors.badRequest('Filtering by environment requires a project.');
   }
 
+  // `actorId` and `actorIds` are the same filter said two ways, so both are
+  // honoured and merged. De-duplicated because `?actorId=a&actorIds=a,b` is a
+  // reasonable thing for a client to send and `IN (a, a, b)` is not a reasonable
+  // thing to send a database.
+  const actorIds = [
+    ...new Set([
+      ...(query.actorId === undefined ? [] : [query.actorId]),
+      ...(query.actorIds ?? []),
+    ]),
+  ];
+  // The schema bounds `actorIds` at fifty, but the merge can add one more —
+  // `?actorId=z&actorIds=<fifty>` arrives as fifty-one, past the bound that
+  // exists so no `IN` list is unbounded. Refused with the schema's own sentence
+  // rather than silently truncated: a filter that quietly drops a name is the
+  // failure mode this whole screen is supposed to be immune to.
+  if (actorIds.length > ACTOR_FILTER_LIMIT) {
+    throw errors.badRequest(`Filter by at most ${ACTOR_FILTER_LIMIT} actors at a time.`);
+  }
+
   const page = await queryAuditLogs(services.db, {
     orgId,
-    actorId: query.actorId,
+    actorIds,
     action: query.action as AuditAction | undefined,
     projectId: project?.id,
     environmentId: environment?.id,

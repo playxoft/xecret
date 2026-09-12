@@ -30,13 +30,24 @@ import { EnvironmentLabel, ValueField } from './value-field';
  * having it. Non-production environments write straight through, as they do
  * everywhere else in the product.
  *
- * Deletion is not offered here at all. Comparing is a reading act, and the
- * environment you are in is the one you can destroy things in.
+ * ── Creating, not only changing ──
+ * A cell whose environment has no such key offers to write one, through the
+ * same field and the same button. That is what makes this a view of several
+ * environments rather than a report about them: the answer to "staging is
+ * missing `STRIPE_KEY`" is almost always to give staging one, and the long way
+ * round was to navigate there and add it by hand. The production confirmation
+ * covers it too, and says "create" rather than "save" so the dialog describes
+ * what the button will do.
+ *
+ * Deletion is not offered here at all. Working across environments is mostly a
+ * reading act, and the environment you are *in* is the one you can destroy
+ * things in.
  */
 export function ComparedValue({
   environment,
   secretName,
   secret,
+  revealed,
   disabled,
   onHistory,
   onSaved,
@@ -46,6 +57,13 @@ export function ComparedValue({
   secretName: string;
   /** `null` when this environment has no secret by that name. */
   secret: SecretSummary | null;
+  /**
+   * Plaintext a "Reveal all" or a hover reveal has already fetched for *this*
+   * environment, and had audited. Supplied by the table, which decides whether
+   * anything is on screen; without it this cell would re-fetch its own value and
+   * put a second record in the log for one act.
+   */
+  revealed?: string | undefined;
   disabled: boolean;
   onHistory: () => void;
   /** Refetches this environment's listing, so the version chip catches up. */
@@ -130,11 +148,20 @@ export function ComparedValue({
     const generation = seedGeneration.current + 1;
     seedGeneration.current = generation;
 
+    // Whatever the table has already decrypted for this environment, if the
+    // field did not hand it over itself. Both were audited when they happened,
+    // and asking again would log a second read for one act.
+    const known = cached ?? revealed;
+
     setError(null);
     setEditing(true);
-    setDraft(cached ?? '');
-    setBaseline(cached ?? '');
-    if (cached !== undefined) return;
+    setDraft(known ?? '');
+    setBaseline(known ?? '');
+    if (known !== undefined) return;
+    // Nothing stored here, so there is nothing to seed *from*: the editor opens
+    // empty and its first save creates the secret. Asking the reveal endpoint for
+    // a secret that does not exist would be a 404 under an empty box.
+    if (secret === null) return;
 
     setPrefilling(true);
     try {
@@ -162,7 +189,8 @@ export function ComparedValue({
   function commit() {
     // Nothing typed is not a write. Without this, opening a compared value to
     // read it and pressing Save would append a version to production recording
-    // no change at all.
+    // no change at all — and on an absent value it would create an empty
+    // secret, which `draft === baseline` catches because both are ''.
     if (draft === baseline) {
       cancel();
       return;
@@ -184,14 +212,22 @@ export function ComparedValue({
     setSaving(true);
     setError(null);
     try {
-      if (environment.io === null || secret === null) {
+      if (environment.io === null) {
         throw new Error('This environment’s key is not available.');
       }
 
-      await environment.io.update(
-        { id: secret.id, name: secretName, version: secret.version },
-        { value: draft },
-      );
+      if (secret === null) {
+        // `string`, the type every new secret starts as: it accepts anything, and
+        // the row it joins can be declared something narrower afterwards from the
+        // environment it now lives in. The type menu belongs to the key, and the
+        // key here is somebody else's.
+        await environment.io.create({ name: secretName, value: draft, valueType: 'string' });
+      } else {
+        await environment.io.update(
+          { id: secret.id, name: secretName, version: secret.version },
+          { value: draft },
+        );
+      }
       seedGeneration.current += 1;
       setEditing(false);
       setDraft('');
@@ -286,6 +322,18 @@ export function ComparedValue({
         secretName={secretName}
         valueType={toSecretValueType(secret?.valueType ?? 'string')}
         environment={{ name: environment.name, isProduction: environment.isProduction }}
+        // Offered where there is genuinely nothing here and this browser holds
+        // the key to put something: a listing read to the end, and an openable
+        // key. Past the first page "not set" is a horizon rather than a fact,
+        // and offering to create over it would race a key that may already
+        // exist — a 409 the reader could not have predicted.
+        //
+        // It does not mean the write will be *allowed*. The grant is the
+        // server's to decide and it is not consulted here; a cell offered to
+        // somebody without one is refused on save, with the reason under the
+        // field. That is the deliberate trade — the alternative is an access
+        // check per environment per row before anything can be clicked.
+        creatable={!environment.truncated && environment.io !== null}
         // This listing is one page deep. Past that, "not set" is a claim about
         // an environment only part of which has been read, and a confident wrong
         // answer about whether production holds a key is worse than an honest
@@ -296,6 +344,7 @@ export function ComparedValue({
             : `Not set in ${environment.name}`
         }
         disabled={disabled}
+        {...(revealed === undefined ? {} : { revealed })}
         onReveal={reveal}
         editing={editing}
         draft={draft}
@@ -311,7 +360,13 @@ export function ComparedValue({
         onNoteChange={saveNote}
         noteSaving={noteSaving}
         noteError={noteError}
-        saveLabel={environment.isProduction ? `Save to ${environment.name}` : 'Save'}
+        saveLabel={
+          secret === null
+            ? `Create in ${environment.name}`
+            : environment.isProduction
+              ? `Save to ${environment.name}`
+              : 'Save'
+        }
         saving={saving}
         onHistory={onHistory}
       />
@@ -319,9 +374,19 @@ export function ComparedValue({
       <ConfirmDialog
         open={confirming}
         onOpenChange={setConfirming}
-        title={`Save ${secretName} to ${environment.name}?`}
-        description="This writes immediately and appends a version. It is not part of the unsaved changes on this page."
-        confirmLabel={`Save to ${environment.name}`}
+        title={
+          secret === null
+            ? `Create ${secretName} in ${environment.name}?`
+            : `Save ${secretName} to ${environment.name}?`
+        }
+        description={
+          secret === null
+            ? 'This writes immediately, creating the key in that environment. It is not part of the unsaved changes on this page.'
+            : 'This writes immediately and appends a version. It is not part of the unsaved changes on this page.'
+        }
+        confirmLabel={
+          secret === null ? `Create in ${environment.name}` : `Save to ${environment.name}`
+        }
         confirmVariant="primary"
         onConfirm={async () => {
           await write();
