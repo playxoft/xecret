@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import { uuidv7 } from '@xecret/core/ids';
 import type { AuditAction, AuditEvent, AuditOutcome } from '@xecret/core/audit';
@@ -59,7 +59,17 @@ export interface AuditCursor {
 export interface AuditLogFilter {
   /** Always required. There is no cross-organisation audit query. */
   orgId: string;
-  actorId?: string | undefined;
+  /**
+   * Narrow to these actors. A list rather than one id because "what did these
+   * two people do" is a question an investigation actually asks, and answering
+   * it with one query per person gives back pages that cannot be merged: each
+   * has its own keyset cursor over its own result set.
+   *
+   * Empty or absent filters nothing. An id nobody acted under is an ordinary
+   * empty result, like every other filter here — history may reference users
+   * who have since been removed, and narrowing is not validating.
+   */
+  actorIds?: readonly string[] | undefined;
   action?: AuditAction | undefined;
   projectId?: string | undefined;
   environmentId?: string | undefined;
@@ -154,7 +164,17 @@ export async function queryAuditLogs(exec: Executor, filter: AuditLogFilter): Pr
   // Each optional filter has a matching index in ../schema/audit: actor and
   // action are both `(org_id, …, created_at DESC)`, so adding one narrows the
   // scan rather than forcing a filter over the org-wide time range.
-  if (filter.actorId !== undefined) conditions.push(eq(auditLogs.actorId, filter.actorId));
+  if (filter.actorIds !== undefined && filter.actorIds.length > 0) {
+    const [only] = filter.actorIds;
+    // `eq` for the single case rather than a one-element `IN`: both can use
+    // `audit_logs_actor_idx`, and the planner costs an equality on the
+    // leading columns more cheaply than a list it has to de-duplicate first.
+    conditions.push(
+      filter.actorIds.length === 1 && only !== undefined
+        ? eq(auditLogs.actorId, only)
+        : inArray(auditLogs.actorId, [...filter.actorIds]),
+    );
+  }
   if (filter.action !== undefined) conditions.push(eq(auditLogs.action, filter.action));
   if (filter.projectId !== undefined) conditions.push(eq(auditLogs.projectId, filter.projectId));
   if (filter.environmentId !== undefined) {

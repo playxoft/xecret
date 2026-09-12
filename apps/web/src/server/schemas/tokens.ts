@@ -235,8 +235,36 @@ export function toCliToken(token: CliTokenSummary, currentTokenId: string | null
  * The audit query. Plain `z.object`, like every query schema: an unknown query
  * parameter is ignored, not refused.
  */
+/**
+ * `actorId=a`, `actorIds=a,b,c` — one actor or several.
+ *
+ * A comma-separated list rather than a repeated parameter because
+ * `parseQuery` reads the query string through `Object.fromEntries`, where a
+ * repeated name silently collapses to its last value: a UI filtering on three
+ * people would have got one, with nothing to say it had happened. The single
+ * `actorId` stays accepted — it is what the API reference has always
+ * documented, and the two are merged in the route.
+ *
+ * Bounded at fifty so a query cannot be handed an `IN` list of unbounded
+ * length, and each entry is still a uuid: a non-uuid here is a client bug
+ * worth a 400, not an empty page somebody has to debug.
+ */
+const actorIdListSchema = z.pipe(
+  z.pipe(
+    z.string().check(z.maxLength(2000)),
+    z.transform((value: string) =>
+      value
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry !== ''),
+    ),
+  ),
+  z.array(z.uuid()).check(z.maxLength(50, 'Filter by at most 50 actors at a time.')),
+);
+
 export const auditQuerySchema = z.object({
   actorId: z.optional(z.uuid()),
+  actorIds: z.optional(actorIdListSchema),
   action: z.optional(z.string().check(z.maxLength(64))),
   projectSlug: z.optional(slugReferenceSchema),
   environmentSlug: z.optional(environmentSlugSchema),
