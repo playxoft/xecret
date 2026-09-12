@@ -22,9 +22,12 @@ import type { NavKey } from '@/lib/site';
  */
 export function PublicPage({
   current,
+  signInShortcut = false,
   children,
 }: {
   current?: NavKey | undefined;
+  /** Forwarded to `SiteHeader`; the landing page is the one caller that sets it. */
+  signInShortcut?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -36,7 +39,7 @@ export function PublicPage({
         Skip to content
       </a>
 
-      <SiteHeader current={current} />
+      <SiteHeader current={current} signInShortcut={signInShortcut} />
 
       <main id="main-content" className="flex-1">
         {children}

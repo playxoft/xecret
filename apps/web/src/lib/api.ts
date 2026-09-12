@@ -19,20 +19,15 @@
  *     already failed silently.
  */
 
-/** Set by the server on login; readable by JavaScript by design — it is the
- *  echo half of the double-submit pair, not a credential on its own. */
-export const CSRF_COOKIE_NAME = '__Host-xecret_csrf';
+import { CSRF_COOKIE_NAME, POST_SIGN_IN_PATH, readCookie, SIGN_IN_PATH } from './session-hint';
+
+// Re-exported rather than declared, so the callers that have always imported
+// them from here keep working. They live in `lib/session-hint.ts` because the
+// prerendered public chrome needs the same two paths and must not import this
+// module to get them; the note at the top of that file has the reasoning.
+export { CSRF_COOKIE_NAME, POST_SIGN_IN_PATH, SIGN_IN_PATH };
+
 export const CSRF_HEADER_NAME = 'X-Xecret-Csrf';
-
-export const SIGN_IN_PATH = '/sign-in';
-
-/**
- * Where sign-in lands when the request carried no `?next=`.
- *
- * Declared here, in one place, because both authentication screens and the
- * dashboard's own entry point need to agree on it.
- */
-export const POST_SIGN_IN_PATH = '/app';
 
 const API_BASE = '/api';
 
@@ -110,17 +105,6 @@ export interface ApiRequestOptions {
    * bouncing to the sign-in screen would be wrong or would loop.
    */
   redirectOnUnauthenticated?: boolean;
-}
-
-function readCookie(name: string): string | null {
-  if (typeof document === 'undefined') return null;
-  for (const part of document.cookie.split('; ')) {
-    const separator = part.indexOf('=');
-    if (separator > 0 && part.slice(0, separator) === name) {
-      return decodeURIComponent(part.slice(separator + 1));
-    }
-  }
-  return null;
 }
 
 /**
