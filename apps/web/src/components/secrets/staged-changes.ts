@@ -86,6 +86,25 @@ export interface Draft {
   note: string;
   /** One of `SECRET_VALUE_TYPES`. New rows start as `string`, which accepts anything. */
   valueType: SecretValueType;
+  /**
+   * Values for the *other* environments on screen, slug → value.
+   *
+   * Empty for every draft outside the multi-environment view, which is the
+   * normal case. A new key usually belongs in more than one environment, and
+   * adding it three times from three pages is both tedious and the way
+   * environments drift apart — so one row writes to as many of them as it has
+   * values for, in one save.
+   *
+   * The key's name, note and declared type are the same in every environment it
+   * lands in: those describe the key, not the value. Only the values differ,
+   * which is the entire reason for having environments.
+   */
+  extraValues: Readonly<Record<string, string>>;
+  /**
+   * Environments this row failed to write to on the last save, by name, for the
+   * message under it. Cleared when the row is edited again.
+   */
+  failedIn?: readonly string[] | undefined;
   /** From the last save attempt; cleared as soon as the row is edited again. */
   error: DraftError | null;
 }
@@ -150,6 +169,19 @@ export interface DraftSeed {
   valueType?: SecretValueType;
 }
 
+/**
+ * Another environment a draft row may be written to.
+ *
+ * Structurally what `ComparedEnvironment` already is, so the table passes its
+ * list straight through rather than mapping it — and this module stays unaware
+ * of how those environments were put on screen.
+ */
+export interface SaveTarget {
+  slug: string;
+  name: string;
+  io: SecretIo | null;
+}
+
 export interface SaveOutcome {
   created: number;
   updated: number;
@@ -181,6 +213,13 @@ export interface StagedChanges {
   addDraft: (seed?: DraftSeed, placement?: DraftPlacement) => void;
   addDrafts: (seeds: readonly DraftSeed[], placement?: DraftPlacement) => void;
   patchDraft: (id: string, patch: DraftSeed) => void;
+  /**
+   * Sets this row's value for another environment on screen.
+   *
+   * Separate from `patchDraft` because it is keyed: one row holds a box per
+   * environment, and a patch shaped like `{ value }` has nowhere to say which.
+   */
+  setDraftValueIn: (id: string, slug: string, value: string) => void;
   /** Replaces one draft with several — how a pasted `.env` block expands. */
   expandDraft: (id: string, seeds: readonly DraftSeed[]) => void;
   removeDraft: (id: string) => void;
@@ -238,7 +277,20 @@ export interface StagedChanges {
    * all four facts rather than four parallel maps that can disagree about which
    * row they describe.
    */
-  save: (stored: ReadonlyMap<string, SecretSummary>) => Promise<SaveOutcome>;
+  /**
+   * Writes the batch.
+   *
+   * `extras` names the other environments on screen, so a draft row carrying a
+   * value for one of them is written there in the same save. Passed per call
+   * rather than held by the hook: which environments are on screen changes while
+   * rows are being composed, and the list that matters is the one at the moment
+   * Save is pressed — a row must never be written to an environment the user has
+   * since taken off the page.
+   */
+  save: (
+    stored: ReadonlyMap<string, SecretSummary>,
+    extras?: readonly SaveTarget[],
+  ) => Promise<SaveOutcome>;
   /**
    * Drops every seeded plaintext, keeping whatever the user typed over it.
    *
@@ -372,7 +424,21 @@ export function dropSeeds(
 }
 
 export function isBlankDraft(draft: Draft): boolean {
-  return draft.name.trim() === '' && draft.value === '' && draft.note.trim() === '';
+  return (
+    draft.name.trim() === '' &&
+    draft.value === '' &&
+    draft.note.trim() === '' &&
+    // A row with a value for staging and none for the environment the page is
+    // about is not blank — it is a key being added to staging.
+    !Object.values(draft.extraValues).some((value) => value.length > 0)
+  );
+}
+
+/** The other environments this draft has a value for. */
+export function draftTargets(draft: Draft): readonly { slug: string; value: string }[] {
+  return Object.entries(draft.extraValues)
+    .filter(([, value]) => value.length > 0)
+    .map(([slug, value]) => ({ slug, value }));
 }
 
 /**
@@ -407,6 +473,20 @@ export function draftNameProblem(
  * `message` read: an arbitrary exception's message may have been built from the
  * request payload, which on this path is a credential.
  */
+/**
+ * Joins a sentence onto the end of another one.
+ *
+ * The reasons come back capitalised because each is written to stand alone
+ * under a field; appended after an em dash, a capital reads as two messages
+ * stuck together. Only the first character, and only when the second is not
+ * also upper case — `API key not found` keeps its initialism.
+ */
+export function lowerFirst(message: string): string {
+  const [first = '', second = ''] = message;
+  if (first !== first.toUpperCase() || second === second.toUpperCase()) return message;
+  return first.toLowerCase() + message.slice(1);
+}
+
 function describeWriteFailure(cause: unknown): DraftError {
   if (!isApiError(cause)) return { field: 'value', message: 'Could not save this secret.' };
 
@@ -436,8 +516,20 @@ function describeWriteFailure(cause: unknown): DraftError {
  */
 function draftProblem(draft: Draft, name: string, claimed: ReadonlySet<string>): DraftError | null {
   if (name.length === 0) return { field: 'name', message: 'Enter a name.' };
-  if (draft.value.length === 0) return { field: 'value', message: 'Enter a value.' };
-  if (claimed.has(name)) {
+
+  const valueType = toSecretValueType(draft.valueType);
+  const targets = draftTargets(draft);
+
+  // A value *somewhere*. In the multi-environment view a row may deliberately
+  // leave this environment's box empty — "staging needs this key, production
+  // does not yet" — and refusing that would make the other boxes unusable.
+  if (draft.value.length === 0 && targets.length === 0) {
+    return { field: 'value', message: 'Enter a value.' };
+  }
+
+  // Only about this environment: `claimed` is built from its listing, and the
+  // same name existing in staging is not a conflict, it is the normal case.
+  if (draft.value.length > 0 && claimed.has(name)) {
     return { field: 'name', message: 'That name is already taken in this environment.' };
   }
 
@@ -446,9 +538,16 @@ function draftProblem(draft: Draft, name: string, claimed: ReadonlySet<string>):
     return { field: 'name', message: nameCheck.message ?? 'That name cannot be used.' };
   }
 
-  const shape = checkSecretValue(draft.value, toSecretValueType(draft.valueType));
-  if (!shape.valid) {
-    return { field: 'value', message: shape.message ?? 'That value does not match its type.' };
+  // The declared type describes the key, so every value written under it has to
+  // match — including the ones going to the other environments.
+  for (const value of [
+    ...(draft.value.length > 0 ? [draft.value] : []),
+    ...targets.map((target) => target.value),
+  ]) {
+    const shape = checkSecretValue(value, valueType);
+    if (!shape.valid) {
+      return { field: 'value', message: shape.message ?? 'That value does not match its type.' };
+    }
   }
 
   return null;
@@ -480,6 +579,7 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
         value: seed.value ?? '',
         note: seed.note ?? '',
         valueType: seed.valueType ?? DEFAULT_SECRET_VALUE_TYPE,
+        extraValues: {},
         error: null,
       };
     });
@@ -504,13 +604,29 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
     [addDrafts],
   );
 
+  const setDraftValueIn = useCallback((id: string, slug: string, value: string) => {
+    setDrafts((current) =>
+      current.map((draft) => {
+        if (draft.id !== id) return draft;
+        const extraValues = { ...draft.extraValues };
+        // Deleted rather than stored empty, so `draftTargets` and
+        // `isBlankDraft` can both ask the simple question and a box emptied
+        // again leaves no trace that would write an empty secret.
+        if (value.length === 0) delete extraValues[slug];
+        else extraValues[slug] = value;
+        // The last attempt's failure described the values as they were then.
+        return { ...draft, extraValues, error: null, failedIn: undefined };
+      }),
+    );
+  }, []);
+
   const patchDraft = useCallback((id: string, patch: DraftSeed) => {
     setDrafts((current) =>
       current.map((draft) =>
         draft.id === id
           ? // The stale error is dropped on any edit: leaving "already exists"
             // under a name the user has since changed is worse than no message.
-            { ...draft, ...patch, error: null }
+            { ...draft, ...patch, error: null, failedIn: undefined }
           : draft,
       ),
     );
@@ -744,6 +860,8 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
   }, []);
 
   const pendingCount = useMemo(() => {
+    // One row counts once however many environments it is going to, which is
+    // what the save bar is counting: rows the user has composed, not requests.
     const rows = drafts.filter((draft) => !isBlankDraft(draft)).length;
     let values = 0;
     // A staged type, name or note change counts even with no new value: it is a
@@ -763,7 +881,10 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
   }, [drafts, edits]);
 
   const save = useCallback(
-    async (stored: ReadonlyMap<string, SecretSummary>): Promise<SaveOutcome> => {
+    async (
+      stored: ReadonlyMap<string, SecretSummary>,
+      extras: readonly SaveTarget[] = [],
+    ): Promise<SaveOutcome> => {
       setSaving(true);
 
       const outcome: SaveOutcome = {
@@ -824,21 +945,106 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
             continue;
           }
 
-          try {
-            await io.create({
-              name,
-              value: draft.value,
-              valueType: draft.valueType,
-              ...(draft.note.trim().length === 0 ? {} : { note: draft.note.trim() }),
-            });
-            claimed.add(name);
-            outcome.created += 1;
-            outcome.wrote = true;
-            // Not pushed to `survivingDrafts`, which is what drops the plaintext.
-          } catch (cause) {
-            survivingDrafts.push({ ...draft, error: describeWriteFailure(cause) });
-            outcome.failed += 1;
+          const note = draft.note.trim();
+          const shared = {
+            name,
+            valueType: draft.valueType,
+            ...(note.length === 0 ? {} : { note }),
+          };
+
+          // ── This environment ──
+          // Skipped when its box was left empty, which in the multi-environment
+          // view is a deliberate "not here, yet".
+          let herePending = draft.value.length > 0;
+          let hereProblem: DraftError | null = null;
+
+          if (herePending) {
+            try {
+              await io.create({ ...shared, value: draft.value });
+              claimed.add(name);
+              outcome.created += 1;
+              outcome.wrote = true;
+              herePending = false;
+            } catch (cause) {
+              hereProblem = describeWriteFailure(cause);
+            }
           }
+
+          // ── The other environments on screen ──
+          //
+          // Sequential with the write above and with each other, for the reason
+          // the whole batch is: each is an audited mutation against the same rate
+          // limit bucket, and the outcome has to stay describable.
+          //
+          // Attempted even when this environment's write failed. They are
+          // separate environments with separate keys and separate grants — a
+          // rejection here says nothing about staging, and abandoning the rest of
+          // the row would quietly drop values the user had typed.
+          const survivingValues: Record<string, string> = {};
+          const failedIn: string[] = [];
+          /**
+           * Why the first of them refused.
+           *
+           * One reason rather than one per environment: they are almost always
+           * the same reason — the key already exists there, the grant is missing
+           * — and a row carrying three messages is a row nobody reads. It comes
+           * from `describeWriteFailure`, which is the same mapping the write to
+           * this environment reports through, so "already exists" reads the same
+           * wherever it happened.
+           */
+          let firstReason: string | null = null;
+
+          for (const target of draftTargets(draft)) {
+            const environment = extras.find((entry) => entry.slug === target.slug);
+            // Gone from the screen between typing and saving, or a key this
+            // browser cannot encrypt with. Either way the value is kept rather
+            // than thrown away with a success message over it.
+            if (environment === undefined || environment.io === null) {
+              survivingValues[target.slug] = target.value;
+              failedIn.push(environment?.name ?? target.slug);
+              firstReason ??=
+                environment === undefined
+                  ? 'it is no longer on this page'
+                  : 'its key is not available here';
+              continue;
+            }
+
+            try {
+              await environment.io.create({ ...shared, value: target.value });
+              outcome.created += 1;
+              outcome.wrote = true;
+            } catch (cause) {
+              survivingValues[target.slug] = target.value;
+              failedIn.push(environment.name);
+              // The message only — `describeWriteFailure` maps the API's error
+              // to a sentence and never reads a response body. See the note at
+              // the top of `lib/api.ts` about why that matters here.
+              firstReason ??= describeWriteFailure(cause).message;
+            }
+          }
+
+          // Nothing left to do: the row is dropped, which is what drops the
+          // plaintexts it was holding.
+          if (!herePending && hereProblem === null && failedIn.length === 0) continue;
+
+          survivingDrafts.push({
+            ...draft,
+            // Emptied where it landed, so a retry cannot write it twice.
+            value: hereProblem === null && !herePending ? '' : draft.value,
+            extraValues: survivingValues,
+            ...(failedIn.length === 0 ? {} : { failedIn }),
+            error:
+              hereProblem ??
+              (failedIn.length === 0
+                ? null
+                : {
+                    field: 'value',
+                    message: `Not written to ${failedIn.join(', ')}${
+                      firstReason === null ? '' : ` — ${lowerFirst(firstReason)}`
+                    }. Those values are still here.`,
+                  }),
+          });
+          outcome.failed += 1;
         }
 
         for (const [name, edit] of edits) {
@@ -975,6 +1181,7 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
     addDraft,
     addDrafts,
     patchDraft,
+    setDraftValueIn,
     expandDraft,
     removeDraft,
     openEdit,

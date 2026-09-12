@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { api } from '@/lib/api';
 import { apiPath, withQuery } from '@/app/(dashboard)/_lib/paths';
@@ -20,9 +20,12 @@ import type { SecretListResponse, SecretSummary } from './types';
  *
  * ── What it fetches, and what it deliberately does not ──
  * `GET …/secrets` per compared environment: names, versions, timestamps,
- * authors — no ciphertext is read and nothing is decrypted. Shift-clicking
- * staging to put it beside dev must not decrypt staging; the values arrive one
- * at a time, through the audited reveal, when somebody actually asks for one.
+ * authors — no ciphertext is read and nothing is decrypted. Putting staging
+ * beside dev must not decrypt staging; the values arrive when somebody asks for
+ * them, one at a time through the audited reveal, or a whole environment at a
+ * time through `loadValues` below — which is what "Reveal all" and "Reveal on
+ * hover" call, so those two mean every environment on screen rather than only
+ * the one the page is about.
  *
  * ── One request per environment, not one per row ──
  * Sixty rows comparing two environments is two requests, because the answer is
@@ -60,6 +63,18 @@ export interface ComparedEnvironment extends EnvironmentTarget {
   error: string | null;
   byName: ReadonlyMap<string, SecretSummary>;
   /**
+   * This environment's plaintexts, name → value, once `loadValues` has pulled
+   * them. `null` until then, and again after `forgetValues`.
+   *
+   * Holding them here rather than in each cell is the same decision
+   * `useRevealAll` makes for the environment the page is about: one `pull` per
+   * environment, one `secret.read` record for the click that asked, instead of
+   * one request and one record per row. Whether they are *shown* is not this
+   * hook's business — the table gates that on the same reveal window and hover
+   * set the primary column uses, so everything on screen masks on one clock.
+   */
+  values: Readonly<Record<string, string>> | null;
+  /**
    * Whether the environment holds more than this one page.
    *
    * Carried because a row's only question is "does this environment have my
@@ -76,6 +91,7 @@ interface Entry {
   loading: boolean;
   error: string | null;
   byName: ReadonlyMap<string, SecretSummary>;
+  values: Readonly<Record<string, string>> | null;
   truncated: boolean;
 }
 
@@ -84,6 +100,7 @@ const EMPTY: Entry = {
   loading: true,
   error: null,
   byName: new Map(),
+  values: null,
   truncated: false,
 };
 
@@ -91,6 +108,30 @@ export interface ComparedSecrets {
   environments: readonly ComparedEnvironment[];
   /** Refetches everything — called after a compared value has been written. */
   reload: () => void;
+  /**
+   * Decrypts every compared environment, once each.
+   *
+   * Idempotent and cheap to call again: an environment that already has its
+   * snapshot, or a pull already in flight, is skipped. An environment this
+   * browser cannot open is skipped too — its cells keep the mask and their own
+   * eye, which is the honest version of "not available here".
+   *
+   * A failure is deliberately silent at this level. The cells fall back to
+   * revealing one value at a time, reporting their own reason where the user is
+   * looking; a banner over the table saying an environment could not be
+   * decrypted would be the same news twice over, and usually for an environment
+   * the reader was not reading.
+   */
+  loadValues: () => void;
+  /**
+   * Drops every compared plaintext, and aborts the pulls still arriving.
+   *
+   * Called by the same things that call `RevealAll.forget`: a write, a delete,
+   * an import, a change of environment. A snapshot that outlives what it
+   * describes is worse than no snapshot — it keeps a replaced credential on
+   * screen, puts it on the clipboard, and seeds it into the next edit.
+   */
+  forgetValues: () => void;
 }
 
 export function useComparedSecrets(
@@ -151,6 +192,12 @@ export function useComparedSecrets(
               loading: false,
               error: null,
               byName,
+              // The snapshot is kept across a refetch: `reload()` runs after
+              // every compared write, and dropping the plaintexts here would
+              // re-mask an environment the user is reading because they saved a
+              // value in a different one. What makes a snapshot *wrong* calls
+              // `forgetValues`, which is the write path's job and not this one's.
+              values: current[slug]?.values ?? null,
               truncated: response.nextCursor !== null,
             },
           }));
@@ -172,6 +219,7 @@ export function useComparedSecrets(
                 loading: false,
                 error: 'Could not read this environment.',
                 byName: previous?.byName ?? new Map(),
+                values: previous?.values ?? null,
                 truncated: previous?.truncated ?? false,
               },
             };
@@ -181,6 +229,81 @@ export function useComparedSecrets(
 
     return () => controller.abort();
   }, [orgSlug, orgId, projectSlug, key, attempt]);
+
+  /**
+   * The pull in flight per environment, so a second "Reveal all" cannot start a
+   * second decryption of the same one — and so a response for an environment
+   * that has been dropped from the view, or invalidated by a write, is discarded
+   * rather than rendered.
+   */
+  const pulls = useRef(new Map<string, AbortController>());
+
+  const abortPulls = useCallback(() => {
+    for (const controller of pulls.current.values()) controller.abort();
+    pulls.current.clear();
+  }, []);
+
+  // Everything in flight belongs to the environments that were on screen when it
+  // was issued. Unmounting, or changing which environments those are, abandons
+  // it: the decryptions behind a `pull` are hundreds of AES-GCM opens in `e2ee`
+  // mode, and finishing them into a screen nobody is looking at only produces
+  // plaintexts for a state that no longer exists.
+  useEffect(() => () => abortPulls(), [abortPulls, key]);
+
+  const loadValues = useCallback(() => {
+    for (const [slug, entry] of Object.entries(entries)) {
+      // Nothing to open with, a snapshot already here, or a pull already out.
+      if (entry.io === null || entry.values !== null || pulls.current.has(slug)) continue;
+
+      const controller = new AbortController();
+      pulls.current.set(slug, controller);
+
+      // The signal goes *into* the pull rather than around it, for the reason
+      // `useRevealAll` gives: in `e2ee` mode a pull is one request followed by a
+      // decryption per secret, and a controller the IO never saw could cancel
+      // only the fetch.
+      entry.io
+        .pull({ signal: controller.signal })
+        .then((values) => {
+          if (controller.signal.aborted) return;
+          setEntries((current) => {
+            const previous = current[slug];
+            // Gone from the view, or refetched into a different environment's
+            // slot: either way these plaintexts have nowhere to belong.
+            if (previous === undefined) return current;
+            return { ...current, [slug]: { ...previous, values } };
+          });
+        })
+        .catch(() => {
+          // Silent by design — see `loadValues` on `ComparedSecrets`. The cells
+          // keep their own eye, which reports its own reason.
+        })
+        .finally(() => {
+          if (pulls.current.get(slug) === controller) pulls.current.delete(slug);
+        });
+    }
+  }, [entries]);
+
+  const forgetValues = useCallback(() => {
+    abortPulls();
+    setEntries((current) => {
+      let changed = false;
+      const next: Record<string, Entry> = {};
+      for (const [slug, entry] of Object.entries(current)) {
+        if (entry.values === null) {
+          next[slug] = entry;
+          continue;
+        }
+        changed = true;
+        // A new object, so the plaintexts are not left reachable through the
+        // previous one: they must not survive in a React fibre for the rest of
+        // the page's life, where the next error boundary or dev-tools
+        // inspection would surface every one of them.
+        next[slug] = { ...entry, values: null };
+      }
+      return changed ? next : current;
+    });
+  }, [abortPulls]);
 
   const compared = useMemo(
     () =>
@@ -194,6 +317,8 @@ export function useComparedSecrets(
   return {
     environments: compared,
     reload: useCallback(() => setAttempt((current) => current + 1), []),
+    loadValues,
+    forgetValues,
   };
 }
 

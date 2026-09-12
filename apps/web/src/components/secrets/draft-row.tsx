@@ -23,6 +23,7 @@ import {
   Tooltip,
   useToast,
 } from '@/components/ui';
+import { EnvironmentLabel } from './value-field';
 import { ValueTypeMenu } from './value-type-menu';
 import { looksLikeAssignments, parsePastedSecrets } from './paste-secrets';
 import { draftNameProblem, isBlankDraft } from './staged-changes';
@@ -35,7 +36,31 @@ export interface DraftRowProps {
   drafts: readonly Draft[];
   existingNames: ReadonlySet<string>;
   disabled: boolean;
+  /**
+   * The environments on screen beside this one, each with a box of its own.
+   *
+   * Empty in the ordinary single-environment table, where the row keeps exactly
+   * the one value field it always had. A new key usually belongs in more than one
+   * environment, and the alternative to this row is adding it three times from
+   * three pages — which is how environments drift apart in the first place.
+   */
+  otherEnvironments?: readonly {
+    slug: string;
+    name: string;
+    isProduction: boolean;
+    /**
+     * Whether this browser can write there — false for an end-to-end encrypted
+     * environment whose key it has not opened. The box is still drawn, disabled:
+     * leaving it out would read as "that environment does not exist", and the
+     * truth is that the key does not.
+     */
+    writable: boolean;
+  }[];
+  /** This environment, for the label beside its own box once there is more than one. */
+  environment?: { name: string; isProduction: boolean } | undefined;
   onPatch: (patch: DraftSeed) => void;
+  /** Sets the value for one of `otherEnvironments`. */
+  onPatchValueIn?: ((slug: string, value: string) => void) | undefined;
   onExpand: (seeds: readonly DraftSeed[]) => void;
   onRemove: () => void;
   /** Another empty row after this one — what Enter in the value asks for. */
@@ -85,7 +110,10 @@ export function DraftRow({
   drafts,
   existingNames,
   disabled,
+  otherEnvironments = [],
+  environment,
   onPatch,
+  onPatchValueIn,
   onExpand,
   onRemove,
   onAddNext,
@@ -112,6 +140,9 @@ export function DraftRow({
   const [noteTip, setNoteTip] = useState(false);
 
   const hasNote = draft.note.length > 0;
+
+  /** Whether this cell holds a box for more than one environment. */
+  const multiple = otherEnvironments.length > 0;
 
   const liveNameProblem = draftNameProblem(draft, drafts, existingNames);
   const nameError = draft.error?.field === 'name' ? draft.error.message : liveNameProblem;
@@ -332,43 +363,92 @@ export function DraftRow({
 
       <TableCell className="align-top">
         <div className="flex min-w-0 items-start gap-1.5">
-          {/* No live byte counter: measuring the value on every keystroke would
-              copy the plaintext into a fresh buffer each time, and the server's
-              64 KB refusal already says exactly what is wrong. */}
-          <Textarea
-            ref={valueRef}
-            value={draft.value}
-            onChange={(event) => onPatch({ value: event.target.value })}
-            onKeyDown={handleValueKeyDown}
-            disabled={disabled}
-            rows={1}
-            placeholder="Paste the value"
-            aria-label="Secret value"
-            aria-invalid={valueError !== null ? true : undefined}
-            // Every assistant that could copy this value somewhere else is turned
-            // off: autocomplete would offer it back on another form, and a spell
-            // checker on some platforms sends its input to a remote service.
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            className={cn(
-              // `block` and `py-[7px]` for the reasons set out at length on the
-              // stored rows' editor: the baseline gap under an inline-block
-              // textarea, and the two pixels a 6px padding leaves at the bottom.
-              'block field-sizing-content max-h-64 min-h-9 py-[7px] font-mono text-sm leading-5 break-all',
-              // On the border this box already has rather than on a ring outside
-              // it, for the reason given at length on the stored rows' editor:
-              // the app-wide outline reads as the field growing under the
-              // pointer. The two boxes are the same control at two ages and must
-              // behave the same way.
-              'focus-visible:border-accent focus-visible:outline-none',
-              // `aria-invalid` is what paints the border — see `INPUT_BASE`.
-              // A `focus:ring-*` colour here would tint a ring no utility in
-              // this file gives a width to, and render nothing at all.
-              valueError !== null && 'border-danger',
-            )}
-          />
+          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+            <div className="flex min-w-0 items-center gap-2">
+              {/* The label only earns its place once there is more than one box
+                  in this cell; on its own it would repeat the page heading. Same
+                  rule, same component, as the stored rows above. */}
+              {multiple && environment !== undefined ? (
+                <EnvironmentLabel environment={environment} />
+              ) : null}
+
+              {/* No live byte counter: measuring the value on every keystroke would
+                  copy the plaintext into a fresh buffer each time, and the server's
+                  64 KB refusal already says exactly what is wrong. */}
+              <Textarea
+                ref={valueRef}
+                value={draft.value}
+                onChange={(event) => onPatch({ value: event.target.value })}
+                onKeyDown={handleValueKeyDown}
+                disabled={disabled}
+                rows={1}
+                placeholder={
+                  multiple && environment !== undefined
+                    ? `Value for ${environment.name}, or leave it empty`
+                    : 'Paste the value'
+                }
+                aria-label={
+                  multiple && environment !== undefined
+                    ? `Secret value for ${environment.name}`
+                    : 'Secret value'
+                }
+                aria-invalid={valueError !== null ? true : undefined}
+                // Every assistant that could copy this value somewhere else is turned
+                // off: autocomplete would offer it back on another form, and a spell
+                // checker on some platforms sends its input to a remote service.
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                className={cn(
+                  // `block` and `py-[7px]` for the reasons set out at length on the
+                  // stored rows' editor: the baseline gap under an inline-block
+                  // textarea, and the two pixels a 6px padding leaves at the bottom.
+                  'block field-sizing-content max-h-64 min-h-9 min-w-0 flex-1 py-[7px] font-mono text-sm leading-5 break-all',
+                  // On the border this box already has rather than on a ring outside
+                  // it, for the reason given at length on the stored rows' editor:
+                  // the app-wide outline reads as the field growing under the
+                  // pointer. The two boxes are the same control at two ages and must
+                  // behave the same way.
+                  'focus-visible:border-accent focus-visible:outline-none',
+                  // `aria-invalid` is what paints the border — see `INPUT_BASE`.
+                  // A `focus:ring-*` colour here would tint a ring no utility in
+                  // this file gives a width to, and render nothing at all.
+                  valueError !== null && 'border-danger',
+                )}
+              />
+            </div>
+
+            {/* One box per other environment on screen. An empty one writes
+                nothing: a key that belongs in staging and not yet in production
+                is a row with production left blank, not a row to save twice. */}
+            {otherEnvironments.map((other) => (
+              <div key={other.slug} className="flex min-w-0 items-center gap-2">
+                <EnvironmentLabel environment={other} />
+                <Textarea
+                  value={draft.extraValues[other.slug] ?? ''}
+                  onChange={(event) => onPatchValueIn?.(other.slug, event.target.value)}
+                  onKeyDown={handleValueKeyDown}
+                  disabled={disabled || !other.writable || onPatchValueIn === undefined}
+                  rows={1}
+                  placeholder={
+                    other.writable
+                      ? `Value for ${other.name}, or leave it empty`
+                      : `${other.name}'s key is not available here`
+                  }
+                  aria-label={`Secret value for ${other.name}`}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  className={cn(
+                    'block field-sizing-content max-h-64 min-h-9 min-w-0 flex-1 py-[7px] font-mono text-sm leading-5 break-all',
+                    'focus-visible:border-accent focus-visible:outline-none',
+                  )}
+                />
+              </div>
+            ))}
+          </div>
 
           <span className="flex shrink-0">
             {/* Always visible, unlike the floating bar on a saved row: a draft is

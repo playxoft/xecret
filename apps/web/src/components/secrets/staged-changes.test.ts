@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   draftNameProblem,
+  draftTargets,
   dropSeeds,
+  lowerFirst,
   hasNewValue,
   isBlankDraft,
   isTouched,
@@ -27,11 +29,20 @@ function draft(patch: Partial<Draft> = {}): Draft {
     value: '',
     note: '',
     valueType: 'string',
+    extraValues: {},
     error: null,
     ...patch,
   };
 }
 
+/**
+ * A row carrying a value for another environment and none for this one.
+ *
+ * The multi-environment view makes that a deliberate state — "staging needs this
+ * key, production does not yet" — and two things have to agree about it: the
+ * save bar must count the row, and the save must not refuse it for having an
+ * empty box here.
+ */
 function edit(patch: Partial<PendingEdit> = {}): PendingEdit {
   return { value: '', error: null, ...patch };
 }
@@ -75,6 +86,47 @@ describe('isBlankDraft', () => {
     expect(isBlankDraft(draft({ name: 'A' }))).toBe(false);
     expect(isBlankDraft(draft({ value: 'x' }))).toBe(false);
     expect(isBlankDraft(draft({ note: 'rotated quarterly' }))).toBe(false);
+  });
+
+  it('counts a value typed for another environment on screen', () => {
+    // The multi-environment view makes "staging needs this key, production does
+    // not yet" a row with an empty box here and a full one there. Reading that as
+    // blank would have the save bar ignore it and Discard throw it away without
+    // asking.
+    expect(isBlankDraft(draft({ name: 'API_KEY', extraValues: { staging: 'x' } }))).toBe(false);
+    // And an emptied box is blank again: `setDraftValueIn` deletes the entry, but
+    // nothing stops a caller from storing the empty string.
+    expect(isBlankDraft(draft({ extraValues: { staging: '' } }))).toBe(true);
+  });
+});
+
+describe('lowerFirst', () => {
+  it('joins a stand-alone sentence onto the end of another', () => {
+    expect(lowerFirst('Could not save this secret.')).toBe('could not save this secret.');
+  });
+
+  it('leaves an initialism alone', () => {
+    // "Not written to production — API key not found" must not become "aPI".
+    expect(lowerFirst('API key not found.')).toBe('API key not found.');
+  });
+
+  it('is safe on an empty message', () => {
+    expect(lowerFirst('')).toBe('');
+  });
+});
+
+describe('draftTargets', () => {
+  it('lists only the environments with something to write', () => {
+    expect(
+      draftTargets(draft({ extraValues: { staging: 'x', production: '', dev: 'y' } })),
+    ).toEqual([
+      { slug: 'staging', value: 'x' },
+      { slug: 'dev', value: 'y' },
+    ]);
+  });
+
+  it('is empty for the ordinary single-environment row', () => {
+    expect(draftTargets(draft({ name: 'API_KEY', value: 'x' }))).toEqual([]);
   });
 });
 
