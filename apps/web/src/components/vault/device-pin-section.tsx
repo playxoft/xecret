@@ -14,12 +14,13 @@ import {
   Button,
   ConfirmDialog,
   Field,
-  Input,
   LockIcon,
   Skeleton,
   useToast,
 } from '@/components/ui';
-import { pinProblem, useDevicePinId } from './device-pin';
+import { enrolmentPinProblem, useDevicePinId } from './device-pin';
+import type { EnrolmentPinProblem } from './device-pin';
+import { PinInput } from './pin-input';
 import { withVaultKeys } from './key-store';
 import { disablePinHere, enrolPin, revokeAllPinDevices, revokePinDevice } from './vault-client';
 import type { PinDevice } from './vault-client';
@@ -73,7 +74,7 @@ export function DevicePinSection({ user }: DevicePinSectionProps) {
   const [choosing, setChoosing] = useState(false);
   const [pin, setPin] = useState('');
   const [confirm, setConfirm] = useState('');
-  const [problem, setProblem] = useState<string | null>(null);
+  const [problem, setProblem] = useState<EnrolmentPinProblem | null>(null);
   const [saving, setSaving] = useState(false);
 
   const [revoking, setRevoking] = useState<PinDevice | null>(null);
@@ -90,7 +91,10 @@ export function DevicePinSection({ user }: DevicePinSectionProps) {
     event.preventDefault();
     if (saving) return;
 
-    const fault = pinProblem(pin, confirm);
+    // Length, then whether the PIN is worth having, then whether it was typed
+    // twice the same — all of it before a single byte of key material is
+    // touched. See `enrolmentPinProblem`.
+    const fault = enrolmentPinProblem(pin, confirm);
     if (fault !== null) {
       setProblem(fault);
       return;
@@ -101,7 +105,7 @@ export function DevicePinSection({ user }: DevicePinSectionProps) {
     // locks with the form open.
     const keys = vault.keys;
     if (keys === null) {
-      setProblem('Your vault locked. Unlock it and try again.');
+      setProblem({ field: 'pin', message: 'Your vault locked. Unlock it and try again.' });
       return;
     }
 
@@ -128,7 +132,7 @@ export function DevicePinSection({ user }: DevicePinSectionProps) {
         title: enrolled ? 'PIN changed for this browser' : 'PIN set up for this browser',
       });
     } catch (cause) {
-      setProblem(errorMessage(cause));
+      setProblem({ field: 'pin', message: errorMessage(cause) });
     } finally {
       setSaving(false);
     }
@@ -188,36 +192,19 @@ export function DevicePinSection({ user }: DevicePinSectionProps) {
             <Field
               label={enrolled ? 'New PIN' : 'Choose a PIN'}
               hint={`${DEVICE_PIN_LENGTH} digits. Avoid your birthday and 123456 — this is the one credential here that a person holding your laptop could plausibly guess.`}
-              error={problem}
+              error={problem?.field === 'pin' ? problem.message : null}
             >
-              <Input
-                type="password"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                maxLength={DEVICE_PIN_LENGTH}
-                value={pin}
-                onChange={(event) =>
-                  setPin(event.target.value.replace(/\D/g, '').slice(0, DEVICE_PIN_LENGTH))
-                }
-                autoComplete="off"
-                autoFocus
-                className="font-mono tracking-[0.5em]"
-              />
+              {/* No `onComplete`: the sixth digit of a PIN being *chosen* is
+                  followed by a confirmation box, and submitting from the first
+                  field is how somebody enrols a typo. */}
+              <PinInput value={pin} onChange={setPin} autoFocus />
             </Field>
 
-            <Field label="Confirm PIN">
-              <Input
-                type="password"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                maxLength={DEVICE_PIN_LENGTH}
-                value={confirm}
-                onChange={(event) =>
-                  setConfirm(event.target.value.replace(/\D/g, '').slice(0, DEVICE_PIN_LENGTH))
-                }
-                autoComplete="off"
-                className="font-mono tracking-[0.5em]"
-              />
+            <Field
+              label="Confirm PIN"
+              error={problem?.field === 'confirm' ? problem.message : null}
+            >
+              <PinInput value={confirm} onChange={setConfirm} />
             </Field>
 
             <div className="flex flex-wrap gap-3">

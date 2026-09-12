@@ -16,6 +16,7 @@ import { Label } from './label';
  */
 interface FieldContextValue {
   controlId: string;
+  labelId: string;
   describedBy: string | undefined;
   invalid: boolean;
 }
@@ -46,6 +47,45 @@ export function useFieldControl(): Partial<{
   return props;
 }
 
+/**
+ * The same wiring, for a control that is several elements rather than one.
+ *
+ * A six-box PIN entry has no single element to hang the field's label on: the
+ * `htmlFor` still points at the first box, so clicking the label lands the caret
+ * where typing starts, but what the *group* is called has to be announced by the
+ * group. So this hands back the label's id for `aria-labelledby` and the
+ * description for the wrapper, leaving each box free to name itself — "digit 3
+ * of 6" is what a screen reader must say on arrival at the third one, and it
+ * cannot say that if every box repeats the field's label.
+ *
+ * Separate from {@link useFieldControl} rather than an addition to it: putting
+ * `aria-labelledby` on the ordinary `Input` would give every text field in the
+ * product two label associations for one `<label>`.
+ */
+export function useFieldGroup(): {
+  controlId: string | undefined;
+  labelledBy: string | undefined;
+  describedBy: string | undefined;
+  invalid: boolean;
+} {
+  const field = use(FieldContext);
+  if (!field) {
+    return {
+      controlId: undefined,
+      labelledBy: undefined,
+      describedBy: undefined,
+      invalid: false,
+    };
+  }
+
+  return {
+    controlId: field.controlId,
+    labelledBy: field.labelId,
+    describedBy: field.describedBy,
+    invalid: field.invalid,
+  };
+}
+
 export interface FieldProps {
   label: ReactNode;
   children: ReactNode;
@@ -65,6 +105,7 @@ export interface FieldProps {
 export function Field({ label, children, hint, error, optional, className }: FieldProps) {
   const reactId = useId();
   const controlId = `${reactId}-control`;
+  const labelId = `${reactId}-label`;
   const hintId = `${reactId}-hint`;
   const errorId = `${reactId}-error`;
 
@@ -77,10 +118,12 @@ export function Field({ label, children, hint, error, optional, className }: Fie
     [hasError ? errorId : null, hint ? hintId : null].filter(Boolean).join(' ') || undefined;
 
   return (
-    <FieldContext value={{ controlId, describedBy, invalid: hasError }}>
+    <FieldContext value={{ controlId, labelId, describedBy, invalid: hasError }}>
       <div className={cn('flex flex-col gap-1.5', className)}>
         <div className="flex items-baseline justify-between gap-3">
-          <Label htmlFor={controlId}>{label}</Label>
+          <Label id={labelId} htmlFor={controlId}>
+            {label}
+          </Label>
           {optional ? <span className="text-fg-subtle text-sm">Optional</span> : null}
         </div>
 

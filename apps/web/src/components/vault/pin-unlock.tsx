@@ -4,7 +4,8 @@ import { useState } from 'react';
 import { DEVICE_PIN_LENGTH } from '@xecret/core/crypto/client';
 
 import { pluralize } from '@/lib/format';
-import { Alert, Button, Field, Input } from '@/components/ui';
+import { Alert, Button, Field } from '@/components/ui';
+import { PinInput } from './pin-input';
 import { describePinUnlockFailure, unlockWithPin } from './vault-client';
 import type { VaultMaterial } from './vault-client';
 
@@ -30,9 +31,16 @@ import type { VaultMaterial } from './vault-client';
  *
  * ── Auto-submit ──
  * At the sixth digit, because a PIN has exactly one length and asking for a
- * confirming click afterwards is a keystroke that carries no decision. The field
+ * confirming click afterwards is a keystroke that carries no decision. The entry
  * refuses anything that is not a digit rather than validating afterwards, so
- * there is no state in which six characters are present and the form will not go.
+ * there is no state in which six boxes are full and the form will not go. The
+ * button below stays for the people who reach for it — a submit that only ever
+ * fires from a keystroke is unreachable from a screen reader's forms mode.
+ *
+ * ── Six boxes rather than one field ──
+ * `pin-input.tsx`, shared with the enrolment form in `device-pin-section.tsx`,
+ * so the two screens cannot disagree about what a paste or a `Backspace` does.
+ * The difference between them is `onComplete` and nothing else.
  */
 
 export interface PinUnlockProps {
@@ -111,15 +119,6 @@ export function PinUnlock({
     }
   }
 
-  function type(raw: string) {
-    // Digits only, and never more than the PIN's length. Filtering on the way in
-    // rather than validating on the way out is what makes the auto-submit below
-    // safe: six characters in the field are always six digits.
-    const digits = raw.replace(/\D/g, '').slice(0, DEVICE_PIN_LENGTH);
-    setPin(digits);
-    if (digits.length === DEVICE_PIN_LENGTH) void attempt(digits);
-  }
-
   return (
     <form
       onSubmit={(event) => {
@@ -136,18 +135,15 @@ export function PinUnlock({
       ) : null}
 
       <Field label={`${DEVICE_PIN_LENGTH}-digit PIN for this browser`}>
-        <Input
-          type="password"
-          inputMode="numeric"
-          pattern="[0-9]*"
-          maxLength={DEVICE_PIN_LENGTH}
+        {/* The entry refuses anything that is not a digit rather than
+            validating afterwards, so `onComplete` can submit without a check:
+            six filled boxes are always six digits. */}
+        <PinInput
           value={pin}
-          onChange={(event) => type(event.target.value)}
-          autoComplete="off"
-          autoFocus
-          spellCheck={false}
+          onChange={setPin}
+          onComplete={(entered) => void attempt(entered)}
           disabled={busy || disabled}
-          className="font-mono tracking-[0.5em]"
+          autoFocus
         />
       </Field>
 

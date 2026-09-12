@@ -36,6 +36,16 @@ import type { SessionUser, VaultStatus } from './session';
  * the number is the difference between "try again" and "you are about to lose
  * this". And this screen must always offer a way out, which is the `Footer`
  * below.
+ *
+ * ── Why there is a stage for the passphrase ──
+ * A browser with a device PIN is shown the PIN alone, and reaches the passphrase
+ * through a button — the argument is in `components/vault/vault-unlock.tsx`, and
+ * the constraint it keeps is that the passphrase is never more than one click
+ * away. The consequence here is that the panel's heading cannot assume which
+ * credential is on screen: `unlock` is whichever one this browser leads with,
+ * and `passphrase` is the screen somebody asked for by name. A single stage
+ * titled "Your vault is locked" over both would be the wrong heading on the one
+ * they navigated to on purpose.
  */
 
 export interface LockScreenProps {
@@ -57,7 +67,16 @@ export function LockScreen({ status, user, onUnlocked }: LockScreenProps) {
   const stageCopy = {
     unlock: {
       title: 'Your vault is locked',
-      description: `Signed in as ${user.email}. Your passphrase unlocks it right here in your browser — xecret never sees it.`,
+      // Deliberately not "your passphrase": this stage is whichever credential
+      // the browser leads with, and on one that has enrolled a PIN it is six
+      // boxes. The sentence has to be true of both, and the half that matters —
+      // that it is checked here rather than by us — is true of both.
+      description: `Signed in as ${user.email}. It unlocks right here in your browser — xecret never sees what opens it.`,
+    },
+    passphrase: {
+      title: 'Unlock with your master passphrase',
+      description:
+        'Your passphrase always works, on every browser. It is turned into your key on this device — xecret never sees it.',
     },
     code: {
       title: 'Unlock with a recovery code',
