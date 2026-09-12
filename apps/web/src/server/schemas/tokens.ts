@@ -249,6 +249,12 @@ export function toCliToken(token: CliTokenSummary, currentTokenId: string | null
  * length, and each entry is still a uuid: a non-uuid here is a client bug
  * worth a 400, not an empty page somebody has to debug.
  */
+/**
+ * The bound, exported because the route enforces it a second time: `actorId`
+ * and `actorIds` are merged there, and fifty plus one is fifty-one.
+ */
+export const ACTOR_FILTER_LIMIT = 50;
+
 const actorIdListSchema = z.pipe(
   z.pipe(
     z.string().check(z.maxLength(2000)),
@@ -259,7 +265,11 @@ const actorIdListSchema = z.pipe(
         .filter((entry) => entry !== ''),
     ),
   ),
-  z.array(z.uuid()).check(z.maxLength(50, 'Filter by at most 50 actors at a time.')),
+  z
+    .array(z.uuid())
+    .check(
+      z.maxLength(ACTOR_FILTER_LIMIT, `Filter by at most ${ACTOR_FILTER_LIMIT} actors at a time.`),
+    ),
 );
 
 export const auditQuerySchema = z.object({

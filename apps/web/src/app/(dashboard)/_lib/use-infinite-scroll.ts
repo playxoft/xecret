@@ -26,6 +26,13 @@ import type { RefObject } from 'react';
  * @param hasMore False at the end of the list, which stops the watching.
  * @param loading True while a page is in flight. Guards against a second
  *   request for the same page when the sentinel is already on screen.
+ * @param blocked True when the last attempt failed and the caller is waiting to
+ *   be asked again. Nothing is observed while it is set, which is the whole
+ *   point of it: a sentinel sitting in the viewport is re-observed on every
+ *   `loading` transition, and each new observer fires immediately — so a page
+ *   that answers 429 or 500 turned into an unbounded retry storm against the
+ *   endpoint that had just asked to be left alone. The caller keeps its cursor
+ *   and offers a Retry beside the sentinel instead.
  * @param rootMargin How early to ask, expressed as a band below the viewport.
  *   Defaults to most of a screen, so the rows are usually there before the
  *   reader arrives at the gap.
@@ -37,11 +44,13 @@ export function useInfiniteScroll<T extends HTMLElement = HTMLDivElement>({
   onLoadMore,
   hasMore,
   loading,
+  blocked = false,
   rootMargin = '400px 0px',
 }: {
   onLoadMore: () => void;
   hasMore: boolean;
   loading: boolean;
+  blocked?: boolean;
   rootMargin?: string;
 }): RefObject<T | null> {
   const sentinel = useRef<T | null>(null);
@@ -53,7 +62,7 @@ export function useInfiniteScroll<T extends HTMLElement = HTMLDivElement>({
 
   useEffect(() => {
     const element = sentinel.current;
-    if (element === null || !hasMore || loading) return;
+    if (element === null || !hasMore || loading || blocked) return;
 
     // No observer — older Safari, jsdom, anything headless. Deliberately *not*
     // the "call straight through" fallback `observeOnce` uses: calling through
@@ -71,7 +80,7 @@ export function useInfiniteScroll<T extends HTMLElement = HTMLDivElement>({
 
     observer.observe(element);
     return () => observer.disconnect();
-  }, [hasMore, loading, rootMargin]);
+  }, [hasMore, loading, blocked, rootMargin]);
 
   return sentinel;
 }

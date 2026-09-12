@@ -169,18 +169,30 @@ export const apiPath = {
  * The result is a plain string rather than `api`'s `query` option because these
  * paths are used as effect dependencies: an object literal is a new identity on
  * every render, and a fetch keyed on one re-runs forever.
+ *
+ * ── Why it merges rather than appends ──
+ * A path handed in may already carry a query string, because building one is
+ * exactly what this function is for: the audit screen composes its filters once
+ * and then asks for the next page of *those* filters. Appending a second `?`
+ * produced `…?action=secret.read?cursor=…`, which the server reads as an
+ * `action` of `secret.read?cursor=…` — a 400, and one that only appeared once a
+ * filter was on. So an existing search string is parsed and the new parameters
+ * are merged into it, later values winning.
  */
 export function withQuery(
   path: string,
   params: Readonly<Record<string, string | number | undefined>>,
 ): string {
-  const search = new URLSearchParams();
+  const separator = path.indexOf('?');
+  const base = separator === -1 ? path : path.slice(0, separator);
+  const search = new URLSearchParams(separator === -1 ? '' : path.slice(separator + 1));
+
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined) continue;
     search.set(key, String(value));
   }
   const serialised = search.toString();
-  return serialised.length > 0 ? `${path}?${serialised}` : path;
+  return serialised.length > 0 ? `${base}?${serialised}` : base;
 }
 
 /**

@@ -4,6 +4,7 @@ import { errors } from '@/server/errors';
 import { json, parseQuery } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
 import {
+  ACTOR_FILTER_LIMIT,
   auditQuerySchema,
   decodeAuditCursor,
   encodeAuditCursor,
@@ -75,6 +76,14 @@ export const GET = authenticatedRoute<Params>(async ({ request, params, principa
       ...(query.actorIds ?? []),
     ]),
   ];
+  // The schema bounds `actorIds` at fifty, but the merge can add one more —
+  // `?actorId=z&actorIds=<fifty>` arrives as fifty-one, past the bound that
+  // exists so no `IN` list is unbounded. Refused with the schema's own sentence
+  // rather than silently truncated: a filter that quietly drops a name is the
+  // failure mode this whole screen is supposed to be immune to.
+  if (actorIds.length > ACTOR_FILTER_LIMIT) {
+    throw errors.badRequest(`Filter by at most ${ACTOR_FILTER_LIMIT} actors at a time.`);
+  }
 
   const page = await queryAuditLogs(services.db, {
     orgId,
