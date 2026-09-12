@@ -29,9 +29,10 @@ export {
   isUniqueViolation,
   softDeleteUser,
   touchLastLogin,
+  updateUserProfile,
   upsertUserFromIdentity,
 } from './users';
-export type { User } from './users';
+export type { User, UserProfilePatch } from './users';
 
 export {
   createSession,

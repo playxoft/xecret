@@ -207,17 +207,31 @@ export function DevicePinSection({ user }: DevicePinSectionProps) {
               <PinInput value={confirm} onChange={setConfirm} />
             </Field>
 
-            <div className="flex flex-wrap gap-3">
-              <Button type="submit" variant="primary" loading={saving}>
-                {enrolled ? 'Change my PIN' : 'Set up my PIN'}
-              </Button>
+            {/* Right-aligned, like every action row in Security. A button sitting
+                under the left edge of a paragraph reads as part of the sentence
+                above it; the actions belong at the end of the section, where the
+                eye arrives last. Reversed on a narrow screen so the primary is
+                still the first thing a thumb reaches. */}
+            <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
               <Button variant="ghost" onClick={closeFlow}>
                 Cancel
+              </Button>
+              <Button type="submit" variant="primary" loading={saving}>
+                {enrolled ? 'Change my PIN' : 'Set up my PIN'}
               </Button>
             </div>
           </form>
         ) : (
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+            {/* A real red button, not a text link. Turning the PIN off here
+                destroys this browser's only copy of the wrap — it is the same
+                kind of act as the Revoke below it, and it was the only one of
+                the three dressed as a footnote. */}
+            {enrolled ? (
+              <Button variant="danger-outline" onClick={() => void turnOffHere()}>
+                Turn off here
+              </Button>
+            ) : null}
             <Button
               variant="secondary"
               disabled={vault.keys === null}
@@ -225,11 +239,6 @@ export function DevicePinSection({ user }: DevicePinSectionProps) {
             >
               {enrolled ? 'Change PIN' : 'Set up a PIN'}
             </Button>
-            {enrolled ? (
-              <Button variant="ghost" onClick={() => void turnOffHere()}>
-                Turn off here
-              </Button>
-            ) : null}
           </div>
         )}
 
@@ -268,7 +277,7 @@ export function DevicePinSection({ user }: DevicePinSectionProps) {
                       : ` · last used ${formatRelativeTime(device.lastUsedAt)}`}
                   </span>
                   <Button
-                    variant="ghost"
+                    variant="danger-outline"
                     size="sm"
                     className="ml-auto"
                     onClick={() => setRevoking(device)}
@@ -280,7 +289,7 @@ export function DevicePinSection({ user }: DevicePinSectionProps) {
             </ul>
 
             {list.length > 1 ? (
-              <div>
+              <div className="flex justify-end">
                 <Button variant="danger-outline" size="sm" onClick={() => setRevokingAll(true)}>
                   Turn off every PIN
                 </Button>

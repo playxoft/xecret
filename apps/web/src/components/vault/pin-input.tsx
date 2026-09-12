@@ -1,31 +1,45 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import type { Ref } from 'react';
 import { DEVICE_PIN_LENGTH } from '@xecret/core/crypto/client';
 
 import { cn } from '@/lib/cn';
-import { INPUT_BASE, useFieldGroup } from '@/components/ui';
-import { applyDigits, deleteBackward, deleteForward, entryIndex, typedDigits } from './pin-entry';
+import { INPUT_BASE, useFieldControl } from '@/components/ui';
+import { caretBox, maskedBoxes, pinDigits, revealedBox } from './pin-entry';
 
 /**
  * Six digits, in six boxes, on both screens that ask for them.
  *
  * ── Why one component for the lock screen and the settings form ──
  * Because a PIN entry is mostly rules, and three copies of a rule is three
- * chances to disagree about what `Backspace` does. The lock screen and the two
- * enrolment fields differ in exactly one behaviour — the sixth digit submits on
- * one of them and does not on the other two — and that difference is a callback
- * ({@link PinInputProps.onComplete}), not a fork. Everything else, including the
- * masking and the paste handling, is the same code by construction.
+ * chances to disagree about what a paste or a `Backspace` does. The lock screen
+ * and the two enrolment fields differ in exactly one behaviour — the sixth digit
+ * submits on one of them and does not on the other two — and that difference is
+ * a callback ({@link PinInputProps.onComplete}), not a fork.
  *
- * ── Why six real inputs rather than one input with six painted boxes ──
- * A single hidden field with decorative cells is simpler to write and lies to
- * anybody not looking at it: the caret is somewhere the boxes cannot show, and a
- * screen reader is handed one control called "PIN" whose contents it re-reads
- * from the top on every keystroke. Six inputs mean the thing that has focus is
- * the thing that is highlighted, each box can say which of the six it is, and
- * arrow keys are the browser's own. The cost is focus management, and it is paid
- * in one place — {@link move} — rather than at every call site.
+ * ── One input, six painted boxes ──
+ * This was six real `<input>`s once, one per digit, and it dropped keystrokes.
+ * Typing `274` at a normal speed reliably landed two digits: each keystroke set
+ * state, and the re-render and the `.focus()` that moved the caret to the next
+ * box raced the next `keydown`, which was delivered to whichever element the
+ * browser thought was focused at that instant. Every fix for that is a bigger
+ * pile of focus bookkeeping around the same design fault — a text field that
+ * only holds one character has to hand the caret on, and handing the caret on
+ * cannot be made atomic with respect to the user's fingers.
+ *
+ * So there is one real input. It holds the whole value, it never loses focus
+ * while somebody is typing into it, and insertion, deletion, selection,
+ * `Backspace`, the arrow keys, paste, autofill and the IME are all the browser's
+ * own behaviour on one ordinary text field. The six boxes below it are
+ * `aria-hidden` paint: they read characters out of the value and light the one
+ * the caret is in front of. Nothing in the render path can eat a keystroke,
+ * because nothing in the render path touches focus.
+ *
+ * The input is laid over the boxes at zero opacity rather than hidden off
+ * screen, so a click anywhere in the group lands on the control itself — no
+ * `onClick` forwarding, and no case where the visible thing and the focused
+ * thing are different elements.
  *
  * ── The masking, and the half-second ──
  * The typed digit is shown while it is being typed and hidden shortly after,
@@ -33,9 +47,20 @@ import { applyDigits, deleteBackward, deleteForward, entryIndex, typedDigits } f
  * that distinguishes "I pressed 4" from "the keyboard missed that", and six
  * identical dots appearing under your fingers is how people give up on PIN
  * fields. The reveal is withdrawn the instant another digit lands as well as on
- * the timer, so at most one digit is ever legible over a shoulder, and the boxes
- * are `••••••` again half a second after the last keystroke — including on the
- * lock screen, where the sixth digit submits and the entry is cleared anyway.
+ * the timer, so at most one digit is ever legible over a shoulder. It is now
+ * purely display state — a late timer repaints a dot and can no longer interfere
+ * with what is being typed.
+ *
+ * ── Why the real input is a password field ──
+ * Because it is the only thing in this component a screen reader can see, and a
+ * `type="text"` field holding six digits is a field whose contents assistive
+ * technology reads out — a PIN spoken aloud by the machine it unlocks, and six
+ * digits of plaintext sitting in the accessibility tree for anything with a
+ * handle on it. `password` is what stops both, and it costs nothing: the field
+ * is invisible anyway, and the boxes above it do the masking a sighted person
+ * sees. `autoComplete="off"` is what keeps the browser from offering to remember
+ * it — the risk that argued for `text` before the accessibility one was weighed
+ * against it.
  *
  * ── What is deliberately *not* here ──
  * `autoComplete="one-time-code"`. This is a PIN, not an OTP: the iOS and Android
@@ -43,13 +68,21 @@ import { applyDigits, deleteBackward, deleteForward, entryIndex, typedDigits } f
  * received, and a password manager that decided to remember six digits would put
  * the one credential this product cannot re-derive into a vault we do not
  * control. `off`, and nothing else.
+ *
+ * ── Why nothing here reads `event.key` ──
+ * Because on Android it is a lie. GBoard reports most keys as `Unidentified`
+ * with `keyCode` 229, backspace included, so a component that implemented
+ * deletion by watching for `'Backspace'` is a component with no working delete
+ * key on a phone. Every state change below is derived from the input's *value*,
+ * which is the one thing every keyboard, IME, autofill and paste path agrees
+ * on.
  */
 
 /** How long a digit stays legible. Long enough to read, short enough to miss. */
 const REVEAL_MS = 500;
 
 export interface PinInputProps {
-  /** The digits typed so far. Always a prefix — see `pin-entry.ts`. */
+  /** The digits typed so far. Always a prefix of the six. */
   value: string;
   onChange: (value: string) => void;
   /**
@@ -65,6 +98,28 @@ export interface PinInputProps {
   disabled?: boolean;
   autoFocus?: boolean;
   className?: string;
+  /**
+   * The real input, for a host that has to hand the caret back.
+   *
+   * The lock screen needs it: its two credential screens swap without
+   * unmounting, so returning to the PIN is not a mount and `autoFocus` never
+   * fires again.
+   */
+  ref?: Ref<HTMLInputElement> | undefined;
+}
+
+/**
+ * Keeps the caret at the end of the value.
+ *
+ * The boxes can only render a prefix, so a caret parked in the middle would
+ * insert a digit somewhere the group cannot show. At module scope because it
+ * touches nothing but the node it is given, which keeps it out of every effect's
+ * dependency list.
+ */
+function pinCaret(node: HTMLInputElement | null): void {
+  if (node === null) return;
+  const end = node.value.length;
+  if (node.selectionStart !== end || node.selectionEnd !== end) node.setSelectionRange(end, end);
 }
 
 export function PinInput({
@@ -75,18 +130,23 @@ export function PinInput({
   disabled = false,
   autoFocus = false,
   className,
+  ref,
 }: PinInputProps) {
-  const field = useFieldGroup();
-  const boxes = useRef<(HTMLInputElement | null)[]>([]);
+  // The ordinary field wiring: the enclosing `Field`'s id, its `aria-describedby`
+  // and its `aria-invalid` all belong to the one control that really exists.
+  const fieldProps = useFieldControl();
+  const input = useRef<HTMLInputElement>(null);
+
+  const [focused, setFocused] = useState(false);
 
   /**
    * Which box is showing its digit rather than a dot, and the timer that ends
    * it.
    *
-   * A ref beside the state because the timer has to be cancellable from the
-   * next keystroke and from unmount — a `setTimeout` outliving this component
-   * would call `setRevealed` on something that is gone, which React logs and
-   * which on the lock screen happens every single time a PIN succeeds.
+   * A ref beside the state because the timer has to be cancellable from the next
+   * keystroke and from unmount — a `setTimeout` outliving this component would
+   * call `setRevealed` on something that is gone, which on the lock screen
+   * happens every single time a PIN succeeds.
    */
   const [revealed, setRevealed] = useState<number | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -98,12 +158,19 @@ export function PinInput({
     [],
   );
 
+  // After every change, including one the host made: the value shrinking under
+  // a caret that was past the new end is exactly the state a cleared entry is
+  // in.
+  useEffect(() => {
+    pinCaret(input.current);
+  }, [value]);
+
   /**
    * The caret, handed back after the host empties a filled entry.
    *
    * A wrong PIN on the lock screen clears the value *and* passes `disabled`
    * while the attempt is in flight — and a browser blurs a control that becomes
-   * disabled, so by the time the six boxes come back the keyboard types nowhere.
+   * disabled, so by the time the boxes come back the keyboard types nowhere.
    * Somebody who has just been told they have four tries left should not have to
    * find the mouse. The flag is not cleared while disabled, because the clear
    * and the re-enable arrive as two separate renders.
@@ -116,174 +183,108 @@ export function PinInput({
     }
     if (!hadDigits.current || disabled) return;
     hadDigits.current = false;
-    move(0);
-    // `move` is re-created every render and carries no state of its own; listing
-    // it would run this on every render instead of on the transition it is about.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    input.current?.focus();
   }, [value, disabled]);
 
-  function reveal(index: number) {
+  function reveal(index: number | null) {
     if (hideTimer.current !== null) clearTimeout(hideTimer.current);
     setRevealed(index);
+    if (index === null) return;
     hideTimer.current = setTimeout(() => setRevealed(null), REVEAL_MS);
   }
 
-  /** Moves the caret, selecting whatever is there so the next digit replaces it. */
-  function move(index: number) {
-    const box = boxes.current[Math.min(Math.max(index, 0), length - 1)];
-    box?.focus();
-    box?.select();
-  }
+  function change(event: React.ChangeEvent<HTMLInputElement>) {
+    const raw = event.target.value;
+    const next = pinDigits(raw, length);
 
-  function commit(next: string, caret: number) {
+    // The control is controlled, but React re-renders nothing when the filtered
+    // value is unchanged — which is precisely the case where a rejected
+    // character was typed. Putting the sanitised string back on the node is what
+    // stops a stray `a` sitting in the field, invisibly, in front of the caret.
+    if (raw !== next) {
+      event.target.value = next;
+      pinCaret(event.target);
+    }
+
+    reveal(revealedBox(value, next));
+    if (next === value) return;
+
     onChange(next);
-    move(caret);
     if (next.length === length) onComplete?.(next);
   }
 
-  function write(index: number, raw: string) {
-    const at = entryIndex(value, index, length);
-    const incoming = typedDigits(raw, value[at] ?? '');
-    // Everything that is not a digit — a letter, a space, an Arabic-Indic
-    // numeral — leaves the boxes exactly as they were. The controlled `value`
-    // below then repaints the box, so nothing rejected is ever left on screen.
-    if (incoming.length === 0) {
-      setRevealed(null);
-      return;
-    }
-
-    const next = applyDigits(value, at, incoming, length);
-    reveal(Math.min(at + incoming.length - 1, length - 1));
-    commit(next, at + incoming.length);
-  }
-
-  function keyDown(index: number, event: React.KeyboardEvent<HTMLInputElement>) {
-    const at = entryIndex(value, index, length);
-
-    switch (event.key) {
-      case 'Backspace': {
-        event.preventDefault();
-        setRevealed(null);
-        commit(deleteBackward(value, at), at - 1);
-        return;
-      }
-      case 'Delete': {
-        event.preventDefault();
-        setRevealed(null);
-        commit(deleteForward(value, at), at);
-        return;
-      }
-      case 'ArrowLeft': {
-        event.preventDefault();
-        move(at - 1);
-        return;
-      }
-      case 'ArrowRight': {
-        event.preventDefault();
-        move(at + 1);
-        return;
-      }
-      case 'Home': {
-        event.preventDefault();
-        move(0);
-        return;
-      }
-      case 'End': {
-        event.preventDefault();
-        move(value.length);
-        return;
-      }
-      default:
-        return;
-    }
-  }
-
-  /**
-   * A paste, handled once for the whole group.
-   *
-   * Six digits arrive as one event on one box, and the default would put all of
-   * them in that box for `maxLength` to truncate to the first. Reading the
-   * clipboard here and distributing through the same {@link applyDigits} a
-   * keystroke uses means "paste 123456" and "type 123456" produce the same six
-   * boxes and the same auto-submit.
-   */
-  function paste(index: number, event: React.ClipboardEvent<HTMLInputElement>) {
-    event.preventDefault();
-    const digits = event.clipboardData.getData('text').replace(/[^0-9]/g, '');
-    if (digits.length === 0) return;
-
-    // A full-length paste replaces the entry rather than appending to whatever
-    // the caret happened to be sitting in front of.
-    const at = digits.length >= length ? 0 : entryIndex(value, index, length);
-    const next = applyDigits(value, at, digits, length);
-    setRevealed(null);
-    commit(next, at + digits.length);
-  }
+  const active = caretBox(value, length);
+  const invalid = fieldProps['aria-invalid'] === true;
 
   return (
-    <div
-      role="group"
-      aria-labelledby={field.labelledBy}
-      aria-describedby={field.describedBy}
-      className={cn('flex items-center gap-2', className)}
-    >
-      {Array.from({ length }, (_, index) => {
-        const digit = value[index] ?? '';
-        const shown = digit === '' ? '' : index === revealed ? digit : '•';
-
-        return (
-          <input
+    <div className={cn('relative w-fit', className)}>
+      {/* Paint. The control is the input below; these exist so six digits look
+          like six digits, and a screen reader is told about them exactly once —
+          by the field's own label, on the thing that actually has the value. */}
+      <div aria-hidden="true" className="flex items-center gap-2">
+        {maskedBoxes(value, revealed, length).map((glyph, index) => (
+          <div
             key={index}
-            ref={(node) => {
-              boxes.current[index] = node;
-            }}
-            // The field's `<label for>` points here, so clicking the label lands
-            // the caret in the box typing starts in. Only the first: an id is
-            // one element's.
-            {...(index === 0 && field.controlId !== undefined ? { id: field.controlId } : {})}
-            type="text"
-            inputMode="numeric"
-            // Not `type="password"`: a browser that decides a password field is
-            // worth remembering would offer to save one sixth of a PIN.
-            autoComplete="off"
-            spellCheck={false}
-            autoCorrect="off"
-            autoCapitalize="off"
-            // Two characters' room, because a controlled box already holding a
-            // mask has to be able to receive the keystroke that replaces it.
-            maxLength={2}
-            aria-label={`digit ${index + 1} of ${length}`}
-            {...(field.invalid ? { 'aria-invalid': true as const } : {})}
-            value={shown}
-            disabled={disabled}
-            autoFocus={autoFocus && index === 0}
-            onChange={(event) => write(index, event.target.value)}
-            onKeyDown={(event) => keyDown(index, event)}
-            onPaste={(event) => paste(index, event)}
-            onFocus={(event) => {
-              // Pulled back to the end of what has been typed, so there is never
-              // a caret in a box the value cannot reach. Selecting is what makes
-              // typing over a filled box replace it rather than append.
-              const at = entryIndex(value, index, length);
-              if (at !== index) move(at);
-              else event.currentTarget.select();
-            }}
             className={cn(
               INPUT_BASE,
-              'h-12 min-w-0 flex-1 px-0 text-center font-mono text-lg',
-              // `focus` as well as the `focus-visible` INPUT_BASE already
-              // carries: a caret moved by this component's own key handling is
-              // not always a "visible" focus to the browser, and six identical
-              // wells side by side are unusable if the one being typed into is
-              // not the one that looks different.
-              'focus:border-fg-subtle',
-              // The caret would sit beside a centred single character and read
-              // as a seventh box. The border is what says where typing lands.
-              'caret-transparent selection:bg-transparent',
+              'grid size-12 shrink-0 place-items-center font-mono text-lg leading-none',
+              // `INPUT_BASE`'s own `disabled:` and `aria-[invalid]:` variants
+              // cannot match a `div`, so both states are spelled out here from
+              // the same tokens rather than left silently unstyled.
+              invalid && 'border-danger',
+              disabled && 'bg-surface-hover text-fg-disabled',
+              // The box the next digit lands in, drawn with the same outline the
+              // rest of the product uses for focus — on the box rather than on
+              // the transparent input, which is the whole point of the overlay.
+              focused &&
+                !disabled &&
+                index === active &&
+                'border-fg-subtle outline-2 outline-offset-2 outline-[var(--ring)]',
             )}
-          />
-        );
-      })}
+          >
+            {glyph}
+          </div>
+        ))}
+      </div>
+
+      <input
+        // The field's id, `aria-describedby` and `aria-invalid` land on the one
+        // element that can be focused and therefore the one whose description a
+        // screen reader will read. A hint or an error hung on the wrapper around
+        // the boxes is a message nothing ever announces.
+        {...fieldProps}
+        ref={(node) => {
+          input.current = node;
+          if (typeof ref === 'function') ref(node);
+          else if (ref !== null && ref !== undefined) ref.current = node;
+        }}
+        // `password`, so assistive technology never has the digits. See above.
+        type="password"
+        inputMode="numeric"
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
+        spellCheck={false}
+        maxLength={length}
+        value={value}
+        disabled={disabled}
+        autoFocus={autoFocus}
+        onChange={change}
+        onFocus={() => {
+          setFocused(true);
+          pinCaret(input.current);
+        }}
+        onBlur={() => setFocused(false)}
+        // Fired by React for caret movement as well as for a selection, so a
+        // click into the middle of the field is pulled back to the end before
+        // anything can be typed there.
+        onSelect={() => pinCaret(input.current)}
+        // Invisible rather than off screen, and the full size of the boxes: a
+        // click anywhere in the group lands on the control itself. The text is
+        // hidden by the opacity — including the caret, and including the focus
+        // outline, which is drawn on the active box instead.
+        className="absolute inset-0 size-full opacity-0"
+      />
     </div>
   );
 }

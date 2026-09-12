@@ -90,8 +90,12 @@ export function PasskeysSection({ user }: PasskeysSectionProps) {
                     ? ' · never used'
                     : ` · last used ${formatRelativeTime(passkey.lastUsedAt)}`}
                 </span>
+                {/* Red, like the Revoke on the PIN rows below. The two lists sit
+                    on the same screen and look identical; a destructive action
+                    dressed as a text link in one of them reads as the safer of
+                    the two, which it is not. */}
                 <Button
-                  variant="ghost"
+                  variant="danger-outline"
                   size="sm"
                   className="ml-auto"
                   onClick={() => setRemoving(passkey)}

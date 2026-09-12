@@ -58,7 +58,7 @@ export type { DropdownMenuItemProps } from './dropdown-menu';
 export { EmptyState } from './empty-state';
 export type { EmptyStateProps } from './empty-state';
 
-export { Field, useFieldControl, useFieldGroup } from './field';
+export { Field, useFieldControl } from './field';
 export type { FieldProps } from './field';
 
 export * from './icons';

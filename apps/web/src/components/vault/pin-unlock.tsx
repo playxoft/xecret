@@ -1,10 +1,12 @@
 'use client';
 
 import { useState } from 'react';
+import type { Ref } from 'react';
 import { DEVICE_PIN_LENGTH } from '@xecret/core/crypto/client';
 
 import { pluralize } from '@/lib/format';
 import { Alert, Button, Field } from '@/components/ui';
+import { pinProblem } from './device-pin';
 import { PinInput } from './pin-input';
 import { describePinUnlockFailure, unlockWithPin } from './vault-client';
 import type { VaultMaterial } from './vault-client';
@@ -59,6 +61,16 @@ export interface PinUnlockProps {
   onGone: (message: string) => void;
   /** True while the passphrase or passkey path is working. */
   disabled?: boolean;
+  /**
+   * Reports whether an attempt is in flight.
+   *
+   * So the host can stop a second credential being submitted underneath one —
+   * this form's `busy` is private, and a screen offering three ways in has to
+   * know that one of them is already spending an attempt.
+   */
+  onBusyChange?: (busy: boolean) => void;
+  /** The entry itself, so a host that hides and re-shows it can refocus it. */
+  entryRef?: Ref<HTMLInputElement>;
 }
 
 export function PinUnlock({
@@ -67,15 +79,29 @@ export function PinUnlock({
   onUnlocked,
   onGone,
   disabled = false,
+  onBusyChange,
+  entryRef,
 }: PinUnlockProps) {
   const [pin, setPin] = useState('');
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
 
   async function attempt(entered: string) {
     if (busy || disabled) return;
 
+    // The button below can be pressed at any time — see the note on it — so the
+    // length is checked here rather than by disabling it. `pinProblem` is the
+    // same rule the enrolment form applies, minus the confirmation.
+    const short = pinProblem(entered);
+    if (short !== null) {
+      setProblem(short);
+      return;
+    }
+
     setBusy(true);
+    onBusyChange?.(true);
+    setProblem(null);
     setFailure(null);
     try {
       const result = await unlockWithPin({ userId: user.id, pin: entered, material });
@@ -116,6 +142,7 @@ export function PinUnlock({
       setFailure(describePinUnlockFailure(cause));
     } finally {
       setBusy(false);
+      onBusyChange?.(false);
     }
   }
 
@@ -134,26 +161,36 @@ export function PinUnlock({
         </Alert>
       ) : null}
 
-      <Field label={`${DEVICE_PIN_LENGTH}-digit PIN for this browser`}>
+      <Field label={`${DEVICE_PIN_LENGTH}-digit PIN for this browser`} error={problem}>
         {/* The entry refuses anything that is not a digit rather than
             validating afterwards, so `onComplete` can submit without a check:
             six filled boxes are always six digits. */}
         <PinInput
+          ref={entryRef}
           value={pin}
-          onChange={setPin}
+          onChange={(next) => {
+            setPin(next);
+            setProblem(null);
+          }}
           onComplete={(entered) => void attempt(entered)}
           disabled={busy || disabled}
           autoFocus
         />
       </Field>
 
-      <Button
-        type="submit"
-        variant="primary"
-        size="lg"
-        loading={busy}
-        disabled={pin.length !== DEVICE_PIN_LENGTH || disabled}
-      >
+      {/*
+        Disabled only while something is already working — never for being
+        incomplete.
+
+        The sixth digit submits on its own, so a button that lit up at six
+        digits would be a button nobody could ever press: by the time it was
+        enabled the attempt was in flight, and it spent the whole of every other
+        moment greyed out, which reads as a broken form rather than as a
+        shortcut having been taken. Pressed early it says how many digits a PIN
+        is, which is the one thing it could usefully tell somebody who reached
+        for it.
+      */}
+      <Button type="submit" variant="primary" size="lg" loading={busy} disabled={disabled}>
         Unlock with my PIN
       </Button>
     </form>

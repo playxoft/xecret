@@ -2,10 +2,70 @@ import * as z from 'zod/mini';
 import { clearedSessionCookie, csrfCookie, serializeCookie } from '@xecret/core/auth';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
-import { deleteAccount } from '@/server/account-service';
+import { deleteAccount, updateDisplayName } from '@/server/account-service';
+import { accountPatchSchema, toAccountProfile } from '@/server/schemas/account';
 import { confirmationMatches } from '@/server/schemas/resources';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
+import { primaryOrgId } from '@/server/vault-service';
+
+/**
+ * `PATCH /api/auth/account` — the account edits its own profile.
+ *
+ * One field, and the gates are the ordinary ones rather than the deletion
+ * route's:
+ *
+ *  - **A browser session only**, like the DELETE below. A CLI token acts for its
+ *    user over secrets, not over who that user *is* — and a display name is what
+ *    every teammate in every shared organisation sees this account as.
+ *  - **The vault lock applies** (no `allowLocked`). Not because a name is key
+ *    material, but because a locked session is a session whose presence has
+ *    expired, and the whole product's rule is that such a session reads nothing
+ *    and changes nothing. A carve-out for "harmless" mutations is how that rule
+ *    stops being a rule.
+ *  - **The mutation allowance**, not the login bucket: this is not a guessing
+ *    surface.
+ *
+ * Audited against the primary organisation, the same way every other
+ * account-level act is — see `primaryOrgId`. The record carries the new name and
+ * never the old one: a log is not editable, and somebody changing the name they
+ * are known by should not have the previous one preserved in it forever. Nothing
+ * in the log depends on the name anyway; the actor is denormalised by email.
+ *
+ * The response is the whole profile rather than the field that changed, so the
+ * client can adopt it exactly as it adopts `GET /api/auth/me`.
+ */
+
+export const PATCH = authenticatedRoute(async ({ request, principal, services, audit, record }) => {
+  if (principal.kind !== 'user') {
+    throw errors.forbidden('Editing a profile requires a signed-in browser session.');
+  }
+
+  await enforce(services.env, 'RL_MUTATION', rateLimitKey([principal.user.id]));
+
+  const body = await parseJsonBody(request, accountPatchSchema);
+  // `undefined` cannot reach here — the schema refuses an empty patch, and
+  // `displayName` is the only field in it.
+  const displayName = body.displayName ?? null;
+  const user = await updateDisplayName(services, principal.user.id, displayName);
+
+  const orgId = await primaryOrgId(services, principal.user.id);
+  if (orgId !== null) {
+    record(
+      audit(orgId).success(
+        'auth.profile_updated',
+        { type: 'user', id: principal.user.id },
+        {
+          source: 'dashboard',
+          reason:
+            displayName === null ? 'display name cleared' : `display name set to “${displayName}”`,
+        },
+      ),
+    );
+  }
+
+  return json({ user: toAccountProfile(user) });
+});
 
 /**
  * `DELETE /api/auth/account` — the account deletes itself.

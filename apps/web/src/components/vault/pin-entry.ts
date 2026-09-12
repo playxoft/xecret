@@ -1,97 +1,88 @@
 import { DEVICE_PIN_LENGTH } from '@xecret/core/crypto/client';
 
 /**
- * What six boxes do with a keystroke, as arithmetic on a string.
+ * What six boxes show, as arithmetic on a string.
  *
  * ── Why this is not inside the component ──
  * Because none of it is about React, and all of it is about being right. A PIN
- * field that mis-handles a paste, a keystroke landing in a box the caret should
- * never have been in, or a `Backspace` at the end of a full entry does not look
- * broken — it produces a *different six digits* than the person typed, which
- * arrives as "my PIN stopped working" one attempt at a time, from a budget of
- * five. The web app's tests run without a DOM (see `vitest.config.mts`), so the
- * only way these rules get assertions is if they are ordinary functions over
- * strings. `pin-input.tsx` renders them; this file decides them.
+ * field that drops a digit does not look broken — it produces a *different six
+ * digits* than the person typed, which arrives as "my PIN stopped working" one
+ * attempt at a time, from a budget of five. The web app's tests run without a
+ * DOM (see `vitest.config.mts`), so the only way these rules get assertions is
+ * if they are ordinary functions over strings. `pin-input.tsx` renders them;
+ * this file decides them.
  *
- * ── The invariant every function here keeps ──
- * The value is a *prefix*: some number of digits from the left, and nothing
- * after it. Six boxes suggest six independent cells, and a model that allowed
- * holes would have to answer what `1__4_6` submits. It cannot arise instead —
- * a keystroke aimed past the filled length is pulled back to the end, which is
- * also where the caret is sent, so the box somebody types into is always the
- * box they are looking at.
+ * ── Why they are this small ──
+ * They used to be bigger. The first version of this component was six real
+ * inputs, and these functions had to decide which box a keystroke belonged to,
+ * how a paste distributed across them and what `Backspace` did at each end —
+ * because none of that came for free once the caret had to be moved by hand
+ * between six elements. It also *did not work*: typing at speed dropped digits,
+ * because each keystroke re-rendered and moved focus while the next one was
+ * already in flight.
+ *
+ * There is now one real input holding the whole value, and the boxes are paint.
+ * Insertion, deletion, selection, `Backspace`, arrow keys, paste and the IME are
+ * the browser's, on one element that never loses focus mid-word. What is left
+ * here is the part that is genuinely ours: which characters are allowed, which
+ * box the caret is in front of, and which of the six is legible right now.
  */
 
 /** ASCII digits only, for the reason `isDevicePin` gives: a PIN is not Unicode. */
 const NOT_A_DIGIT = /[^0-9]/g;
 
 /**
- * What a box's raw value means, given the digit it was already showing.
+ * The digits in a field's raw value, in order, up to the PIN's length.
  *
- * A controlled box holding `•` or a revealed digit is not empty, so a browser
- * hands back *both* characters on the next keystroke — `•5`, or `37` when the
- * digit was momentarily visible. The mask is not a digit and falls out with
- * everything else that is not one; a visible digit has to be removed by
- * identity, once, or typing `7` over a `7` would answer an empty string.
- *
- * More than one digit surviving that is a paste or an autofill rather than a
- * keystroke, and is returned whole for {@link applyDigits} to distribute. The
- * alternative — taking the last character — is what makes a pasted PIN land as
- * its sixth digit in the first box, which is the bug this returns a string for.
+ * The whole of the input filter, and deliberately order-preserving rather than
+ * "take the character that changed". A browser can deliver several characters in
+ * one `change` — a paste, an autofill, a phone's keyboard committing a word, or
+ * simply typing faster than React re-renders — and a filter that picked one
+ * would silently drop the rest. That is the bug this function exists to not
+ * have.
  */
-export function typedDigits(raw: string, previous: string): string {
-  const digits = raw.replace(NOT_A_DIGIT, '');
-  if (previous === '' || digits.length <= 1) return digits;
-
-  // `replace` with a string argument removes the first occurrence, which is the
-  // one the box was already displaying.
-  const without = digits.replace(previous, '');
-  return without === '' ? digits.slice(-1) : without;
-}
-
-/** Where a keystroke aimed at `index` actually lands. Never past the end. */
-export function entryIndex(value: string, index: number, length = DEVICE_PIN_LENGTH): number {
-  if (index < 0) return 0;
-  return Math.min(index, value.length, length - 1);
+export function pinDigits(raw: string, length = DEVICE_PIN_LENGTH): string {
+  return raw.replace(NOT_A_DIGIT, '').slice(0, length);
 }
 
 /**
- * The value after `incoming` is written at `index`.
+ * The box the next digit will land in.
  *
- * One digit overwrites one box. Several overwrite forwards from that box, which
- * is what makes a paste into the middle of a half-typed PIN do the obvious
- * thing, and what keeps the result a prefix in both cases.
+ * The caret is pinned to the end of the value — a PIN is typed left to right and
+ * there is no such thing as a hole in the middle of one — so this is the length,
+ * except at the end, where the sixth box stays lit rather than the highlight
+ * vanishing off the edge of the group.
  */
-export function applyDigits(
+export function caretBox(value: string, length = DEVICE_PIN_LENGTH): number {
+  return Math.min(value.length, length - 1);
+}
+
+/**
+ * Which box should become legible for a moment, or `null` for none.
+ *
+ * A digit is revealed when a digit is *added*, and never on a deletion: showing
+ * the character somebody just backspaced over is the one moment they have said
+ * they do not want it. The last one added is the one shown, so a paste reveals
+ * its final digit rather than flashing all six.
+ */
+export function revealedBox(previous: string, next: string): number | null {
+  return next.length > previous.length ? next.length - 1 : null;
+}
+
+/**
+ * What each of the six boxes reads, given the value and which box is legible.
+ *
+ * Empty for a box with no digit yet, the digit itself for the one moment it is
+ * revealed, and a dot for everything already entered.
+ */
+export function maskedBoxes(
   value: string,
-  index: number,
-  incoming: string,
+  revealed: number | null,
   length = DEVICE_PIN_LENGTH,
-): string {
-  const digits = incoming.replace(NOT_A_DIGIT, '');
-  if (digits.length === 0) return value;
-
-  const at = entryIndex(value, index, length);
-  return (value.slice(0, at) + digits + value.slice(at + digits.length)).slice(0, length);
-}
-
-/**
- * The value after `Backspace` at `index`.
- *
- * A box holding a digit gives it up; a box that is empty — which is where the
- * caret sits after the sixth digit, and after every digit before it — takes the
- * one before it instead. Either way something is deleted, because a `Backspace`
- * that only moved the caret would read as a keyboard that had stopped working.
- */
-export function deleteBackward(value: string, index: number): string {
-  const at = Math.max(0, index);
-  if (at < value.length) return value.slice(0, at) + value.slice(at + 1);
-  return value.slice(0, Math.max(0, value.length - 1));
-}
-
-/** The value after `Delete` at `index`: this box's digit, and nothing else. */
-export function deleteForward(value: string, index: number): string {
-  const at = Math.max(0, index);
-  if (at >= value.length) return value;
-  return value.slice(0, at) + value.slice(at + 1);
+): string[] {
+  return Array.from({ length }, (_unused, index) => {
+    const digit = value[index];
+    if (digit === undefined) return '';
+    return index === revealed ? digit : '•';
+  });
 }
