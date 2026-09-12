@@ -16,7 +16,7 @@ import { REPO_URL, SIGN_IN_SHORTCUT_KEYS, SITE_NAV } from '@/lib/site';
 import type { NavKey } from '@/lib/site';
 import { Wordmark } from './logo';
 import { MobileNav } from './mobile-nav';
-import { SignInShortcut } from './sign-in-shortcut';
+import { SignInLink, SignInShortcut } from './sign-in-shortcut';
 import { ThemeToggle } from './theme-toggle';
 
 /**
@@ -127,17 +127,19 @@ export function SiteHeader({
               360px bar they crowd the one button that matters, and nobody
               holding a phone has an `S` key to press. */}
           <Button asChild variant="primary" size="sm" className="ml-1 rounded-full">
-            <Link
-              href={SIGN_IN_PATH}
-              aria-keyshortcuts={
-                signInShortcut ? ariaKeyShortcuts(SIGN_IN_SHORTCUT_KEYS) : undefined
-              }
-            >
-              Sign in
-              {signInShortcut ? (
+            {/* Where the shortcut is bound, the button resolves its destination
+                the same way the key does — `SignInLink` reads the session hint
+                after mount. Everywhere else this stays a plain server-rendered
+                anchor costing no JavaScript, which is the whole reason the
+                shortcut is opt-in in the first place. */}
+            {signInShortcut ? (
+              <SignInLink aria-keyshortcuts={ariaKeyShortcuts(SIGN_IN_SHORTCUT_KEYS)}>
+                Sign in
                 <Shortcut keys={SIGN_IN_SHORTCUT_KEYS} className="-mr-0.5 hidden sm:inline-flex" />
-              ) : null}
-            </Link>
+              </SignInLink>
+            ) : (
+              <Link href={SIGN_IN_PATH}>Sign in</Link>
+            )}
           </Button>
 
           {signInShortcut ? <SignInShortcut /> : null}

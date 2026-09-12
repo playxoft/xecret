@@ -150,6 +150,11 @@ function NameForm() {
     setProblem(null);
     try {
       await api.patch(apiPath.account(), { displayName: trimmed.length === 0 ? null : trimmed });
+      // The field holds what was *sent*, which is the trimmed form. Without
+      // this, saving "  Ada  " left the box holding the spaces while the session
+      // came back with "Ada" — so `unchanged` was false, the button stayed
+      // enabled, and pressing it again re-sent a value the server already had.
+      setName(trimmed);
       toast({ variant: 'success', title: 'Name updated' });
       // Not awaited for the toast's sake, but awaited before the button comes
       // back: `unchanged` is computed from the session, so returning the form to
@@ -170,16 +175,25 @@ function NameForm() {
         // The length is reported rather than enforced with `maxLength`: a name
         // seeded from a provider can arrive over the limit, and silently
         // swallowing the end of it as somebody edits is worse than saying so.
+        //
+        // The live count first, not the last attempt's message: a save that
+        // failed and a name since typed past the limit are two different
+        // problems, and the stale one used to hide the one the user could act
+        // on — leaving a disabled button with no explanation beside it.
         error={
-          problem ??
-          (tooLong
+          tooLong
             ? `That name is ${trimmed.length} characters; the limit is ${NAME_MAX_LENGTH}.`
-            : null)
+            : problem
         }
       >
         <Input
           value={name}
-          onChange={(event) => setName(event.target.value)}
+          onChange={(event) => {
+            setName(event.target.value);
+            // The message described the name that failed, and this is no longer
+            // that name.
+            setProblem(null);
+          }}
           placeholder="Not set"
           autoComplete="name"
         />

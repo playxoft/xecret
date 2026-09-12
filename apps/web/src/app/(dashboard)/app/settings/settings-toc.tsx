@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { cn } from '@/lib/cn';
 import { useSettingsHeaderHeight } from './settings-header';
@@ -149,12 +149,28 @@ export function SettingsToc() {
       .filter((element): element is HTMLElement => element !== null);
     if (elements.length === 0) return;
 
+    // What is in the band right now, kept across callbacks.
+    //
+    // An `IntersectionObserver` callback carries only what *changed*, and the
+    // answer this rail needs is about everything currently inside the band. A
+    // callback reporting a single entering section used to be read as the whole
+    // truth, so scrolling down marked the arriving card the moment its top edge
+    // crossed the line — while the card above it, still filling most of the
+    // band and still the one being read, quietly lost the highlight.
+    const inBand = new Set<string>();
+    const order = sections.map((section) => section.id);
+
     const observer = new IntersectionObserver(
       (entries) => {
-        const topmost = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
-        if (topmost !== undefined) setActive(topmost.target.id);
+        for (const entry of entries) {
+          if (entry.isIntersecting) inBand.add(entry.target.id);
+          else inBand.delete(entry.target.id);
+        }
+        // Document order, so the topmost section in the band wins however the
+        // entries arrived. The previous answer is kept when the band is empty —
+        // mid-flick, and at the bottom of a short page.
+        const topmost = order.find((id) => inBand.has(id));
+        if (topmost !== undefined) setActive(topmost);
       },
       // Resolved against the viewport, so the top edge has to clear both sticky
       // bars the sections scroll under — the same line the anchor jump lands on,
@@ -169,10 +185,39 @@ export function SettingsToc() {
     // hand over to the next section a heading or two early.
   }, [sections, headerHeight]);
 
-  // Nothing to list until the tab's cards are on the page. Every settings tab
-  // has more than one section, so the rail is on every one of them — a list
-  // that appeared only on the longest tab would read as a glitch on the others.
-  if (sections.length === 0) return null;
+  // ── Landing on the card somebody was sent to ──
+  //
+  // The browser performs its own jump for `…/security#devices`, and misses:
+  // half these cards are not in the document on the first paint, so at the
+  // moment the browser looks, the id it was given does not exist. By the time
+  // the vault, the lock and the device list have answered, the page is at the
+  // top and the fragment in the address bar is a promise nothing kept.
+  //
+  // So the corrective scroll happens here, on the first render where the target
+  // is genuinely on the page — which is the first `sync()` that lists it — and
+  // once the header has published a height, since `scroll-margin-top` is built
+  // from that and a jump made before it lands is a jump behind the header.
+  //
+  // At most once per navigation. `sections` changes on every mutation in a
+  // subtree full of forms, and a scroll on each of them would drag the page back
+  // under somebody who had already scrolled away.
+  const jumpedTo = useRef<string | null>(null);
+  useEffect(() => {
+    if (headerHeight === 0) return;
+
+    const id = decodeURIComponent(window.location.hash.slice(1));
+    if (id.length === 0) return;
+
+    const navigation = `${pathname}#${id}`;
+    if (jumpedTo.current === navigation) return;
+    if (!sections.some((section) => section.id === id)) return;
+
+    const target = document.getElementById(id);
+    if (target === null) return;
+
+    jumpedTo.current = navigation;
+    target.scrollIntoView();
+  }, [pathname, sections, headerHeight]);
 
   // Derived rather than seeded into state, so something is always marked —
   // including before the first scroll, and on a page short enough that nothing
@@ -186,39 +231,48 @@ export function SettingsToc() {
     // the rail cannot end up over the cards at any width. Hidden below `xl`,
     // which is the first breakpoint with room for 14rem of rail beside a
     // full-measure form once the application's own sidebar has taken its 15.
+    //
+    // The gutter is rendered whether or not there is anything to put in it. It
+    // is 14rem of a flex row plus the gap, and returning `null` while the cards
+    // were still arriving meant every settings tab painted its form 256px to the
+    // left and then jumped sideways once the sections were read — on every load,
+    // at the moment somebody's cursor was arriving at a field. Only the *nav*
+    // waits for the sections; the space it will occupy never does.
     <div className="hidden w-56 shrink-0 xl:block">
-      <nav aria-labelledby="settings-toc-heading" className="sticky" style={{ top: TOP_CSS }}>
-        <h2
-          id="settings-toc-heading"
-          className="text-fg-subtle px-3 pb-2 text-[0.6875rem] font-semibold tracking-wider uppercase"
-        >
-          On this page
-        </h2>
+      {sections.length === 0 ? null : (
+        <nav aria-labelledby="settings-toc-heading" className="sticky" style={{ top: TOP_CSS }}>
+          <h2
+            id="settings-toc-heading"
+            className="text-fg-subtle px-3 pb-2 text-[0.6875rem] font-semibold tracking-wider uppercase"
+          >
+            On this page
+          </h2>
 
-        <ul className="border-line-subtle flex flex-col border-l">
-          {sections.map((section) => {
-            const current = section.id === currentId;
-            return (
-              <li key={section.id} className="flex">
-                <a
-                  href={`#${section.id}`}
-                  // `location`, not `page`: this marks where you are *within*
-                  // the page, and the tab bar above already owns `page`.
-                  aria-current={current ? 'location' : undefined}
-                  className={cn(
-                    '-ml-px block min-w-0 flex-1 border-l-2 py-1.5 pl-3 text-sm transition-colors',
-                    current
-                      ? 'border-accent text-fg font-medium'
-                      : 'text-fg-muted hover:border-line-strong hover:text-fg border-transparent',
-                  )}
-                >
-                  {section.label}
-                </a>
-              </li>
-            );
-          })}
-        </ul>
-      </nav>
+          <ul className="border-line-subtle flex flex-col border-l">
+            {sections.map((section) => {
+              const current = section.id === currentId;
+              return (
+                <li key={section.id} className="flex">
+                  <a
+                    href={`#${section.id}`}
+                    // `location`, not `page`: this marks where you are *within*
+                    // the page, and the tab bar above already owns `page`.
+                    aria-current={current ? 'location' : undefined}
+                    className={cn(
+                      '-ml-px block min-w-0 flex-1 border-l-2 py-1.5 pl-3 text-sm transition-colors',
+                      current
+                        ? 'border-accent text-fg font-medium'
+                        : 'text-fg-muted hover:border-line-strong hover:text-fg border-transparent',
+                    )}
+                  >
+                    {section.label}
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        </nav>
+      )}
     </div>
   );
 }
