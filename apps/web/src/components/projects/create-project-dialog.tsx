@@ -3,9 +3,19 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
-import { isReservedSlug, slugify, SLUG_MAX_LENGTH, SLUG_PATTERN } from '@xecret/core/validation';
+import { uuidv7 } from '@xecret/core/ids';
+import { zeroize } from '@xecret/core/crypto/client';
+import {
+  DEFAULT_ENVIRONMENTS,
+  isReservedSlug,
+  slugify,
+  SLUG_MAX_LENGTH,
+  SLUG_PATTERN,
+} from '@xecret/core/validation';
 import { api, isApiError } from '@/lib/api';
 import { apiPath, appPath } from '@/app/(dashboard)/_lib/paths';
+import { createEnvironmentKeys } from '@/components/envkeys';
+import { useVaultKeys } from '@/components/vault';
 import {
   Alert,
   Button,
@@ -68,6 +78,20 @@ function validateSlug(slug: string): string | null {
  * redeployed in the same instant. Something a user cannot undo should not be
  * decided for them behind a disclosure triangle, so it is shown, derived live
  * from the name, and editable until they touch it.
+ *
+ * ── Why this needs an unlocked vault ──
+ * A project is not an empty container that gets environments later: it arrives
+ * with development, staging and production, and every environment created from
+ * Phase 3 onward is end-to-end encrypted. Their keys are generated **here**, in
+ * this browser, then sealed to the creator's own public key and signed with
+ * their signing key — three times, once per environment. A locked vault has
+ * neither key, so the form refuses rather than sending a body the server would
+ * reject, the same gate `CreateEnvironmentDialog` applies.
+ *
+ * The environment uuids are minted here too, and that is not bookkeeping: each
+ * grant's AAD names the environment it is for (spec §4.2), so the ids have to
+ * exist before the sealing does. The server writes the rows under the ids it is
+ * given, inside the same transaction as the project.
  */
 export function CreateProjectDialog({ orgSlug, open, onOpenChange }: CreateProjectDialogProps) {
   const [submitting, setSubmitting] = useState(false);
@@ -89,6 +113,50 @@ export function CreateProjectDialog({ orgSlug, open, onOpenChange }: CreateProje
   );
 }
 
+/** One default environment's client-generated keys, awaiting the create call. */
+interface EnvironmentKeys {
+  slug: string;
+  id: string;
+  grant: Awaited<ReturnType<typeof createEnvironmentKeys>>['grant'];
+  edk: Awaited<ReturnType<typeof createEnvironmentKeys>>['edk'];
+  ehk: Awaited<ReturnType<typeof createEnvironmentKeys>>['ehk'];
+}
+
+/**
+ * Mints an id and generates a key pair for each of the three default
+ * environments.
+ *
+ * In sequence rather than concurrently, and that is the interesting part: the
+ * generation is cheap, but the failure handling is not. If the second of three
+ * throws, everything produced so far is key material in a heap that is about to
+ * render an error, and it has to be wiped — which is straightforward walking a
+ * list built in order and impossible to reason about across three promises
+ * settling in whatever order they settle in.
+ */
+async function generateEnvironmentKeys(
+  vault: NonNullable<ReturnType<typeof useVaultKeys>>,
+): Promise<EnvironmentKeys[]> {
+  const keyed: EnvironmentKeys[] = [];
+
+  try {
+    for (const environment of DEFAULT_ENVIRONMENTS) {
+      const environmentId = uuidv7();
+      const keys = await createEnvironmentKeys({ vault, environmentId });
+      keyed.push({ slug: environment.slug, id: environmentId, ...keys });
+    }
+  } catch (cause) {
+    // Nothing downstream will ever be able to use these — the request is not
+    // going to be sent — and they are 64 bytes of key material per environment.
+    for (const environment of keyed) {
+      zeroize(environment.edk);
+      zeroize(environment.ehk);
+    }
+    throw cause;
+  }
+
+  return keyed;
+}
+
 function CreateProjectForm({
   orgSlug,
   onOpenChange,
@@ -100,6 +168,7 @@ function CreateProjectForm({
 }) {
   const router = useRouter();
   const { toast } = useToast();
+  const vault = useVaultKeys();
 
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
@@ -136,14 +205,39 @@ function CreateProjectForm({
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
 
+    if (vault === null) {
+      setFormError(
+        'Unlock your vault first. A new project starts with three end-to-end encrypted environments, and their keys are generated in this browser and sealed to your own key.',
+      );
+      return;
+    }
+
     setBusy(true);
     setFormError(null);
+
+    // Generated before the `try` that owns the zeroization, and guarded on its
+    // own: a failure part-way through has produced material to wipe but nothing
+    // to send, and letting it fall through to a `finally` that reads `keyed`
+    // would wipe a partial list on top of whatever actually went wrong.
+    let keyed: EnvironmentKeys[];
+    try {
+      keyed = await generateEnvironmentKeys(vault);
+    } catch {
+      setBusy(false);
+      setFormError('Could not generate this project’s environment keys in your browser.');
+      return;
+    }
 
     try {
       const created = await api.post<CreateProjectResponse>(apiPath.projects(orgSlug), {
         name: trimmedName,
         slug: effectiveSlug,
         ...(description.trim().length === 0 ? {} : { description: description.trim() }),
+        environments: keyed.map((environment) => ({
+          slug: environment.slug,
+          id: environment.id,
+          keys: { grant: environment.grant },
+        })),
       });
 
       toast({
@@ -171,6 +265,16 @@ function CreateProjectForm({
         }
       }
       setFormError(cause instanceof Error ? cause.message : 'Could not create the project.');
+    } finally {
+      // The environments are re-opened through the ordinary path — `GET …/keys`,
+      // open the grant — so there is one way key material enters the store and
+      // no second copy of a live data key left in this closure. On the failure
+      // path they are simply gone, which is why the server writes the project
+      // and all six key rows in one transaction.
+      for (const environment of keyed) {
+        zeroize(environment.edk);
+        zeroize(environment.ehk);
+      }
     }
   }
 

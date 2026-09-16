@@ -2,6 +2,7 @@ import * as z from 'zod/mini';
 import type { ZodMiniType } from 'zod/mini';
 import type { OrgRole } from '@xecret/core/authz';
 import {
+  DEFAULT_ENVIRONMENTS,
   environmentSlugSchema,
   isReservedSlug,
   ORGANIZATION_NAME_MAX_LENGTH,
@@ -20,6 +21,7 @@ import type {
 import { errors } from '../errors';
 import type { ApiError } from '../errors';
 import { environmentKeyInitSchema } from './env-keys';
+import { uuidField } from './ids';
 
 /**
  * The request schemas and response shapes of the organisation, project and
@@ -210,12 +212,68 @@ export const organizationPatchSchema = z
   // instead of a generic "nothing to update".
   .check(z.refine((patch) => Object.keys(patch).length > 0, { message: NON_EMPTY_PATCH }));
 
+/**
+ * One of the default environments a new project is created with, and the keys
+ * its creator generated for it.
+ *
+ * A project is not a container that gets environments later: it arrives with
+ * development, staging and production, every one of them end-to-end encrypted,
+ * and every one of them therefore needing an EDK, an EHK and the creator's grant
+ * over both — generated in a browser, before this request exists. That is the
+ * whole reason this field is here rather than the project route minting three
+ * environments on its own the way it used to.
+ *
+ * `slug` names *which* of the defaults the entry is for; it is not a free
+ * choice. `DEFAULT_ENVIRONMENTS` owns the name, the production flag and the
+ * order, and it must keep owning them — a client that could name its own
+ * environment here could also decide which of them is production, which is the
+ * one field that changes who may read the environment. The route checks the set
+ * of slugs against `DEFAULT_ENVIRONMENTS` exactly and refuses anything else.
+ *
+ * `id` is required, not optional as it is on `environmentCreateSchema`. There is
+ * no server-mode path into this route to keep it optional for: the grant's AAD
+ * names the environment (spec §4.2), so the row has to be written under the id
+ * the browser sealed against or it holds a grant nobody can ever open.
+ */
+export const projectEnvironmentInitSchema = z.strictObject(
+  {
+    slug: environmentSlugSchema,
+    id: uuidField('An environment is named by a UUID.'),
+    keys: environmentKeyInitSchema,
+  },
+  UNEXPECTED_FIELD,
+);
+
+export type ProjectEnvironmentInit = z.infer<typeof projectEnvironmentInitSchema>;
+
 export const projectCreateSchema = z.strictObject(
   {
     name: nameSchema,
     /** Optional: derived from the name when absent. See `resolveProjectSlug`. */
     slug: z.optional(slugSchema),
     description: z.optional(descriptionSchema),
+    /**
+     * **Required in practice, optional in the schema**, for the reason
+     * `environmentCreateSchema.keys` gives: a caller without an unlocked vault
+     * cannot produce this, and telling them so by way of a field-level error on
+     * a field they have never heard of explains nothing. The route refuses
+     * instead, in a sentence that says what to do.
+     *
+     * Bounded to the number of defaults so a caller cannot order an unbounded
+     * number of sealings inside one transaction; the exact-set check that
+     * actually decides the request lives in the route, where it can name which
+     * environment is missing.
+     */
+    environments: z.optional(
+      z
+        .array(projectEnvironmentInitSchema)
+        .check(
+          z.maxLength(
+            DEFAULT_ENVIRONMENTS.length,
+            `A project starts with ${DEFAULT_ENVIRONMENTS.length} environments.`,
+          ),
+        ),
+    ),
   },
   UNEXPECTED_FIELD,
 );

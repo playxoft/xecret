@@ -409,6 +409,22 @@ Both routes out of that state now stay open instead of one closing itself immedi
 | `GET` `POST` | `/api/orgs/{orgSlug}/projects` |
 | `GET` `PATCH` `DELETE` | `/api/orgs/{orgSlug}/projects/{projectSlug}` |
 
+**A project arrives with its three default environments, and every one of them is end-to-end
+encrypted** — so `POST` carries the key hierarchy for all three:
+`{ name, slug?, description?, environments: [{ slug, id, keys: { grant } }] }`. Each entry's
+`slug` names *which* default it is for, and nothing more: `DEFAULT_ENVIRONMENTS` owns the name,
+the sort order and the production flag, because that flag decides who may read the environment
+and is not a client's to choose. The set is checked against the defaults **exactly** — a missing
+entry, a surplus one and a duplicate are all 400s that name what is wrong — and `id` is required
+rather than optional, because the grant's AAD names the environment (spec §4.2) and a row written
+under a server-minted id would hold a grant nobody could ever open.
+
+Like `POST …/environments`, this needs a **browser session with an unlocked vault**: a CLI or
+service token has no public key to seal to and no signing key to sign with, and is refused with a
+403 rather than a validation error about a field it could never have produced. A caller with no
+vault at all gets a 400 telling them to set one up. **The first grant must be the creator's own**,
+for the reason the *Environments* section gives.
+
 `DELETE` is a soft delete. A hard delete would orphan the audit records that say the project
 existed and who removed it.
 
