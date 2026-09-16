@@ -10,9 +10,9 @@
  * first code that finds out.
  *
  * It covers the path a first sign-in actually takes — create the user,
- * bootstrap their organisation and its key hierarchy, store an encrypted
- * secret, read it back — plus the properties the design rests on and that no
- * unit test can reach:
+ * bootstrap their organisation and its master key, make a project and an
+ * environment, store an encrypted secret, read it back — plus the properties the
+ * design rests on and that no unit test can reach:
  *
  *  - a ciphertext moved to another row fails to decrypt (the AAD binding);
  *  - the `value_type` CHECK refuses a write that bypassed the application;
@@ -30,6 +30,8 @@
 import { sql } from 'drizzle-orm';
 import { createDatabase } from '../packages/db/src/client.ts';
 import {
+  createEnvironment,
+  createProject,
   createSecret,
   createSession,
   createVault,
@@ -54,6 +56,16 @@ import {
 } from '../packages/core/src/auth/index.ts';
 import { randomBytes } from '../packages/core/src/crypto/encoding.ts';
 import { uuidv7 } from '../packages/core/src/ids/index.ts';
+import { DEFAULT_ENVIRONMENTS } from '../packages/core/src/validation/index.ts';
+
+/**
+ * The ceiling `provisionOrganization` refuses past.
+ *
+ * Stated rather than omitted: the parameter is required precisely so that no
+ * caller can create an organisation without naming one, and a smoke test that
+ * passed `undefined` would be exercising a quota check that never fires.
+ */
+const ORGANIZATION_LIMIT = 10;
 
 /** Thrown to unwind the transaction once the checks have run. */
 class Rollback extends Error {
@@ -97,27 +109,75 @@ async function main(): Promise<void> {
         email: `smoke-${uuidv7()}@example.invalid`,
         emailVerified: true,
         displayName: 'Smoke Test',
+        // Seconds since the epoch, as a verified token carries it. The freshness
+        // rules that read this belong to the routes, not to the repository, but
+        // the field is required and a smoke test that invented a value outside
+        // the unit it is stored in would be the first thing to mislead somebody.
+        authTime: Math.floor(Date.now() / 1000),
       });
       step('user created', true, `id ${user.id.slice(0, 8)}…`);
 
-      // ── 2. Organisation bootstrap: org, master key, project, env keys ───
-      const account = await provisionOrganization(tx, { user, envelope });
+      // ── 2. Organisation bootstrap: the org, the membership, the master key ─
+      const account = await provisionOrganization(tx, {
+        user,
+        envelope,
+        limit: ORGANIZATION_LIMIT,
+      });
       step(
         'organisation bootstrapped',
-        account.environments.length === 3,
-        `org "${account.organization.slug}", project "${account.project.slug}", ` +
-          `${account.environments.length} environments`,
+        account.membership.role === 'owner',
+        `org "${account.organization.slug}", ${account.membership.role} membership, master key`,
       );
 
-      const production = account.environments.find((environment) => environment.isProduction);
-      const development = account.environments.find((environment) => !environment.isProduction);
+      const orgId = account.organization.id;
+
+      // ── 2b. A project and its environments ──────────────────────────────
+      // Provisioning deliberately stops short of these: an end-to-end encrypted
+      // environment's keys are sealed to a public key the server has never seen,
+      // and there is no browser here to generate them. So this creates them in
+      // `server` mode — the migration state that predates the client hierarchy,
+      // and the only mode anything without a vault can produce. What that
+      // exercises is the envelope chain below, root → org → env, which is
+      // exactly what a server-mode environment is for and what this script is
+      // here to prove still works end to end against a real database.
+      const project = await createProject(tx, {
+        orgId,
+        name: 'Smoke Test',
+        slug: `smoke-${uuidv7().slice(0, 8)}`,
+        createdBy: user.id,
+      });
+
+      const created = [];
+      for (const environment of DEFAULT_ENVIRONMENTS) {
+        created.push(
+          await createEnvironment(tx, {
+            orgId,
+            projectId: project.id,
+            name: environment.name,
+            slug: environment.slug,
+            isProduction: environment.isProduction,
+            sortOrder: environment.sortOrder,
+            encryptionMode: 'server',
+            envelope,
+          }),
+        );
+      }
+
+      step(
+        'project created',
+        created.length === DEFAULT_ENVIRONMENTS.length,
+        `project "${project.slug}", ${created.length} environments, one Env Data Key each`,
+      );
+
+      const production = created.find((environment) => environment.isProduction);
+      const development = created.find((environment) => !environment.isProduction);
       if (!production || !development)
         throw new Error('expected a production and a non-production environment');
 
       step('production flagged', true, `"${production.slug}" is_production = true`);
 
       // ── 3. Unwrap the key chain: root → org → env ───────────────────────
-      const chain = await loadEnvironmentKeyChain(tx, account.organization.id, development.id);
+      const chain = await loadEnvironmentKeyChain(tx, orgId, development.id);
       if (!chain) throw new Error('environment has no key chain');
 
       const envKey = await envelope.openEnvKey({
@@ -145,13 +205,15 @@ async function main(): Promise<void> {
       );
 
       await createSecret(tx, {
-        orgId: account.organization.id,
+        orgId,
         environmentId: development.id,
         name: 'DATABASE_URL',
         id: secretId,
-        envKeyId: chain.envKeyId,
-        encrypted,
-        createdBy: user.id,
+        // The `server` arm of the payload union. `secret_versions` is dual-mode
+        // from migration 0013 — one key column or the other, never both — and
+        // naming the arm is what decides which CHECK the row has to satisfy.
+        payload: { mode: 'server', envKeyId: chain.envKeyId, encrypted },
+        writer: { userId: user.id },
       });
       step('secret stored', true, 'secrets + secret_versions written');
 
@@ -163,11 +225,17 @@ async function main(): Promise<void> {
         'DATABASE_URL',
       );
       if (!stored) throw new Error('stored secret could not be found by name');
+      // Null on an `e2ee` row, where the bytes are a client blob this server
+      // cannot open. This environment is `server` mode, so a null here means the
+      // row was written down the wrong arm — worth failing loudly for, since the
+      // whole point of the script is to catch exactly that against a real
+      // database.
+      if (!stored.encrypted) throw new Error('stored secret has no server-envelope payload');
 
       const decrypted = await envelope.decrypt(
         envKey,
         {
-          orgId: account.organization.id,
+          orgId,
           environmentId: development.id,
           secretId: stored.secretId,
           version: stored.version,
@@ -187,7 +255,7 @@ async function main(): Promise<void> {
         await envelope.decrypt(
           envKey,
           {
-            orgId: account.organization.id,
+            orgId,
             environmentId: production.id, // ← the only thing changed
             secretId: stored.secretId,
             version: stored.version,

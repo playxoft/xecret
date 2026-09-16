@@ -46,7 +46,7 @@ xecret secrets restore NAME --version 3  # re-append an old value; history intac
 xecret secrets annotate NAME --note "…"  # metadata; appends no version
 
 xecret orgs / orgs use SLUG              # which organisation commands address
-xecret projects create "Checkout API"    # + its default environments and keys
+xecret projects delete checkout-api      # soft delete; 'create' is dashboard-only
 xecret environments create "PR 412" --slug pr-412
 xecret audit --action secret.revealed --since 7d
 xecret members
@@ -57,14 +57,17 @@ xecret doctor                            # what this machine is set up to do
 xecret upgrade                           # is a newer release published?
 ```
 
-Two things are deliberately *not* here, and the commands say so rather than
-letting the server answer with a 403:
+Some things are deliberately *not* here:
 
 - **Minting a service token.** `POST …/tokens/service` requires a browser
   session: a token that could mint another token turns one leaked credential
   into a permanent foothold, so the chain has to start with a person.
 - **Inviting or suspending members.** Same reason, same server-side rule.
   `xecret members` reads; it does not write.
+- **Creating a project or an environment.** Both arrive end-to-end encrypted
+  under keys generated in a browser and sealed to their creator. This CLI opens
+  grants and encrypts secrets; it implements no sealing, so there is nothing it
+  could send, and the server answers 403. Listing and deleting work here.
 
 ## How authentication works
 

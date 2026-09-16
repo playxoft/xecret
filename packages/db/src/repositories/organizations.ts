@@ -52,13 +52,6 @@ const FALLBACK_SLUG_BASE = 'org';
 
 const FALLBACK_ORGANIZATION_NAME = 'My Organisation';
 
-/**
- * The project every new organisation starts with.
- *
- * A fixed slug rather than a derived one so the first CLI command in the
- * documentation — `xecret run --project default` — works for everybody.
- */
-
 export async function findOrganizationBySlug(
   exec: Executor,
   slug: string,

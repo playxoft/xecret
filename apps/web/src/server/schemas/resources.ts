@@ -64,10 +64,9 @@ export const DESCRIPTION_MAX_LENGTH = 500;
  *
  * The rate limiter bounds how *fast* `POST /api/orgs` can be called; nothing
  * bounded how many times, and the two are not the same control. Every call
- * derives an Org Master Key and three Env Data Keys inside one transaction, so
- * a caller spending their mutation budget on this endpoint holds a database
- * connection open across CPU-bound cryptography ~60 times a minute for as long
- * as they like. Worse, it is the one endpoint that spends something no deletion
+ * derives an Org Master Key inside one transaction, so a caller spending their
+ * mutation budget on this endpoint holds a database connection open across
+ * CPU-bound cryptography ~60 times a minute for as long as they like. Worse, it is the one endpoint that spends something no deletion
  * returns: `organizations_slug_unique` is a total constraint, so every slug
  * claimed is taken out of a namespace shared with every other tenant for good.
  *

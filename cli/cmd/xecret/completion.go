@@ -82,7 +82,7 @@ var completionTree = []completionCommand{
 		Flags: withHelp("--json"),
 		Subcommands: []completionCommand{
 			{Name: "list", Description: "List projects", Flags: withHelp("--json")},
-			{Name: "create", Description: "Create a project and its default environments",
+			{Name: "create", Description: "Create a project (dashboard only — needs a browser to seal keys)",
 				Flags: withHelp("--json", "--slug", "--description")},
 			{Name: "delete", Description: "Soft-delete a project", Flags: withHelp("--yes")},
 		}},
@@ -90,7 +90,7 @@ var completionTree = []completionCommand{
 		Flags: withHelp("--json", "--project"),
 		Subcommands: []completionCommand{
 			{Name: "list", Description: "List environments", Flags: withHelp("--json", "--project")},
-			{Name: "create", Description: "Create an environment and its key",
+			{Name: "create", Description: "Create an environment (dashboard only — needs a browser to seal keys)",
 				Flags: withHelp("--json", "--slug", "--production", "--project")},
 			{Name: "delete", Description: "Soft-delete an environment",
 				Flags: withHelp("--yes", "--project")},

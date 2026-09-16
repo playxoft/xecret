@@ -220,8 +220,6 @@ function provisioned() {
       deletedAt: null,
     },
     membership: { role: 'owner' },
-    project: {},
-    environments: [],
   };
 }
 

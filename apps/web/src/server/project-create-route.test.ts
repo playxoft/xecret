@@ -152,7 +152,7 @@ function principalFor(userId: string) {
   };
 }
 
-/** A credential minted for a machine: no vault, so nothing to seal with. */
+/** A credential minted for a machine: it holds key material, but cannot seal. */
 const cliTokenPrincipal = {
   kind: 'cliToken' as const,
   tokenId: uuidv7(),
@@ -555,6 +555,11 @@ describe('POST …/projects — what the audit log is told', () => {
     const keyRecords = (await settledAudit()).filter(
       (record) => record.action === 'envkey.created',
     );
+
+    // Asserted before the loop, because a `for` over an empty list passes every
+    // expectation inside it. Without this the test stayed green with the records
+    // removed from the route entirely — which is the failure it exists to catch.
+    expect(keyRecords).toHaveLength(DEFAULT_ENVIRONMENTS.length);
 
     for (const record of keyRecords) {
       expect(record.metadata).toMatchObject({ keyVersion: 1, grantCount: 1, source: 'dashboard' });
