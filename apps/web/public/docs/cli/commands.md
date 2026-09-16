@@ -139,22 +139,18 @@ xecret projects create NAME [--slug SLUG] [--description TEXT]
 xecret projects delete SLUG [--yes]
 ```
 
-Lists the projects you can see in your organisation, and creates or removes one.
+Lists the projects you can see in your organisation, and removes one.
 
-Creating a project also creates its default environments — development, staging
-and production — each with its own encryption key, in a single transaction. A
-project with no environments has nowhere to put a secret, and an environment
-without a key cannot be repaired from inside the product, so neither half is
-ever created alone.
+**`create` is refused for a CLI token — make the project in the dashboard.** A
+project arrives with its default environments — development, staging and
+production — and each is end-to-end encrypted under a key generated in the
+creator's browser and sealed to them. This CLI opens grants and encrypts
+secrets; it cannot produce that key material, so there is nothing it could send.
 
-```bash
-xecret projects create "Checkout API" --slug checkout-api
-```
-
-The slug is permanent: it appears in every URL, in `.xecret.yaml` and in the CI
-configuration of everyone who consumes the project, so renaming it would break
-every consumer that is not redeployed at the same instant. Pass `--slug` if you
-do not want one derived from the name.
+The slug you choose there is permanent: it appears in every URL, in
+`.xecret.yaml` and in the CI configuration of everyone who consumes the project,
+so renaming it would break every consumer that is not redeployed at the same
+instant.
 
 Deleting is soft, and asks you to type the slug back unless you pass `--yes`.
 

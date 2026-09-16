@@ -7,11 +7,13 @@ import {
   RepositoryError,
 } from '@xecret/db/repositories';
 import type { EnvironmentRecord, ProjectRecord } from '@xecret/db/repositories';
-import { actingUserId, actorId } from '@/server/actor';
+import { actorId } from '@/server/actor';
+import { assertSelfGrant, callerHasVault, requireSealingUser } from '@/server/env-keys-service';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody, parseQuery } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
+import { toGrantSeed } from '@/server/schemas/env-keys';
 import {
   pageQuerySchema,
   projectCreateSchema,
@@ -20,6 +22,7 @@ import {
   toProject,
   toProjectListItem,
 } from '@/server/schemas/resources';
+import type { ProjectEnvironmentInit } from '@/server/schemas/resources';
 import { authorize, resolveOrg } from '@/server/tenancy';
 import type { OrgScope } from '@/server/tenancy';
 
@@ -28,6 +31,19 @@ import type { OrgScope } from '@/server/tenancy';
  */
 
 type Params = { orgSlug: string };
+
+/**
+ * The decision recorded when a token is refused for being unable to seal.
+ *
+ * `forbidden` rather than `notFound`: the caller is an authenticated principal
+ * of this organisation that `can()` has already allowed, so it provably knows
+ * the organisation exists and there is nothing for a `notFound` to conceal.
+ */
+const SEALING_DENIED = {
+  allowed: false,
+  reason: 'forbidden',
+  message: 'Creating a project requires a browser session that can seal keys.',
+} as const;
 
 export const GET = authenticatedRoute<Params>(async ({ request, params, principal, services }) => {
   const scope = await resolveOrg(principal, params.orgSlug, services);
@@ -87,16 +103,69 @@ export const POST = authenticatedRoute<Params>(
       throw cause;
     }
 
-    // Unreachable: `project.create` is not in `SERVICE_TOKEN_ACTIONS`, so the
-    // authorization above has already refused the only principal without a user
-    // behind it. Written out because `projects.created_by` is NOT NULL and an
-    // assertion here would be a claim the type system cannot check — a CI
-    // credential must never be able to appear as the author of anything (T5).
-    const createdBy = actingUserId(principal);
-    if (createdBy === null) throw errors.forbidden('Service tokens cannot create projects.');
+    // A project arrives with three end-to-end encrypted environments, so the
+    // caller has to be a principal that can *seal* — a stricter requirement than
+    // this route used to have, and deliberately the same one
+    // `POST …/environments` applies.
+    //
+    // Not because a token holds no key material: a CLI token receives its
+    // issuing user's vault material, signing key included (`api.md` §Vault), and
+    // `cli/internal/envkeys` opens grants with it today. It is because no
+    // non-browser client can *produce* a grant — the Go CLI implements `Open`
+    // and the secret codecs and no sealing at all — and because `can()` routes a
+    // CLI token through `memberDecision`, so `authorize` above passes it and
+    // this is the gate that actually stops it.
+    //
+    // Recorded rather than merely thrown. The `AuthorizationError` branch above
+    // files a `denied` event, and a refusal here would otherwise be the one way
+    // to attempt project creation and leave no trace — a stolen CLI token
+    // hammering this endpoint would produce an empty audit log.
+    //
+    // This also settles `projects.created_by`, which is NOT NULL and must never
+    // name a CI credential as the author of anything (T5).
+    let createdBy: string;
+    try {
+      createdBy = requireSealingUser(principal);
+    } catch (cause) {
+      record(audit(orgId).denied('project.created', { type: 'project', id: null }, SEALING_DENIED));
+      throw cause;
+    }
 
     const body = await parseJsonBody(request, projectCreateSchema);
     const slug = resolveProjectSlug(body);
+
+    // ── The three default environments, and the keys that come with them ──
+    // `environments.encryption_mode` defaults to `e2ee` from migration 0013
+    // onward. Before this gate existed the route called `createEnvironment` with
+    // no key material at all, and every attempt to create a project died inside
+    // the transaction as an unmapped repository error — a 500 reading
+    // "Something went wrong." for what is really a caller holding the wrong kind
+    // of credential, or a browser whose vault is locked.
+    if (body.environments === undefined) {
+      throw errors.badRequest(
+        "A project's environments are end-to-end encrypted, so it must be created with client-generated keys from an unlocked browser session.",
+      );
+    }
+
+    if (!(await callerHasVault(services, principal))) {
+      throw errors.badRequest(
+        'Set up your vault before creating a project: its environment keys are sealed to your public key.',
+      );
+    }
+
+    // Exactly the defaults, no more and no fewer, and the refusal names what is
+    // wrong. The client does not get to choose this set: `DEFAULT_ENVIRONMENTS`
+    // owns which environment is production, and that flag decides who may read
+    // it.
+    const inits = indexEnvironmentInits(body.environments);
+
+    // Every grant must be the creator's own. Without this the route would accept
+    // a first grant addressed to any principal of any kind — `grantSchema` takes
+    // a `recipientKind` and a uuid, and the foreign keys check that the row
+    // exists, not that it belongs to this tenant. At creation there is exactly
+    // one public key the caller could honestly have sealed to, and it is theirs.
+    // The same assertion `POST …/environments` makes, for the same reason.
+    for (const init of inits.values()) assertSelfGrant(init.keys.grant, createdBy);
 
     /**
      * One transaction for the project and its environments.
@@ -125,15 +194,48 @@ export const POST = authenticatedRoute<Params>(
 
         const environments: EnvironmentRecord[] = [];
         for (const environment of DEFAULT_ENVIRONMENTS) {
+          const init = inits.get(environment.slug);
+          // Unreachable — `indexEnvironmentInits` has already established that
+          // every default has an entry. A throw rather than a non-null
+          // assertion, so a future edit that loosens that check fails loudly
+          // instead of writing an environment nobody can ever open.
+          if (init === undefined) {
+            throw errors.badRequest(`No keys were supplied for "${environment.slug}".`);
+          }
+
           environments.push(
             await createEnvironment(tx, {
               orgId,
               projectId: project.id,
+              // The id the grant was sealed against, not one minted here: the
+              // AAD names the environment (spec §4.2), so a row written under
+              // any other id holds a grant nobody can open — and unlike every
+              // other broken state in this system there is no repair, because
+              // the key bytes existed only in the browser that generated them.
+              id: init.id,
               name: environment.name,
               slug: environment.slug,
               isProduction: environment.isProduction,
               sortOrder: environment.sortOrder,
-              envelope: services.envelope,
+              encryptionMode: 'e2ee',
+              keyInit: { createdBy, grant: toGrantSeed(init.keys.grant) },
+            }).catch((cause: unknown) => {
+              // `createEnvironment` inserts `ON CONFLICT DO NOTHING` with no
+              // conflict target, so a collision on the client-supplied primary
+              // key is reported as a slug conflict — and the outer handler would
+              // then rewrite it as "a project with this slug already exists",
+              // which the dialog pins to the slug field. The user would rename
+              // the project and fail identically, for ever. Answered here, on
+              // the field that is actually wrong, and without echoing the id:
+              // the difference between "this uuid exists somewhere in the
+              // installation" and "it does not" is an existence oracle across
+              // tenants, bounded only by UUIDv7 being unguessable (T2).
+              if (cause instanceof RepositoryError && cause.code === 'conflict') {
+                throw errors.conflict(
+                  'One of these environment ids is already in use. Retry to generate new ones.',
+                );
+              }
+              throw cause;
             }),
           );
         }
@@ -146,6 +248,22 @@ export const POST = authenticatedRoute<Params>(
         // caller can act on, naming the slug they are competing for.
         if (cause instanceof RepositoryError && cause.code === 'conflict') {
           throw errors.conflict(`A project with the slug "${slug}" already exists.`);
+        }
+        // `invalid` is the repository refusing the material it was handed — key
+        // init that does not match the encryption mode, above all. That is a
+        // property of the request, so it answers 400 naming the problem rather
+        // than the bare 500 an unmapped `RepositoryError` produces, which is the
+        // shape the bug this route is fixing took for every project anyone tried
+        // to create.
+        if (cause instanceof RepositoryError && cause.code === 'invalid') {
+          throw errors.badRequest(cause.message);
+        }
+        // Practically unreachable — the project row is inserted in this same
+        // transaction, so `createEnvironment` cannot fail to find it. Mapped
+        // anyway, because the sibling route maps it and the alternative if it
+        // ever does fire is a 500 for something that is not a server fault.
+        if (cause instanceof RepositoryError && cause.code === 'notFound') {
+          throw errors.notFound('project disappeared mid-transaction');
         }
         throw cause;
       });
@@ -160,7 +278,7 @@ export const POST = authenticatedRoute<Params>(
         { type: 'project', id: created.project.id, projectId: created.project.id },
         { projectSlug: created.project.slug },
       ),
-      ...created.environments.map((environment) =>
+      ...created.environments.flatMap((environment) => [
         audit(orgId).success(
           'environment.created',
           {
@@ -171,7 +289,31 @@ export const POST = authenticatedRoute<Params>(
           },
           { projectSlug: created.project.slug, environmentSlug: environment.slug },
         ),
-      ),
+        // A second record per environment, for the key hierarchy, exactly as
+        // `POST …/environments` writes one. `envkey.created` is the origin of
+        // everything that will ever be encrypted in that environment and the
+        // only event that can precede a secret in it, so a key-history review
+        // starts from it. Without this, the environments of every project — which
+        // is very nearly every environment in the product — would have no
+        // key-creation event at all, and the gap would read as missing rows
+        // rather than as a route that never wrote them.
+        audit(orgId).success(
+          'envkey.created',
+          {
+            type: 'environment',
+            id: environment.id,
+            projectId: created.project.id,
+            environmentId: environment.id,
+          },
+          {
+            projectSlug: created.project.slug,
+            environmentSlug: environment.slug,
+            keyVersion: 1,
+            grantCount: 1,
+            source: 'dashboard',
+          },
+        ),
+      ]),
     );
 
     return json(
@@ -200,4 +342,60 @@ function readable(scope: OrgScope, project: ProjectRecord): boolean {
     if (cause instanceof AuthorizationError) return false;
     throw cause;
   }
+}
+
+/**
+ * Indexes the supplied environment keys by slug, having checked the set is
+ * exactly `DEFAULT_ENVIRONMENTS`.
+ *
+ * The three refusals are separate because they are different mistakes. A
+ * *missing* entry is a client that would have created an environment with no key
+ * — the unrepairable state this whole path exists to prevent. A *surplus* one
+ * names an environment this route does not create, which is the shape of a
+ * caller trying to have an environment of its own choosing written under a
+ * project's creation permission. A *duplicate* would silently drop one of two
+ * grants, and which one depends on iteration order.
+ */
+function indexEnvironmentInits(
+  supplied: readonly ProjectEnvironmentInit[],
+): Map<string, ProjectEnvironmentInit> {
+  const inits = new Map<string, ProjectEnvironmentInit>();
+  const ids = new Set<string>();
+
+  for (const init of supplied) {
+    if (inits.has(init.slug)) {
+      throw errors.badRequest(`Two sets of keys were supplied for "${init.slug}".`);
+    }
+    // Distinct ids, checked here rather than left to the primary key. Three
+    // entries carrying one id would otherwise reach the insert and come back as
+    // a conflict indistinguishable from a genuine collision — a confusing 409
+    // for a body that is plainly malformed.
+    if (ids.has(init.id)) {
+      throw errors.badRequest('Each environment needs its own id.');
+    }
+    ids.add(init.id);
+    inits.set(init.slug, init);
+  }
+
+  const expected: readonly string[] = DEFAULT_ENVIRONMENTS.map((environment) => environment.slug);
+
+  // Surplus **before** missing, and the order is the whole correctness of the
+  // message. The schema caps the array at the number of defaults, so a body
+  // naming an environment this route does not create necessarily omits one that
+  // it does. Checked the other way round, `[canary, staging, production]` is
+  // reported as "keys are missing for development" — true, and the least useful
+  // of the two true things that can be said about it.
+  const surplus = [...inits.keys()].filter((slug) => !expected.includes(slug));
+  if (surplus.length > 0) {
+    throw errors.badRequest(
+      `A project starts with ${expected.join(', ')}; keys were supplied for ${surplus.join(', ')}.`,
+    );
+  }
+
+  const missing = expected.filter((slug) => !inits.has(slug));
+  if (missing.length > 0) {
+    throw errors.badRequest(`Keys are missing for ${missing.join(', ')}.`);
+  }
+
+  return inits;
 }

@@ -4,7 +4,6 @@ import { randomBytes } from '@xecret/core/crypto';
 import type { EnvelopeService } from '@xecret/core/crypto';
 import { uuidv7 } from '@xecret/core/ids';
 import {
-  DEFAULT_ENVIRONMENTS,
   ORGANIZATION_NAME_MAX_LENGTH,
   ORGANIZATION_SLUG_MAX_LENGTH,
   isReservedSlug,
@@ -12,7 +11,7 @@ import {
   truncateName,
 } from '@xecret/core/validation';
 import { users } from '../schema/identity';
-import { envKeys, orgKeys } from '../schema/keys';
+import { orgKeys } from '../schema/keys';
 import { environments, projects } from '../schema/resources';
 import { orgMembers, organizations } from '../schema/tenancy';
 import { addMember } from './membership';
@@ -52,15 +51,6 @@ const SLUG_ATTEMPT_LIMIT = 8;
 const FALLBACK_SLUG_BASE = 'org';
 
 const FALLBACK_ORGANIZATION_NAME = 'My Organisation';
-
-/**
- * The project every new organisation starts with.
- *
- * A fixed slug rather than a derived one so the first CLI command in the
- * documentation — `xecret run --project default` — works for everybody.
- */
-const DEFAULT_PROJECT_NAME = 'Default';
-const DEFAULT_PROJECT_SLUG = 'default';
 
 export async function findOrganizationBySlug(
   exec: Executor,
@@ -289,14 +279,32 @@ export interface ProvisionOrganizationParams {
 export interface ProvisionedOrganization {
   organization: Organization;
   membership: MemberRecord;
-  project: Project;
-  environments: Environment[];
 }
 
 /**
  * Builds an organisation that can hold a secret: the organisation itself, an
- * owner membership for the caller, an Org Master Key, a default project, its
- * default environments, and an Env Data Key for each.
+ * owner membership for the caller, and an Org Master Key.
+ *
+ * ── Why it stops there, and does not seed a project ──
+ * It used to create a `Default` project with the three standard environments and
+ * an Env Data Key for each. That became wrong the moment migration 0013 made
+ * `e2ee` the column default: the environments were written straight through this
+ * function rather than through `createEnvironment`, so they took the new default
+ * while still receiving the old server-wrapped `env_keys` and no
+ * `env_data_keys`/`env_key_grants` at all. The product has a name for that state
+ * and it is not a recoverable one — `env-key-notice.tsx` tells the user "no key
+ * was ever recorded for it… nothing can repair it. Create a new environment and
+ * delete this one." Every organisation created since that migration was born
+ * holding three of them.
+ *
+ * It cannot be fixed by keying them here either, and that is the deeper reason
+ * this is gone rather than repaired: an end-to-end encrypted environment's keys
+ * are generated in a browser and sealed to a public key **this server has never
+ * seen**. At sign-up there is no vault to seal to yet, so there is no honest key
+ * this function could write. The first project is therefore created by
+ * `POST …/projects` from an unlocked browser, which is the only place the
+ * material can come from, and a new organisation opens on an empty projects
+ * screen instead of on three environments nothing can be written to.
  *
  * Two paths reach this. The first is sign-up — a verified identity with no
  * membership anywhere gets one here, which is what makes the product usable
@@ -417,60 +425,7 @@ export async function provisionOrganization(
       .returning();
     if (!orgKeyRow) throw new Error('Organisation key insert returned no row.');
 
-    const projectId = uuidv7();
-    const [project] = await tx
-      .insert(projects)
-      .values({
-        id: projectId,
-        orgId,
-        name: DEFAULT_PROJECT_NAME,
-        slug: DEFAULT_PROJECT_SLUG,
-        createdBy: user.id,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
-    if (!project) throw new Error('Project insert returned no row.');
-
-    const createdEnvironments = await tx
-      .insert(environments)
-      .values(
-        DEFAULT_ENVIRONMENTS.map((environment) => ({
-          id: uuidv7(),
-          projectId,
-          name: environment.name,
-          slug: environment.slug,
-          isProduction: environment.isProduction,
-          sortOrder: environment.sortOrder,
-          createdAt: now,
-          updatedAt: now,
-        })),
-      )
-      .returning();
-
-    const envKeyRows = await Promise.all(
-      createdEnvironments.map(async (environment) => {
-        const envKey = await envelope.createEnvKey({
-          orgId,
-          environmentId: environment.id,
-          orgKey,
-        });
-
-        return {
-          id: uuidv7(),
-          environmentId: environment.id,
-          orgKeyId: orgKeyRow.id,
-          version: envKey.version,
-          wrappedKey: envKey.ciphertext,
-          wrapIv: envKey.iv,
-          algorithm: envKey.algorithm,
-          createdAt: now,
-        };
-      }),
-    );
-    await tx.insert(envKeys).values(envKeyRows);
-
-    return { organization, membership, project, environments: createdEnvironments };
+    return { organization, membership };
   });
 }
 
@@ -608,7 +563,7 @@ function randomSlugSuffix(): string {
  * forces the second to count again under the first one's committed effect.
  *
  * The honest cost: the lock is held for the rest of the transaction, which in
- * `provisionOrganization` means across four key derivations — so a second
+ * `provisionOrganization` means across the Org Master Key derivation — so a second
  * creation from the same account waits the first one out. That is the intent —
  * one account may not mint Org Master Keys in parallel — and the contention is
  * confined to that account, since nobody else has any reason to touch this row.

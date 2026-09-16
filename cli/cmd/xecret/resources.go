@@ -28,8 +28,11 @@ const projectsUsage = `Usage:
   xecret projects create   <NAME> [--slug SLUG] [--description TEXT]
   xecret projects delete   <SLUG> [--yes]
 
-Creating a project also creates its default environments — development, staging
-and production — each with its own encryption key, in one transaction.
+A project is created with its default environments — development, staging and
+production — each end-to-end encrypted under a key generated in the creator's
+browser and sealed to them. This CLI cannot produce that key material, so
+'create' is refused for a CLI token: make the project in the dashboard. Listing
+and deleting work here as they always have.
 `
 
 const environmentsUsage = `Usage:
@@ -39,7 +42,9 @@ const environmentsUsage = `Usage:
 
 An environment is created with its encryption key in the same transaction. One
 without a key could not hold a secret and could not be repaired from inside the
-product, so the two are never separate.
+product, so the two are never separate — which is also why 'create' is refused
+for a CLI token: the key is generated in a browser and sealed to its creator,
+and this CLI has no way to produce one. Make the environment in the dashboard.
 `
 
 const orgsUsage = `Usage:
@@ -155,7 +160,7 @@ func projectsList(args []string) error {
 	}
 
 	if len(projects) == 0 {
-		a.printer.Infof("No projects yet. Create one with 'xecret projects create <name>'.")
+		a.printer.Infof("No projects yet. Create one in the dashboard — a project's environment keys are generated in your browser, which this CLI cannot do.")
 		return nil
 	}
 

@@ -124,17 +124,19 @@ xecret environments delete SLUG [--yes] [--project SLUG]
 
 - The bare form is still the listing, so no existing invocation changes
   meaning: a first argument that begins with `-` is a flag on `list`.
-- Creating a project creates its default environments and each one's Env Data
-  Key in a single transaction; creating an environment creates its key the same
-  way. `secret_versions.env_key_id` is `NOT NULL`, so an environment without a
-  key silently rejects every write it will ever receive and cannot be repaired
-  without an operator holding the Root KEK.
+- Creating a project creates its default environments and each one's key in a
+  single transaction; creating an environment creates its key the same way. An
+  environment without a key silently rejects every write it will ever receive
+  and cannot be repaired, which is why the two are never separate.
 - Both deletes are soft, and both send `{"confirm": "<slug>"}` unconditionally —
   the server requires it only for production, and a request that came back
   asking for one would be a retry the user did not understand.
-- Creating either is refused for a service token: `project.create` is not in
-  `SERVICE_TOKEN_ACTIONS`, because a CI credential must never appear as the
-  author of anything.
+- **Creating either is refused for a CLI token**, and both `create` subcommands
+  therefore only work from the dashboard. Those keys are generated in a browser
+  and sealed to the creator's public key, and this CLI implements opening and
+  the secret codecs but no sealing — so there is nothing it could send. A
+  service token is refused for a second, older reason: a CI credential must
+  never appear as the author of anything.
 
 ### Secrets
 

@@ -152,7 +152,7 @@ export function grantRecipient(principal: Principal): { kind: 'member' | 'token'
 export function requireSealingUser(principal: Principal): string {
   if (principal.kind !== 'user') {
     throw errors.forbidden(
-      'Sealing an environment key requires an unlocked browser session, not a token.',
+      'Sealing an environment key requires an unlocked browser session, not a token. Create this in the dashboard.',
     );
   }
   return principal.user.id;
