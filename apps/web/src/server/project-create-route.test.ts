@@ -101,9 +101,15 @@ const PUBLIC_KEY = 'A'.repeat(43);
 const SEALED = `xk2.x25519.${'A'.repeat(123)}`;
 const SIGNATURE = `xk2.ed25519.${'A'.repeat(86)}`;
 
-function grant(recipientId: string = OWNER_USER_ID) {
+function grant(
+  recipientId: string = OWNER_USER_ID,
+  // Widened past `'member'` so a test can address a grant to a token or an
+  // invitation — `assertSelfGrant` checks the kind as well as the id, and the
+  // literal type would make that case unwritable.
+  recipientKind: 'member' | 'token' | 'invite' = 'member',
+) {
   return {
-    recipientKind: 'member' as const,
+    recipientKind,
     recipientId,
     recipientPublicKey: PUBLIC_KEY,
     edkSealed: SEALED,
@@ -158,6 +164,16 @@ const cliTokenPrincipal = {
 const deferred: Promise<unknown>[] = [];
 const runtimeDeferred: Promise<unknown>[] = [];
 
+/** Everything the request queued for the audit sink, once the flush has run. */
+let written: { action: string; outcome: string; metadata?: Record<string, unknown> }[] = [];
+
+/** Runs the audit flush the route wrapper deferred, then reads what it wrote. */
+async function settledAudit(): Promise<typeof written> {
+  await Promise.allSettled(deferred);
+  await Promise.allSettled(runtimeDeferred);
+  return written;
+}
+
 function silentLog(base: Record<string, unknown> = {}): RequestLog {
   return createLogger({
     sink: { write: () => {}, flush: () => Promise.resolve() },
@@ -171,7 +187,11 @@ beforeEach(() => {
   deferred.length = 0;
   runtimeDeferred.length = 0;
 
-  auditSink.write.mockResolvedValue(undefined);
+  written = [];
+  auditSink.write.mockImplementation((batch: typeof written) => {
+    written.push(...batch);
+    return Promise.resolve();
+  });
   logging.createRequestLog.mockImplementation((_env: unknown, base: Record<string, unknown>) =>
     silentLog(base),
   );
@@ -502,5 +522,150 @@ describe('POST …/projects — what the repository refuses', () => {
     expect(await bodyOf(response)).toMatchObject({
       message: expect.stringContaining('client-generated keys'),
     });
+  });
+});
+
+describe('POST …/projects — what the audit log is told', () => {
+  /**
+   * `envkey.created` is the origin of an environment's whole cryptographic
+   * history and the only event that can precede a secret in it, so a key-history
+   * review starts from it. This route creates very nearly every environment in
+   * the product; when it recorded only `environment.created`, that history began
+   * nowhere.
+   */
+  it('records the key hierarchy as well as the environment', async () => {
+    await post({ name: 'Payments API', environments: environmentInits() });
+
+    const actions = (await settledAudit())
+      .filter((record) => record.outcome === 'success')
+      .map((record) => record.action);
+
+    expect(actions).toContain('project.created');
+    expect(actions.filter((action) => action === 'environment.created')).toHaveLength(
+      DEFAULT_ENVIRONMENTS.length,
+    );
+    expect(actions.filter((action) => action === 'envkey.created')).toHaveLength(
+      DEFAULT_ENVIRONMENTS.length,
+    );
+  });
+
+  it('states the key version and the grant count on each envkey record', async () => {
+    await post({ name: 'Payments API', environments: environmentInits() });
+
+    const keyRecords = (await settledAudit()).filter(
+      (record) => record.action === 'envkey.created',
+    );
+
+    for (const record of keyRecords) {
+      expect(record.metadata).toMatchObject({ keyVersion: 1, grantCount: 1, source: 'dashboard' });
+    }
+  });
+
+  /**
+   * The refusal that `authorize` does not produce. Without a record here, a
+   * stolen CLI token hammering this endpoint is invisible — every other way of
+   * being refused writes a row.
+   */
+  it('records the refusal of a principal that cannot seal', async () => {
+    actor.authenticate.mockResolvedValue({ principal: cliTokenPrincipal, source: 'bearer' });
+
+    const response = await post({ name: 'Payments API', environments: environmentInits() });
+    expect(response.status).toBe(403);
+
+    const denials = (await settledAudit()).filter((record) => record.outcome === 'denied');
+    expect(denials.map((record) => record.action)).toContain('project.created');
+  });
+});
+
+describe('POST …/projects — malformed bodies that reach the handler', () => {
+  /**
+   * `assertSelfGrant` checks the *kind* as well as the id. A grant addressed to
+   * a token or an invitation whose uuid happens to equal the creator's user id
+   * would otherwise pass — the foreign keys check that a row exists, not that it
+   * is the right sort of row.
+   */
+  it.each(['token', 'invite'] as const)(
+    "refuses a first grant addressed to a %s, even with the creator's own id",
+    async (recipientKind) => {
+      const environments = environmentInits();
+      environments[0] = {
+        ...environments[0]!,
+        keys: { grant: grant(OWNER_USER_ID, recipientKind) },
+      };
+
+      const response = await post({ name: 'Payments API', environments });
+
+      expect(response.status).toBe(400);
+      expect(repositories.createProject).not.toHaveBeenCalled();
+    },
+  );
+
+  /**
+   * Three entries sharing one id would otherwise reach the insert and come back
+   * as a primary-key conflict indistinguishable from a real collision.
+   */
+  it('refuses two environments carrying the same id', async () => {
+    const environments = environmentInits();
+    environments[1] = { ...environments[1]!, id: environments[0]!.id };
+
+    const response = await post({ name: 'Payments API', environments });
+
+    expect(response.status).toBe(400);
+    expect(await bodyOf(response)).toMatchObject({
+      message: expect.stringContaining('its own id'),
+    });
+    expect(repositories.createProject).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The message has to name the surplus, not the default that was displaced by
+   * it. Checked the other way round this body reports "keys are missing for
+   * development" — true, and the less useful of the two true things.
+   */
+  it('names the environment it does not create, not the one that went missing', async () => {
+    const environments = environmentInits();
+    environments[0] = { ...environments[0]!, slug: 'canary' };
+
+    const response = await post({ name: 'Payments API', environments });
+
+    expect(response.status).toBe(400);
+    expect(await bodyOf(response)).toMatchObject({
+      message: expect.stringContaining('canary'),
+    });
+  });
+
+  /**
+   * `createEnvironment` inserts `ON CONFLICT DO NOTHING` with no conflict target,
+   * so a collision on the client-supplied id arrives as a slug conflict. Reported
+   * as a project-slug 409 it would be pinned to the slug field, and the user
+   * would rename the project and fail identically for ever.
+   */
+  it('does not report an environment id collision as a project slug conflict', async () => {
+    repositories.createEnvironment.mockRejectedValue(
+      new RepositoryError('conflict', 'An environment with slug "development" already exists'),
+    );
+
+    const response = await post({
+      name: 'Payments API',
+      slug: 'payments',
+      environments: environmentInits(),
+    });
+
+    expect(response.status).toBe(409);
+    const message = (await bodyOf(response))['message'];
+    expect(message).toContain('environment id');
+    expect(message).not.toContain('payments');
+  });
+});
+
+describe('POST …/projects — the order the gates run in', () => {
+  it('consults the rate limiter before touching the database', async () => {
+    rateLimit.enforce.mockRejectedValue(new Error('rate limited'));
+
+    await post({ name: 'Payments API', environments: environmentInits() });
+
+    expect(rateLimit.enforce).toHaveBeenCalled();
+    expect(repositories.findOrganizationBySlug).not.toHaveBeenCalled();
+    expect(repositories.createProject).not.toHaveBeenCalled();
   });
 });

@@ -81,17 +81,15 @@ function validateSlug(slug: string): string | null {
  *
  * ── Why this needs an unlocked vault ──
  * A project is not an empty container that gets environments later: it arrives
- * with development, staging and production, and every environment created from
- * Phase 3 onward is end-to-end encrypted. Their keys are generated **here**, in
- * this browser, then sealed to the creator's own public key and signed with
- * their signing key — three times, once per environment. A locked vault has
- * neither key, so the form refuses rather than sending a body the server would
- * reject, the same gate `CreateEnvironmentDialog` applies.
+ * with development, staging and production, and each of them is end-to-end
+ * encrypted. Their keys are generated **here** and sealed to the creator — three
+ * times, once per environment — so a locked vault has nothing to seal with and
+ * the form refuses rather than sending a body the server would reject. The same
+ * gate `CreateEnvironmentDialog` applies, for the reason stated there.
  *
- * The environment uuids are minted here too, and that is not bookkeeping: each
- * grant's AAD names the environment it is for (spec §4.2), so the ids have to
- * exist before the sealing does. The server writes the rows under the ids it is
- * given, inside the same transaction as the project.
+ * The environment uuids are minted here too, because each grant is sealed
+ * against one; `projectEnvironmentInitSchema` explains why the server insists on
+ * receiving them rather than minting its own.
  */
 export function CreateProjectDialog({ orgSlug, open, onOpenChange }: CreateProjectDialogProps) {
   const [submitting, setSubmitting] = useState(false);
@@ -284,7 +282,8 @@ function CreateProjectForm({
         <DialogTitle>New project</DialogTitle>
         <DialogDescription>
           A project holds one set of secrets per environment. It starts with development, staging
-          and production.
+          and production, each end-to-end encrypted under its own key — generated here, in your
+          browser, and sealed to you.
         </DialogDescription>
       </DialogHeader>
 

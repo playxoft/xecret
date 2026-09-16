@@ -6,9 +6,11 @@ identical.
 
 ## 1. Create an account
 
-Sign up at the dashboard with Google or email. Your personal organisation, a
-default project, and three environments — development, staging, production —
-are created on first sign-in, each environment with its own encryption key.
+Sign up at the dashboard with Google or email. Your personal organisation is
+created on first sign-in. Then set up your vault and create your first project:
+it starts with three environments — development, staging, production — and the
+key for each is generated in your browser and sealed to you, so the server never
+sees it.
 
 ## 2. Import the .env you already have
 

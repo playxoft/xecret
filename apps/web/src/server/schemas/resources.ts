@@ -226,14 +226,14 @@ export const organizationPatchSchema = z
  * `slug` names *which* of the defaults the entry is for; it is not a free
  * choice. `DEFAULT_ENVIRONMENTS` owns the name, the production flag and the
  * order, and it must keep owning them — a client that could name its own
- * environment here could also decide which of them is production, which is the
- * one field that changes who may read the environment. The route checks the set
- * of slugs against `DEFAULT_ENVIRONMENTS` exactly and refuses anything else.
+ * environment here could also decide which of them is production, the one field
+ * that changes who may read it. `indexEnvironmentInits` in the route enforces
+ * the set, and says there why each of its three refusals is separate.
  *
- * `id` is required, not optional as it is on `environmentCreateSchema`. There is
- * no server-mode path into this route to keep it optional for: the grant's AAD
- * names the environment (spec §4.2), so the row has to be written under the id
- * the browser sealed against or it holds a grant nobody can ever open.
+ * `id` is required, unlike on `environmentCreateSchema` where a server-mode
+ * creation left it optional. There is no server-mode path into this route, and
+ * the grant's AAD names the environment (spec §4.2): a row written under any
+ * other id holds a grant nobody can ever open.
  */
 export const projectEnvironmentInitSchema = z.strictObject(
   {

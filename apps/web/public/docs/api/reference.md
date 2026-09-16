@@ -84,7 +84,7 @@ rather than leaving it guessable.
 |---|---|---|
 | `GET` | `/orgs` | Your memberships. Refused for a service token, which is pinned to one organisation. |
 | `GET` | `/orgs/availability?slug=` | `{ slug, available, reason?: invalid\|reserved\|taken }`. A snapshot, not a reservation. |
-| `POST` | `/orgs` | Body `{ name, slug? }`. Name is 25 characters at most. Session + CSRF only. Creates the organisation's key, a default project, its environments and each environment's key in one transaction. |
+| `POST` | `/orgs` | Body `{ name, slug? }`. Name is 25 characters at most. Session + CSRF only. Creates the organisation, your owner membership and the organisation's key in one transaction. No project is seeded — create the first one from the dashboard, which generates its environment keys in your browser. |
 | `GET` | `/orgs/{orgSlug}` | Any active member. |
 | `PATCH` | `/orgs/{orgSlug}` | The name only. A slug change is refused with an explanation rather than ignored. |
 | `DELETE` | `/orgs/{orgSlug}` | Soft delete. Owners only, browser session only, body `{ confirm: "<orgSlug>" }`. |
@@ -101,9 +101,14 @@ rather than leaving it guessable.
 Both deletes are soft. A hard delete would orphan the audit records saying the
 thing existed and who removed it.
 
-Creating an environment also creates its encryption key, in the same
-transaction. An environment without a key cannot hold a secret and cannot be
-repaired without an operator.
+Creating a project or an environment also creates the encryption keys, in the
+same transaction. A project arrives with `development`, `staging` and
+`production`, so `POST /orgs/{orgSlug}/projects` carries the keys for all three:
+`{ name, slug?, description?, environments: [{ slug, id, keys: { grant } }] }`,
+where each `slug` names which of the three defaults the entry is for. Both
+creates need a browser session with an unlocked vault — the keys are generated
+there and sealed to you — and are refused for a CLI or service token. An
+environment without a key cannot hold a secret and cannot be repaired.
 
 ## Secrets
 

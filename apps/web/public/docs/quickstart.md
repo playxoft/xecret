@@ -15,13 +15,13 @@ in one page.
 ## 1. Create an account
 
 Sign up with Google or with an email address and password. On your first
-sign-in xecret creates:
+sign-in xecret creates your **personal organisation** — a workspace with just
+you in it. Set up your vault, then create your first **project**: one project per
+application, and it starts with three **environments** — `development`,
+`staging` and `production`.
 
-- your **personal organisation** — a workspace with just you in it;
-- a **default project** — one project per application;
-- three **environments** — `development`, `staging` and `production`.
-
-Each environment gets its own encryption key at the moment it is created. A
+Each environment gets its own encryption key at the moment it is created —
+generated in your browser and sealed to you, so the server never holds it. A
 secret stored in `staging` is encrypted under a different key from the same
 secret in `production`.
 

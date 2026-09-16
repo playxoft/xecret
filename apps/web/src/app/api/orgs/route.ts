@@ -86,12 +86,19 @@ export const GET = authenticatedRoute(async ({ principal, services }) => {
  * applied it, so there is one place the ceiling is decided and one place it is
  * imposed.
  *
- * ── Why the whole bootstrap, rather than an empty organisation ──
- * `provisionOrganization` mints the Org Master Key, a default project, its three
- * environments and an Env Data Key for each, in one transaction. An organisation
- * without those is not a lighter version of one — it is an organisation nothing
- * can be stored in, and one the product has no path to repair, because minting a
- * key requires unwrapping a key that was never created.
+ * ── What it provisions, and what it deliberately does not ──
+ * `provisionOrganization` mints the organisation, the caller's owner membership
+ * and the Org Master Key in one transaction. An organisation without that key is
+ * not a lighter version of one — it is an organisation nothing can be stored in,
+ * and one the product has no path to repair, because minting a key later
+ * requires unwrapping a key that was never created.
+ *
+ * It stops there. It used to seed a `Default` project with three environments,
+ * and that became unserviceable when `e2ee` became the column default: an
+ * end-to-end encrypted environment's keys are sealed to a public key this server
+ * has never seen, and at this point in a new account's life there is no vault to
+ * seal to. The first project is created by `POST …/projects` from an unlocked
+ * browser, which is the only place that material can come from.
  */
 export const POST = authenticatedRoute(async ({ request, principal, services, audit, record }) => {
   if (principal.kind !== 'user') {
@@ -99,8 +106,9 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
   }
 
   // Before the body is read and long before the transaction: provisioning an
-  // organisation costs four key derivations and six inserts, which is the most
-  // expensive thing an authenticated caller can ask for in one request.
+  // organisation derives an Org Master Key and claims a slug out of a namespace
+  // every tenant shares, and the slug is not given back by deleting the
+  // organisation afterwards.
   await enforce(services.env, 'RL_MUTATION', rateLimitKey([principal.user.id]));
 
   const body = await parseJsonBody(request, organizationCreateSchema);

@@ -195,7 +195,7 @@ function CreateOrganizationForm({
       toast({
         variant: 'success',
         title: `Created ${created.organization.name}`,
-        description: `Its slug is ${created.organization.slug}, and it starts with a default project.`,
+        description: `Its slug is ${created.organization.slug}. Create your first project to start storing secrets.`,
       });
 
       onOpenChange(false);
