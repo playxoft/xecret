@@ -117,9 +117,7 @@ const principal = {
   },
 };
 
-function request(
-  init: { method?: string; origin?: string; userAgent?: string } = {},
-): Request {
+function request(init: { method?: string; origin?: string; userAgent?: string } = {}): Request {
   return new Request('https://xecret.playxoft.com/api/test', {
     method: init.method ?? 'GET',
     headers: {
