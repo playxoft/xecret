@@ -65,6 +65,8 @@ vi.mock('./logging', async (importOriginal) => ({
 const { authenticatedRoute, publicRoute } = await import('./route');
 const { MissingBindingError } = await import('./bindings');
 const { errors } = await import('./errors');
+const { CLI_HEADLINE_HEADER, CLI_LATEST_HEADER, CLI_LATEST_HEADLINE, CLI_LATEST_VERSION } =
+  await import('@/lib/cli-release');
 
 const ORG_ID = uuidv7();
 
@@ -115,12 +117,15 @@ const principal = {
   },
 };
 
-function request(init: { method?: string; origin?: string } = {}): Request {
+function request(
+  init: { method?: string; origin?: string; userAgent?: string } = {},
+): Request {
   return new Request('https://xecret.playxoft.com/api/test', {
     method: init.method ?? 'GET',
     headers: {
       'cf-ray': RAY_ID,
       ...(init.origin === undefined ? {} : { origin: init.origin }),
+      ...(init.userAgent === undefined ? {} : { 'user-agent': init.userAgent }),
     },
   });
 }
@@ -247,6 +252,52 @@ describe('successful responses', () => {
 
     await handler(request());
     expect(seen).toEqual([{}]);
+  });
+});
+
+/**
+ * The upgrade notice, from the server's side.
+ *
+ * `lib/cli-release.ts` explains why the server volunteers this rather than the
+ * CLI going looking for it. What is verified here is the half that lives in the
+ * wrapper: the headers reach the CLI, and nothing else pays for them.
+ */
+describe('the CLI upgrade headers', () => {
+  it('tells the CLI which release this deployment expects', async () => {
+    const handler = publicRoute(async () => new Response('ok', { status: 200 }));
+    const response = await handler(request({ userAgent: 'xecret-cli/0.1.2 (windows/amd64)' }));
+
+    expect(response.headers.get(CLI_LATEST_HEADER)).toBe(CLI_LATEST_VERSION);
+    expect(response.headers.get(CLI_HEADLINE_HEADER)).toBe(CLI_LATEST_HEADLINE);
+  });
+
+  it('carries them on an authenticated response too', async () => {
+    const handler = authenticatedRoute(async () => new Response('ok', { status: 200 }));
+    const response = await handler(request({ userAgent: 'xecret-cli/0.1.2 (linux/amd64)' }));
+
+    expect(response.headers.get(CLI_LATEST_HEADER)).toBe(CLI_LATEST_VERSION);
+  });
+
+  it('does not spend them on a browser', async () => {
+    // Every dashboard fetch would otherwise carry ~120 bytes it can do nothing
+    // with, on every request, for ever.
+    const handler = publicRoute(async () => new Response('ok', { status: 200 }));
+    const response = await handler(request({ userAgent: 'Mozilla/5.0' }));
+
+    expect(response.headers.get(CLI_LATEST_HEADER)).toBeNull();
+    expect(response.headers.get(CLI_HEADLINE_HEADER)).toBeNull();
+  });
+
+  it('does not add them to an error envelope', async () => {
+    // An error response is not the moment to change the subject, and the next
+    // successful request carries them anyway.
+    const handler = publicRoute(async () => {
+      throw new Error('boom');
+    });
+    const response = await handler(request({ userAgent: 'xecret-cli/0.1.2 (darwin/arm64)' }));
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get(CLI_LATEST_HEADER)).toBeNull();
   });
 });
 

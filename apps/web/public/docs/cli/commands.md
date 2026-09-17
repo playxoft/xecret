@@ -623,6 +623,37 @@ signed, and the installer verifies the checksum before unpacking; a secret
 manager that silently overwrites its own executable is exactly the supply-chain
 shape nobody should accept.
 
+### The upgrade notice
+
+Commands that talk to your deployment may end with three lines on stderr:
+
+```text
+↑ xecret 0.2.0 is available (you have 0.1.2)
+  Reads end-to-end encrypted environments - older builds return an empty
+  value for them.
+  Upgrade: xecret upgrade
+```
+
+This is not the background check the section above rules out, and it costs no
+request of any kind. Your deployment names the release it expects in a header on
+a response the CLI was already receiving; the CLI reads it and says so. Nobody
+is asked anything, and a server that sends no header produces no notice.
+
+Running your own deployment? Then you decide what your developers are told, by
+deciding what you deploy — which is usually more useful than pointing everyone
+at the newest tag on GitHub.
+
+The notice stays quiet when stderr is not a terminal, when `XECRET_TOKEN` is set
+(a CI job cannot upgrade itself, and the line would land in every build log for
+ever), when you have already been told about that release today, and when
+`XECRET_NO_UPGRADE_NOTICE` is set. A newer release than the one you last saw is
+raised straight away rather than waiting for tomorrow.
+
+What you were last told is remembered in `~/.xecret/notices.json` — a version
+and a date, nothing else. It sits outside the cache directory on purpose, so
+`xecret cache clear` and `xecret logout` are not read as "please start nagging
+me again".
+
 ### `xecret version`
 
 ```bash

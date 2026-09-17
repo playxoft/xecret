@@ -52,6 +52,15 @@ func stdoutIsTerminal() bool {
 // that change behaviour on where their output lands — the pull warning.
 func StdoutIsTerminal() bool { return stdoutIsTerminal() }
 
+// StderrIsTerminal reports whether stderr is a terminal.
+//
+// Its own test rather than StdoutIsTerminal's, because the two streams are
+// redirected independently and the question they answer is different: colour
+// asks "will stdout render escapes", the upgrade notice asks "is there a person
+// looking at the stream I am about to write to". `xecret pull > .env` has a
+// person at stderr and a file at stdout, and the notice belongs there.
+func StderrIsTerminal() bool { return term.IsTerminal(int(os.Stderr.Fd())) }
+
 // StdinIsTerminal reports whether stdin is a terminal — whether there is a
 // person there to answer a prompt.
 //
@@ -156,3 +165,14 @@ func pad(b *strings.Builder, text string, width int, last bool) {
 
 // Bold returns text emboldened when colour is on.
 func (p *Printer) Bold(text string) string { return p.paint(ansiBold, text) }
+
+// Dim renders secondary text — the lines under a notice that carry its detail.
+func (p *Printer) Dim(text string) string { return p.paint(ansiDim, text) }
+
+// Noticef prints an unsolicited message to stderr: something the user did not
+// ask about and ought to know. The arrow distinguishes it at a glance from the
+// ✓/!/✗ of the command they actually ran, which is the point — a notice that
+// looks like a result gets read as one.
+func (p *Printer) Noticef(format string, args ...any) {
+	fmt.Fprintf(p.Err, "%s %s\n", p.paint(ansiAmber, "↑"), fmt.Sprintf(format, args...))
+}

@@ -72,6 +72,7 @@ explicit with the flag.
 | `XECRET_TOKEN` | Authenticate as a service token (`xst_…`). No login, no keychain, no offline cache. Overrides any stored login. |
 | `XECRET_API_URL` | Which deployment to talk to — used by `login` and by `XECRET_TOKEN` mode. A stored login remembers its own URL, so you do not need this after `xecret login --api-url …`. |
 | `XECRET_KEYRING=file` | Force the `0600` file fallback instead of the OS keyring. |
+| `XECRET_NO_UPGRADE_NOTICE` | Silence the [upgrade notice](commands.md#the-upgrade-notice). It is already silent under `XECRET_TOKEN` and whenever stderr is not a terminal. |
 | `NO_COLOR` | Disable colour. Output is also uncoloured whenever stdout is not a terminal. |
 
 ### `XECRET_TOKEN` in practice

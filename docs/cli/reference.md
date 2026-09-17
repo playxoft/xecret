@@ -37,6 +37,7 @@ client.
 | `XECRET_TOKEN` | Authenticate as a service token (`xst_…`). No login, no keychain, no offline cache. Wins over any stored login. A token for an end-to-end encrypted environment carries its own decryption key in the string — set it whole, and only ever from a secret store. |
 | `XECRET_API_URL` | The deployment to talk to, for `login` and for `XECRET_TOKEN` mode. A stored login remembers its own URL. |
 | `XECRET_KEYRING=file` | Force the `0600` file fallback instead of the OS keyring. |
+| `XECRET_NO_UPGRADE_NOTICE` | Silence the upgrade notice. Already silent under `XECRET_TOKEN` and whenever stderr is not a terminal. |
 | `NO_COLOR` | Disable colour. Output is also uncoloured when stdout is not a TTY. |
 
 ## Commands
@@ -327,6 +328,42 @@ xecret help
   and doing it in the background would ship that from inside every CI job. It
   never replaces the binary — the published archives are checksummed and signed,
   and `scripts/install-cli.sh` verifies the checksum before unpacking.
+
+### The upgrade notice
+
+Commands that talk to a deployment may end with three lines on stderr:
+
+```text
+↑ xecret 0.2.0 is available (you have 0.1.2)
+  Reads end-to-end encrypted environments - older builds return an empty
+  value for them.
+  Upgrade: xecret upgrade
+```
+
+**It is not a version check, and it costs no request.** The server names the
+release it expects in a response header, and the CLI reads it off a reply it was
+already receiving — the rule above is intact, because nobody is asked anything.
+A deployment that sends no header produces no notice, so an older server, a
+self-hoster who would rather not, and every offline path are silent by
+construction.
+
+It is what a self-hoster wants for a second reason: their developers should run
+the CLI *their* deployment expects, which is not necessarily the newest tag on
+GitHub. Whoever operates the deployment decides, by deciding what they deploy.
+
+The notice stays quiet when any of these hold:
+
+| Condition | Why |
+|---|---|
+| stderr is not a terminal | It is being captured. A notice in a log file is something nobody acts on and some parser chokes on. |
+| `XECRET_TOKEN` is set | A CI job cannot upgrade itself, and the line would land in every build log for ever. |
+| already shown today | Shown once a day per release. A newer release than the one you were told about is raised straight away, because that is new information rather than a repetition. |
+| `XECRET_NO_UPGRADE_NOTICE` is set | An explicit opt-out. |
+| this is a development build | A `git describe` version is ahead of the last release and still is not one. |
+
+What was last shown is remembered in `~/.xecret/notices.json` — a version and a
+date, no credential. It is deliberately outside the cache directory, so neither
+`xecret cache clear` nor `logout` is read as a request to be nagged again.
 
 ## End-to-end encrypted environments
 

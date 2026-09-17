@@ -12,6 +12,13 @@
 # this repository's release workflow identity — see the install doc at
 # apps/web/public/docs/install.md.
 #
+# After publishing, bump `CLI_LATEST_VERSION` and `CLI_LATEST_HEADLINE` in
+# apps/web/src/lib/cli-release.ts and deploy the web app. That constant is how a
+# developer's CLI finds out a new release exists — the server names it in a
+# response header the CLI is already receiving, so nothing checks in the
+# background. Until the web app is deployed, the notice names the older version
+# and therefore says nothing, which is the safe direction to be wrong in.
+#
 # The release is created as a DRAFT (see .goreleaser.yaml): a human reads the
 # generated notes and presses publish. An unreviewed release of a secrets tool
 # is not a convenience worth having.
