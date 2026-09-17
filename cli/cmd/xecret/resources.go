@@ -25,26 +25,21 @@ import (
 
 const projectsUsage = `Usage:
   xecret projects [list]   [--json]
-  xecret projects create   <NAME> [--slug SLUG] [--description TEXT]
   xecret projects delete   <SLUG> [--yes]
 
-A project is created with its default environments — development, staging and
-production — each end-to-end encrypted under a key generated in the creator's
-browser and sealed to them. This CLI cannot produce that key material, so
-'create' is refused for a CLI token: make the project in the dashboard. Listing
-and deleting work here as they always have.
+There is no 'create' here. A project arrives with its default environments —
+development, staging and production — each end-to-end encrypted under a key
+generated in the creator's browser and sealed to them, and no client outside a
+browser implements that sealing. Create projects in the dashboard.
 `
 
 const environmentsUsage = `Usage:
   xecret environments [list]   [--json] [--project SLUG]
-  xecret environments create   <NAME> [--slug SLUG] [--production] [--project SLUG]
   xecret environments delete   <SLUG> [--yes] [--project SLUG]
 
-An environment is created with its encryption key in the same transaction. One
-without a key could not hold a secret and could not be repaired from inside the
-product, so the two are never separate — which is also why 'create' is refused
-for a CLI token: the key is generated in a browser and sealed to its creator,
-and this CLI has no way to produce one. Make the environment in the dashboard.
+There is no 'create' here either, for the reason 'xecret projects help' gives:
+an environment is inseparable from its encryption key, and that key is generated
+in a browser and sealed to its creator. Create environments in the dashboard.
 `
 
 const orgsUsage = `Usage:
@@ -60,8 +55,6 @@ func cmdProjects(args []string) error {
 	switch subcommand(args, "list") {
 	case "list":
 		return projectsList(listArgs(args))
-	case "create":
-		return projectsCreate(args[1:])
 	case "delete":
 		return projectsDelete(args[1:])
 	case "help":
@@ -76,8 +69,6 @@ func cmdEnvironments(args []string) error {
 	switch subcommand(args, "list") {
 	case "list":
 		return environmentsList(listArgs(args))
-	case "create":
-		return environmentsCreate(args[1:])
 	case "delete":
 		return environmentsDelete(args[1:])
 	case "help":
@@ -172,51 +163,6 @@ func projectsList(args []string) error {
 	return nil
 }
 
-func projectsCreate(args []string) error {
-	flags := flag.NewFlagSet("projects create", flag.ContinueOnError)
-	jsonMode := flags.Bool("json", false, "machine-readable output")
-	slug := flags.String("slug", "", "permanent identifier (default: derived from the name)")
-	description := flags.String("description", "", "what the project is for")
-	positional, err := parseFlags(flags, args)
-	if err != nil {
-		return err
-	}
-	name, err := oneArgument(positional, "a project name")
-	if err != nil {
-		return err
-	}
-
-	a := newApp(*jsonMode)
-	client, credentials, err := a.client()
-	if err != nil {
-		return err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	created, err := client.CreateProject(ctx, credentials.OrgSlug, name, *slug, *description)
-	if err != nil {
-		return err
-	}
-
-	if a.printer.JSON {
-		return a.printer.WriteJSON(created)
-	}
-
-	environments := make([]string, len(created.Environments))
-	for i, environment := range created.Environments {
-		environments[i] = environment.Slug
-	}
-	a.printer.Successf("Created project %s with %s.",
-		a.printer.Bold(created.Project.Slug), strings.Join(environments, ", "))
-	// The slug is what goes in .xecret.yaml and in CI, and it cannot be changed
-	// afterwards — worth seeing once, at the moment it is settled.
-	a.printer.Infof("Point this directory at it with 'xecret init --project %s --environment %s'.",
-		created.Project.Slug, firstOr(environments, "development"))
-	return nil
-}
-
 func projectsDelete(args []string) error {
 	flags := flag.NewFlagSet("projects delete", flag.ContinueOnError)
 	yes := flags.Bool("yes", false, "skip the confirmation prompt")
@@ -292,51 +238,6 @@ func environmentsList(args []string) error {
 		rows[i] = []string{environment.Slug, environment.Name, production}
 	}
 	a.printer.Table([]string{"slug", "name", "production"}, rows)
-	return nil
-}
-
-func environmentsCreate(args []string) error {
-	flags := flag.NewFlagSet("environments create", flag.ContinueOnError)
-	jsonMode := flags.Bool("json", false, "machine-readable output")
-	slug := flags.String("slug", "", "identifier used in --environment and .xecret.yaml")
-	isProduction := flags.Bool("production", false, "treat this environment as production")
-	projectFlag := flags.String("project", "", "project slug (default: .xecret.yaml)")
-	positional, err := parseFlags(flags, args)
-	if err != nil {
-		return err
-	}
-	name, err := oneArgument(positional, "an environment name")
-	if err != nil {
-		return err
-	}
-
-	a := newApp(*jsonMode)
-	client, credentials, err := a.client()
-	if err != nil {
-		return err
-	}
-	resolved, err := a.resolveScope(credentials, *projectFlag, "-")
-	if err != nil {
-		return err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	environment, err := client.CreateEnvironment(
-		ctx, resolved.Org, resolved.Project, name, *slug, *isProduction)
-	if err != nil {
-		return err
-	}
-
-	if a.printer.JSON {
-		return a.printer.WriteJSON(environment)
-	}
-	a.printer.Successf("Created environment %s in %s.",
-		a.printer.Bold(environment.Slug), resolved.Project)
-	if environment.IsProduction {
-		a.printer.Infof("Marked production: reads are narrower, and deleting it will ask you to type the slug.")
-	}
 	return nil
 }
 
@@ -548,11 +449,4 @@ func oneArgument(positional []string, what string) (string, error) {
 		return "", fmt.Errorf("expected %s", what)
 	}
 	return strings.TrimSpace(positional[0]), nil
-}
-
-func firstOr(values []string, fallback string) string {
-	if len(values) == 0 {
-		return fallback
-	}
-	return values[0]
 }

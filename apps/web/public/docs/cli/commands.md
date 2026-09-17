@@ -135,17 +135,16 @@ token's own scope already answers the question.
 
 ```bash
 xecret projects [list] [--json]
-xecret projects create NAME [--slug SLUG] [--description TEXT]
 xecret projects delete SLUG [--yes]
 ```
 
 Lists the projects you can see in your organisation, and removes one.
 
-**`create` is refused for a CLI token — make the project in the dashboard.** A
-project arrives with its default environments — development, staging and
-production — and each is end-to-end encrypted under a key generated in the
-creator's browser and sealed to them. This CLI opens grants and encrypts
-secrets; it cannot produce that key material, so there is nothing it could send.
+**There is no `create` here — projects are created in the dashboard.** A project
+arrives with its default environments — development, staging and production —
+and each is end-to-end encrypted under a key generated in the creator's browser
+and sealed to them. This CLI opens grants and encrypts secrets; it cannot
+produce that key material, so there is nothing it could send.
 
 The slug you choose there is permanent: it appears in every URL, in
 `.xecret.yaml` and in the CI configuration of everyone who consumes the project,
@@ -158,24 +157,26 @@ Deleting is soft, and asks you to type the slug back unless you pass `--yes`.
 
 ```bash
 xecret environments [list] [--project SLUG] [--json]
-xecret environments create NAME [--slug SLUG] [--production] [--project SLUG]
 xecret environments delete SLUG [--yes] [--project SLUG]
 ```
 
-Lists, creates and removes the environments of one project. Without
-`--project`, uses `.xecret.yaml`.
+Lists and removes the environments of one project. Without `--project`, uses
+`.xecret.yaml`.
+
+**There is no `create` here either, for the same reason.** An environment is
+inseparable from its encryption key — one without a key could not hold a secret
+— and that key is generated in a browser and sealed to its creator. Create the
+environment in the dashboard, then fill it from here:
 
 ```bash
-# a throwaway environment for one pull request
-xecret environments create "PR 412" --slug pr-412
+# a throwaway environment for one pull request, created in the dashboard as pr-412
 xecret import .env.example --environment pr-412 --strategy overwrite
 xecret environments delete pr-412 --yes
 ```
 
-`--production` marks the environment as production at creation, which narrows
-who can read it and makes deleting it ask for the slug. *Flipping* the flag
-later is an admin-level change and lives in the dashboard: reclassifying an
-environment that already holds production secrets is a different act from
+Whether an environment is production is settled in the dashboard too. It narrows
+who can read the environment and makes deleting it ask for the slug, and
+reclassifying one that already holds production secrets is a different act from
 labelling an empty one.
 
 ## Secrets

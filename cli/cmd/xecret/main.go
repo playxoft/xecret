@@ -35,8 +35,8 @@ Authentication:
 
 Project setup:
   init         Choose a project and environment; writes .xecret.yaml
-  projects     list | create | delete
-  environments list | create | delete
+  projects     list | delete — projects are created in the dashboard
+  environments list | delete — environments are created in the dashboard
 
 Working with secrets:
   secrets      list | get | set | annotate | versions | restore | delete
