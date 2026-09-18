@@ -717,15 +717,14 @@ function UnlockForm({
             </Button>
           </form>
 
-          {busy ? (
-            // The derivation runs in a worker, so this is a live region rather
-            // than a frozen one — but it is still a second in which nothing
-            // appears to happen, and an unexplained second on a passphrase form
-            // reads as a failure. See `argon2.ts`.
-            <p role="status" className="text-fg-subtle text-center text-sm">
-              Securing your vault… this takes a moment on purpose.
-            </p>
-          ) : null}
+          {/* No "Securing your vault…" line here, unlike the setup screen and
+              the passphrase change below it. Both of those are one-off
+              ceremonies where the wait is unfamiliar and worth narrating; this
+              is the sign-in a returning user does every day, and a sentence
+              apologising for a second they already expect is noise on the most
+              travelled screen in the product. The button carries `loading`,
+              which spins and sets `aria-busy`, so the wait is still stated —
+              once, where the user is already looking. */}
 
           {/* Only when there is a PIN to go back to. A browser that has just
               lost its enrolment is offered the recovery link and nothing that
