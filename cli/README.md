@@ -46,8 +46,8 @@ xecret secrets restore NAME --version 3  # re-append an old value; history intac
 xecret secrets annotate NAME --note "…"  # metadata; appends no version
 
 xecret orgs / orgs use SLUG              # which organisation commands address
-xecret projects delete checkout-api      # soft delete; 'create' is dashboard-only
-xecret environments create "PR 412" --slug pr-412
+xecret projects delete checkout-api      # soft delete; there is no 'create'
+xecret environments delete pr-412        # same — environments are made in the dashboard
 xecret audit --action secret.revealed --since 7d
 xecret members
 xecret tokens list / tokens revoke ID --kind service
@@ -67,7 +67,8 @@ Some things are deliberately *not* here:
 - **Creating a project or an environment.** Both arrive end-to-end encrypted
   under keys generated in a browser and sealed to their creator. This CLI opens
   grants and encrypts secrets; it implements no sealing, so there is nothing it
-  could send, and the server answers 403. Listing and deleting work here.
+  could send. There are no `create` subcommands to run — listing and deleting
+  work here, and creation lives in the dashboard.
 
 ## How authentication works
 

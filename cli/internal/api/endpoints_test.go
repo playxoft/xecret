@@ -241,34 +241,6 @@ func TestDeleteProjectAlwaysConfirms(t *testing.T) {
 	}
 }
 
-func TestCreateEnvironmentOmitsDefaults(t *testing.T) {
-	var body map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"environment":{"name":"Preview","slug":"preview","isProduction":false}}`))
-	}))
-	defer server.Close()
-
-	environment, err := New(server.URL, "xct_live_abc", "test-agent").
-		CreateEnvironment(context.Background(), "acme", "web", "Preview", "", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if environment.Slug != "preview" {
-		t.Fatalf("environment = %+v", environment)
-	}
-	// The server derives a slug from the name and defaults isProduction; sending
-	// either as an empty value would be a different request.
-	if _, present := body["slug"]; present {
-		t.Errorf("an empty slug was sent: %+v", body)
-	}
-	if _, present := body["isProduction"]; present {
-		t.Errorf("a false isProduction was sent: %+v", body)
-	}
-}
-
 func TestExportAndPullAreDifferentPaths(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

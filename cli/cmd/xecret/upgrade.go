@@ -25,6 +25,12 @@ import (
 //     machine runs which build of a secret-management client, and making it a
 //     side effect of `xecret run` would mean shipping that telemetry from
 //     inside every CI job in the world. It happens when it is asked for.
+//
+//     The upgrade notice does not weaken this and is worth reading beside it.
+//     It makes no request: the server volunteers the release it expects in a
+//     header, and `api/advertised.go` reads it off a reply that had already
+//     arrived. Nobody is asked anything, and a machine that never contacts a
+//     deployment is never nudged. `upgrade_notice.go` holds the rest.
 //  2. **The request goes to GitHub, not to the xecret server.** Releases live
 //     there. Routing it through the deployment would tell a self-hoster's
 //     server about every developer's binary for no benefit.

@@ -56,9 +56,9 @@ that is what was in your shell is how a debugging session becomes an incident.
 
 ### Give the agent its own environment
 
-Create an environment — call it `agent`, or reuse `test` — containing values
-that are **shaped correctly but not real**: a local database URL, a Stripe test
-key, a signing secret generated for the purpose.
+Create an environment in the dashboard — call it `agent`, or reuse `test` —
+containing values that are **shaped correctly but not real**: a local database
+URL, a Stripe test key, a signing secret generated for the purpose.
 
 ```bash
 xecret run --environment agent -- npm test

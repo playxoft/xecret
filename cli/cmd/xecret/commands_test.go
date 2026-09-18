@@ -802,7 +802,7 @@ func TestCompletionFlagsAreScopedToTheirCommand(t *testing.T) {
 		{[]string{"secrets", "set"}, "--generate", true},
 		{[]string{"orgs", "use"}, "--project", false},
 		{[]string{"projects", "delete"}, "--project", false},
-		{[]string{"projects", "create"}, "--slug", true},
+		{[]string{"environments", "delete"}, "--project", true},
 		{[]string{"tokens", "revoke"}, "--json", false},
 		{[]string{"tokens", "list"}, "--kind", true},
 		{[]string{"doctor"}, "--project", false},
@@ -867,12 +867,40 @@ func TestCompletionFlagsAreScopedToTheirCommand(t *testing.T) {
 	}
 }
 
+// Neither `projects` nor `environments` has a `create` subcommand, and neither
+// should grow one back.
+//
+// Creating either means sealing an environment key to its creator's public key,
+// and that key is generated in a browser; this CLI implements opening and the
+// secret codecs, but no sealing. A `create` here could only ever build a request
+// the server refuses, so the honest shape is a command that does not exist —
+// not one that exists and always fails. The completion tree is asserted beside
+// the dispatcher because it is the other place a user learns what is offered,
+// and the two drifted apart once already.
+func TestResourceCreateIsGone(t *testing.T) {
+	for _, command := range []string{"projects", "environments"} {
+		if code := dispatch([]string{command, "create", "Anything"}); code == 0 {
+			t.Errorf("'xecret %s create' succeeded — creation belongs to the dashboard", command)
+		}
+		for _, entry := range completionTree {
+			if entry.Name != command {
+				continue
+			}
+			for _, sub := range entry.Subcommands {
+				if sub.Name == "create" {
+					t.Errorf("the completion tree still offers %q create", command)
+				}
+			}
+		}
+	}
+}
+
 // `xecret <command> --help` is the documented way to see one command's flags,
 // and the flag package reports it as an error. It is not one.
 func TestSubcommandHelpExitsZero(t *testing.T) {
 	for _, args := range [][]string{
 		{"secrets", "get", "--help"},
-		{"projects", "create", "-h"},
+		{"projects", "delete", "-h"},
 		{"audit", "--help"},
 	} {
 		if code := dispatch(args); code != 0 {
