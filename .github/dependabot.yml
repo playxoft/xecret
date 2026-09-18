@@ -52,6 +52,17 @@ updates:
           - "@types/node"
         update-types: [major, minor, patch]
 
+      # vitest and @vitest/coverage-v8 release in lockstep: the coverage
+      # provider peer-depends on the exact vitest version, not a range. Bumping
+      # the provider alone fails every test file with "coverageFilesDirectory
+      # is required" and collapses coverage to 0%, which is how vitest 5 arrived
+      # as two PRs of which neither was mergeable alone.
+      vitest:
+        patterns:
+          - vitest
+          - "@vitest/*"
+        update-types: [major, minor, patch]
+
       dev-dependencies:
         dependency-type: development
         update-types: [minor, patch]

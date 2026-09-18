@@ -25,15 +25,15 @@
     "import-fixtures:generate": "tsx scripts/generate-import-fixtures.ts"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "^4.1.11",
+    "@vitest/coverage-v8": "^5.0.0",
     "ajv": "^8.20.0",
     "typescript": "^6",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.0"
   },
   "dependencies": {
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
-    "yaml": "^2.8.1",
-    "zod": "^4.5.4"
+    "yaml": "^2.9.1",
+    "zod": "^4.6.2"
   }
 }
