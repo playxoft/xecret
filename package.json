@@ -27,7 +27,7 @@
     "db:migrate": "npm run db:migrate --workspace @xecret/db",
     "db:studio": "npm run db:studio --workspace @xecret/db",
     "// cli:build": "Stamps the version the same way a release does, so a locally built binary says which commit it is instead of \"dev (commit none, built unknown)\". `git describe` names the last tag and how far past it this tree is; buildinfo reads the commit and its timestamp out of the binary's own VCS stamp, so those need no flag. A checkout with no tags falls back to dev. `--match=v*` because `--tags` also considers lightweight tags, and retired branches are kept as `archive/<branch>` tags: without it the nearest archive tag wins and the binary reports `archive/fix/some-branch-1-gaaebe31` as its version.",
-    "cli:build": "cd cli && go build -ldflags \"-X github.com/playxoft/xecret/cli/internal/buildinfo.Version=$(git describe --tags --dirty --match=v* 2>/dev/null || echo dev)\" -o dist/xecret ./cmd/xecret",
+    "cli:build": "node scripts/cli-build.mjs",
     "cli:test": "cd cli && go test ./...",
     "cli:lint": "cd cli && go vet ./...",
     "check:bundle": "node scripts/check-bundle-size.mjs",
