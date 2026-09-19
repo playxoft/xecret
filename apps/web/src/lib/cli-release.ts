@@ -43,7 +43,7 @@
  * `compareVersions`, which reads major/minor/patch and treats a pre-release
  * suffix as older than the release it precedes.
  */
-export const CLI_LATEST_VERSION = '0.2.0';
+export const CLI_LATEST_VERSION = '0.2.1';
 
 /**
  * One line on why the upgrade is worth it, shown under the version.
