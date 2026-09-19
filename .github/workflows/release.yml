@@ -39,6 +39,11 @@
 # secrets tool one `npm install` away, which is exactly what the draft exists
 # to prevent.
 #
+# npm publishes through **trusted publishing**, so no npm credential is stored
+# in this repository at all. Adding a package to the set below means registering
+# this repository and this file as a trusted publisher on npmjs.com for it
+# first, or its publish will be refused.
+#
 # Homebrew is on the second trigger for a plainer reason. GoReleaser used to
 # push the formula at tag time under `skip_upload: auto`, and `auto` skips
 # prereleases and snapshots — not drafts. So the tap spent every review window
@@ -441,10 +446,30 @@ jobs:
           # contents:write on playxoft/homebrew-tap and nothing else.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
+      # Trusted publishing needs npm 11.5.1 or later, and the npm bundled with
+      # Node 22 is a 10.x. `.nvmrc` stays the source of truth for *Node* — the
+      # runtime that publishes must not drift from the one that tested — so the
+      # client is upgraded in place rather than by moving Node off it.
+      - name: Use an npm that can publish with OIDC
+        run: npm install --global npm@^11.5.1
+
       - name: Publish to npm
         working-directory: cli/npm
         run: node publish.mjs --version "${TAG}" --archives "${RUNNER_TEMP}/release"
         env:
           TAG: ${{ github.event.release.tag_name }}
-          # An automation token from the npm account that owns `xecret`.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # No token. Each of the seven packages names this repository and this
+          # workflow file as a trusted publisher, and npm exchanges the OIDC
+          # credential that `id-token: write` mints for a short-lived,
+          # single-publish grant.
+          #
+          # This is not only tidier than a secret; it is the only route left.
+          # npm is retiring 2FA-bypass granular access tokens — since August 2026
+          # they cannot perform account operations, and from around January 2027
+          # they cannot publish at all — and an account with publish-2FA on
+          # cannot use any other kind of token to publish. A stored credential
+          # here would be one that expires, or one that has to be exempted from
+          # the account's own 2FA.
+          #
+          # It also means provenance is no longer conditional on remembering the
+          # flag: npm attests a public package published this way automatically.
