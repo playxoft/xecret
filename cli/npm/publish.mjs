@@ -42,7 +42,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -176,8 +176,29 @@ function binariesFromArchives(directory, version) {
 
     const into = join(staging, `${goos}_${goarch}`);
     mkdirSync(into, { recursive: true });
-    if (goos === 'windows') execFileSync('unzip', ['-q', path, '-d', into], { stdio: 'inherit' });
-    else execFileSync('tar', ['-xzf', path, '-C', into], { stdio: 'inherit' });
+
+    // The archive is named **relative** to `directory`, with the cwd moved there
+    // rather than passed absolutely, and that is not cosmetic. GNU tar reads an
+    // archive argument containing a colon as `host:path` and tries to open a
+    // network connection — so on Windows `-xzf E:\…` fails with
+    // "Cannot connect to E: resolve failed", which is a confusing way to be told
+    // a local file was mistaken for a server.
+    //
+    // `--force-local` is the documented cure and the wrong one here: bsdtar,
+    // which is what macOS ships and what Windows now has in System32, does not
+    // accept the flag at all. Giving tar a name with no colon in it needs no
+    // flag and is understood by every implementation.
+    //
+    // The destination stays absolute but is spelled with forward slashes, for a
+    // second and separate reason: the MSYS build of tar unescapes backslashes in
+    // its arguments, so a path carrying `c2cbd37` loses the `` to an octal
+    // escape and the directory it then looks for has never existed. Windows
+    // accepts `/` everywhere it accepts `\`, so normalising costs nothing and
+    // removes the whole class of mangling.
+    const options = { cwd: directory, stdio: 'inherit' };
+    const destination = into.split(sep).join('/');
+    if (goos === 'windows') execFileSync('unzip', ['-q', archive, '-d', destination], options);
+    else execFileSync('tar', ['-xzf', archive, '-C', destination], options);
 
     const executable = goos === 'windows' ? 'xecret.exe' : 'xecret';
     binaries.push({ ...target, path: join(into, executable) });
@@ -283,7 +304,18 @@ function publish(pkg, { version, dryRun }) {
   if (dryRun) args.push('--dry-run');
 
   console.log(`→ npm ${args.join(' ')}  (${pkg.name}@${version})`);
-  execFileSync('npm', args, { cwd: pkg.directory, stdio: 'inherit' });
+  // `npm` on Windows is `npm.cmd`, which `execFileSync` will not find by the
+  // bare name and cannot execute without a shell — Node refuses to spawn `.cmd`
+  // directly since CVE-2024-27980. Every argument here is a literal decided a
+  // few lines above, none of it interpolated from a package name or a tag that
+  // could carry shell syntax, so the shell is safe to ask for where it is the
+  // only way in.
+  const windows = process.platform === 'win32';
+  execFileSync(windows ? 'npm.cmd' : 'npm', args, {
+    cwd: pkg.directory,
+    stdio: 'inherit',
+    shell: windows,
+  });
 }
 
 function main() {
