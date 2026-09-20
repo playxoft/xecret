@@ -1,3 +1,4 @@
+import { availableParallelism } from 'node:os';
 import type { NextConfig } from 'next';
 
 import { contentSecurityPolicy } from './src/lib/csp';
@@ -29,8 +30,37 @@ const buildStamp = {
   XECRET_BUILD_TIME: process.env.XECRET_BUILD_TIME ?? 'unknown',
 };
 
+/**
+ * How many workers static generation may fork.
+ *
+ * Next derives this from the core count alone, which is the wrong axis: a
+ * worker costs memory, not a core. On a 32-thread workstation that means 31
+ * forks, and a `next build` there died with every one of them reporting
+ * "Zone Allocation failed - process out of memory" at a ~15 MB heap. Not the
+ * heap ceiling — the machine refusing the commit. The box had 58.5 GB committed
+ * of a 70.6 GB limit, between four other projects' dev servers and a set of OEM
+ * services holding gigabytes they never touch, so there was no room for a
+ * thirty-first anything.
+ *
+ * The number is low because the measurement says it costs nothing. This app's
+ * entire static-generation phase is **84 pages in 1.2 seconds at two workers**.
+ * Parallelism beyond that buys milliseconds and pays for them in simultaneous
+ * heaps, which is a bad trade at any core count — and a build that does not
+ * finish is not a slow build, it is a failed one.
+ *
+ * Expressed as a ceiling rather than a fixed number so it still yields to a
+ * smaller machine: CI runners have 2–4 cores and would pick 1–3 of their own
+ * accord, so this changes nothing there. It binds only where the default is
+ * pathological.
+ */
+const BUILD_WORKER_CEILING = 2;
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+
+  experimental: {
+    cpus: Math.max(1, Math.min(availableParallelism() - 1, BUILD_WORKER_CEILING)),
+  },
 
   env: buildStamp,
 
