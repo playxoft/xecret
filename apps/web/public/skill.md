@@ -550,4 +550,3 @@ CLI at one with `xecret login --api-url https://secrets.example.com`, or set
 Source: <https://github.com/playxoft/xecret>
 
 <!-- end of the xecret skill -->
-
