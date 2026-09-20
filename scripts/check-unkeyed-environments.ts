@@ -75,6 +75,8 @@
  * expected to find nothing in these projects. It asserts that rather than
  * assuming it, and refuses to retire anything that turns out to hold a live
  * secret — if that ever fires, the premise above is wrong and the run must stop.
+ * "In these projects" includes their soft-deleted environments: deleting an
+ * environment leaves its secrets live, so they are still there to lose.
  *
  * The delete is soft, like every other delete in this system. An audit record
  * pointing at a row somebody `DELETE`d is worthless. No `audit_logs` row is
@@ -93,9 +95,14 @@ interface UnkeyedRow {
   project_id: string;
   project_slug: string;
   project_name: string;
-  live_environments: number;
-  unkeyed_environments: number;
-  live_secrets: number;
+  // `string`, not `number`: postgres.js hands back `count()` — an `int8` — as a
+  // string, because the range does not fit a JS number. Typing these honestly
+  // is what keeps the `Number()` at every use site load-bearing instead of
+  // decorative; declared as `number`, a future `row.live_secrets > 0` would
+  // typecheck and be false for every row in the table.
+  live_environments: string;
+  unkeyed_environments: string;
+  live_secrets: string;
 }
 
 async function main(): Promise<void> {
@@ -127,6 +134,13 @@ async function main(): Promise<void> {
      * real — filtering those environments out of the join would report it as
      * wholly keyless and holding nothing, which is the one mistake here that
      * loses data.
+     *
+     * The secret count deliberately does not require `xe.deleted_at IS NULL`.
+     * `softDeleteEnvironment` marks the environment and nothing else — the
+     * secrets keep `deleted_at` null so that restoring the environment restores
+     * its contents intact — so a project whose only remaining live environment
+     * is keyless can still be holding fifty live secrets behind a deleted one.
+     * Retiring it would bury them, and `restoreProject` has no route.
      */
     const rows = (await db.execute(sql`
       SELECT
@@ -138,7 +152,12 @@ async function main(): Promise<void> {
         count(e.id) AS live_environments,
         count(e.id) FILTER (WHERE e.encryption_mode = 'e2ee' AND k.environment_id IS NULL)
           AS unkeyed_environments,
-        coalesce(sum(s.live_secrets), 0) AS live_secrets
+        (
+          SELECT count(*)
+          FROM secrets x
+          JOIN environments xe ON xe.id = x.environment_id
+          WHERE xe.project_id = p.id AND x.deleted_at IS NULL
+        ) AS live_secrets
       FROM projects p
       JOIN organizations o ON o.id = p.org_id AND o.deleted_at IS NULL
       JOIN environments e ON e.project_id = p.id AND e.deleted_at IS NULL
@@ -148,11 +167,6 @@ async function main(): Promise<void> {
         WHERE d.environment_id = e.id AND d.status = 'active'
         LIMIT 1
       ) k ON true
-      LEFT JOIN LATERAL (
-        SELECT count(*) AS live_secrets
-        FROM secrets x
-        WHERE x.environment_id = e.id AND x.deleted_at IS NULL
-      ) s ON true
       WHERE p.deleted_at IS NULL
       GROUP BY o.id, o.slug, p.id, p.slug, p.name
       HAVING count(e.id) FILTER (WHERE e.encryption_mode = 'e2ee' AND k.environment_id IS NULL) > 0
@@ -215,7 +229,9 @@ async function main(): Promise<void> {
     if (!apply) {
       console.warn('');
       console.warn(
-        `Dry run. Re-run with --apply to retire the ${retirable.length} wholly keyless one(s).`,
+        retirable.length > 0
+          ? `Dry run. Re-run with --apply to retire the ${retirable.length} wholly keyless one(s).`
+          : 'Dry run — and nothing here is wholly keyless, so --apply has nothing to do.',
       );
       process.exitCode = 1;
       return;
@@ -251,6 +267,14 @@ async function main(): Promise<void> {
         and(
           inArray(projects.id, ids),
           isNull(projects.deletedAt),
+          // At least one live environment, so the condition below cannot be
+          // satisfied by a project that has none — "every live environment is
+          // keyless" is vacuously true of a project with nothing left in it,
+          // and that is not a project this script has any business retiring.
+          sql`EXISTS (
+            SELECT 1 FROM environments e
+            WHERE e.project_id = ${projects.id} AND e.deleted_at IS NULL
+          )`,
           sql`NOT EXISTS (
             SELECT 1
             FROM environments e
@@ -262,25 +286,31 @@ async function main(): Promise<void> {
                   SELECT 1 FROM env_data_keys d
                   WHERE d.environment_id = e.id AND d.status = 'active'
                 )
-                OR EXISTS (
-                  SELECT 1 FROM secrets x
-                  WHERE x.environment_id = e.id AND x.deleted_at IS NULL
-                )
               )
+          )`,
+          // Every environment, including the soft-deleted ones, for the reason
+          // the report's own secret count gives.
+          sql`NOT EXISTS (
+            SELECT 1
+            FROM secrets x
+            JOIN environments xe ON xe.id = x.environment_id
+            WHERE xe.project_id = ${projects.id} AND x.deleted_at IS NULL
           )`,
         ),
       )
       .returning({ id: projects.id });
 
     console.warn('');
-    console.warn(`✅  Retired ${retired.length} project(s). Their slugs are free to reuse.`);
-    console.warn('    Affected users create a new project from the dashboard, which now works.');
+    if (retired.length > 0) {
+      console.warn(`✅  Retired ${retired.length} project(s). Their slugs are free to reuse.`);
+      console.warn('    Affected users create a new project from the dashboard, which now works.');
+    }
 
     if (retired.length !== ids.length) {
-      console.warn('');
       console.warn(
         `${ids.length - retired.length} project(s) stopped matching between the report and the ` +
-          'delete — an environment in one of them was keyed or written to. Re-run to see them.',
+          'delete — an environment in one of them was keyed, written to, or removed. Re-run to ' +
+          'see where they stand.',
       );
       process.exitCode = 1;
     }
