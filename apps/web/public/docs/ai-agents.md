@@ -34,10 +34,13 @@ curl -fsSL https://xecret.playxoft.com/skill.sh | sh
 
 That writes the skill to `.agents/skills/xecret/SKILL.md` and
 `.claude/skills/xecret/SKILL.md`, and adds a short pointer to your `AGENTS.md`
-so an agent that reads only that file still finds it. Re-running it upgrades
-the copies and leaves your own instructions alone. Commit the result: everyone
-who clones the repository gets it, and the next person's agent does not have to
-be told twice.
+so an agent that reads only that file still finds it. It installs at the root
+of the repository you are standing in, wherever in the tree you run it from,
+and refuses to run outside one; `--no-pointer` skips the instruction files, and
+`XECRET_SKILL_DIR` names a directory explicitly. Re-running it upgrades the
+copies and leaves your own instructions alone. Commit the result: everyone who
+clones the repository gets it, and the next person's agent does not have to be
+told twice.
 
 **In a chat**, for ChatGPT, Gemini, Claude or anything else with a browser:
 
@@ -46,7 +49,7 @@ Read https://xecret.playxoft.com/skill.md and follow it whenever I ask you
 about xecret, secrets, or environment variables.
 ```
 
-**Without a network**, pipe it straight into whatever you are feeding:
+**Without writing any files**, pipe it straight into whatever you are feeding:
 
 ```bash
 curl -fsSL https://xecret.playxoft.com/skill.sh | sh -s -- --print
