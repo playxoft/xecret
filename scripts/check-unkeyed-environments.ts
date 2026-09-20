@@ -5,14 +5,25 @@
  *   phase run -- npx tsx scripts/check-unkeyed-environments.ts           # report
  *   phase run -- npx tsx scripts/check-unkeyed-environments.ts --apply   # retire
  *
+ * Exits non-zero whenever it leaves a keyless environment behind, so a cron or
+ * CI job wired to it goes red on the state instead of reporting it into a log
+ * nobody reads — which is the silence this check exists to end.
+ *
  * ## The state this looks for
  *
- * An environment whose `encryption_mode` is `e2ee` but which has no row in
- * `env_data_keys`. Nothing can be written to it — every write path demands an
- * `env_data_key_id` that only a grant can supply — and nothing can repair it,
- * because the key bytes existed only in the browser that generated them and that
- * browser has long since navigated away. `env-key-notice.tsx` says exactly that
- * to the user, and tells them to create a new environment and delete this one.
+ * An environment whose `encryption_mode` is `e2ee` but which has no *active*
+ * row in `env_data_keys`. Nothing can be written to it — every write path
+ * demands an `env_data_key_id` that only a grant can supply — and nothing can
+ * repair it, because the key bytes existed only in the browser that generated
+ * them and that browser has long since navigated away. `env-key-notice.tsx`
+ * says exactly that to the user, and tells them to create a new environment and
+ * delete this one.
+ *
+ * *Active* is the same test the product makes — `loadEnvironmentKeyState`
+ * selects `status = 'active'` — so an environment left holding only `retired`
+ * rows by a rotation interrupted between the retire and the insert counts here
+ * too. That is the same class of interrupted write as the rest of this, and the
+ * user is already looking at the same red box.
  *
  * ## Why it is a standing check rather than a one-off
  *
@@ -41,7 +52,7 @@
  * `env_keys` row, holds real secrets, and must not be touched. The name does not
  * distinguish the two. What distinguishes them is the thing that is missing:
  *
- *   encryption_mode = 'e2ee'  AND  no row in env_data_keys
+ *   encryption_mode = 'e2ee'  AND  no active row in env_data_keys
  *
  * A project is retired only when *every* live environment in it matches, so one
  * that has since had a working environment added beside the broken ones is
@@ -66,7 +77,10 @@
  * secret — if that ever fires, the premise above is wrong and the run must stop.
  *
  * The delete is soft, like every other delete in this system. An audit record
- * pointing at a row somebody `DELETE`d is worthless.
+ * pointing at a row somebody `DELETE`d is worthless. No `audit_logs` row is
+ * written for the retirement itself: every actor in that table is a user or an
+ * API token, and an operator at a shell is neither. The record of this run is
+ * its output and the `deleted_at` timestamp it sets.
  */
 
 import { and, inArray, isNull, sql } from 'drizzle-orm';
@@ -105,6 +119,14 @@ async function main(): Promise<void> {
      * Counting the secrets here rather than in a follow-up query is what makes
      * the safety check unracy with the report — the number printed and the
      * number decided on are the same number.
+     *
+     * `encryption_mode = 'e2ee'` sits in the `FILTER` and deliberately not in
+     * the `WHERE`: both of the other counters have to see the project's
+     * *server*-mode environments too. A project with three working server-mode
+     * environments and one keyless `e2ee` one is a partial, and its secrets are
+     * real — filtering those environments out of the join would report it as
+     * wholly keyless and holding nothing, which is the one mistake here that
+     * loses data.
      */
     const rows = (await db.execute(sql`
       SELECT
@@ -113,16 +135,17 @@ async function main(): Promise<void> {
         p.id   AS project_id,
         p.slug AS project_slug,
         p.name AS project_name,
-        count(e.id)                                        AS live_environments,
-        count(e.id) FILTER (WHERE k.environment_id IS NULL) AS unkeyed_environments,
-        coalesce(sum(s.live_secrets), 0)                    AS live_secrets
+        count(e.id) AS live_environments,
+        count(e.id) FILTER (WHERE e.encryption_mode = 'e2ee' AND k.environment_id IS NULL)
+          AS unkeyed_environments,
+        coalesce(sum(s.live_secrets), 0) AS live_secrets
       FROM projects p
       JOIN organizations o ON o.id = p.org_id AND o.deleted_at IS NULL
       JOIN environments e ON e.project_id = p.id AND e.deleted_at IS NULL
       LEFT JOIN LATERAL (
         SELECT 1 AS environment_id
         FROM env_data_keys d
-        WHERE d.environment_id = e.id
+        WHERE d.environment_id = e.id AND d.status = 'active'
         LIMIT 1
       ) k ON true
       LEFT JOIN LATERAL (
@@ -131,9 +154,8 @@ async function main(): Promise<void> {
         WHERE x.environment_id = e.id AND x.deleted_at IS NULL
       ) s ON true
       WHERE p.deleted_at IS NULL
-        AND e.encryption_mode = 'e2ee'
       GROUP BY o.id, o.slug, p.id, p.slug, p.name
-      HAVING count(e.id) FILTER (WHERE k.environment_id IS NULL) > 0
+      HAVING count(e.id) FILTER (WHERE e.encryption_mode = 'e2ee' AND k.environment_id IS NULL) > 0
       ORDER BY o.slug, p.slug
     `)) as unknown as UnkeyedRow[];
 
@@ -183,20 +205,27 @@ async function main(): Promise<void> {
       for (const row of holdingSecrets) {
         console.error(`    ${row.org_slug}/${row.project_slug} — ${row.live_secrets} secret(s)`);
       }
-      process.exit(1);
+      // `exitCode` rather than `process.exit`, here and below: the latter walks
+      // out past the `finally` and leaves the connection to be closed by the
+      // process dying.
+      process.exitCode = 1;
+      return;
     }
 
     if (!apply) {
       console.warn('');
-      console.warn('Dry run. Re-run with --apply to retire the wholly keyless projects.');
+      console.warn(
+        `Dry run. Re-run with --apply to retire the ${retirable.length} wholly keyless one(s).`,
+      );
+      process.exitCode = 1;
       return;
     }
 
-    // Soft, and in one statement: the set was computed above and a row that
-    // became keyed in between would no longer match `deleted_at is null` twice.
     const ids = retirable.map((row) => row.project_id);
     if (ids.length === 0) {
       console.warn('Nothing wholly keyless to retire.');
+      // The partials are still broken, and nothing here fixed them.
+      process.exitCode = 1;
       return;
     }
 
@@ -204,21 +233,70 @@ async function main(): Promise<void> {
     // ids came from the database a moment ago and are uuids, so nothing hostile
     // is in play — but a `sql.raw` holding a joined list is the shape that stops
     // being safe the first time somebody feeds this script an id from elsewhere.
+    //
+    // The premise is re-stated inside the statement rather than trusted from the
+    // `SELECT` above. Between the two, a repair through
+    // `POST …/environments/{envSlug}/keys` — or a rotation finishing — could give
+    // one of these environments a key, and `deleted_at is null` on the *project*
+    // would not notice: the delete would bury the repair. The `NOT EXISTS` states
+    // the condition itself, so a project is retired only while every live
+    // environment in it is still a keyless `e2ee` one holding no live secret.
+    //
+    // `now()` rather than a JS `Date`, matching `softDeleteProject`: the clock of
+    // whatever laptop this is run from is not the database's.
     const retired = await db
       .update(projects)
-      .set({ deletedAt: new Date(), updatedAt: new Date() })
-      .where(and(inArray(projects.id, ids), isNull(projects.deletedAt)))
+      .set({ deletedAt: sql`now()`, updatedAt: sql`now()` })
+      .where(
+        and(
+          inArray(projects.id, ids),
+          isNull(projects.deletedAt),
+          sql`NOT EXISTS (
+            SELECT 1
+            FROM environments e
+            WHERE e.project_id = ${projects.id}
+              AND e.deleted_at IS NULL
+              AND (
+                e.encryption_mode <> 'e2ee'
+                OR EXISTS (
+                  SELECT 1 FROM env_data_keys d
+                  WHERE d.environment_id = e.id AND d.status = 'active'
+                )
+                OR EXISTS (
+                  SELECT 1 FROM secrets x
+                  WHERE x.environment_id = e.id AND x.deleted_at IS NULL
+                )
+              )
+          )`,
+        ),
+      )
       .returning({ id: projects.id });
 
     console.warn('');
     console.warn(`✅  Retired ${retired.length} project(s). Their slugs are free to reuse.`);
     console.warn('    Affected users create a new project from the dashboard, which now works.');
+
+    if (retired.length !== ids.length) {
+      console.warn('');
+      console.warn(
+        `${ids.length - retired.length} project(s) stopped matching between the report and the ` +
+          'delete — an environment in one of them was keyed or written to. Re-run to see them.',
+      );
+      process.exitCode = 1;
+    }
+
+    // The partials were never in `ids`, and they are still broken.
+    if (partial.length > 0) process.exitCode = 1;
   } finally {
     await end();
   }
 }
 
 main().catch((error: unknown) => {
-  console.error(error);
+  // The message, with any connection string scrubbed out of it: postgres.js
+  // embeds the DSN — password and all — in some connection errors, and the
+  // audience for this output is somebody about to paste it into a chat window.
+  const message = error instanceof Error ? error.message : 'unknown error';
+  console.error(message.replace(/postgres(?:ql)?:\/\/[^\s]*/gi, '<connection string redacted>'));
   process.exit(1);
 });
