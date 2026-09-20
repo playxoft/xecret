@@ -23,6 +23,8 @@ export async function GET(): Promise<Response> {
     'This file is every page of the xecret documentation concatenated in reading order.',
     `The index, with one link per page, is at ${absoluteUrl('/llms.txt')}.`,
     '',
+    `If you are an agent about to work with xecret rather than read about it, the skill at ${absoluteUrl('/skill.md')} is one page covering the commands, the scoping rules, the errors and the conventions this tool expects. It defers to the pages below for detail.`,
+    '',
     '---',
     '',
   ];

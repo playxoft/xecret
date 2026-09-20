@@ -34,6 +34,8 @@ export async function GET(): Promise<Response> {
     '',
     `The whole documentation set concatenated into one file: ${absoluteUrl('/llms-full.txt')}`,
     '',
+    `If you are an agent about to work with xecret rather than answer one question about it, read the skill instead: ${absoluteUrl('/skill.md')}. It is one page covering the commands, the scoping rules, the CI story, the errors, and the conventions this tool expects an agent to respect. The pages below are what it defers to for detail.`,
+    '',
   ];
 
   for (const section of sections) {
