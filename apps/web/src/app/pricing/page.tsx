@@ -29,6 +29,7 @@ import {
   MinusIcon,
   TerminalIcon,
 } from '@/components/ui/icons';
+import { PLANS as PLAN_DEFINITIONS } from '@xecret/core/entitlements';
 import { cn } from '@/lib/cn';
 import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } from '@/lib/site';
 
@@ -38,14 +39,14 @@ import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } fro
  * ── One place a price is written ──
  * Three things on this page state money: the plan cards, the header of the
  * comparison table, and the `Offer` nodes in the structured data. A rich result
- * advertising $9 above a page that renders $12 is a manual action from Google
+ * advertising $12 above a page that renders $19 is a manual action from Google
  * waiting to happen, so the plan constants are the single source: the cards
  * read the four priced ones, the table header reads all five, and the JSON-LD
  * is derived from them rather than hand-written beside them. `PRICED_PLANS` is
  * a separate list only because self-hosting is not a rung on the ladder and
  * renders as a band; both flow into `PLANS`, and nothing is written twice.
  * The `amount` field exists so the published number is
- * never parsed back out of the display string — `'$9'` is typography and `'9'`
+ * never parsed back out of the display string — `'$12'` is typography and `'12'`
  * is data, and the day one of them gains a currency symbol or a suffix is the
  * day a regex would silently publish the wrong price.
  *
@@ -59,7 +60,7 @@ import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } fro
  * the checked radio names — see `.x-price-monthly` in globals.css. The obvious
  * alternative, `useState` and a client component around the plans block, would
  * turn the one part of this page a reader is deciding on into something that
- * arrives after hydration: on a slow connection the card paints $9, the bundle
+ * arrives after hydration: on a slow connection the card paints $12, the bundle
  * lands, and the number changes under them. A price that moves on its own is
  * the last thing this page can afford. It also costs a `'use client'` boundary
  * on an otherwise fully static document.
@@ -103,9 +104,9 @@ import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } fro
  * last one.
  */
 
-const TITLE = 'Pricing: free forever, or $9 per member';
+const TITLE = 'Pricing: free forever, or $5 per member';
 const DESCRIPTION =
-  'Four xecret plans: free for 1 organisation and 3 members, Team at $9 a member a month, Business at $19, self-hosted free forever, and no card in pre-alpha.';
+  'Five xecret plans: free for one developer, Pro from $5 a member a month, Team from $12 with single sign-on included, Scale from $22, self-hosted free forever. Service tokens and CI never cost anything, and no card is taken in pre-alpha.';
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -151,9 +152,56 @@ const SEGMENT =
  */
 const NOT_YET = 'Not yet';
 
+/** One word, used wherever a plan limit is `null`. */
+const UNLIMITED = 'Unlimited';
+
+/**
+ * Bought per connection rather than reached by moving tier.
+ *
+ * Its own token, beside `NOT_YET`, because "your plan does not have this" and
+ * "your plan can have this, for a published price" are different answers and a
+ * dash gives the first to a reader entitled to the second.
+ */
+const ADDON = 'Add-on';
+
+/**
+ * The limits, read from the file the server enforces from.
+ *
+ * Not copied. `@xecret/core/entitlements` holds one definition of every ceiling
+ * in the product, and `pricing-page.test.ts` fails the build if a number
+ * rendered here stops matching it. A pricing page that advertises a limit the
+ * server does not hold is a page that will one day refuse a customer something
+ * they paid for, in the middle of a deploy, with a receipt in hand.
+ *
+ * Prices are deliberately *not* imported: a price is typography as much as
+ * data, it varies by currency, and `'$12'` is a rendering decision where `12`
+ * is a number.
+ */
+const LIMITS = {
+  free: PLAN_DEFINITIONS.free.limits,
+  pro: PLAN_DEFINITIONS.pro.limits,
+  team: PLAN_DEFINITIONS.team.limits,
+  scale: PLAN_DEFINITIONS.scale.limits,
+} as const;
+
+/**
+ * `150_000` → `150,000`, and `2_000_000` → `2 million`.
+ *
+ * Seven digits in a card bullet is a number nobody reads; two million is a
+ * number everybody does. The threshold is where the comma form stops being
+ * scannable at a glance rather than where it stops being correct.
+ */
+function formatCount(value: number): string {
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000;
+    return `${Number.isInteger(millions) ? millions : millions.toFixed(1)} million`;
+  }
+  return value.toLocaleString('en-GB');
+}
+
 /* ── The plans ─────────────────────────────────────────────────────────────── */
 
-type PlanId = 'free' | 'team' | 'business' | 'enterprise' | 'self-hosted';
+type PlanId = 'free' | 'pro' | 'team' | 'scale' | 'enterprise' | 'self-hosted';
 
 /** One billing period's figures, for one plan. */
 interface PlanPrice {
@@ -206,7 +254,23 @@ interface Plan {
 }
 
 /**
- * The four plans with a price. These are the cards.
+ * The five plans with a price. These are the cards.
+ *
+ * ── Where the numbers come from ──
+ * `.local/plans/pricing-plan.md` §3 and §4. Yearly is the headline rate and is
+ * roughly 37 per cent below monthly, which is not generosity: it brings the
+ * cash in on day one, removes twelve renewal decisions a year, and cuts the
+ * payment processor's fee burden from about 9.5 per cent of revenue to about
+ * 5.2, because the fixed per-charge component is paid once instead of twelve
+ * times. Four of those thirty-seven points pay for themselves.
+ *
+ * ── Why the limits here are not written here ──
+ * Every limit on a card and in the matrix below is read from `plans.ts` in
+ * `@xecret/core/entitlements` through `LIMITS`, the same file the server
+ * enforces from. A pricing page that advertises a ceiling the server does not
+ * hold is a page that will one day refuse a customer something they paid for.
+ * The *prices* stay local, because a price is typography as much as data and
+ * varies by currency; a limit is a number with one correct value.
  *
  * Annotated rather than `as const satisfies`: a const assertion would give each
  * bullet its own object type, and half of them have no `notYet` key at all, so
@@ -220,14 +284,14 @@ const PRICED_PLANS: readonly Plan[] = [
     name: 'Free',
     monthly: { price: '$0', unit: 'forever, no card' },
     yearly: { price: '$0', unit: 'forever, no card' },
-    audience: 'For a solo project, or three people who have outgrown a shared .env file.',
+    audience: 'For one developer who has had enough of moving .env files around.',
     features: [
-      { text: '1 organisation' },
-      { text: '5 projects' },
-      { text: '3 members' },
-      { text: '3 environments per project' },
-      { text: '7 days of audit history' },
-      { text: 'CLI and CI service tokens' },
+      { text: `${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects` },
+      { text: `${LIMITS.free.environmentsPerProject} environments per project` },
+      { text: `${LIMITS.free.seats} member` },
+      { text: `${LIMITS.free.serviceTokens} service tokens for CI` },
+      { text: `${formatCount(LIMITS.free.includedFetchesPerMonth)} secret fetches a month` },
+      { text: `${LIMITS.free.auditRetentionDays} days of audit history` },
       { text: 'Community support on GitHub' },
     ],
     cta: { label: 'Start free', href: '/sign-up', external: false },
@@ -236,49 +300,75 @@ const PRICED_PLANS: readonly Plan[] = [
     unitText: null,
   },
   {
-    id: 'team',
-    name: 'Team',
-    monthly: { price: '$9', unit: 'per member, per month' },
+    id: 'pro',
+    name: 'Pro',
+    monthly: { price: '$8', unit: 'per member, per month' },
     yearly: {
-      price: '$7',
+      price: '$5',
       unit: 'per member, per month',
-      note: '$84 per member, billed yearly',
+      note: '$60 per member, billed yearly',
     },
-    audience: 'For a team that needs roles, per-environment access and a year of audit history.',
+    audience:
+      'For a small team that has outgrown the free limits and does not yet need to keep anyone out of production.',
     features: [
-      { text: 'Unlimited organisations, projects and members' },
-      { text: 'Unlimited environments per project' },
-      { text: '12 months of audit history' },
-      { text: 'Roles and per-environment access' },
-      { text: 'Service tokens for CI' },
-      { text: 'Email support' },
+      { text: 'Unlimited organisations, projects and environments' },
+      { text: 'Unlimited members — everyone can read every environment' },
+      { text: `${formatCount(LIMITS.pro.includedFetchesPerMonth)} secret fetches a month` },
+      { text: `${LIMITS.pro.auditRetentionDays} days of audit history` },
+      { text: 'Secret referencing and environment inheritance', notYet: true },
+      { text: 'Environment promotion and point-in-time restore', notYet: true },
     ],
-    cta: { label: 'Start on Team', href: '/sign-up', external: false },
-    recommended: true,
-    amount: '9',
+    cta: { label: 'Start on Pro', href: '/sign-up', external: false },
+    recommended: false,
+    amount: '8',
     unitText: 'member/month',
   },
   {
-    id: 'business',
-    name: 'Business',
+    id: 'team',
+    name: 'Team',
     monthly: { price: '$19', unit: 'per member, per month' },
     yearly: {
-      price: '$15',
+      price: '$12',
       unit: 'per member, per month',
-      note: '$180 per member, billed yearly',
+      note: '$144 per member, billed yearly',
     },
     audience:
-      'For a company whose security review wants single sign-on, three years of audit history and an invoice.',
+      'For a team with somebody who must not see production — a contractor, a junior, an auditor.',
+    features: [
+      { text: 'Everything in Pro' },
+      { text: 'Roles and per-environment access' },
+      { text: 'Single sign-on with OIDC, included', notYet: true },
+      { text: `${LIMITS.team.auditRetentionDays} days of audit history` },
+      { text: `${formatCount(LIMITS.team.includedFetchesPerMonth)} secret fetches a month` },
+      { text: 'Change approvals and break-glass access', notYet: true },
+    ],
+    cta: { label: 'Start on Team', href: '/sign-up', external: false },
+    recommended: true,
+    amount: '19',
+    unitText: 'member/month',
+  },
+  {
+    id: 'scale',
+    name: 'Scale',
+    monthly: { price: '$35', unit: 'per member, per month' },
+    yearly: {
+      price: '$22',
+      unit: 'per member, per month',
+      note: '$264 per member, billed yearly',
+    },
+    audience:
+      'For a company whose security review asks about provisioning, rotation and where the audit log is streamed.',
     features: [
       { text: 'Everything in Team' },
-      { text: '3 years of audit history' },
-      { text: 'SAML single sign-on', notYet: true },
+      { text: 'A year of audit history, streamed to your SIEM', notYet: true },
+      { text: 'Custom roles', notYet: true },
+      { text: 'GitHub OIDC federation — no static CI tokens', notYet: true },
+      { text: 'Scheduled and expiring secrets', notYet: true },
       { text: 'Priority support, one business day' },
-      { text: 'Invoiced billing' },
     ],
-    cta: { label: 'Start on Business', href: '/sign-up', external: false },
+    cta: { label: 'Start on Scale', href: '/sign-up', external: false },
     recommended: false,
-    amount: '19',
+    amount: '35',
     unitText: 'member/month',
   },
   {
@@ -287,14 +377,14 @@ const PRICED_PLANS: readonly Plan[] = [
     monthly: { price: 'Custom', unit: 'invoiced, with an SLA' },
     yearly: { price: 'Custom', unit: 'invoiced, with an SLA' },
     audience:
-      'For an organisation that needs directory provisioning, its own retention period and a contract behind both.',
+      'For an organisation that needs residency, its own root key and a contract behind both.',
     features: [
-      { text: 'Everything in Business' },
-      { text: 'SCIM provisioning', notYet: true },
-      { text: 'Custom audit retention' },
-      { text: 'A self-hosting support contract' },
-      { text: 'A contractual SLA' },
-      { text: 'A named contact' },
+      { text: 'Everything in Scale' },
+      { text: 'SAML and SCIM included rather than charged as add-ons', notYet: true },
+      { text: 'Your own root key, and the escrow ceremony to go with it' },
+      { text: 'Data residency and custom retention', notYet: true },
+      { text: 'A commercial, non-AGPL self-hosting licence' },
+      { text: 'A contractual SLA and a named contact' },
     ],
     // There is no sales form, no calendar link and no inbox pretending to be a
     // sales team. The issue tracker is where this conversation actually
@@ -309,8 +399,8 @@ const PRICED_PLANS: readonly Plan[] = [
 /**
  * Self-hosting, which is not a rung on the ladder.
  *
- * It renders as a band under the cards rather than as a fifth card, because a
- * fifth card would invite the comparison the other four are asking for — more
+ * It renders as a band under the cards rather than as a sixth card, because a
+ * sixth card would invite the comparison the other five are asking for — more
  * money, more features — and self-hosting is the opposite arrangement: no
  * money, every feature, all of the operational work. It keeps its column in the
  * matrix and its `Offer` in the structured data, which is why it is a `Plan`.
@@ -324,9 +414,9 @@ const SELF_HOSTED: Plan = {
   features: [
     { text: 'The whole server, under AGPL-3.0' },
     { text: 'No feature held back, no licence key' },
+    { text: 'Single sign-on included — bring your own identity provider', notYet: true },
     { text: 'Unlimited organisations, projects, members and environments' },
     { text: 'Audit history for as long as your database keeps it' },
-    { text: 'Cloudflare Workers, PostgreSQL, your own Firebase project' },
     { text: 'Community support, or an Enterprise contract' },
   ],
   cta: { label: 'Read the self-hosting guide', href: '/docs/self-hosting', external: false },
@@ -337,6 +427,39 @@ const SELF_HOSTED: Plan = {
 
 /** Every plan, in column order. The matrix header and the JSON-LD read this. */
 const PLANS: readonly Plan[] = [...PRICED_PLANS, SELF_HOSTED];
+
+/* ── Add-ons ───────────────────────────────────────────────────────────────── */
+
+/**
+ * The two capabilities that are bought rather than reached by moving tier.
+ *
+ * ── Why these are add-ons and why the page says what they cost us ──
+ * Each is one WorkOS connection, and WorkOS bills us $125 a month for each one
+ * whether or not anybody signs in through it. A connection is a connection
+ * there: SAML and OIDC cost the same. That is the whole reason OIDC single
+ * sign-on is *included* at Team and SAML is not — we implemented OIDC
+ * ourselves, it costs us nothing per customer, and charging for it would be
+ * the SSO tax this pricing is positioned against.
+ *
+ * Publishing our own cost beside the price is deliberate. It is the same
+ * instinct as the trust-model note in the README: the honest version of a thing
+ * a reader could otherwise discover later and feel misled by. A vendor that
+ * shows the receipt is making a claim that can be checked.
+ */
+const ADDONS = [
+  {
+    name: 'SAML single sign-on',
+    price: '$199',
+    unit: 'per connection, per month',
+    body: 'For an identity provider that speaks SAML rather than OIDC. Brokered through WorkOS, which charges us $125 per connection per month; we charge $199 and keep the difference for the support that comes with it. OIDC single sign-on is included from Team and costs nothing extra, because it costs us nothing.',
+  },
+  {
+    name: 'Directory sync (SCIM)',
+    price: '$249',
+    unit: 'per connection, per month',
+    body: 'Members provisioned and deprovisioned by your directory. A second WorkOS connection at the same $125 to us, and the reason it is priced separately rather than folded into a tier: bundling it would mean paying for a connection for every customer on that tier, including the ones who never use it. Included with Enterprise.',
+  },
+] as const;
 
 /* ── The comparison matrix ─────────────────────────────────────────────────── */
 
@@ -359,56 +482,111 @@ interface MatrixGroup {
   readonly rows: readonly MatrixRow[];
 }
 
+/** Every paid tier and the self-hosted column say "unlimited" together. */
+const UNLIMITED_ABOVE_FREE = {
+  pro: UNLIMITED,
+  team: UNLIMITED,
+  scale: UNLIMITED,
+  enterprise: UNLIMITED,
+  'self-hosted': UNLIMITED,
+} as const;
+
+/** A capability every column has. */
+const EVERYWHERE = {
+  free: true,
+  pro: true,
+  team: true,
+  scale: true,
+  enterprise: true,
+  'self-hosted': true,
+} as const;
+
+/**
+ * Announced and not built, in every column.
+ *
+ * More useful than omitting the row: somebody scanning for a capability finds
+ * out here rather than mid-migration. The dash and the "Not yet" say different
+ * things and the difference is the point — a dash means the plan does not carry
+ * it, "Not yet" means the plan names it and nobody has it.
+ */
+const NOWHERE_YET = {
+  free: NOT_YET,
+  pro: NOT_YET,
+  team: NOT_YET,
+  scale: NOT_YET,
+  enterprise: NOT_YET,
+  'self-hosted': NOT_YET,
+} as const;
+
 const MATRIX = [
   {
     title: 'Limits',
     rows: [
       {
         label: 'Organisations',
-        values: {
-          free: '1',
-          team: 'Unlimited',
-          business: 'Unlimited',
-          enterprise: 'Unlimited',
-          'self-hosted': 'Unlimited',
-        },
+        values: { free: String(LIMITS.free.organizations), ...UNLIMITED_ABOVE_FREE },
       },
       {
         label: 'Projects',
-        values: {
-          free: '5',
-          team: 'Unlimited',
-          business: 'Unlimited',
-          enterprise: 'Unlimited',
-          'self-hosted': 'Unlimited',
-        },
+        values: { free: String(LIMITS.free.projects), ...UNLIMITED_ABOVE_FREE },
       },
       {
         label: 'Members',
-        values: {
-          free: 'Up to 3',
-          team: 'Unlimited',
-          business: 'Unlimited',
-          enterprise: 'Unlimited',
-          'self-hosted': 'Unlimited',
-        },
+        values: { free: String(LIMITS.free.seats), ...UNLIMITED_ABOVE_FREE },
       },
       {
         label: 'Environments per project',
+        values: { free: String(LIMITS.free.environmentsPerProject), ...UNLIMITED_ABOVE_FREE },
+      },
+      {
+        label: 'Service tokens for CI',
+        values: { free: String(LIMITS.free.serviceTokens), ...UNLIMITED_ABOVE_FREE },
+      },
+      // Machines are free everywhere and this row is where a reader checks
+      // that. The competing meter in this category bills per identity, human
+      // or not, which is the comparison this row is written to invite.
+      {
+        label: 'Cost per service token, CI runner or AI agent',
         values: {
-          free: '3',
-          team: 'Unlimited',
-          business: 'Unlimited',
-          enterprise: 'Unlimited',
-          'self-hosted': 'Unlimited',
+          free: 'Free',
+          pro: 'Free',
+          team: 'Free',
+          scale: 'Free',
+          enterprise: 'Free',
+          'self-hosted': 'Free',
+        },
+      },
+      {
+        label: 'Included secret fetches a month',
+        values: {
+          free: formatCount(LIMITS.free.includedFetchesPerMonth),
+          pro: formatCount(LIMITS.pro.includedFetchesPerMonth),
+          team: formatCount(LIMITS.team.includedFetchesPerMonth),
+          scale: formatCount(LIMITS.scale.includedFetchesPerMonth),
+          enterprise: 'Custom',
+          'self-hosted': UNLIMITED,
+        },
+      },
+      // The answer is the same in every column and it is the row most worth
+      // reading twice: going over the allowance is an invoice, never a refusal.
+      {
+        label: 'What happens past the allowance',
+        values: {
+          free: 'Nothing breaks',
+          pro: 'Billed, never blocked',
+          team: 'Billed, never blocked',
+          scale: 'Billed, never blocked',
+          enterprise: 'Contracted',
+          'self-hosted': 'Your infrastructure',
         },
       },
       {
         label: 'Audit history',
         values: {
-          free: '7 days',
-          team: '12 months',
-          business: '3 years',
+          free: `${LIMITS.free.auditRetentionDays} days`,
+          pro: `${LIMITS.pro.auditRetentionDays} days`,
+          team: `${LIMITS.team.auditRetentionDays} days`,
+          scale: '1 year',
           enterprise: 'Custom',
           'self-hosted': 'Your database',
         },
@@ -418,74 +596,168 @@ const MATRIX = [
   {
     title: 'Secrets and data',
     rows: [
+      { label: 'Version history and rollback', values: EVERYWHERE },
+      { label: 'Import from .env, JSON, YAML or shell', values: EVERYWHERE },
+      { label: 'Export as env, JSON, YAML, shell or Docker', values: EVERYWHERE },
+      { label: 'Per-environment encryption, zero-knowledge', values: EVERYWHERE },
       {
-        label: 'Version history and rollback',
-        values: { free: true, team: true, business: true, enterprise: true, 'self-hosted': true },
-      },
-      {
-        label: 'Import from .env, JSON, YAML or shell',
-        values: { free: true, team: true, business: true, enterprise: true, 'self-hosted': true },
-      },
-      {
-        label: 'Export as env, JSON, YAML, shell or Docker',
-        values: { free: true, team: true, business: true, enterprise: true, 'self-hosted': true },
-      },
-      // Not a limitation of a tier — `pull` returns the current value of every
-      // secret and there is no bulk history export at all. Saying so in five
-      // columns is more useful than leaving the row out and letting somebody
-      // discover it mid-migration.
-      {
-        label: 'Bulk export of version history',
+        label: 'Secret referencing and environment inheritance',
         values: {
-          free: NOT_YET,
+          free: false,
+          pro: NOT_YET,
           team: NOT_YET,
-          business: NOT_YET,
+          scale: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
       },
+      {
+        label: 'Personal local overrides',
+        values: {
+          free: false,
+          pro: NOT_YET,
+          team: NOT_YET,
+          scale: NOT_YET,
+          enterprise: NOT_YET,
+          'self-hosted': NOT_YET,
+        },
+      },
+      {
+        label: 'Environment promotion, with a diff',
+        values: {
+          free: false,
+          pro: NOT_YET,
+          team: NOT_YET,
+          scale: NOT_YET,
+          enterprise: NOT_YET,
+          'self-hosted': NOT_YET,
+        },
+      },
+      {
+        label: 'Point-in-time restore',
+        values: {
+          free: false,
+          pro: NOT_YET,
+          team: NOT_YET,
+          scale: NOT_YET,
+          enterprise: NOT_YET,
+          'self-hosted': NOT_YET,
+        },
+      },
+      {
+        label: 'Scheduled and expiring secrets',
+        values: {
+          free: false,
+          pro: false,
+          team: false,
+          scale: NOT_YET,
+          enterprise: NOT_YET,
+          'self-hosted': NOT_YET,
+        },
+      },
+      // Not a limitation of a tier — `pull` returns the current value of every
+      // secret and there is no bulk history export at all.
+      { label: 'Bulk export of version history', values: NOWHERE_YET },
     ],
   },
   {
     title: 'People and access',
     rows: [
+      { label: 'Production marking and hazard hatching', values: EVERYWHERE },
+      { label: 'PIN lock and idle auto-lock', values: EVERYWHERE },
+      // The row the Pro → Team decision turns on, and the reason Pro can offer
+      // unlimited members without undercutting Team: on Pro, everybody reads
+      // production. A team with one person who must not is on Team.
       {
         label: 'Roles for members',
-        values: { free: false, team: true, business: true, enterprise: true, 'self-hosted': true },
+        values: {
+          free: false,
+          pro: false,
+          team: true,
+          scale: true,
+          enterprise: true,
+          'self-hosted': true,
+        },
       },
       {
         label: 'Per-project and per-environment grants',
-        values: { free: false, team: true, business: true, enterprise: true, 'self-hosted': true },
-      },
-      {
-        label: 'Production marking and hazard hatching',
-        values: { free: true, team: true, business: true, enterprise: true, 'self-hosted': true },
-      },
-      {
-        label: 'PIN lock and idle auto-lock',
-        values: { free: true, team: true, business: true, enterprise: true, 'self-hosted': true },
-      },
-      // The dash and the "Not yet" say different things, and the difference is
-      // the point: a dash means the plan does not carry it, "Not yet" means the
-      // plan names it and nobody has it — including a self-hosted deployment,
-      // which authenticates through Firebase and does not gain a SAML
-      // implementation by owning the server it would run on.
-      {
-        label: 'SAML single sign-on',
         values: {
           free: false,
-          team: false,
-          business: NOT_YET,
+          pro: false,
+          team: true,
+          scale: true,
+          enterprise: true,
+          'self-hosted': true,
+        },
+      },
+      {
+        label: 'Change approvals',
+        values: {
+          free: false,
+          pro: false,
+          team: NOT_YET,
+          scale: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
       },
       {
-        label: 'SCIM provisioning',
+        label: 'Break-glass emergency access',
         values: {
           free: false,
+          pro: false,
+          team: NOT_YET,
+          scale: NOT_YET,
+          enterprise: NOT_YET,
+          'self-hosted': NOT_YET,
+        },
+      },
+      {
+        label: 'Custom roles',
+        values: {
+          free: false,
+          pro: false,
           team: false,
-          business: false,
+          scale: NOT_YET,
+          enterprise: NOT_YET,
+          'self-hosted': NOT_YET,
+        },
+      },
+      // Included, not charged. Google Workspace, Entra ID, Okta, Auth0 and
+      // JumpCloud all speak OIDC, and implementing it ourselves is what makes
+      // giving it away at this tier affordable.
+      {
+        label: 'Single sign-on with OIDC',
+        values: {
+          free: false,
+          pro: false,
+          team: NOT_YET,
+          scale: NOT_YET,
+          enterprise: NOT_YET,
+          'self-hosted': NOT_YET,
+        },
+      },
+      // An add-on rather than a tier feature, because each connection costs us
+      // $125 a month at WorkOS whether it is used or not. Self-hosting brings
+      // its own identity provider and owes us nothing for it.
+      {
+        label: 'SAML single sign-on',
+        values: {
+          free: false,
+          pro: false,
+          team: ADDON,
+          scale: ADDON,
+          enterprise: NOT_YET,
+          'self-hosted': NOT_YET,
+        },
+      },
+      {
+        label: 'Directory sync (SCIM)',
+        values: {
+          free: false,
+          pro: false,
+          team: false,
+          scale: ADDON,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -495,28 +767,40 @@ const MATRIX = [
   {
     title: 'The CLI, CI and the API',
     rows: [
+      { label: 'The CLI, including xecret run', values: EVERYWHERE },
+      { label: 'Encrypted offline cache', values: EVERYWHERE },
+      { label: 'Service tokens, pinned to one environment', values: EVERYWHERE },
+      { label: 'The HTTP API', values: EVERYWHERE },
+      { label: 'GitHub Action, Docker image and install script', values: EVERYWHERE },
       {
-        label: 'The CLI, including xecret run',
-        values: { free: true, team: true, business: true, enterprise: true, 'self-hosted': true },
-      },
-      {
-        label: 'Encrypted offline cache',
-        values: { free: true, team: true, business: true, enterprise: true, 'self-hosted': true },
-      },
-      {
-        label: 'Service tokens, pinned to one environment',
-        values: { free: true, team: true, business: true, enterprise: true, 'self-hosted': true },
-      },
-      {
-        label: 'The HTTP API',
-        values: { free: true, team: true, business: true, enterprise: true, 'self-hosted': true },
-      },
-      {
-        label: 'Webhooks and chat integrations',
+        label: 'Token IP allowlists and lifetime policy',
         values: {
-          free: NOT_YET,
+          free: false,
+          pro: NOT_YET,
           team: NOT_YET,
-          business: NOT_YET,
+          scale: NOT_YET,
+          enterprise: NOT_YET,
+          'self-hosted': NOT_YET,
+        },
+      },
+      {
+        label: 'GitHub OIDC federation, with no static token',
+        values: {
+          free: false,
+          pro: false,
+          team: false,
+          scale: NOT_YET,
+          enterprise: NOT_YET,
+          'self-hosted': NOT_YET,
+        },
+      },
+      {
+        label: 'Webhooks on secret change',
+        values: {
+          free: false,
+          pro: NOT_YET,
+          team: NOT_YET,
+          scale: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -530,18 +814,31 @@ const MATRIX = [
         label: 'Audit export',
         values: {
           free: 'Via the API',
+          pro: 'Via the API',
           team: 'Via the API',
-          business: 'Via the API',
+          scale: 'Via the API',
           enterprise: 'Custom',
           'self-hosted': 'Via the API',
+        },
+      },
+      {
+        label: 'Audit streaming to a SIEM',
+        values: {
+          free: false,
+          pro: false,
+          team: false,
+          scale: NOT_YET,
+          enterprise: NOT_YET,
+          'self-hosted': NOT_YET,
         },
       },
       {
         label: 'Where your data sits',
         values: {
           free: "Cloudflare's network",
+          pro: "Cloudflare's network",
           team: "Cloudflare's network",
-          business: "Cloudflare's network",
+          scale: "Cloudflare's network",
           enterprise: "Cloudflare's network",
           'self-hosted': 'Wherever you host it',
         },
@@ -550,8 +847,9 @@ const MATRIX = [
         label: 'Runs on your own infrastructure',
         values: {
           free: false,
+          pro: false,
           team: false,
-          business: false,
+          scale: false,
           enterprise: true,
           'self-hosted': true,
         },
@@ -560,20 +858,22 @@ const MATRIX = [
         label: 'Support channel',
         values: {
           free: 'GitHub issues',
-          team: 'Email',
-          business: 'Priority email',
+          pro: 'Email',
+          team: 'Priority email',
+          scale: 'Priority email',
           enterprise: 'Contracted',
           'self-hosted': 'GitHub issues',
         },
       },
-      // Identical in all five columns, and that is the point of including it:
+      // Identical in all six columns, and that is the point of including it:
       // the licence is not a tier. A reader scanning for the catch finds this.
       {
         label: 'Licence',
         values: {
           free: 'AGPL-3.0 + MIT',
+          pro: 'AGPL-3.0 + MIT',
           team: 'AGPL-3.0 + MIT',
-          business: 'AGPL-3.0 + MIT',
+          scale: 'AGPL-3.0 + MIT',
           enterprise: 'AGPL-3.0 + MIT',
           'self-hosted': 'AGPL-3.0 + MIT',
         },
@@ -582,8 +882,9 @@ const MATRIX = [
         label: 'SLA',
         values: {
           free: false,
+          pro: false,
           team: false,
-          business: false,
+          scale: false,
           enterprise: 'Contractual',
           'self-hosted': 'Yours to set',
         },
@@ -627,37 +928,57 @@ const FAQ: readonly FaqItem[] = [
   {
     question: 'What counts as a member?',
     answer:
-      'Anyone with a seat in your organisation who can sign in and read or write a secret. Service tokens are not members, so a CI pipeline that pulls secrets on every build costs nothing. A pending invitation is not counted until it is accepted, and removing someone frees their seat immediately.',
+      'Anyone with a seat in your organisation who can sign in and read or write a secret. Service tokens are not members, so a CI pipeline that pulls secrets on every build costs nothing — and neither does a Kubernetes workload or an AI agent. A pending invitation is not counted until it is accepted, and removing someone frees their seat immediately.',
   },
   {
-    question: 'What is the difference between Team and Business?',
+    question: 'Do machines really cost nothing?',
     answer:
-      'Three things you can hold us to: audit history goes from 12 months to 3 years, support moves from email to a one business day commitment, and you can be invoiced instead of paying by card. Business also lists SAML single sign-on, which is not built yet and is marked as such on the card and in the comparison table. If none of those change how you work, Team is the plan.',
+      'Yes, on every plan including Free, and we will put it in writing. Only humans are billed. The reason is not generosity: a secret read runs on Cloudflare’s edge and makes no external network call, so a service token costs us a fraction of a cent. Billing per identity would also punish the one habit a secret manager exists to encourage — a separate, narrowly scoped token per workload rather than one shared credential in ten places.',
+  },
+  {
+    question: 'What is the difference between Pro and Team?',
+    answer:
+      'Who can read production. On Pro every member sees every environment, which is fine while everyone on the team is trusted with everything. Team adds roles and per-environment grants, so a contractor can hold staging and not production. That is the whole gate, and it is why Pro has no member limit — most teams cross it because somebody joins who should not see prod, not because they hit a ceiling we invented.',
+  },
+  {
+    question: 'Is single sign-on an extra?',
+    answer:
+      'OIDC single sign-on is included from Team at no extra cost, and it covers Google Workspace, Microsoft Entra ID, Okta, Auth0 and JumpCloud. We built it ourselves, so it costs us nothing per customer and charging for it would be indefensible. SAML is a $199 per connection add-on, because it is brokered through WorkOS and they charge us $125 per connection per month whether anyone signs in or not. Self-hosted deployments bring their own identity provider and pay nothing for either.',
   },
   {
     question: 'What happens when I exceed the free tier?',
     answer:
-      'Nothing breaks and nothing is deleted. You are asked to move to Team the next time you invite a fourth member, create a sixth project, create a second organisation, or add a fourth environment to a project. Everything already stored keeps working and the CLI keeps running. During pre-alpha there is no limit to exceed at all.',
+      'Nothing breaks and nothing is deleted. You are asked to move up the next time you invite a second member, create a sixth project, create a second organisation, or add a fourth environment to a project. Everything already stored keeps working and the CLI keeps running. Going over the included fetch allowance is billed, never blocked. During pre-alpha there is no limit to exceed at all.',
+  },
+  {
+    question: 'Can a billing problem break my build?',
+    answer:
+      'No, and this is the one commitment on this page we would rather be held to than any other. A declined card, a cancelled plan, an expired subscription or a fetch allowance ten times overspent all leave xecret run working exactly as before. Access is degraded in the dashboard and we send an email; the data path is never touched. A secret manager that can stop a deploy over an invoice is worse than the .env file it replaced.',
   },
   {
     question: 'Is there an annual price?',
     answer:
-      'Yes. Billed yearly, Team is $7 per member per month and Business is $15, charged as $84 and $180 per member per year — a saving of up to 22 per cent. The control at the top of this page switches every price on it. Monthly stays available on both plans, and neither is billed at all during pre-alpha.',
+      'Yes, and it is the headline rate on this page. Billed yearly, Pro is $5 a member a month, Team is $12 and Scale is $22 — charged as $60, $144 and $264 a member a year, about 37 per cent below monthly. The control at the top switches every price on the page. Monthly stays available on all three, and none is billed at all during pre-alpha.',
+  },
+  {
+    question: 'Why is it cheaper in India?',
+    answer:
+      'Because a price that is reasonable in San Francisco is not reasonable in Bengaluru, and pretending otherwise just means we do not sell there. Pro, Team and Scale are priced separately in rupees, yen and Australian dollars rather than converted. The rate follows your billing country and the card that pays, it is locked for twelve months so it cannot be changed by travelling, and it does not apply to Enterprise contracts.',
   },
   {
     question: 'Do you take a card during pre-alpha?',
     answer:
-      'No. There is no billing system connected yet, so there is nothing to enter a card into. Every paid feature is switched on for every account, and we will give notice well before that changes rather than converting anyone silently.',
+      'No. There is no billing system connected yet, so there is nothing to enter a card into. Every paid feature that exists is switched on for every account, and the ones marked "Not yet" on this page are not built for anybody. We will give notice well before that changes rather than converting anyone silently.',
   },
   {
     question: 'Is self-hosting really free and unlimited?',
     answer:
-      'Yes. The server is AGPL-3.0 and the CLI is MIT, so you can run the whole thing on your own Cloudflare account, your own PostgreSQL database and your own Firebase project. No feature is held back for a paid tier and there is no licence key to buy. What you pay for is the infrastructure and the time to operate it, and the self-hosting guide states both plainly, including the parts that are friction.',
+      'Yes. The server is AGPL-3.0 and the CLI is MIT, so you can run the whole thing on your own infrastructure. No feature is held back for a paid tier and there is no licence key to buy — single sign-on included. What an Enterprise self-hosting licence buys is a commercial, non-AGPL licence, priority security notification, help with the root-key escrow ceremony and an SLA. None of that is a feature we removed from the code.',
   },
   {
     question: 'What happens to my data if I stop paying?',
     answer:
-      'Your organisation drops to the Free plan. Nothing is deleted: every secret is still readable, still exportable and still injectable by the CLI. If you are over the free limits, new members, projects and environments are blocked until you are back inside them or you export and self-host. We will not hold a credential hostage over a billing dispute — a secret manager that can lock you out of your own secrets is worse than the .env file it replaced.',
+      'Your organisation drops to the Free plan. Nothing is deleted: every secret is still readable, still exportable and still injectable by the CLI. If you are over the free limits, new members, projects and environments are blocked until you are back inside them or you export and self-host. We will not hold a credential hostage over a billing dispute.',
   },
   {
     question: 'Do you offer a discount for open source or non-profits?',
@@ -667,7 +988,7 @@ const FAQ: readonly FaqItem[] = [
   {
     question: 'Can I move between plans?',
     answer:
-      'Yes, in both directions and at any time. Moving up will take effect immediately and be prorated for the rest of the period; moving down will take effect at the end of the period you have already paid for, and nothing is deleted when it does. None of this is live yet, because no plan is billed yet.',
+      'Yes, in both directions and at any time. Moving up takes effect immediately and is prorated for the rest of the period; moving down takes effect at the end of the period you have already paid for, and nothing is deleted when it does. None of this is live yet, because no plan is billed yet.',
   },
 ];
 
@@ -794,7 +1115,7 @@ export default function PricingPage() {
       <PageHero
         eyebrow="Pricing"
         title="Secret management pricing, without the sales call."
-        description="Four plans and a self-hosted option, published in full — the limits included. Free is genuinely free, Team is $9 per member per month, and running the whole server yourself is free forever."
+        description="Five plans and a self-hosted option, published in full — the limits included. Free is genuinely free, Team is $12 per member per month with single sign-on, service tokens and CI never cost anything, and running the whole server yourself is free forever."
       />
 
       <Section id="plans" aria-labelledby="plans-heading" tone="canvas">
@@ -856,7 +1177,7 @@ export default function PricingPage() {
               </p>
             </div>
 
-            <RevealGroup className="mt-10 grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
+            <RevealGroup className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
               {PRICED_PLANS.map((plan) => (
                 <article
                   key={plan.id}
@@ -940,8 +1261,30 @@ export default function PricingPage() {
           </div>
         </fieldset>
 
+        {/* ── Add-ons ──
+            Between the cards and the self-hosting band, because they attach to
+            a plan rather than replacing one. Outside the fieldset: neither has
+            a yearly rate, and showing one under a yearly toggle would imply a
+            discount that is not offered.
+
+            The body text states what each costs us. That is deliberate — see
+            the note on ADDONS — and it is the part of this page most likely to
+            be trimmed by somebody tidying marketing copy. It should not be. */}
+        <div className="border-line bg-surface mt-6 grid gap-6 rounded-xl border p-6 sm:grid-cols-2 sm:p-7">
+          {ADDONS.map((addon) => (
+            <div key={addon.name}>
+              <h3 className="text-fg text-base font-semibold">{addon.name}</h3>
+              <p className="text-fg mt-2 text-2xl font-semibold tracking-[-0.02em]">
+                {addon.price}{' '}
+                <span className="text-fg-subtle text-sm font-normal">{addon.unit}</span>
+              </p>
+              <p className="text-fg-muted mt-3 text-sm leading-6">{addon.body}</p>
+            </div>
+          ))}
+        </div>
+
         {/* ── Self-hosting ──
-            Deliberately not a fifth card, and deliberately outside the fieldset
+            Deliberately not a sixth card, and deliberately outside the fieldset
             above: it has no billing period to switch and it is not a rung on
             the ladder. A row instead — price, then what you get, then the way
             in — so the eye reads it as a different kind of offer rather than as
@@ -1005,8 +1348,9 @@ export default function PricingPage() {
           <table className="w-full min-w-[64rem] border-collapse text-sm">
             <caption className="sr-only">
               Every xecret plan compared, capability by capability, in five groups. The header shows
-              the monthly price; billed yearly, Team is $7 and Business is $15 per member per month.
-              During pre-alpha every feature is available on every account and nothing is billed.
+              the monthly price; billed yearly, Pro is $5, Team is $12 and Scale is $22 per member
+              per month. During pre-alpha every feature that exists is available on every account
+              and nothing is billed.
             </caption>
             <thead className="bg-canvas-inset">
               <tr className="border-line border-b">
@@ -1090,7 +1434,7 @@ export default function PricingPage() {
           align="center"
           eyebrow="Every plan"
           title="What every plan includes"
-          description="The parts a secrets product should never tier are not tiered here. These four are identical whether you pay nothing, pay for Business or sign a contract."
+          description="The parts a secrets product should never tier are not tiered here. These four are identical whether you pay nothing, pay for Scale or sign a contract."
         />
 
         <RevealGroup className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
@@ -1142,7 +1486,7 @@ export default function PricingPage() {
 
       <CtaBand
         title="Start on the free tier. Move when it stops fitting."
-        description="Five projects, three members and the whole CLI, without a card. If you outgrow it, the price is on this page and it will not change under you."
+        description="Five projects, three environments each and the whole CLI, without a card — and every CI token you need, free on any plan. If you outgrow it, the price is on this page and it will not change under you."
       />
     </PublicPage>
   );
