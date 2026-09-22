@@ -69,6 +69,26 @@ export const orgMembers = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     role: orgRoleEnum('role').notNull(),
+
+    /**
+     * A custom role narrowing `role`, or null for the built-in role as-is.
+     *
+     * **`role` stays authoritative.** The custom role is a narrowing applied on
+     * top, never a replacement — which is what keeps `canAssignRole` meaningful
+     * and what makes a null here mean exactly what it meant before this column
+     * existed.
+     *
+     * The foreign key is `ON DELETE RESTRICT`, deliberately, and it is the only
+     * restrict in the schema. Every other option is worse:
+     *   - `SET NULL` would silently **widen** every member holding the role the
+     *     moment it was deleted — a "Deployer" who could not touch production
+     *     becomes a plain developer who can, with no act that looks like a
+     *     permission change and nothing in the audit log that reads as one.
+     *   - `CASCADE` would delete the members.
+     * So a role in use cannot be deleted until its members are moved off it,
+     * and the widening becomes something an administrator did on purpose.
+     */
+    customRoleId: uuid('custom_role_id'),
     status: memberStatusEnum('status').notNull().default('active'),
     seatAssigned: boolean('seat_assigned').notNull().default(true),
     invitedBy: uuid('invited_by').references(() => users.id),

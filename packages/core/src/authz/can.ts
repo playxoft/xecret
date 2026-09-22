@@ -1,6 +1,6 @@
 import { resolveAccessLevel } from './grants';
 import type { Membership } from './grants';
-import { accessLevelAtLeast, ACTION_REQUIREMENTS, ROLE_CAPABILITIES } from './roles';
+import { accessLevelAtLeast, ACTION_REQUIREMENTS, effectiveCapabilities } from './roles';
 import type { RequiredAccessLevel } from './roles';
 import type { AccessLevel, Action, Actor, Decision, Resource } from './types';
 
@@ -187,7 +187,9 @@ function memberDecision(
   // covers org-level actions too, which no grant is consulted for.
   if (membership.memberStatus !== 'active') return forbidden();
 
-  if (!ROLE_CAPABILITIES[membership.role][action]) return forbidden();
+  // The built-in table when there is no custom role, and `base AND custom` when
+  // there is. Never the custom role alone — see `CustomRole` in roles.ts.
+  if (!effectiveCapabilities(membership.role, membership.customRole)[action]) return forbidden();
 
   const requirement = ACTION_REQUIREMENTS[action];
   if (requirement.scope === 'org') return { allowed: true };

@@ -3,6 +3,7 @@ export * from './enums';
 export * from './identity';
 export * from './vault';
 export * from './tenancy';
+export * from './roles';
 export * from './resources';
 export * from './keys';
 export * from './env-keys';

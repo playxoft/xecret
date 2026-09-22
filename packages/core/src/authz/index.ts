@@ -13,11 +13,19 @@ export {
   accessLevelAtLeast,
   ACTION_REQUIREMENTS,
   canAssignRole,
+  canDefineCustomRole,
+  effectiveCapabilities,
+  narrowAccessDefaults,
   compareAccessLevel,
   compareOrgRole,
   ROLE_ACCESS_DEFAULTS,
   ROLE_CAPABILITIES,
   roleDefaultAccessLevel,
 } from './roles';
-export type { ActionRequirement, RequiredAccessLevel, RoleAccessDefaults } from './roles';
+export type {
+  ActionRequirement,
+  CustomRole,
+  RequiredAccessLevel,
+  RoleAccessDefaults,
+} from './roles';
 export type { AccessLevel, Action, Actor, Decision, OrgRole, Resource } from './types';

@@ -1,7 +1,8 @@
 import { and, asc, count, eq, isNull, sql } from 'drizzle-orm';
-import type { AccessLevel, OrgRole } from '@xecret/core/authz';
+import type { AccessLevel, Action, CustomRole, OrgRole } from '@xecret/core/authz';
 import { uuidv7 } from '@xecret/core/ids';
 import { accessGrants } from '../schema/access';
+import { customRoles } from '../schema/roles';
 import { users } from '../schema/identity';
 import { environments, projects } from '../schema/resources';
 import { orgMembers, organizations } from '../schema/tenancy';
@@ -34,6 +35,14 @@ export interface MemberRecord {
   userId: string;
   role: OrgRole;
   status: MemberStatus;
+  /**
+   * The organisation's narrowing of `role`, resolved from the joined row.
+   *
+   * Carried here rather than left as six loose columns so that exactly one
+   * place in the codebase knows how the join maps onto the shape `can()` reads,
+   * and every caller gets the same answer.
+   */
+  customRole?: CustomRole | undefined;
 }
 
 /** A row of `access_grants`, as the authorization engine consumes it. */
@@ -60,6 +69,13 @@ export interface AuthorizationContext {
   memberId: string;
   role: OrgRole;
   status: MemberStatus;
+  /**
+   * The organisation's own narrowing of `role`, when the member holds one.
+   *
+   * Absent for almost everybody. `role` stays authoritative either way — this
+   * only ever subtracts from it.
+   */
+  customRole?: CustomRole | undefined;
   grants: MemberGrant[];
 }
 
@@ -101,7 +117,85 @@ const MEMBER_COLUMNS = {
   userId: orgMembers.userId,
   role: orgMembers.role,
   status: orgMembers.status,
+  // The narrowing, carried on the same row that carries the role it narrows.
+  // Joined rather than fetched separately because it is read on every
+  // authorization decision, and a second query per request to answer a question
+  // that is NULL for almost everybody would be paid by everybody.
+  customRoleId: orgMembers.customRoleId,
+  customRoleName: customRoles.name,
+  customRoleBase: customRoles.baseRole,
+  customRoleActions: customRoles.allowedActions,
+  customRoleCeilingNonProduction: customRoles.ceilingNonProduction,
+  customRoleCeilingProduction: customRoles.ceilingProduction,
 } as const;
+
+/**
+ * Rebuilds the `CustomRole` the engine consumes from the joined columns.
+ *
+ * Returns `undefined` — not a permissive default — when the member holds no
+ * custom role, so the common path hands `can()` exactly what it handed before
+ * this column existed.
+ *
+ * A row whose ceiling columns are half-set cannot exist: `custom_roles_ceiling_check`
+ * forbids it at the database. The check here is for the type, not the data.
+ */
+function toCustomRole(member: {
+  customRoleId: string | null;
+  customRoleName: string | null;
+  customRoleBase: OrgRole | null;
+  customRoleActions: Action[] | null;
+  customRoleCeilingNonProduction: AccessLevel | null;
+  customRoleCeilingProduction: AccessLevel | null;
+}): CustomRole | undefined {
+  if (
+    member.customRoleId === null ||
+    member.customRoleName === null ||
+    member.customRoleBase === null
+  ) {
+    return undefined;
+  }
+
+  const ceiling =
+    member.customRoleCeilingNonProduction !== null && member.customRoleCeilingProduction !== null
+      ? {
+          nonProduction: member.customRoleCeilingNonProduction,
+          production: member.customRoleCeilingProduction,
+        }
+      : undefined;
+
+  return {
+    id: member.customRoleId,
+    name: member.customRoleName,
+    baseRole: member.customRoleBase,
+    allowedActions: member.customRoleActions ?? [],
+    ...(ceiling ? { accessCeiling: ceiling } : {}),
+  };
+}
+
+/** One selected row, as the rest of this module wants it. */
+function toMemberRecord(row: {
+  id: string;
+  orgId: string;
+  userId: string;
+  role: OrgRole;
+  status: MemberStatus;
+  customRoleId: string | null;
+  customRoleName: string | null;
+  customRoleBase: OrgRole | null;
+  customRoleActions: Action[] | null;
+  customRoleCeilingNonProduction: AccessLevel | null;
+  customRoleCeilingProduction: AccessLevel | null;
+}): MemberRecord {
+  const customRole = toCustomRole(row);
+  return {
+    id: row.id,
+    orgId: row.orgId,
+    userId: row.userId,
+    role: row.role,
+    status: row.status,
+    ...(customRole ? { customRole } : {}),
+  };
+}
 
 /** Likewise for a grant. */
 const GRANT_COLUMNS = {
@@ -117,7 +211,7 @@ export async function findMembership(
   userId: string,
 ): Promise<MemberRecord | null> {
   const [row] = await membershipQuery(exec, orgId, userId);
-  return row ?? null;
+  return row ? toMemberRecord(row) : null;
 }
 
 /**
@@ -186,6 +280,7 @@ export async function loadOrganizationAuthorizationContexts(
       organizations,
       and(eq(organizations.id, orgMembers.orgId), isNull(organizations.deletedAt)),
     )
+    .leftJoin(customRoles, eq(customRoles.id, orgMembers.customRoleId))
     .where(and(eq(orgMembers.orgId, params.orgId), eq(orgMembers.status, 'active')))
     .orderBy(asc(orgMembers.createdAt), asc(orgMembers.id));
 
@@ -254,6 +349,7 @@ export function toAuthorizationContext(
     memberId: member.id,
     role: member.role,
     status: member.status,
+    ...(member.customRole ? { customRole: member.customRole } : {}),
     grants,
   };
 }
@@ -622,15 +718,21 @@ export function wouldStrandOrganization(change: OwnershipChange): boolean {
  * for every member at once, instead of each caller remembering to check.
  */
 export function membershipQuery(exec: Executor, orgId: string, userId: string) {
-  return exec
-    .select(MEMBER_COLUMNS)
-    .from(orgMembers)
-    .innerJoin(
-      organizations,
-      and(eq(organizations.id, orgMembers.orgId), isNull(organizations.deletedAt)),
-    )
-    .where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, userId)))
-    .limit(1);
+  return (
+    exec
+      .select(MEMBER_COLUMNS)
+      .from(orgMembers)
+      .innerJoin(
+        organizations,
+        and(eq(organizations.id, orgMembers.orgId), isNull(organizations.deletedAt)),
+      )
+      // LEFT, because almost every member has no custom role and an inner join
+      // would make them all disappear — which would read as "not a member" and
+      // deny them everything.
+      .leftJoin(customRoles, eq(customRoles.id, orgMembers.customRoleId))
+      .where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, userId)))
+      .limit(1)
+  );
 }
 
 /**
@@ -680,24 +782,30 @@ export function memberGrantsQuery(
  * them invites an operator to act on a row that no longer represents anyone.
  */
 export function membersPageQuery(exec: Executor, orgId: string, page: number, pageSize: number) {
-  return exec
-    .select({
-      ...MEMBER_COLUMNS,
-      seatAssigned: orgMembers.seatAssigned,
-      createdAt: orgMembers.createdAt,
-      user: {
-        id: users.id,
-        email: users.email,
-        displayName: users.displayName,
-        avatarUrl: users.avatarUrl,
-      },
-    })
-    .from(orgMembers)
-    .innerJoin(users, and(eq(users.id, orgMembers.userId), isNull(users.deletedAt)))
-    .where(eq(orgMembers.orgId, orgId))
-    .orderBy(asc(orgMembers.createdAt), asc(orgMembers.id))
-    .limit(pageSize + 1)
-    .offset((page - 1) * pageSize);
+  return (
+    exec
+      .select({
+        ...MEMBER_COLUMNS,
+        seatAssigned: orgMembers.seatAssigned,
+        createdAt: orgMembers.createdAt,
+        user: {
+          id: users.id,
+          email: users.email,
+          displayName: users.displayName,
+          avatarUrl: users.avatarUrl,
+        },
+      })
+      .from(orgMembers)
+      .innerJoin(users, and(eq(users.id, orgMembers.userId), isNull(users.deletedAt)))
+      // The roster shows which role each member holds, and for a member on a
+      // custom role the built-in name alone would be actively misleading —
+      // "developer" beside somebody who cannot write anywhere.
+      .leftJoin(customRoles, eq(customRoles.id, orgMembers.customRoleId))
+      .where(eq(orgMembers.orgId, orgId))
+      .orderBy(asc(orgMembers.createdAt), asc(orgMembers.id))
+      .limit(pageSize + 1)
+      .offset((page - 1) * pageSize)
+  );
 }
 
 /**

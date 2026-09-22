@@ -302,3 +302,114 @@ export const ACTION_REQUIREMENTS: Record<Action, ActionRequirement> = {
   'org.update': { scope: 'org' },
   'org.delete': { scope: 'org' },
 };
+
+/* ── Custom roles ──────────────────────────────────────────────────────────── */
+
+/**
+ * A role an organisation defined for itself.
+ *
+ * ── The one rule that makes this safe: a custom role can only SUBTRACT ──
+ * Every custom role names a built-in `baseRole` and is resolved as
+ * `base AND custom` — never `custom` alone. There is therefore no arrangement
+ * of rows in the database, malformed or malicious, that grants a capability the
+ * base role does not already have. Privilege escalation through custom roles is
+ * not prevented by validation that could be bypassed; it is unreachable.
+ *
+ * It is the same shape as `limitOverrides` in the entitlements engine, for the
+ * same reason: a mechanism with only one direction has no bugs in the other.
+ *
+ * `canAssignRole` keeps working unchanged, because it compares the *base* role.
+ * An admin cannot mint a custom role whose base is `owner`, so they cannot
+ * reach owner authority by naming it something else.
+ *
+ * ── Why `allowedActions` is a positive list and not a deny list ──
+ * A deny list would mean any `Action` added to the union later is silently
+ * granted to every custom role that predates it. Under a positive list a new
+ * action is denied until an administrator opts in — the same fail-closed choice
+ * `SERVICE_TOKEN_ACTIONS` makes, and for the same reason: a capability that
+ * arrives without anyone deciding it should is exactly the kind nobody audits.
+ *
+ * The cost is real and accepted: an organisation that adds a capability to the
+ * product will not see it in its custom roles until somebody edits them. That
+ * surfaces as "my custom role cannot do the new thing", which is a support
+ * conversation. The alternative surfaces as a breach.
+ */
+export interface CustomRole {
+  readonly id: string;
+  readonly name: string;
+  /** The built-in role this narrows. Its capabilities are the ceiling. */
+  readonly baseRole: OrgRole;
+  /** Actions this role may perform, intersected with the base role's. */
+  readonly allowedActions: readonly Action[];
+  /**
+   * An optional ceiling on the level this role reaches where no grant says
+   * otherwise. Never raises the base role's default — `narrowAccessDefaults`
+   * takes the weaker of the two.
+   */
+  readonly accessCeiling?: RoleAccessDefaults | undefined;
+}
+
+/**
+ * The effective capability table for a member, custom role or not.
+ *
+ * Returns the built-in table unchanged when there is no custom role, so the
+ * common path allocates nothing and the two cases cannot diverge.
+ */
+export function effectiveCapabilities(
+  role: OrgRole,
+  custom: CustomRole | undefined,
+): Readonly<Record<Action, boolean>> {
+  const base = ROLE_CAPABILITIES[role];
+  if (custom === undefined) return base;
+
+  const allowed = new Set<Action>(custom.allowedActions);
+  const result = {} as Record<Action, boolean>;
+
+  // Iterating the base table rather than the custom list is what makes the
+  // intersection total: every action gets an answer, and an action the custom
+  // role names that the base role lacks contributes nothing.
+  for (const action of Object.keys(base) as Action[]) {
+    result[action] = base[action] && allowed.has(action);
+  }
+
+  return result;
+}
+
+/**
+ * The weaker of the base role's defaults and the custom role's ceiling.
+ *
+ * Per environment kind, because a role that is narrowed in production and left
+ * alone elsewhere is the single most common thing an organisation wants from
+ * this feature.
+ */
+export function narrowAccessDefaults(
+  role: OrgRole,
+  custom: CustomRole | undefined,
+): RoleAccessDefaults {
+  const base = ROLE_ACCESS_DEFAULTS[role];
+  if (custom?.accessCeiling === undefined) return base;
+
+  const ceiling = custom.accessCeiling;
+  return {
+    nonProduction:
+      compareAccessLevel(ceiling.nonProduction, base.nonProduction) < 0
+        ? ceiling.nonProduction
+        : base.nonProduction,
+    production:
+      compareAccessLevel(ceiling.production, base.production) < 0
+        ? ceiling.production
+        : base.production,
+  };
+}
+
+/**
+ * Whether an actor may create or edit a custom role with this base.
+ *
+ * The same "no role above your own" rule as `canAssignRole`, applied to the
+ * base. Without it, an admin could define a custom role based on `owner`,
+ * assign it to themselves, and hold owner capabilities under another name —
+ * the exact escalation `canAssignRole` exists to close, routed around.
+ */
+export function canDefineCustomRole(actorRole: OrgRole, baseRole: OrgRole): boolean {
+  return canAssignRole(actorRole, baseRole);
+}

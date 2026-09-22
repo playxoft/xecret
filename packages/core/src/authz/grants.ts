@@ -1,4 +1,5 @@
-import { roleDefaultAccessLevel } from './roles';
+import { compareAccessLevel, narrowAccessDefaults, roleDefaultAccessLevel } from './roles';
+import type { CustomRole } from './roles';
 import type { AccessLevel, OrgRole } from './types';
 
 /**
@@ -48,6 +49,15 @@ export interface Membership {
   role: OrgRole;
   memberStatus: MemberStatus;
   /**
+   * A role the organisation defined, narrowing `role`.
+   *
+   * Never replaces `role`: the built-in role remains the ceiling and the thing
+   * `canAssignRole` compares. See `CustomRole` in `roles.ts` for why a custom
+   * role can only subtract, and why that makes escalation through this field
+   * unreachable rather than merely guarded against.
+   */
+  customRole?: CustomRole | undefined;
+  /**
    * The acting member's own rows and nothing else. A query that forgets to
    * filter by `org_member_id` would hand one member another member's authority,
    * so the caller owns that filter and this module assumes it.
@@ -83,6 +93,14 @@ export function resolveAccessLevel(
   // explicit grant.
   if (context.memberStatus === 'suspended') return 'none';
 
+  return capAtCustomRole(context, resolveFromGrants(context, projectId, environmentId));
+}
+
+function resolveFromGrants(
+  context: GrantContext,
+  projectId: string,
+  environmentId: string | null,
+): AccessLevel {
   if (environmentId !== null) {
     // `find` rather than a fold over every match: `access_grants_unique_idx`
     // permits at most one row per (member, project, environment).
@@ -98,4 +116,29 @@ export function resolveAccessLevel(
   if (forProject !== undefined) return forProject.accessLevel;
 
   return roleDefaultAccessLevel(context.role, context.isProduction);
+}
+
+/**
+ * Applies a custom role's ceiling to the level the grants produced.
+ *
+ * ── Why this caps an explicit grant and not only the role default ──
+ * A ceiling that a grant can exceed is not a ceiling. The whole reason an
+ * organisation defines "a developer who can never reach production" is to have
+ * a statement that stays true, and it would not stay true the first time
+ * somebody wrote a production grant for that member — which is an ordinary act
+ * by an ordinary admin, not an attack, and precisely the mistake the role was
+ * created to make impossible.
+ *
+ * The cost is that a grant can now be silently weaker than what was written.
+ * That is the right direction to be surprised in, and the effective-permission
+ * preview shows the resolved level rather than the stored one, so "what can
+ * Alice actually see?" still answers honestly.
+ */
+function capAtCustomRole(context: GrantContext, level: AccessLevel): AccessLevel {
+  if (context.customRole?.accessCeiling === undefined) return level;
+
+  const ceiling = narrowAccessDefaults(context.role, context.customRole);
+  const limit = context.isProduction ? ceiling.production : ceiling.nonProduction;
+
+  return compareAccessLevel(level, limit) > 0 ? limit : level;
 }
