@@ -935,22 +935,42 @@
    `display: none` on the figure that is not showing, never `visibility` or
    `opacity`: the hidden one has to leave the accessibility tree, or every card
    announces two prices one after the other. */
-.x-price-yearly {
+/* Eight figures per card — four currencies by two billing periods — and one
+   shown. Hidden by default and revealed by the pair the two radio groups name,
+   rather than shown by default and hidden seven times: a card that paints eight
+   prices before the stylesheet lands is worse than one that paints none, and
+   this way a stylesheet that fails to load leaves the page priceless rather
+   than lying eight times over.
+
+   The `~ … ~` chain is what ANDs two independent radio groups together without
+   `:has()`. It only works because the currency inputs are emitted *before* the
+   billing inputs, which are before `.x-billing-body` — the general sibling
+   combinator reaches forward and never back. Reordering those three blocks in
+   the JSX makes every price on the page disappear, which is why the markup says
+   so where the order is set. */
+.x-price {
   display: none;
 }
 
-.x-billing-yearly:checked ~ .x-billing-body .x-price-monthly {
-  display: none;
-}
-
-.x-billing-yearly:checked ~ .x-billing-body .x-price-yearly {
+.x-cur-usd:checked ~ .x-billing-monthly:checked ~ .x-billing-body .x-price-usd-monthly,
+.x-cur-usd:checked ~ .x-billing-yearly:checked ~ .x-billing-body .x-price-usd-yearly,
+.x-cur-inr:checked ~ .x-billing-monthly:checked ~ .x-billing-body .x-price-inr-monthly,
+.x-cur-inr:checked ~ .x-billing-yearly:checked ~ .x-billing-body .x-price-inr-yearly,
+.x-cur-jpy:checked ~ .x-billing-monthly:checked ~ .x-billing-body .x-price-jpy-monthly,
+.x-cur-jpy:checked ~ .x-billing-yearly:checked ~ .x-billing-body .x-price-jpy-yearly,
+.x-cur-aud:checked ~ .x-billing-monthly:checked ~ .x-billing-body .x-price-aud-monthly,
+.x-cur-aud:checked ~ .x-billing-yearly:checked ~ .x-billing-body .x-price-aud-yearly {
   display: block;
 }
 
 /* The selected half of the segmented control. Unlayered, so it wins over the
    resting `text-fg-muted` the label carries as a utility. */
 .x-billing-monthly:checked ~ .x-billing-body [data-billing='monthly'],
-.x-billing-yearly:checked ~ .x-billing-body [data-billing='yearly'] {
+.x-billing-yearly:checked ~ .x-billing-body [data-billing='yearly'],
+.x-cur-usd:checked ~ .x-billing-body [data-currency='usd'],
+.x-cur-inr:checked ~ .x-billing-body [data-currency='inr'],
+.x-cur-jpy:checked ~ .x-billing-body [data-currency='jpy'],
+.x-cur-aud:checked ~ .x-billing-body [data-currency='aud'] {
   background: var(--surface);
   color: var(--fg);
   box-shadow: var(--shadow-raised);
@@ -961,7 +981,11 @@
    names instead — same treatment, moved to where the eye already is. Without
    this the control is operable by keyboard and invisible to one. */
 .x-billing-monthly:focus-visible ~ .x-billing-body [data-billing='monthly'],
-.x-billing-yearly:focus-visible ~ .x-billing-body [data-billing='yearly'] {
+.x-billing-yearly:focus-visible ~ .x-billing-body [data-billing='yearly'],
+.x-cur-usd:focus-visible ~ .x-billing-body [data-currency='usd'],
+.x-cur-inr:focus-visible ~ .x-billing-body [data-currency='inr'],
+.x-cur-jpy:focus-visible ~ .x-billing-body [data-currency='jpy'],
+.x-cur-aud:focus-visible ~ .x-billing-body [data-currency='aud'] {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }

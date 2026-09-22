@@ -1,4 +1,6 @@
+import { Fragment } from 'react';
 import type { Metadata } from 'next';
+import { headers } from 'next/headers';
 import Link from 'next/link';
 
 import {
@@ -203,6 +205,47 @@ function formatCount(value: number): string {
 
 type PlanId = 'free' | 'pro' | 'team' | 'scale' | 'enterprise' | 'self-hosted';
 
+/**
+ * The four price sheets — pricing-plan.md §4.
+ *
+ * Not a conversion. Each is a deliberate number: the US and Australian sheets
+ * are at parity because developer salaries are, Japan is about 25 per cent
+ * below because yen pricing and a proper invoice matter there more than a deep
+ * cut does, and India is about 65 per cent below because a price that is
+ * reasonable in San Francisco is not reasonable in Bengaluru, and pretending
+ * otherwise means not selling there at all.
+ *
+ * Ordered as they render in the selector.
+ */
+const CURRENCIES = [
+  { id: 'usd', label: 'USD', symbol: '$' },
+  { id: 'inr', label: 'INR', symbol: '₹' },
+  { id: 'jpy', label: 'JPY', symbol: '¥' },
+  { id: 'aud', label: 'AUD', symbol: 'A$' },
+] as const;
+
+type CurrencyId = (typeof CURRENCIES)[number]['id'];
+
+const DEFAULT_CURRENCY: CurrencyId = 'usd';
+
+/**
+ * Which sheet a visitor sees first, by the country Cloudflare reports.
+ *
+ * Only a default. Every currency is in the markup and the selector switches
+ * between them without JavaScript, so a wrong guess costs one click rather than
+ * a wrong price — which is why this is allowed to be a short list of obvious
+ * cases rather than an exhaustive mapping nobody can maintain.
+ *
+ * New Zealand joins Australia because the alternative for a New Zealander is
+ * USD, and the Australian sheet is the closer of the two.
+ */
+const CURRENCY_BY_COUNTRY: Readonly<Record<string, CurrencyId>> = {
+  IN: 'inr',
+  JP: 'jpy',
+  AU: 'aud',
+  NZ: 'aud',
+};
+
 /** One billing period's figures, for one plan. */
 interface PlanPrice {
   /** The large figure on the card. Typography, never parsed. */
@@ -227,11 +270,24 @@ interface PlanFeature {
   readonly notYet?: boolean | undefined;
 }
 
+/** Both billing periods, for one currency. */
+interface PlanPeriods {
+  readonly monthly: PlanPrice;
+  readonly yearly: PlanPrice;
+}
+
 interface Plan {
   readonly id: PlanId;
   readonly name: string;
-  readonly monthly: PlanPrice;
-  readonly yearly: PlanPrice;
+  /**
+   * Every currency, every period — all eight figures in the markup.
+   *
+   * The selector shows one and hides the rest with CSS, which is what lets a
+   * visitor switch currency with no JavaScript and no request. It also means
+   * the page publishes every price it charges, which is the honest arrangement
+   * for a pricing page and an awkward one to argue against.
+   */
+  readonly prices: Readonly<Record<CurrencyId, PlanPeriods>>;
   /** One line, answering "is this me?" before the feature list is read. */
   readonly audience: string;
   readonly features: readonly PlanFeature[];
@@ -282,8 +338,24 @@ const PRICED_PLANS: readonly Plan[] = [
   {
     id: 'free',
     name: 'Free',
-    monthly: { price: '$0', unit: 'forever, no card' },
-    yearly: { price: '$0', unit: 'forever, no card' },
+    prices: {
+      usd: {
+        monthly: { price: '$0', unit: 'forever, no card' },
+        yearly: { price: '$0', unit: 'forever, no card' },
+      },
+      inr: {
+        monthly: { price: '₹0', unit: 'forever, no card' },
+        yearly: { price: '₹0', unit: 'forever, no card' },
+      },
+      jpy: {
+        monthly: { price: '¥0', unit: 'forever, no card' },
+        yearly: { price: '¥0', unit: 'forever, no card' },
+      },
+      aud: {
+        monthly: { price: 'A$0', unit: 'forever, no card' },
+        yearly: { price: 'A$0', unit: 'forever, no card' },
+      },
+    },
     audience: 'For one developer who has had enough of moving .env files around.',
     features: [
       { text: `${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects` },
@@ -302,11 +374,39 @@ const PRICED_PLANS: readonly Plan[] = [
   {
     id: 'pro',
     name: 'Pro',
-    monthly: { price: '$8', unit: 'per member, per month' },
-    yearly: {
-      price: '$5',
-      unit: 'per member, per month',
-      note: '$60 per member, billed yearly',
+    prices: {
+      usd: {
+        monthly: { price: '$8', unit: 'per member, per month' },
+        yearly: {
+          price: '$5',
+          unit: 'per member, per month',
+          note: '$60 per member, billed yearly',
+        },
+      },
+      inr: {
+        monthly: { price: '₹249', unit: 'per member, per month' },
+        yearly: {
+          price: '₹149',
+          unit: 'per member, per month',
+          note: '₹1,788 per member, billed yearly',
+        },
+      },
+      jpy: {
+        monthly: { price: '¥900', unit: 'per member, per month' },
+        yearly: {
+          price: '¥567',
+          unit: 'per member, per month',
+          note: '¥6,800 per member, billed yearly',
+        },
+      },
+      aud: {
+        monthly: { price: 'A$13', unit: 'per member, per month' },
+        yearly: {
+          price: 'A$8',
+          unit: 'per member, per month',
+          note: 'A$96 per member, billed yearly',
+        },
+      },
     },
     audience:
       'For a small team that has outgrown the free limits and does not yet need to keep anyone out of production.',
@@ -326,11 +426,39 @@ const PRICED_PLANS: readonly Plan[] = [
   {
     id: 'team',
     name: 'Team',
-    monthly: { price: '$19', unit: 'per member, per month' },
-    yearly: {
-      price: '$12',
-      unit: 'per member, per month',
-      note: '$144 per member, billed yearly',
+    prices: {
+      usd: {
+        monthly: { price: '$19', unit: 'per member, per month' },
+        yearly: {
+          price: '$12',
+          unit: 'per member, per month',
+          note: '$144 per member, billed yearly',
+        },
+      },
+      inr: {
+        monthly: { price: '₹599', unit: 'per member, per month' },
+        yearly: {
+          price: '₹375',
+          unit: 'per member, per month',
+          note: '₹4,499 per member, billed yearly',
+        },
+      },
+      jpy: {
+        monthly: { price: '¥2,100', unit: 'per member, per month' },
+        yearly: {
+          price: '¥1,317',
+          unit: 'per member, per month',
+          note: '¥15,800 per member, billed yearly',
+        },
+      },
+      aud: {
+        monthly: { price: 'A$29', unit: 'per member, per month' },
+        yearly: {
+          price: 'A$19',
+          unit: 'per member, per month',
+          note: 'A$228 per member, billed yearly',
+        },
+      },
     },
     audience:
       'For a team with somebody who must not see production — a contractor, a junior, an auditor.',
@@ -350,11 +478,39 @@ const PRICED_PLANS: readonly Plan[] = [
   {
     id: 'scale',
     name: 'Scale',
-    monthly: { price: '$35', unit: 'per member, per month' },
-    yearly: {
-      price: '$22',
-      unit: 'per member, per month',
-      note: '$264 per member, billed yearly',
+    prices: {
+      usd: {
+        monthly: { price: '$35', unit: 'per member, per month' },
+        yearly: {
+          price: '$22',
+          unit: 'per member, per month',
+          note: '$264 per member, billed yearly',
+        },
+      },
+      inr: {
+        monthly: { price: '₹1,099', unit: 'per member, per month' },
+        yearly: {
+          price: '₹692',
+          unit: 'per member, per month',
+          note: '₹8,299 per member, billed yearly',
+        },
+      },
+      jpy: {
+        monthly: { price: '¥3,900', unit: 'per member, per month' },
+        yearly: {
+          price: '¥2,483',
+          unit: 'per member, per month',
+          note: '¥29,800 per member, billed yearly',
+        },
+      },
+      aud: {
+        monthly: { price: 'A$55', unit: 'per member, per month' },
+        yearly: {
+          price: 'A$35',
+          unit: 'per member, per month',
+          note: 'A$420 per member, billed yearly',
+        },
+      },
     },
     audience:
       'For a company whose security review asks about provisioning, rotation and where the audit log is streamed.',
@@ -374,8 +530,24 @@ const PRICED_PLANS: readonly Plan[] = [
   {
     id: 'enterprise',
     name: 'Enterprise',
-    monthly: { price: 'Custom', unit: 'invoiced, with an SLA' },
-    yearly: { price: 'Custom', unit: 'invoiced, with an SLA' },
+    prices: {
+      usd: {
+        monthly: { price: 'Custom', unit: 'invoiced, with an SLA' },
+        yearly: { price: 'Custom', unit: 'invoiced, with an SLA' },
+      },
+      inr: {
+        monthly: { price: 'Custom', unit: 'invoiced, with an SLA' },
+        yearly: { price: 'Custom', unit: 'invoiced, with an SLA' },
+      },
+      jpy: {
+        monthly: { price: 'Custom', unit: 'invoiced, with an SLA' },
+        yearly: { price: 'Custom', unit: 'invoiced, with an SLA' },
+      },
+      aud: {
+        monthly: { price: 'Custom', unit: 'invoiced, with an SLA' },
+        yearly: { price: 'Custom', unit: 'invoiced, with an SLA' },
+      },
+    },
     audience:
       'For an organisation that needs residency, its own root key and a contract behind both.',
     features: [
@@ -408,8 +580,24 @@ const PRICED_PLANS: readonly Plan[] = [
 const SELF_HOSTED: Plan = {
   id: 'self-hosted',
   name: 'Self-hosted',
-  monthly: { price: 'Free', unit: 'always' },
-  yearly: { price: 'Free', unit: 'always' },
+  prices: {
+    usd: {
+      monthly: { price: 'Free', unit: 'always' },
+      yearly: { price: 'Free', unit: 'always' },
+    },
+    inr: {
+      monthly: { price: 'Free', unit: 'always' },
+      yearly: { price: 'Free', unit: 'always' },
+    },
+    jpy: {
+      monthly: { price: 'Free', unit: 'always' },
+      yearly: { price: 'Free', unit: 'always' },
+    },
+    aud: {
+      monthly: { price: 'Free', unit: 'always' },
+      yearly: { price: 'Free', unit: 'always' },
+    },
+  },
   audience: 'For anyone who would rather hold their own root key and run their own server.',
   features: [
     { text: 'The whole server, under AGPL-3.0' },
@@ -1007,7 +1195,10 @@ function offerDescription(plan: Plan): string {
   const includes = plan.features
     .map((feature) => (feature.notYet === true ? `${feature.text} (not built yet)` : feature.text))
     .join('; ');
-  const annual = plan.yearly.note === undefined ? '' : ` Annual equivalent: ${plan.yearly.note}.`;
+  const annual =
+    plan.prices.usd.yearly.note === undefined
+      ? ''
+      : ` Annual equivalent: ${plan.prices.usd.yearly.note}.`;
 
   return `${plan.audience} Includes: ${includes}.${annual}`;
 }
@@ -1101,7 +1292,45 @@ function CellValue({ value }: { value: Cell }) {
   return <span className={value === NOT_YET ? 'text-fg-subtle' : 'text-fg-muted'}>{value}</span>;
 }
 
-export default function PricingPage() {
+/**
+ * Which price sheet to show first.
+ *
+ * ── The cost of this function, stated ──
+ * Reading a request header makes this route **dynamic**; it is no longer
+ * prerendered. That is a real change to the highest-traffic marketing page in
+ * the product and it should not be discovered in a commit nobody read.
+ *
+ * It is worth it, narrowly, because the page touches no database and no binding
+ * — it is a render and nothing else, on an edge worker, so "dynamic" here costs
+ * microseconds rather than a round trip. And the thing bought is the whole
+ * point of having four price sheets: an Indian developer who lands on this page
+ * and sees dollars concludes the product is not for them, and no selector they
+ * did not notice will change their mind.
+ *
+ * ── Why it is only a default ──
+ * Every currency is in the markup and the selector switches between them with
+ * CSS. So a wrong guess — a VPN, a traveller, a mis-geolocated range — costs
+ * one click, not a wrong price. That is what allows this to be a short list of
+ * obvious countries rather than an exhaustive mapping nobody can maintain, and
+ * it is why the header is never used for anything but this. **What somebody is
+ * actually charged is decided at checkout from their billing country and the
+ * card that pays**, never from a header a client can send.
+ */
+async function resolveInitialCurrency(): Promise<CurrencyId> {
+  try {
+    const country = (await headers()).get('CF-IPCountry');
+    if (!country) return DEFAULT_CURRENCY;
+    return CURRENCY_BY_COUNTRY[country.toUpperCase()] ?? DEFAULT_CURRENCY;
+  } catch {
+    // `headers()` throws where there is no request — a build-time render, a
+    // test. Dollars is the right answer there and not worth failing a page for.
+    return DEFAULT_CURRENCY;
+  }
+}
+
+export default async function PricingPage() {
+  const initialCurrency = await resolveInitialCurrency();
+
   return (
     <PublicPage current="pricing">
       <JsonLd
@@ -1137,7 +1366,24 @@ export default function PricingPage() {
             default `min-inline-size: min-content` would let the widest cell in
             the grid push the page sideways. */}
         <fieldset className="min-w-0">
-          <legend className="sr-only">Billing period</legend>
+          <legend className="sr-only">Currency and billing period</legend>
+
+          {/* Currency first, billing period second, and the order is
+              load-bearing: the CSS that picks one of eight figures ANDs the two
+              groups with `.x-cur-inr:checked ~ .x-billing-yearly:checked ~ …`,
+              and `~` only reaches forward. Swap these two blocks and every
+              price on the page disappears. */}
+          {CURRENCIES.map((currency) => (
+            <input
+              key={currency.id}
+              id={`currency-${currency.id}`}
+              type="radio"
+              name="currency"
+              value={currency.id}
+              defaultChecked={currency.id === initialCurrency}
+              className={`x-cur-${currency.id} sr-only`}
+            />
+          ))}
 
           <input
             id="billing-monthly"
@@ -1157,15 +1403,38 @@ export default function PricingPage() {
 
           <div className="x-billing-body">
             <div className="flex flex-col items-center">
-              <div className="border-line bg-canvas-inset inline-flex items-center gap-1 rounded-full border p-1">
-                <label htmlFor="billing-monthly" data-billing="monthly" className={SEGMENT}>
-                  Monthly
-                </label>
-                <label htmlFor="billing-yearly" data-billing="yearly" className={SEGMENT}>
-                  Yearly
-                  <span className="text-fg-subtle text-xs font-normal">Save up to 22%</span>
-                </label>
+              <div className="flex flex-wrap items-center justify-center gap-3">
+                <div className="border-line bg-canvas-inset inline-flex items-center gap-1 rounded-full border p-1">
+                  <label htmlFor="billing-monthly" data-billing="monthly" className={SEGMENT}>
+                    Monthly
+                  </label>
+                  <label htmlFor="billing-yearly" data-billing="yearly" className={SEGMENT}>
+                    Yearly
+                    <span className="text-fg-subtle text-xs font-normal">Save 37%</span>
+                  </label>
+                </div>
+
+                <div className="border-line bg-canvas-inset inline-flex items-center gap-1 rounded-full border p-1">
+                  {CURRENCIES.map((currency) => (
+                    <label
+                      key={currency.id}
+                      htmlFor={`currency-${currency.id}`}
+                      data-currency={currency.id}
+                      className={SEGMENT}
+                    >
+                      {currency.label}
+                    </label>
+                  ))}
+                </div>
               </div>
+
+              {/* Said once, here, rather than under every card. A reader who
+                  did not expect their own currency needs to know it is not an
+                  accident and not a conversion. */}
+              <p className="text-fg-subtle mt-3 max-w-2xl text-center text-sm leading-6">
+                Prices in rupees, yen and Australian dollars are set for those markets rather than
+                converted, and follow your billing country.
+              </p>
 
               {/* The one sentence left of what used to be a banner between two
                   sections. It qualifies every figure below it, so it stays —
@@ -1208,8 +1477,24 @@ export default function PricingPage() {
                   <p className="text-fg-muted mt-2 text-sm leading-6">{plan.audience}</p>
 
                   <div className="mt-5">
-                    <PriceBlock className="x-price-monthly" value={plan.monthly} />
-                    <PriceBlock className="x-price-yearly" value={plan.yearly} />
+                    {/* Eight figures, one shown. Every currency and both
+                        periods are in the markup, and CSS picks the pair the
+                        two radio groups name — so switching either needs no
+                        request and no JavaScript. `display: none` on the seven
+                        that are hidden, never `visibility`, or every card
+                        announces eight prices in a row to a screen reader. */}
+                    {CURRENCIES.map((currency) => (
+                      <Fragment key={currency.id}>
+                        <PriceBlock
+                          className={`x-price x-price-${currency.id}-monthly`}
+                          value={plan.prices[currency.id].monthly}
+                        />
+                        <PriceBlock
+                          className={`x-price x-price-${currency.id}-yearly`}
+                          value={plan.prices[currency.id].yearly}
+                        />
+                      </Fragment>
+                    ))}
                   </div>
 
                   <ul className="mt-5 space-y-2.5">
@@ -1297,9 +1582,9 @@ export default function PricingPage() {
             <div className="lg:w-64 lg:shrink-0">
               <h3 className="text-fg text-base font-semibold">{SELF_HOSTED.name}</h3>
               <p className="text-fg mt-2 text-3xl font-semibold tracking-[-0.02em]">
-                {SELF_HOSTED.monthly.price}
+                {SELF_HOSTED.prices.usd.monthly.price}
               </p>
-              <p className="text-fg-subtle mt-1 text-sm">{SELF_HOSTED.monthly.unit}</p>
+              <p className="text-fg-subtle mt-1 text-sm">{SELF_HOSTED.prices.usd.monthly.unit}</p>
               <p className="text-fg-muted mt-3 text-sm leading-6">{SELF_HOSTED.audience}</p>
             </div>
 
@@ -1365,9 +1650,11 @@ export default function PricingPage() {
                         silently kept a yearly price while the cards showed a
                         monthly one would be the same page contradicting
                         itself — so the caption says which one this is. */}
-                    <span className="text-fg block text-xs font-medium">{plan.monthly.price}</span>
+                    <span className="text-fg block text-xs font-medium">
+                      {plan.prices.usd.monthly.price}
+                    </span>
                     <span className="text-fg-subtle block text-xs font-normal">
-                      {plan.monthly.unit}
+                      {plan.prices.usd.monthly.unit}
                     </span>
                   </th>
                 ))}

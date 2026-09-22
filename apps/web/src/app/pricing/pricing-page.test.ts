@@ -96,6 +96,46 @@ describe('the prices that are written down', () => {
     }
   });
 
+  /**
+   * The other three price sheets — pricing-plan.md §4.
+   *
+   * Asserted by value rather than derived, for the same reason as the USD ones:
+   * these are deliberate numbers, not conversions, and a test that recomputed
+   * them from an exchange rate would pass through exactly the change it exists
+   * to catch.
+   */
+  const PPP: readonly (readonly [string, string, string, string])[] = [
+    ['pro', '₹249', '¥900', 'A$13'],
+    ['team', '₹599', '¥2,100', 'A$29'],
+    ['scale', '₹1,099', '¥3,900', 'A$55'],
+  ];
+
+  it.each(PPP)('%s publishes a rupee, yen and Australian dollar price', (id, inr, jpy, aud) => {
+    const block = SOURCE.slice(SOURCE.indexOf(`id: '${id}'`));
+    const card = block.slice(0, block.indexOf('cta:'));
+
+    for (const price of [inr, jpy, aud]) {
+      expect(card, `${id} is missing ${price}`).toContain(`price: '${price}'`);
+    }
+  });
+
+  it('every plan carries all four currencies', () => {
+    for (const id of ['free', 'pro', 'team', 'scale', 'enterprise', 'self-hosted']) {
+      const block = SOURCE.slice(SOURCE.indexOf(`id: '${id}'`));
+      const card = block.slice(0, block.indexOf('cta:'));
+      for (const currency of ['usd:', 'inr:', 'jpy:', 'aud:']) {
+        expect(card, `${id} has no ${currency} sheet`).toContain(currency);
+      }
+    }
+  });
+
+  it('India is priced well below the US sheet, not converted from it', () => {
+    // ₹375 a month on the yearly rate against $12 is roughly a third, and under
+    // the ₹400 line on the figure the page shows first. If this ever drifts
+    // towards parity, somebody has replaced a price sheet with an exchange rate.
+    expect(SOURCE).toContain("price: '₹375'");
+  });
+
   it('yearly is about 37 per cent below monthly, as the plan says', () => {
     for (const [, monthly, yearly] of EXPECTED) {
       const m = Number(monthly.slice(1));
@@ -146,6 +186,22 @@ describe('the honesty rules this page is built on', () => {
 
   it('promises that billing never breaks a build', () => {
     expect(SOURCE).toContain('Billed, never blocked');
+  });
+
+  it('selects a currency from the request, and charges from the billing country', () => {
+    // The header is a *default* and nothing more: every currency is in the
+    // markup and the selector is pure CSS, so a VPN or a traveller costs one
+    // click rather than a wrong price. What anyone is actually charged is
+    // decided at checkout from their billing country and the card that pays.
+    expect(SOURCE).toContain('CF-IPCountry');
+    expect(SOURCE).toContain('CURRENCY_BY_COUNTRY');
+    expect(SOURCE).toContain('never from a header a client can send');
+  });
+
+  it('falls back to dollars where there is no request', () => {
+    // `headers()` throws at build time and in tests. A page that failed rather
+    // than falling back would take the marketing site down for a missing header.
+    expect(SOURCE).toContain('return DEFAULT_CURRENCY');
   });
 
   it('ships no JavaScript for the billing toggle', () => {
