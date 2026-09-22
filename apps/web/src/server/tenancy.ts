@@ -7,9 +7,11 @@ import type {
   Resource,
   ResolvedGrant,
 } from '@xecret/core/authz';
+import type { Entitlements } from '@xecret/core/entitlements';
 import {
+  entitlementsFromRow,
   findEnvironmentBySlug,
-  findOrganizationBySlug,
+  findOrganizationBySlugWithEntitlements,
   findProjectBySlug,
   loadAuthorizationContext,
 } from '@xecret/db/repositories';
@@ -45,6 +47,19 @@ export interface OrgScope {
   actor: Actor;
   /** Absent for a service token, which has no membership to resolve. */
   membership: StoredAuthorizationContext | undefined;
+  /**
+   * The third gate, resolved from the same row that found the organisation.
+   *
+   * Present for every principal including a service token, because a limit
+   * belongs to the organisation rather than to whoever is asking. It costs no
+   * extra query: `findOrganizationBySlugWithEntitlements` carries the columns
+   * along on the lookup `resolveOrg` was already making.
+   *
+   * Holding it here — rather than fetching it where it is checked — is what
+   * keeps "no extra query on the hot path" a structural property instead of a
+   * thing each route has to remember.
+   */
+  entitlements: Entitlements;
 }
 
 export interface ProjectScope extends OrgScope {
@@ -68,8 +83,11 @@ export async function resolveOrg(
   slug: string,
   services: ServiceContext,
 ): Promise<OrgScope> {
-  const organization = await findOrganizationBySlug(services.db, slug);
-  if (!organization) throw errors.notFound(`no organisation with slug`);
+  const found = await findOrganizationBySlugWithEntitlements(services.db, slug);
+  if (!found) throw errors.notFound(`no organisation with slug`);
+
+  const { organization } = found;
+  const entitlements = entitlementsFromRow(found.entitlements);
 
   if (principal.kind === 'serviceToken') {
     // A service token carries its organisation; it does not get to name one.
@@ -89,6 +107,7 @@ export async function resolveOrg(
         environmentId: principal.environmentId,
       },
       membership: undefined,
+      entitlements,
     };
   }
 
@@ -109,6 +128,7 @@ export async function resolveOrg(
         ? { kind: 'user', userId, orgId: organization.id }
         : { kind: 'cliToken', tokenId: principal.tokenId, userId, orgId: organization.id },
     membership,
+    entitlements,
   };
 }
 

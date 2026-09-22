@@ -116,12 +116,17 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
   const created = await provisionOrganization(services.db, {
     user: principal.user,
     envelope: services.envelope,
-    // The standing limit, which is a different control from the rate. Sixty of
-    // these a minute, sustained, is still an unbounded number of Org Master Keys
-    // and an unbounded number of slugs burned out of a namespace every tenant
-    // shares — `isOrgSlugAvailable` and `generateUniqueOrgSlug` do not filter
-    // `deleted_at`, deliberately, so deleting the organisation afterwards gives
-    // none of them back.
+    // The abuse cap, which is a different control from both the rate and the
+    // plan. Sixty of these a minute, sustained, is still an unbounded number of
+    // Org Master Keys and an unbounded number of slugs burned out of a
+    // namespace every tenant shares — `isOrgSlugAvailable` and
+    // `generateUniqueOrgSlug` do not filter `deleted_at`, deliberately, so
+    // deleting the organisation afterwards gives none of them back.
+    //
+    // `provisionOrganization` takes the lower of this and the plan ceiling
+    // resolved from the organisations the account already holds
+    // (`accountOrganizationCeiling`). On Free that is one; this number is what
+    // bounds the paid case, where the plan says unlimited.
     limit: ORGANIZATIONS_PER_ACCOUNT_LIMIT,
     name: body.name,
     // Two different contracts, and the difference matters:

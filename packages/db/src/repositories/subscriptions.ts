@@ -1,0 +1,295 @@
+import { and, eq, sql } from 'drizzle-orm';
+import {
+  DEFAULT_PLAN,
+  resolveEntitlements,
+  type Entitlements,
+  type PlanId,
+  type SubscriptionStatus,
+} from '@xecret/core/entitlements';
+import { billingWebhookEvents, orgSubscriptions, orgUsageCounters } from '../schema/billing';
+import { organizations } from '../schema/tenancy';
+import type { Executor } from './shared';
+
+/**
+ * Subscriptions, entitlements and usage counters.
+ *
+ * ── The one performance rule ──
+ * `loadEntitlements` exists for scripts and for the dashboard. The request path
+ * does **not** call it: entitlements there are resolved from the row the
+ * authorization context already loaded (`entitlementsFromRow`), because adding
+ * a query to the hot path to answer a billing question would be paying latency
+ * on every secret fetch for something that changes once a month.
+ *
+ * ── The one correctness rule ──
+ * Nothing here reads the payment provider. D15: Dodo is the billing truth,
+ * these rows are the access truth, and the two are reconciled by webhooks
+ * asynchronously. A secret fetch that waited on a third party would inherit
+ * that party's uptime, which is the failure ADR 0002 already refused once.
+ */
+
+export type SubscriptionRecord = typeof orgSubscriptions.$inferSelect;
+
+/** The columns entitlement resolution needs, and nothing else. */
+export interface SubscriptionEntitlementRow {
+  plan: PlanId;
+  status: SubscriptionStatus;
+  addonSaml: boolean;
+  addonDirectorySync: boolean;
+  limitOverrides: Record<string, number | null> | null;
+  currentPeriodEnd: Date | null;
+}
+
+/**
+ * Turn a loaded row into entitlements. Pure — no query, no clock, no IO.
+ *
+ * This is what the request path calls, with a row the authorization context
+ * already fetched. Keeping it separate from `loadEntitlements` is what makes
+ * "no extra query on the hot path" a structural property rather than a
+ * convention somebody has to remember.
+ */
+export function entitlementsFromRow(
+  row: SubscriptionEntitlementRow | null | undefined,
+): Entitlements {
+  if (!row) {
+    // An organisation with no subscription row should not exist — the migration
+    // backfilled every one and provisioning inserts alongside. Resolving to
+    // Free is the same answer the migration would have written, and it is the
+    // safe direction to be wrong in.
+    return resolveEntitlements({
+      plan: DEFAULT_PLAN,
+      status: 'active',
+      addonSaml: false,
+      addonDirectorySync: false,
+    });
+  }
+
+  return resolveEntitlements({
+    plan: row.plan,
+    status: row.status,
+    addonSaml: row.addonSaml,
+    addonDirectorySync: row.addonDirectorySync,
+    limitOverrides: row.limitOverrides ?? undefined,
+    currentPeriodEnd: row.currentPeriodEnd,
+  });
+}
+
+/** The projection `entitlementsFromRow` consumes, for joining into other queries. */
+export const entitlementColumns = {
+  plan: orgSubscriptions.plan,
+  status: orgSubscriptions.status,
+  addonSaml: orgSubscriptions.addonSaml,
+  addonDirectorySync: orgSubscriptions.addonDirectorySync,
+  limitOverrides: orgSubscriptions.limitOverrides,
+  currentPeriodEnd: orgSubscriptions.currentPeriodEnd,
+} as const;
+
+/** The subscription-lookup query, exposed so `.toSQL()` tests can assert its shape. */
+export function subscriptionQuery(exec: Executor, orgId: string) {
+  return exec.select().from(orgSubscriptions).where(eq(orgSubscriptions.orgId, orgId)).limit(1);
+}
+
+export async function findSubscription(
+  exec: Executor,
+  orgId: string,
+): Promise<SubscriptionRecord | null> {
+  const [row] = await subscriptionQuery(exec, orgId);
+  return row ?? null;
+}
+
+/**
+ * Load and resolve in one call. **Not for the request path** — see the header.
+ *
+ * Used by the operator tool, the dashboard's billing page, and the reconciler,
+ * all of which are already doing IO and none of which are latency-sensitive.
+ */
+export async function loadEntitlements(exec: Executor, orgId: string): Promise<Entitlements> {
+  return entitlementsFromRow(await findSubscription(exec, orgId));
+}
+
+/**
+ * Create the Free subscription that every organisation starts with.
+ *
+ * Called inside the provisioning transaction, so an organisation and its
+ * subscription commit together or not at all. `DO NOTHING` rather than an
+ * error on conflict: provisioning is retried in places, and a second attempt
+ * finding the row already there is success, not a conflict to report.
+ */
+export async function createFreeSubscription(exec: Executor, orgId: string): Promise<void> {
+  await exec.insert(orgSubscriptions).values({ orgId }).onConflictDoNothing();
+}
+
+export interface SubscriptionPatch {
+  plan?: PlanId;
+  status?: SubscriptionStatus;
+  billingInterval?: 'monthly' | 'yearly' | null;
+  seats?: number;
+  currency?: string | null;
+  billingCountry?: string | null;
+  regionLockedUntil?: Date | null;
+  currentPeriodEnd?: Date | null;
+  trialEndsAt?: Date | null;
+  cancelAtPeriodEnd?: boolean;
+  grandfatheredUntil?: Date | null;
+  dodoCustomerId?: string | null;
+  dodoSubscriptionId?: string | null;
+  addonSaml?: boolean;
+  addonDirectorySync?: boolean;
+  limitOverrides?: Record<string, number | null> | null;
+}
+
+/**
+ * Apply a patch to one organisation's subscription.
+ *
+ * Returns the updated row so the caller can audit the before/after without a
+ * second read. The caller supplies the audit event; this function does not,
+ * because it is used by both an operator script and (later) a webhook handler,
+ * and the actor differs.
+ */
+export async function updateSubscription(
+  exec: Executor,
+  orgId: string,
+  patch: SubscriptionPatch,
+): Promise<SubscriptionRecord | null> {
+  const [row] = await exec
+    .update(orgSubscriptions)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(eq(orgSubscriptions.orgId, orgId))
+    .returning();
+  return row ?? null;
+}
+
+/**
+ * Seats billed, synced to `organizations.seat_limit`.
+ *
+ * Two columns rather than one, deliberately: `seat_limit` is what the member
+ * service enforces on an invitation, `org_subscriptions.seats` is what the
+ * invoice says. Their failure modes differ — a drift in the first blocks an
+ * invite, a drift in the second charges the wrong amount — and one column for
+ * both would turn every reconciliation bug into a billing bug.
+ *
+ * Both are written in one statement pair here so they cannot diverge through
+ * this path; the reconciler (P12) catches divergence through any other.
+ */
+export async function setBilledSeats(exec: Executor, orgId: string, seats: number): Promise<void> {
+  await exec
+    .update(orgSubscriptions)
+    .set({ seats, updatedAt: new Date() })
+    .where(eq(orgSubscriptions.orgId, orgId));
+
+  await exec
+    .update(organizations)
+    .set({ seatLimit: seats, updatedAt: new Date() })
+    .where(eq(organizations.id, orgId));
+}
+
+/* ── usage counters ────────────────────────────────────────────────────────── */
+
+export type UsageCounterRecord = typeof orgUsageCounters.$inferSelect;
+
+/**
+ * Add to the fetch counter for a period.
+ *
+ * **Never call this from the fetch path.** It is the destination of a periodic
+ * flush that accumulates counts in the Worker; a fetch that paid for an UPDATE
+ * would double its p99 to record a number nobody reads in real time.
+ *
+ * The upsert is `ON CONFLICT DO UPDATE` with an addition rather than a read,
+ * add, write — two concurrent flushes must sum, not overwrite each other, and
+ * the only place that can be guaranteed is inside the statement.
+ */
+export async function recordFetches(
+  exec: Executor,
+  orgId: string,
+  periodStart: Date,
+  fetches: number,
+): Promise<void> {
+  if (fetches <= 0) return;
+
+  await exec
+    .insert(orgUsageCounters)
+    .values({ orgId, periodStart, secretFetches: fetches })
+    .onConflictDoUpdate({
+      target: [orgUsageCounters.orgId, orgUsageCounters.periodStart],
+      set: {
+        secretFetches: sql`${orgUsageCounters.secretFetches} + ${fetches}`,
+        updatedAt: new Date(),
+      },
+    });
+}
+
+/**
+ * Record metered units as reported to the payment provider.
+ *
+ * Additive for the same reason as `recordFetches`, and the column it feeds is
+ * what stops a retried report from billing twice: units owed are always
+ * computed as `floor(billable / unit) - unitsAlreadySent`.
+ */
+export async function recordMeteredUnits(
+  exec: Executor,
+  orgId: string,
+  periodStart: Date,
+  units: number,
+): Promise<void> {
+  if (units <= 0) return;
+
+  await exec
+    .update(orgUsageCounters)
+    .set({
+      meteredUnitsSent: sql`${orgUsageCounters.meteredUnitsSent} + ${units}`,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(orgUsageCounters.orgId, orgId), eq(orgUsageCounters.periodStart, periodStart)));
+}
+
+export function usageQuery(exec: Executor, orgId: string, periodStart: Date) {
+  return exec
+    .select()
+    .from(orgUsageCounters)
+    .where(and(eq(orgUsageCounters.orgId, orgId), eq(orgUsageCounters.periodStart, periodStart)))
+    .limit(1);
+}
+
+export async function findUsage(
+  exec: Executor,
+  orgId: string,
+  periodStart: Date,
+): Promise<UsageCounterRecord | null> {
+  const [row] = await usageQuery(exec, orgId, periodStart);
+  return row ?? null;
+}
+
+/* ── webhook idempotency ───────────────────────────────────────────────────── */
+
+/**
+ * Claim a webhook delivery, returning false if it was already handled.
+ *
+ * **This is the deduplication, not a check before it.** The insert either wins
+ * the primary key or it does not; two concurrent retries cannot both win. A
+ * `SELECT` followed by an `INSERT` leaves a window both can pass through, and
+ * on the other side of that window is a double grant or a double charge.
+ *
+ * Call inside the same transaction that processes the event, so that a handler
+ * which throws rolls back the claim and lets the provider's retry succeed.
+ */
+export async function claimWebhookEvent(
+  exec: Executor,
+  params: {
+    webhookId: string;
+    eventType: string;
+    occurredAt?: Date | null;
+    orgId?: string | null;
+  },
+): Promise<boolean> {
+  const inserted = await exec
+    .insert(billingWebhookEvents)
+    .values({
+      webhookId: params.webhookId,
+      eventType: params.eventType,
+      occurredAt: params.occurredAt ?? null,
+      orgId: params.orgId ?? null,
+    })
+    .onConflictDoNothing()
+    .returning({ webhookId: billingWebhookEvents.webhookId });
+
+  return inserted.length > 0;
+}

@@ -9,6 +9,7 @@
     "./crypto": "./src/crypto/index.ts",
     "./crypto/client": "./src/crypto/client/index.ts",
     "./authz": "./src/authz/index.ts",
+    "./entitlements": "./src/entitlements/index.ts",
     "./audit": "./src/audit/index.ts",
     "./validation": "./src/validation/index.ts",
     "./ids": "./src/ids/index.ts",

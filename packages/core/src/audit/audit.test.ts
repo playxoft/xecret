@@ -606,6 +606,12 @@ describe('every declared metadata field survives sanitisation', () => {
       principalKind: 'token',
       valueType: 'url',
       reason: 'rotation',
+      plan: 'team',
+      previousPlan: 'free',
+      addonName: 'saml',
+      limitName: 'projects',
+      seatCount: 12,
+      operator: 'ops-alice',
       source: 'dashboard',
     });
 
@@ -632,6 +638,12 @@ describe('every declared metadata field survives sanitisation', () => {
       principalKind: 'token',
       valueType: 'url',
       reason: 'rotation',
+      plan: 'team',
+      previousPlan: 'free',
+      addonName: 'saml',
+      limitName: 'projects',
+      seatCount: 12,
+      operator: 'ops-alice',
       source: 'dashboard',
     });
   });

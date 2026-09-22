@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { toBase64Url } from '@xecret/core/crypto';
+import { FREE_ENTITLEMENTS } from '@xecret/core/entitlements';
 import type { Database } from '@xecret/db';
 import type {
   EnvironmentRecord,
@@ -164,6 +165,11 @@ function scope(
   const userId = role === 'owner' ? OWNER_ID : DEVELOPER_ID;
 
   return {
+    // Free, deliberately. Nothing in either of these files is entitlement-gated
+    // — a secret read is never refused for a billing reason — so the weakest
+    // plan is the honest fixture, and any assertion here that started depending
+    // on a paid feature would be testing the wrong thing.
+    entitlements: FREE_ENTITLEMENTS,
     organization: { id: ORG_ID, slug: 'acme' } as unknown as Organization,
     project: { id: PROJECT_ID, slug: 'api' } as unknown as ProjectRecord,
     environment: {

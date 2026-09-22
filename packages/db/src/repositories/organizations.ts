@@ -1,5 +1,7 @@
 import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import type { OrgRole } from '@xecret/core/authz';
+import { DEFAULT_PLAN, FAIR_USE, PLANS } from '@xecret/core/entitlements';
+import type { PlanId } from '@xecret/core/entitlements';
 import { randomBytes } from '@xecret/core/crypto';
 import type { EnvelopeService } from '@xecret/core/crypto';
 import { uuidv7 } from '@xecret/core/ids';
@@ -13,11 +15,14 @@ import {
 import { users } from '../schema/identity';
 import { orgKeys } from '../schema/keys';
 import { environments, projects } from '../schema/resources';
+import { orgSubscriptions } from '../schema/billing';
 import { orgMembers, organizations } from '../schema/tenancy';
 import { addMember } from './membership';
 import type { MemberRecord } from './membership';
 import { RepositoryError } from './shared';
 import type { Executor } from './shared';
+import { createFreeSubscription, entitlementColumns } from './subscriptions';
+import type { SubscriptionEntitlementRow } from './subscriptions';
 import { isUniqueViolation } from './users';
 import type { User } from './users';
 
@@ -65,6 +70,48 @@ export async function findOrganizationBySlug(
   return row ?? null;
 }
 
+/**
+ * An organisation and its entitlement columns, in one row.
+ *
+ * ── Why a join and not a second lookup ──
+ * Entitlements are the third authorization gate, so they are needed on every
+ * tenant-scoped request. `resolveOrg` already reads the organisation by slug;
+ * adding a second query to answer a billing question would put a round trip on
+ * the path of every secret fetch, for a value that changes about once a month.
+ *
+ * A `LEFT JOIN` rather than an inner one: migration 0016 backfilled every
+ * organisation and provisioning inserts alongside, so the row is always there —
+ * but an inner join would turn a missing subscription into a *missing
+ * organisation*, which is a 404 for a tenant that plainly exists. The null case
+ * resolves to Free, which is the same answer the migration would have written.
+ */
+export interface OrganizationWithEntitlements {
+  organization: Organization;
+  entitlements: SubscriptionEntitlementRow | null;
+}
+
+/**
+ * @internal Exported so `subscriptions.test.ts` can assert the join exists and
+ * that the projection carries no provider identifier, without a database.
+ */
+export function organizationBySlugWithEntitlementsQuery(exec: Executor, slug: string) {
+  return exec
+    .select({ organization: organizations, entitlements: entitlementColumns })
+    .from(organizations)
+    .leftJoin(orgSubscriptions, eq(orgSubscriptions.orgId, organizations.id))
+    .where(and(eq(organizations.slug, slug), isNull(organizations.deletedAt)))
+    .limit(1);
+}
+
+export async function findOrganizationBySlugWithEntitlements(
+  exec: Executor,
+  slug: string,
+): Promise<OrganizationWithEntitlements | null> {
+  const [row] = await organizationBySlugWithEntitlementsQuery(exec, slug);
+  if (!row) return null;
+  return { organization: row.organization, entitlements: row.entitlements };
+}
+
 export async function findOrganizationById(
   exec: Executor,
   orgId: string,
@@ -106,6 +153,15 @@ export interface HeldOrganizations {
   total: number;
   /** The most recent of them, or `null` when the account holds none. */
   latestId: string | null;
+  /**
+   * The plan of each organisation counted.
+   *
+   * Carried because the ceiling on *how many organisations an account may hold*
+   * is a plan limit, and an account has no plan of its own — only the
+   * organisations it belongs to have one. `accountOrganizationCeiling` resolves
+   * the two into a number; see the reasoning there.
+   */
+  plans: PlanId[];
 }
 
 /**
@@ -157,7 +213,58 @@ export async function countOrganizationsHeldBy(
   limit: number,
 ): Promise<HeldOrganizations> {
   const rows = await organizationsHeldByQuery(exec, userId, limit);
-  return { total: rows.length, latestId: rows[0]?.id ?? null };
+  return {
+    total: rows.length,
+    latestId: rows[0]?.id ?? null,
+    // A null plan means no subscription row, which migration 0016 made
+    // impossible and which resolves to Free everywhere else. Same answer here.
+    plans: rows.map((row) => row.plan ?? DEFAULT_PLAN),
+  };
+}
+
+/**
+ * How many organisations this account may hold.
+ *
+ * ── The problem this solves ──
+ * `organizations` is a plan limit — Free allows one, every paid plan allows as
+ * many as fair use permits. But a *plan* belongs to an organisation and this
+ * ceiling belongs to an *account*, and an account is not a billable thing. So
+ * the question "which plan applies" has no answer until one is chosen.
+ *
+ * ── The rule ──
+ * The most generous ceiling among the organisations the account already holds.
+ * Unlimited wins outright; otherwise the largest number does.
+ *
+ * Chosen because every alternative punishes somebody who paid. Taking the
+ * *lowest* would mean joining a colleague's Free organisation silently revoked
+ * your own Team allowance. Taking the plan of the organisation being created is
+ * circular — it does not exist yet, and it would be Free. Taking the account's
+ * "own" organisation requires picking one, and an account that was invited into
+ * every organisation it belongs to has no own.
+ *
+ * ── The consequence, stated plainly ──
+ * An account holding nothing but Free organisations may create one. That is a
+ * tightening: the previous fixed ceiling was ten for everybody. It is also what
+ * the pricing page says, and the pricing page is the contract.
+ *
+ * ── Why unlimited still lands on a number ──
+ * `FAIR_USE.organizations`. Not to sell anything past it — crossing a fair-use
+ * ceiling is a conversation, not a refusal — but because this particular count
+ * is the one an abuse script drives in a loop, and every organisation created
+ * derives an Org Master Key. The ceiling here is an abuse bound that happens to
+ * coincide with a published number, and support raises it with an override like
+ * any other.
+ */
+export function accountOrganizationCeiling(plans: readonly PlanId[]): number {
+  if (plans.length === 0) return PLANS[DEFAULT_PLAN].limits.organizations ?? FAIR_USE.organizations;
+
+  let best = 0;
+  for (const plan of plans) {
+    const ceiling = PLANS[plan]?.limits.organizations;
+    if (ceiling === null || ceiling === undefined) return FAIR_USE.organizations;
+    if (ceiling > best) best = ceiling;
+  }
+  return best;
 }
 
 /**
@@ -168,11 +275,16 @@ export async function countOrganizationsHeldBy(
 export function organizationsHeldByQuery(exec: Executor, userId: string, limit: number) {
   return (
     exec
-      .select({ id: organizations.id })
+      // The plan rides along on a primary-key join, so the count that was
+      // already being made now also answers which ceilings apply. A second
+      // query would be a round trip on the first-login path, which is the one
+      // request in the product a new user judges the whole thing by.
+      .select({ id: organizations.id, plan: orgSubscriptions.plan })
       .from(organizations)
       // `org_members_org_user_unique` makes this at most one row per
       // organisation, so the join cannot inflate the count it is part of.
       .innerJoin(orgMembers, eq(orgMembers.orgId, organizations.id))
+      .leftJoin(orgSubscriptions, eq(orgSubscriptions.orgId, organizations.id))
       .where(
         and(
           eq(organizations.createdBy, userId),
@@ -355,11 +467,23 @@ export async function provisionOrganization(
     // mean anything.
     await lockAccount(tx, user.id);
 
+    // Counted up to the abuse cap rather than to the plan ceiling, because the
+    // ceiling is not known until the plans of the organisations already held
+    // have been read — and they are read by this same query. Counting to the
+    // larger of the two costs at most a few extra index rows and removes the
+    // second round trip that computing it first would need.
     const held = await countOrganizationsHeldBy(tx, user.id, params.limit);
-    if (held.total >= params.limit) {
+
+    // The plan ceiling, bounded by the caller's abuse cap. `min` rather than
+    // either alone: the plan says what was sold, the cap says what this system
+    // will mint Org Master Keys for in one account, and neither is allowed to
+    // override the other.
+    const ceiling = Math.min(accountOrganizationCeiling(held.plans), params.limit);
+
+    if (held.total >= ceiling) {
       throw new RepositoryError(
         'quotaExceeded',
-        `An account can hold at most ${params.limit} organisations.`,
+        `An account can hold at most ${ceiling} organisations.`,
       );
     }
 
@@ -424,6 +548,13 @@ export async function provisionOrganization(
       })
       .returning();
     if (!orgKeyRow) throw new Error('Organisation key insert returned no row.');
+
+    // Inside the same transaction, so an organisation and its subscription
+    // commit together or not at all. The alternative — creating the row lazily
+    // on first read — makes every entitlement lookup a left join with a
+    // fallback, and a fallback that duplicates the Free plan is a fallback that
+    // will one day disagree with it.
+    await createFreeSubscription(tx, orgId);
 
     return { organization, membership };
   });

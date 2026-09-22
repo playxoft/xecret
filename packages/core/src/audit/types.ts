@@ -268,7 +268,31 @@ export type AuditAction =
    * access grant and no explanation of the gap that followed it.
    */
   | 'envkey.grant_pending'
-  | 'access.denied';
+  | 'access.denied'
+  /**
+   * An organisation's plan, add-ons or limit overrides changed.
+   *
+   * Written by the operator tool today and by the payment webhooks later, and
+   * deliberately the same event for both: what a reviewer needs to answer is
+   * "when did this organisation gain SAML", and splitting that across two
+   * action names by provenance makes the question take two queries. The
+   * `operator` field is what distinguishes a hand-made change, and its absence
+   * is what marks an automated one.
+   */
+  | 'plan.changed'
+  /**
+   * A control-plane write was refused because the organisation was at a plan
+   * ceiling.
+   *
+   * Recorded as `denied`, like every other refusal. It is the only evidence
+   * that a customer tried to do something their plan would not allow, which is
+   * both a support signal and the most honest input to a pricing decision —
+   * a ceiling nobody ever hits is a ceiling nobody is buying past.
+   *
+   * There is no matching event for a *fair-use* ceiling, because crossing one
+   * refuses nothing; that path warns and continues.
+   */
+  | 'limit.exceeded';
 
 /**
  * Fields permitted in `metadata`.
@@ -375,6 +399,39 @@ export interface AuditMetadata {
    */
   valueType?: string;
   reason?: string;
+  /**
+   * The plan an organisation moved to, and the one it held before.
+   *
+   * Plan names, never prices and never a payment identifier. What a review
+   * needs from a billing change is which capabilities moved and when; the
+   * amount charged lives with the payment provider, and copying it here would
+   * put a second, staler answer in the table people trust most.
+   */
+  plan?: string;
+  previousPlan?: string;
+  /**
+   * Which separately-purchased add-on changed, e.g. `saml`.
+   *
+   * Worth its own field rather than folding into `plan`, because an add-on is
+   * the one change that costs us money the moment it is switched on — each is a
+   * $125/month WorkOS connection — and "when was SAML enabled for this
+   * organisation" needs to be answerable without reading every plan change.
+   */
+  addonName?: string;
+  /** Which ceiling was raised or reached, e.g. `projects`. A field name, never a value. */
+  limitName?: string;
+  /** Seats billed after the change. A count, never an amount of money. */
+  seatCount?: number;
+  /**
+   * The person who ran an operator script, as they named themselves.
+   *
+   * A label and plainly a label — `actor_type` is `system` on these rows,
+   * because an operator at a shell is not a user and not a token, and minting a
+   * synthetic user id would put a lie in the one table this product promises is
+   * truthful. Absent on anything a webhook wrote, which is what distinguishes
+   * an automated plan change from a hand-made one.
+   */
+  operator?: string;
   source?: 'dashboard' | 'cli' | 'ci' | 'api';
 }
 

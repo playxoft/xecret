@@ -113,6 +113,13 @@
       "when": 1786926000000,
       "tag": "0015_unlock_convenience",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1786926060000,
+      "tag": "0016_plans_and_entitlements",
+      "breakpoints": true
     }
   ]
 }

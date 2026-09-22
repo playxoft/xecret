@@ -98,10 +98,13 @@ export type { MintPinPepperParams, PinAttemptOutcome, PinDeviceRecord } from './
 
 export {
   accountLockQuery,
+  accountOrganizationCeiling,
   countOrganizationsHeldBy,
   findOrganizationById,
   findOrganizationBySlug,
+  findOrganizationBySlugWithEntitlements,
   generateUniqueOrgSlug,
+  organizationBySlugWithEntitlementsQuery,
   isOrgSlugAvailable,
   listOrganizationsForUser,
   orgSlugCandidate,
@@ -118,6 +121,7 @@ export type {
   Organization,
   OrganizationMembership,
   OrganizationPatch,
+  OrganizationWithEntitlements,
   Project,
   ProvisionedOrganization,
   ProvisionOrganizationParams,
@@ -327,3 +331,25 @@ export type {
 
 export { appendAuditEvents, clampAuditRange, MAX_AUDIT_RANGE_DAYS, queryAuditLogs } from './audit';
 export type { AuditCursor, AuditLogFilter, AuditLogRecord, AuditPage, AuditWindow } from './audit';
+
+export {
+  claimWebhookEvent,
+  createFreeSubscription,
+  entitlementColumns,
+  entitlementsFromRow,
+  findSubscription,
+  findUsage,
+  loadEntitlements,
+  recordFetches,
+  recordMeteredUnits,
+  setBilledSeats,
+  subscriptionQuery,
+  updateSubscription,
+  usageQuery,
+} from './subscriptions';
+export type {
+  SubscriptionEntitlementRow,
+  SubscriptionPatch,
+  SubscriptionRecord,
+  UsageCounterRecord,
+} from './subscriptions';

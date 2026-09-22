@@ -21,13 +21,19 @@ import type { ApiError } from './errors';
  */
 
 const repositories = vi.hoisted(() => ({
-  findOrganizationBySlug: vi.fn(),
+  findOrganizationBySlugWithEntitlements: vi.fn(),
   findProjectBySlug: vi.fn(),
   findEnvironmentBySlug: vi.fn(),
   loadAuthorizationContext: vi.fn(),
 }));
 
-vi.mock('@xecret/db/repositories', () => repositories);
+// Partial: `entitlementsFromRow` is a pure mapper with no IO, so the real one
+// is what these tests should exercise — stubbing it would hide a row shape that
+// stopped resolving. Only the four query functions above are replaced.
+vi.mock('@xecret/db/repositories', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@xecret/db/repositories')>()),
+  ...repositories,
+}));
 
 const {
   authorize,
@@ -125,7 +131,10 @@ async function expectNotFound(promise: Promise<unknown>): Promise<void> {
 
 beforeEach(() => {
   vi.resetAllMocks();
-  repositories.findOrganizationBySlug.mockResolvedValue(organization);
+  repositories.findOrganizationBySlugWithEntitlements.mockResolvedValue({
+    organization,
+    entitlements: null,
+  });
   repositories.findProjectBySlug.mockResolvedValue(project);
   repositories.findEnvironmentBySlug.mockResolvedValue(environment);
   repositories.loadAuthorizationContext.mockResolvedValue(membership());
@@ -140,7 +149,7 @@ describe('organisation resolution', () => {
   });
 
   it('reports an unknown slug as not found', async () => {
-    repositories.findOrganizationBySlug.mockResolvedValue(null);
+    repositories.findOrganizationBySlugWithEntitlements.mockResolvedValue(null);
     await expectNotFound(resolveOrg(userPrincipal, 'nope', services));
   });
 
