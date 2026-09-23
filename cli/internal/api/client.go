@@ -237,6 +237,13 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any, raw
 	}
 	defer response.Body.Close()
 
+	// Before the status is judged, so a 4xx still teaches this process which
+	// release the server expects. An old CLI is disproportionately likely to be
+	// the one getting refused, and that is exactly when the notice earns its
+	// place. See advertised.go — this reads a reply that had already arrived and
+	// asks nobody anything.
+	noteAdvertised(response.Header.Get(latestHeader), response.Header.Get(headlineHeader))
+
 	limited := io.LimitReader(response.Body, MaxResponseBytes)
 
 	if response.StatusCode < 200 || response.StatusCode > 299 {

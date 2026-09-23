@@ -20,6 +20,7 @@ import (
 	"github.com/playxoft/xecret/cli/internal/api"
 	"github.com/playxoft/xecret/cli/internal/buildinfo"
 	"github.com/playxoft/xecret/cli/internal/cred"
+	"github.com/playxoft/xecret/cli/internal/output"
 )
 
 const usage = `xecret — open-source secret management
@@ -35,8 +36,8 @@ Authentication:
 
 Project setup:
   init         Choose a project and environment; writes .xecret.yaml
-  projects     list | create | delete
-  environments list | create | delete
+  projects     list | delete — projects are created in the dashboard
+  environments list | delete — environments are created in the dashboard
 
 Working with secrets:
   secrets      list | get | set | annotate | versions | restore | delete
@@ -88,6 +89,18 @@ func dispatch(args []string) int {
 	}
 
 	command, rest := args[0], args[1:]
+
+	// Deferred, so it runs on every way out of this function: success, the
+	// error tail below, `flag.ErrHelp`, and the exit code `run` forwards from a
+	// child. A notice that only appeared after commands that succeeded would
+	// miss the case it exists for — a CLI too old to satisfy the server is a
+	// CLI whose commands are failing.
+	//
+	// Not after `upgrade`, which has just said more about versions than this
+	// ever will, and would otherwise end by repeating itself.
+	if command != "upgrade" {
+		defer maybeShowUpgradeNotice(output.New(false))
+	}
 
 	var err error
 	switch command {

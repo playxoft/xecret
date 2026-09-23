@@ -1,18 +1,71 @@
 ---
 title: Using xecret with AI agents
 navTitle: AI agents
-description: Machine-readable documentation endpoints, and how to let a coding agent run your app without handing it your production credentials.
-keywords: [llms.txt, ai agent secrets, coding agent environment variables, machine readable docs, mcp secrets, agent security]
-updated: 2026-08-16
+description: The one-line skill install for Claude, ChatGPT, Gemini and every other coding agent, the machine-readable documentation endpoints, and letting an agent run your app without production credentials.
+keywords: [llms.txt, ai agent skill, claude skill, chatgpt gemini agent, ai agent secrets, coding agent environment variables, machine readable docs, agent security]
+updated: 2026-09-20
 ---
 
-Two separate things share this page, because the people asking about one are
-usually about to need the other:
+Three separate things share this page, because the people asking about one are
+usually about to need the next:
 
-1. **Reading this documentation programmatically** — the endpoints an agent
+1. **Teaching an agent to use xecret** — one document, one line to install it.
+2. **Reading this documentation programmatically** — the endpoints an agent
    should fetch.
-2. **Letting an agent run your code** — without giving it production
+3. **Letting an agent run your code** — without giving it production
    credentials.
+
+## The skill
+
+A single document teaches any agent how this product works: the commands, the
+scoping rules, the CI story, the errors, and the conventions it is expected to
+respect — never print a value, prefer `xecret run` over a `.env` file, ask
+before touching production.
+
+It is published at `https://xecret.playxoft.com/skill.md` and is the same
+document however you load it.
+
+**In a repository**, for agents that read files — Claude Code, Codex, Cursor,
+Antigravity, Gemini CLI, Copilot, Windsurf, Zed:
+
+```bash
+curl -fsSL https://xecret.playxoft.com/skill.sh | sh
+```
+
+That writes the skill to `.agents/skills/xecret/SKILL.md` and
+`.claude/skills/xecret/SKILL.md`, and adds a short pointer to your `AGENTS.md`
+so an agent that reads only that file still finds it. It installs at the root
+of the repository you are standing in, wherever in the tree you run it from,
+and refuses to run outside one; `--no-pointer` skips the instruction files, and
+`XECRET_SKILL_DIR` names a directory explicitly. Re-running it upgrades the
+copies and leaves your own instructions alone. Commit the result: everyone who
+clones the repository gets it, and the next person's agent does not have to be
+told twice.
+
+**In a chat**, for ChatGPT, Gemini, Claude or anything else with a browser:
+
+```text
+Read https://xecret.playxoft.com/skill.md and follow it whenever I ask you
+about xecret, secrets, or environment variables.
+```
+
+**Without writing any files**, pipe it straight into whatever you are feeding:
+
+```bash
+curl -fsSL https://xecret.playxoft.com/skill.sh | sh -s -- --print
+```
+
+Self-hosting? Every deployment serves its own copy, so point at yours and the
+agent learns your hostname along with everything else:
+
+```bash
+XECRET_SKILL_URL=https://secrets.your-company.com/skill.md \
+  sh -c "$(curl -fsSL https://secrets.your-company.com/skill.sh)"
+```
+
+The skill is a summary with an escape hatch: it names the endpoints below, so
+an agent that needs the exact flags of one command fetches that page rather
+than guessing from what it remembers.
 
 ## Machine-readable documentation
 
@@ -56,9 +109,9 @@ that is what was in your shell is how a debugging session becomes an incident.
 
 ### Give the agent its own environment
 
-Create an environment — call it `agent`, or reuse `test` — containing values
-that are **shaped correctly but not real**: a local database URL, a Stripe test
-key, a signing secret generated for the purpose.
+Create an environment in the dashboard — call it `agent`, or reuse `test` —
+containing values that are **shaped correctly but not real**: a local database
+URL, a Stripe test key, a signing secret generated for the purpose.
 
 ```bash
 xecret run --environment agent -- npm test

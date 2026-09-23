@@ -529,62 +529,12 @@ func (c *Client) Organizations(ctx context.Context) ([]Organization, error) {
 	return response.Organizations, nil
 }
 
-// CreatedProject is what POST …/projects returns: the project and the default
-// environments created with it, in one transaction.
-type CreatedProject struct {
-	Project      Project       `json:"project"`
-	Environments []Environment `json:"environments"`
-}
-
-// CreateProject creates a project and its default environments.
-func (c *Client) CreateProject(
-	ctx context.Context,
-	org, name, slug, description string,
-) (*CreatedProject, error) {
-	body := map[string]any{"name": name}
-	if slug != "" {
-		body["slug"] = slug
-	}
-	if description != "" {
-		body["description"] = description
-	}
-	var created CreatedProject
-	if err := c.Post(ctx, orgPath(org)+"/projects", body, &created); err != nil {
-		return nil, err
-	}
-	return &created, nil
-}
-
 // DeleteProject soft-deletes a project. `confirm` carries the slug, which the
 // server requires when the project holds a production environment; sending it
 // unconditionally costs nothing and removes a retry the user would not
 // understand.
 func (c *Client) DeleteProject(ctx context.Context, org, project, confirm string) error {
 	return c.Delete(ctx, projectPath(org, project), map[string]any{"confirm": confirm}, nil)
-}
-
-// CreateEnvironment creates an environment together with its data key — one
-// server-side transaction, because an environment without a key silently
-// rejects every write it will ever receive.
-func (c *Client) CreateEnvironment(
-	ctx context.Context,
-	org, project, name, slug string,
-	isProduction bool,
-) (*Environment, error) {
-	body := map[string]any{"name": name}
-	if slug != "" {
-		body["slug"] = slug
-	}
-	if isProduction {
-		body["isProduction"] = true
-	}
-	var response struct {
-		Environment Environment `json:"environment"`
-	}
-	if err := c.Post(ctx, projectPath(org, project)+"/environments", body, &response); err != nil {
-		return nil, err
-	}
-	return &response.Environment, nil
 }
 
 // DeleteEnvironment soft-deletes an environment. As for DeleteProject, the

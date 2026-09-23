@@ -2,6 +2,13 @@ import { BufferedAuditRecorder, createAuditBuilder } from '@xecret/core/audit';
 import type { AuditBuilder, AuditRecord } from '@xecret/core/audit';
 import { AuthorizationError } from '@xecret/core/authz';
 import {
+  CLI_HEADLINE_HEADER,
+  CLI_LATEST_HEADER,
+  CLI_LATEST_HEADLINE,
+  CLI_LATEST_VERSION,
+  isCliUserAgent,
+} from '@/lib/cli-release';
+import {
   actorId,
   actorLabel,
   actorType,
@@ -118,9 +125,10 @@ export function publicRoute<Params = Record<string, never>>(
       started = await begin(request, requestId, log, doing, startedAt);
       const params = ((await args?.params) ?? {}) as Params;
 
-      response = withRequestId(
+      response = withResponseHeaders(
         await handler({ request, params, services: started.services }),
         requestId,
+        request,
       );
     } catch (cause) {
       response = failure(cause, requestId, log.logger, doing);
@@ -231,7 +239,7 @@ export function authenticatedRoute<Params = Record<string, never>>(
 
       const params = ((await args?.params) ?? {}) as Params;
 
-      response = withRequestId(
+      response = withResponseHeaders(
         await handler({
           request,
           params,
@@ -251,6 +259,7 @@ export function authenticatedRoute<Params = Record<string, never>>(
           record: (...events) => recorder.record(...events),
         }),
         requestId,
+        request,
       );
     } catch (cause) {
       response = failure(cause, requestId, log.logger, doing);
@@ -455,8 +464,26 @@ function settle(services: ServiceContext, recorder: BufferedAuditRecorder): void
   services.dispose();
 }
 
-function withRequestId(response: Response, requestId: string): Response {
+/**
+ * The headers every successful response carries, set in one place.
+ *
+ * The request id is the correlation key described on `REQUEST_ID_HEADER`. The
+ * two CLI headers are the upgrade notice: this deployment names the release it
+ * expects its callers to run, and the CLI reads it off a reply it was already
+ * receiving. `lib/cli-release.ts` explains why the server volunteers this rather
+ * than the CLI going looking for it.
+ *
+ * `failure` sets the request id itself, on its own envelope, and deliberately
+ * does not add the CLI headers: an error response is not the moment to change
+ * the subject, and the next successful request carries them anyway.
+ */
+function withResponseHeaders(response: Response, requestId: string, request: Request): Response {
   response.headers.set(REQUEST_ID_HEADER, requestId);
+
+  if (isCliUserAgent(request.headers.get('user-agent'))) {
+    response.headers.set(CLI_LATEST_HEADER, CLI_LATEST_VERSION);
+    response.headers.set(CLI_HEADLINE_HEADER, CLI_LATEST_HEADLINE);
+  }
   return response;
 }
 
