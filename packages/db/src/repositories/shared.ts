@@ -86,4 +86,18 @@ export type RepositoryErrorCode =
    * data: no arrangement of rows would have made it succeed. Route handlers map
    * it to 400, which is where their `default` branch already sends it.
    */
-  | 'invalid';
+  | 'invalid'
+  /**
+   * The write is refused on policy grounds, whatever the rows say.
+   *
+   * Its one use today is an identity whose email the provider has not verified.
+   * That is not a conflict — no other row is in the way — and it is not
+   * `invalid`, because the request is perfectly well formed. It is a refusal,
+   * and it maps to 403.
+   *
+   * It lives here rather than only at the route because it guards the linking
+   * pass, which is the account-takeover surface of the whole provider
+   * migration: a check that only exists in one caller stops being a guarantee
+   * the moment there are two.
+   */
+  | 'forbidden';
