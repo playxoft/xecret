@@ -1,0 +1,17 @@
+# Headers for files served by the Cloudflare asset binding, which answers
+# before the Worker runs — so nothing in `next.config.ts` reaches them.
+#
+# `/skill.md` is the one asset we hand to people as a URL to open, rather than
+# one a browser fetches as part of a page: the README and the AI-agents page
+# both tell a user to paste it into a chat, and /llms.txt points agents at it.
+# Served as `text/markdown` with no charset, a browser falls back to the
+# locale default — windows-1252 in most of the world — and every em dash and
+# box-drawing character in the document renders as mojibake. There is no HTML
+# `<meta>` to correct it, because it is not HTML.
+#
+# `nosniff` is here for consistency with the Worker's own header set, which
+# asset responses never see.
+/skill.md
+  Content-Type: text/markdown; charset=utf-8
+  Cache-Control: public, max-age=3600, must-revalidate
+  X-Content-Type-Options: nosniff

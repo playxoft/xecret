@@ -65,6 +65,19 @@ FIREBASE_PROJECT_ID = "xecret-management"
 # which is a failure that arrives hours later and looks like something else.
 ZEPTOMAIL_FROM_ADDRESS = "no-reply-xecrets@mail.playxoft.com"
 ZEPTOMAIL_FROM_NAME = "Xecret"
+# Zoho runs one host per data centre and a token is only valid at the one that
+# issued it. `mail.ts` defaults to the US host when this is unset, which is what
+# this deployment had been relying on — correctly, as it turns out, but by
+# omission rather than by decision. Verified rather than assumed: the same token
+# is accepted here (201, "Email request received") and refused by the EU and
+# India hosts (401, "Invalid API Token found").
+#
+# Stated so that the next person moving this account, or standing up a second
+# deployment in another region, changes a line that is already here instead of
+# discovering that mail fails in a way nothing reports. `check:deploy` warned
+# about the omission on every run; an unanswered warning is one that eventually
+# gets read past.
+ZEPTOMAIL_API_URL = "https://api.zeptomail.com/v1.1/email"
 
 # ADR 0002 — the Root KEK map. Sourced from Phase.dev, pushed to the
 # account's default Secrets Store by scripts/deploy-bootstrap.sh.
