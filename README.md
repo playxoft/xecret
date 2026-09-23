@@ -48,6 +48,28 @@ CLI ──▶ xecret login ──▶ xecret run -- npm run dev ─────�
                               └──▶ secrets injected into your process environment
 ```
 
+## Teach your AI agent
+
+One document covers the commands, the scoping rules, the CI story and the
+conventions an agent should respect — never print a value, prefer `xecret run`
+over a `.env` file, ask before touching production.
+
+```bash
+# Claude Code, Codex, Cursor, Antigravity, Gemini CLI, Copilot, Windsurf, Zed
+curl -fsSL https://xecret.playxoft.com/skill.sh | sh
+```
+
+```text
+# ChatGPT, Gemini, Claude, or any chat with a browser
+Read https://xecret.playxoft.com/skill.md and follow it whenever I ask you
+about xecret, secrets, or environment variables.
+```
+
+The installer writes the skill into `.agents/skills/` and `.claude/skills/` and
+points your `AGENTS.md` at it. Commit the result and your teammates' agents
+know it too. Details, and how to give an agent an environment that holds
+nothing real: [AI agents](https://xecret.playxoft.com/docs/ai-agents).
+
 ## Honesty about the security model
 
 xecret uses **server-side envelope encryption**. The service can technically
