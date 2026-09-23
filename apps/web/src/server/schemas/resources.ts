@@ -420,13 +420,49 @@ export function assertSlugImmutable(
  * how `mapMembershipError` treats a seat limit — the product's other quota — and
  * the two should not answer differently.
  *
- * The number is stated because it is a published constant and the only
- * actionable thing left to say. Nothing derived from the request appears: the
- * caller learns a rule, not an echo of what they sent.
+ * The number is stated because it is the only actionable thing left to say, and
+ * it is **passed in rather than read from `ORGANIZATIONS_PER_ACCOUNT_LIMIT`**.
+ * That constant is now only the abuse cap — the upper of the two bounds. The one
+ * actually applied is `min(accountOrganizationCeiling(plans), cap)`, resolved
+ * inside `provisionOrganization` from the plans of the organisations the account
+ * already holds, and it is one on Free. Interpolating the constant here told a
+ * Free user holding a single organisation that they were at a limit of ten,
+ * which is both false and unactionable.
+ *
+ * Nothing derived from the request appears: the caller learns a rule, not an echo
+ * of what they sent.
+ *
+ * The advice differs at a ceiling of one because deleting is not advice there —
+ * it is the only organisation they have, and the thing that lifts the ceiling is
+ * a plan rather than a deletion.
+ *
+ * ── Why this is a 409 and not the `plan_limit` 403 this PR added ──
+ * It is the only live entitlement refusal in the product, so it is a fair
+ * question. Two reasons it stays a conflict.
+ *
+ * The status is a wire contract. `conflict` is what the Go CLI and the dashboard
+ * already branch on for this refusal, and 403 is the code both treat as "this
+ * credential may not"; moving it would make a quota look like a permissions
+ * failure to every client in the field, for a body field none of them read yet.
+ *
+ * And a `plan` block would be a promise the rest of the system does not keep.
+ * `requireCapacity` and the `upgradeTo` resolution it feeds are deliberately
+ * unwired until payments land — see the header of `server/entitlements.ts`. A
+ * structured upgrade hint pointing at a plan with no checkout behind it is worse
+ * than a sentence, because a sentence is plainly advice and a hint is plainly a
+ * button. The sentence says what to do; the machine-readable version arrives
+ * with the page that can act on it.
  */
-export function organizationLimitReached(): ApiError {
+export function organizationLimitReached(ceiling: number): ApiError {
+  if (ceiling <= 1) {
+    return errors.conflict(
+      'Your plan allows one organisation per account. ' +
+        'Upgrade to create another, or delete the one you have.',
+    );
+  }
+
   return errors.conflict(
-    `An account can hold at most ${ORGANIZATIONS_PER_ACCOUNT_LIMIT} organisations. ` +
+    `An account can hold at most ${ceiling} organisations. ` +
       'Delete one you no longer need before creating another.',
   );
 }

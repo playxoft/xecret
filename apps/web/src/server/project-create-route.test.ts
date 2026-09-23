@@ -47,7 +47,7 @@ const auditSink = vi.hoisted(() => ({ write: vi.fn() }));
 const logging = vi.hoisted(() => ({ createRequestLog: vi.fn() }));
 
 const repositories = vi.hoisted(() => ({
-  findOrganizationBySlug: vi.fn(),
+  findOrganizationBySlugWithEntitlements: vi.fn(),
   loadAuthorizationContext: vi.fn(),
   hasVault: vi.fn(),
   createProject: vi.fn(),
@@ -241,15 +241,20 @@ beforeEach(() => {
 
   rateLimit.enforce.mockResolvedValue({ allowed: true, enforced: true });
 
-  repositories.findOrganizationBySlug.mockResolvedValue({
-    id: ORG_ID,
-    name: 'Acme',
-    slug: 'acme',
-    seatLimit: 5,
-    createdBy: OWNER_USER_ID,
-    createdAt: EPOCH,
-    updatedAt: EPOCH,
-    deletedAt: null,
+  repositories.findOrganizationBySlugWithEntitlements.mockResolvedValue({
+    // Free, because nothing this route does is entitlement-gated beyond the
+    // project ceiling, and the fixture creates one project.
+    entitlements: null,
+    organization: {
+      id: ORG_ID,
+      name: 'Acme',
+      slug: 'acme',
+      seatLimit: 5,
+      createdBy: OWNER_USER_ID,
+      createdAt: EPOCH,
+      updatedAt: EPOCH,
+      deletedAt: null,
+    },
   });
 
   repositories.loadAuthorizationContext.mockResolvedValue({
@@ -670,7 +675,7 @@ describe('POST …/projects — the order the gates run in', () => {
     await post({ name: 'Payments API', environments: environmentInits() });
 
     expect(rateLimit.enforce).toHaveBeenCalled();
-    expect(repositories.findOrganizationBySlug).not.toHaveBeenCalled();
+    expect(repositories.findOrganizationBySlugWithEntitlements).not.toHaveBeenCalled();
     expect(repositories.createProject).not.toHaveBeenCalled();
   });
 });

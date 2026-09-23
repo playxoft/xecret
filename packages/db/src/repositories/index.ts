@@ -19,7 +19,13 @@
  * transaction boundary; a repository never opens one behind the caller's back.
  */
 
-export { clampPageSize, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, RepositoryError } from './shared';
+export {
+  clampPageSize,
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+  QuotaExceededError,
+  RepositoryError,
+} from './shared';
 export type { Executor, RepositoryErrorCode, Transaction } from './shared';
 
 export {
@@ -98,10 +104,12 @@ export type { MintPinPepperParams, PinAttemptOutcome, PinDeviceRecord } from './
 
 export {
   accountLockQuery,
+  accountOrganizationCeiling,
   countOrganizationsHeldBy,
   findOrganizationById,
-  findOrganizationBySlug,
+  findOrganizationBySlugWithEntitlements,
   generateUniqueOrgSlug,
+  organizationBySlugWithEntitlementsQuery,
   isOrgSlugAvailable,
   listOrganizationsForUser,
   orgSlugCandidate,
@@ -118,6 +126,7 @@ export type {
   Organization,
   OrganizationMembership,
   OrganizationPatch,
+  OrganizationWithEntitlements,
   Project,
   ProvisionedOrganization,
   ProvisionOrganizationParams,
@@ -327,3 +336,25 @@ export type {
 
 export { appendAuditEvents, clampAuditRange, MAX_AUDIT_RANGE_DAYS, queryAuditLogs } from './audit';
 export type { AuditCursor, AuditLogFilter, AuditLogRecord, AuditPage, AuditWindow } from './audit';
+
+export {
+  claimWebhookEvent,
+  createFreeSubscription,
+  entitlementColumns,
+  entitlementsFromRow,
+  findSubscription,
+  findUsage,
+  loadEntitlements,
+  recordFetches,
+  recordMeteredUnits,
+  setBilledSeats,
+  subscriptionQuery,
+  updateSubscription,
+  usageQuery,
+} from './subscriptions';
+export type {
+  SubscriptionEntitlementRow,
+  SubscriptionPatch,
+  SubscriptionRecord,
+  UsageCounterRecord,
+} from './subscriptions';

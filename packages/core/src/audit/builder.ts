@@ -200,6 +200,10 @@ const LIMITS = {
   deviceName: 128,
   valueType: 32,
   reason: 256,
+  plan: 32,
+  addonName: 64,
+  limitName: 64,
+  operator: 128,
   actorLabel: 320,
   userAgent: 512,
   requestId: 128,
@@ -349,6 +353,23 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   if (metadata.reason !== undefined) {
     clean.reason = sanitizeMetadataString(metadata.reason, LIMITS.reason);
   }
+  if (metadata.plan !== undefined) {
+    clean.plan = sanitizeMetadataString(metadata.plan, LIMITS.plan);
+  }
+  if (metadata.previousPlan !== undefined) {
+    clean.previousPlan = sanitizeMetadataString(metadata.previousPlan, LIMITS.plan);
+  }
+  if (metadata.addonName !== undefined) {
+    clean.addonName = sanitizeMetadataString(metadata.addonName, LIMITS.addonName);
+  }
+  if (metadata.limitName !== undefined) {
+    clean.limitName = sanitizeMetadataString(metadata.limitName, LIMITS.limitName);
+  }
+  // An operator names themselves from a shell environment variable, so it is as
+  // attacker-influenced as any other string here and gets the same treatment.
+  if (metadata.operator !== undefined) {
+    clean.operator = sanitizeMetadataString(metadata.operator, LIMITS.operator);
+  }
 
   // Non-finite numbers are dropped rather than stored: `JSON.stringify(NaN)` is
   // `null`, and a `null` in the column is indistinguishable from a field nobody
@@ -364,6 +385,9 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   }
   if (metadata.grantCount !== undefined && Number.isFinite(metadata.grantCount)) {
     clean.grantCount = metadata.grantCount;
+  }
+  if (metadata.seatCount !== undefined && Number.isFinite(metadata.seatCount)) {
+    clean.seatCount = metadata.seatCount;
   }
 
   // Closed unions of literals; there is nothing to sanitise.

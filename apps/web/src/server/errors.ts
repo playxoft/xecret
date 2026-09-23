@@ -35,6 +35,21 @@ export type ApiErrorCode =
    * access they already have.
    */
   | 'session_locked'
+  /**
+   * The caller is authenticated and permitted, and their *plan* does not
+   * include what they asked for.
+   *
+   * Its own code rather than a plain `forbidden` for the same reason
+   * `session_locked` has one: it is a 403 the client can resolve without
+   * anybody granting them anything. The dashboard renders an upgrade path from
+   * the `plan` block below and the CLI prints a one-line hint, neither of which
+   * is possible from a generic "you do not have permission".
+   *
+   * Never used for a *data-plane* refusal, because there is no such thing —
+   * a secret fetch is never refused for a billing reason. See
+   * `isDataPlaneActive` in `@xecret/core/entitlements`.
+   */
+  | 'plan_limit'
   | 'internal_error'
   | 'unavailable';
 
@@ -43,6 +58,7 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   validation_failed: 422,
   unauthenticated: 401,
   forbidden: 403,
+  plan_limit: 403,
   not_found: 404,
   conflict: 409,
   payload_too_large: 413,
@@ -66,6 +82,27 @@ export interface FieldProblem {
   message: string;
 }
 
+/**
+ * What a plan refusal tells the client.
+ *
+ * Enough to render one upgrade button, and nothing else. No price — prices vary
+ * by currency and interval and belong to the pricing page, and an amount quoted
+ * in an error body is an amount that will one day be wrong. No organisation
+ * identifier, no counts of anything but the resource in question: these bodies
+ * are logged.
+ */
+export interface PlanProblem {
+  /** The resource or capability that was refused, e.g. `projects`, `oidcSso`. */
+  resource: string;
+  /** The ceiling, or `null` where the refusal was about a capability. */
+  limit: number | null;
+  current: number | null;
+  /** The plan the organisation holds now. */
+  plan: string;
+  /** The cheapest plan that would allow it, or `null` when none would. */
+  upgradeTo: string | null;
+}
+
 export interface ApiErrorBody {
   error: {
     code: ApiErrorCode;
@@ -73,6 +110,8 @@ export interface ApiErrorBody {
     /** Correlates a user-visible failure with the server log line. */
     requestId: string;
     fields?: FieldProblem[];
+    /** Present only on `plan_limit`. */
+    plan?: PlanProblem;
   };
 }
 
@@ -87,17 +126,19 @@ export interface ApiErrorBody {
 export class ApiError extends Error {
   readonly code: ApiErrorCode;
   readonly fields: FieldProblem[] | undefined;
+  readonly plan: PlanProblem | undefined;
   readonly logDetail: string | undefined;
 
   constructor(
     code: ApiErrorCode,
     message: string,
-    options: { fields?: FieldProblem[]; logDetail?: string } = {},
+    options: { fields?: FieldProblem[]; plan?: PlanProblem; logDetail?: string } = {},
   ) {
     super(message);
     this.name = 'ApiError';
     this.code = code;
     this.fields = options.fields;
+    this.plan = options.plan;
     this.logDetail = options.logDetail;
   }
 
@@ -112,6 +153,7 @@ export class ApiError extends Error {
       requestId,
     };
     if (this.fields && this.fields.length > 0) error.fields = this.fields;
+    if (this.plan) error.plan = this.plan;
     return { error };
   }
 }
@@ -156,6 +198,17 @@ export const errors = {
     new ApiError('validation_failed', 'The request could not be processed.', { fields }),
 
   conflict: (message: string): ApiError => new ApiError('conflict', message),
+
+  /**
+   * The organisation's plan does not include this.
+   *
+   * The message is composed by `@xecret/core/entitlements`, which builds it from
+   * plan names and a ceiling — never from request data. That keeps this inside
+   * rule 2 at the top of the file while still saying something useful, which
+   * the other constructors here cannot do because their inputs are untrusted.
+   */
+  planLimit: (message: string, plan: PlanProblem): ApiError =>
+    new ApiError('plan_limit', message, { plan }),
 
   tooLarge: (message: string): ApiError => new ApiError('payload_too_large', message),
 

@@ -2,6 +2,7 @@ import {
   countOrganizationsHeldBy,
   listOrganizationsForUser,
   provisionOrganization,
+  QuotaExceededError,
   RepositoryError,
 } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
@@ -78,13 +79,17 @@ export const GET = authenticatedRoute(async ({ principal, services }) => {
  * per minute, and this endpoint's cost is not only per minute — a slug is
  * claimed out of a global namespace permanently, deleted or not.
  *
- * The ceiling is *stated* here and *enforced* inside `provisionOrganization`,
- * behind the row lock it takes on the account. It used to be counted here, one
- * statement before the transaction, which made it advisory: every concurrent
- * request that read nine passed, and nothing further down disagreed. This route
- * now names the number and reads the refusal back off the transaction that
- * applied it, so there is one place the ceiling is decided and one place it is
- * imposed.
+ * The *abuse cap* is stated here; the ceiling actually applied is decided and
+ * imposed inside `provisionOrganization`, behind the row lock it takes on the
+ * account. It used to be counted here, one statement before the transaction,
+ * which made it advisory: every concurrent request that read nine passed, and
+ * nothing further down disagreed.
+ *
+ * Note that this route can no longer *name* the ceiling, and must not try. The
+ * number is `min(ORGANIZATIONS_PER_ACCOUNT_LIMIT, accountOrganizationCeiling)`,
+ * and the second half of that is resolved from the plans of the organisations
+ * the account already holds — rows this route never reads. It comes back on
+ * `QuotaExceededError.ceiling`, which is why that error carries a field at all.
  *
  * ── What it provisions, and what it deliberately does not ──
  * `provisionOrganization` mints the organisation, the caller's owner membership
@@ -116,12 +121,17 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
   const created = await provisionOrganization(services.db, {
     user: principal.user,
     envelope: services.envelope,
-    // The standing limit, which is a different control from the rate. Sixty of
-    // these a minute, sustained, is still an unbounded number of Org Master Keys
-    // and an unbounded number of slugs burned out of a namespace every tenant
-    // shares — `isOrgSlugAvailable` and `generateUniqueOrgSlug` do not filter
-    // `deleted_at`, deliberately, so deleting the organisation afterwards gives
-    // none of them back.
+    // The abuse cap, which is a different control from both the rate and the
+    // plan. Sixty of these a minute, sustained, is still an unbounded number of
+    // Org Master Keys and an unbounded number of slugs burned out of a
+    // namespace every tenant shares — `isOrgSlugAvailable` and
+    // `generateUniqueOrgSlug` do not filter `deleted_at`, deliberately, so
+    // deleting the organisation afterwards gives none of them back.
+    //
+    // `provisionOrganization` takes the lower of this and the plan ceiling
+    // resolved from the organisations the account already holds
+    // (`accountOrganizationCeiling`). On Free that is one; this number is what
+    // bounds the paid case, where the plan says unlimited.
     limit: ORGANIZATIONS_PER_ACCOUNT_LIMIT,
     name: body.name,
     // Two different contracts, and the difference matters:
@@ -143,9 +153,14 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
       ]);
     }
 
-    if (cause instanceof RepositoryError && cause.code === 'quotaExceeded') {
+    // The ceiling comes off the error rather than out of the constant above.
+    // They are no longer the same number: the constant is the abuse cap, and
+    // the transaction applied `min(cap, plan ceiling)` — one, for an account
+    // holding only Free organisations. Stating ten to somebody refused at one
+    // is an error message that describes a rule the system is not following.
+    if (cause instanceof QuotaExceededError) {
       await recordQuotaRefusal({ services, audit, record }, principal.user.id);
-      throw organizationLimitReached();
+      throw organizationLimitReached(cause.ceiling);
     }
 
     throw cause;
