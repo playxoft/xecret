@@ -4,9 +4,19 @@
  *
  *   phase run -- npm run plan:show -- --org acme
  *   phase run -- npm run plan:set  -- --org acme --plan team --interval yearly --seats 5
+ *   phase run -- npm run plan:set  -- --org acme --interval monthly
+ *   phase run -- npm run plan:set  -- --org acme --status past_due
  *   phase run -- npm run plan:set  -- --org acme --addon saml --on
  *   phase run -- npm run plan:set  -- --org acme --limit-override projects=2000
  *   phase run -- npm run plan:set  -- --org acme --plan free
+ *
+ * ## Seats are two columns, and this tool writes both
+ *
+ * `org_subscriptions.seats` is what the invoice is computed from.
+ * `organizations.seat_limit` is what `assertSeatAvailable` refuses an invitation
+ * against. `--seats` goes through `setBilledSeats`, which writes the pair in one
+ * transaction, because a tool that moved only the first would report success and
+ * leave the organisation unable to invite anybody up to the number it printed.
  *
  * ## Why this exists before any payment code does
  *
@@ -48,13 +58,20 @@ import {
   resolveEntitlements,
   type PlanId,
 } from '../packages/core/src/entitlements/index.ts';
+import { createAuditBuilder } from '../packages/core/src/audit/index.ts';
 import { createDatabaseHandle } from '../packages/db/src/client.ts';
-import { auditLogs } from '../packages/db/src/schema/audit.ts';
+import { appendAuditEvents } from '../packages/db/src/repositories/audit.ts';
+import { setBilledSeats } from '../packages/db/src/repositories/subscriptions.ts';
 import { orgSubscriptions } from '../packages/db/src/schema/billing.ts';
+import { subscriptionStatusEnum } from '../packages/db/src/schema/enums.ts';
 import { organizations } from '../packages/db/src/schema/tenancy.ts';
-import { uuidv7 } from '../packages/core/src/ids/index.ts';
 
 type Args = Record<string, string | boolean>;
+
+type SubscriptionStatusValue = (typeof subscriptionStatusEnum.enumValues)[number];
+type BillingInterval = 'monthly' | 'yearly';
+
+const BILLING_INTERVALS: readonly BillingInterval[] = ['monthly', 'yearly'];
 
 function parseArgs(argv: readonly string[]): Args {
   const args: Args = {};
@@ -83,6 +100,23 @@ function isPlanId(value: string): value is PlanId {
 }
 
 /**
+ * Checked against the Drizzle enum rather than a list written out here.
+ *
+ * `--status` used to be a bare cast. The spelling is the trap: `canceled` (US)
+ * and `cancelled` (the value) differ by one letter, and an unvalidated cast sent
+ * either straight to Postgres — where it failed as a raw enum error, after the
+ * organisation lookup had already run and with nothing saying which flag was
+ * wrong. Every other flag in this file is validated; this one is no different.
+ */
+function isSubscriptionStatus(value: string): value is SubscriptionStatusValue {
+  return (subscriptionStatusEnum.enumValues as readonly string[]).includes(value);
+}
+
+function isBillingInterval(value: string): value is BillingInterval {
+  return (BILLING_INTERVALS as readonly string[]).includes(value);
+}
+
+/**
  * `projects=2000` or `projects=null`.
  *
  * `null` means unlimited. Overrides are applied raise-only by
@@ -104,7 +138,18 @@ function parseOverride(spec: string): [string, number | null] {
   return [key, value];
 }
 
-function describe(row: typeof orgSubscriptions.$inferSelect, slug: string): void {
+/**
+ * `seatLimit` is passed in rather than read off the subscription because it is
+ * not there: it lives on `organizations`, and it is the column an invitation is
+ * actually refused against. Printed next to the billed number on every run so
+ * that a divergence between the two is visible without a second query — the two
+ * disagreeing is what made `--seats` look like it worked when it did not.
+ */
+function describe(
+  row: typeof orgSubscriptions.$inferSelect,
+  slug: string,
+  seatLimit: number,
+): void {
   const entitlements = resolveEntitlements({
     plan: row.plan,
     status: row.status,
@@ -125,6 +170,9 @@ function describe(row: typeof orgSubscriptions.$inferSelect, slug: string): void
   );
   console.log(`  status          ${row.status}`);
   console.log(`  seats billed    ${row.seats}`);
+  console.log(
+    `  seats enforced  ${seatLimit}${seatLimit === row.seats ? '' : '  ← diverged from billed'}`,
+  );
   console.log(`  control plane   ${entitlements.controlPlaneActive ? 'open' : 'closed'}`);
   // Stated on every run because it is the property most likely to be doubted
   // during an incident, and the one the product's promise rests on.
@@ -162,7 +210,11 @@ async function main(): Promise<void> {
 
   try {
     const [org] = await db
-      .select({ id: organizations.id, slug: organizations.slug })
+      .select({
+        id: organizations.id,
+        slug: organizations.slug,
+        seatLimit: organizations.seatLimit,
+      })
       .from(organizations)
       .where(eq(organizations.slug, slug))
       .limit(1);
@@ -191,7 +243,7 @@ async function main(): Promise<void> {
         .from(orgSubscriptions)
         .where(eq(orgSubscriptions.orgId, org.id))
         .limit(1);
-      if (row) describe(row, slug);
+      if (row) describe(row, slug, org.seatLimit);
       return;
     }
 
@@ -199,6 +251,32 @@ async function main(): Promise<void> {
     const changes: string[] = [];
     /** Which ceiling this run raised, for the audit row. */
     let overriddenLimit: string | null = null;
+    /**
+     * Seats, applied through `setBilledSeats` rather than through `patch`.
+     *
+     * Deliberately kept out of the patch: seats live in **two** columns, and this
+     * tool used to write only one of them. `org_subscriptions.seats` is what the
+     * invoice says; `organizations.seat_limit` is what `assertSeatAvailable`
+     * enforces on an invitation. Setting `--seats 25` and then watching
+     * invitations be refused at the default of five is the bug that produced —
+     * the tool reported success, and the number it printed was real, and the
+     * organisation still could not invite anybody.
+     */
+    let billedSeats: number | undefined;
+
+    /**
+     * `--interval` is read here rather than only inside the `--plan` branch.
+     *
+     * It was nested, so `plan:set --org acme --interval monthly` on an existing
+     * paid subscription added nothing to `changes` and exited with "Nothing to
+     * do" — there was no way to move a subscription between monthly and yearly
+     * with a tool that documents `--interval` as a flag.
+     */
+    let interval: BillingInterval | undefined;
+    if (typeof args['interval'] === 'string') {
+      if (!isBillingInterval(args['interval'])) fail('--interval must be "monthly" or "yearly".');
+      interval = args['interval'];
+    }
 
     if (typeof args['plan'] === 'string') {
       const plan = args['plan'];
@@ -212,14 +290,15 @@ async function main(): Promise<void> {
       // paid-without-one both impossible, so the tool has to settle it rather
       // than let the insert fail with a constraint name.
       if (plan === 'free') {
-        patch.billingInterval = null;
-      } else {
-        const interval = typeof args['interval'] === 'string' ? args['interval'] : 'yearly';
-        if (interval !== 'monthly' && interval !== 'yearly') {
-          fail('--interval must be "monthly" or "yearly".');
+        if (interval !== undefined) {
+          console.warn('  ! free has no billing interval; --interval is ignored.');
         }
-        patch.billingInterval = interval;
-        changes.push(`interval=${interval}`);
+        patch.billingInterval = null;
+        changes.push('interval=none');
+      } else {
+        const chosen = interval ?? 'yearly';
+        patch.billingInterval = chosen;
+        changes.push(`interval=${chosen}`);
       }
 
       const minimum = MINIMUM_SEATS[plan];
@@ -232,18 +311,35 @@ async function main(): Promise<void> {
           `  ! ${plan} has a ${minimum}-seat minimum; ${requested} was requested. Setting ${minimum}.`,
         );
       }
-      patch.seats = plan === 'free' ? 1 : Math.max(requested, minimum);
-      changes.push(`seats=${patch.seats}`);
-    } else if (typeof args['seats'] === 'string') {
-      const seats = Number(args['seats']);
-      if (!Number.isFinite(seats) || seats < 0) fail('--seats must be a number.');
-      patch.seats = seats;
-      changes.push(`seats=${seats}`);
+      billedSeats = plan === 'free' ? 1 : Math.max(requested, minimum);
+      changes.push(`seats=${billedSeats}`);
+    } else {
+      if (interval !== undefined) {
+        // Refused rather than silently written: the schema's interval check
+        // makes free-with-an-interval impossible, and a constraint name is a
+        // worse thing to read than a sentence.
+        if ((existing?.plan ?? 'free') === 'free') {
+          fail('A free subscription has no billing interval. Pass --plan as well.');
+        }
+        patch.billingInterval = interval;
+        changes.push(`interval=${interval}`);
+      }
+
+      if (typeof args['seats'] === 'string') {
+        const seats = Number(args['seats']);
+        if (!Number.isFinite(seats) || seats < 0) fail('--seats must be a number.');
+        billedSeats = seats;
+        changes.push(`seats=${seats}`);
+      }
     }
 
     if (typeof args['status'] === 'string') {
-      patch.status = args['status'] as typeof orgSubscriptions.$inferInsert.status;
-      changes.push(`status=${args['status']}`);
+      const status = args['status'];
+      if (!isSubscriptionStatus(status)) {
+        fail(`--status must be one of: ${subscriptionStatusEnum.enumValues.join(', ')}`);
+      }
+      patch.status = status;
+      changes.push(`status=${status}`);
     }
 
     if (typeof args['addon'] === 'string') {
@@ -273,7 +369,9 @@ async function main(): Promise<void> {
 
     if (typeof args['limit-override'] === 'string') {
       const [key, value] = parseOverride(args['limit-override']);
-      if (!(key in PLANS.free.limits)) {
+      // `Object.hasOwn`, not `in`: `--limit-override constructor=5` would pass an
+      // `in` check and be stored as an override naming no limit at all.
+      if (!Object.hasOwn(PLANS.free.limits, key)) {
         fail(`"${key}" is not a limit. Known: ${Object.keys(PLANS.free.limits).join(', ')}`);
       }
       patch.limitOverrides = { ...(existing?.limitOverrides ?? {}), [key]: value };
@@ -299,34 +397,32 @@ async function main(): Promise<void> {
 
     patch.updatedAt = new Date();
 
-    const [updated] = await db
-      .update(orgSubscriptions)
-      .set(patch)
-      .where(eq(orgSubscriptions.orgId, org.id))
-      .returning();
-
-    if (!updated) fail('Update returned no row.');
-
     // `actor_type` is 'system': an operator at a shell is not a user and not a
     // token, and inventing a synthetic user id would put a lie in the one table
     // the product promises is truthful. The operator's name goes in the
     // metadata, where it is plainly a label rather than an identity.
     //
-    // The metadata fields are the declared ones from `AuditMetadata` rather
-    // than the free-form object it would be convenient to write here. The
-    // allowlist is what guarantees no audit row can carry a secret, and a
-    // script that writes around it because it is "only an operator tool" is the
-    // first hole in that guarantee.
-    await db.insert(auditLogs).values({
-      id: uuidv7(),
+    // Built through `createAuditBuilder` rather than assembled as an insert.
+    // The declared field *names* from `AuditMetadata` were always here, but the
+    // values went in raw — so `LIMITS.operator`, `LIMITS.reason` and
+    // `LIMITS.actorLabel`, three caps added by this very change, applied to
+    // every audit row in the product except the ones this script wrote.
+    // `$USER` is an environment variable and `--operator` is an argument: both
+    // are as attacker-influenced as any string the sanitiser exists for, and a
+    // script that writes around the one code path because it is "only an
+    // operator tool" is the first hole in that guarantee.
+    const event = createAuditBuilder({
       orgId: org.id,
       actorType: 'system',
+      actorId: null,
       actorLabel: operator,
-      action: 'plan.changed',
-      outcome: 'success',
-      resourceType: 'org',
-      resourceId: org.id,
-      metadata: {
+      ipAddress: null,
+      userAgent: null,
+      requestId: null,
+    }).success(
+      'plan.changed',
+      { type: 'org', id: org.id },
+      {
         operator,
         ...(patch.plan ? { plan: patch.plan } : {}),
         ...(existing?.plan && patch.plan && existing.plan !== patch.plan
@@ -334,14 +430,34 @@ async function main(): Promise<void> {
           : {}),
         ...(typeof args['addon'] === 'string' ? { addonName: args['addon'] } : {}),
         ...(overriddenLimit ? { limitName: overriddenLimit } : {}),
-        ...(typeof patch.seats === 'number' ? { seatCount: patch.seats } : {}),
+        ...(billedSeats === undefined ? {} : { seatCount: billedSeats }),
         reason: changes.join(' '),
       },
-      createdAt: new Date(),
+    );
+
+    // One transaction, because seats are two columns and a run that wrote the
+    // invoice's number without the enforced one is the failure this tool had.
+    // The audit row joins them: a record of a change that did not fully commit
+    // is worse than no record, and this is the table the product promises is
+    // truthful.
+    const updated = await db.transaction(async (tx) => {
+      if (billedSeats !== undefined) await setBilledSeats(tx, org.id, billedSeats);
+
+      const [row] = await tx
+        .update(orgSubscriptions)
+        .set(patch)
+        .where(eq(orgSubscriptions.orgId, org.id))
+        .returning();
+      if (!row) return null;
+
+      await appendAuditEvents(tx, [event]);
+      return row;
     });
 
+    if (!updated) fail('Update returned no row.');
+
     console.log(`✓ ${slug}: ${changes.join(' ')}`);
-    describe(updated, slug);
+    describe(updated, slug, billedSeats ?? org.seatLimit);
   } finally {
     await end();
   }

@@ -184,6 +184,23 @@ const FREE_LIMITS: PlanLimits = {
   projects: 5,
   environmentsPerProject: 3,
   serviceTokens: 10,
+  /**
+   * 1 per pricing-plan.md §3 — and **not what is enforced today**.
+   *
+   * Seats are the one limit in this file with a second home. Invitations are
+   * refused by `assertSeatAvailable` against `organizations.seat_limit`, a
+   * column that predates this file and defaults to 5; nothing sets it from the
+   * plan at provisioning time. A Free organisation can therefore seat five
+   * people, not one, and the looser number is the one that applies.
+   *
+   * Left as a documented divergence rather than reconciled, in either direction:
+   * loosening this to 5 would put a number in this file that contradicts the
+   * pricing page, which is the single thing this file exists to prevent;
+   * tightening the column to 1 would retroactively lock teams out of
+   * organisations they already invited into, months before there is a checkout
+   * page to pay past it with. `setBilledSeats` is the path that writes the two
+   * together, and payments (P12) are where they stop diverging.
+   */
   seats: 1,
   cliDevicesPerUser: 2,
   webhooks: 0,

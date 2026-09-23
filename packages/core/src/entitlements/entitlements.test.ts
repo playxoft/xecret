@@ -377,6 +377,27 @@ describe('resolveEntitlements', () => {
     expect(e.limits.projects).toBe(5);
   });
 
+  /**
+   * The guard was `state.plan in PLANS`, and `in` walks the prototype chain.
+   * `'constructor'` and `'toString'` are own properties of `Object.prototype`,
+   * so both passed it, `PLANS[plan]` was `undefined`, and the next line threw a
+   * `TypeError` reading `.limits` — on the authorization path, which is the one
+   * place the fallback exists to keep exception-free. A defensive line that does
+   * not defend is worse than none, because it reads as though the case is
+   * handled.
+   *
+   * Unreachable through the database, which supplies this through a Postgres
+   * enum. That is precisely the argument the original comment makes for having
+   * the line at all, so it has to survive the input it was written against.
+   */
+  it('falls back to Free for a prototype key, not just an unknown string', () => {
+    for (const hostile of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
+      const e = resolveEntitlements(state({ plan: hostile as PlanId }));
+      expect(e.plan).toBe('free');
+      expect(e.limits.projects).toBe(5);
+    }
+  });
+
   it('FREE_ENTITLEMENTS matches a freshly resolved Free org', () => {
     expect(FREE_ENTITLEMENTS.plan).toBe('free');
     expect(FREE_ENTITLEMENTS.limits).toEqual(entitlementsFor('free').limits);
@@ -392,6 +413,16 @@ describe('limit overrides are raise-only', () => {
   it('ignores an attempt to lower one', () => {
     // A stale or malformed override must never downgrade a paying customer.
     const e = entitlementsFor('free', { limitOverrides: { projects: 2 } });
+    expect(e.limits.projects).toBe(5);
+  });
+
+  /** Same `in`-versus-`Object.hasOwn` bug, in the override loop. */
+  it('ignores an override naming a prototype key rather than a limit', () => {
+    const e = entitlementsFor('free', {
+      limitOverrides: { constructor: 9999, toString: 9999 },
+    });
+
+    expect(Object.hasOwn(e.limits, 'constructor')).toBe(false);
     expect(e.limits.projects).toBe(5);
   });
 

@@ -204,8 +204,21 @@ export async function recordFetches(
   fetches: number,
 ): Promise<void> {
   if (fetches <= 0) return;
+  await recordFetchesStatement(exec, orgId, periodStart, fetches);
+}
 
-  await exec
+/**
+ * @internal Exported so `subscriptions.test.ts` can assert the upsert shape —
+ * that it adds rather than overwrites, and that its conflict target is the
+ * composite key — without a database.
+ */
+export function recordFetchesStatement(
+  exec: Executor,
+  orgId: string,
+  periodStart: Date,
+  fetches: number,
+) {
+  return exec
     .insert(orgUsageCounters)
     .values({ orgId, periodStart, secretFetches: fetches })
     .onConflictDoUpdate({
@@ -223,6 +236,20 @@ export async function recordFetches(
  * Additive for the same reason as `recordFetches`, and the column it feeds is
  * what stops a retried report from billing twice: units owed are always
  * computed as `floor(billable / unit) - unitsAlreadySent`.
+ *
+ * ── Why this is an upsert and not an UPDATE ──
+ * It was an `UPDATE … WHERE org_id AND period_start`, which has no way to say
+ * that it matched nothing: zero rows affected is a successful statement. The
+ * caller would then believe the units were banked when they were not, and the
+ * next flush — recomputing `floor(billable / unit) - unitsAlreadySent` with
+ * `unitsAlreadySent` still zero — would report the same units to the provider a
+ * second time. A double charge, produced by the one column that exists to
+ * prevent double charges.
+ *
+ * The missing row is reachable: `recordFetches` returns early on a period with
+ * no fetches, so a period can legitimately have units reported against no
+ * counter row at all. Inserting `secret_fetches = 0` alongside is honest — no
+ * fetch was counted — and it is the row the *next* `recordFetches` will add to.
  */
 export async function recordMeteredUnits(
   exec: Executor,
@@ -231,14 +258,30 @@ export async function recordMeteredUnits(
   units: number,
 ): Promise<void> {
   if (units <= 0) return;
+  await recordMeteredUnitsStatement(exec, orgId, periodStart, units);
+}
 
-  await exec
-    .update(orgUsageCounters)
-    .set({
-      meteredUnitsSent: sql`${orgUsageCounters.meteredUnitsSent} + ${units}`,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(orgUsageCounters.orgId, orgId), eq(orgUsageCounters.periodStart, periodStart)));
+/**
+ * @internal Exported so `subscriptions.test.ts` can assert that this is an
+ * upsert and not the `UPDATE` it used to be — the difference between banking
+ * the units and silently affecting no rows.
+ */
+export function recordMeteredUnitsStatement(
+  exec: Executor,
+  orgId: string,
+  periodStart: Date,
+  units: number,
+) {
+  return exec
+    .insert(orgUsageCounters)
+    .values({ orgId, periodStart, secretFetches: 0, meteredUnitsSent: units })
+    .onConflictDoUpdate({
+      target: [orgUsageCounters.orgId, orgUsageCounters.periodStart],
+      set: {
+        meteredUnitsSent: sql`${orgUsageCounters.meteredUnitsSent} + ${units}`,
+        updatedAt: new Date(),
+      },
+    });
 }
 
 export function usageQuery(exec: Executor, orgId: string, periodStart: Date) {

@@ -19,7 +19,7 @@ import { orgSubscriptions } from '../schema/billing';
 import { orgMembers, organizations } from '../schema/tenancy';
 import { addMember } from './membership';
 import type { MemberRecord } from './membership';
-import { RepositoryError } from './shared';
+import { QuotaExceededError, RepositoryError } from './shared';
 import type { Executor } from './shared';
 import { createFreeSubscription, entitlementColumns } from './subscriptions';
 import type { SubscriptionEntitlementRow } from './subscriptions';
@@ -56,19 +56,6 @@ const SLUG_ATTEMPT_LIMIT = 8;
 const FALLBACK_SLUG_BASE = 'org';
 
 const FALLBACK_ORGANIZATION_NAME = 'My Organisation';
-
-export async function findOrganizationBySlug(
-  exec: Executor,
-  slug: string,
-): Promise<Organization | null> {
-  const [row] = await exec
-    .select()
-    .from(organizations)
-    .where(and(eq(organizations.slug, slug), isNull(organizations.deletedAt)))
-    .limit(1);
-
-  return row ?? null;
-}
 
 /**
  * An organisation and its entitlement columns, in one row.
@@ -481,9 +468,11 @@ export async function provisionOrganization(
     const ceiling = Math.min(accountOrganizationCeiling(held.plans), params.limit);
 
     if (held.total >= ceiling) {
-      throw new RepositoryError(
-        'quotaExceeded',
+      // The ceiling rides along on the error: the route has to say the number
+      // out loud, and this transaction is the only place it was ever computed.
+      throw new QuotaExceededError(
         `An account can hold at most ${ceiling} organisations.`,
+        ceiling,
       );
     }
 

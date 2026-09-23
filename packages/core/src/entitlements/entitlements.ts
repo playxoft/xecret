@@ -97,7 +97,10 @@ function applyOverrides(
   let changed = false;
 
   for (const [key, value] of Object.entries(overrides)) {
-    if (!(key in limits)) continue;
+    // `Object.hasOwn`, not `key in limits`: `in` walks the prototype chain, so
+    // an override named `constructor` or `toString` would pass the guard and
+    // then write a field onto the limits object that no `LimitedResource` names.
+    if (!Object.hasOwn(limits, key)) continue;
 
     const current = result[key];
 
@@ -133,9 +136,15 @@ function applyOverrides(
  * from our own database via a Postgres enum, so this should be unreachable; but
  * "unreachable" and "throws on the authorization path" is a combination worth
  * one defensive line.
+ *
+ * `Object.hasOwn` rather than `state.plan in PLANS`, because `in` walks the
+ * prototype chain and would have let `'constructor'` and `'toString'` through
+ * the guard to a `PLANS[plan]` of `undefined` and a `TypeError` one line later —
+ * on the authorization path, which is the single place this line exists to keep
+ * exception-free. The defensive line has to actually defend.
  */
 export function resolveEntitlements(state: SubscriptionState): Entitlements {
-  const plan: PlanId = state.plan in PLANS ? state.plan : DEFAULT_PLAN;
+  const plan: PlanId = Object.hasOwn(PLANS, state.plan) ? state.plan : DEFAULT_PLAN;
   const definition = PLANS[plan];
 
   const addons: OrgAddons = Object.freeze({
