@@ -70,10 +70,11 @@ export interface SeatDecision {
 export function resolveBilledSeats(request: SeatRequest): SeatDecision {
   const { plan, requested, billed, enforced } = request;
 
-  // Free bills one seat and enforces whatever it already enforced. A downgrade
-  // to Free does not confiscate access from members already seated — and it
-  // could not honestly grant it back either, because nothing in the product
-  // sells a Free organisation more.
+  // Free bills one seat, and its enforced ceiling only ever moves upward. A
+  // downgrade to Free does not confiscate access from members already seated;
+  // an explicit request may still raise the ceiling, which is the only thing
+  // `--seats` could sensibly mean on a plan that bills a fixed one. What it
+  // cannot do is cut — a plan change is not the place to evict a team.
   if (plan === 'free') {
     return {
       billed: 1,

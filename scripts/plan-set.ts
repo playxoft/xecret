@@ -172,11 +172,14 @@ function resolveSeats(params: {
 
   if (params.plan === 'free' && params.requested !== null) {
     // Free bills one seat whatever is asked for. Stated rather than left to be
-    // inferred from a `seats=1` line that looks like the flag was ignored.
-    console.warn(
-      '  ! free bills one seat. The enforced limit is left at ' +
-        `${decision.enforced}; only a paid plan bills more.`,
-    );
+    // inferred from a `seats=1` line that looks like the flag was ignored — and
+    // stated accurately, because the same flag *did* move the enforced ceiling
+    // if it asked for more than was there.
+    const enforced =
+      decision.enforced === params.enforced
+        ? `The enforced limit stays at ${decision.enforced}`
+        : `The enforced limit is raised from ${params.enforced} to ${decision.enforced}`;
+    console.warn(`  ! free bills one seat. ${enforced}; only a paid plan bills more.`);
   }
 
   return decision;
