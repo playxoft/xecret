@@ -219,20 +219,33 @@ export async function countOrganizationsHeldBy(
  * the question "which plan applies" has no answer until one is chosen.
  *
  * ── The rule ──
- * The most generous ceiling among the organisations the account already holds.
- * Unlimited wins outright; otherwise the largest number does.
+ * The most generous ceiling among the organisations the account **created and is
+ * still in**. Unlimited wins outright; otherwise the largest number does.
  *
- * Chosen because every alternative punishes somebody who paid. Taking the
- * *lowest* would mean joining a colleague's Free organisation silently revoked
- * your own Team allowance. Taking the plan of the organisation being created is
- * circular — it does not exist yet, and it would be Free. Taking the account's
- * "own" organisation requires picking one, and an account that was invited into
- * every organisation it belongs to has no own.
+ * Note which set that is, because it is narrower than "organisations the account
+ * belongs to" and the difference is deliberate. The plans come from
+ * `organizationsHeldByQuery`, which filters `created_by = userId` — so an
+ * account that was *invited* into somebody else's Team organisation is measured
+ * against the plans it bought itself, and being a member of a paid tenant does
+ * not raise its personal allowance. Anything wider would make a colleague's
+ * purchase spend on your behalf, and would let one Scale organisation hand an
+ * unlimited ceiling to everybody it ever invited.
  *
- * ── The consequence, stated plainly ──
+ * Chosen over the alternatives because each of those punishes somebody who paid.
+ * Taking the *lowest* of the set would mean starting a second Free organisation
+ * silently revoked the Team allowance you are paying for. Taking the plan of the
+ * organisation being created is circular — it does not exist yet, and it would be
+ * Free. Taking the account's "own" organisation requires picking one, and an
+ * account invited into every organisation it belongs to has none.
+ *
+ * ── The consequences, stated plainly ──
  * An account holding nothing but Free organisations may create one. That is a
  * tightening: the previous fixed ceiling was ten for everybody. It is also what
  * the pricing page says, and the pricing page is the contract.
+ *
+ * And: somebody who has created one Free organisation and been invited into a
+ * colleague's Team organisation is still capped at one. Their own account is on
+ * Free, which is the plan they are on; the upgrade that lifts it is one they buy.
  *
  * ── Why unlimited still lands on a number ──
  * `FAIR_USE.organizations`. Not to sell anything past it — crossing a fair-use

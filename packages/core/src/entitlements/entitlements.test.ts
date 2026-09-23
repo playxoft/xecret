@@ -20,6 +20,7 @@ import {
   FAIR_USE,
   FETCHES_PER_METERED_UNIT,
   MINIMUM_SEATS,
+  NULLABLE_LIMITS,
   PLAN_IDS,
   PLAN_RANK,
   PLANS,
@@ -424,6 +425,64 @@ describe('limit overrides are raise-only', () => {
 
     expect(Object.hasOwn(e.limits, 'constructor')).toBe(false);
     expect(e.limits.projects).toBe(5);
+  });
+
+  /**
+   * `null` means unlimited, and four `PlanLimits` fields have no unlimited:
+   * `secretVersionsRetained`, `auditRetentionDays`, `pitrDays` and
+   * `includedFetchesPerMonth` are typed `number` and every reader treats them as
+   * one. A `null` there passed the "is this a known limit?" guard, was
+   * persisted, and then threw a `TypeError` on the *next* read of that
+   * organisation — permanently, because the bad value is in the row.
+   */
+  it('ignores an unlimited override on a limit that has no unlimited', () => {
+    const e = entitlementsFor('free', {
+      limitOverrides: {
+        includedFetchesPerMonth: null,
+        auditRetentionDays: null,
+        pitrDays: null,
+        secretVersionsRetained: null,
+      },
+    });
+
+    expect(e.limits.includedFetchesPerMonth).toBe(PLANS.free.limits.includedFetchesPerMonth);
+    expect(e.limits.auditRetentionDays).toBe(PLANS.free.limits.auditRetentionDays);
+    expect(e.limits.pitrDays).toBe(PLANS.free.limits.pitrDays);
+    expect(e.limits.secretVersionsRetained).toBe(PLANS.free.limits.secretVersionsRetained);
+
+    // The failure this prevents is a read, not a write: the value only bites
+    // when somebody formats it.
+    expect(() => e.limits.includedFetchesPerMonth.toLocaleString('en-GB')).not.toThrow();
+  });
+
+  it('still accepts unlimited on a countable ceiling', () => {
+    const e = entitlementsFor('free', { limitOverrides: { projects: null } });
+    expect(e.limits.projects).toBeNull();
+  });
+
+  /** Every `LimitedResource` is nullable, and nothing else is. */
+  it('NULLABLE_LIMITS names exactly the countable resources', () => {
+    for (const resource of [
+      'organizations',
+      'projects',
+      'environmentsPerProject',
+      'serviceTokens',
+      'seats',
+      'cliDevicesPerUser',
+      'webhooks',
+      'secretsPerEnvironment',
+    ]) {
+      expect(NULLABLE_LIMITS.has(resource)).toBe(true);
+    }
+
+    for (const scalar of [
+      'secretVersionsRetained',
+      'auditRetentionDays',
+      'pitrDays',
+      'includedFetchesPerMonth',
+    ]) {
+      expect(NULLABLE_LIMITS.has(scalar)).toBe(false);
+    }
   });
 
   it('ignores an equal value', () => {

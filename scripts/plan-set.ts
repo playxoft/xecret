@@ -53,8 +53,10 @@
 import { eq } from 'drizzle-orm';
 import {
   MINIMUM_SEATS,
+  NULLABLE_LIMITS,
   PLAN_IDS,
   PLANS,
+  resolveBilledSeats,
   resolveEntitlements,
   type PlanId,
 } from '../packages/core/src/entitlements/index.ts';
@@ -114,6 +116,47 @@ function isSubscriptionStatus(value: string): value is SubscriptionStatusValue {
 
 function isBillingInterval(value: string): value is BillingInterval {
   return (BILLING_INTERVALS as readonly string[]).includes(value);
+}
+
+/**
+ * The seat decision, plus the sentences an operator should see about it.
+ *
+ * The arithmetic lives in `@xecret/core` (`resolveBilledSeats`) because it is a
+ * pricing rule and checkout has to reach the same answer; this wrapper only
+ * validates the flag and does the talking.
+ */
+function resolveSeats(params: {
+  plan: PlanId;
+  /** What `--seats` said, or `null` when the flag was absent. */
+  requested: number | null;
+  /** `org_subscriptions.seats` — what the invoice currently says. */
+  billed: number;
+  /** `organizations.seat_limit` — what invitations are currently refused against. */
+  enforced: number;
+}): number {
+  if (params.requested !== null && (!Number.isFinite(params.requested) || params.requested < 0)) {
+    fail('--seats must be a non-negative number.');
+  }
+
+  const decision = resolveBilledSeats(params);
+
+  if (decision.raisedToMinimum) {
+    console.warn(
+      `  ! ${params.plan} has a ${MINIMUM_SEATS[params.plan]}-seat minimum; ` +
+        `${params.requested} was requested. Setting ${decision.seats}.`,
+    );
+  }
+
+  if (decision.lowersEnforced) {
+    // Said out loud because this is the column invitations are refused against,
+    // and the effect is felt by somebody who was not in the room.
+    console.warn(
+      `  ! This lowers the enforced seat limit from ${params.enforced} to ${decision.seats}. ` +
+        'Members already seated keep their seats; new invitations will be refused.',
+    );
+  }
+
+  return decision.seats;
 }
 
 /**
@@ -214,12 +257,30 @@ async function main(): Promise<void> {
         id: organizations.id,
         slug: organizations.slug,
         seatLimit: organizations.seatLimit,
+        deletedAt: organizations.deletedAt,
       })
       .from(organizations)
       .where(eq(organizations.slug, slug))
       .limit(1);
 
     if (!org) fail(`No organisation with slug "${slug}".`);
+
+    // Deliberately *found* and then refused, rather than filtered out of the
+    // lookup. `organizations_slug_unique` is a total constraint, so a
+    // soft-deleted organisation keeps its slug for ever and a filtered query
+    // would report "no organisation with slug acme" about a row that plainly
+    // exists — sending the operator to look for a typo. Refusing here says which
+    // problem it actually is.
+    //
+    // Refused rather than warned because of what this tool can switch on: an
+    // add-on here is a $125/month WorkOS connection, and a plan is an invoice.
+    // Neither belongs on an organisation nothing in the product can reach.
+    if (org.deletedAt !== null) {
+      fail(
+        `"${slug}" was deleted on ${org.deletedAt.toISOString()}. ` +
+          'Its slug is still claimed — restore it before changing its plan.',
+      );
+    }
 
     const [existing] = await db
       .select()
@@ -301,17 +362,12 @@ async function main(): Promise<void> {
         changes.push(`interval=${chosen}`);
       }
 
-      const minimum = MINIMUM_SEATS[plan];
-      const requested =
-        typeof args['seats'] === 'string' ? Number(args['seats']) : (existing?.seats ?? 1);
-
-      if (!Number.isFinite(requested) || requested < 0) fail('--seats must be a number.');
-      if (plan !== 'free' && requested < minimum) {
-        console.warn(
-          `  ! ${plan} has a ${minimum}-seat minimum; ${requested} was requested. Setting ${minimum}.`,
-        );
-      }
-      billedSeats = plan === 'free' ? 1 : Math.max(requested, minimum);
+      billedSeats = resolveSeats({
+        plan,
+        requested: typeof args['seats'] === 'string' ? Number(args['seats']) : null,
+        billed: existing?.seats ?? 1,
+        enforced: org.seatLimit,
+      });
       changes.push(`seats=${billedSeats}`);
     } else {
       if (interval !== undefined) {
@@ -326,10 +382,18 @@ async function main(): Promise<void> {
       }
 
       if (typeof args['seats'] === 'string') {
-        const seats = Number(args['seats']);
-        if (!Number.isFinite(seats) || seats < 0) fail('--seats must be a number.');
-        billedSeats = seats;
-        changes.push(`seats=${seats}`);
+        // The plan's own minimum applies here too. It used to be reached only
+        // through the `--plan` branch, so `--seats 1` on a Scale organisation
+        // set one billed seat against a ten-seat minimum and under-charged it,
+        // silently, against what both `MINIMUM_SEATS` and this file's header
+        // say is enforced by this tool.
+        billedSeats = resolveSeats({
+          plan: existing?.plan ?? 'free',
+          requested: Number(args['seats']),
+          billed: existing?.seats ?? 1,
+          enforced: org.seatLimit,
+        });
+        changes.push(`seats=${billedSeats}`);
       }
     }
 
@@ -373,6 +437,18 @@ async function main(): Promise<void> {
       // `in` check and be stored as an override naming no limit at all.
       if (!Object.hasOwn(PLANS.free.limits, key)) {
         fail(`"${key}" is not a limit. Known: ${Object.keys(PLANS.free.limits).join(', ')}`);
+      }
+      // Only some limits have an "unlimited" to reach. `resolveEntitlements`
+      // ignores a `null` on the others, so writing one would store a value that
+      // silently does nothing — and `describe()` below would read it back as a
+      // number that is not there. Refused here, where there is an operator to
+      // tell; ignored there, where an exception would take down entitlement
+      // resolution for the tenant.
+      if (value === null && !NULLABLE_LIMITS.has(key)) {
+        fail(
+          `"${key}" cannot be unlimited — it is a number every reader treats as one. ` +
+            `Unlimited is available for: ${[...NULLABLE_LIMITS].join(', ')}`,
+        );
       }
       patch.limitOverrides = { ...(existing?.limitOverrides ?? {}), [key]: value };
       overriddenLimit = key;
@@ -448,13 +524,16 @@ async function main(): Promise<void> {
         .set(patch)
         .where(eq(orgSubscriptions.orgId, org.id))
         .returning();
-      if (!row) return null;
+      // Thrown, not returned. `return null` from a transaction callback
+      // *commits* it — so a missed UPDATE left `setBilledSeats`' two writes on
+      // disk while the tool printed "Update returned no row." and wrote no audit
+      // event: a partial write reported as a total failure, and the one shape of
+      // outcome this table must never have.
+      if (!row) throw new Error('The subscription UPDATE matched no row.');
 
       await appendAuditEvents(tx, [event]);
       return row;
     });
-
-    if (!updated) fail('Update returned no row.');
 
     console.log(`✓ ${slug}: ${changes.join(' ')}`);
     describe(updated, slug, billedSeats ?? org.seatLimit);

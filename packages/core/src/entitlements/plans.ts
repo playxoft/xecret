@@ -24,7 +24,7 @@
  * Changing one here without changing it there is a bug in both places.
  */
 
-import type { OrgAddons, Plan, PlanFeatures, PlanId, PlanLimits } from './types';
+import type { LimitedResource, OrgAddons, Plan, PlanFeatures, PlanId, PlanLimits } from './types';
 
 /**
  * Ordering, weakest to strongest.
@@ -74,6 +74,37 @@ export const FAIR_USE = Object.freeze({
   seats: null,
   cliDevicesPerUser: null,
 } as const satisfies Readonly<Record<string, number | null>>);
+
+/**
+ * Which limits may be set to `null`, meaning unlimited.
+ *
+ * Not every field of `PlanLimits` can be: `secretVersionsRetained`,
+ * `auditRetentionDays`, `pitrDays` and `includedFetchesPerMonth` are typed
+ * `number`, and every reader treats them as one —
+ * `includedFetchesPerMonth.toLocaleString()` in the operator tool, arithmetic in
+ * the metered-usage calculation. A support override writing `null` into one of
+ * them passed the "is this a known limit?" check, was persisted, and then threw
+ * a `TypeError` on the *next* read of that organisation, for ever.
+ *
+ * `LimitedResource` is exactly the nullable set, and the `satisfies` is what
+ * keeps that true: adding a member without adding it here fails to compile, and
+ * a key that is not one fails too.
+ */
+const NULLABLE_LIMIT_KEYS = Object.freeze({
+  organizations: true,
+  projects: true,
+  environmentsPerProject: true,
+  serviceTokens: true,
+  seats: true,
+  cliDevicesPerUser: true,
+  webhooks: true,
+  secretsPerEnvironment: true,
+} as const satisfies Readonly<Record<LimitedResource, true>>);
+
+/** The names from `NULLABLE_LIMIT_KEYS`, for runtime membership tests. */
+export const NULLABLE_LIMITS: ReadonlySet<string> = Object.freeze(
+  new Set<string>(Object.keys(NULLABLE_LIMIT_KEYS)),
+);
 
 /**
  * How close to a hard ceiling counts as "approaching".
