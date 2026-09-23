@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/button';
 import {
   ArrowRightIcon,
   CheckIcon,
+  ChevronDownIcon,
   ExternalLinkIcon,
   FileTextIcon,
   HistoryIcon,
@@ -58,14 +59,18 @@ import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } fro
  * a limit the page does not show.
  *
  * ── Why the billing toggle ships no JavaScript ──
- * Monthly and yearly figures are both in the markup, and CSS shows whichever
- * the checked radio names — see `.x-price-monthly` in globals.css. The obvious
- * alternative, `useState` and a client component around the plans block, would
- * turn the one part of this page a reader is deciding on into something that
- * arrives after hydration: on a slow connection the card paints $12, the bundle
- * lands, and the number changes under them. A price that moves on its own is
- * the last thing this page can afford. It also costs a `'use client'` boundary
- * on an otherwise fully static document.
+ * Every currency and both periods are in the markup, and CSS shows whichever
+ * pair the checked radios name — see `.x-price` and the eight reveal rules in
+ * globals.css. The obvious alternative, `useState` and a client component
+ * around the plans block, would turn the one part of this page a reader is
+ * deciding on into something that arrives after hydration: on a slow connection
+ * the card paints $12, the bundle lands, and the number changes under them. A
+ * price that moves on its own is the last thing this page can afford. It also
+ * costs a `'use client'` boundary on a document that otherwise ships none.
+ *
+ * The document is no longer *static*, which is a separate thing and is said
+ * plainly at `resolveInitialCurrency` below: reading `CF-IPCountry` to pick the
+ * opening currency opts this route into dynamic rendering.
  *
  * The shape of the JSX follows from the selector. `~` can only reach a later
  * sibling, so the two radios are the first children of the fieldset and
@@ -106,9 +111,17 @@ import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } fro
  * last one.
  */
 
-const TITLE = 'Pricing: free forever, or $5 per member';
+// Both of these name the billing period, and that is not pedantry: $5 and $12
+// are the *yearly* rates, the cards default to monthly, and these two strings
+// are what a search result shows above a page rendering $8 and $19. A rich
+// result advertising a price the page does not show is the failure mode the
+// note at the top of this file is about — it just reaches the metadata too.
+// Single sign-on came out of the description for the other reason: it is
+// `notYet` on the Team card and `Not yet` in the matrix, so promising it here
+// made the metadata the most optimistic thing about the product.
+const TITLE = 'Pricing: free forever, or $5 a member billed yearly';
 const DESCRIPTION =
-  'Five xecret plans: free for one developer, Pro from $5 a member a month, Team from $12 with single sign-on included, Scale from $22, self-hosted free forever. Service tokens and CI never cost anything, and no card is taken in pre-alpha.';
+  'Four xecret plans: free for one developer, Pro $8 a member a month ($5 billed yearly), Team $19, Enterprise by contract, and self-hosted free forever. Service tokens and CI never cost anything, and no card is taken in pre-alpha.';
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -152,7 +165,7 @@ const SEGMENT =
  * failure mode this guards against is not a typo — it is the page showing a
  * tick beside SAML in one place and an absence in the other.
  */
-const NOT_YET = 'Not yet';
+const NOT_YET = 'Coming soon';
 
 /** One word, used wherever a plan limit is `null`. */
 const UNLIMITED = 'Unlimited';
@@ -165,6 +178,20 @@ const UNLIMITED = 'Unlimited';
  * dash gives the first to a reader entitled to the second.
  */
 const ADDON = 'Add-on';
+
+/**
+ * Priced as an add-on, and not built.
+ *
+ * SAML and SCIM are both. The matrix used to read a bare `Add-on` for the paid
+ * self-serve columns while the *enterprise* column on the same row read the
+ * not-built chip, which told a Team customer they could buy SAML today and an
+ * Enterprise customer they could not — the two answers inverted against the tier ladder, on the one
+ * capability this page charges $199 a month for. Both halves have to be on the
+ * cell, because dropping either one publishes a falsehood: `Add-on` alone sells
+ * something that does not exist, `Not yet` alone hides that it will be charged
+ * for separately when it does.
+ */
+const ADDON_NOT_YET = `${ADDON}, coming soon`;
 
 /**
  * The limits, read from the file the server enforces from.
@@ -183,8 +210,20 @@ const LIMITS = {
   free: PLAN_DEFINITIONS.free.limits,
   pro: PLAN_DEFINITIONS.pro.limits,
   team: PLAN_DEFINITIONS.team.limits,
-  scale: PLAN_DEFINITIONS.scale.limits,
+  enterprise: PLAN_DEFINITIONS.enterprise.limits,
 } as const;
+
+/**
+ * A ceiling as a cell or a bullet: the number, or the word for `null`.
+ *
+ * Every countable on Pro and Team is a number now, and Enterprise is where
+ * `null` lives — so this exists to render one column rather than to paper over a
+ * plan whose limits nobody wrote down. `String(limit)` on a `null` produces the
+ * literal `"null"`, which is the failure this replaces.
+ */
+function formatLimit(limit: number | null): string {
+  return limit === null ? UNLIMITED : limit.toLocaleString('en-GB');
+}
 
 /**
  * `150_000` → `150,000`, and `2_000_000` → `2 million`.
@@ -201,9 +240,26 @@ function formatCount(value: number): string {
   return value.toLocaleString('en-GB');
 }
 
+/**
+ * `7` → `7 days`, `365` → `1 year`.
+ *
+ * One column used to carry the literal `'1 year'` while the rest read
+ * `LIMITS.*.auditRetentionDays`, which meant it could stop matching the server
+ * with every test still green — the single thing importing the limits at all was
+ * supposed to prevent. A year is the only retention worth rewording, so the
+ * rewording lives here and every column goes through it.
+ */
+function formatRetention(days: number): string {
+  if (days % 365 === 0) {
+    const years = days / 365;
+    return years === 1 ? '1 year' : `${years} years`;
+  }
+  return `${days} days`;
+}
+
 /* ── The plans ─────────────────────────────────────────────────────────────── */
 
-type PlanId = 'free' | 'pro' | 'team' | 'scale' | 'enterprise' | 'self-hosted';
+type PlanId = 'free' | 'pro' | 'team' | 'enterprise' | 'self-hosted';
 
 /**
  * The four price sheets — pricing-plan.md §4.
@@ -411,12 +467,19 @@ const PRICED_PLANS: readonly Plan[] = [
     audience:
       'For a small team that has outgrown the free limits and does not yet need to keep anyone out of production.',
     features: [
-      { text: 'Unlimited organisations, projects and environments' },
+      {
+        text: `${formatLimit(LIMITS.pro.projects)} projects across ${formatLimit(LIMITS.pro.organizations)} organisations`,
+      },
+      {
+        text: `${formatLimit(LIMITS.pro.environmentsPerProject)} environments per project, ${formatLimit(LIMITS.pro.secretsPerEnvironment)} secrets in each`,
+      },
+      // The one uncapped thing on this tier, and it is uncapped on purpose:
+      // the gate to Team is per-environment access control, not headcount.
       { text: 'Unlimited members — everyone can read every environment' },
+      { text: `${formatLimit(LIMITS.pro.serviceTokens)} service tokens for CI, all free` },
       { text: `${formatCount(LIMITS.pro.includedFetchesPerMonth)} secret fetches a month` },
       { text: `${LIMITS.pro.auditRetentionDays} days of audit history` },
       { text: 'Secret referencing and environment inheritance', notYet: true },
-      { text: 'Environment promotion and point-in-time restore', notYet: true },
     ],
     cta: { label: 'Start on Pro', href: '/sign-up', external: false },
     recommended: false,
@@ -465,66 +528,23 @@ const PRICED_PLANS: readonly Plan[] = [
     features: [
       { text: 'Everything in Pro' },
       { text: 'Roles and per-environment access' },
-      { text: 'Single sign-on with OIDC, included', notYet: true },
-      { text: `${LIMITS.team.auditRetentionDays} days of audit history` },
+      {
+        text: `${formatLimit(LIMITS.team.projects)} projects, ${formatLimit(LIMITS.team.secretsPerEnvironment)} secrets per environment`,
+      },
+      { text: `${formatLimit(LIMITS.team.serviceTokens)} service tokens for CI` },
       { text: `${formatCount(LIMITS.team.includedFetchesPerMonth)} secret fetches a month` },
+      { text: `${formatRetention(LIMITS.team.auditRetentionDays)} of audit history` },
+      { text: 'Single sign-on with OIDC, included', notYet: true },
+      // Came down from Scale when that tier went. Both are security posture a
+      // small team with a contractor needs most, which is the argument for them
+      // being here rather than behind a contract — see TEAM_FEATURES.
+      { text: 'GitHub OIDC federation — no static CI tokens', notYet: true },
+      { text: 'Scheduled and expiring secrets', notYet: true },
       { text: 'Change approvals and break-glass access', notYet: true },
     ],
     cta: { label: 'Start on Team', href: '/sign-up', external: false },
     recommended: true,
     amount: '19',
-    unitText: 'member/month',
-  },
-  {
-    id: 'scale',
-    name: 'Scale',
-    prices: {
-      usd: {
-        monthly: { price: '$35', unit: 'per member, per month' },
-        yearly: {
-          price: '$22',
-          unit: 'per member, per month',
-          note: '$264 per member, billed yearly',
-        },
-      },
-      inr: {
-        monthly: { price: '₹1,099', unit: 'per member, per month' },
-        yearly: {
-          price: '₹692',
-          unit: 'per member, per month',
-          note: '₹8,299 per member, billed yearly',
-        },
-      },
-      jpy: {
-        monthly: { price: '¥3,900', unit: 'per member, per month' },
-        yearly: {
-          price: '¥2,483',
-          unit: 'per member, per month',
-          note: '¥29,800 per member, billed yearly',
-        },
-      },
-      aud: {
-        monthly: { price: 'A$55', unit: 'per member, per month' },
-        yearly: {
-          price: 'A$35',
-          unit: 'per member, per month',
-          note: 'A$420 per member, billed yearly',
-        },
-      },
-    },
-    audience:
-      'For a company whose security review asks about provisioning, rotation and where the audit log is streamed.',
-    features: [
-      { text: 'Everything in Team' },
-      { text: 'A year of audit history, streamed to your SIEM', notYet: true },
-      { text: 'Custom roles', notYet: true },
-      { text: 'GitHub OIDC federation — no static CI tokens', notYet: true },
-      { text: 'Scheduled and expiring secrets', notYet: true },
-      { text: 'Priority support, one business day' },
-    ],
-    cta: { label: 'Start on Scale', href: '/sign-up', external: false },
-    recommended: false,
-    amount: '35',
     unitText: 'member/month',
   },
   {
@@ -551,10 +571,25 @@ const PRICED_PLANS: readonly Plan[] = [
     audience:
       'For an organisation that needs residency, its own root key and a contract behind both.',
     features: [
-      { text: 'Everything in Scale' },
+      { text: 'Everything in Team' },
+      { text: 'No ceiling on projects, environments, secrets or tokens' },
+      { text: 'Custom roles', notYet: true },
+      { text: 'Audit streamed to your SIEM', notYet: true },
       { text: 'SAML and SCIM included rather than charged as add-ons', notYet: true },
-      { text: 'Your own root key, and the escrow ceremony to go with it' },
-      { text: 'Data residency and custom retention', notYet: true },
+      // Chipped, because it is not built. `packages/core/src/crypto/escrow.ts`
+      // is the recovery-share format for an account, not a customer-held root
+      // key — the hosted service holds the root key for every plan today, which
+      // is what `/docs/security/trust-model` says and what the self-hosting
+      // band offers as the actual alternative. This was the one bullet on the
+      // page carrying a tick for something nobody can have.
+      { text: 'Your own root key, and the escrow ceremony to go with it', notYet: true },
+      // Split, for the same reason as Scale's audit bullet: the matrix already
+      // publishes `Custom` retention for this column as a live value, so one
+      // chip across both halves had the card and the table disagreeing. The
+      // residency half is the unbuilt one — "Where your data sits" reads
+      // "Cloudflare's network" in every hosted column, this one included.
+      { text: 'Custom audit retention' },
+      { text: 'Data residency', notYet: true },
       { text: 'A commercial, non-AGPL self-hosting licence' },
       { text: 'A contractual SLA and a named contact' },
     ],
@@ -634,18 +669,33 @@ const PLANS: readonly Plan[] = [...PRICED_PLANS, SELF_HOSTED];
  * a reader could otherwise discover later and feel misled by. A vendor that
  * shows the receipt is making a claim that can be checked.
  */
+/**
+ * The two add-ons, and the tier each one starts from.
+ *
+ * `notYet` is on both because neither is built, and this band was the last
+ * surface on the page still saying otherwise: every matrix cell that names them
+ * reads `Add-on, not yet` and the paragraph under the table says "neither is
+ * built for anybody, at any price", while the band rendered $199 and $249 as
+ * live prices. `from` is here for the same reason — the matrix gates SCIM at
+ * Enterprise, and a band that omits the gate tells a Team reader they can buy
+ * it.
+ */
 const ADDONS = [
   {
     name: 'SAML single sign-on',
     price: '$199',
     unit: 'per connection, per month',
-    body: 'For an identity provider that speaks SAML rather than OIDC. Brokered through WorkOS, which charges us $125 per connection per month; we charge $199 and keep the difference for the support that comes with it. OIDC single sign-on is included from Team and costs nothing extra, because it costs us nothing.',
+    from: 'Team and above',
+    notYet: true,
+    body: 'For an identity provider that speaks SAML rather than OIDC. Brokered through WorkOS, which charges us $125 per connection per month; we charge $199 and keep the difference for the support that comes with it. OIDC single sign-on will be included from Team and cost nothing extra, because it costs us nothing — neither is built yet.',
   },
   {
     name: 'Directory sync (SCIM)',
     price: '$249',
     unit: 'per connection, per month',
-    body: 'Members provisioned and deprovisioned by your directory. A second WorkOS connection at the same $125 to us, and the reason it is priced separately rather than folded into a tier: bundling it would mean paying for a connection for every customer on that tier, including the ones who never use it. Included with Enterprise.',
+    from: 'Enterprise',
+    notYet: true,
+    body: 'Members provisioned and deprovisioned by your directory. A second WorkOS connection at the same $125 to us, and the reason it is priced separately rather than folded into a tier: bundling it would mean paying for a connection for every customer on that tier, including the ones who never use it. Included with Enterprise once it is built.',
   },
 ] as const;
 
@@ -670,21 +720,45 @@ interface MatrixGroup {
   readonly rows: readonly MatrixRow[];
 }
 
-/** Every paid tier and the self-hosted column say "unlimited" together. */
-const UNLIMITED_ABOVE_FREE = {
-  pro: UNLIMITED,
-  team: UNLIMITED,
-  scale: UNLIMITED,
-  enterprise: UNLIMITED,
-  'self-hosted': UNLIMITED,
-} as const;
+/**
+ * One countable ceiling, across every column.
+ *
+ * Replaces the constant that spread `Unlimited` across all four paid columns.
+ * Pro and Team publish real numbers now — see the note on `PRO_LIMITS` in
+ * `plans.ts` — and a shared "unlimited" would have been the page stating a
+ * promise the server had stopped making, which is the single failure the
+ * imported limits exist to prevent.
+ *
+ * Self-hosting is unlimited by construction rather than by plan: there is no
+ * meter in a server you run, and nothing in the code to raise.
+ */
+function limitRow(
+  label: string,
+  resource:
+    | 'organizations'
+    | 'projects'
+    | 'seats'
+    | 'environmentsPerProject'
+    | 'serviceTokens'
+    | 'secretsPerEnvironment',
+): MatrixRow {
+  return {
+    label,
+    values: {
+      free: formatLimit(LIMITS.free[resource]),
+      pro: formatLimit(LIMITS.pro[resource]),
+      team: formatLimit(LIMITS.team[resource]),
+      enterprise: formatLimit(LIMITS.enterprise[resource]),
+      'self-hosted': UNLIMITED,
+    },
+  };
+}
 
 /** A capability every column has. */
 const EVERYWHERE = {
   free: true,
   pro: true,
   team: true,
-  scale: true,
   enterprise: true,
   'self-hosted': true,
 } as const;
@@ -701,7 +775,6 @@ const NOWHERE_YET = {
   free: NOT_YET,
   pro: NOT_YET,
   team: NOT_YET,
-  scale: NOT_YET,
   enterprise: NOT_YET,
   'self-hosted': NOT_YET,
 } as const;
@@ -710,26 +783,12 @@ const MATRIX = [
   {
     title: 'Limits',
     rows: [
-      {
-        label: 'Organisations',
-        values: { free: String(LIMITS.free.organizations), ...UNLIMITED_ABOVE_FREE },
-      },
-      {
-        label: 'Projects',
-        values: { free: String(LIMITS.free.projects), ...UNLIMITED_ABOVE_FREE },
-      },
-      {
-        label: 'Members',
-        values: { free: String(LIMITS.free.seats), ...UNLIMITED_ABOVE_FREE },
-      },
-      {
-        label: 'Environments per project',
-        values: { free: String(LIMITS.free.environmentsPerProject), ...UNLIMITED_ABOVE_FREE },
-      },
-      {
-        label: 'Service tokens for CI',
-        values: { free: String(LIMITS.free.serviceTokens), ...UNLIMITED_ABOVE_FREE },
-      },
+      limitRow('Organisations', 'organizations'),
+      limitRow('Projects', 'projects'),
+      limitRow('Members', 'seats'),
+      limitRow('Environments per project', 'environmentsPerProject'),
+      limitRow('Secrets per environment', 'secretsPerEnvironment'),
+      limitRow('Service tokens for CI', 'serviceTokens'),
       // Machines are free everywhere and this row is where a reader checks
       // that. The competing meter in this category bills per identity, human
       // or not, which is the comparison this row is written to invite.
@@ -739,7 +798,6 @@ const MATRIX = [
           free: 'Free',
           pro: 'Free',
           team: 'Free',
-          scale: 'Free',
           enterprise: 'Free',
           'self-hosted': 'Free',
         },
@@ -750,8 +808,7 @@ const MATRIX = [
           free: formatCount(LIMITS.free.includedFetchesPerMonth),
           pro: formatCount(LIMITS.pro.includedFetchesPerMonth),
           team: formatCount(LIMITS.team.includedFetchesPerMonth),
-          scale: formatCount(LIMITS.scale.includedFetchesPerMonth),
-          enterprise: 'Custom',
+          enterprise: formatCount(LIMITS.enterprise.includedFetchesPerMonth),
           'self-hosted': UNLIMITED,
         },
       },
@@ -763,7 +820,6 @@ const MATRIX = [
           free: 'Nothing breaks',
           pro: 'Billed, never blocked',
           team: 'Billed, never blocked',
-          scale: 'Billed, never blocked',
           enterprise: 'Contracted',
           'self-hosted': 'Your infrastructure',
         },
@@ -771,11 +827,13 @@ const MATRIX = [
       {
         label: 'Audit history',
         values: {
-          free: `${LIMITS.free.auditRetentionDays} days`,
-          pro: `${LIMITS.pro.auditRetentionDays} days`,
-          team: `${LIMITS.team.auditRetentionDays} days`,
-          scale: '1 year',
-          enterprise: 'Custom',
+          free: formatRetention(LIMITS.free.auditRetentionDays),
+          pro: formatRetention(LIMITS.pro.auditRetentionDays),
+          team: formatRetention(LIMITS.team.auditRetentionDays),
+          // The default a contract raises, not a wall — but a default is still a
+          // number the server holds, and `'Custom'` here was the one column on
+          // this row that could stop matching the engine with every test green.
+          enterprise: `${formatRetention(LIMITS.enterprise.auditRetentionDays)}, or as contracted`,
           'self-hosted': 'Your database',
         },
       },
@@ -794,7 +852,6 @@ const MATRIX = [
           free: false,
           pro: NOT_YET,
           team: NOT_YET,
-          scale: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -805,7 +862,6 @@ const MATRIX = [
           free: false,
           pro: NOT_YET,
           team: NOT_YET,
-          scale: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -816,7 +872,6 @@ const MATRIX = [
           free: false,
           pro: NOT_YET,
           team: NOT_YET,
-          scale: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -827,7 +882,6 @@ const MATRIX = [
           free: false,
           pro: NOT_YET,
           team: NOT_YET,
-          scale: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -838,7 +892,6 @@ const MATRIX = [
           free: false,
           pro: false,
           team: false,
-          scale: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -862,7 +915,6 @@ const MATRIX = [
           free: false,
           pro: false,
           team: true,
-          scale: true,
           enterprise: true,
           'self-hosted': true,
         },
@@ -873,7 +925,6 @@ const MATRIX = [
           free: false,
           pro: false,
           team: true,
-          scale: true,
           enterprise: true,
           'self-hosted': true,
         },
@@ -884,7 +935,6 @@ const MATRIX = [
           free: false,
           pro: false,
           team: NOT_YET,
-          scale: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -895,7 +945,6 @@ const MATRIX = [
           free: false,
           pro: false,
           team: NOT_YET,
-          scale: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -906,7 +955,6 @@ const MATRIX = [
           free: false,
           pro: false,
           team: false,
-          scale: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -920,7 +968,6 @@ const MATRIX = [
           free: false,
           pro: false,
           team: NOT_YET,
-          scale: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -933,8 +980,7 @@ const MATRIX = [
         values: {
           free: false,
           pro: false,
-          team: ADDON,
-          scale: ADDON,
+          team: ADDON_NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -945,7 +991,6 @@ const MATRIX = [
           free: false,
           pro: false,
           team: false,
-          scale: ADDON,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -966,7 +1011,6 @@ const MATRIX = [
           free: false,
           pro: NOT_YET,
           team: NOT_YET,
-          scale: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -977,7 +1021,6 @@ const MATRIX = [
           free: false,
           pro: false,
           team: false,
-          scale: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -988,7 +1031,6 @@ const MATRIX = [
           free: false,
           pro: NOT_YET,
           team: NOT_YET,
-          scale: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -1004,7 +1046,6 @@ const MATRIX = [
           free: 'Via the API',
           pro: 'Via the API',
           team: 'Via the API',
-          scale: 'Via the API',
           enterprise: 'Custom',
           'self-hosted': 'Via the API',
         },
@@ -1015,7 +1056,6 @@ const MATRIX = [
           free: false,
           pro: false,
           team: false,
-          scale: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -1026,9 +1066,34 @@ const MATRIX = [
           free: "Cloudflare's network",
           pro: "Cloudflare's network",
           team: "Cloudflare's network",
-          scale: "Cloudflare's network",
           enterprise: "Cloudflare's network",
           'self-hosted': 'Wherever you host it',
+        },
+      },
+      // Both rows exist because the Enterprise card names both capabilities,
+      // and a claim on a card that a reader cannot find in this table is the
+      // half-told story the header note is about. Residency is chosen rather
+      // than given, so it is a separate question from "Where your data sits"
+      // above — that row says where it sits today, this one says whether you
+      // get to decide.
+      {
+        label: 'Choose your data region',
+        values: {
+          free: false,
+          pro: false,
+          team: false,
+          enterprise: NOT_YET,
+          'self-hosted': true,
+        },
+      },
+      {
+        label: 'Your own root key',
+        values: {
+          free: false,
+          pro: false,
+          team: false,
+          enterprise: NOT_YET,
+          'self-hosted': true,
         },
       },
       {
@@ -1037,7 +1102,6 @@ const MATRIX = [
           free: false,
           pro: false,
           team: false,
-          scale: false,
           enterprise: true,
           'self-hosted': true,
         },
@@ -1048,7 +1112,6 @@ const MATRIX = [
           free: 'GitHub issues',
           pro: 'Email',
           team: 'Priority email',
-          scale: 'Priority email',
           enterprise: 'Contracted',
           'self-hosted': 'GitHub issues',
         },
@@ -1061,7 +1124,6 @@ const MATRIX = [
           free: 'AGPL-3.0 + MIT',
           pro: 'AGPL-3.0 + MIT',
           team: 'AGPL-3.0 + MIT',
-          scale: 'AGPL-3.0 + MIT',
           enterprise: 'AGPL-3.0 + MIT',
           'self-hosted': 'AGPL-3.0 + MIT',
         },
@@ -1072,7 +1134,6 @@ const MATRIX = [
           free: false,
           pro: false,
           team: false,
-          scale: false,
           enterprise: 'Contractual',
           'self-hosted': 'Yours to set',
         },
@@ -1130,13 +1191,26 @@ const FAQ: readonly FaqItem[] = [
   },
   {
     question: 'Is single sign-on an extra?',
+    // Written in the future tense on purpose. Nothing here is built: the Team
+    // card chips OIDC `Not yet` and the matrix row says the same in every
+    // column, so the present tense this answer used to carry ("is included
+    // from Team", "covers Google Workspace, Microsoft Entra ID, Okta…") was
+    // the page promising a working integration with five named vendors. It
+    // matters more here than in ordinary copy because `faqSchema(FAQ)`
+    // republishes every answer as `FAQPage` structured data — so an answer
+    // nobody reads back is still an answer Google indexes and quotes.
     answer:
-      'OIDC single sign-on is included from Team at no extra cost, and it covers Google Workspace, Microsoft Entra ID, Okta, Auth0 and JumpCloud. We built it ourselves, so it costs us nothing per customer and charging for it would be indefensible. SAML is a $199 per connection add-on, because it is brokered through WorkOS and they charge us $125 per connection per month whether anyone signs in or not. Self-hosted deployments bring their own identity provider and pay nothing for either.',
+      'It will not be. OIDC single sign-on is not built yet, and when it lands it is included from Team at no extra cost rather than priced separately — we are building it ourselves, so it costs us nothing per customer and charging for it would be indefensible. SAML is the exception and will be a $199 per connection add-on, because it is brokered through WorkOS and they charge us $125 per connection per month whether anyone signs in or not. Neither is available today, on any plan. Self-hosted deployments will bring their own identity provider and pay nothing for either.',
   },
   {
     question: 'What happens when I exceed the free tier?',
-    answer:
-      'Nothing breaks and nothing is deleted. You are asked to move up the next time you invite a second member, create a sixth project, create a second organisation, or add a fourth environment to a project. Everything already stored keeps working and the CLI keeps running. Going over the included fetch allowance is billed, never blocked. During pre-alpha there is no limit to exceed at all.',
+    // The ceilings are named rather than counted past. The prose used to say
+    // "a sixth project" and "a fourth environment", which are the free limits
+    // plus one written as ordinals — correct only until a limit moves, and
+    // wrong in a way no test would catch, because the cards would still be
+    // right. Stating the limit rather than the first value above it lets the
+    // sentence read from `LIMITS` like everything else on the page.
+    answer: `Nothing breaks and nothing is deleted. Free covers ${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} member, and you are asked to move up the next time you need one more of any of those. Everything already stored keeps working and the CLI keeps running. Going over the included fetch allowance is billed, never blocked. During pre-alpha there is no limit to exceed at all.`,
   },
   {
     question: 'Can a billing problem break my build?',
@@ -1146,22 +1220,22 @@ const FAQ: readonly FaqItem[] = [
   {
     question: 'Is there an annual price?',
     answer:
-      'Yes, and it is the headline rate on this page. Billed yearly, Pro is $5 a member a month, Team is $12 and Scale is $22 — charged as $60, $144 and $264 a member a year, about 37 per cent below monthly. The control at the top switches every price on the page. Monthly stays available on all three, and none is billed at all during pre-alpha.',
+      'Yes, and it is the headline rate on this page. Billed yearly, Pro is $5 a member a month and Team is $12 — charged as $60 and $144 a member a year, about 37 per cent below monthly. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both, and neither is billed at all during pre-alpha.',
   },
   {
     question: 'Why is it cheaper in India?',
     answer:
-      'Because a price that is reasonable in San Francisco is not reasonable in Bengaluru, and pretending otherwise just means we do not sell there. Pro, Team and Scale are priced separately in rupees, yen and Australian dollars rather than converted. The rate follows your billing country and the card that pays, it is locked for twelve months so it cannot be changed by travelling, and it does not apply to Enterprise contracts.',
+      'Because a price that is reasonable in San Francisco is not reasonable in Bengaluru, and pretending otherwise just means we do not sell there. Pro and Team are priced separately in rupees, yen and Australian dollars rather than converted. The rate follows your billing country and the card that pays, it is locked for twelve months so it cannot be changed by travelling, and it does not apply to Enterprise contracts.',
   },
   {
     question: 'Do you take a card during pre-alpha?',
     answer:
-      'No. There is no billing system connected yet, so there is nothing to enter a card into. Every paid feature that exists is switched on for every account, and the ones marked "Not yet" on this page are not built for anybody. We will give notice well before that changes rather than converting anyone silently.',
+      'No. There is no billing system connected yet, so there is nothing to enter a card into. Every paid feature that exists is switched on for every account, and the ones marked "Coming soon" on this page are not built for anybody. We will give notice well before that changes rather than converting anyone silently.',
   },
   {
     question: 'Is self-hosting really free and unlimited?',
     answer:
-      'Yes. The server is AGPL-3.0 and the CLI is MIT, so you can run the whole thing on your own infrastructure. No feature is held back for a paid tier and there is no licence key to buy — single sign-on included. What an Enterprise self-hosting licence buys is a commercial, non-AGPL licence, priority security notification, help with the root-key escrow ceremony and an SLA. None of that is a feature we removed from the code.',
+      'Yes. The server is AGPL-3.0 and the CLI is MIT, so you can run the whole thing on your own infrastructure. No feature is held back for a paid tier and there is no licence key to buy — single sign-on included, once it exists; it is not built for anybody yet. What an Enterprise self-hosting licence buys is a commercial, non-AGPL licence, priority security notification, help with the root-key escrow ceremony and an SLA. None of that is a feature we removed from the code.',
   },
   {
     question: 'What happens to my data if I stop paying?',
@@ -1243,11 +1317,47 @@ const PRODUCT = {
 /* ── Pieces ────────────────────────────────────────────────────────────────── */
 
 /**
- * One billing period's figures, inside a card.
+ * One bullet in a plan's feature list.
  *
- * Both periods are rendered on every card and one of them is `display: none` —
- * not `visibility: hidden`, which would leave every card announcing two prices
- * one after the other to a screen reader.
+ * Shared by the cards and by the self-hosting band, and that sharing is the
+ * whole point rather than a tidiness: the band used to map `features` itself
+ * and render an unconditional tick, so `Single sign-on included` sat under a
+ * check on the band while the matrix row said `Not yet` in the same column and
+ * the JSON-LD published "(not built yet)" for the same bullet. Three renderings
+ * of one field, and only two of them read it. There is now one, so a bullet
+ * that gains `notYet` cannot pick up a tick anywhere on the page.
+ */
+function PlanFeatureItem({ feature }: { feature: PlanFeature }) {
+  const notYet = feature.notYet === true;
+
+  return (
+    <li className="flex gap-2.5">
+      {/* No tick beside something that does not exist. The dash is the same
+          glyph the matrix uses for an absence, and the chip beside the text is
+          the same word the matrix row carries. */}
+      {notYet ? (
+        <MinusIcon className="text-fg-subtle mt-1 size-4 shrink-0" />
+      ) : (
+        <CheckIcon className="text-fg-subtle mt-1 size-4 shrink-0" />
+      )}
+      <span className="text-fg-muted text-sm leading-6">
+        {feature.text}
+        {notYet ? (
+          <span className="border-line text-fg-subtle ml-1.5 rounded-full border px-1.5 py-0.5 text-[0.6875rem] font-medium whitespace-nowrap">
+            {NOT_YET}
+          </span>
+        ) : null}
+      </span>
+    </li>
+  );
+}
+
+/**
+ * One currency and one billing period's figures, inside a card.
+ *
+ * All eight are rendered on every card and seven are `display: none` — not
+ * `visibility: hidden`, which would leave every card announcing eight prices
+ * one after another to a screen reader.
  */
 function PriceBlock({ value, className }: { value: PlanPrice; className: string }) {
   return (
@@ -1258,6 +1368,25 @@ function PriceBlock({ value, className }: { value: PlanPrice; className: string 
         <p className="text-fg-subtle mt-1 text-xs leading-5">{value.note}</p>
       )}
     </div>
+  );
+}
+
+/**
+ * One plan's price in a comparison-table column header.
+ *
+ * The compact sibling of `PriceBlock`: same eight-figures-one-shown mechanism
+ * and the same `x-price` classes, sized for a header cell rather than a card.
+ * Two components rather than a prop, because the card version carries a third
+ * line for the yearly total and this one deliberately does not — a column header
+ * that grew a line when somebody pressed Yearly would shift twenty-six rows of
+ * table down the page.
+ */
+function HeaderPrice({ value, className }: { value: PlanPrice; className: string }) {
+  return (
+    <span className={className}>
+      <span className="text-fg block text-sm font-medium">{value.price}</span>
+      <span className="text-fg-subtle block text-xs font-normal">{value.unit}</span>
+    </span>
   );
 }
 
@@ -1287,9 +1416,12 @@ function CellValue({ value }: { value: Cell }) {
     );
   }
 
-  // Quieter than a value, louder than a dash. Compared against the constant
-  // rather than the literal so this treatment cannot survive a reword of it.
-  return <span className={value === NOT_YET ? 'text-fg-subtle' : 'text-fg-muted'}>{value}</span>;
+  // Quieter than a value, louder than a dash. Compared against the constants
+  // rather than the literals so this treatment cannot survive a reword of
+  // either — `ADDON_NOT_YET` gets it too, because what it mostly says is that
+  // nobody has this yet.
+  const unbuilt = value === NOT_YET || value === ADDON_NOT_YET;
+  return <span className={unbuilt ? 'text-fg-subtle' : 'text-fg-muted'}>{value}</span>;
 }
 
 /**
@@ -1322,10 +1454,112 @@ async function resolveInitialCurrency(): Promise<CurrencyId> {
     if (!country) return DEFAULT_CURRENCY;
     return CURRENCY_BY_COUNTRY[country.toUpperCase()] ?? DEFAULT_CURRENCY;
   } catch {
-    // `headers()` throws where there is no request — a build-time render, a
-    // test. Dollars is the right answer there and not worth failing a page for.
+    // Dollars wherever the header cannot be read, which is the right answer in
+    // a test and during a build-time render, and not worth failing a page for.
+    //
+    // What this `catch` does **not** do is keep the route static. Next marks
+    // the render dynamic inside `headers()` — `dynamicUsageDescription` is set
+    // and the prerender store's `revalidate` is forced to 0 — *before* it
+    // throws `DynamicServerError`, so swallowing the throw suppresses the
+    // explanation and not the consequence. The route is dynamic either way;
+    // see the note above for why that is accepted here.
     return DEFAULT_CURRENCY;
   }
+}
+
+/**
+ * The currency and billing-period control, rendered wherever a price is.
+ *
+ * ── Why this is a component and the radios are not in it ──
+ * There is **one** set of radios for the whole page, emitted once above
+ * everything they govern, and this renders only the labels and the menu that
+ * point at them. That is what makes the two controls — the one over the cards
+ * and the one over the comparison table — the same control rather than two that
+ * have to be kept in step: a `<label for>` reaches a radio anywhere in the
+ * document, so pressing Yearly beside the table checks the same input the cards
+ * read. Nothing synchronises them because nothing has to.
+ *
+ * Every selected state below is driven from `:checked` on those radios by
+ * attribute selectors in globals.css, so both instances light up together for
+ * the same reason.
+ */
+function PriceControls() {
+  return (
+    <div className="flex flex-wrap items-center justify-center gap-3">
+      <div className="border-line bg-canvas-inset inline-flex items-center gap-1 rounded-full border p-1">
+        <label htmlFor="billing-monthly" data-billing="monthly" className={SEGMENT}>
+          Monthly
+        </label>
+        <label htmlFor="billing-yearly" data-billing="yearly" className={SEGMENT}>
+          Yearly
+          <span className="text-fg-subtle text-xs font-normal">Save 37%</span>
+        </label>
+      </div>
+
+      {/* ── The currency menu ──
+          A `<details>` and not a `<select>`, and the reason is the same one the
+          billing toggle ships no JavaScript for. CSS picks one of eight figures
+          per card from `:checked`, and there is no selector that reads the value
+          of a `<select>` — so a real dropdown means a client component around
+          the prices, which means the card paints $12, the bundle lands, and the
+          number changes under the reader. On the page a person is deciding money
+          on, that is the one thing we do not do.
+
+          So the radios stay: they remain the control a screen reader and a
+          keyboard operate, and this is the pointer affordance over them. The
+          panel opens on `[open]` *or* while any currency radio holds focus, so
+          tabbing into the group can never leave focus on an option inside a
+          closed menu. */}
+      <details className="x-currency relative">
+        <summary
+          className={cn(
+            SEGMENT,
+            'border-line bg-canvas-inset x-currency-summary list-none justify-between',
+            'min-w-28 rounded-full border py-2',
+          )}
+        >
+          {/* Four names, one shown — the same mechanism as the prices, so the
+              trigger cannot disagree with the figures below it. */}
+          <span>
+            {CURRENCIES.map((currency) => (
+              <span key={currency.id} data-currency-name={currency.id} className="x-currency-name">
+                {currency.label}
+              </span>
+            ))}
+          </span>
+          <ChevronDownIcon className="x-currency-chevron size-4 shrink-0" />
+        </summary>
+
+        <div
+          className={cn(
+            'x-currency-panel border-line bg-surface shadow-raised absolute top-full',
+            'left-1/2 z-10 mt-2 w-36 -translate-x-1/2 rounded-xl border p-1',
+          )}
+        >
+          {CURRENCIES.map((currency) => (
+            <label
+              key={currency.id}
+              htmlFor={`currency-${currency.id}`}
+              data-currency-option={currency.id}
+              className={cn(
+                'text-fg-muted hover:text-fg hover:bg-canvas-inset flex cursor-pointer',
+                'items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm',
+                'font-medium transition-colors',
+              )}
+            >
+              <span>
+                {currency.symbol} {currency.label}
+              </span>
+              {/* Hidden until this option is the checked one. The tick is what
+                  says "current" to a reader who cannot tell two shades of
+                  foreground apart. */}
+              <CheckIcon className="x-currency-tick size-4 shrink-0" />
+            </label>
+          ))}
+        </div>
+      </details>
+    </div>
+  );
 }
 
 export default async function PricingPage() {
@@ -1341,92 +1575,82 @@ export default async function PricingPage() {
         )}
       />
 
+      {/* Two corrections live in the sentence below, and both were the page
+          disagreeing with itself a screen further down. $12 is the yearly rate
+          and monthly is what the cards render by default, so a reader met
+          "$12 per member per month" here and $19 on the Team card — exactly the
+          mismatch the note at the top of this file exists to prevent. And
+          single sign-on is `notYet` on the Team card and the not-built chip in
+          the matrix, so the hero was the one place on the page promising it
+          outright. */}
       <PageHero
         eyebrow="Pricing"
         title="Secret management pricing, without the sales call."
-        description="Five plans and a self-hosted option, published in full — the limits included. Free is genuinely free, Team is $12 per member per month with single sign-on, service tokens and CI never cost anything, and running the whole server yourself is free forever."
+        description="Four plans and a self-hosted option, published in full — the limits included. Free is genuinely free, Team is $19 per member per month or $12 billed yearly, service tokens and CI never cost anything, and running the whole server yourself is free forever."
       />
 
-      <Section id="plans" aria-labelledby="plans-heading" tone="canvas">
-        {/* The prices come first, with no heading introducing them: a reader who
-            opened /pricing does not need to be told that the four cards under
-            the word "Pricing" are the plans. The h2 stays as a hidden one
-            because the cards are h3s — a page whose headings jump from h1 to h3
-            has a hole in the outline a screen-reader user navigates by — and
-            because `<section aria-labelledby>` needs something to name it. */}
-        <h2 id="plans-heading" className="sr-only">
-          Plans and prices
-        </h2>
+      {/* ── One control, two places it appears ──
+          The radios are emitted **here**, above both sections, and everything
+          they govern sits in the single `.x-billing-body` wrapper beside them.
+          That is not tidiness: the CSS that swaps the prices reaches from
+          `:checked` with `~`, which only travels forward and only between
+          siblings. While the inputs lived inside the plans section the
+          comparison table was out of reach of them, which is why its header used
+          to hard-code the monthly USD figure and say so in the caption.
 
-        {/* ── The billing period ──
-            The two radios come first and everything they govern sits in the one
-            wrapper beside them, because the CSS that swaps the prices reaches
-            from `:checked` with `~`. See the note at the top of this file, and
-            `.x-price-monthly` in globals.css. `min-w-0` because a fieldset's
-            default `min-inline-size: min-content` would let the widest cell in
-            the grid push the page sideways. */}
-        <fieldset className="min-w-0">
-          <legend className="sr-only">Currency and billing period</legend>
+          Currency first, billing period second, and that order is load-bearing
+          too: the rule that picks one of eight figures ANDs the two groups with
+          `.x-cur-inr:checked ~ .x-billing-yearly:checked ~ …`. Swap these two
+          blocks and every price on the page disappears.
 
-          {/* Currency first, billing period second, and the order is
-              load-bearing: the CSS that picks one of eight figures ANDs the two
-              groups with `.x-cur-inr:checked ~ .x-billing-yearly:checked ~ …`,
-              and `~` only reaches forward. Swap these two blocks and every
-              price on the page disappears. */}
-          {CURRENCIES.map((currency) => (
-            <input
-              key={currency.id}
-              id={`currency-${currency.id}`}
-              type="radio"
-              name="currency"
-              value={currency.id}
-              defaultChecked={currency.id === initialCurrency}
-              className={`x-cur-${currency.id} sr-only`}
-            />
-          ))}
+          `min-w-0` because a fieldset's default `min-inline-size: min-content`
+          would let the widest cell in the table push the whole page sideways. */}
+      <fieldset className="min-w-0">
+        <legend className="sr-only">Currency and billing period</legend>
 
+        {CURRENCIES.map((currency) => (
           <input
-            id="billing-monthly"
+            key={currency.id}
+            id={`currency-${currency.id}`}
             type="radio"
-            name="billing"
-            value="monthly"
-            defaultChecked
-            className="x-billing-monthly sr-only"
+            name="currency"
+            value={currency.id}
+            defaultChecked={currency.id === initialCurrency}
+            className={`x-cur-${currency.id} sr-only`}
           />
-          <input
-            id="billing-yearly"
-            type="radio"
-            name="billing"
-            value="yearly"
-            className="x-billing-yearly sr-only"
-          />
+        ))}
 
-          <div className="x-billing-body">
+        <input
+          id="billing-monthly"
+          type="radio"
+          name="billing"
+          value="monthly"
+          defaultChecked
+          className="x-billing-monthly sr-only"
+        />
+        <input
+          id="billing-yearly"
+          type="radio"
+          name="billing"
+          value="yearly"
+          className="x-billing-yearly sr-only"
+        />
+
+        <div className="x-billing-body">
+          <Section id="plans" aria-labelledby="plans-heading" tone="canvas">
+            {/* The prices come first, with no heading introducing them: a reader
+                who opened /pricing does not need to be told that the cards under
+                the word "Pricing" are the plans. The h2 stays as a hidden one
+                because the cards are h3s — a page whose headings jump from h1 to
+                h3 has a hole in the outline a screen-reader user navigates by —
+                and because `<section aria-labelledby>` needs something to name
+                it. */}
+            <h2 id="plans-heading" className="sr-only">
+              Plans and prices
+            </h2>
+
             <div className="flex flex-col items-center">
-              <div className="flex flex-wrap items-center justify-center gap-3">
-                <div className="border-line bg-canvas-inset inline-flex items-center gap-1 rounded-full border p-1">
-                  <label htmlFor="billing-monthly" data-billing="monthly" className={SEGMENT}>
-                    Monthly
-                  </label>
-                  <label htmlFor="billing-yearly" data-billing="yearly" className={SEGMENT}>
-                    Yearly
-                    <span className="text-fg-subtle text-xs font-normal">Save 37%</span>
-                  </label>
-                </div>
-
-                <div className="border-line bg-canvas-inset inline-flex items-center gap-1 rounded-full border p-1">
-                  {CURRENCIES.map((currency) => (
-                    <label
-                      key={currency.id}
-                      htmlFor={`currency-${currency.id}`}
-                      data-currency={currency.id}
-                      className={SEGMENT}
-                    >
-                      {currency.label}
-                    </label>
-                  ))}
-                </div>
-              </div>
+              <PriceControls />
 
               {/* Said once, here, rather than under every card. A reader who
                   did not expect their own currency needs to know it is not an
@@ -1446,7 +1670,22 @@ export default async function PricingPage() {
               </p>
             </div>
 
-            <RevealGroup className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+            {/* ── Four cards, and why the row no longer overhangs ──
+                At five columns inside an 80rem container each card had about
+                180px of content, narrower than "₹1,490" wants to be and narrower
+                than any feature bullet reads well at, so the row was let out
+                past the container to compensate. Removing Scale removed the
+                reason: four columns give each card roughly 290px inside the
+                normal width, which is enough, and a row that breaks the page's
+                left edge to solve a problem it no longer has is just a row that
+                does not line up with anything above or below it.
+
+                Two across from `sm` rather than three at `lg`: four cards make
+                two even rows, where three columns leave one card alone on a
+                second row looking like an afterthought. */}
+            <RevealGroup
+              className={cn('mt-10 grid gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-4 xl:gap-5')}
+            >
               {PRICED_PLANS.map((plan) => (
                 <article
                   key={plan.id}
@@ -1456,13 +1695,17 @@ export default async function PricingPage() {
                     // the action pushes it down whatever the feature list does
                     // above it, so four cards of different lengths still end on
                     // one line.
-                    'bg-surface flex h-full scroll-mt-24 flex-col rounded-xl border p-6 transition-colors',
+                    'bg-surface flex h-full scroll-mt-24 flex-col rounded-xl border transition-colors',
+                    'p-6',
                     plan.recommended
                       ? 'border-accent shadow-raised'
                       : 'border-line hover:border-line-strong',
                   )}
                 >
-                  <div className="flex items-center gap-2">
+                  {/* Wraps rather than shrinking: at five across the badge and a
+                      two-word plan name do not fit on one line, and a squeezed
+                      `Recommended` chip looks like a rendering fault. */}
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <h3 className="text-fg text-base font-semibold">{plan.name}</h3>
                     {/* Accent, not production. The production ramp marks exactly
                         one thing in this product and a recommended plan is not
@@ -1474,9 +1717,19 @@ export default async function PricingPage() {
                     ) : null}
                   </div>
 
-                  <p className="text-fg-muted mt-2 text-sm leading-6">{plan.audience}</p>
+                  {/* ── The price, directly under the name ──
+                      It used to sit below the audience line, which runs to one,
+                      two or three lines depending on the plan — so the figure a
+                      reader scans across five cards landed at a different height
+                      on each of them, and comparing two of them meant moving the
+                      eye diagonally. A plan name is always one line, so putting
+                      the price against it puts every figure on one baseline. The
+                      audience line follows, where a varying height costs nothing.
 
-                  <div className="mt-5">
+                      `min-h` because the yearly figures carry a third line the
+                      monthly ones do not; without it every feature list in the
+                      row jumps as the billing toggle is pressed. */}
+                  <div className="mt-4 min-h-[6.25rem]">
                     {/* Eight figures, one shown. Every currency and both
                         periods are in the markup, and CSS picks the pair the
                         two radio groups name — so switching either needs no
@@ -1497,27 +1750,17 @@ export default async function PricingPage() {
                     ))}
                   </div>
 
+                  {/* Ruled off from the price above it. With the figure moved up,
+                      the card has two plain halves — what it costs, and who it is
+                      for — and a hairline says so more cheaply than the
+                      whitespace that would otherwise be needed. */}
+                  <p className="text-fg-muted border-line-subtle border-t pt-4 text-sm leading-6">
+                    {plan.audience}
+                  </p>
+
                   <ul className="mt-5 space-y-2.5">
                     {plan.features.map((feature) => (
-                      <li key={feature.text} className="flex gap-2.5">
-                        {/* No tick beside something that does not exist. The
-                            dash is the same glyph the matrix uses for an
-                            absence, and the chip beside the text is the same
-                            word the matrix row carries. */}
-                        {feature.notYet === true ? (
-                          <MinusIcon className="text-fg-subtle mt-1 size-4 shrink-0" />
-                        ) : (
-                          <CheckIcon className="text-fg-subtle mt-1 size-4 shrink-0" />
-                        )}
-                        <span className="text-fg-muted text-sm leading-6">
-                          {feature.text}
-                          {feature.notYet === true ? (
-                            <span className="border-line text-fg-subtle ml-1.5 rounded-full border px-1.5 py-0.5 text-[0.6875rem] font-medium whitespace-nowrap">
-                              {NOT_YET}
-                            </span>
-                          ) : null}
-                        </span>
-                      </li>
+                      <PlanFeatureItem key={feature.text} feature={feature} />
                     ))}
                   </ul>
 
@@ -1543,10 +1786,8 @@ export default async function PricingPage() {
                 </article>
               ))}
             </RevealGroup>
-          </div>
-        </fieldset>
 
-        {/* ── Add-ons ──
+            {/* ── Add-ons ──
             Between the cards and the self-hosting band, because they attach to
             a plan rather than replacing one. Outside the fieldset: neither has
             a yearly rate, and showing one under a yearly toggle would imply a
@@ -1555,165 +1796,202 @@ export default async function PricingPage() {
             The body text states what each costs us. That is deliberate — see
             the note on ADDONS — and it is the part of this page most likely to
             be trimmed by somebody tidying marketing copy. It should not be. */}
-        <div className="border-line bg-surface mt-6 grid gap-6 rounded-xl border p-6 sm:grid-cols-2 sm:p-7">
-          {ADDONS.map((addon) => (
-            <div key={addon.name}>
-              <h3 className="text-fg text-base font-semibold">{addon.name}</h3>
-              <p className="text-fg mt-2 text-2xl font-semibold tracking-[-0.02em]">
-                {addon.price}{' '}
-                <span className="text-fg-subtle text-sm font-normal">{addon.unit}</span>
-              </p>
-              <p className="text-fg-muted mt-3 text-sm leading-6">{addon.body}</p>
+            <div className="border-line bg-surface mt-6 grid gap-6 rounded-xl border p-6 sm:grid-cols-2 sm:p-7">
+              {ADDONS.map((addon) => (
+                <div key={addon.name}>
+                  {/* The chip carries the same word the matrix cells and the card
+                  bullets carry, for the same reason: this band publishes a
+                  price, and a price with no qualifier beside it is an offer. */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-fg text-base font-semibold">{addon.name}</h3>
+                    {addon.notYet ? (
+                      <span className="border-line text-fg-subtle rounded-full border px-1.5 py-0.5 text-[0.6875rem] font-medium whitespace-nowrap">
+                        {NOT_YET}
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="text-fg mt-2 text-2xl font-semibold tracking-[-0.02em]">
+                    {addon.price}{' '}
+                    <span className="text-fg-subtle text-sm font-normal">{addon.unit}</span>
+                  </p>
+                  <p className="text-fg-subtle mt-1 text-sm">{addon.from}</p>
+                  <p className="text-fg-muted mt-3 text-sm leading-6">{addon.body}</p>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
 
-        {/* ── Self-hosting ──
+            {/* ── Self-hosting ──
             Deliberately not a sixth card, and deliberately outside the fieldset
             above: it has no billing period to switch and it is not a rung on
             the ladder. A row instead — price, then what you get, then the way
             in — so the eye reads it as a different kind of offer rather than as
             the cheapest column of the same one. */}
-        <div
-          id={SELF_HOSTED.id}
-          className="border-line bg-surface hover:border-line-strong mt-6 scroll-mt-24 rounded-xl border p-6 transition-colors sm:p-7"
-        >
-          <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:gap-8">
-            <div className="lg:w-64 lg:shrink-0">
-              <h3 className="text-fg text-base font-semibold">{SELF_HOSTED.name}</h3>
-              <p className="text-fg mt-2 text-3xl font-semibold tracking-[-0.02em]">
-                {SELF_HOSTED.prices.usd.monthly.price}
-              </p>
-              <p className="text-fg-subtle mt-1 text-sm">{SELF_HOSTED.prices.usd.monthly.unit}</p>
-              <p className="text-fg-muted mt-3 text-sm leading-6">{SELF_HOSTED.audience}</p>
+            <div
+              id={SELF_HOSTED.id}
+              className="border-line bg-surface hover:border-line-strong mt-6 scroll-mt-24 rounded-xl border p-6 transition-colors sm:p-7"
+            >
+              <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:gap-8">
+                <div className="lg:w-64 lg:shrink-0">
+                  <h3 className="text-fg text-base font-semibold">{SELF_HOSTED.name}</h3>
+                  <p className="text-fg mt-2 text-3xl font-semibold tracking-[-0.02em]">
+                    {SELF_HOSTED.prices.usd.monthly.price}
+                  </p>
+                  <p className="text-fg-subtle mt-1 text-sm">
+                    {SELF_HOSTED.prices.usd.monthly.unit}
+                  </p>
+                  <p className="text-fg-muted mt-3 text-sm leading-6">{SELF_HOSTED.audience}</p>
+                </div>
+
+                <ul className="border-line-subtle grid flex-1 gap-x-6 gap-y-2 border-t pt-6 sm:grid-cols-2 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-8">
+                  {SELF_HOSTED.features.map((feature) => (
+                    <PlanFeatureItem key={feature.text} feature={feature} />
+                  ))}
+                </ul>
+
+                <div className="lg:shrink-0">
+                  <Button asChild variant="secondary" className="w-full lg:w-auto">
+                    <Link href={SELF_HOSTED.cta.href}>
+                      {SELF_HOSTED.cta.label}
+                      <ArrowRightIcon className="size-4" />
+                    </Link>
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </Section>
+
+          <Section id="compare" aria-labelledby="compare-heading" tone="inset">
+            <SectionHeading
+              headingId="compare-heading"
+              align="center"
+              eyebrow="Comparison"
+              title="Every plan compared, including the limits"
+              description="The whole matrix rather than the flattering half of it. Where a plan does not have something the row says so, and where nobody has it yet the row says that too."
+            />
+
+            {/* The same control as the one over the cards — the same radios,
+                reached by a second set of labels. Here because the table states
+                prices too, and a reader who switched to rupees at the top should
+                not meet dollars again two screens down. Nothing keeps the two in
+                step; there is only one thing to keep. */}
+            <div className="mt-8 flex flex-col items-center">
+              <PriceControls />
             </div>
 
-            <ul className="border-line-subtle grid flex-1 gap-x-6 gap-y-2 border-t pt-6 sm:grid-cols-2 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-8">
-              {SELF_HOSTED.features.map((feature) => (
-                <li key={feature.text} className="flex gap-2.5">
-                  <CheckIcon className="text-fg-subtle mt-1 size-4 shrink-0" />
-                  <span className="text-fg-muted text-sm leading-6">{feature.text}</span>
-                </li>
-              ))}
-            </ul>
-
-            <div className="lg:shrink-0">
-              <Button asChild variant="secondary" className="w-full lg:w-auto">
-                <Link href={SELF_HOSTED.cta.href}>
-                  {SELF_HOSTED.cta.label}
-                  <ArrowRightIcon className="size-4" />
-                </Link>
-              </Button>
-            </div>
-          </div>
-        </div>
-      </Section>
-
-      <Section id="compare" aria-labelledby="compare-heading" tone="inset">
-        <SectionHeading
-          headingId="compare-heading"
-          align="center"
-          eyebrow="Comparison"
-          title="Every plan compared, including the limits"
-          description="The whole matrix rather than the flattering half of it. Where a plan does not have something the row says so, and where nobody has it yet the row says that too."
-        />
-
-        {/* The table is wider than a phone and always will be, so it scrolls
+            {/* The table is wider than a phone and always will be, so it scrolls
             inside its own box rather than making the document scroll sideways.
             `tabindex` is what makes that box reachable without a pointer — a
             scroll container that only a mouse can move is a table a keyboard
             user can read one third of. The same arrangement as `.doc-table-wrap`
             in docs.css; the global `:focus-visible` rule rings it. */}
-        <div
-          tabIndex={0}
-          role="region"
-          aria-label="Plan comparison"
-          className="border-line bg-surface mt-10 overflow-x-auto rounded-xl border"
-        >
-          <table className="w-full min-w-[64rem] border-collapse text-sm">
-            <caption className="sr-only">
-              Every xecret plan compared, capability by capability, in five groups. The header shows
-              the monthly price; billed yearly, Pro is $5, Team is $12 and Scale is $22 per member
-              per month. During pre-alpha every feature that exists is available on every account
-              and nothing is billed.
-            </caption>
-            <thead className="bg-canvas-inset">
-              <tr className="border-line border-b">
-                <th scope="col" className="w-[17rem] px-4 py-3 text-left">
-                  <span className="sr-only">Capability</span>
-                </th>
-                {PLANS.map((plan) => (
-                  <th key={plan.id} scope="col" className="px-4 py-3 text-center align-bottom">
-                    <span className="text-fg block font-semibold">{plan.name}</span>
-                    {/* The monthly figure, always. This header sits outside the
-                        toggle's wrapper and cannot follow it, and a column that
-                        silently kept a yearly price while the cards showed a
-                        monthly one would be the same page contradicting
-                        itself — so the caption says which one this is. */}
-                    <span className="text-fg block text-xs font-medium">
-                      {plan.prices.usd.monthly.price}
-                    </span>
-                    <span className="text-fg-subtle block text-xs font-normal">
-                      {plan.prices.usd.monthly.unit}
-                    </span>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            {MATRIX.map((group) => (
-              <tbody key={group.title}>
-                <tr className="border-line-subtle bg-canvas-inset/60 border-y">
-                  {/* `colgroup`, not `col`: this heading names the rows beneath
-                      it across every plan column, and it is what a screen reader
-                      reads out before each row of the group. */}
-                  <th
-                    scope="colgroup"
-                    colSpan={PLANS.length + 1}
-                    className="text-fg-subtle px-4 py-2.5 text-left text-xs font-semibold tracking-[0.14em] uppercase"
-                  >
-                    {group.title}
-                  </th>
-                </tr>
-                {group.rows.map((row) => (
-                  <tr
-                    key={row.label}
-                    className="border-line-subtle hover:bg-surface-hover border-b transition-colors last:border-b-0"
-                  >
-                    <th scope="row" className="text-fg px-4 py-3 text-left font-medium">
-                      {row.label}
+            <div
+              tabIndex={0}
+              role="region"
+              aria-label="Plan comparison"
+              className="border-line bg-surface mt-10 overflow-x-auto rounded-xl border"
+            >
+              {/* `text-[0.9375rem]` rather than `text-sm`: this table is the
+                  densest thing on the page and the one a buyer reads most
+                  carefully, and 14px across twenty-six rows of capability names
+                  is smaller than the body text everywhere else on the site. */}
+              <table className="w-full min-w-[64rem] border-collapse text-[0.9375rem]">
+                <caption className="sr-only">
+                  Every xecret plan compared, capability by capability, in five groups. The header
+                  shows the price for the currency and billing period selected above the table,
+                  which is the same pair the plan cards use. During pre-alpha every feature that
+                  exists is available on every account and nothing is billed.
+                </caption>
+                <thead className="bg-canvas-inset">
+                  <tr className="border-line border-b">
+                    <th scope="col" className="w-[17rem] px-4 py-3 text-left">
+                      <span className="sr-only">Capability</span>
                     </th>
                     {PLANS.map((plan) => (
-                      <td key={plan.id} className="px-4 py-3 text-center whitespace-nowrap">
-                        <CellValue value={row.values[plan.id]} />
-                      </td>
+                      <th key={plan.id} scope="col" className="px-4 py-4 text-center align-bottom">
+                        <span className="text-fg block text-base font-semibold">{plan.name}</span>
+                        {/* Eight figures, one shown — the same markup the cards
+                            carry, now that the radios sit above both sections and
+                            the sibling chain reaches in here. This used to be a
+                            hard-coded monthly USD price with a caption
+                            apologising for it, which meant a reader who chose
+                            yearly rupees at the top met monthly dollars again
+                            here: one page quoting two prices for the same plan. */}
+                        {CURRENCIES.map((currency) => (
+                          <Fragment key={currency.id}>
+                            <HeaderPrice
+                              className={`x-price x-price-${currency.id}-monthly`}
+                              value={plan.prices[currency.id].monthly}
+                            />
+                            <HeaderPrice
+                              className={`x-price x-price-${currency.id}-yearly`}
+                              value={plan.prices[currency.id].yearly}
+                            />
+                          </Fragment>
+                        ))}
+                      </th>
                     ))}
                   </tr>
+                </thead>
+                {MATRIX.map((group) => (
+                  <tbody key={group.title}>
+                    <tr className="border-line-subtle bg-canvas-inset/60 border-y">
+                      {/* `colgroup`, not `col`: this heading names the rows beneath
+                      it across every plan column, and it is what a screen reader
+                      reads out before each row of the group. */}
+                      <th
+                        scope="colgroup"
+                        colSpan={PLANS.length + 1}
+                        className="text-fg-subtle px-4 py-3 text-left text-[0.8125rem] font-semibold tracking-[0.14em] uppercase"
+                      >
+                        {group.title}
+                      </th>
+                    </tr>
+                    {group.rows.map((row) => (
+                      <tr
+                        key={row.label}
+                        className="border-line-subtle hover:bg-surface-hover border-b transition-colors last:border-b-0"
+                      >
+                        <th scope="row" className="text-fg px-4 py-3.5 text-left font-medium">
+                          {row.label}
+                        </th>
+                        {PLANS.map((plan) => (
+                          <td key={plan.id} className="px-4 py-3.5 text-center whitespace-nowrap">
+                            <CellValue value={row.values[plan.id]} />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
                 ))}
-              </tbody>
-            ))}
-          </table>
-        </div>
+              </table>
+            </div>
 
-        <p className="text-fg-muted mx-auto mt-6 max-w-3xl text-center text-sm leading-7">
-          SAML and SCIM are named on the plans that will carry them and marked{' '}
-          <span className="text-fg font-medium">Not yet</span> in every column, because neither is
-          built. The chips on the cards and the rows in this table say the same word deliberately:
-          the first contract that needs them is what gets them written, and until then you should
-          plan as though they do not exist. Enterprise is a conversation rather than a checkout,
-          which is why the card has no price and there is no form to fill in.
-        </p>
+            <p className="text-fg-muted mx-auto mt-6 max-w-3xl text-center text-sm leading-7">
+              SAML and SCIM are named on the plans that will carry them, and every column that names
+              them says <span className="text-fg font-medium">coming soon</span> — the plans that
+              would buy them per connection read{' '}
+              <span className="text-fg font-medium">{ADDON_NOT_YET}</span>, Enterprise reads{' '}
+              <span className="text-fg font-medium">{NOT_YET}</span>, and the plans that were never
+              going to carry them read a dash. Neither is built for anybody, at any price. The chips
+              on the cards and the rows in this table say so deliberately: the first contract that
+              needs them is what gets them written, and until then you should plan as though they do
+              not exist. Enterprise is a conversation rather than a checkout, which is why the card
+              has no price and there is no form to fill in.
+            </p>
 
-        <div className="mt-5 flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm">
-          <Link href="/features" className={QUIET_LINK}>
-            Every feature in detail
-            <ArrowRightIcon className="size-3.5" />
-          </Link>
-          <Link href="/docs/self-hosting" className={QUIET_LINK}>
-            The self-hosting guide
-            <ArrowRightIcon className="size-3.5" />
-          </Link>
+            <div className="mt-5 flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm">
+              <Link href="/features" className={QUIET_LINK}>
+                Every feature in detail
+                <ArrowRightIcon className="size-3.5" />
+              </Link>
+              <Link href="/docs/self-hosting" className={QUIET_LINK}>
+                The self-hosting guide
+                <ArrowRightIcon className="size-3.5" />
+              </Link>
+            </div>
+          </Section>
         </div>
-      </Section>
+      </fieldset>
 
       <Section id="included" aria-labelledby="included-heading" tone="canvas">
         <SectionHeading
@@ -1721,7 +1999,7 @@ export default async function PricingPage() {
           align="center"
           eyebrow="Every plan"
           title="What every plan includes"
-          description="The parts a secrets product should never tier are not tiered here. These four are identical whether you pay nothing, pay for Scale or sign a contract."
+          description="The parts a secrets product should never tier are not tiered here. These four are identical whether you pay nothing, pay for Team or sign a contract."
         />
 
         <RevealGroup className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
@@ -1753,7 +2031,10 @@ export default async function PricingPage() {
           align="center"
           eyebrow="Questions"
           title="Questions about the money"
-          description="The nine that decide whether a price is workable, answered including the several where the honest answer is that it is not built yet."
+          // Counted, not stated. The prose said "nine" against a list of
+          // thirteen, which is the kind of number that is wrong the first time
+          // somebody adds a question and right again only by accident.
+          description={`The ${FAQ.length} that decide whether a price is workable, answered including the several where the honest answer is that it is not built yet.`}
         />
 
         <Faq items={FAQ} className="mx-auto mt-10 max-w-3xl" />
@@ -1773,7 +2054,14 @@ export default async function PricingPage() {
 
       <CtaBand
         title="Start on the free tier. Move when it stops fitting."
-        description="Five projects, three environments each and the whole CLI, without a card — and every CI token you need, free on any plan. If you outgrow it, the price is on this page and it will not change under you."
+        // "Every CI token you need" sat beside `serviceTokens = 10`, which the
+        // card and the matrix both publish as a hard ceiling — the sentence
+        // derived its projects and environments from `LIMITS` and then stated
+        // the one capped resource it did not derive as uncapped. The number is
+        // read like the other two now, and the "never billed" claim is kept
+        // separate from the "never capped" one, because only the first is true
+        // on Free.
+        description={`${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments each, ${LIMITS.free.serviceTokens} CI tokens and the whole CLI, without a card — and a service token is never billed on any plan, whatever it pulls. If you outgrow it, the price is on this page and it will not change under you.`}
       />
     </PublicPage>
   );

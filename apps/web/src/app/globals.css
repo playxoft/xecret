@@ -966,11 +966,7 @@
 /* The selected half of the segmented control. Unlayered, so it wins over the
    resting `text-fg-muted` the label carries as a utility. */
 .x-billing-monthly:checked ~ .x-billing-body [data-billing='monthly'],
-.x-billing-yearly:checked ~ .x-billing-body [data-billing='yearly'],
-.x-cur-usd:checked ~ .x-billing-body [data-currency='usd'],
-.x-cur-inr:checked ~ .x-billing-body [data-currency='inr'],
-.x-cur-jpy:checked ~ .x-billing-body [data-currency='jpy'],
-.x-cur-aud:checked ~ .x-billing-body [data-currency='aud'] {
+.x-billing-yearly:checked ~ .x-billing-body [data-billing='yearly'] {
   background: var(--surface);
   color: var(--fg);
   box-shadow: var(--shadow-raised);
@@ -981,13 +977,103 @@
    names instead — same treatment, moved to where the eye already is. Without
    this the control is operable by keyboard and invisible to one. */
 .x-billing-monthly:focus-visible ~ .x-billing-body [data-billing='monthly'],
-.x-billing-yearly:focus-visible ~ .x-billing-body [data-billing='yearly'],
-.x-cur-usd:focus-visible ~ .x-billing-body [data-currency='usd'],
-.x-cur-inr:focus-visible ~ .x-billing-body [data-currency='inr'],
-.x-cur-jpy:focus-visible ~ .x-billing-body [data-currency='jpy'],
-.x-cur-aud:focus-visible ~ .x-billing-body [data-currency='aud'] {
+.x-billing-yearly:focus-visible ~ .x-billing-body [data-billing='yearly'] {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
+}
+
+/* ── The currency menu ──────────────────────────────────────────────────────
+   A `<details>` rather than a `<select>`, for the reason the whole control
+   ships no JavaScript: no selector reads the value of a `<select>`, so a real
+   dropdown would mean a client component around the prices — and a price that
+   changes after hydration is the one thing this page cannot do. The four radios
+   are still the control; this is the pointer affordance drawn over them.
+
+   Everything below reaches from `:checked` or `:focus` on those radios, which
+   sit before `.x-billing-body`, exactly like the price rules above. */
+
+/* Marker off in every engine: `list-style` covers Firefox and Chrome, the
+   pseudo-element covers Safari, which ignores the first. */
+.x-currency-summary {
+  list-style: none;
+}
+
+.x-currency-summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Four names in the trigger, one shown — the same mechanism as the figures, so
+   the trigger cannot disagree with the prices under it. Hidden by default for
+   the same reason: a stylesheet that fails to load leaves the trigger blank
+   rather than reading "USD INR JPY AUD". */
+.x-currency-name {
+  display: none;
+}
+
+.x-cur-usd:checked ~ .x-billing-body [data-currency-name='usd'],
+.x-cur-inr:checked ~ .x-billing-body [data-currency-name='inr'],
+.x-cur-jpy:checked ~ .x-billing-body [data-currency-name='jpy'],
+.x-cur-aud:checked ~ .x-billing-body [data-currency-name='aud'] {
+  display: inline;
+}
+
+/* The tick marks the current option. `visibility` rather than `display` so the
+   four rows keep one width and the menu does not reflow as the eye moves down
+   it; the row is already named by the radio, so nothing is lost to the
+   accessibility tree by leaving the tick in it. */
+.x-currency-tick {
+  visibility: hidden;
+}
+
+.x-cur-usd:checked ~ .x-billing-body [data-currency-option='usd'] .x-currency-tick,
+.x-cur-inr:checked ~ .x-billing-body [data-currency-option='inr'] .x-currency-tick,
+.x-cur-jpy:checked ~ .x-billing-body [data-currency-option='jpy'] .x-currency-tick,
+.x-cur-aud:checked ~ .x-billing-body [data-currency-option='aud'] .x-currency-tick {
+  visibility: visible;
+}
+
+.x-cur-usd:checked ~ .x-billing-body [data-currency-option='usd'],
+.x-cur-inr:checked ~ .x-billing-body [data-currency-option='inr'],
+.x-cur-jpy:checked ~ .x-billing-body [data-currency-option='jpy'],
+.x-cur-aud:checked ~ .x-billing-body [data-currency-option='aud'] {
+  color: var(--fg);
+}
+
+/* Closed unless the disclosure is open. The panel is in the markup either way,
+   so a reader with no CSS gets four plain labels rather than nothing. */
+.x-currency-panel {
+  display: none;
+}
+
+.x-currency[open] .x-currency-panel {
+  display: block;
+}
+
+/* Open while any currency radio holds focus, whatever `[open]` says. Without
+   this, tabbing into the radio group lands focus on a label inside a closed
+   menu: operable by keyboard and invisible to one, which is the failure the
+   rule above this section exists to prevent for the billing toggle. */
+.x-cur-usd:focus ~ .x-billing-body .x-currency-panel,
+.x-cur-inr:focus ~ .x-billing-body .x-currency-panel,
+.x-cur-jpy:focus ~ .x-billing-body .x-currency-panel,
+.x-cur-aud:focus ~ .x-billing-body .x-currency-panel {
+  display: block;
+}
+
+.x-cur-usd:focus-visible ~ .x-billing-body [data-currency-option='usd'],
+.x-cur-inr:focus-visible ~ .x-billing-body [data-currency-option='inr'],
+.x-cur-jpy:focus-visible ~ .x-billing-body [data-currency-option='jpy'],
+.x-cur-aud:focus-visible ~ .x-billing-body [data-currency-option='aud'] {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.x-currency-chevron {
+  transition: transform 150ms ease;
+}
+
+.x-currency[open] .x-currency-chevron {
+  transform: rotate(180deg);
 }
 
 /* Honour the OS setting. Motion here is decorative — a dialog that appears

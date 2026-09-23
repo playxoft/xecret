@@ -23,6 +23,20 @@ export const auditOutcomeEnum = pgEnum('audit_outcome', ['success', 'denied', 'e
  * `@xecret/core/entitlements` — Postgres orders enum values by declaration, so
  * `ORDER BY plan` sorts the way a human expects without a CASE expression.
  */
+/**
+ * `scale` is **retired and cannot be removed.**
+ *
+ * The tier was withdrawn — four self-serve rungs asked a buyer to make a
+ * distinction they had no basis for — but a Postgres enum is additive-only, so
+ * the value stays in the type for as long as the column does. It is absent from
+ * `PlanId` in `@xecret/core/entitlements` and present in `StoredPlanId`;
+ * `resolvePlanId` maps it to Team, which is what its holders were sold.
+ *
+ * Do not reuse the name for something else, and do not attempt to drop it: the
+ * only way to remove an enum value is to rewrite the type and every column using
+ * it, which is a migration with an exclusive lock on the table every tenant
+ * authorises through.
+ */
 export const planIdEnum = pgEnum('plan_id', ['free', 'pro', 'team', 'scale', 'enterprise']);
 
 export const billingIntervalEnum = pgEnum('billing_interval', ['monthly', 'yearly']);

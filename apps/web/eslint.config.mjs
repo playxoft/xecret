@@ -119,9 +119,15 @@ const eslintConfig = defineConfig([
 
   {
     name: 'xecret/tests-never-reach-the-edge',
-    files: ['**/*.test.ts', '**/*.test.tsx'],
+    // Scoped to the one test that needs it, not to `**/*.test.ts`. The ban
+    // exists because a `node:fs` import that reaches the worker bundle is a
+    // 500 in production, and test files are only *usually* outside it — a
+    // shared helper under `__tests__` that runtime code later imports is
+    // exactly how that stops being true. One file asking for the exemption is
+    // a thing a reviewer can see; every test in the app holding it is not.
+    files: ['src/app/pricing/pricing-page.test.ts'],
     rules: {
-      // Same reasoning as the block above, one step further out: a test file is
+      // Same reasoning as the block above, one step further out: this file is
       // not in the worker bundle at all. `pricing-page.test.ts` reads
       // `page.tsx` as text to assert that the published limits are still
       // derived from the entitlements package rather than typed in by hand —

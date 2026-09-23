@@ -3,6 +3,7 @@ export {
   isControlPlaneActive,
   isDataPlaneActive,
   resolveEntitlements,
+  resolvePlanId,
 } from './entitlements';
 export {
   featureError,
@@ -25,6 +26,7 @@ export {
   PLAN_RANK,
   PLANS,
   RATE_LIMITS,
+  RETIRED_PLANS,
   WARN_AT,
 } from './plans';
 export type {
@@ -37,6 +39,8 @@ export type {
   PlanFeatures,
   PlanId,
   PlanLimits,
+  RetiredPlanId,
+  StoredPlanId,
   SubscriptionState,
   SubscriptionStatus,
 } from './types';

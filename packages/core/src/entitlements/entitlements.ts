@@ -6,7 +6,7 @@
  * subscription may still fetch secrets — and the answer is always yes.
  */
 
-import { DEFAULT_PLAN, PLANS } from './plans';
+import { DEFAULT_PLAN, PLANS, RETIRED_PLANS } from './plans';
 import type {
   Entitlements,
   OrgAddons,
@@ -133,9 +133,14 @@ function applyOverrides(
  * from our own database via a Postgres enum, so this should be unreachable; but
  * "unreachable" and "throws on the authorization path" is a combination worth
  * one defensive line.
+ *
+ * A **retired** plan is answered before that fallback, and the order matters. A
+ * row saying `scale` is not an unrecognised value — it is a tier this product
+ * sold and then withdrew, and dropping its holder to Free would take away the
+ * per-environment grants they paid for. See `resolvePlanId`.
  */
 export function resolveEntitlements(state: SubscriptionState): Entitlements {
-  const plan: PlanId = state.plan in PLANS ? state.plan : DEFAULT_PLAN;
+  const plan: PlanId = resolvePlanId(state.plan);
   const definition = PLANS[plan];
 
   const addons: OrgAddons = Object.freeze({
@@ -151,6 +156,20 @@ export function resolveEntitlements(state: SubscriptionState): Entitlements {
     addons,
     controlPlaneActive: isControlPlaneActive(state.status),
   });
+}
+
+/**
+ * The plan a stored value resolves to: itself, its replacement, or Free.
+ *
+ * Exported so the operator tool and the dashboard read a retired row the same
+ * way the authorization path does. A second copy of this precedence is a second
+ * answer to "what is this organisation on", and the two would disagree on
+ * exactly the rows where being wrong costs a customer something.
+ */
+export function resolvePlanId(stored: string): PlanId {
+  if (Object.hasOwn(PLANS, stored)) return stored as PlanId;
+  if (Object.hasOwn(RETIRED_PLANS, stored)) return RETIRED_PLANS[stored] ?? DEFAULT_PLAN;
+  return DEFAULT_PLAN;
 }
 
 /**

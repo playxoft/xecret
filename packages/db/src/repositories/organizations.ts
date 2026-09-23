@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import type { OrgRole } from '@xecret/core/authz';
-import { DEFAULT_PLAN, FAIR_USE, PLANS } from '@xecret/core/entitlements';
+import { DEFAULT_PLAN, FAIR_USE, PLANS, resolvePlanId } from '@xecret/core/entitlements';
 import type { PlanId } from '@xecret/core/entitlements';
 import { randomBytes } from '@xecret/core/crypto';
 import type { EnvelopeService } from '@xecret/core/crypto';
@@ -218,7 +218,13 @@ export async function countOrganizationsHeldBy(
     latestId: rows[0]?.id ?? null,
     // A null plan means no subscription row, which migration 0016 made
     // impossible and which resolves to Free everywhere else. Same answer here.
-    plans: rows.map((row) => row.plan ?? DEFAULT_PLAN),
+    //
+    // Through `resolvePlanId` rather than used as read, for the same reason
+    // `resolveEntitlements` does it: a row can hold a plan this build no longer
+    // sells, and the ceiling an account is measured against must be the one its
+    // holder was actually given. Taking the stored string literally would let a
+    // retired value fall past `PLANS[plan]` and answer as Free.
+    plans: rows.map((row) => (row.plan === null ? DEFAULT_PLAN : resolvePlanId(row.plan))),
   };
 }
 

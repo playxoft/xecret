@@ -3,7 +3,7 @@ import {
   DEFAULT_PLAN,
   resolveEntitlements,
   type Entitlements,
-  type PlanId,
+  type StoredPlanId,
   type SubscriptionStatus,
 } from '@xecret/core/entitlements';
 import { billingWebhookEvents, orgSubscriptions, orgUsageCounters } from '../schema/billing';
@@ -31,7 +31,8 @@ export type SubscriptionRecord = typeof orgSubscriptions.$inferSelect;
 
 /** The columns entitlement resolution needs, and nothing else. */
 export interface SubscriptionEntitlementRow {
-  plan: PlanId;
+  /** As stored. A retired plan is resolved by `resolveEntitlements`, not here. */
+  plan: StoredPlanId;
   status: SubscriptionStatus;
   addonSaml: boolean;
   addonDirectorySync: boolean;
@@ -119,7 +120,7 @@ export async function createFreeSubscription(exec: Executor, orgId: string): Pro
 }
 
 export interface SubscriptionPatch {
-  plan?: PlanId;
+  plan?: StoredPlanId;
   status?: SubscriptionStatus;
   billingInterval?: 'monthly' | 'yearly' | null;
   seats?: number;
