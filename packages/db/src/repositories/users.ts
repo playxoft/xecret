@@ -1,4 +1,4 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, or } from 'drizzle-orm';
 import type { VerifiedIdentity } from '@xecret/core/auth';
 import { uuidv7 } from '@xecret/core/ids';
 import { users } from '../schema/identity';
@@ -50,6 +50,19 @@ export function isUniqueViolation(error: unknown, constraint: string): boolean {
   return false;
 }
 
+export async function findUserByWorkosId(
+  exec: Executor,
+  workosUserId: string,
+): Promise<User | null> {
+  const [row] = await exec
+    .select()
+    .from(users)
+    .where(and(eq(users.workosUserId, workosUserId), isNull(users.deletedAt)))
+    .limit(1);
+
+  return row ?? null;
+}
+
 export async function findUserByFirebaseUid(
   exec: Executor,
   firebaseUid: string,
@@ -99,11 +112,36 @@ export async function findUserByEmail(exec: Executor, email: string): Promise<Us
   return row ?? null;
 }
 
+export type IdentityLinkOutcome =
+  /** The provider id was already on a row. The ordinary login. */
+  | 'matched'
+  /** A pre-existing account was claimed by verified email. Audited loudly. */
+  | 'linked'
+  /** Nobody held this identity or this address. A new account. */
+  | 'created';
+
+export interface UpsertedUser {
+  user: User;
+  outcome: IdentityLinkOutcome;
+}
+
 /**
- * Creates the user on first login, or refreshes the mirrored profile on every
- * login after that.
+ * Resolves a verified identity to a user row, creating or linking as needed.
  *
- * The write is an upsert on `firebase_uid` rather than a read-then-insert
+ * Implements the normative linking order in `.local/workos-auth.md` §5:
+ * provider id, then **verified** email, then create. Each step is documented at
+ * the branch that performs it; the rule that governs all of them is that an
+ * unverified address is refused before any of them runs.
+ *
+ * ── Why a sequence and not one clever statement ──
+ * The three cases key on different columns, and the second has to *write* a
+ * column the first reads. A single `ON CONFLICT` cannot express "conflict on
+ * this column, or else that one" — attempting it yields an upsert that
+ * silently prefers whichever index the planner reaches first. The unique
+ * constraints still settle concurrent races: the writes below can lose, and
+ * losing produces an answer rather than a 500.
+ *
+ * The insert in step 3 remains an upsert rather than a read-then-insert
  * because two concurrent first logins are a real possibility, not a theoretical
  * one: a cold start plus a double-clicked sign-in button issues two requests
  * that both find no row. The unique index is the only thing that actually
@@ -127,7 +165,23 @@ export async function findUserByEmail(exec: Executor, email: string): Promise<Us
 export async function upsertUserFromIdentity(
   exec: Executor,
   identity: VerifiedIdentity,
-): Promise<User> {
+): Promise<UpsertedUser> {
+  // Rule 4 of the linking order, and deliberately the first thing here: an
+  // address the provider has not verified may never reach the linking pass
+  // below. Registering an unverified `someone@company.com` at the identity
+  // provider would otherwise hand over that person's existing account, with its
+  // organisations, its grants and its secrets.
+  //
+  // The route checks this too. The duplication is intentional — the route's
+  // check produces the good error message, and this one is the check that is
+  // still true after somebody adds a second caller.
+  if (!identity.emailVerified) {
+    throw new RepositoryError(
+      'forbidden',
+      'The identity provider has not verified this email address.',
+    );
+  }
+
   const now = new Date();
   const mirrored = {
     email: identity.email,
@@ -135,11 +189,74 @@ export async function upsertUserFromIdentity(
     avatarUrl: identity.avatarUrl ?? null,
   };
 
+  // ── 1. Known identity ──────────────────────────────────────────────────────
+  const existing = await findUserByWorkosId(exec, identity.subject);
+  if (existing) {
+    // Rule 5: the address may have changed upstream since the last login. The
+    // provider is authoritative for it, and a collision is reported exactly as
+    // it would be on a fresh signup.
+    const [updated] = await exec
+      .update(users)
+      .set({ ...mirrored, updatedAt: now, lastLoginAt: now })
+      .where(and(eq(users.id, existing.id), isNull(users.deletedAt)))
+      .returning()
+      .catch(rethrowEmailCollision);
+
+    if (!updated) {
+      throw new RepositoryError('notFound', 'No active account exists for this identity.');
+    }
+    return { user: updated, outcome: 'matched' };
+  }
+
+  // ── 2. Known address, new identity ─────────────────────────────────────────
+  // This branch is what carries every pre-existing account across the provider
+  // swap without anybody noticing, and it is the one that has to be airtight.
+  const byEmail = await findUserByEmail(exec, identity.email);
+  if (byEmail) {
+    // An address already bound to a *different* provider identity is a
+    // conflict, never a relink. Two identities claiming one account is either a
+    // provider bug or an attack, and adopting the newer one hands the account
+    // over. `findUserByEmail` already excludes soft-deleted rows, so a deleted
+    // account is not revived by signing in again either.
+    if (byEmail.workosUserId !== null && byEmail.workosUserId !== identity.subject) {
+      throw new RepositoryError(
+        'conflict',
+        'That email address is already linked to a different identity.',
+      );
+    }
+
+    const [linked] = await exec
+      .update(users)
+      .set({ workosUserId: identity.subject, ...mirrored, updatedAt: now, lastLoginAt: now })
+      // Re-asserting "still unlinked, or already ours" inside the predicate is
+      // what makes two concurrent first logins safe. The loser updates nothing,
+      // reads no row back, and is refused — rather than overwriting the link
+      // the winner just wrote.
+      .where(
+        and(
+          eq(users.id, byEmail.id),
+          isNull(users.deletedAt),
+          or(isNull(users.workosUserId), eq(users.workosUserId, identity.subject)),
+        ),
+      )
+      .returning()
+      .catch(rethrowEmailCollision);
+
+    if (!linked) {
+      throw new RepositoryError(
+        'conflict',
+        'That email address is already linked to a different identity.',
+      );
+    }
+    return { user: linked, outcome: 'linked' };
+  }
+
+  // ── 3. New account ─────────────────────────────────────────────────────────
   const rows = await exec
     .insert(users)
     .values({
       id: uuidv7(),
-      firebaseUid: identity.subject,
+      workosUserId: identity.subject,
       ...mirrored,
       displayName: identity.displayName ?? null,
       createdAt: now,
@@ -147,12 +264,12 @@ export async function upsertUserFromIdentity(
       lastLoginAt: now,
     })
     .onConflictDoUpdate({
-      target: users.firebaseUid,
+      target: users.workosUserId,
       set: { ...mirrored, updatedAt: now, lastLoginAt: now },
-      // A soft-deleted account is not revived by signing in again. The Firebase
-      // account may well still exist after the xecret account was deleted, and
-      // silently restoring the row would restore its memberships and grants with
-      // it — which is exactly what deleting the account was meant to end.
+      // A soft-deleted account is not revived by signing in again. The provider
+      // account may well outlive the xecret one, and silently restoring the row
+      // would restore its memberships and grants with it — which is exactly
+      // what deleting the account was meant to end.
       setWhere: isNull(users.deletedAt),
     })
     .returning()
@@ -164,7 +281,7 @@ export async function upsertUserFromIdentity(
     throw new RepositoryError('notFound', 'No active account exists for this identity.');
   }
 
-  return row;
+  return { user: row, outcome: 'created' };
 }
 
 /** What an account may change about its own profile. */

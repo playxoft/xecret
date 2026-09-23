@@ -482,6 +482,10 @@ describe('response shapes', () => {
     name: 'Acme',
     slug: 'acme',
     seatLimit: 5,
+    // No WorkOS organisation and no SSO requirement: the overwhelmingly common
+    // shape, and the one every assertion in this file is about.
+    workosOrgId: null,
+    ssoRequired: false,
     createdBy: '0198c0de-0000-7000-8000-00000000000a',
     createdAt: new Date('2026-01-01T10:00:00.000Z'),
     updatedAt: new Date('2026-02-01T10:00:00.000Z'),

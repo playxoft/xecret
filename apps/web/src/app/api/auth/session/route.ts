@@ -86,9 +86,17 @@ export const POST = publicRoute(async ({ request, services }) => {
   // here as a plain statement rather than a 500. 403, not 404: this caller has
   // just proven control of the identity, so "this account was deleted" reveals
   // nothing they are not entitled to know.
-  const user = await upsertUserFromIdentity(services.db, identity).catch((cause: unknown) => {
+  // `outcome` is discarded here and consumed by the WorkOS callback that
+  // replaces this route: it distinguishes an ordinary login from a
+  // pre-existing account being adopted by verified email, and the second is an
+  // event worth auditing on its own. This route is deleted with the Firebase
+  // path, so wiring it up here would be writing code with a known expiry date.
+  const { user } = await upsertUserFromIdentity(services.db, identity).catch((cause: unknown) => {
     if (cause instanceof RepositoryError && cause.code === 'notFound') {
       throw errors.forbidden('This account was deleted and cannot be signed in to again.');
+    }
+    if (cause instanceof RepositoryError && cause.code === 'forbidden') {
+      throw errors.forbidden('Verify your email address before signing in.');
     }
     throw cause;
   });

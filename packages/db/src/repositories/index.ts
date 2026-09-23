@@ -26,13 +26,14 @@ export {
   findUserByEmail,
   findUserByFirebaseUid,
   findUserById,
+  findUserByWorkosId,
   isUniqueViolation,
   softDeleteUser,
   touchLastLogin,
   updateUserProfile,
   upsertUserFromIdentity,
 } from './users';
-export type { User, UserProfilePatch } from './users';
+export type { IdentityLinkOutcome, UpsertedUser, User, UserProfilePatch } from './users';
 
 export {
   createSession,
