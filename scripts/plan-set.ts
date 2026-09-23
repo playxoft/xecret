@@ -59,6 +59,7 @@ import {
   resolveBilledSeats,
   resolveEntitlements,
   type PlanId,
+  type SeatDecision,
 } from '../packages/core/src/entitlements/index.ts';
 import { createAuditBuilder } from '../packages/core/src/audit/index.ts';
 import { createDatabaseHandle } from '../packages/db/src/client.ts';
@@ -119,6 +120,19 @@ function isBillingInterval(value: string): value is BillingInterval {
 }
 
 /**
+ * The seats line in the run summary.
+ *
+ * One number when the two agree, both when they do not — which is every Free
+ * organisation, and is the thing worth seeing rather than hiding behind a single
+ * figure that is true of only one of the columns.
+ */
+function describeSeats(decision: SeatDecision): string {
+  return decision.billed === decision.enforced
+    ? `seats=${decision.billed}`
+    : `seats=${decision.billed} (billed) seatLimit=${decision.enforced} (enforced)`;
+}
+
+/**
  * The seat decision, plus the sentences an operator should see about it.
  *
  * The arithmetic lives in `@xecret/core` (`resolveBilledSeats`) because it is a
@@ -133,7 +147,7 @@ function resolveSeats(params: {
   billed: number;
   /** `organizations.seat_limit` — what invitations are currently refused against. */
   enforced: number;
-}): number {
+}): SeatDecision {
   if (params.requested !== null && (!Number.isFinite(params.requested) || params.requested < 0)) {
     fail('--seats must be a non-negative number.');
   }
@@ -143,7 +157,7 @@ function resolveSeats(params: {
   if (decision.raisedToMinimum) {
     console.warn(
       `  ! ${params.plan} has a ${MINIMUM_SEATS[params.plan]}-seat minimum; ` +
-        `${params.requested} was requested. Setting ${decision.seats}.`,
+        `${params.requested} was requested. Billing ${decision.billed}.`,
     );
   }
 
@@ -151,12 +165,21 @@ function resolveSeats(params: {
     // Said out loud because this is the column invitations are refused against,
     // and the effect is felt by somebody who was not in the room.
     console.warn(
-      `  ! This lowers the enforced seat limit from ${params.enforced} to ${decision.seats}. ` +
+      `  ! This lowers the enforced seat limit from ${params.enforced} to ${decision.enforced}. ` +
         'Members already seated keep their seats; new invitations will be refused.',
     );
   }
 
-  return decision.seats;
+  if (params.plan === 'free' && params.requested !== null) {
+    // Free bills one seat whatever is asked for. Stated rather than left to be
+    // inferred from a `seats=1` line that looks like the flag was ignored.
+    console.warn(
+      '  ! free bills one seat. The enforced limit is left at ' +
+        `${decision.enforced}; only a paid plan bills more.`,
+    );
+  }
+
+  return decision;
 }
 
 /**
@@ -323,7 +346,7 @@ async function main(): Promise<void> {
      * the tool reported success, and the number it printed was real, and the
      * organisation still could not invite anybody.
      */
-    let billedSeats: number | undefined;
+    let seats: SeatDecision | undefined;
 
     /**
      * `--interval` is read here rather than only inside the `--plan` branch.
@@ -357,18 +380,23 @@ async function main(): Promise<void> {
         patch.billingInterval = null;
         changes.push('interval=none');
       } else {
-        const chosen = interval ?? 'yearly';
+        // The existing interval is consulted before the default. Falling
+        // straight to `yearly` moved a customer billed monthly onto yearly
+        // billing as a side effect of a plan change nobody asked to re-cadence —
+        // a change to what they are charged and when, with no flag requesting it
+        // and no line saying it happened.
+        const chosen = interval ?? existing?.billingInterval ?? 'yearly';
         patch.billingInterval = chosen;
         changes.push(`interval=${chosen}`);
       }
 
-      billedSeats = resolveSeats({
+      seats = resolveSeats({
         plan,
         requested: typeof args['seats'] === 'string' ? Number(args['seats']) : null,
         billed: existing?.seats ?? 1,
         enforced: org.seatLimit,
       });
-      changes.push(`seats=${billedSeats}`);
+      changes.push(describeSeats(seats));
     } else {
       if (interval !== undefined) {
         // Refused rather than silently written: the schema's interval check
@@ -387,13 +415,13 @@ async function main(): Promise<void> {
         // set one billed seat against a ten-seat minimum and under-charged it,
         // silently, against what both `MINIMUM_SEATS` and this file's header
         // say is enforced by this tool.
-        billedSeats = resolveSeats({
+        seats = resolveSeats({
           plan: existing?.plan ?? 'free',
           requested: Number(args['seats']),
           billed: existing?.seats ?? 1,
           enforced: org.seatLimit,
         });
-        changes.push(`seats=${billedSeats}`);
+        changes.push(describeSeats(seats));
       }
     }
 
@@ -456,6 +484,13 @@ async function main(): Promise<void> {
     }
 
     if (args['clear-overrides'] === true) {
+      // Refused rather than ordered. Both flags write `limitOverrides`, so
+      // whichever ran second won silently — and `changes` reported both, so the
+      // run printed `✓ override.projects=2000 overrides=cleared` and the
+      // operator was told an override had been applied that had not.
+      if (typeof args['limit-override'] === 'string') {
+        fail('--limit-override and --clear-overrides contradict each other. Pass one.');
+      }
       patch.limitOverrides = null;
       changes.push('overrides=cleared');
     }
@@ -506,7 +541,7 @@ async function main(): Promise<void> {
           : {}),
         ...(typeof args['addon'] === 'string' ? { addonName: args['addon'] } : {}),
         ...(overriddenLimit ? { limitName: overriddenLimit } : {}),
-        ...(billedSeats === undefined ? {} : { seatCount: billedSeats }),
+        ...(seats === undefined ? {} : { seatCount: seats.billed }),
         reason: changes.join(' '),
       },
     );
@@ -517,7 +552,7 @@ async function main(): Promise<void> {
     // is worse than no record, and this is the table the product promises is
     // truthful.
     const updated = await db.transaction(async (tx) => {
-      if (billedSeats !== undefined) await setBilledSeats(tx, org.id, billedSeats);
+      if (seats !== undefined) await setBilledSeats(tx, org.id, seats);
 
       const [row] = await tx
         .update(orgSubscriptions)
@@ -536,7 +571,7 @@ async function main(): Promise<void> {
     });
 
     console.log(`✓ ${slug}: ${changes.join(' ')}`);
-    describe(updated, slug, billedSeats ?? org.seatLimit);
+    describe(updated, slug, seats?.enforced ?? org.seatLimit);
   } finally {
     await end();
   }

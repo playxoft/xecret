@@ -435,6 +435,23 @@ export function assertSlugImmutable(
  * The advice differs at a ceiling of one because deleting is not advice there —
  * it is the only organisation they have, and the thing that lifts the ceiling is
  * a plan rather than a deletion.
+ *
+ * ── Why this is a 409 and not the `plan_limit` 403 this PR added ──
+ * It is the only live entitlement refusal in the product, so it is a fair
+ * question. Two reasons it stays a conflict.
+ *
+ * The status is a wire contract. `conflict` is what the Go CLI and the dashboard
+ * already branch on for this refusal, and 403 is the code both treat as "this
+ * credential may not"; moving it would make a quota look like a permissions
+ * failure to every client in the field, for a body field none of them read yet.
+ *
+ * And a `plan` block would be a promise the rest of the system does not keep.
+ * `requireCapacity` and the `upgradeTo` resolution it feeds are deliberately
+ * unwired until payments land — see the header of `server/entitlements.ts`. A
+ * structured upgrade hint pointing at a plan with no checkout behind it is worse
+ * than a sentence, because a sentence is plainly advice and a hint is plainly a
+ * button. The sentence says what to do; the machine-readable version arrives
+ * with the page that can act on it.
  */
 export function organizationLimitReached(ceiling: number): ApiError {
   if (ceiling <= 1) {

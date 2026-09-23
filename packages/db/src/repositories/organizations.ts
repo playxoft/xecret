@@ -256,15 +256,30 @@ export async function countOrganizationsHeldBy(
  * any other.
  */
 export function accountOrganizationCeiling(plans: readonly PlanId[]): number {
-  if (plans.length === 0) return PLANS[DEFAULT_PLAN].limits.organizations ?? FAIR_USE.organizations;
+  if (plans.length === 0) return freeCeiling();
 
   let best = 0;
   for (const plan of plans) {
-    const ceiling = PLANS[plan]?.limits.organizations;
-    if (ceiling === null || ceiling === undefined) return FAIR_USE.organizations;
+    // An unrecognised plan id resolves to Free, exactly as `resolveEntitlements`
+    // does with the same input. It used to share a branch with `null`, so
+    // `undefined` — a plan this build has never heard of, which is what a
+    // Postgres `plan_id` enum gaining a value before a deploy looks like, or a
+    // stale row — was read as *unlimited* and granted 25 organisations instead
+    // of one. An unknown plan is the one case where a quota check must not fail
+    // open; the two meanings share nothing but a falsy check.
+    const definition = Object.hasOwn(PLANS, plan) ? PLANS[plan] : PLANS[DEFAULT_PLAN];
+    const ceiling = definition.limits.organizations;
+
+    // `null` is unlimited, and unlimited wins outright.
+    if (ceiling === null) return FAIR_USE.organizations;
     if (ceiling > best) best = ceiling;
   }
   return best;
+}
+
+/** Free's ceiling, or the fair-use bound if Free ever becomes unlimited. */
+function freeCeiling(): number {
+  return PLANS[DEFAULT_PLAN].limits.organizations ?? FAIR_USE.organizations;
 }
 
 /**

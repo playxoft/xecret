@@ -8,7 +8,7 @@ import {
 } from '@xecret/core/entitlements';
 import { billingWebhookEvents, orgSubscriptions, orgUsageCounters } from '../schema/billing';
 import { organizations } from '../schema/tenancy';
-import type { Executor } from './shared';
+import type { Executor, Transaction } from './shared';
 
 /**
  * Subscriptions, entitlements and usage counters.
@@ -159,7 +159,7 @@ export async function updateSubscription(
 }
 
 /**
- * Seats billed, synced to `organizations.seat_limit`.
+ * Seats billed, and the ceiling invitations are refused against.
  *
  * Two columns rather than one, deliberately: `seat_limit` is what the member
  * service enforces on an invitation, `org_subscriptions.seats` is what the
@@ -167,18 +167,36 @@ export async function updateSubscription(
  * invite, a drift in the second charges the wrong amount — and one column for
  * both would turn every reconciliation bug into a billing bug.
  *
- * Both are written in one statement pair here so they cannot diverge through
- * this path; the reconciler (P12) catches divergence through any other.
+ * **Two numbers, not one.** They are equal on every paid plan and they are not
+ * equal on Free, which bills one seat while enforcing the column's default of
+ * five. Taking a single `seats` here meant a Free organisation's invoice figure
+ * was written into its access ceiling, and a three-person team could suddenly
+ * invite nobody. `resolveBilledSeats` in `@xecret/core` decides the pair; this
+ * only writes it.
+ *
+ * ── Why the parameter is a `Transaction` and not an `Executor` ──
+ * Because this is two statements and the point of it is that they cannot
+ * diverge. Every other repository function here takes an `Executor` so it works
+ * standalone or inside a transaction — but "standalone" for this one means a
+ * window where the invoice has moved and the ceiling has not, which is precisely
+ * the state it exists to prevent. The type makes the caller open one rather than
+ * leaving a comment asking them to.
  */
-export async function setBilledSeats(exec: Executor, orgId: string, seats: number): Promise<void> {
-  await exec
+export async function setBilledSeats(
+  tx: Transaction,
+  orgId: string,
+  seats: { billed: number; enforced: number },
+): Promise<void> {
+  const now = new Date();
+
+  await tx
     .update(orgSubscriptions)
-    .set({ seats, updatedAt: new Date() })
+    .set({ seats: seats.billed, updatedAt: now })
     .where(eq(orgSubscriptions.orgId, orgId));
 
-  await exec
+  await tx
     .update(organizations)
-    .set({ seatLimit: seats, updatedAt: new Date() })
+    .set({ seatLimit: seats.enforced, updatedAt: now })
     .where(eq(organizations.id, orgId));
 }
 

@@ -5,12 +5,15 @@ import { resolveBilledSeats } from './seats';
 /**
  * The seat rule: what a change bills, and what it enforces.
  *
- * Two columns are written from this one number — `org_subscriptions.seats`,
- * which the invoice is computed from, and `organizations.seat_limit`, which
- * `assertSeatAvailable` refuses an invitation against. That is why "never lower
- * a number nobody asked to lower" is a property worth testing rather than a
- * nicety: the failure is felt by a teammate who cannot be invited, days after
- * the operator who caused it has closed the terminal.
+ * Two columns, and **two numbers** — `org_subscriptions.seats`, which the
+ * invoice is computed from, and `organizations.seat_limit`, which
+ * `assertSeatAvailable` refuses an invitation against. They agree on every paid
+ * plan and disagree on Free, which bills one seat while enforcing the column's
+ * default of five.
+ *
+ * That is why "never lower a number nobody asked to lower" is a property worth
+ * testing rather than a nicety: the failure is felt by a teammate who cannot be
+ * invited, days after the operator who caused it has closed the terminal.
  */
 
 describe('resolveBilledSeats', () => {
@@ -31,7 +34,7 @@ describe('resolveBilledSeats', () => {
       enforced: 5,
     });
 
-    expect(decision.seats).toBe(5);
+    expect(decision.billed).toBe(5);
     expect(decision.lowersEnforced).toBe(false);
   });
 
@@ -43,7 +46,7 @@ describe('resolveBilledSeats', () => {
       enforced: 5,
     });
 
-    expect(decision.seats).toBe(MINIMUM_SEATS.scale);
+    expect(decision.billed).toBe(MINIMUM_SEATS.scale);
   });
 
   it('keeps a billed count above both the minimum and the enforced ceiling', () => {
@@ -54,7 +57,7 @@ describe('resolveBilledSeats', () => {
       enforced: 5,
     });
 
-    expect(decision.seats).toBe(40);
+    expect(decision.billed).toBe(40);
   });
 
   /**
@@ -70,7 +73,7 @@ describe('resolveBilledSeats', () => {
       enforced: 10,
     });
 
-    expect(decision.seats).toBe(MINIMUM_SEATS.scale);
+    expect(decision.billed).toBe(MINIMUM_SEATS.scale);
     expect(decision.raisedToMinimum).toBe(true);
   });
 
@@ -82,7 +85,7 @@ describe('resolveBilledSeats', () => {
       enforced: 3,
     });
 
-    expect(decision.seats).toBe(25);
+    expect(decision.billed).toBe(25);
     expect(decision.raisedToMinimum).toBe(false);
   });
 
@@ -99,27 +102,68 @@ describe('resolveBilledSeats', () => {
       enforced: 25,
     });
 
-    expect(decision.seats).toBe(3);
+    expect(decision.billed).toBe(3);
     expect(decision.lowersEnforced).toBe(true);
   });
 
   it('bills Free at one seat whatever was asked for', () => {
-    expect(resolveBilledSeats({ plan: 'free', requested: 9, billed: 9, enforced: 9 }).seats).toBe(
+    expect(resolveBilledSeats({ plan: 'free', requested: 9, billed: 9, enforced: 9 }).billed).toBe(
       1,
     );
     expect(
-      resolveBilledSeats({ plan: 'free', requested: null, billed: 1, enforced: 5 }).seats,
+      resolveBilledSeats({ plan: 'free', requested: null, billed: 1, enforced: 5 }).billed,
     ).toBe(1);
   });
 
   /**
-   * A downgrade to Free does reduce what is enforced, from the column default of
-   * five to one. That is the plan's published limit and not a mistake — but it
-   * is still reported, because it is the same surprise from the other direction.
+   * The regression that made splitting the return value necessary.
+   *
+   * One number meant Free's *invoice* figure of 1 was written into
+   * `organizations.seat_limit`, so `plan:set --org acme --seats 10` on a Free
+   * organisation — or any `--plan free` downgrade — dropped the enforced ceiling
+   * from 5 to 1 and a three-person team could suddenly invite nobody. It also
+   * contradicted the divergence documented on `FREE_LIMITS.seats` and on the
+   * column, which says the looser number is the one that applies until payments.
    */
-  it('reports a downgrade to Free as lowering enforcement', () => {
+  it('never writes Free’s invoice figure into the enforced ceiling', () => {
+    const decision = resolveBilledSeats({ plan: 'free', requested: null, billed: 1, enforced: 5 });
+
+    expect(decision.billed).toBe(1);
+    expect(decision.enforced).toBe(5);
+    expect(decision.lowersEnforced).toBe(false);
+  });
+
+  it('leaves a downgrade to Free with the access its members already had', () => {
+    const decision = resolveBilledSeats({
+      plan: 'free',
+      requested: null,
+      billed: 20,
+      enforced: 20,
+    });
+
+    expect(decision.billed).toBe(1);
+    expect(decision.enforced).toBe(20);
+  });
+
+  /**
+   * `--seats` on a Free organisation cannot buy billed seats, but it can still
+   * raise the ceiling invitations are refused against — which is the only thing
+   * the flag could sensibly mean there, and is a raise rather than a cut.
+   */
+  it('lets an explicit request raise Free’s enforced ceiling but never lower it', () => {
     expect(
-      resolveBilledSeats({ plan: 'free', requested: null, billed: 1, enforced: 5 }).lowersEnforced,
-    ).toBe(true);
+      resolveBilledSeats({ plan: 'free', requested: 10, billed: 1, enforced: 5 }).enforced,
+    ).toBe(10);
+    expect(
+      resolveBilledSeats({ plan: 'free', requested: 2, billed: 1, enforced: 5 }).enforced,
+    ).toBe(5);
+  });
+
+  /** On every paid plan the two numbers are the same, and stay that way. */
+  it('keeps billed and enforced equal on a paid plan', () => {
+    for (const requested of [null, 4, 40]) {
+      const decision = resolveBilledSeats({ plan: 'team', requested, billed: 5, enforced: 5 });
+      expect(decision.billed).toBe(decision.enforced);
+    }
   });
 });

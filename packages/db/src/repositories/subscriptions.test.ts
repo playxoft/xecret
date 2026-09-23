@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import type { Sql } from 'postgres';
 
-import { PLANS } from '@xecret/core/entitlements';
+import { FAIR_USE, PLANS } from '@xecret/core/entitlements';
 import * as schema from '../schema';
+import { accountOrganizationCeiling } from './organizations';
 import {
   entitlementColumns,
   entitlementsFromRow,
@@ -201,5 +202,38 @@ describe('the usage counter writes', () => {
   it('inserts a zero fetch count when it has to create the row', () => {
     const { params } = recordMeteredUnitsStatement(db, 'org-1', period, 3).toSQL();
     expect(params).toContain(0);
+  });
+});
+
+/**
+ * The ceiling on how many organisations one account may hold.
+ *
+ * A quota check is the one place that must not fail open, and this one did: an
+ * unrecognised plan id shared a branch with `null`, so a plan this build has
+ * never heard of — a Postgres `plan_id` enum gaining a value before a deploy, or
+ * a stale row — read as *unlimited* and granted 25 organisations instead of one.
+ */
+describe('accountOrganizationCeiling', () => {
+  it('takes the most generous ceiling among the plans it was given', () => {
+    expect(accountOrganizationCeiling(['free', 'free'])).toBe(PLANS.free.limits.organizations);
+    expect(accountOrganizationCeiling(['free', 'team'])).toBe(FAIR_USE.organizations);
+  });
+
+  it('falls back to Free for an account holding nothing', () => {
+    expect(accountOrganizationCeiling([])).toBe(PLANS.free.limits.organizations);
+  });
+
+  it('treats an unrecognised plan as Free, not as unlimited', () => {
+    // `resolveEntitlements` answers the identical input the identical way. A
+    // quota that disagreed with the resolver about what an unknown plan means
+    // would be a hole opened by a migration, not by a request.
+    expect(accountOrganizationCeiling(['platinum' as never])).toBe(PLANS.free.limits.organizations);
+    expect(accountOrganizationCeiling(['free', 'platinum' as never])).toBe(
+      PLANS.free.limits.organizations,
+    );
+  });
+
+  it('still lets a genuinely unlimited plan reach the fair-use bound', () => {
+    expect(accountOrganizationCeiling(['scale'])).toBe(FAIR_USE.organizations);
   });
 });

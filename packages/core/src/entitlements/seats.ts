@@ -27,26 +27,38 @@ export interface SeatRequest {
 }
 
 export interface SeatDecision {
-  /** The number to write to **both** seat columns. */
-  readonly seats: number;
+  /** What to write to `org_subscriptions.seats` — the number the invoice uses. */
+  readonly billed: number;
+  /** What to write to `organizations.seat_limit` — the number invitations are refused against. */
+  readonly enforced: number;
   /** An explicit request was below the plan's minimum and was raised to it. */
   readonly raisedToMinimum: boolean;
-  /** The result is below what invitations are currently refused against. */
+  /** `enforced` is below what invitations were previously refused against. */
   readonly lowersEnforced: boolean;
 }
 
 /**
- * ── Why a run that was told nothing never lowers a number ──
- * The result is written to `organizations.seat_limit` as well as to
- * `org_subscriptions.seats`, and `seat_limit` is the one that refuses an
- * invitation. Deriving from the *billed* count alone let an upgrade tighten it:
- * a Free organisation bills 1 seat and enforces 5 (the column default), so
- * moving it to Team with no seat count gave `max(1, 3) = 3` — an organisation
- * with four members instantly over its own limit and unable to invite anybody,
- * immediately after the upgrade that was meant to give it more.
+ * ── Why this returns two numbers rather than one ──
+ * They are not the same question and on Free they are not the same number.
+ * `billed` is what the invoice says; Free bills one seat by definition, which
+ * `org_subscriptions_seats_check` and the pricing page both agree on. `enforced`
+ * is `organizations.seat_limit`, a column that predates plans, defaults to 5 and
+ * is not set from the plan at provisioning — the divergence documented on
+ * `FREE_LIMITS.seats` and on the column itself, which stands until payments.
+ *
+ * Collapsing them to one number is a bug in the shape of a simplification: it
+ * writes the Free invoice figure of 1 into `seat_limit` and a three-person
+ * organisation can suddenly invite nobody. The whole reason two columns exist is
+ * that one is money and the other is access.
+ *
+ * ── Why a run that was told nothing never lowers `enforced` ──
+ * Deriving from the *billed* count alone let an upgrade tighten it: a Free
+ * organisation bills 1 and enforces 5, so moving it to Team with no seat count
+ * gave `max(1, 3) = 3` — an organisation with four members instantly over its
+ * own limit, immediately after the upgrade that was meant to give it more.
  *
  * So `requested: null` takes the largest of what is billed, what is enforced,
- * and the plan's minimum. Reducing seats is a deliberate act and requires
+ * and the plan's minimum. Reducing access is a deliberate act and requires
  * saying a number.
  *
  * ── Why the minimum applies to an explicit request too ──
@@ -54,31 +66,34 @@ export interface SeatDecision {
  * floor on what may be *billed*, so it binds whether the number was typed or
  * derived. It is a floor and never a ceiling: asking for more than the minimum
  * always gets what was asked for.
- *
- * ── Free ──
- * Bills one seat by definition — `org_subscriptions_seats_check` and the pricing
- * page agree — so no floor above it applies and none of the above runs.
  */
 export function resolveBilledSeats(request: SeatRequest): SeatDecision {
   const { plan, requested, billed, enforced } = request;
 
+  // Free bills one seat and enforces whatever it already enforced. A downgrade
+  // to Free does not confiscate access from members already seated — and it
+  // could not honestly grant it back either, because nothing in the product
+  // sells a Free organisation more.
   if (plan === 'free') {
-    return { seats: 1, raisedToMinimum: false, lowersEnforced: enforced > 1 };
-  }
-
-  const minimum = MINIMUM_SEATS[plan];
-
-  if (requested === null) {
     return {
-      seats: Math.max(billed, enforced, minimum),
+      billed: 1,
+      enforced: requested === null ? enforced : Math.max(requested, enforced),
       raisedToMinimum: false,
       lowersEnforced: false,
     };
   }
 
+  const minimum = MINIMUM_SEATS[plan];
+
+  if (requested === null) {
+    const seats = Math.max(billed, enforced, minimum);
+    return { billed: seats, enforced: seats, raisedToMinimum: false, lowersEnforced: false };
+  }
+
   const seats = Math.max(requested, minimum);
   return {
-    seats,
+    billed: seats,
+    enforced: seats,
     raisedToMinimum: seats > requested,
     lowersEnforced: seats < enforced,
   };
