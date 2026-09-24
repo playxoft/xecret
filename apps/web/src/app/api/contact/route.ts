@@ -3,7 +3,7 @@ import { publicOrigin } from '@/server/bindings';
 import type { Bindings } from '@/server/bindings';
 import { ContactDeliveryError, contactSink } from '@/server/discord';
 import { errors } from '@/server/errors';
-import { isSameOrigin, json, parseJsonBody } from '@/server/http';
+import { json, parseJsonBody } from '@/server/http';
 import { errorName } from '@/server/logging';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { unbackedRoute } from '@/server/route';
@@ -18,14 +18,21 @@ import { contactSchema } from '@/server/schemas/contact';
  * question. That makes it the endpoint most exposed to abuse and the one where
  * the controls have to be stated rather than inherited, so they are, in order:
  *
- *  1. **Same origin.** `publicRoute` does not check this and does not need to:
- *     its routes authenticate by other means. This one has no credential at all,
- *     so without the check any third-party page can `fetch` it with a
- *     CORS-safelisted content type, no preflight, and an opaque response it does
- *     not care about — and every visitor to that page posts an enquiry from
- *     *their own* address. The rate limit is keyed on the address, so it would
- *     stop bounding anything. There is no legitimate non-browser caller here,
- *     which is what makes the check free.
+ *  1. **An `Origin` header, and ours.** `publicRoute` does not check this and
+ *     does not need to: its routes authenticate by other means. This one has no
+ *     credential at all, so without the check any third-party page can `fetch`
+ *     it with a CORS-safelisted content type, no preflight, and an opaque
+ *     response it does not care about — and every visitor to that page posts an
+ *     enquiry from *their own* address. The rate limit is keyed on the address,
+ *     so it would stop bounding anything.
+ *
+ *     Note the header must be **present**, which is stricter than the shared
+ *     `isSameOrigin`. That helper passes an absent `Origin` on purpose — the CLI
+ *     omits it, and the routes it calls present a credential instead. Reusing it
+ *     here let anything that is not a browser through the one check standing in
+ *     front of the one unauthenticated write, which is the whole check. A
+ *     browser sends `Origin` on every non-GET request, so the form is unaffected
+ *     and `curl` is not.
  *  2. **Rate limit, before the body is read.** Keyed on the caller's address,
  *     because there is no account to key on — see `RL_CONTACT` for why it is a
  *     separate bucket from `RL_MUTATION`. Early, so a flood costs a counter
@@ -57,12 +64,16 @@ import { contactSchema } from '@/server/schemas/contact';
  * for the same reason as the product is a form that is missing when it matters.
  *
  * A missing webhook binding surfaces as a 503 through the wrapper's
- * `MissingBindingError` handling. That is not a third party failing; it is this
- * deployment being unconfigured, and a contact form that silently swallows
- * enquiries because nobody set the webhook is the worst outcome available here.
+ * `MissingBindingError` handling — which is why the sink is built *above* the
+ * `try` below rather than inside it. Built inside, the catch would swallow that
+ * error and report an unconfigured deployment as a third party being down,
+ * sending whoever reads the log to look at Discord's status page for a webhook
+ * nobody had set.
  */
 export const POST = unbackedRoute(async ({ request, env, meta, log }) => {
-  if (!isSameOrigin(request, publicOrigin(env))) {
+  // Not `isSameOrigin`: see the header. Absent is a failure here, because the
+  // only caller this endpoint has is a browser and a browser always sends it.
+  if (request.headers.get('origin') !== publicOrigin(env)) {
     throw errors.forbidden('This endpoint accepts requests from the xecret site only.');
   }
 
@@ -89,8 +100,10 @@ export const POST = unbackedRoute(async ({ request, env, meta, log }) => {
     return json({ accepted: true }, { status: 202 });
   }
 
+  const sink = contactSink(env);
+
   try {
-    await contactSink(env).deliver({
+    await sink.deliver({
       // The label, not the id: the channel is read by a person, and `feature` is
       // a value where "A feature request" is a sentence.
       reason: contactReasonLabel(body.reason),

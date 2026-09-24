@@ -193,6 +193,28 @@ describe('POST /api/contact', () => {
   });
 
   /**
+   * The hole the shared `isSameOrigin` left open here.
+   *
+   * That helper treats an absent `Origin` as a pass, deliberately: the CLI omits
+   * it, and the routes it calls present a credential instead. This route has no
+   * credential, so reusing the helper meant the one check standing in front of
+   * the one unauthenticated write was satisfied by simply not sending a header —
+   * which every script does by default and no browser does at all.
+   */
+  it('refuses a submission that sends no origin at all', async () => {
+    const request = new Request('https://xecret.playxoft.com/api/contact', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(VALID),
+    });
+
+    const response = await contact.POST(request);
+
+    expect(response.status).toBe(403);
+    expect(discord.deliver).not.toHaveBeenCalled();
+  });
+
+  /**
    * A form that silently succeeds while the message goes nowhere is the worst
    * outcome a contact form has. It fails visibly and names the alternative; the
    * provider's own status stays in the log.

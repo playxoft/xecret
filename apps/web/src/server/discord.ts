@@ -148,7 +148,39 @@ function escapeMarkdown(value: string): string {
  */
 function field(value: string | undefined, max: number): string {
   const clean = sanitizeMetadataString(value ?? '', max);
-  return clean.length === 0 ? '—' : escapeMarkdown(clean);
+  return clean.length === 0 ? '—' : clamp(escapeMarkdown(clean), max);
+}
+
+/**
+ * Bounds the value **after** escaping, which is the only length that matters.
+ *
+ * ── Why this exists ──
+ * `sanitizeMetadataString` truncates, then `escapeMarkdown` adds a byte per
+ * markup character — so a 3,900-character enquiry could leave here at 7,799 and
+ * be refused by Discord with a 400, losing it. `'*'.repeat(4000)` is the extreme
+ * case and ordinary prose is not safe either: a pasted stack trace at roughly
+ * seven per cent parentheses and underscores clears 4,096 on its own. Only 196
+ * markup characters of headroom existed in a maximum-length message.
+ *
+ * This is the same defect as the one it replaced, one layer further in: a bound
+ * applied to the wrong string. The first version measured before redaction
+ * shortened the value; this one measured before escaping lengthened it.
+ *
+ * ── The trailing backslash ──
+ * Cutting escaped text can land between a backslash and the character it
+ * escapes, leaving a lone backslash that would escape the ellipsis instead — so
+ * an odd run at the cut is trimmed. Counting the run rather than testing one
+ * character matters because `\\` is an escaped backslash and is even.
+ */
+function clamp(escaped: string, max: number): string {
+  if (escaped.length <= max) return escaped;
+
+  let cut = escaped.slice(0, max - 1);
+  let trailing = 0;
+  while (trailing < cut.length && cut.at(-1 - trailing) === '\\') trailing += 1;
+  if (trailing % 2 === 1) cut = cut.slice(0, -1);
+
+  return `${cut}…`;
 }
 
 /** Discord's webhook API, which is the only implementation we ship. */

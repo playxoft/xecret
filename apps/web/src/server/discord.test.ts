@@ -212,15 +212,27 @@ describe('the contact sink', () => {
    * mistake was found, by the live smoke test rather than by anything here.
    * 1,024 per field value, 4,096 for the description, 6,000 across the embed.
    */
-  it('stays inside every limit Discord actually enforces', async () => {
+  it.each([
+    ['plain text', 'x'],
+    // The input class the first version of this test could not fail on: `x` is
+    // not escaped, so it never exercised the pass that *grows* the string. Every
+    // character here does, which doubles the length — and doubling 3,900 clears
+    // the 4,096 description cap, which is a 400 from Discord and a lost enquiry.
+    ['markup', '*'],
+    ['masked links', '[a](b)'],
+    // Ordinary prose is not safe either. A pasted stack trace sits at roughly
+    // this density of parentheses and underscores.
+    ['prose with punctuation', 'at foo_bar (file.ts:12) '],
+  ])('stays inside every limit Discord enforces, for %s', async (_label, unit) => {
+    const fill = (length: number) => unit.repeat(Math.ceil(length / unit.length)).slice(0, length);
     const calls = capture();
     await sink().deliver({
-      reason: 'x'.repeat(200),
-      name: 'x'.repeat(500),
-      email: 'x'.repeat(500),
-      company: 'x'.repeat(500),
-      message: 'x'.repeat(10_000),
-      source: 'x'.repeat(500),
+      reason: fill(200),
+      name: fill(500),
+      email: fill(500),
+      company: fill(500),
+      message: fill(10_000),
+      source: fill(500),
     });
 
     const only = embed(calls[0]!.body);

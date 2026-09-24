@@ -17,6 +17,17 @@
  * channel pings anybody when this lands, `allowed_mentions` has regressed and
  * the form is a notification cannon.
  *
+ * ── Why the padding looks like that ──
+ * It is markup-dense on purpose, and it used to be plain prose repeated forty
+ * times — 2,152 characters, which is under every cap in the sink. So the run
+ * printed "check that the message ends in an ellipsis" about a message that
+ * could not end in one, and it exercised neither truncation nor the pass that
+ * *grows* a value. Escaping adds a character per markup character, and the one
+ * bound that matters is the length after that: at roughly seven per cent
+ * density a maximum-length enquiry clears Discord's 4,096 description cap and
+ * comes back as a 400 with a lost enquiry behind it. The padding below sits at
+ * that density and runs past the cap, so a real run proves the clamp holds.
+ *
  * Safe to run more than once. It sends one message and writes nothing.
  */
 
@@ -38,7 +49,7 @@ async function main(): Promise<void> {
     message:
       'Hi @here — token: xec_live_abcdefghijklmnop. We are moving off Vault and need EU data ' +
       'residency. Backtick test: `code`. Masked link: [https://xecret.playxoft.com/admin](https://evil.example). ' +
-      'Padding so the truncation path is exercised too. '.repeat(40),
+      'Padding (with_markup) so the clamp path is exercised too. '.repeat(80),
     source: 'https://xecret.playxoft.com/pricing',
   });
 
@@ -47,7 +58,8 @@ async function main(): Promise<void> {
   console.log('  - Email reads ada@example.com, not [redacted-email]');
   console.log('  - the token in the body is masked');
   console.log('  - the masked link renders as literal text, not as a clickable link');
-  console.log('  - Message ends in an ellipsis rather than at Discord’s own cap');
+  console.log('  - the body ends in an ellipsis — it is past the cap, so it must be cut');
+  console.log('  - the body arrived at all: a 400 here means the clamp stopped holding');
 }
 
 void main().catch((error: unknown) => {
