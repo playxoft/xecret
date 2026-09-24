@@ -73,6 +73,21 @@ export function ContactForm() {
     }
   }
 
+  /**
+   * Back to an empty form.
+   *
+   * Everything is cleared, including the reason. The inputs are uncontrolled and
+   * unmount with the form, so they come back empty on their own; this resets the
+   * two pieces of state that would otherwise survive and makes the intent one
+   * thing rather than two halves in different places.
+   */
+  function reset() {
+    setReason(DEFAULT_CONTACT_REASON);
+    setFields({});
+    setProblem(null);
+    setSent(false);
+  }
+
   if (sent) {
     return (
       <div
@@ -88,6 +103,20 @@ export function ContactForm() {
           It has gone to the channel we actually watch, rather than an inbox nobody has agreed to
           read. Expect a reply from a person, usually within a working day.
         </p>
+
+        {/* A way back, because there is a legitimate reason to want one: an
+            enquiry that turns out to be two questions, or a second one for a
+            colleague. `secondary` rather than `ghost`: a bare label centred
+            under a paragraph reads as more of that paragraph, and the one thing
+            on this screen that can be pressed should look like it. Deliberately
+            not the *primary* style either — the message is already sent, and the
+            loudest thing here should not be an invitation to send another.
+            Deliberately not pre-filled — the previous message is already sent, and a form that
+            reappears holding it invites somebody to change a word and send the
+            same enquiry twice. */}
+        <Button type="button" variant="secondary" className="mt-2" onClick={reset}>
+          Send another message
+        </Button>
       </div>
     );
   }
@@ -167,13 +196,12 @@ export function ContactForm() {
         </p>
       )}
 
-      {/* The action sits at the end of the row, where a reader who has filled
-          the form in is already looking — the eye leaves the last field on the
-          right, and a button on the left asks it to travel back across the card
-          to find the thing it came for. */}
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <p className="text-fg-subtle text-sm">No newsletter, no CRM sequence.</p>
-        <Button type="submit" disabled={busy}>
+      {/* Centred and `lg`, with nothing beside it. The row previously carried a
+          reassurance on the left that a reader had already decided about by the
+          time they reached the button — a form is not the place to argue, and
+          anything sharing a line with the only action competes with it. */}
+      <div className="mt-2 flex justify-center">
+        <Button type="submit" size="lg" disabled={busy} className="min-w-44">
           {busy ? 'Sending…' : 'Send message'}
         </Button>
       </div>
