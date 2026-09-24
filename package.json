@@ -27,6 +27,7 @@
     "phase:smoke": "phase run -- npm run smoke",
     "// phase:contact": "Sends one deliberately hostile enquiry through the real Discord webhook. What it proves is the half a stub cannot: that the URL is real, points at the channel somebody meant, and renders a message nobody gets pinged by.",
     "phase:contact-smoke": "phase run -- npx tsx scripts/contact-smoke.ts",
+    "// dev": "Port 3030, set in apps/web/package.json so the workspace owns it. Prefer `phase:dev` above: this one starts without secrets, and the result is an app that loads while every API route answers 503.",
     "dev": "npm run dev --workspace @xecret/web",
     "build": "npm run build --workspace @xecret/web",
     "preview": "npm run preview --workspace @xecret/web",

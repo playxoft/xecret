@@ -19,10 +19,16 @@ import { ContactForm } from './contact-form';
  * question, which is the only signal worth having.
  *
  * ── Why the alternatives are on the page ──
- * A contact form is the slowest way to ask most questions, so the two faster
- * ones sit beside it. Somebody with a bug should open an issue, and somebody
- * deciding whether the product fits should read the docs; sending either of them
- * through a form and a reply cycle wastes a day to arrive at a link.
+ * A contact form is the slowest way to ask most questions, so the faster ones
+ * sit under it. Somebody with a bug should open an issue, and somebody deciding
+ * whether the product fits should read the docs; sending either of them through
+ * a form and a reply cycle wastes a day to arrive at a link.
+ *
+ * ── What used to be here ──
+ * Three blocks describing what an Enterprise agreement, a security review and a
+ * migration involve. They went when the reason selector arrived: the selector
+ * asks the same question and gets a machine-readable answer, so the prose was
+ * three paragraphs of preamble between a reader and the form they came for.
  */
 
 const TITLE = 'Contact sales';
@@ -42,21 +48,6 @@ export const metadata: Metadata = {
     description: DESCRIPTION,
   },
 };
-
-const REACHES_US = [
-  {
-    title: 'An Enterprise agreement',
-    body: 'Residency, your own root key, a commercial licence for self-hosting, an SLA with a named contact. A conversation rather than a checkout, which is why that card has no price.',
-  },
-  {
-    title: 'A security review',
-    body: 'Send the questionnaire. The architecture and threat model are already published, so most of it is answerable with links — and where it is not, the answer becomes a page rather than a PDF.',
-  },
-  {
-    title: 'A migration',
-    body: 'Moving off something else, with more secrets than a weekend of copy-paste allows. Tell us what you are on and how it is structured.',
-  },
-] as const;
 
 export default function ContactPage() {
   // No `current` is passed: contact is not a top-level nav entry. It is reached
@@ -87,20 +78,11 @@ export default function ContactPage() {
             <ContactForm />
           </div>
 
-          <div className="mt-12 grid gap-8 sm:grid-cols-3">
-            {REACHES_US.map((item) => (
-              <div key={item.title}>
-                <h3 className="text-fg text-sm font-semibold">{item.title}</h3>
-                <p className="text-fg-muted mt-2 text-sm leading-6">{item.body}</p>
-              </div>
-            ))}
-          </div>
-
           {/* The two faster routes, said plainly rather than buried. A form is
               the wrong tool for a bug report and for a question the docs already
               answer, and pretending otherwise costs the sender a day to be
               handed a link. */}
-          <div className="border-line-subtle mt-10 flex flex-wrap items-center justify-center gap-x-6 gap-y-3 border-t pt-6">
+          <div className="mt-8 flex flex-wrap items-center justify-center gap-x-6 gap-y-3">
             <a
               href={`${REPO_URL}/issues`}
               target="_blank"

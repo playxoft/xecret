@@ -94,6 +94,26 @@ export function ContactForm() {
 
   return (
     <form onSubmit={submit} noValidate className="flex flex-col gap-5">
+      <div className="grid gap-5 sm:grid-cols-2">
+        <Field label="Name" error={fields['name']}>
+          <Input name="name" autoComplete="name" maxLength={CONTACT_LIMITS.name} required />
+        </Field>
+
+        <Field label="Work email" error={fields['email']}>
+          <Input
+            name="email"
+            type="email"
+            autoComplete="email"
+            maxLength={CONTACT_LIMITS.email}
+            required
+          />
+        </Field>
+      </div>
+
+      <Field label="Company" optional error={fields['company']}>
+        <Input name="company" autoComplete="organization" maxLength={CONTACT_LIMITS.company} />
+      </Field>
+
       <Field
         label="What is this about?"
         hint="It decides who picks this up first, nothing else."
@@ -117,26 +137,6 @@ export function ContactForm() {
             ))}
           </SelectContent>
         </Select>
-      </Field>
-
-      <div className="grid gap-5 sm:grid-cols-2">
-        <Field label="Name" error={fields['name']}>
-          <Input name="name" autoComplete="name" maxLength={CONTACT_LIMITS.name} required />
-        </Field>
-
-        <Field label="Work email" error={fields['email']}>
-          <Input
-            name="email"
-            type="email"
-            autoComplete="email"
-            maxLength={CONTACT_LIMITS.email}
-            required
-          />
-        </Field>
-      </div>
-
-      <Field label="Company" optional error={fields['company']}>
-        <Input name="company" autoComplete="organization" maxLength={CONTACT_LIMITS.company} />
       </Field>
 
       <Field
@@ -167,11 +167,15 @@ export function ContactForm() {
         </p>
       )}
 
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      {/* The action sits at the end of the row, where a reader who has filled
+          the form in is already looking — the eye leaves the last field on the
+          right, and a button on the left asks it to travel back across the card
+          to find the thing it came for. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <p className="text-fg-subtle text-sm">No newsletter, no CRM sequence.</p>
         <Button type="submit" disabled={busy}>
           {busy ? 'Sending…' : 'Send message'}
         </Button>
-        <p className="text-fg-subtle text-sm">No newsletter, no CRM sequence.</p>
       </div>
     </form>
   );
