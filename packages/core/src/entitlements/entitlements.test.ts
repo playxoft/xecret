@@ -21,6 +21,7 @@ import {
   FAIR_USE,
   FETCHES_PER_METERED_UNIT,
   MINIMUM_SEATS,
+  NULLABLE_LIMITS,
   PLAN_IDS,
   PLAN_RANK,
   PLANS,
@@ -469,6 +470,27 @@ describe('resolveEntitlements', () => {
     expect(e.limits.projects).toBe(5);
   });
 
+  /**
+   * The guard was `state.plan in PLANS`, and `in` walks the prototype chain.
+   * `'constructor'` and `'toString'` are own properties of `Object.prototype`,
+   * so both passed it, `PLANS[plan]` was `undefined`, and the next line threw a
+   * `TypeError` reading `.limits` — on the authorization path, which is the one
+   * place the fallback exists to keep exception-free. A defensive line that does
+   * not defend is worse than none, because it reads as though the case is
+   * handled.
+   *
+   * Unreachable through the database, which supplies this through a Postgres
+   * enum. That is precisely the argument the original comment makes for having
+   * the line at all, so it has to survive the input it was written against.
+   */
+  it('falls back to Free for a prototype key, not just an unknown string', () => {
+    for (const hostile of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
+      const e = resolveEntitlements(state({ plan: hostile as PlanId }));
+      expect(e.plan).toBe('free');
+      expect(e.limits.projects).toBe(5);
+    }
+  });
+
   it('FREE_ENTITLEMENTS matches a freshly resolved Free org', () => {
     expect(FREE_ENTITLEMENTS.plan).toBe('free');
     expect(FREE_ENTITLEMENTS.limits).toEqual(entitlementsFor('free').limits);
@@ -485,6 +507,74 @@ describe('limit overrides are raise-only', () => {
     // A stale or malformed override must never downgrade a paying customer.
     const e = entitlementsFor('free', { limitOverrides: { projects: 2 } });
     expect(e.limits.projects).toBe(5);
+  });
+
+  /** Same `in`-versus-`Object.hasOwn` bug, in the override loop. */
+  it('ignores an override naming a prototype key rather than a limit', () => {
+    const e = entitlementsFor('free', {
+      limitOverrides: { constructor: 9999, toString: 9999 },
+    });
+
+    expect(Object.hasOwn(e.limits, 'constructor')).toBe(false);
+    expect(e.limits.projects).toBe(5);
+  });
+
+  /**
+   * `null` means unlimited, and four `PlanLimits` fields have no unlimited:
+   * `secretVersionsRetained`, `auditRetentionDays`, `pitrDays` and
+   * `includedFetchesPerMonth` are typed `number` and every reader treats them as
+   * one. A `null` there passed the "is this a known limit?" guard, was
+   * persisted, and then threw a `TypeError` on the *next* read of that
+   * organisation — permanently, because the bad value is in the row.
+   */
+  it('ignores an unlimited override on a limit that has no unlimited', () => {
+    const e = entitlementsFor('free', {
+      limitOverrides: {
+        includedFetchesPerMonth: null,
+        auditRetentionDays: null,
+        pitrDays: null,
+        secretVersionsRetained: null,
+      },
+    });
+
+    expect(e.limits.includedFetchesPerMonth).toBe(PLANS.free.limits.includedFetchesPerMonth);
+    expect(e.limits.auditRetentionDays).toBe(PLANS.free.limits.auditRetentionDays);
+    expect(e.limits.pitrDays).toBe(PLANS.free.limits.pitrDays);
+    expect(e.limits.secretVersionsRetained).toBe(PLANS.free.limits.secretVersionsRetained);
+
+    // The failure this prevents is a read, not a write: the value only bites
+    // when somebody formats it.
+    expect(() => e.limits.includedFetchesPerMonth.toLocaleString('en-GB')).not.toThrow();
+  });
+
+  it('still accepts unlimited on a countable ceiling', () => {
+    const e = entitlementsFor('free', { limitOverrides: { projects: null } });
+    expect(e.limits.projects).toBeNull();
+  });
+
+  /** Every `LimitedResource` is nullable, and nothing else is. */
+  it('NULLABLE_LIMITS names exactly the countable resources', () => {
+    for (const resource of [
+      'organizations',
+      'projects',
+      'environmentsPerProject',
+      'serviceTokens',
+      'seats',
+      'cliDevicesPerUser',
+      'webhooks',
+      'secretsPerEnvironment',
+    ]) {
+      expect(NULLABLE_LIMITS.has(resource)).toBe(true);
+    }
+
+    for (const scalar of [
+      'secretVersionsRetained',
+      'auditRetentionDays',
+      'pitrDays',
+      'includedFetchesPerMonth',
+    ]) {
+      expect(NULLABLE_LIMITS.has(scalar)).toBe(false);
+    }
   });
 
   it('ignores an equal value', () => {

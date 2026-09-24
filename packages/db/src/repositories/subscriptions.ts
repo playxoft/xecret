@@ -8,7 +8,7 @@ import {
 } from '@xecret/core/entitlements';
 import { billingWebhookEvents, orgSubscriptions, orgUsageCounters } from '../schema/billing';
 import { organizations } from '../schema/tenancy';
-import type { Executor } from './shared';
+import type { Executor, Transaction } from './shared';
 
 /**
  * Subscriptions, entitlements and usage counters.
@@ -160,7 +160,7 @@ export async function updateSubscription(
 }
 
 /**
- * Seats billed, synced to `organizations.seat_limit`.
+ * Seats billed, and the ceiling invitations are refused against.
  *
  * Two columns rather than one, deliberately: `seat_limit` is what the member
  * service enforces on an invitation, `org_subscriptions.seats` is what the
@@ -168,18 +168,36 @@ export async function updateSubscription(
  * invite, a drift in the second charges the wrong amount — and one column for
  * both would turn every reconciliation bug into a billing bug.
  *
- * Both are written in one statement pair here so they cannot diverge through
- * this path; the reconciler (P12) catches divergence through any other.
+ * **Two numbers, not one.** They are equal on every paid plan and they are not
+ * equal on Free, which bills one seat while enforcing the column's default of
+ * five. Taking a single `seats` here meant a Free organisation's invoice figure
+ * was written into its access ceiling, and a three-person team could suddenly
+ * invite nobody. `resolveBilledSeats` in `@xecret/core` decides the pair; this
+ * only writes it.
+ *
+ * ── Why the parameter is a `Transaction` and not an `Executor` ──
+ * Because this is two statements and the point of it is that they cannot
+ * diverge. Every other repository function here takes an `Executor` so it works
+ * standalone or inside a transaction — but "standalone" for this one means a
+ * window where the invoice has moved and the ceiling has not, which is precisely
+ * the state it exists to prevent. The type makes the caller open one rather than
+ * leaving a comment asking them to.
  */
-export async function setBilledSeats(exec: Executor, orgId: string, seats: number): Promise<void> {
-  await exec
+export async function setBilledSeats(
+  tx: Transaction,
+  orgId: string,
+  seats: { billed: number; enforced: number },
+): Promise<void> {
+  const now = new Date();
+
+  await tx
     .update(orgSubscriptions)
-    .set({ seats, updatedAt: new Date() })
+    .set({ seats: seats.billed, updatedAt: now })
     .where(eq(orgSubscriptions.orgId, orgId));
 
-  await exec
+  await tx
     .update(organizations)
-    .set({ seatLimit: seats, updatedAt: new Date() })
+    .set({ seatLimit: seats.enforced, updatedAt: now })
     .where(eq(organizations.id, orgId));
 }
 
@@ -205,8 +223,21 @@ export async function recordFetches(
   fetches: number,
 ): Promise<void> {
   if (fetches <= 0) return;
+  await recordFetchesStatement(exec, orgId, periodStart, fetches);
+}
 
-  await exec
+/**
+ * @internal Exported so `subscriptions.test.ts` can assert the upsert shape —
+ * that it adds rather than overwrites, and that its conflict target is the
+ * composite key — without a database.
+ */
+export function recordFetchesStatement(
+  exec: Executor,
+  orgId: string,
+  periodStart: Date,
+  fetches: number,
+) {
+  return exec
     .insert(orgUsageCounters)
     .values({ orgId, periodStart, secretFetches: fetches })
     .onConflictDoUpdate({
@@ -224,6 +255,20 @@ export async function recordFetches(
  * Additive for the same reason as `recordFetches`, and the column it feeds is
  * what stops a retried report from billing twice: units owed are always
  * computed as `floor(billable / unit) - unitsAlreadySent`.
+ *
+ * ── Why this is an upsert and not an UPDATE ──
+ * It was an `UPDATE … WHERE org_id AND period_start`, which has no way to say
+ * that it matched nothing: zero rows affected is a successful statement. The
+ * caller would then believe the units were banked when they were not, and the
+ * next flush — recomputing `floor(billable / unit) - unitsAlreadySent` with
+ * `unitsAlreadySent` still zero — would report the same units to the provider a
+ * second time. A double charge, produced by the one column that exists to
+ * prevent double charges.
+ *
+ * The missing row is reachable: `recordFetches` returns early on a period with
+ * no fetches, so a period can legitimately have units reported against no
+ * counter row at all. Inserting `secret_fetches = 0` alongside is honest — no
+ * fetch was counted — and it is the row the *next* `recordFetches` will add to.
  */
 export async function recordMeteredUnits(
   exec: Executor,
@@ -232,14 +277,30 @@ export async function recordMeteredUnits(
   units: number,
 ): Promise<void> {
   if (units <= 0) return;
+  await recordMeteredUnitsStatement(exec, orgId, periodStart, units);
+}
 
-  await exec
-    .update(orgUsageCounters)
-    .set({
-      meteredUnitsSent: sql`${orgUsageCounters.meteredUnitsSent} + ${units}`,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(orgUsageCounters.orgId, orgId), eq(orgUsageCounters.periodStart, periodStart)));
+/**
+ * @internal Exported so `subscriptions.test.ts` can assert that this is an
+ * upsert and not the `UPDATE` it used to be — the difference between banking
+ * the units and silently affecting no rows.
+ */
+export function recordMeteredUnitsStatement(
+  exec: Executor,
+  orgId: string,
+  periodStart: Date,
+  units: number,
+) {
+  return exec
+    .insert(orgUsageCounters)
+    .values({ orgId, periodStart, secretFetches: 0, meteredUnitsSent: units })
+    .onConflictDoUpdate({
+      target: [orgUsageCounters.orgId, orgUsageCounters.periodStart],
+      set: {
+        meteredUnitsSent: sql`${orgUsageCounters.meteredUnitsSent} + ${units}`,
+        updatedAt: new Date(),
+      },
+    });
 }
 
 export function usageQuery(exec: Executor, orgId: string, periodStart: Date) {

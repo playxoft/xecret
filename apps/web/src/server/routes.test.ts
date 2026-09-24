@@ -174,7 +174,7 @@ describe('organisation creation schema', () => {
  */
 describe('the organisation limit', () => {
   it('answers 409, the same status the product’s other quota answers', () => {
-    const error = organizationLimitReached();
+    const error = organizationLimitReached(ORGANIZATIONS_PER_ACCOUNT_LIMIT);
 
     // Not 403: the caller's permissions are fine, and the identical request
     // succeeds once they delete one. `mapMembershipError` maps `seatLimit` the
@@ -184,8 +184,27 @@ describe('the organisation limit', () => {
     expect(error.status).toBe(409);
   });
 
-  it('states the number, because it is the only actionable thing left to say', () => {
-    expect(organizationLimitReached().message).toContain(String(ORGANIZATIONS_PER_ACCOUNT_LIMIT));
+  it('answers 409 at a ceiling of one too', () => {
+    expect(organizationLimitReached(1).status).toBe(409);
+  });
+
+  it('states the number it was refused against, not the abuse cap', () => {
+    expect(organizationLimitReached(ORGANIZATIONS_PER_ACCOUNT_LIMIT).message).toContain(
+      String(ORGANIZATIONS_PER_ACCOUNT_LIMIT),
+    );
+
+    // The regression this replaced: a Free account holding one organisation was
+    // told it could hold ten. The ceiling is resolved per account from the plans
+    // of the organisations it already has, so the constant is not the number.
+    const atOne = organizationLimitReached(1).message;
+    expect(atOne).not.toContain(String(ORGANIZATIONS_PER_ACCOUNT_LIMIT));
+    expect(atOne).toContain('one organisation');
+  });
+
+  // Deleting is not advice to somebody whose ceiling is their only organisation.
+  it('points at the plan rather than at deletion when the ceiling is one', () => {
+    expect(organizationLimitReached(1).message).toContain('Upgrade');
+    expect(organizationLimitReached(3).message).toContain('Delete one');
   });
 
   // A limit somebody meets while working normally is a limit that will be raised

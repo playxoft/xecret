@@ -24,7 +24,7 @@
  * Changing one here without changing it there is a bug in both places.
  */
 
-import type { OrgAddons, Plan, PlanFeatures, PlanId, PlanLimits } from './types';
+import type { LimitedResource, OrgAddons, Plan, PlanFeatures, PlanId, PlanLimits } from './types';
 
 /**
  * Ordering, weakest to strongest.
@@ -92,6 +92,37 @@ export const FAIR_USE = Object.freeze({
   seats: null,
   cliDevicesPerUser: null,
 } as const satisfies Readonly<Record<string, number | null>>);
+
+/**
+ * Which limits may be set to `null`, meaning unlimited.
+ *
+ * Not every field of `PlanLimits` can be: `secretVersionsRetained`,
+ * `auditRetentionDays`, `pitrDays` and `includedFetchesPerMonth` are typed
+ * `number`, and every reader treats them as one —
+ * `includedFetchesPerMonth.toLocaleString()` in the operator tool, arithmetic in
+ * the metered-usage calculation. A support override writing `null` into one of
+ * them passed the "is this a known limit?" check, was persisted, and then threw
+ * a `TypeError` on the *next* read of that organisation, for ever.
+ *
+ * `LimitedResource` is exactly the nullable set, and the `satisfies` is what
+ * keeps that true: adding a member without adding it here fails to compile, and
+ * a key that is not one fails too.
+ */
+const NULLABLE_LIMIT_KEYS = Object.freeze({
+  organizations: true,
+  projects: true,
+  environmentsPerProject: true,
+  serviceTokens: true,
+  seats: true,
+  cliDevicesPerUser: true,
+  webhooks: true,
+  secretsPerEnvironment: true,
+} as const satisfies Readonly<Record<LimitedResource, true>>);
+
+/** The names from `NULLABLE_LIMIT_KEYS`, for runtime membership tests. */
+export const NULLABLE_LIMITS: ReadonlySet<string> = Object.freeze(
+  new Set<string>(Object.keys(NULLABLE_LIMIT_KEYS)),
+);
 
 /**
  * How close to a hard ceiling counts as "approaching".
@@ -233,6 +264,25 @@ const FREE_LIMITS: PlanLimits = {
   projects: 5,
   environmentsPerProject: 3,
   serviceTokens: 10,
+  /**
+   * Three — and **still not what is enforced today**.
+   *
+   * Seats are the one limit in this file with a second home. Invitations are
+   * refused by `assertSeatAvailable` against `organizations.seat_limit`, a
+   * column that predates this file and defaults to 5; nothing sets it from the
+   * plan at provisioning time. A Free organisation can therefore seat five
+   * people, not three, and the looser number is the one that applies.
+   *
+   * The divergence is smaller than it was — this used to be 1, so the page said
+   * one seat and the server allowed five — but it is still a divergence, and it
+   * is still left documented rather than reconciled in either direction:
+   * loosening this to 5 would put a number in this file that contradicts the
+   * pricing page, which is the single thing this file exists to prevent;
+   * tightening the column would retroactively lock teams out of organisations
+   * they have already invited into, months before there is a checkout page to
+   * pay past it with. `setBilledSeats` is the path that writes the two together,
+   * and payments (P12) are where they stop diverging.
+   */
   seats: 3,
   cliDevicesPerUser: 2,
   webhooks: 0,

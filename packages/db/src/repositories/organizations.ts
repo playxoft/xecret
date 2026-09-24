@@ -19,7 +19,7 @@ import { orgSubscriptions } from '../schema/billing';
 import { orgMembers, organizations } from '../schema/tenancy';
 import { addMember } from './membership';
 import type { MemberRecord } from './membership';
-import { RepositoryError } from './shared';
+import { QuotaExceededError, RepositoryError } from './shared';
 import type { Executor } from './shared';
 import { createFreeSubscription, entitlementColumns } from './subscriptions';
 import type { SubscriptionEntitlementRow } from './subscriptions';
@@ -56,19 +56,6 @@ const SLUG_ATTEMPT_LIMIT = 8;
 const FALLBACK_SLUG_BASE = 'org';
 
 const FALLBACK_ORGANIZATION_NAME = 'My Organisation';
-
-export async function findOrganizationBySlug(
-  exec: Executor,
-  slug: string,
-): Promise<Organization | null> {
-  const [row] = await exec
-    .select()
-    .from(organizations)
-    .where(and(eq(organizations.slug, slug), isNull(organizations.deletedAt)))
-    .limit(1);
-
-  return row ?? null;
-}
 
 /**
  * An organisation and its entitlement columns, in one row.
@@ -238,20 +225,33 @@ export async function countOrganizationsHeldBy(
  * the question "which plan applies" has no answer until one is chosen.
  *
  * ── The rule ──
- * The most generous ceiling among the organisations the account already holds.
- * Unlimited wins outright; otherwise the largest number does.
+ * The most generous ceiling among the organisations the account **created and is
+ * still in**. Unlimited wins outright; otherwise the largest number does.
  *
- * Chosen because every alternative punishes somebody who paid. Taking the
- * *lowest* would mean joining a colleague's Free organisation silently revoked
- * your own Team allowance. Taking the plan of the organisation being created is
- * circular — it does not exist yet, and it would be Free. Taking the account's
- * "own" organisation requires picking one, and an account that was invited into
- * every organisation it belongs to has no own.
+ * Note which set that is, because it is narrower than "organisations the account
+ * belongs to" and the difference is deliberate. The plans come from
+ * `organizationsHeldByQuery`, which filters `created_by = userId` — so an
+ * account that was *invited* into somebody else's Team organisation is measured
+ * against the plans it bought itself, and being a member of a paid tenant does
+ * not raise its personal allowance. Anything wider would make a colleague's
+ * purchase spend on your behalf, and would let one Scale organisation hand an
+ * unlimited ceiling to everybody it ever invited.
  *
- * ── The consequence, stated plainly ──
+ * Chosen over the alternatives because each of those punishes somebody who paid.
+ * Taking the *lowest* of the set would mean starting a second Free organisation
+ * silently revoked the Team allowance you are paying for. Taking the plan of the
+ * organisation being created is circular — it does not exist yet, and it would be
+ * Free. Taking the account's "own" organisation requires picking one, and an
+ * account invited into every organisation it belongs to has none.
+ *
+ * ── The consequences, stated plainly ──
  * An account holding nothing but Free organisations may create one. That is a
  * tightening: the previous fixed ceiling was ten for everybody. It is also what
  * the pricing page says, and the pricing page is the contract.
+ *
+ * And: somebody who has created one Free organisation and been invited into a
+ * colleague's Team organisation is still capped at one. Their own account is on
+ * Free, which is the plan they are on; the upgrade that lifts it is one they buy.
  *
  * ── Why unlimited still lands on a number ──
  * `FAIR_USE.organizations`. Not to sell anything past it — crossing a fair-use
@@ -262,15 +262,35 @@ export async function countOrganizationsHeldBy(
  * any other.
  */
 export function accountOrganizationCeiling(plans: readonly PlanId[]): number {
-  if (plans.length === 0) return PLANS[DEFAULT_PLAN].limits.organizations ?? FAIR_USE.organizations;
+  if (plans.length === 0) return freeCeiling();
 
   let best = 0;
   for (const plan of plans) {
-    const ceiling = PLANS[plan]?.limits.organizations;
-    if (ceiling === null || ceiling === undefined) return FAIR_USE.organizations;
+    // Through `resolvePlanId`, which is the same precedence `resolveEntitlements`
+    // applies to the same value — a retired plan resolves to what replaced it, and
+    // only a genuinely unknown one falls to Free.
+    //
+    // Two failures are being avoided here, and they pull in opposite directions.
+    // `undefined` used to share a branch with `null`, so a plan this build had
+    // never heard of — a Postgres `plan_id` enum gaining a value before a deploy,
+    // or a stale row — read as *unlimited* and granted 25 organisations instead of
+    // one: a quota check must never fail open. But resolving `scale` to Free would
+    // fail closed on somebody who paid for the tier above Team, which is the
+    // opposite mistake. `resolvePlanId` is the one place that tells them apart,
+    // and calling it here is what stops this function and the entitlement
+    // resolver giving two answers about the same row.
+    const ceiling = PLANS[resolvePlanId(plan)].limits.organizations;
+
+    // `null` is unlimited, and unlimited wins outright.
+    if (ceiling === null) return FAIR_USE.organizations;
     if (ceiling > best) best = ceiling;
   }
   return best;
+}
+
+/** Free's ceiling, or the fair-use bound if Free ever becomes unlimited. */
+function freeCeiling(): number {
+  return PLANS[DEFAULT_PLAN].limits.organizations ?? FAIR_USE.organizations;
 }
 
 /**
@@ -487,9 +507,11 @@ export async function provisionOrganization(
     const ceiling = Math.min(accountOrganizationCeiling(held.plans), params.limit);
 
     if (held.total >= ceiling) {
-      throw new RepositoryError(
-        'quotaExceeded',
+      // The ceiling rides along on the error: the route has to say the number
+      // out loud, and this transaction is the only place it was ever computed.
+      throw new QuotaExceededError(
         `An account can hold at most ${ceiling} organisations.`,
+        ceiling,
       );
     }
 

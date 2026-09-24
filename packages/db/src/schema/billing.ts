@@ -7,6 +7,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uuid,
@@ -194,7 +195,20 @@ export const orgUsageCounters = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index('org_usage_counters_pk_idx').on(t.orgId, t.periodStart),
+    // A composite **primary key**, not an index — and the distinction is the
+    // whole behaviour of this table. `recordFetches` and `recordMeteredUnits`
+    // are `INSERT … ON CONFLICT (org_id, period_start) DO UPDATE`, and Postgres
+    // resolves that conflict target against a unique constraint. Against a plain
+    // index it does not resolve at all: the statement fails with "there is no
+    // unique or exclusion constraint matching the ON CONFLICT specification",
+    // and two concurrent flushes could otherwise insert two rows for one period
+    // and halve the number an invoice is argued from.
+    //
+    // Named to match migration 0016, which has always created it correctly. The
+    // model said `index(...)`, so `db:generate` would have emitted a drift
+    // migration dropping the real key — and any environment built from the model
+    // rather than the SQL got a table the upserts cannot run against.
+    primaryKey({ name: 'org_usage_counters_pkey', columns: [t.orgId, t.periodStart] }),
     check('org_usage_counters_fetches_check', sql`${t.secretFetches} >= 0`),
     check('org_usage_counters_units_check', sql`${t.meteredUnitsSent} >= 0`),
   ],

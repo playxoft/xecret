@@ -196,10 +196,18 @@ export interface Entitlements {
   readonly features: PlanFeatures;
   readonly addons: OrgAddons;
   /**
-   * False when the subscription has lapsed past any grace.
+   * False once the subscription has lapsed — `cancelled` or `expired`.
    *
    * Control-plane writes are refused; **the data plane is untouched**. See
    * `isDataPlaneActive`.
+   *
+   * Derived from `status` alone, and no date is consulted. A customer who
+   * cancels mid-month keeps the month they paid for, but that is carried by the
+   * status rather than by `currentPeriodEnd`: cancelling sets
+   * `cancel_at_period_end` and leaves the status `active` until the provider's
+   * webhook moves it at the boundary. Comparing a stored date to a clock here
+   * would make a pure function on the authorization path resolve the same row
+   * two different ways depending on when it was asked.
    */
   readonly controlPlaneActive: boolean;
 }
@@ -220,7 +228,15 @@ export interface SubscriptionState {
    * so an override can never be used to quietly downgrade someone.
    */
   readonly limitOverrides?: Readonly<Record<string, number | null>> | undefined;
-  /** When the paid period ends. Access survives to here after cancellation. */
+  /**
+   * When the paid period ends.
+   *
+   * **Carried, not consulted.** Nothing in this module reads it, and that is the
+   * design rather than an omission — see `controlPlaneActive`. It travels on
+   * `SubscriptionState` because the two things that *do* need it, the dashboard's
+   * billing panel and the reconciler that sweeps ended periods, take the same
+   * shape from the same row and would otherwise each re-read it.
+   */
   readonly currentPeriodEnd?: Date | null | undefined;
 }
 

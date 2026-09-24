@@ -19,7 +19,13 @@
  * transaction boundary; a repository never opens one behind the caller's back.
  */
 
-export { clampPageSize, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, RepositoryError } from './shared';
+export {
+  clampPageSize,
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+  QuotaExceededError,
+  RepositoryError,
+} from './shared';
 export type { Executor, RepositoryErrorCode, Transaction } from './shared';
 
 export {
@@ -101,7 +107,6 @@ export {
   accountOrganizationCeiling,
   countOrganizationsHeldBy,
   findOrganizationById,
-  findOrganizationBySlug,
   findOrganizationBySlugWithEntitlements,
   generateUniqueOrgSlug,
   organizationBySlugWithEntitlementsQuery,

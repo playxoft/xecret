@@ -23,6 +23,33 @@ import { errors } from './errors';
  * viewer a writer, and an owner on Free still cannot read an environment they
  * hold no grant on.
  *
+ * ── ⚠ NOTHING IN THIS FILE HAS A CALL SITE YET. THAT IS DELIBERATE. ──
+ * Every function below is written, tested and unused. Do not read the presence
+ * of `requireCapacity` as evidence that project, seat, service-token,
+ * environment, secret or webhook ceilings are enforced anywhere: they are not.
+ * The only entitlement enforced in the product today is the organisations-per-
+ * account ceiling, which lives in `provisionOrganization` because it needs a row
+ * lock rather than a route-layer check.
+ *
+ * Why staged rather than wired: payments are the *eleventh* of twelve phases in
+ * `.local/plans/v2/01-billing.md`, and this is the first. Every organisation is
+ * on Free until a checkout page exists, so wiring these today would hand every
+ * account in the product a hard ceiling with no way to pay past it — a refusal
+ * whose `upgradeTo` points at a plan nobody can buy. The gates land with the
+ * checkout that makes them answerable, and they exist now so that the phases
+ * between here and there have something to call rather than each growing its own
+ * temporary way to ask the same question.
+ *
+ * The seats ceiling is the one to know about, because it is enforced by a
+ * *different* mechanism and the two numbers disagree: `FREE_LIMITS.seats` is 1,
+ * and `organizations.seat_limit` — which `assertSeatAvailable` actually refuses
+ * invitations against — defaults to 5. The looser number is what applies. See
+ * the note on `seats` in `packages/core/src/entitlements/plans.ts`.
+ *
+ * When wiring does happen, the counts these take are pre-addition counts from
+ * the repository layer, and `limit.exceeded` should be recorded on the refusal —
+ * it is in `AuditAction` for that, and is likewise not yet emitted anywhere.
+ *
  * ── The rule every function here obeys ──
  * **Nothing in this file may be called on the secret-fetch path.** A build never
  * fails for a billing reason (pricing-plan §5, and `isDataPlaneActive`). These
