@@ -1,3 +1,4 @@
+import { contactReasonLabel } from '@/lib/contact';
 import { contactSink } from '@/server/discord';
 import { json, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
@@ -58,6 +59,9 @@ export const POST = unbackedRoute(async ({ request, env, meta, log }) => {
   }
 
   await contactSink(env).deliver({
+    // The label, not the id: the channel is read by a person, and `feature` is
+    // a value where "A feature request" is a sentence.
+    reason: contactReasonLabel(body.reason),
     name: body.name,
     email: body.email,
     company: body.company,

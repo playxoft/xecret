@@ -43,6 +43,7 @@ function valueOf(body: Record<string, unknown>, name: string): string {
 const sink = () => new DiscordContactSink('https://discord.example/webhook/secret-token');
 
 const base = {
+  reason: 'Sales or an Enterprise agreement',
   name: 'Ada',
   email: 'ada@example.com',
   message: 'We are moving off Vault and need to talk about residency.',
@@ -170,6 +171,19 @@ describe('the contact sink', () => {
     expect(error).toBeInstanceOf(ContactDeliveryError);
     expect(JSON.stringify(error)).not.toContain('secret-token');
     expect((error as Error).message).not.toContain('secret-token');
+  });
+
+  /**
+   * The reason is in the title so the channel is scannable without opening
+   * anything: a security questionnaire and a feature request must not look
+   * identical in a list.
+   */
+  it('puts the reason in the title', async () => {
+    const calls = capture();
+    await sink().deliver({ ...base, reason: 'A security review or questionnaire' });
+
+    const embeds = calls[0]!.body['embeds'] as { title: string }[];
+    expect(embeds[0]!.title).toContain('A security review or questionnaire');
   });
 
   it('reports a rejected delivery with its status', async () => {

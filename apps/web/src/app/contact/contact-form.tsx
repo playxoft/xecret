@@ -8,7 +8,14 @@ import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { CheckCircleIcon } from '@/components/ui/icons';
-import { CONTACT_LIMITS } from '@/lib/contact';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { CONTACT_LIMITS, CONTACT_REASONS, DEFAULT_CONTACT_REASON } from '@/lib/contact';
 
 /**
  * The sales enquiry form.
@@ -27,6 +34,11 @@ import { CONTACT_LIMITS } from '@/lib/contact';
  * year. The round trip costs a moment on a page nobody submits twice.
  */
 export function ContactForm() {
+  // The one controlled field. Radix's select is not a native `<select>`, so it
+  // does not appear in `FormData` — every other field here is uncontrolled and
+  // read from the form on submit, which is why this is the only piece of state
+  // the form holds about its own contents.
+  const [reason, setReason] = useState<string>(DEFAULT_CONTACT_REASON);
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [fields, setFields] = useState<Record<string, string>>({});
@@ -43,6 +55,7 @@ export function ContactForm() {
 
     try {
       await api.post('/contact', {
+        reason,
         name: String(form.get('name') ?? ''),
         email: String(form.get('email') ?? ''),
         company: String(form.get('company') ?? '') || undefined,
@@ -81,6 +94,31 @@ export function ContactForm() {
 
   return (
     <form onSubmit={submit} noValidate className="flex flex-col gap-5">
+      <Field
+        label="What is this about?"
+        hint="It decides who picks this up first, nothing else."
+        error={fields['reason']}
+      >
+        <Select value={reason} onValueChange={setReason}>
+          <SelectTrigger aria-label="What is this about?">
+            {/* The label is passed explicitly rather than left to Radix to
+                resolve. Radix reads it from the selected `SelectItem`, which
+                lives in a portal that does not exist during a server render —
+                so the trigger shipped blank and filled itself in on hydration.
+                On a page whose first impression is a form, a control that
+                starts empty and then guesses reads as a bug. */}
+            <SelectValue>{CONTACT_REASONS.find((r) => r.id === reason)?.label}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {CONTACT_REASONS.map((option) => (
+              <SelectItem key={option.id} value={option.id}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
+
       <div className="grid gap-5 sm:grid-cols-2">
         <Field label="Name" error={fields['name']}>
           <Input name="name" autoComplete="name" maxLength={CONTACT_LIMITS.name} required />
@@ -129,7 +167,7 @@ export function ContactForm() {
         </p>
       )}
 
-      <div className="flex items-center gap-4">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <Button type="submit" disabled={busy}>
           {busy ? 'Sending…' : 'Send message'}
         </Button>

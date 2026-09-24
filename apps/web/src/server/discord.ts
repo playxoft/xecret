@@ -40,6 +40,8 @@ import { errorName, scrubText } from './logging';
 
 /** What a submitted form becomes, after validation. */
 export interface ContactMessage {
+  /** Why they are writing, as a label a person reads. See `CONTACT_REASONS`. */
+  reason: string;
   name: string;
   email: string;
   /** Optional: most enquiries give one, and none is a fine answer. */
@@ -85,6 +87,7 @@ const LIMITS = {
   company: 100,
   message: 1_800,
   source: 200,
+  reason: 60,
 } as const;
 
 /**
@@ -141,7 +144,11 @@ export class DiscordContactSink implements ContactSink {
       // impersonate a person or another integration by choosing a name.
       embeds: [
         {
-          title: 'New contact enquiry',
+          // The reason is in the title rather than only in a field, so the
+          // channel is scannable without opening anything: a security
+          // questionnaire and a feature request should not look identical in a
+          // list until somebody clicks both.
+          title: `New enquiry · ${plain(message.reason, LIMITS.reason)}`,
           color: 0x5865f2,
           fields: [
             { name: 'Name', value: scrubbed(message.name, LIMITS.name), inline: true },

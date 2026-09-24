@@ -12,6 +12,44 @@
  * the server refuses a body that got past the browser. Neither is decoration —
  * `maxLength` is a courtesy that a `curl` ignores, and the schema is the rule.
  */
+/**
+ * Why somebody is writing, as a closed list.
+ *
+ * ── Why this is a select and not a free-text subject line ──
+ * A subject line is written by the sender to be read by nobody: the reader is
+ * already reading the message. What a reason is actually for is triage — a
+ * channel where a security questionnaire and a bug report look identical until
+ * somebody opens both is a channel where the urgent one waits behind the other.
+ * Six options because a list somebody has to scroll is a list they pick the
+ * first item from.
+ *
+ * `other` is last and exists on purpose. A closed list with no escape hatch
+ * makes people choose the nearest wrong answer, which is worse than no answer
+ * at all — the triage then runs on a category the sender did not mean.
+ *
+ * The `label` is what the form shows and what the Discord message says, so the
+ * two cannot drift into different vocabularies for the same enquiry.
+ */
+export const CONTACT_REASONS = [
+  { id: 'sales', label: 'Sales or an Enterprise agreement' },
+  { id: 'support', label: 'Help with the product' },
+  { id: 'security', label: 'A security review or questionnaire' },
+  { id: 'migration', label: 'Migrating from something else' },
+  { id: 'feature', label: 'A feature request' },
+  { id: 'partnership', label: 'Partnership or press' },
+  { id: 'other', label: 'Something else' },
+] as const;
+
+export type ContactReasonId = (typeof CONTACT_REASONS)[number]['id'];
+
+/** The default: the card that sends most people here is the Enterprise one. */
+export const DEFAULT_CONTACT_REASON: ContactReasonId = 'sales';
+
+/** The label for a stored id, for the message a human reads. */
+export function contactReasonLabel(id: string): string {
+  return CONTACT_REASONS.find((reason) => reason.id === id)?.label ?? id;
+}
+
 export const CONTACT_LIMITS = {
   name: 100,
   /** RFC 5321's maximum for a forward path. Longer is not an address anywhere. */

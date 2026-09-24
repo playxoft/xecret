@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "next dev -p 3030",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3030",
     "lint": "eslint .",
     "// typecheck": "next typegen emits LayoutProps/PageProps and next-env.d.ts; tsc needs them and CI must not run a full build just to typecheck",
     "typecheck": "next typegen && tsc --noEmit",

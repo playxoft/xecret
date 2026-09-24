@@ -1,6 +1,6 @@
 import * as z from 'zod/mini';
 
-import { CONTACT_LIMITS } from '@/lib/contact';
+import { CONTACT_LIMITS, CONTACT_REASONS } from '@/lib/contact';
 
 /**
  * The contact form's request body.
@@ -20,6 +20,8 @@ import { CONTACT_LIMITS } from '@/lib/contact';
 
 export { CONTACT_LIMITS };
 
+const REASON_IDS = CONTACT_REASONS.map((reason) => reason.id);
+
 /**
  * Deliberately not a full RFC 5322 grammar.
  *
@@ -33,6 +35,14 @@ export { CONTACT_LIMITS };
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export const contactSchema = z.object({
+  /**
+   * Validated against the same list the form renders, so a value that was never
+   * on the menu cannot reach the channel. Optional in the body and defaulted
+   * here rather than required: an API client posting the three fields that
+   * matter should not be refused over a triage label, and the default is the
+   * reason most senders arrive with.
+   */
+  reason: z._default(z.enum(REASON_IDS as [string, ...string[]]), 'sales'),
   name: z
     .string()
     .check(

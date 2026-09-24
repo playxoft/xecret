@@ -46,11 +46,11 @@ export const metadata: Metadata = {
 const REACHES_US = [
   {
     title: 'An Enterprise agreement',
-    body: 'Data residency, your own root key and the escrow ceremony, a commercial licence for self-hosting, an SLA with a named contact. All of it is a conversation rather than a checkout, which is why there is no price on that card.',
+    body: 'Residency, your own root key, a commercial licence for self-hosting, an SLA with a named contact. A conversation rather than a checkout, which is why that card has no price.',
   },
   {
     title: 'A security review',
-    body: 'Send the questionnaire. The architecture, the threat model and what the server can and cannot see are already published, so most of it is answerable with links — and where it is not, the answer becomes a page rather than a PDF nobody else can read.',
+    body: 'Send the questionnaire. The architecture and threat model are already published, so most of it is answerable with links — and where it is not, the answer becomes a page rather than a PDF.',
   },
   {
     title: 'A migration',
@@ -77,47 +77,47 @@ export default function ContactPage() {
           Send a message
         </h2>
 
-        <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        {/* One centred column rather than a form beside a sidebar. The
+            two-column arrangement put the thing somebody came to do off to one
+            side of the thing explaining it, and on a page with exactly one
+            action that is the wrong emphasis — the supporting material reads
+            better *after* the form than beside it, where it competed. */}
+        <div className="mx-auto max-w-2xl">
           <div className="border-line bg-surface rounded-xl border p-6 sm:p-8">
             <ContactForm />
           </div>
 
-          <div className="flex flex-col gap-8">
-            <div className="flex flex-col gap-6">
-              {REACHES_US.map((item) => (
-                <div key={item.title}>
-                  <h3 className="text-fg text-base font-semibold">{item.title}</h3>
-                  <p className="text-fg-muted mt-2 text-sm leading-6">{item.body}</p>
-                </div>
-              ))}
-            </div>
+          <div className="mt-12 grid gap-8 sm:grid-cols-3">
+            {REACHES_US.map((item) => (
+              <div key={item.title}>
+                <h3 className="text-fg text-sm font-semibold">{item.title}</h3>
+                <p className="text-fg-muted mt-2 text-sm leading-6">{item.body}</p>
+              </div>
+            ))}
+          </div>
 
-            {/* The two faster routes, said plainly rather than buried. A form is
-                the wrong tool for a bug report and for a question the docs
-                already answer, and pretending otherwise costs the sender a day
-                to be handed a link. */}
-            <div className="border-line-subtle flex flex-col gap-3 border-t pt-6">
-              <p className="text-fg-subtle text-sm leading-6">
-                A bug or a feature request is faster in the open:
-              </p>
-              <a
-                href={`${REPO_URL}/issues`}
-                target="_blank"
-                rel="noreferrer noopener"
-                className={QUIET_LINK}
-              >
-                Open an issue
-                <ExternalLinkIcon className="size-3.5" />
-              </a>
-              <Link href="/docs" className={QUIET_LINK}>
-                Read the documentation
-                <ArrowRightIcon className="size-3.5" />
-              </Link>
-              <Link href="/pricing" className={QUIET_LINK}>
-                Every plan, with its limits
-                <ArrowRightIcon className="size-3.5" />
-              </Link>
-            </div>
+          {/* The two faster routes, said plainly rather than buried. A form is
+              the wrong tool for a bug report and for a question the docs already
+              answer, and pretending otherwise costs the sender a day to be
+              handed a link. */}
+          <div className="border-line-subtle mt-10 flex flex-wrap items-center justify-center gap-x-6 gap-y-3 border-t pt-6">
+            <a
+              href={`${REPO_URL}/issues`}
+              target="_blank"
+              rel="noreferrer noopener"
+              className={QUIET_LINK}
+            >
+              Open an issue
+              <ExternalLinkIcon className="size-3.5" />
+            </a>
+            <Link href="/docs" className={QUIET_LINK}>
+              Read the documentation
+              <ArrowRightIcon className="size-3.5" />
+            </Link>
+            <Link href="/pricing" className={QUIET_LINK}>
+              Every plan, with its limits
+              <ArrowRightIcon className="size-3.5" />
+            </Link>
           </div>
         </div>
       </Section>
