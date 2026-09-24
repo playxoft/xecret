@@ -41,7 +41,7 @@ import { errors } from './errors';
  * temporary way to ask the same question.
  *
  * The seats ceiling is the one to know about, because it is enforced by a
- * *different* mechanism and the two numbers disagree: `FREE_LIMITS.seats` is 1,
+ * *different* mechanism and the two numbers disagree: `FREE_LIMITS.seats` is 3,
  * and `organizations.seat_limit` — which `assertSeatAvailable` actually refuses
  * invitations against — defaults to 5. The looser number is what applies. See
  * the note on `seats` in `packages/core/src/entitlements/plans.ts`.

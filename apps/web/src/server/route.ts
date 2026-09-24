@@ -192,9 +192,11 @@ export function unbackedRoute<Params = Record<string, never>>(
     const startedAt = Date.now();
     const url = new URL(request.url);
 
+    let ctx: WorkerContext['ctx'] | undefined;
     let response: Response;
     try {
       const worker = await workerContext();
+      ctx = worker.ctx;
       const params = ((await args?.params) ?? {}) as Params;
 
       response = withResponseHeaders(
@@ -222,7 +224,12 @@ export function unbackedRoute<Params = Record<string, never>>(
     }
 
     finished(log.logger, doing, response.status, startedAt);
-    shipLogs(undefined, log);
+    // The runtime handle, not `undefined`. Passing nothing left the Better Stack
+    // flush racing the end of the invocation — so on the one unauthenticated
+    // write endpoint in the product, the honeypot line, the delivery failure and
+    // the completion line were all liable to be dropped. That is the abuse
+    // telemetry for the route that most needs it.
+    shipLogs(ctx, log);
     return response;
   };
 }
@@ -471,12 +478,16 @@ function finished(logger: Logger, doing: RequestAction, status: number, startedA
  * already waiting on is a knot with no reason to be tied. The two run
  * concurrently and neither touches what the other holds.
  */
-function shipLogs(scope: RequestScope | undefined, log: RequestLog): void {
-  // Without a scope, `begin` failed before a context existed: nothing was
-  // deferred, so there is nothing to wait for — and no runtime handle to keep
-  // the isolate alive either. The batch races the end of the invocation, which
-  // is the best available answer for a request that could not be started.
-  const flushing = (scope ? scope.services.settled() : Promise.resolve())
+function shipLogs(scope: RequestScope | WorkerContext['ctx'] | undefined, log: RequestLog): void {
+  // Three callers, three shapes. A `RequestScope` has deferred work to wait on
+  // and a handle to keep the isolate alive; an unbacked route has only the
+  // handle, because it defers nothing; and a request that failed inside `begin`
+  // has neither, so its batch races the end of the invocation — the best answer
+  // available for a request that could not be started.
+  const requestScope = scope !== undefined && 'services' in scope ? scope : undefined;
+  const ctx = requestScope ? requestScope.ctx : (scope as WorkerContext['ctx'] | undefined);
+
+  const flushing = (requestScope ? requestScope.services.settled() : Promise.resolve())
     .then(() => log.flush())
     // A shipping failure is already degraded to the console inside the sink, so
     // this catch only exists for the impossible case. It must not reject: an
@@ -484,7 +495,7 @@ function shipLogs(scope: RequestScope | undefined, log: RequestLog): void {
     // request that succeeded.
     .catch(() => undefined);
 
-  scope?.ctx.waitUntil(flushing);
+  ctx?.waitUntil(flushing);
 }
 
 /** The caller, flattened into fields a log query can group on. */

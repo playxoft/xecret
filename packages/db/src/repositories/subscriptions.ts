@@ -3,6 +3,7 @@ import {
   DEFAULT_PLAN,
   resolveEntitlements,
   type Entitlements,
+  type PlanId,
   type StoredPlanId,
   type SubscriptionStatus,
 } from '@xecret/core/entitlements';
@@ -120,7 +121,15 @@ export async function createFreeSubscription(exec: Executor, orgId: string): Pro
 }
 
 export interface SubscriptionPatch {
-  plan?: StoredPlanId;
+  /**
+   * `PlanId`, not `StoredPlanId` — the asymmetry is the point.
+   *
+   * A *read* can find a retired tier, because the column has held one since
+   * before it was withdrawn. A *write* must never create one: nothing should be
+   * able to put an organisation back onto `scale`, and typing this as the wider
+   * union would let `updateSubscription(exec, id, { plan: 'scale' })` compile.
+   */
+  plan?: PlanId;
   status?: SubscriptionStatus;
   billingInterval?: 'monthly' | 'yearly' | null;
   seats?: number;

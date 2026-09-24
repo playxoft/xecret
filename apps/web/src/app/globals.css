@@ -1098,22 +1098,26 @@
   display: block;
 }
 
-/* Open while a currency radio holds focus **from the keyboard**, whatever
-   `[open]` says. Without this, tabbing into the radio group lands focus on a
-   label inside a closed menu: operable by keyboard and invisible to one.
+/* A focus ring on the trigger while a currency radio holds keyboard focus.
+   The radios are visually hidden, so without this the control is operable by
+   keyboard and invisible to one.
 
-   `:focus-visible` and not `:focus`, and the difference is the whole bug it
-   fixes. Clicking a `<label>` focuses the radio it names, so with plain
-   `:focus` the panel stayed painted after a selection even though the menu had
-   closed — the reader chose a currency and the menu simply would not go away.
-   `:focus-visible` is false for a pointer interaction and true for a keyboard
-   one, which is exactly the distinction this rule always meant. */
-.x-cur-usd:focus-visible ~ .x-billing-body .x-currency-panel,
-.x-cur-eur:focus-visible ~ .x-billing-body .x-currency-panel,
-.x-cur-inr:focus-visible ~ .x-billing-body .x-currency-panel,
-.x-cur-jpy:focus-visible ~ .x-billing-body .x-currency-panel,
-.x-cur-aud:focus-visible ~ .x-billing-body .x-currency-panel {
-  display: block;
+   This used to open the *panel* instead, and did it to both of them: the two
+   controls share one `.x-billing-body` ancestor, so a descendant selector cannot
+   tell one from the other. Tabbing into the radios at the top of the page popped
+   the menu open over the comparison table two screens down, and Escape could not
+   close either — `CurrencyMenu` keys its handler on `details.open`, which was
+   still false because CSS, not the disclosure, had done the opening.
+
+   Feedback survives without it: the trigger's own label follows the selection
+   live, through the `[data-currency-name]` rules above. */
+.x-cur-usd:focus-visible ~ .x-billing-body .x-currency-summary,
+.x-cur-eur:focus-visible ~ .x-billing-body .x-currency-summary,
+.x-cur-inr:focus-visible ~ .x-billing-body .x-currency-summary,
+.x-cur-jpy:focus-visible ~ .x-billing-body .x-currency-summary,
+.x-cur-aud:focus-visible ~ .x-billing-body .x-currency-summary {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 
 .x-cur-usd:focus-visible ~ .x-billing-body [data-currency-option='usd'],

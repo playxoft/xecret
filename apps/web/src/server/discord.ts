@@ -1,6 +1,7 @@
+import { sanitizeMetadataString } from '@xecret/core/audit';
 import { requireBinding } from './bindings';
 import type { Bindings } from './bindings';
-import { errorName, scrubText } from './logging';
+import { errorName } from './logging';
 
 /**
  * The contact form's delivery channel.
@@ -23,10 +24,17 @@ import { errorName, scrubText } from './logging';
  *     request, and it is the control — not the escaping below it. Without it,
  *     `@everyone` in a message body pings a whole server, which turns a public
  *     form into a free notification cannon.
- *  2. **Markdown cannot restructure the message.** Field values are fenced
- *     inside embed fields rather than concatenated into content, so a body full
- *     of `#` headings and `[text](url)` cannot forge the labels around it or
- *     present a link as something it is not.
+ *  2. **Markdown cannot restructure the message.** Every value is escaped by
+ *     `escapeMarkdown` before it goes anywhere near the payload.
+ *
+ *     This comment used to claim the opposite — that putting values in embed
+ *     *fields* rather than in `content` was itself the defence. That is exactly
+ *     backwards. Discord suppresses masked links in plain content and renders
+ *     them inside embeds, so the structure this file chose for safety is the one
+ *     place `[https://xecret.playxoft.com/admin](https://evil.example)` renders
+ *     as a clickable link wearing our own domain as its label — in a channel
+ *     whose only writer is our own contact form, read by somebody with every
+ *     reason to trust it. Escaping is the control; the embed is just layout.
  *  3. **Nothing is unbounded.** Discord rejects an oversized payload with a
  *     400 that says nothing useful, and an attacker who can make our request
  *     fail can make every *other* enquiry fail with it. Each field is truncated
@@ -74,63 +82,73 @@ export class ContactDeliveryError extends Error {
 }
 
 /**
- * Field caps, all comfortably under Discord's.
+ * Field caps, against Discord's actual ones.
  *
- * Discord allows 256 for an embed field name and 1024 for its value, and 6000
- * across the whole embed. These are smaller because the point is not to fit —
- * it is that a message longer than this is not an enquiry, and truncating it
- * costs a real sender nothing while costing a flooder the thing they wanted.
+ * Discord allows **1,024** characters in an embed field value, 4,096 in the
+ * description, and 6,000 across the whole embed. The first of those is the
+ * number that matters and the one this file previously got wrong: the comment
+ * here claimed everything was "comfortably under" a 6,000 limit and set
+ * `message` to 1,800, which is 776 over the field cap. It never showed, because
+ * the sanitiser then in use truncated at 512 — so removing that hidden cap was
+ * what turned a latent mistake into a 400 from Discord and a lost enquiry.
+ *
+ * `message` therefore lives in the **description**, not a field, which is the
+ * only place in an embed a real enquiry fits. The rest are short by nature and
+ * stay as fields.
  */
 const LIMITS = {
   name: 100,
   email: 254,
   company: 100,
-  message: 1_800,
+  /** The description's cap is 4,096; `contactSchema` refuses a body over 4,000. */
+  message: 3_900,
   source: 200,
   reason: 60,
 } as const;
 
 /**
- * Trims one untrusted value to something safe to render, without redacting it.
+ * Characters Discord reads as markup.
  *
- * Backticks become apostrophes rather than being escaped: they are the one
- * character that can break out of an inline-code span, and no legitimate
- * enquiry needs one. Control characters go because a message containing a
- * newline run or a bidi override can forge the layout of the embed around it.
+ * `[`, `]`, `(` and `)` are the important ones and the reason this function
+ * exists: together they form a masked link, which renders inside an embed as
+ * arbitrary text pointing at an arbitrary URL. The rest — emphasis, spoilers,
+ * headings, quotes — cannot redirect anybody but can forge a label
+ * ("**Verified Enterprise customer**") beside the real ones.
+ *
+ * The backslash is first in the class and therefore escaped first, which is what
+ * stops `\[` in the input becoming an escaped backslash followed by a live
+ * bracket.
  */
-function plain(value: string | undefined, max: number): string {
-  const clean = (value ?? '')
-    // C0 and C1 controls, then the bidirectional overrides. The second set is
-    // the less obvious half and the more useful one: U+202E reverses the
-    // rendering of everything after it, which is how a value forges the label
-    // sitting beside it in a channel somebody already trusts.
-    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ')
-    .replaceAll('`', "'")
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (clean.length === 0) return '—';
-  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+const MARKDOWN = /[\\*_~`>#[\]()|]/g;
+
+/** Backslash-escapes anything Discord would otherwise render as markup. */
+function escapeMarkdown(value: string): string {
+  return value.replace(MARKDOWN, (character) => `\\${character}`);
 }
 
 /**
- * As `plain`, and then redacted the way a log line is.
+ * One untrusted value, made safe to store, to read and to render.
  *
- * `scrubText` masks anything shaped like a credential, which matters more here
- * than it looks: people paste API keys into contact forms while asking why one
- * does not work, and a channel full of other people's live credentials is a
- * breach we invited.
+ * `sanitizeMetadataString` is the same function every audit record in this
+ * product passes through: it collapses control characters and bidi overrides to
+ * spaces, redacts anything shaped like a credential or a high-entropy blob, and
+ * truncates to the length it is given. People paste API keys into contact forms
+ * while asking why one does not work, and a channel full of other people's live
+ * credentials is a breach we invited.
  *
- * ── Why the email field does NOT go through this ──
- * `scrubText` also replaces email addresses with `[redacted-email]`, which is
- * right for a log line and catastrophic here: the address is the entire point of
- * the message, and an enquiry that arrives with no way to reply to it has failed
- * at the only thing it had to do. It is validated by `contactSchema` and cleaned
- * by `plain`, which is the correct amount of handling for a value we asked for
- * on purpose.
+ * ── Why this replaced two functions ──
+ * There were `plain` and `scrubbed`, because the web logger's `scrubText`
+ * replaces email addresses with `[redacted-email]` — right for a log line, and
+ * catastrophic for the one field an enquiry exists to carry. Splitting them made
+ * the email safe and left a second, worse bug: `scrubText` also truncates at its
+ * own `MAX_STRING` of 512, so `LIMITS.message` of 1,800 was never reached and
+ * 87% of a maximum-length enquiry was silently dropped — under an ellipsis that
+ * made it look deliberate. The core sanitiser has no hidden cap and does not
+ * touch addresses, so one function serves every field.
  */
-function scrubbed(value: string | undefined, max: number): string {
-  const clean = plain(scrubText(value ?? ''), max);
-  return clean;
+function field(value: string | undefined, max: number): string {
+  const clean = sanitizeMetadataString(value ?? '', max);
+  return clean.length === 0 ? '—' : escapeMarkdown(clean);
 }
 
 /** Discord's webhook API, which is the only implementation we ship. */
@@ -148,16 +166,20 @@ export class DiscordContactSink implements ContactSink {
           // channel is scannable without opening anything: a security
           // questionnaire and a feature request should not look identical in a
           // list until somebody clicks both.
-          title: `New enquiry · ${plain(message.reason, LIMITS.reason)}`,
+          title: `New enquiry · ${field(message.reason, LIMITS.reason)}`,
           color: 0x5865f2,
           fields: [
-            { name: 'Name', value: scrubbed(message.name, LIMITS.name), inline: true },
-            // The one field that is not redacted; see the note on `scrubbed`.
-            { name: 'Email', value: plain(message.email, LIMITS.email), inline: true },
-            { name: 'Company', value: scrubbed(message.company, LIMITS.company), inline: true },
-            { name: 'Message', value: scrubbed(message.message, LIMITS.message), inline: false },
-            { name: 'From', value: scrubbed(message.source, LIMITS.source), inline: false },
+            { name: 'Name', value: field(message.name, LIMITS.name), inline: true },
+            { name: 'Email', value: field(message.email, LIMITS.email), inline: true },
+            { name: 'Company', value: field(message.company, LIMITS.company), inline: true },
+            { name: 'From', value: field(message.source, LIMITS.source), inline: false },
           ],
+          // The enquiry itself, in the description rather than in a field: a
+          // field value is capped at 1,024 and this one is allowed 4,096, which
+          // is the difference between delivering what somebody wrote and
+          // delivering a quarter of it — or, once the field cap is crossed,
+          // delivering nothing and answering them with a 503.
+          description: field(message.message, LIMITS.message),
           timestamp: new Date().toISOString(),
         },
       ],

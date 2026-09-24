@@ -32,12 +32,26 @@ function capture(status = 204) {
 }
 
 function embed(body: Record<string, unknown>) {
-  const embeds = body['embeds'] as { fields: { name: string; value: string }[] }[];
+  const embeds = body['embeds'] as {
+    description?: string;
+    fields: { name: string; value: string }[];
+  }[];
   return embeds[0]!;
 }
 
 function valueOf(body: Record<string, unknown>, name: string): string {
+  // The enquiry itself is the embed's description rather than a field: a field
+  // value is capped at 1,024 by Discord and a real message does not fit.
+  if (name === 'Message') return embed(body).description ?? '';
   return embed(body).fields.find((f) => f.name === name)?.value ?? '';
+}
+
+/**
+ * Drops every backslash-escaped pair, leaving only characters Discord would act
+ * on. Anything markup-significant still present after this is live.
+ */
+function stripEscapes(value: string): string {
+  return value.replaceAll(/\\./g, '');
 }
 
 const sink = () => new DiscordContactSink('https://discord.example/webhook/secret-token');
@@ -123,14 +137,51 @@ describe('the contact sink', () => {
   });
 
   /**
-   * Backticks are the one character that breaks out of an inline-code span, and
-   * no real enquiry needs one.
+   * The defect this file's header used to argue could not happen.
+   *
+   * Discord suppresses masked links in plain `content` and renders them inside
+   * embeds — so putting values in embed fields, which this sink does *for*
+   * safety, is the one arrangement where `[label](url)` becomes a clickable link
+   * wearing a label of the sender's choosing. In a channel whose only writer is
+   * our own contact form, read by somebody with every reason to trust it.
    */
-  it('neutralises backticks', async () => {
+  it('renders a masked link as text rather than as a link', async () => {
     const calls = capture();
-    await sink().deliver({ ...base, name: 'Ada`` `@everyone`' });
+    await sink().deliver({
+      ...base,
+      message:
+        'See [https://xecret.playxoft.com/admin](https://evil.example/harvest) for the error',
+    });
 
-    expect(valueOf(calls[0]!.body, 'Name')).not.toContain('`');
+    const value = valueOf(calls[0]!.body, 'Message');
+    expect(value).toContain('evil.example');
+    // Every bracket and parenthesis carries a backslash, so Discord renders the
+    // literal characters and there is no link to click. Asserted as "no bare
+    // one survives" rather than by counting escapes, because one unescaped
+    // bracket is all a masked link needs.
+    expect(stripEscapes(value)).not.toMatch(/[[\]()]/);
+  });
+
+  it('escapes the rest of the markup a value could forge a label with', async () => {
+    const calls = capture();
+    await sink().deliver({ ...base, name: '**Verified** _customer_ ~~not~~ `x` > # |' });
+
+    const value = valueOf(calls[0]!.body, 'Name');
+    for (const character of ['*', '_', '~', '`', '>', '#', '|']) {
+      expect(value.includes(`\\${character}`), `${character} is not escaped`).toBe(true);
+    }
+    expect(stripEscapes(value)).not.toMatch(/[*_~`>#|]/);
+  });
+
+  /**
+   * The email field goes through the same escaping. `EMAIL_PATTERN` allows
+   * brackets and parentheses in a local part, so this was a second way in.
+   */
+  it('escapes a masked link smuggled through the address', async () => {
+    const calls = capture();
+    await sink().deliver({ ...base, email: '[x](https://evil.example)@e.co' });
+
+    expect(stripEscapes(valueOf(calls[0]!.body, 'Email'))).not.toMatch(/[[\]()]/);
   });
 
   /**
@@ -138,13 +189,52 @@ describe('the contact sink', () => {
    * nothing — and an attacker who can make our request fail can make every
    * other enquiry fail with it.
    */
-  it('truncates a long message rather than letting the request be rejected', async () => {
+  /**
+   * The old version of this test passed vacuously and hid a real defect. It
+   * asserted `length <= 1_800`, which was satisfied by a far smaller number: the
+   * sanitiser then in use capped its own output at 512, so 87% of a
+   * maximum-length enquiry was dropped under an ellipsis that made it look
+   * deliberate. The lower bound is the half that matters.
+   */
+  it('truncates a long message at its own limit, not at a hidden one', async () => {
     const calls = capture();
     await sink().deliver({ ...base, message: 'x'.repeat(5_000) });
 
     const value = valueOf(calls[0]!.body, 'Message');
-    expect(value.length).toBeLessThanOrEqual(1_800);
+    expect(value.length).toBeGreaterThan(3_000);
+    expect(value.length).toBeLessThanOrEqual(3_900);
     expect(value.endsWith('…')).toBe(true);
+  });
+
+  /**
+   * Discord's own caps, asserted because getting one wrong is a 400 with no
+   * explanation and a lost enquiry — which is how the field-versus-description
+   * mistake was found, by the live smoke test rather than by anything here.
+   * 1,024 per field value, 4,096 for the description, 6,000 across the embed.
+   */
+  it('stays inside every limit Discord actually enforces', async () => {
+    const calls = capture();
+    await sink().deliver({
+      reason: 'x'.repeat(200),
+      name: 'x'.repeat(500),
+      email: 'x'.repeat(500),
+      company: 'x'.repeat(500),
+      message: 'x'.repeat(10_000),
+      source: 'x'.repeat(500),
+    });
+
+    const only = embed(calls[0]!.body);
+    for (const entry of only.fields) {
+      expect(entry.value.length, `${entry.name} exceeds Discord's field cap`).toBeLessThanOrEqual(
+        1_024,
+      );
+    }
+    expect((only.description ?? '').length).toBeLessThanOrEqual(4_096);
+
+    const total =
+      (only.description ?? '').length +
+      only.fields.reduce((sum, entry) => sum + entry.name.length + entry.value.length, 0);
+    expect(total).toBeLessThanOrEqual(6_000);
   });
 
   it('renders an absent optional field as a dash rather than "undefined"', async () => {

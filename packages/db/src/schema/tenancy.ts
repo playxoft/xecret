@@ -27,9 +27,10 @@ export const organizations = pgTable(
      * The seat ceiling **invitations are actually refused against**, by
      * `assertSeatAvailable` under the organisation's row lock.
      *
-     * Not the same number as `FREE_LIMITS.seats`, which is 1. This column
+     * Not the same number as `FREE_LIMITS.seats`, which is 3. This column
      * predates the plans table, nothing sets it from the plan at provisioning
-     * time, and the default of 5 is therefore what a Free organisation gets. The
+     * time, and the default of 5 is therefore what a Free organisation gets.
+     * The gap has narrowed — it was 1 against 5 — and it is still a gap. The
      * divergence is deliberate and documented at both ends — see the note on
      * `seats` in `packages/core/src/entitlements/plans.ts` — and it closes when
      * payments land.

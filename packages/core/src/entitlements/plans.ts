@@ -84,8 +84,12 @@ export const RETIRED_PLANS: Readonly<Record<string, PlanId>> = Object.freeze({
 export const FAIR_USE = Object.freeze({
   organizations: 25,
   projects: 500,
-  environmentsPerProject: 25,
-  secretsPerEnvironment: 5_000,
+  // Both of these were sized when Pro and Team were unlimited and every tier
+  // could reach them. Only Enterprise can now — so leaving them at Team's own
+  // hard caps meant the tier whose ceilings are "whatever the contract says" was
+  // the only one warned, at a count a Team customer is allowed without comment.
+  environmentsPerProject: 100,
+  secretsPerEnvironment: 25_000,
   serviceTokens: 1_000,
   webhooks: 50,
   /** No published ceiling; seats are billed, so abuse is self-limiting. */

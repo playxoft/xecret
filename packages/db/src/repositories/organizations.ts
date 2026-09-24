@@ -1,7 +1,6 @@
 import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import type { OrgRole } from '@xecret/core/authz';
-import { DEFAULT_PLAN, FAIR_USE, PLANS, resolvePlanId } from '@xecret/core/entitlements';
-import type { PlanId } from '@xecret/core/entitlements';
+import { DEFAULT_PLAN, FAIR_USE, PLANS } from '@xecret/core/entitlements';
 import { randomBytes } from '@xecret/core/crypto';
 import type { EnvelopeService } from '@xecret/core/crypto';
 import { uuidv7 } from '@xecret/core/ids';
@@ -21,7 +20,7 @@ import { addMember } from './membership';
 import type { MemberRecord } from './membership';
 import { QuotaExceededError, RepositoryError } from './shared';
 import type { Executor } from './shared';
-import { createFreeSubscription, entitlementColumns } from './subscriptions';
+import { createFreeSubscription, entitlementColumns, entitlementsFromRow } from './subscriptions';
 import type { SubscriptionEntitlementRow } from './subscriptions';
 import { isUniqueViolation } from './users';
 import type { User } from './users';
@@ -141,14 +140,21 @@ export interface HeldOrganizations {
   /** The most recent of them, or `null` when the account holds none. */
   latestId: string | null;
   /**
-   * The plan of each organisation counted.
+   * The resolved organisation ceiling of each organisation counted.
    *
    * Carried because the ceiling on *how many organisations an account may hold*
    * is a plan limit, and an account has no plan of its own — only the
    * organisations it belongs to have one. `accountOrganizationCeiling` resolves
-   * the two into a number; see the reasoning there.
+   * the set into a number; see the reasoning there.
+   *
+   * Resolved *entitlements* rather than raw plan ids, which is the difference
+   * between the fair-usage promise working and merely being documented: support
+   * raises a ceiling with a `limitOverrides` row, and reading the plan
+   * definition alone ignored it. A customer whose ceiling had been raised was
+   * still refused at the plan's number, by the one entitlement this product
+   * actually enforces.
    */
-  plans: PlanId[];
+  ceilings: (number | null)[];
 }
 
 /**
@@ -203,15 +209,23 @@ export async function countOrganizationsHeldBy(
   return {
     total: rows.length,
     latestId: rows[0]?.id ?? null,
-    // A null plan means no subscription row, which migration 0016 made
-    // impossible and which resolves to Free everywhere else. Same answer here.
-    //
-    // Through `resolvePlanId` rather than used as read, for the same reason
-    // `resolveEntitlements` does it: a row can hold a plan this build no longer
-    // sells, and the ceiling an account is measured against must be the one its
-    // holder was actually given. Taking the stored string literally would let a
-    // retired value fall past `PLANS[plan]` and answer as Free.
-    plans: rows.map((row) => (row.plan === null ? DEFAULT_PLAN : resolvePlanId(row.plan))),
+    // Through `entitlementsFromRow`, which is the same resolution the
+    // authorization path applies to the same columns: a retired plan maps to
+    // what replaced it, an unknown one falls to Free, and a support override is
+    // honoured. A null plan means no subscription row — impossible since
+    // migration 0016, and Free is the answer the migration would have written.
+    ceilings: rows.map((row) =>
+      row.plan === null
+        ? PLANS[DEFAULT_PLAN].limits.organizations
+        : entitlementsFromRow({
+            plan: row.plan,
+            status: row.status ?? 'active',
+            addonSaml: false,
+            addonDirectorySync: false,
+            limitOverrides: row.limitOverrides,
+            currentPeriodEnd: null,
+          }).limits.organizations,
+    ),
   };
 }
 
@@ -261,26 +275,11 @@ export async function countOrganizationsHeldBy(
  * coincide with a published number, and support raises it with an override like
  * any other.
  */
-export function accountOrganizationCeiling(plans: readonly PlanId[]): number {
-  if (plans.length === 0) return freeCeiling();
+export function accountOrganizationCeiling(ceilings: readonly (number | null)[]): number {
+  if (ceilings.length === 0) return freeCeiling();
 
   let best = 0;
-  for (const plan of plans) {
-    // Through `resolvePlanId`, which is the same precedence `resolveEntitlements`
-    // applies to the same value — a retired plan resolves to what replaced it, and
-    // only a genuinely unknown one falls to Free.
-    //
-    // Two failures are being avoided here, and they pull in opposite directions.
-    // `undefined` used to share a branch with `null`, so a plan this build had
-    // never heard of — a Postgres `plan_id` enum gaining a value before a deploy,
-    // or a stale row — read as *unlimited* and granted 25 organisations instead of
-    // one: a quota check must never fail open. But resolving `scale` to Free would
-    // fail closed on somebody who paid for the tier above Team, which is the
-    // opposite mistake. `resolvePlanId` is the one place that tells them apart,
-    // and calling it here is what stops this function and the entitlement
-    // resolver giving two answers about the same row.
-    const ceiling = PLANS[resolvePlanId(plan)].limits.organizations;
-
+  for (const ceiling of ceilings) {
     // `null` is unlimited, and unlimited wins outright.
     if (ceiling === null) return FAIR_USE.organizations;
     if (ceiling > best) best = ceiling;
@@ -305,7 +304,15 @@ export function organizationsHeldByQuery(exec: Executor, userId: string, limit: 
       // already being made now also answers which ceilings apply. A second
       // query would be a round trip on the first-login path, which is the one
       // request in the product a new user judges the whole thing by.
-      .select({ id: organizations.id, plan: orgSubscriptions.plan })
+      .select({
+        id: organizations.id,
+        plan: orgSubscriptions.plan,
+        status: orgSubscriptions.status,
+        // The override, without which the fair-usage promise this ceiling
+        // documents does not work: support raises a limit by writing this
+        // column, and a ceiling read from the plan definition never sees it.
+        limitOverrides: orgSubscriptions.limitOverrides,
+      })
       .from(organizations)
       // `org_members_org_user_unique` makes this at most one row per
       // organisation, so the join cannot inflate the count it is part of.
@@ -504,7 +511,7 @@ export async function provisionOrganization(
     // either alone: the plan says what was sold, the cap says what this system
     // will mint Org Master Keys for in one account, and neither is allowed to
     // override the other.
-    const ceiling = Math.min(accountOrganizationCeiling(held.plans), params.limit);
+    const ceiling = Math.min(accountOrganizationCeiling(held.ceilings), params.limit);
 
     if (held.total >= ceiling) {
       // The ceiling rides along on the error: the route has to say the number

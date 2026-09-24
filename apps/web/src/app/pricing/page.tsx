@@ -658,7 +658,14 @@ const PRICED_PLANS: readonly Plan[] = [
       { text: 'No ceiling on projects, environments, secrets or tokens' },
       { text: 'Custom roles', notYet: true },
       { text: 'Audit streamed to your SIEM', notYet: true },
-      { text: 'SAML and SCIM included rather than charged as add-ons', notYet: true },
+      // Was "SAML and SCIM included rather than charged as add-ons", which the
+      // add-on band contradicts: SCIM is listed there at a per-connection price
+      // marked `from: 'Enterprise'`. Three surfaces, three answers, on the one
+      // capability this page charges separately for — the exact divergence
+      // `ADDON_NOT_YET` exists to kill. SAML *is* included at Enterprise; SCIM
+      // is bought per connection, and the card now says so.
+      { text: 'SAML single sign-on included', notYet: true },
+      { text: `Directory sync (SCIM) at the published per-connection price`, notYet: true },
       // Chipped, because it is not built. `packages/core/src/crypto/escrow.ts`
       // is the recovery-share format for an account, not a customer-held root
       // key — the hosted service holds the root key for every plan today, which
@@ -1189,7 +1196,11 @@ const MATRIX = [
           free: false,
           pro: false,
           team: false,
-          enterprise: NOT_YET,
+          // `ADDON_NOT_YET`, not a bare chip: this is bought per connection at a
+          // published price even on Enterprise, and a cell that omits the price
+          // half tells a reader it comes with the tier. The add-on band says
+          // otherwise two screens up.
+          enterprise: ADDON_NOT_YET,
           'self-hosted': NOT_YET,
         },
       },
@@ -1440,7 +1451,7 @@ const FAQ: readonly FaqItem[] = [
     // wrong in a way no test would catch, because the cards would still be
     // right. Stating the limit rather than the first value above it lets the
     // sentence read from `LIMITS` like everything else on the page.
-    answer: `Nothing breaks and nothing is deleted. Free covers ${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} member, and you are asked to move up the next time you need one more of any of those. Everything already stored keeps working and the CLI keeps running. Going over the included fetch allowance is billed, never blocked. During pre-alpha there is no limit to exceed at all.`,
+    answer: `Nothing breaks and nothing is deleted. Free covers ${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} members, and you are asked to move up the next time you need one more of any of those. Everything already stored keeps working and the CLI keeps running. Going over the included fetch allowance is billed, never blocked. During pre-alpha there is no limit to exceed at all.`,
   },
   {
     question: 'Can a billing problem break my build?',
@@ -1450,7 +1461,7 @@ const FAQ: readonly FaqItem[] = [
   {
     question: 'Is there an annual price?',
     answer:
-      'Yes, and it is the headline rate on this page. Billed yearly, Pro is $5 a member a month and Team is $12 — charged as $60 and $144 a member a year, about 37 per cent below monthly. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both, and neither is billed at all during pre-alpha.',
+      'Yes. Billed yearly, Pro is $5 a member a month and Team is $12 — charged as $60 and $144 a member a year, a third to two fifths below the monthly rate. The exact saving differs by currency, because each sheet is a set of deliberate prices rather than one number converted: it is nearer a third on the euro sheet and nearer two fifths on the rupee one. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both, and neither is billed at all during pre-alpha.',
   },
   {
     question: 'Why is it cheaper in India?',
@@ -1733,7 +1744,13 @@ function PriceControls() {
         </label>
         <label htmlFor="billing-yearly" data-billing="yearly" className={SEGMENT}>
           Yearly
-          <span className="text-fg-subtle text-xs font-normal">Save 37%</span>
+          {/* "Save" without a number. The figure differs by sheet — 33% on the
+              euro Pro rate, 40% on the rupee one — because each sheet is a set
+              of deliberate prices rather than one number converted five ways.
+              A literal here sat directly above a card contradicting it, and
+              deriving it would mean five chips for a claim that is the same
+              either way: yearly is cheaper. The FAQ carries the arithmetic. */}
+          <span className="text-fg-subtle text-xs font-normal">Save</span>
         </label>
       </div>
 
@@ -1863,6 +1880,11 @@ export default async function PricingPage() {
             name="currency"
             value={currency.id}
             defaultChecked={currency.id === initialCurrency}
+            // Named explicitly, because two controls render a `<label for>` at
+            // this input and engines concatenate every associated label into the
+            // accessible name — so it announced as "$ USD $ USD". An `aria-label`
+            // replaces the lot with one.
+            aria-label={currency.label}
             className={`x-cur-${currency.id} x-price-input`}
           />
         ))}
@@ -1873,6 +1895,7 @@ export default async function PricingPage() {
           name="billing"
           value="monthly"
           defaultChecked
+          aria-label="Billed monthly"
           className="x-billing-monthly x-price-input"
         />
         <input
@@ -1880,6 +1903,7 @@ export default async function PricingPage() {
           type="radio"
           name="billing"
           value="yearly"
+          aria-label="Billed yearly"
           className="x-billing-yearly x-price-input"
         />
 
@@ -2031,9 +2055,14 @@ export default async function PricingPage() {
 
             {/* ── Add-ons ──
             Between the cards and the self-hosting band, because they attach to
-            a plan rather than replacing one. Outside the fieldset: neither has
-            a yearly rate, and showing one under a yearly toggle would imply a
-            discount that is not offered.
+            a plan rather than replacing one.
+
+            **Inside** `.x-billing-body`, and it has to be: the rule that reveals
+            one add-on price per currency is
+            `.x-cur-*:checked ~ .x-billing-body .x-addon-*`, so moving this band
+            out blanks all ten figures. This comment used to say the opposite.
+            What is true is that add-ons have no *yearly* rate, which is why the
+            rule keys on currency alone and not on the period.
 
             The body text states what each costs us. That is deliberate — see
             the note on ADDONS — and it is the part of this page most likely to
@@ -2095,10 +2124,22 @@ export default async function PricingPage() {
                 <div className="lg:w-64 lg:shrink-0">
                   <h3 className="text-fg text-base font-semibold">{SELF_HOSTED.name}</h3>
                   <p className="text-fg mt-2 text-3xl font-semibold tracking-[-0.02em]">
-                    {SELF_HOSTED.prices.usd.monthly.price}
+                    {/* All five sheets, not `usd`. Every one of them currently
+                        reads "Free", which is the only reason hard-coding one
+                        was invisible — and is exactly why it would have stayed
+                        invisible until somebody localised the word. */}
+                    {CURRENCIES.map((currency) => (
+                      <span key={currency.id} className={`x-addon-price x-addon-${currency.id}`}>
+                        {SELF_HOSTED.prices[currency.id].monthly.price}
+                      </span>
+                    ))}
                   </p>
                   <p className="text-fg-subtle mt-1 text-sm">
-                    {SELF_HOSTED.prices.usd.monthly.unit}
+                    {CURRENCIES.map((currency) => (
+                      <span key={currency.id} className={`x-addon-price x-addon-${currency.id}`}>
+                        {SELF_HOSTED.prices[currency.id].monthly.unit}
+                      </span>
+                    ))}
                   </p>
                   <p className="text-fg-muted mt-3 text-sm leading-6">{SELF_HOSTED.audience}</p>
                 </div>

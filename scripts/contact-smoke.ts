@@ -32,11 +32,12 @@ async function main(): Promise<void> {
   }
 
   await new DiscordContactSink(url).deliver({
+    reason: 'A security review or questionnaire',
     name: 'Ada Lovelace @everyone',
     email: 'ada@example.com',
     message:
       'Hi @here — token: xec_live_abcdefghijklmnop. We are moving off Vault and need EU data ' +
-      'residency. Backtick test: `code`. ' +
+      'residency. Backtick test: `code`. Masked link: [https://xecret.playxoft.com/admin](https://evil.example). ' +
       'Padding so the truncation path is exercised too. '.repeat(40),
     source: 'https://xecret.playxoft.com/pricing',
   });
@@ -45,6 +46,7 @@ async function main(): Promise<void> {
   console.log('  - nobody was pinged — @everyone and @here must be plain text');
   console.log('  - Email reads ada@example.com, not [redacted-email]');
   console.log('  - the token in the body is masked');
+  console.log('  - the masked link renders as literal text, not as a clickable link');
   console.log('  - Message ends in an ellipsis rather than at Discord’s own cap');
 }
 

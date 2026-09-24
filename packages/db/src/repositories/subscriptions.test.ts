@@ -208,45 +208,78 @@ describe('the usage counter writes', () => {
 /**
  * The ceiling on how many organisations one account may hold.
  *
- * A quota check is the one place that must not fail open, and this one did: an
- * unrecognised plan id shared a branch with `null`, so a plan this build has
- * never heard of — a Postgres `plan_id` enum gaining a value before a deploy, or
- * a stale row — read as *unlimited* and granted 25 organisations instead of one.
+ * It takes **resolved ceilings** rather than plan ids, which is the fix for the
+ * defect this block grew out of: reading the plan definition ignored
+ * `limitOverrides`, so the one entitlement this product actually enforces was
+ * also the one place the fair-usage promise did not work. Resolution — retired
+ * plans, unknown plans, overrides — happens once in `countOrganizationsHeldBy`,
+ * through the same `entitlementsFromRow` the authorization path uses.
  */
 describe('accountOrganizationCeiling', () => {
-  it('takes the most generous ceiling among the plans it was given', () => {
-    expect(accountOrganizationCeiling(['free', 'free'])).toBe(PLANS.free.limits.organizations);
-    // Team publishes a number now rather than `null`, so the most generous
-    // ceiling among these two is Team's own — not the fair-use bound, which is
-    // only reached by a plan that genuinely has no limit.
-    expect(accountOrganizationCeiling(['free', 'team'])).toBe(PLANS.team.limits.organizations);
-  });
+  /** What the resolver produces for a plan with no override. */
+  const ceilingOf = (plan: 'free' | 'pro' | 'team' | 'enterprise') =>
+    PLANS[plan].limits.organizations;
 
-  it('falls back to Free for an account holding nothing', () => {
-    expect(accountOrganizationCeiling([])).toBe(PLANS.free.limits.organizations);
-  });
-
-  it('treats an unrecognised plan as Free, not as unlimited', () => {
-    // `resolveEntitlements` answers the identical input the identical way. A
-    // quota that disagreed with the resolver about what an unknown plan means
-    // would be a hole opened by a migration, not by a request.
-    expect(accountOrganizationCeiling(['platinum' as never])).toBe(PLANS.free.limits.organizations);
-    expect(accountOrganizationCeiling(['free', 'platinum' as never])).toBe(
-      PLANS.free.limits.organizations,
+  it('takes the most generous ceiling it was given', () => {
+    expect(accountOrganizationCeiling([ceilingOf('free'), ceilingOf('free')])).toBe(
+      ceilingOf('free'),
+    );
+    // Team publishes a number now rather than `null`, so the most generous of
+    // these two is Team's own — not the fair-use bound, which is reached only by
+    // a plan that genuinely has no limit.
+    expect(accountOrganizationCeiling([ceilingOf('free'), ceilingOf('team')])).toBe(
+      ceilingOf('team'),
     );
   });
 
-  it('still lets a genuinely unlimited plan reach the fair-use bound', () => {
-    expect(accountOrganizationCeiling(['enterprise'])).toBe(FAIR_USE.organizations);
+  it('falls back to Free for an account holding nothing', () => {
+    expect(accountOrganizationCeiling([])).toBe(ceilingOf('free'));
+  });
+
+  it('lets an unlimited plan reach the fair-use bound', () => {
+    expect(accountOrganizationCeiling([null])).toBe(FAIR_USE.organizations);
+    expect(accountOrganizationCeiling([ceilingOf('free'), null])).toBe(FAIR_USE.organizations);
   });
 
   /**
-   * `scale` was withdrawn but its value survives in the Postgres enum, which is
-   * additive-only. A row still saying so must be measured against what replaced
-   * the tier — Team — and not fall through to Free, which would take a ceiling
-   * away from somebody who paid for it. See `RETIRED_PLANS`.
+   * The defect, stated as a test. Support raises a ceiling by writing
+   * `limitOverrides`; the ceiling was read from the plan definition, so the
+   * override resolved correctly everywhere the customer could *see* it and had
+   * no effect at the one place that refuses them.
    */
-  it('measures a retired plan against what replaced it', () => {
-    expect(accountOrganizationCeiling(['scale' as never])).toBe(PLANS.team.limits.organizations);
+  it('honours a support override, because that is the whole fair-usage promise', () => {
+    const raised = entitlementsFromRow({
+      plan: 'pro',
+      status: 'active',
+      addonSaml: false,
+      addonDirectorySync: false,
+      limitOverrides: { organizations: 8 },
+      currentPeriodEnd: null,
+    }).limits.organizations;
+
+    expect(raised).toBe(8);
+    expect(accountOrganizationCeiling([raised])).toBe(8);
+  });
+
+  /**
+   * Both directions of the resolution, asserted through the function that now
+   * performs it. An *unknown* plan must fail closed to Free — a quota check is
+   * the one place that must never fail open. A *retired* one must resolve to
+   * what replaced it, because failing closed on somebody who paid for the tier
+   * above Team is the opposite mistake.
+   */
+  it('tells an unknown plan from a withdrawn one', () => {
+    const resolved = (plan: string) =>
+      entitlementsFromRow({
+        plan: plan as never,
+        status: 'active',
+        addonSaml: false,
+        addonDirectorySync: false,
+        limitOverrides: null,
+        currentPeriodEnd: null,
+      }).limits.organizations;
+
+    expect(accountOrganizationCeiling([resolved('platinum')])).toBe(ceilingOf('free'));
+    expect(accountOrganizationCeiling([resolved('scale')])).toBe(ceilingOf('team'));
   });
 });

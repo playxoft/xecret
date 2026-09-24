@@ -58,8 +58,10 @@ import {
   PLANS,
   resolveBilledSeats,
   resolveEntitlements,
+  resolvePlanId,
   type PlanId,
   type SeatDecision,
+  type StoredPlanId,
 } from '../packages/core/src/entitlements/index.ts';
 import { createAuditBuilder } from '../packages/core/src/audit/index.ts';
 import { createDatabaseHandle } from '../packages/db/src/client.ts';
@@ -140,7 +142,8 @@ function describeSeats(decision: SeatDecision): string {
  * validates the flag and does the talking.
  */
 function resolveSeats(params: {
-  plan: PlanId;
+  /** As stored: `resolveBilledSeats` maps a retired tier to what replaced it. */
+  plan: StoredPlanId;
   /** What `--seats` said, or `null` when the flag was absent. */
   requested: number | null;
   /** `org_subscriptions.seats` — what the invoice currently says. */
@@ -154,9 +157,15 @@ function resolveSeats(params: {
 
   const decision = resolveBilledSeats(params);
 
+  // The *resolved* plan, for the same reason the arithmetic uses it: a stored
+  // `scale` indexes `MINIMUM_SEATS` to `undefined`, and this line would have
+  // printed "scale has a undefined-seat minimum" — the message that would have
+  // explained the NaN, wearing the same bug.
+  const plan = resolvePlanId(params.plan);
+
   if (decision.raisedToMinimum) {
     console.warn(
-      `  ! ${params.plan} has a ${MINIMUM_SEATS[params.plan]}-seat minimum; ` +
+      `  ! ${plan} has a ${MINIMUM_SEATS[plan]}-seat minimum; ` +
         `${params.requested} was requested. Billing ${decision.billed}.`,
     );
   }
@@ -170,7 +179,7 @@ function resolveSeats(params: {
     );
   }
 
-  if (params.plan === 'free' && params.requested !== null) {
+  if (plan === 'free' && params.requested !== null) {
     // Free bills one seat whatever is asked for. Stated rather than left to be
     // inferred from a `seats=1` line that looks like the flag was ignored — and
     // stated accurately, because the same flag *did* move the enforced ceiling

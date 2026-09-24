@@ -87,10 +87,14 @@ export const contactSchema = z.object({
    * delivering anything — a refusal that tells the author nothing is worth more
    * than one that teaches them which field to skip next time.
    *
+   * Bounded like everything else. An unbounded field that is parsed, trimmed and
+   * then thrown away is still a megabyte somebody made us handle — and this one
+   * is the field a bot is most likely to stuff.
+   *
    * Not a substitute for the rate limit; it costs nothing and catches the
    * laziest half.
    */
-  website: z.optional(z.string()),
+  website: z.optional(z.string().check(z.maxLength(200, 'Unexpected value.'))),
 });
 
 export type ContactRequest = z.infer<typeof contactSchema>;

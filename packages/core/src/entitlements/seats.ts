@@ -12,12 +12,23 @@
  * facts in very different sentences.
  */
 
+import { resolvePlanId } from './entitlements';
 import { MINIMUM_SEATS } from './plans';
-import type { PlanId } from './types';
+import type { StoredPlanId } from './types';
 
 export interface SeatRequest {
-  /** The plan the organisation will be on **after** this change. */
-  readonly plan: PlanId;
+  /**
+   * The plan the organisation will be on **after** this change, as stored.
+   *
+   * `StoredPlanId` rather than `PlanId`, and resolved inside rather than by the
+   * caller. A `scale` row reaching `MINIMUM_SEATS['scale']` gives `undefined`,
+   * `Math.max(n, undefined)` gives `NaN`, and `NaN` reaches two `integer`
+   * columns — which is what happened, because `scripts/` is in no tsconfig and
+   * the operator tool was the one call site the type split did not police.
+   * Widening the parameter and resolving here means no caller can get it wrong,
+   * which is worth more than a rule they have to remember.
+   */
+  readonly plan: StoredPlanId;
   /** What the operator asked for, or `null` when they said nothing. */
   readonly requested: number | null;
   /** `org_subscriptions.seats` — what the invoice currently says. */
@@ -68,7 +79,8 @@ export interface SeatDecision {
  * always gets what was asked for.
  */
 export function resolveBilledSeats(request: SeatRequest): SeatDecision {
-  const { plan, requested, billed, enforced } = request;
+  const { requested, billed, enforced } = request;
+  const plan = resolvePlanId(request.plan);
 
   // Free bills one seat, and its enforced ceiling only ever moves upward. A
   // downgrade to Free does not confiscate access from members already seated;
@@ -87,8 +99,21 @@ export function resolveBilledSeats(request: SeatRequest): SeatDecision {
   const minimum = MINIMUM_SEATS[plan];
 
   if (requested === null) {
-    const seats = Math.max(billed, enforced, minimum);
-    return { billed: seats, enforced: seats, raisedToMinimum: false, lowersEnforced: false };
+    // Two numbers, from two sources, and conflating them put people on the wrong
+    // invoice. `enforced` is `organizations.seat_limit`, which defaults to 5 and
+    // is never set from a plan — so folding it into `billed` charged a
+    // one-person Free organisation for five Pro seats the moment somebody
+    // upgraded it, with nothing warning because `raisedToMinimum` was false.
+    //
+    // An access ceiling must never set a price. It may only stop itself being
+    // lowered, which is what the second line does.
+    const billedSeats = Math.max(billed, minimum);
+    return {
+      billed: billedSeats,
+      enforced: Math.max(billedSeats, enforced, minimum),
+      raisedToMinimum: false,
+      lowersEnforced: false,
+    };
   }
 
   const seats = Math.max(requested, minimum);

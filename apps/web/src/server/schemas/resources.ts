@@ -11,6 +11,7 @@ import {
   slugify,
   SLUG_MAX_LENGTH,
 } from '@xecret/core/validation';
+import { FAIR_USE } from '@xecret/core/entitlements';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@xecret/db/repositories';
 import type {
   EnvironmentRecord,
@@ -70,11 +71,17 @@ export const DESCRIPTION_MAX_LENGTH = 500;
  * returns: `organizations_slug_unique` is a total constraint, so every slug
  * claimed is taken out of a namespace shared with every other tenant for good.
  *
- * Ten, because separation *inside* an organisation is what projects and
- * environments are for — an account that genuinely needs an eleventh is asking
- * the product a question it answers better a level down. It is deliberately far
- * above the one or two a real account has, so the refusal is only ever met by
- * something that is not a person filling in a form.
+ * `FAIR_USE.organizations`, and taken from there rather than written again. This
+ * was a hand-written 10, which is the same number as Team's *plan* ceiling — so
+ * `min(plan ceiling, this cap)` could never produce anything above 10 and the
+ * unlimited branch of `accountOrganizationCeiling` was unreachable. An
+ * Enterprise account sold "unlimited organisations" was refused its eleventh
+ * with a message about a limit nobody had sold it.
+ *
+ * An abuse cap has to sit at or above the most generous thing the product sells,
+ * or it stops being an abuse cap and becomes a quieter, wronger plan limit. It is
+ * still deliberately far above the one or two a real account has, so the refusal
+ * is only ever met by something that is not a person filling in a form.
  *
  * ── What this bounds, and what it does not ──
  * It bounds what one account **holds at once**: `countOrganizationsHeldBy`
@@ -103,7 +110,7 @@ export const DESCRIPTION_MAX_LENGTH = 500;
  * slow, attributable, multi-account act rather than a loop, which is the shape
  * abuse response deals with. It is not a claim that the ceiling closes it.
  */
-export const ORGANIZATIONS_PER_ACCOUNT_LIMIT = 10;
+export const ORGANIZATIONS_PER_ACCOUNT_LIMIT = FAIR_USE.organizations;
 
 /**
  * The display order of an environment.
