@@ -18,15 +18,20 @@ import { resolveBilledSeats } from './seats';
 
 describe('resolveBilledSeats', () => {
   /**
-   * The regression this rule exists for.
+   * Two regressions in one case, pulling opposite ways.
    *
    * A Free organisation bills 1 seat and enforces 5 — `seat_limit`'s column
    * default, which nothing sets from the plan. Deriving the new count from the
-   * billed one alone gave `max(1, 3) = 3` on an upgrade to Team, so an
+   * *billed* one alone gave `max(1, 3) = 3` on an upgrade to Team, so an
    * organisation with four members came out of the upgrade over its own limit
-   * and unable to invite anybody. The upgrade was run to give it *more*.
+   * and unable to invite anybody; the upgrade was run to give it more.
+   *
+   * Folding `enforced` into `billed` fixed that and broke the invoice instead: a
+   * one-person organisation upgrading to Pro was charged for five seats, because
+   * a column default nobody had chosen became a price. An access ceiling may
+   * stop itself being lowered. It may never set what somebody pays.
    */
-  it('never tightens the enforced ceiling on an upgrade nobody gave a number for', () => {
+  it('keeps the enforced ceiling without letting it set the invoice', () => {
     const decision = resolveBilledSeats({
       plan: 'team',
       requested: null,
@@ -34,19 +39,33 @@ describe('resolveBilledSeats', () => {
       enforced: 5,
     });
 
-    expect(decision.billed).toBe(5);
+    // The plan minimum, not the 5 that `seat_limit` happened to be sitting at.
+    expect(decision.billed).toBe(MINIMUM_SEATS.team);
+    expect(decision.enforced).toBe(5);
     expect(decision.lowersEnforced).toBe(false);
   });
 
-  it('takes the plan minimum when it is the largest of the three', () => {
+  it('never charges a one-person organisation for a column default', () => {
     const decision = resolveBilledSeats({
-      plan: 'scale',
+      plan: 'pro',
       requested: null,
       billed: 1,
       enforced: 5,
     });
 
-    expect(decision.billed).toBe(MINIMUM_SEATS.scale);
+    expect(decision.billed).toBe(1);
+    expect(decision.enforced).toBe(5);
+  });
+
+  it('takes the plan minimum when it is the largest of the three', () => {
+    const decision = resolveBilledSeats({
+      plan: 'enterprise',
+      requested: null,
+      billed: 1,
+      enforced: 5,
+    });
+
+    expect(decision.billed).toBe(MINIMUM_SEATS.enterprise);
   });
 
   it('keeps a billed count above both the minimum and the enforced ceiling', () => {
@@ -61,19 +80,19 @@ describe('resolveBilledSeats', () => {
   });
 
   /**
-   * `MINIMUM_SEATS` is what stops a solo developer buying one Scale seat. It
-   * used to be applied only on the `--plan` path, so setting seats alone on an
-   * existing Scale organisation under-billed it silently.
+   * `MINIMUM_SEATS` is what stops a solo developer buying one Enterprise seat.
+   * It used to be applied only on the `--plan` path, so setting seats alone on
+   * an organisation already on that tier under-billed it silently.
    */
   it('raises an explicit request to the plan minimum, and says it did', () => {
     const decision = resolveBilledSeats({
-      plan: 'scale',
+      plan: 'enterprise',
       requested: 1,
       billed: 10,
       enforced: 10,
     });
 
-    expect(decision.billed).toBe(MINIMUM_SEATS.scale);
+    expect(decision.billed).toBe(MINIMUM_SEATS.enterprise);
     expect(decision.raisedToMinimum).toBe(true);
   });
 

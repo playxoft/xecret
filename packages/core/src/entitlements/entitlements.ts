@@ -6,7 +6,7 @@
  * subscription may still fetch secrets — and the answer is always yes.
  */
 
-import { DEFAULT_PLAN, NULLABLE_LIMITS, PLANS } from './plans';
+import { DEFAULT_PLAN, NULLABLE_LIMITS, PLANS, RETIRED_PLANS } from './plans';
 import type {
   Entitlements,
   OrgAddons,
@@ -162,14 +162,20 @@ function applyOverrides(
  * "unreachable" and "throws on the authorization path" is a combination worth
  * one defensive line.
  *
- * `Object.hasOwn` rather than `state.plan in PLANS`, because `in` walks the
- * prototype chain and would have let `'constructor'` and `'toString'` through
- * the guard to a `PLANS[plan]` of `undefined` and a `TypeError` one line later —
- * on the authorization path, which is the single place this line exists to keep
- * exception-free. The defensive line has to actually defend.
+ * A **retired** plan is answered before that fallback, and the order matters. A
+ * row saying `scale` is not an unrecognised value — it is a tier this product
+ * sold and then withdrew, and dropping its holder to Free would take away the
+ * per-environment grants they paid for.
+ *
+ * Both of those live in `resolvePlanId`, which uses `Object.hasOwn` rather than
+ * `state.plan in PLANS`: `in` walks the prototype chain and would let
+ * `'constructor'` and `'toString'` through the guard to a `PLANS[plan]` of
+ * `undefined` and a `TypeError` one line later — on the authorization path,
+ * which is the single place this line exists to keep exception-free. The
+ * defensive line has to actually defend.
  */
 export function resolveEntitlements(state: SubscriptionState): Entitlements {
-  const plan: PlanId = Object.hasOwn(PLANS, state.plan) ? state.plan : DEFAULT_PLAN;
+  const plan: PlanId = resolvePlanId(state.plan);
   const definition = PLANS[plan];
 
   const addons: OrgAddons = Object.freeze({
@@ -185,6 +191,20 @@ export function resolveEntitlements(state: SubscriptionState): Entitlements {
     addons,
     controlPlaneActive: isControlPlaneActive(state.status),
   });
+}
+
+/**
+ * The plan a stored value resolves to: itself, its replacement, or Free.
+ *
+ * Exported so the operator tool and the dashboard read a retired row the same
+ * way the authorization path does. A second copy of this precedence is a second
+ * answer to "what is this organisation on", and the two would disagree on
+ * exactly the rows where being wrong costs a customer something.
+ */
+export function resolvePlanId(stored: string): PlanId {
+  if (Object.hasOwn(PLANS, stored)) return stored as PlanId;
+  if (Object.hasOwn(RETIRED_PLANS, stored)) return RETIRED_PLANS[stored] ?? DEFAULT_PLAN;
+  return DEFAULT_PLAN;
 }
 
 /**

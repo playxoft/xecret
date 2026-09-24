@@ -12,7 +12,7 @@ import {
   timestamp,
   uuid,
 } from 'drizzle-orm/pg-core';
-import type { PlanId } from '@xecret/core/entitlements';
+import type { PlanId, StoredPlanId } from '@xecret/core/entitlements';
 import { billingIntervalEnum, planIdEnum, subscriptionStatusEnum } from './enums';
 import { organizations } from './tenancy';
 
@@ -245,5 +245,13 @@ export const billingWebhookEvents = pgTable(
   ],
 );
 
-/** Re-exported so callers get the plan union without importing core directly. */
-export type { PlanId };
+/**
+ * Re-exported so callers get the plan unions without importing core directly.
+ *
+ * Both, deliberately. `orgSubscriptions.plan` yields `StoredPlanId`, which is
+ * wider than `PlanId` by exactly the tiers this product has withdrawn — so a
+ * caller who followed the old comment and reached for `PlanId` got a type that
+ * excludes the one value the column can actually hold. Read as `StoredPlanId`,
+ * decide as `PlanId`, and cross between them with `resolvePlanId`.
+ */
+export type { PlanId, StoredPlanId };

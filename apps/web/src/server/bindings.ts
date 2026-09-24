@@ -89,6 +89,19 @@ declare global {
     ZEPTOMAIL_API_URL?: string | undefined;
 
     /**
+     * The Discord webhook the contact form posts to.
+     *
+     * A credential in the shape of a URL: the token is a path segment, so
+     * anybody holding the string can post into that channel as often as they
+     * like. It never reaches a client — the form posts to our own endpoint,
+     * which is what lets the message be rate-limited, validated and stripped of
+     * mentions before a third party ever sees it. Absent means the contact
+     * endpoint answers 503 rather than dropping a message on the floor: a sales
+     * enquiry that silently disappears is worse than one that visibly failed.
+     */
+    DISCORD_CONTACT_WEBHOOK_URL?: string | undefined;
+
+    /**
      * Better Stack source token, from the source's settings page.
      *
      * A credential: it authorises writing into your log stream, and anybody
@@ -125,6 +138,7 @@ declare global {
     RL_SERVICE?: RateLimit;
     RL_MUTATION?: RateLimit;
     RL_SLUG_CHECK?: RateLimit;
+    RL_CONTACT?: RateLimit;
   }
 }
 
@@ -179,9 +193,18 @@ export function connectionString(env: Bindings): string {
  *
  * Everything else in `Bindings` is a real Cloudflare binding — an object the
  * runtime hands over — and cannot come from an environment variable at all.
+ *
+ * **Adding a string binding means adding it here.** Forgetting is not a subtle
+ * failure and it is not a rare one: the value is in the shell, `phase run`
+ * injects it, every script that reads `process.env` works, and the application
+ * answers 503 saying the binding is missing — which is true and tells you
+ * nothing about why. `bindings.test.ts` compares this list against the
+ * declarations above it and fails with the name of whatever was left out, which
+ * is the only reason this comment is not the whole defence.
  */
 const PROCESS_SUPPLIED = [
   'DATABASE_URL',
+  'DISCORD_CONTACT_WEBHOOK_URL',
   'FIREBASE_PROJECT_ID',
   'XECRET_ROOT_KEY_VERSION',
   'ZEPTOMAIL_TOKEN',

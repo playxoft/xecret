@@ -4,6 +4,7 @@ import {
   resolveEntitlements,
   type Entitlements,
   type PlanId,
+  type StoredPlanId,
   type SubscriptionStatus,
 } from '@xecret/core/entitlements';
 import { billingWebhookEvents, orgSubscriptions, orgUsageCounters } from '../schema/billing';
@@ -31,7 +32,8 @@ export type SubscriptionRecord = typeof orgSubscriptions.$inferSelect;
 
 /** The columns entitlement resolution needs, and nothing else. */
 export interface SubscriptionEntitlementRow {
-  plan: PlanId;
+  /** As stored. A retired plan is resolved by `resolveEntitlements`, not here. */
+  plan: StoredPlanId;
   status: SubscriptionStatus;
   addonSaml: boolean;
   addonDirectorySync: boolean;
@@ -119,6 +121,14 @@ export async function createFreeSubscription(exec: Executor, orgId: string): Pro
 }
 
 export interface SubscriptionPatch {
+  /**
+   * `PlanId`, not `StoredPlanId` — the asymmetry is the point.
+   *
+   * A *read* can find a retired tier, because the column has held one since
+   * before it was withdrawn. A *write* must never create one: nothing should be
+   * able to put an organisation back onto `scale`, and typing this as the wider
+   * union would let `updateSubscription(exec, id, { plan: 'scale' })` compile.
+   */
   plan?: PlanId;
   status?: SubscriptionStatus;
   billingInterval?: 'monthly' | 'yearly' | null;

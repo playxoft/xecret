@@ -20,8 +20,35 @@
  * See `.local/plans/v2/01-billing.md` §P11 and `.local/plans/pricing-plan.md` §3.
  */
 
-/** The five rungs. Ordered weakest to strongest; `PLAN_RANK` depends on it. */
-export type PlanId = 'free' | 'pro' | 'team' | 'scale' | 'enterprise';
+/**
+ * The four rungs. Ordered weakest to strongest; `PLAN_RANK` depends on it.
+ *
+ * There were five. `scale` sat between Team and Enterprise and was removed —
+ * four self-serve tiers asked a buyer to make a distinction they had no basis
+ * for making, and the two capabilities that justified the tier belong with the
+ * contract that asks for them. The Postgres enum still carries the value because
+ * enums are additive-only; `RETIRED_PLANS` is what maps it back onto this union.
+ */
+export type PlanId = 'free' | 'pro' | 'team' | 'enterprise';
+
+/**
+ * A plan value a row can still hold, but which is no longer sold.
+ *
+ * Separate from `PlanId` so the two cannot be confused at a type level: `PlanId`
+ * is what the product offers and what enforcement branches on, this is what the
+ * database may contain. `resolvePlanId` is the only crossing between them.
+ */
+export type RetiredPlanId = 'scale';
+
+/**
+ * What `org_subscriptions.plan` can actually hold.
+ *
+ * Wider than `PlanId` because a Postgres enum is additive-only: a value this
+ * product stopped selling stays in the type for as long as the column does. Use
+ * this for anything read out of a row, and `PlanId` for anything decided from
+ * it.
+ */
+export type StoredPlanId = PlanId | RetiredPlanId;
 
 /** How a paid plan is billed. `null` on Free, which is never billed. */
 export type BillingInterval = 'monthly' | 'yearly';
@@ -187,7 +214,8 @@ export interface Entitlements {
 
 /** The input `resolveEntitlements` works from — one organisation's billing row. */
 export interface SubscriptionState {
-  readonly plan: PlanId;
+  /** As stored, which may be a plan that is no longer sold. See `StoredPlanId`. */
+  readonly plan: StoredPlanId;
   readonly status: SubscriptionStatus;
   readonly addonSaml: boolean;
   readonly addonDirectorySync: boolean;

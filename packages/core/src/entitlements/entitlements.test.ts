@@ -5,6 +5,7 @@ import {
   isControlPlaneActive,
   isDataPlaneActive,
   resolveEntitlements,
+  resolvePlanId,
 } from './entitlements';
 import {
   checkLimit,
@@ -143,9 +144,10 @@ describe('the control plane does fail closed', () => {
     expect(checkLimit(free, 'projects', 5).kind).toBe('exceeded');
   });
 
-  it('refuses a second member on Free', () => {
+  it('refuses a fourth member on Free', () => {
     const free = entitlementsFor('free');
-    expect(checkLimit(free, 'seats', 1).kind).toBe('exceeded');
+    expect(checkLimit(free, 'seats', 2).kind).toBe('ok');
+    expect(checkLimit(free, 'seats', 3).kind).toBe('exceeded');
   });
 });
 
@@ -162,7 +164,7 @@ describe('plan definitions', () => {
 
   it('ranks are a total order with no gaps or ties', () => {
     const ranks = PLAN_IDS.map((id) => PLAN_RANK[id]);
-    expect(ranks).toEqual([0, 1, 2, 3, 4]);
+    expect(ranks).toEqual([0, 1, 2, 3]);
     expect(new Set(ranks).size).toBe(ranks.length);
   });
 
@@ -170,7 +172,7 @@ describe('plan definitions', () => {
    * Monotonicity. This is the property the accumulating `...SPREAD` construction
    * in plans.ts exists to guarantee, asserted rather than assumed — because the
    * construction is a convention and a future editor can write a flat literal
-   * that quietly drops a feature from Scale.
+   * that quietly drops a feature from Enterprise.
    */
   it('features are monotonic: no plan loses a capability the tier below has', () => {
     for (const [weaker, stronger] of adjacentPlanPairs()) {
@@ -236,7 +238,7 @@ describe('the published Free-tier limits', () => {
   it('1 organisation', () => expect(free.organizations).toBe(1));
   it('5 projects', () => expect(free.projects).toBe(5));
   it('3 environments per project', () => expect(free.environmentsPerProject).toBe(3));
-  it('1 seat', () => expect(free.seats).toBe(1));
+  it('3 seats', () => expect(free.seats).toBe(3));
   it('10 service tokens', () => expect(free.serviceTokens).toBe(10));
   it('2 CLI devices per user', () => expect(free.cliDevicesPerUser).toBe(2));
   it('20,000 included fetches', () => expect(free.includedFetchesPerMonth).toBe(20_000));
@@ -248,21 +250,77 @@ describe('the published Free-tier limits', () => {
 
 describe('the published paid-tier limits', () => {
   it('included fetches per plan', () => {
-    expect(PLANS.pro.limits.includedFetchesPerMonth).toBe(150_000);
-    expect(PLANS.team.limits.includedFetchesPerMonth).toBe(500_000);
-    expect(PLANS.scale.limits.includedFetchesPerMonth).toBe(2_000_000);
+    expect(PLANS.pro.limits.includedFetchesPerMonth).toBe(200_000);
+    expect(PLANS.team.limits.includedFetchesPerMonth).toBe(1_000_000);
+    expect(PLANS.enterprise.limits.includedFetchesPerMonth).toBe(10_000_000);
   });
 
   it('audit retention per plan', () => {
     expect(PLANS.pro.limits.auditRetentionDays).toBe(30);
-    expect(PLANS.team.limits.auditRetentionDays).toBe(90);
-    expect(PLANS.scale.limits.auditRetentionDays).toBe(365);
+    expect(PLANS.team.limits.auditRetentionDays).toBe(180);
+    expect(PLANS.enterprise.limits.auditRetentionDays).toBe(365);
   });
 
   it('minimum seats per plan', () => {
     expect(MINIMUM_SEATS.pro).toBe(1);
     expect(MINIMUM_SEATS.team).toBe(3);
-    expect(MINIMUM_SEATS.scale).toBe(10);
+    expect(MINIMUM_SEATS.enterprise).toBe(10);
+  });
+
+  /**
+   * Every countable ceiling on a paid self-serve rung is a number.
+   *
+   * Pro and Team used to publish `null` — "unlimited" — on all of these, which
+   * was a promise with a fair-use ceiling quietly behind it: the real limit was
+   * whatever an operator decided during an incident, and the first customer to
+   * meet it found out the published word was not the rule. A number that support
+   * raises for free with an override says the same thing honestly.
+   *
+   * Seats are deliberately absent from this list; see the test below.
+   */
+  it('publishes a number, not "unlimited", for every countable on Pro and Team', () => {
+    const countable = [
+      'organizations',
+      'projects',
+      'environmentsPerProject',
+      'serviceTokens',
+      'secretsPerEnvironment',
+      'webhooks',
+      'cliDevicesPerUser',
+    ] as const;
+
+    for (const plan of ['pro', 'team'] as const) {
+      for (const resource of countable) {
+        expect(PLANS[plan].limits[resource]).toBeTypeOf('number');
+      }
+    }
+  });
+
+  it('leaves the countables uncapped only on Enterprise, where a contract sets them', () => {
+    expect(PLANS.enterprise.limits.projects).toBeNull();
+    expect(PLANS.enterprise.limits.organizations).toBeNull();
+    expect(PLANS.enterprise.limits.secretsPerEnvironment).toBeNull();
+  });
+
+  it('gives every paid rung more of each countable than the one below it', () => {
+    const countable = [
+      'organizations',
+      'projects',
+      'environmentsPerProject',
+      'serviceTokens',
+      'secretsPerEnvironment',
+    ] as const;
+
+    for (const resource of countable) {
+      const free = PLANS.free.limits[resource];
+      const pro = PLANS.pro.limits[resource];
+      const team = PLANS.team.limits[resource];
+      // Free and Pro are both numbers by construction above; the assertion is
+      // that the ladder never steps backwards, which is the failure a hand-edited
+      // limits table actually produces.
+      expect(typeof free === 'number' && typeof pro === 'number' && pro > free).toBe(true);
+      expect(typeof pro === 'number' && typeof team === 'number' && team > pro).toBe(true);
+    }
   });
 
   it('Pro has unlimited seats — the deliberate decision, not an oversight', () => {
@@ -325,14 +383,25 @@ describe('feature placement', () => {
     }
   });
 
-  it('the Scale bundle starts at Scale', () => {
-    for (const feature of [
-      'customRoles',
-      'githubOidcFederation',
-      'scheduledSecrets',
-      'siemStreaming',
-    ] as const) {
-      expect(cheapestPlanWithFeature(feature), feature).toBe('scale');
+  /**
+   * Where Scale's four capabilities landed when the tier was removed.
+   *
+   * Two came down to Team and two went up to Enterprise, and the split is a
+   * product decision worth pinning rather than leaving to whoever next edits the
+   * feature table. Federation and expiring secrets are security posture that
+   * small teams with outside help need most; custom roles and SIEM streaming are
+   * bought by an organisation that has a security function, which is the same
+   * organisation that is signing a contract.
+   */
+  it('two of the retired Scale bundle start at Team', () => {
+    for (const feature of ['githubOidcFederation', 'scheduledSecrets'] as const) {
+      expect(cheapestPlanWithFeature(feature), feature).toBe('team');
+    }
+  });
+
+  it('the other two start at Enterprise', () => {
+    for (const feature of ['customRoles', 'siemStreaming'] as const) {
+      expect(cheapestPlanWithFeature(feature), feature).toBe('enterprise');
     }
   });
 
@@ -370,6 +439,29 @@ describe('resolveEntitlements', () => {
     expect(Object.isFrozen(e)).toBe(true);
     expect(Object.isFrozen(e.limits)).toBe(true);
     expect(Object.isFrozen(e.addons)).toBe(true);
+  });
+
+  /**
+   * Scale was sold as the tier above Team and then withdrawn. A row can still
+   * say so — `plan_id` is a Postgres enum and enums are additive-only — and the
+   * difference between resolving it to Team and letting it fall through to Free
+   * is a customer losing per-environment grants they paid for, silently, on the
+   * authorization path.
+   */
+  it('resolves a retired plan to what replaced it, not to Free', () => {
+    const e = resolveEntitlements(state({ plan: 'scale' as PlanId }));
+
+    expect(e.plan).toBe('team');
+    expect(e.features.perEnvironmentGrants).toBe(true);
+    expect(e.limits).toEqual(PLANS.team.limits);
+  });
+
+  it('resolvePlanId answers the same way for every input the resolver takes', () => {
+    expect(resolvePlanId('team')).toBe('team');
+    expect(resolvePlanId('scale')).toBe('team');
+    expect(resolvePlanId('platinum')).toBe('free');
+    // `in` would match this through Object.prototype; the guard must not.
+    expect(resolvePlanId('constructor')).toBe('free');
   });
 
   it('falls back to Free for an unrecognised plan rather than throwing', () => {
@@ -495,9 +587,16 @@ describe('limit overrides are raise-only', () => {
     expect(e.limits.projects).toBeNull();
   });
 
+  // Enterprise, because it is now the only plan with an unlimited countable —
+  // Pro and Team publish numbers, which is the point of them publishing numbers.
   it('cannot narrow an already-unlimited ceiling', () => {
-    const e = entitlementsFor('team', { limitOverrides: { projects: 10 } });
+    const e = entitlementsFor('enterprise', { limitOverrides: { projects: 10 } });
     expect(e.limits.projects).toBeNull();
+  });
+
+  it('can still raise a paid rung’s real ceiling', () => {
+    const e = entitlementsFor('pro', { limitOverrides: { projects: 500 } });
+    expect(e.limits.projects).toBe(500);
   });
 
   it('ignores a field nobody defined', () => {
@@ -543,14 +642,27 @@ describe('checkLimit', () => {
   });
 
   it('never refuses where the plan limit is unlimited', () => {
-    const team = entitlementsFor('team');
-    expect(checkLimit(team, 'projects', 1_000_000).kind).not.toBe('exceeded');
+    const enterprise = entitlementsFor('enterprise');
+    expect(checkLimit(enterprise, 'projects', 1_000_000).kind).not.toBe('exceeded');
   });
 
   it('warns — never refuses — past a fair-use ceiling', () => {
-    const team = entitlementsFor('team');
-    const verdict = checkLimit(team, 'projects', FAIR_USE.projects);
+    const enterprise = entitlementsFor('enterprise');
+    const verdict = checkLimit(enterprise, 'projects', FAIR_USE.projects);
     expect(verdict).toMatchObject({ kind: 'warn', reason: 'fairUse', limit: null });
+  });
+
+  /**
+   * The other half of the same rule, now that Pro and Team have real numbers:
+   * a *plan* ceiling does refuse, and it names the tier that would not.
+   */
+  it('refuses past a paid plan’s own ceiling, naming where to go', () => {
+    const pro = entitlementsFor('pro');
+    const projects = PLANS.pro.limits.projects;
+    expect(typeof projects).toBe('number');
+    const verdict = checkLimit(pro, 'projects', projects as number);
+    expect(verdict.kind).toBe('exceeded');
+    if (verdict.kind === 'exceeded') expect(verdict.upgradeTo).toBe('team');
   });
 
   it('honours a raised ceiling', () => {
@@ -581,7 +693,7 @@ describe('checkLimit', () => {
 
 describe('cheapestPlanWithLimit', () => {
   it('treats unlimited as clearing any requirement', () => {
-    expect(cheapestPlanWithLimit('projects', 1_000_000)).toBe('pro');
+    expect(cheapestPlanWithLimit('projects', 1_000_000)).toBe('enterprise');
   });
 
   it('finds the cheapest plan that clears a small requirement', () => {
