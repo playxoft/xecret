@@ -128,14 +128,46 @@ describe('the prices that are written down', () => {
     }
   });
 
-  it('every plan carries all four currencies', () => {
+  it('every plan carries every currency', () => {
     for (const id of ['free', 'pro', 'team', 'enterprise', 'self-hosted']) {
       const block = SOURCE.slice(SOURCE.indexOf(`id: '${id}'`));
       const card = block.slice(0, block.indexOf('cta:'));
-      for (const currency of ['usd:', 'inr:', 'jpy:', 'aud:']) {
+      for (const currency of ['usd:', 'eur:', 'inr:', 'jpy:', 'aud:']) {
         expect(card, `${id} has no ${currency} sheet`).toContain(currency);
       }
     }
+  });
+
+  /**
+   * The euro sheet is the only one priced *above* the dollar one.
+   *
+   * Not because Europe can afford more: prices there are quoted VAT-inclusive
+   * at 19–27 per cent, and a sheet set from a 1.15 exchange rate is under water
+   * the first time the rate moves. Asserted rather than assumed, because "round
+   * it up a bit" is exactly the kind of decision that gets quietly normalised
+   * back to parity by somebody tidying the numbers.
+   */
+  it('prices the euro sheet above the dollar one', () => {
+    const team = SOURCE.slice(SOURCE.indexOf("id: 'team'"));
+    const card = team.slice(0, team.indexOf('cta:'));
+
+    expect(card).toContain("price: '€21'");
+    expect(card).toContain("price: '€13'");
+    expect(card).toContain('€156 per member, billed yearly');
+  });
+
+  /**
+   * Add-ons go the other way, and the page says so.
+   *
+   * Each is a WorkOS connection billed to us in dollars at the same rate
+   * everywhere, so these are the dollar figure converted rather than a sheet set
+   * for the market — which means the euro add-on is *below* the dollar one while
+   * the euro plan is above it. Two rules, both deliberate, both stated on the
+   * page so a reader does not have to infer either.
+   */
+  it('converts the add-ons rather than pricing them per market', () => {
+    expect(SOURCE).toContain("eur: '€185'");
+    expect(SOURCE).toContain('Add-on prices are the same figure converted');
   });
 
   it('India is priced well below the US sheet, not converted from it', () => {

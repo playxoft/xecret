@@ -89,6 +89,19 @@ declare global {
     ZEPTOMAIL_API_URL?: string | undefined;
 
     /**
+     * The Discord webhook the contact form posts to.
+     *
+     * A credential in the shape of a URL: the token is a path segment, so
+     * anybody holding the string can post into that channel as often as they
+     * like. It never reaches a client — the form posts to our own endpoint,
+     * which is what lets the message be rate-limited, validated and stripped of
+     * mentions before a third party ever sees it. Absent means the contact
+     * endpoint answers 503 rather than dropping a message on the floor: a sales
+     * enquiry that silently disappears is worse than one that visibly failed.
+     */
+    DISCORD_CONTACT_WEBHOOK_URL?: string | undefined;
+
+    /**
      * Better Stack source token, from the source's settings page.
      *
      * A credential: it authorises writing into your log stream, and anybody
@@ -125,6 +138,7 @@ declare global {
     RL_SERVICE?: RateLimit;
     RL_MUTATION?: RateLimit;
     RL_SLUG_CHECK?: RateLimit;
+    RL_CONTACT?: RateLimit;
   }
 }
 

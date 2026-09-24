@@ -954,6 +954,8 @@
 
 .x-cur-usd:checked ~ .x-billing-monthly:checked ~ .x-billing-body .x-price-usd-monthly,
 .x-cur-usd:checked ~ .x-billing-yearly:checked ~ .x-billing-body .x-price-usd-yearly,
+.x-cur-eur:checked ~ .x-billing-monthly:checked ~ .x-billing-body .x-price-eur-monthly,
+.x-cur-eur:checked ~ .x-billing-yearly:checked ~ .x-billing-body .x-price-eur-yearly,
 .x-cur-inr:checked ~ .x-billing-monthly:checked ~ .x-billing-body .x-price-inr-monthly,
 .x-cur-inr:checked ~ .x-billing-yearly:checked ~ .x-billing-body .x-price-inr-yearly,
 .x-cur-jpy:checked ~ .x-billing-monthly:checked ~ .x-billing-body .x-price-jpy-monthly,
@@ -1000,6 +1002,7 @@
 }
 
 .x-cur-usd:checked ~ .x-billing-body .x-addon-usd,
+.x-cur-eur:checked ~ .x-billing-body .x-addon-eur,
 .x-cur-inr:checked ~ .x-billing-body .x-addon-inr,
 .x-cur-jpy:checked ~ .x-billing-body .x-addon-jpy,
 .x-cur-aud:checked ~ .x-billing-body .x-addon-aud {
@@ -1054,6 +1057,7 @@
 }
 
 .x-cur-usd:checked ~ .x-billing-body [data-currency-name='usd'],
+.x-cur-eur:checked ~ .x-billing-body [data-currency-name='eur'],
 .x-cur-inr:checked ~ .x-billing-body [data-currency-name='inr'],
 .x-cur-jpy:checked ~ .x-billing-body [data-currency-name='jpy'],
 .x-cur-aud:checked ~ .x-billing-body [data-currency-name='aud'] {
@@ -1069,6 +1073,7 @@
 }
 
 .x-cur-usd:checked ~ .x-billing-body [data-currency-option='usd'] .x-currency-tick,
+.x-cur-eur:checked ~ .x-billing-body [data-currency-option='eur'] .x-currency-tick,
 .x-cur-inr:checked ~ .x-billing-body [data-currency-option='inr'] .x-currency-tick,
 .x-cur-jpy:checked ~ .x-billing-body [data-currency-option='jpy'] .x-currency-tick,
 .x-cur-aud:checked ~ .x-billing-body [data-currency-option='aud'] .x-currency-tick {
@@ -1076,6 +1081,7 @@
 }
 
 .x-cur-usd:checked ~ .x-billing-body [data-currency-option='usd'],
+.x-cur-eur:checked ~ .x-billing-body [data-currency-option='eur'],
 .x-cur-inr:checked ~ .x-billing-body [data-currency-option='inr'],
 .x-cur-jpy:checked ~ .x-billing-body [data-currency-option='jpy'],
 .x-cur-aud:checked ~ .x-billing-body [data-currency-option='aud'] {
@@ -1103,6 +1109,7 @@
    `:focus-visible` is false for a pointer interaction and true for a keyboard
    one, which is exactly the distinction this rule always meant. */
 .x-cur-usd:focus-visible ~ .x-billing-body .x-currency-panel,
+.x-cur-eur:focus-visible ~ .x-billing-body .x-currency-panel,
 .x-cur-inr:focus-visible ~ .x-billing-body .x-currency-panel,
 .x-cur-jpy:focus-visible ~ .x-billing-body .x-currency-panel,
 .x-cur-aud:focus-visible ~ .x-billing-body .x-currency-panel {
@@ -1110,6 +1117,7 @@
 }
 
 .x-cur-usd:focus-visible ~ .x-billing-body [data-currency-option='usd'],
+.x-cur-eur:focus-visible ~ .x-billing-body [data-currency-option='eur'],
 .x-cur-inr:focus-visible ~ .x-billing-body [data-currency-option='inr'],
 .x-cur-jpy:focus-visible ~ .x-billing-body [data-currency-option='jpy'],
 .x-cur-aud:focus-visible ~ .x-billing-body [data-currency-option='aud'] {

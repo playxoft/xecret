@@ -1,0 +1,185 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { ContactDeliveryError, DiscordContactSink } from './discord';
+
+/**
+ * The contact sink, which is the one place in this product where a string a
+ * stranger typed leaves it for a third party that renders markdown, resolves
+ * mentions and unfurls links for a human inclined to trust their own channel.
+ *
+ * Everything below is about that boundary. None of it is about Discord's API
+ * shape, which is why the assertions read the payload rather than the response.
+ */
+
+const originalFetch = globalThis.fetch;
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  vi.restoreAllMocks();
+});
+
+/** Captures the one request the sink makes, and reports success. */
+function capture(status = 204) {
+  const calls: { url: string; body: Record<string, unknown> }[] = [];
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({
+      url: String(input),
+      body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+    });
+    return new Response(status === 204 ? null : 'nope', { status });
+  }) as typeof fetch;
+  return calls;
+}
+
+function embed(body: Record<string, unknown>) {
+  const embeds = body['embeds'] as { fields: { name: string; value: string }[] }[];
+  return embeds[0]!;
+}
+
+function valueOf(body: Record<string, unknown>, name: string): string {
+  return embed(body).fields.find((f) => f.name === name)?.value ?? '';
+}
+
+const sink = () => new DiscordContactSink('https://discord.example/webhook/secret-token');
+
+const base = {
+  name: 'Ada',
+  email: 'ada@example.com',
+  message: 'We are moving off Vault and need to talk about residency.',
+};
+
+describe('the contact sink', () => {
+  /**
+   * The control, and the reason it is the first test in the file.
+   *
+   * Without `allowed_mentions`, `@everyone` in a message body pings an entire
+   * Discord server — which turns a public, unauthenticated form into a free
+   * notification cannon aimed at our own team. No amount of escaping the text
+   * substitutes for it, because Discord resolves mentions from the rendered
+   * message and not from what we thought we escaped.
+   */
+  it('tells Discord to resolve no mention of any kind', async () => {
+    const calls = capture();
+    await sink().deliver({ ...base, message: 'Hello @everyone and @here, see <@1234>' });
+
+    expect(calls[0]!.body['allowed_mentions']).toEqual({ parse: [] });
+  });
+
+  it('keeps the untrusted text in embed fields rather than in content', async () => {
+    const calls = capture();
+    await sink().deliver(base);
+
+    // No top-level `content`, so nothing a sender wrote is concatenated into a
+    // message where markdown could forge the labels around it.
+    expect(calls[0]!.body['content']).toBeUndefined();
+    expect(valueOf(calls[0]!.body, 'Message')).toContain('moving off Vault');
+  });
+
+  /**
+   * People paste API keys into contact forms — usually while asking why one does
+   * not work. A channel full of other people's live credentials is a breach we
+   * invited, so the same redaction the logs use runs before anything is sent.
+   */
+  it('masks a credential in the message body', async () => {
+    const calls = capture();
+    await sink().deliver({
+      ...base,
+      message: 'token: xec_live_abcdefghijklmnop and it still 401s',
+    });
+
+    expect(valueOf(calls[0]!.body, 'Message')).not.toContain('xec_live_abcdefghijklmnop');
+  });
+
+  /**
+   * The regression that made `plain` and `scrubbed` two functions.
+   *
+   * `scrubText` replaces an email address with `[redacted-email]`, which is
+   * right for a log line and catastrophic here: the address is the entire point
+   * of the enquiry. Running every field through it delivered a perfectly
+   * sanitised message that nobody could reply to.
+   */
+  it('delivers the sender’s address intact', async () => {
+    const calls = capture();
+    await sink().deliver(base);
+
+    expect(valueOf(calls[0]!.body, 'Email')).toBe('ada@example.com');
+  });
+
+  /**
+   * `U+202E` reverses the rendering of everything after it, which is how a
+   * value forges the label beside it in a channel somebody already trusts.
+   */
+  it('strips bidirectional overrides and control characters', async () => {
+    const calls = capture();
+    await sink().deliver({
+      ...base,
+      name: 'Ada\u202Bevil\u202E',
+      company: 'a\u0000b',
+    });
+
+    expect(valueOf(calls[0]!.body, 'Name')).not.toMatch(/[\u202a-\u202e]/);
+    expect(valueOf(calls[0]!.body, 'Company')).toBe('a b');
+  });
+
+  /**
+   * Backticks are the one character that breaks out of an inline-code span, and
+   * no real enquiry needs one.
+   */
+  it('neutralises backticks', async () => {
+    const calls = capture();
+    await sink().deliver({ ...base, name: 'Ada`` `@everyone`' });
+
+    expect(valueOf(calls[0]!.body, 'Name')).not.toContain('`');
+  });
+
+  /**
+   * An oversized payload is rejected by Discord with a 400 that explains
+   * nothing — and an attacker who can make our request fail can make every
+   * other enquiry fail with it.
+   */
+  it('truncates a long message rather than letting the request be rejected', async () => {
+    const calls = capture();
+    await sink().deliver({ ...base, message: 'x'.repeat(5_000) });
+
+    const value = valueOf(calls[0]!.body, 'Message');
+    expect(value.length).toBeLessThanOrEqual(1_800);
+    expect(value.endsWith('…')).toBe(true);
+  });
+
+  it('renders an absent optional field as a dash rather than "undefined"', async () => {
+    const calls = capture();
+    await sink().deliver(base);
+
+    expect(valueOf(calls[0]!.body, 'Company')).toBe('—');
+  });
+
+  /**
+   * The webhook URL *is* the credential — the token is a path segment. An error
+   * carrying it would put it in a log line, which is the one place a secret
+   * should never reach.
+   */
+  it('never puts the webhook URL in the error it throws', async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError('network down');
+    }) as typeof fetch;
+
+    const error = await sink()
+      .deliver(base)
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(ContactDeliveryError);
+    expect(JSON.stringify(error)).not.toContain('secret-token');
+    expect((error as Error).message).not.toContain('secret-token');
+  });
+
+  it('reports a rejected delivery with its status', async () => {
+    capture(500);
+
+    const error = await sink()
+      .deliver(base)
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(ContactDeliveryError);
+    expect((error as ContactDeliveryError).status).toBe(500);
+  });
+});

@@ -36,7 +36,7 @@ import {
 } from '@/components/ui/icons';
 import { PLANS as PLAN_DEFINITIONS } from '@xecret/core/entitlements';
 import { cn } from '@/lib/cn';
-import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } from '@/lib/site';
+import { absoluteUrl, breadcrumbSchema, SITE_KEYWORDS, SITE_NAME } from '@/lib/site';
 
 /**
  * The pricing page.
@@ -296,10 +296,19 @@ type PlanId = 'free' | 'pro' | 'team' | 'enterprise' | 'self-hosted';
  * reasonable in San Francisco is not reasonable in Bengaluru, and pretending
  * otherwise means not selling there at all.
  *
+ * The euro sheet sits slightly *above* the dollar one — €9 against $8, €21
+ * against $19 — which is the only sheet here that goes up. Two reasons, and
+ * neither is that Europe can afford more: prices on the continent are quoted
+ * and expected VAT-inclusive at rates from 19 to 27 per cent, and the euro has
+ * spent long enough near parity that a sheet set from a 1.15 exchange rate would
+ * be under water the first time it moves. Rounding up absorbs both rather than
+ * leaving a customer to discover the difference at checkout.
+ *
  * Ordered as they render in the selector.
  */
 const CURRENCIES = [
   { id: 'usd', label: 'USD', symbol: '$' },
+  { id: 'eur', label: 'EUR', symbol: '€' },
   { id: 'inr', label: 'INR', symbol: '₹' },
   { id: 'jpy', label: 'JPY', symbol: '¥' },
   { id: 'aud', label: 'AUD', symbol: 'A$' },
@@ -325,6 +334,31 @@ const CURRENCY_BY_COUNTRY: Readonly<Record<string, CurrencyId>> = {
   JP: 'jpy',
   AU: 'aud',
   NZ: 'aud',
+  // The euro area, which is a list rather than a rule: "in Europe" is not the
+  // same set as "pays in euro", and a Swede, a Swiss or a Briton meeting a euro
+  // price would be reading a currency they do not hold. Only the twenty
+  // countries that actually use it are here; everywhere else falls to the
+  // default, and one click fixes a wrong guess either way.
+  AT: 'eur',
+  BE: 'eur',
+  HR: 'eur',
+  CY: 'eur',
+  EE: 'eur',
+  FI: 'eur',
+  FR: 'eur',
+  DE: 'eur',
+  GR: 'eur',
+  IE: 'eur',
+  IT: 'eur',
+  LV: 'eur',
+  LT: 'eur',
+  LU: 'eur',
+  MT: 'eur',
+  NL: 'eur',
+  PT: 'eur',
+  SK: 'eur',
+  SI: 'eur',
+  ES: 'eur',
 };
 
 /** One billing period's figures, for one plan. */
@@ -424,6 +458,10 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '$0', unit: 'forever, no card' },
         yearly: { price: '$0', unit: 'forever, no card' },
       },
+      eur: {
+        monthly: { price: '€0', unit: 'forever, no card' },
+        yearly: { price: '€0', unit: 'forever, no card' },
+      },
       inr: {
         monthly: { price: '₹0', unit: 'forever, no card' },
         yearly: { price: '₹0', unit: 'forever, no card' },
@@ -462,6 +500,14 @@ const PRICED_PLANS: readonly Plan[] = [
           price: '$5',
           unit: 'per member, per month',
           note: '$60 per member, billed yearly',
+        },
+      },
+      eur: {
+        monthly: { price: '€9', unit: 'per member, per month' },
+        yearly: {
+          price: '€6',
+          unit: 'per member, per month',
+          note: '€72 per member, billed yearly',
         },
       },
       inr: {
@@ -523,6 +569,14 @@ const PRICED_PLANS: readonly Plan[] = [
           note: '$144 per member, billed yearly',
         },
       },
+      eur: {
+        monthly: { price: '€21', unit: 'per member, per month' },
+        yearly: {
+          price: '€13',
+          unit: 'per member, per month',
+          note: '€156 per member, billed yearly',
+        },
+      },
       inr: {
         monthly: { price: '₹599', unit: 'per member, per month' },
         yearly: {
@@ -580,6 +634,10 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: 'Custom', unit: 'invoiced, with an SLA' },
         yearly: { price: 'Custom', unit: 'invoiced, with an SLA' },
       },
+      eur: {
+        monthly: { price: 'Custom', unit: 'invoiced, with an SLA' },
+        yearly: { price: 'Custom', unit: 'invoiced, with an SLA' },
+      },
       inr: {
         monthly: { price: 'Custom', unit: 'invoiced, with an SLA' },
         yearly: { price: 'Custom', unit: 'invoiced, with an SLA' },
@@ -618,10 +676,15 @@ const PRICED_PLANS: readonly Plan[] = [
       { text: 'A commercial, non-AGPL self-hosting licence' },
       { text: 'A contractual SLA and a named contact' },
     ],
-    // There is no sales form, no calendar link and no inbox pretending to be a
-    // sales team. The issue tracker is where this conversation actually
-    // happens, so that is where the button goes and what the label says.
-    cta: { label: 'Open an issue to talk', href: `${REPO_URL}/issues`, external: true },
+    // ── Why this is a form now, and was an issue link ──
+    // The issue tracker was the honest answer while there was nowhere else for
+    // the conversation to go, and it was the wrong one for this card: an
+    // Enterprise enquiry names a team size, a jurisdiction and sometimes a
+    // questionnaire, and a public tracker is where none of that belongs. The
+    // contact page is still not a sales funnel — it asks four fields and posts
+    // them to the channel we already watch — and `/contact` keeps the issue link
+    // beside the form, for the questions that genuinely are better in the open.
+    cta: { label: 'Contact sales', href: '/contact', external: false },
     recommended: false,
     amount: null,
     unitText: null,
@@ -642,6 +705,10 @@ const SELF_HOSTED: Plan = {
   name: 'Self-hosted',
   prices: {
     usd: {
+      monthly: { price: 'Free', unit: 'always' },
+      yearly: { price: 'Free', unit: 'always' },
+    },
+    eur: {
       monthly: { price: 'Free', unit: 'always' },
       yearly: { price: 'Free', unit: 'always' },
     },
@@ -722,7 +789,7 @@ const PLANS: readonly Plan[] = [...PRICED_PLANS, SELF_HOSTED];
 const ADDONS = [
   {
     name: 'SAML single sign-on',
-    prices: { usd: '$199', inr: '₹16,900', jpy: '¥29,900', aud: 'A$309' },
+    prices: { usd: '$199', eur: '€185', inr: '₹16,900', jpy: '¥29,900', aud: 'A$309' },
     unit: 'per connection, per month',
     from: 'Team and above',
     notYet: true,
@@ -730,7 +797,7 @@ const ADDONS = [
   },
   {
     name: 'Directory sync (SCIM)',
-    prices: { usd: '$249', inr: '₹21,200', jpy: '¥37,400', aud: 'A$389' },
+    prices: { usd: '$249', eur: '€229', inr: '₹21,200', jpy: '¥37,400', aud: 'A$389' },
     unit: 'per connection, per month',
     from: 'Enterprise',
     notYet: true,
@@ -1647,9 +1714,20 @@ async function resolveInitialCurrency(): Promise<CurrencyId> {
  * the same reason.
  */
 function PriceControls() {
+  // Three columns so the period toggle is centred against the *row* rather than
+  // against whatever sits beside it: an empty cell, the toggle, then the
+  // currency menu pushed to the end. Centring with `justify-between` would put
+  // the toggle wherever the menu's width left it, and the menu's width changes
+  // with the currency name — so the toggle would drift sideways when somebody
+  // switched to AUD.
+  //
+  // One column below `sm`, where there is no room for three and a centred stack
+  // reads better than a squeezed row.
   return (
-    <div className="flex flex-wrap items-center justify-center gap-3 sm:justify-end">
-      <div className={cn(CONTROL_SHELL, 'gap-1')}>
+    <div className="flex flex-col items-center gap-3 sm:grid sm:grid-cols-[1fr_auto_1fr] sm:items-center sm:gap-3">
+      <span className="hidden sm:block" aria-hidden="true" />
+
+      <div className={cn(CONTROL_SHELL, 'gap-1 justify-self-center')}>
         <label htmlFor="billing-monthly" data-billing="monthly" className={SEGMENT}>
           Monthly
         </label>
@@ -1673,7 +1751,7 @@ function PriceControls() {
           `CurrencyMenu` adds dismissal — outside press, Escape, selection — and
           touches nothing else; without its script the menu still works and every
           price still switches. */}
-      <CurrencyMenu className="x-currency relative">
+      <CurrencyMenu className="x-currency relative sm:justify-self-end">
         <summary
           className={cn(
             CONTROL_SHELL,

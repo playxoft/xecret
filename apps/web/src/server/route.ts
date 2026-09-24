@@ -22,7 +22,7 @@ import { DatabaseAuditSink } from './audit-sink';
 import { MissingBindingError, publicOrigin } from './bindings';
 import type { Bindings, WorkerContext } from './bindings';
 import { createServiceContext, workerContext } from './context';
-import type { ServiceContext } from './context';
+import type { RequestMeta, ServiceContext } from './context';
 import { errors } from './errors';
 import {
   REQUEST_ID_HEADER,
@@ -71,6 +71,36 @@ export interface PublicRouteContext<Params> {
   request: Request;
   params: Params;
   services: ServiceContext;
+}
+
+/**
+ * What a route gets when it needs no database and no key material.
+ *
+ * ── Why this exists beside `publicRoute` ──
+ * `publicRoute` still builds a full `ServiceContext`, which opens a database
+ * handle and resolves the Root KEK before the handler runs. That is right for
+ * everything it serves — all of which reads or writes rows — and wrong for a
+ * route that touches neither, because it makes such a route fail whenever the
+ * database is unreachable or the keys are unset.
+ *
+ * The contact form is the case that forced the distinction, and it is the worst
+ * possible one to get wrong: people reach for a contact form *because* something
+ * is broken, and a form that is down for the same reason as the product is a
+ * form that is missing exactly when it is needed. It has no rows to read, so it
+ * should not need a database to answer.
+ *
+ * Everything else a route depends on is still here — the request id, the error
+ * envelope, the attributed logger, `waitUntil` — because those come from the
+ * wrapper rather than from the bindings.
+ */
+export interface UnbackedRouteContext<Params> {
+  request: Request;
+  params: Params;
+  env: Bindings;
+  meta: RequestMeta;
+  log: Logger;
+  /** Defers work until after the response is sent. */
+  waitUntil: (promise: Promise<unknown>) => void;
 }
 
 export interface RouteContext<Params> extends PublicRouteContext<Params> {
@@ -140,6 +170,59 @@ export function publicRoute<Params = Record<string, never>>(
     // Last, so nothing this request can still queue is left out of the batch —
     // neither the finish line above nor the lines the deferred work writes.
     shipLogs(started, log);
+    return response;
+  };
+}
+
+/**
+ * Wraps a handler that needs no database and no key material.
+ *
+ * Same envelope, same request id, same logger and the same failure mapping as
+ * `publicRoute` — it simply does not construct the things it is not going to
+ * use. See `UnbackedRouteContext` for why that distinction is worth a second
+ * wrapper rather than a flag.
+ */
+export function unbackedRoute<Params = Record<string, never>>(
+  handler: Handler<UnbackedRouteContext<Params>>,
+): (request: Request, args?: NextRouteArgs<Params>) => Promise<Response> {
+  return async (request, args) => {
+    const requestId = requestIdFrom();
+    const doing = describeRequest(request.method, new URL(request.url).pathname);
+    const log = openLog(request, requestId, doing);
+    const startedAt = Date.now();
+    const url = new URL(request.url);
+
+    let response: Response;
+    try {
+      const worker = await workerContext();
+      const params = ((await args?.params) ?? {}) as Params;
+
+      response = withResponseHeaders(
+        await handler({
+          request,
+          params,
+          env: worker.env,
+          meta: {
+            requestId,
+            rayId: rayIdFrom(request),
+            ipAddress: clientIp(request),
+            userAgent: userAgent(request),
+            method: request.method,
+            path: url.pathname,
+            startedAt,
+          },
+          log: log.logger,
+          waitUntil: (promise) => worker.ctx.waitUntil(promise),
+        }),
+        requestId,
+        request,
+      );
+    } catch (cause) {
+      response = failure(cause, requestId, log.logger, doing);
+    }
+
+    finished(log.logger, doing, response.status, startedAt);
+    shipLogs(undefined, log);
     return response;
   };
 }

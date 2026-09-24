@@ -34,7 +34,18 @@ export type RateLimitBucket =
    * a user exhaust their mutation budget by filling in a form, and would make
    * the limit that guards writes depend on typing speed.
    */
-  | 'RL_SLUG_CHECK';
+  | 'RL_SLUG_CHECK'
+  /**
+   * The contact form, which is the only unauthenticated write in the product.
+   *
+   * Its own bucket because it is the only endpoint whose abuse case is *volume
+   * of content* rather than volume of attempts: every accepted request puts a
+   * message in a channel a human reads, so the limit that matters is a handful
+   * an hour from one address, not the sixty a minute a mutation gets. Sharing
+   * `RL_MUTATION` would have made the spam ceiling the same as the ceiling for
+   * somebody legitimately working.
+   */
+  | 'RL_CONTACT';
 
 export interface RateLimitDecision {
   allowed: boolean;
