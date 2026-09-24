@@ -143,9 +143,10 @@ describe('the control plane does fail closed', () => {
     expect(checkLimit(free, 'projects', 5).kind).toBe('exceeded');
   });
 
-  it('refuses a second member on Free', () => {
+  it('refuses a fourth member on Free', () => {
     const free = entitlementsFor('free');
-    expect(checkLimit(free, 'seats', 1).kind).toBe('exceeded');
+    expect(checkLimit(free, 'seats', 2).kind).toBe('ok');
+    expect(checkLimit(free, 'seats', 3).kind).toBe('exceeded');
   });
 });
 
@@ -236,7 +237,7 @@ describe('the published Free-tier limits', () => {
   it('1 organisation', () => expect(free.organizations).toBe(1));
   it('5 projects', () => expect(free.projects).toBe(5));
   it('3 environments per project', () => expect(free.environmentsPerProject).toBe(3));
-  it('1 seat', () => expect(free.seats).toBe(1));
+  it('3 seats', () => expect(free.seats).toBe(3));
   it('10 service tokens', () => expect(free.serviceTokens).toBe(10));
   it('2 CLI devices per user', () => expect(free.cliDevicesPerUser).toBe(2));
   it('20,000 included fetches', () => expect(free.includedFetchesPerMonth).toBe(20_000));
@@ -248,7 +249,7 @@ describe('the published Free-tier limits', () => {
 
 describe('the published paid-tier limits', () => {
   it('included fetches per plan', () => {
-    expect(PLANS.pro.limits.includedFetchesPerMonth).toBe(150_000);
+    expect(PLANS.pro.limits.includedFetchesPerMonth).toBe(200_000);
     expect(PLANS.team.limits.includedFetchesPerMonth).toBe(1_000_000);
     expect(PLANS.enterprise.limits.includedFetchesPerMonth).toBe(10_000_000);
   });

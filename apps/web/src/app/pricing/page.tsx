@@ -20,6 +20,8 @@ import type { FaqItem } from '@/components/marketing';
 // prerendered and public, and the barrel drags the dashboard's dependencies on
 // to anything that touches it.
 import { Badge } from '@/components/ui/badge';
+import { CurrencyMenu } from './currency-menu';
+import { RowHint, RowHintProvider } from './row-hint';
 import { Button } from '@/components/ui/button';
 import {
   ArrowRightIcon,
@@ -155,8 +157,21 @@ const QUIET_LINK =
 // because the inputs are `sr-only` and a Tailwind variant cannot reach across
 // the wrapper that the `~` selector needs.
 const SEGMENT =
-  'text-fg-muted hover:text-fg flex cursor-pointer items-center gap-2 rounded-full px-4 py-1.5 ' +
+  'text-fg-muted hover:text-fg flex h-9 cursor-pointer items-center gap-2 rounded-full px-4 ' +
   'text-sm font-medium transition-colors';
+
+/**
+ * The shell around each half of the control.
+ *
+ * Shared so the period toggle and the currency menu are the same height without
+ * either one being measured against the other by hand. They sat at different
+ * heights because one was a wrapper with `p-1` around `py-1.5` labels and the
+ * other was a single bordered label: two ways of arriving at a pill, and two
+ * answers. `h-11` on the shell and `h-9` on the control inside it is one answer,
+ * applied twice.
+ */
+const CONTROL_SHELL =
+  'border-line bg-canvas-inset inline-flex h-11 items-center rounded-full border p-1';
 
 /**
  * The one string that means "named on the plan, and not built".
@@ -169,6 +184,16 @@ const NOT_YET = 'Coming soon';
 
 /** One word, used wherever a plan limit is `null`. */
 const UNLIMITED = 'Unlimited';
+
+/**
+ * What an Enterprise cell says where every other column says a number.
+ *
+ * Its own token beside `UNLIMITED` because the two are different claims.
+ * "Unlimited" is a ceiling we have decided not to impose; this is a ceiling that
+ * exists and is written in an agreement rather than on a web page. Printing the
+ * engine's fallback figure here would be quoting an allowance nobody negotiated.
+ */
+const CONTRACTED = 'Contracted';
 
 /**
  * Bought per connection rather than reached by moving tier.
@@ -416,7 +441,7 @@ const PRICED_PLANS: readonly Plan[] = [
     features: [
       { text: `${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects` },
       { text: `${LIMITS.free.environmentsPerProject} environments per project` },
-      { text: `${LIMITS.free.seats} member` },
+      { text: `${LIMITS.free.seats} members` },
       { text: `${LIMITS.free.serviceTokens} service tokens for CI` },
       { text: `${formatCount(LIMITS.free.includedFetchesPerMonth)} secret fetches a month` },
       { text: `${LIMITS.free.auditRetentionDays} days of audit history` },
@@ -680,10 +705,24 @@ const PLANS: readonly Plan[] = [...PRICED_PLANS, SELF_HOSTED];
  * Enterprise, and a band that omits the gate tells a Team reader they can buy
  * it.
  */
+/**
+ * ── Why the add-on sheets are converted and the plan sheets are not ──
+ * Every plan price on this page is *set* for its market: India is about 65 per
+ * cent below the US sheet because a price that is reasonable in San Francisco is
+ * not reasonable in Bengaluru, and a seat costs us the same either way — which
+ * is to say almost nothing.
+ *
+ * An add-on does not work like that. Each one is a WorkOS connection billed to
+ * us at $125 a month in dollars, wherever the customer is. Discounting these to
+ * the Indian sheet would price them at roughly $75 and we would be paying for
+ * the privilege of selling them. So these four figures are the same price
+ * converted, not four decisions, and the band says so rather than letting a
+ * reader infer a regional discount that is not there.
+ */
 const ADDONS = [
   {
     name: 'SAML single sign-on',
-    price: '$199',
+    prices: { usd: '$199', inr: '₹16,900', jpy: '¥29,900', aud: 'A$309' },
     unit: 'per connection, per month',
     from: 'Team and above',
     notYet: true,
@@ -691,7 +730,7 @@ const ADDONS = [
   },
   {
     name: 'Directory sync (SCIM)',
-    price: '$249',
+    prices: { usd: '$249', inr: '₹21,200', jpy: '¥37,400', aud: 'A$389' },
     unit: 'per connection, per month',
     from: 'Enterprise',
     notYet: true,
@@ -706,6 +745,24 @@ type Cell = boolean | string;
 
 interface MatrixRow {
   readonly label: string;
+  /**
+   * One sentence explaining what the row means, behind an info button.
+   *
+   * **Required, deliberately.** A table of forty-nine capability names is a
+   * glossary as much as a comparison, and half the rows say something a reader
+   * outside this product has no way to guess — "break-glass", "per-environment
+   * grants", "point-in-time restore". Making it optional would have left the
+   * rows nobody thought about as the ones with no explanation, which are the
+   * same rows.
+   *
+   * A field rather than a lookup keyed on `label`, for the reason the note on
+   * `PlanFeature.notYet` gives: a table keyed by a row's own text stops applying
+   * the first time somebody rewords the text, and does it silently.
+   *
+   * Says what the row *is*, never what it is worth. A hint that sells is a hint
+   * a reader learns to skip.
+   */
+  readonly hint: string;
   /**
    * Keyed by plan rather than positional. A tuple would be shorter and would
    * let a row silently shift by one column the first time a plan is inserted;
@@ -741,9 +798,11 @@ function limitRow(
     | 'environmentsPerProject'
     | 'serviceTokens'
     | 'secretsPerEnvironment',
+  hint: string,
 ): MatrixRow {
   return {
     label,
+    hint,
     values: {
       free: formatLimit(LIMITS.free[resource]),
       pro: formatLimit(LIMITS.pro[resource]),
@@ -783,17 +842,42 @@ const MATRIX = [
   {
     title: 'Limits',
     rows: [
-      limitRow('Organisations', 'organizations'),
-      limitRow('Projects', 'projects'),
-      limitRow('Members', 'seats'),
-      limitRow('Environments per project', 'environmentsPerProject'),
-      limitRow('Secrets per environment', 'secretsPerEnvironment'),
-      limitRow('Service tokens for CI', 'serviceTokens'),
+      limitRow(
+        'Organisations',
+        'organizations',
+        'A separate tenant, with its own members, projects and master key. Most teams need one.',
+      ),
+      limitRow(
+        'Projects',
+        'projects',
+        'A codebase or a service. Each holds its own environments and secrets.',
+      ),
+      limitRow(
+        'Members',
+        'seats',
+        'People with a login. Service tokens, CI runners and agents are never counted here.',
+      ),
+      limitRow(
+        'Environments per project',
+        'environmentsPerProject',
+        'development, staging, production — and any others you add.',
+      ),
+      limitRow(
+        'Secrets per environment',
+        'secretsPerEnvironment',
+        'Individual keys stored inside one environment.',
+      ),
+      limitRow(
+        'Service tokens for CI',
+        'serviceTokens',
+        'Machine credentials, each pinned to a single environment.',
+      ),
       // Machines are free everywhere and this row is where a reader checks
       // that. The competing meter in this category bills per identity, human
       // or not, which is the comparison this row is written to invite.
       {
         label: 'Cost per service token, CI runner or AI agent',
+        hint: 'What a non-human identity adds to the bill. Nothing, on every plan.',
         values: {
           free: 'Free',
           pro: 'Free',
@@ -804,11 +888,15 @@ const MATRIX = [
       },
       {
         label: 'Included secret fetches a month',
+        hint: 'Reads across everything — the CLI, CI and the API.',
         values: {
           free: formatCount(LIMITS.free.includedFetchesPerMonth),
           pro: formatCount(LIMITS.pro.includedFetchesPerMonth),
           team: formatCount(LIMITS.team.includedFetchesPerMonth),
-          enterprise: formatCount(LIMITS.enterprise.includedFetchesPerMonth),
+          // Not a number, deliberately. An Enterprise allowance is whatever the
+          // agreement says, and printing the engine's fallback would be quoting
+          // a figure nobody has agreed to. See `ENTERPRISE_LIMITS`.
+          enterprise: CONTRACTED,
           'self-hosted': UNLIMITED,
         },
       },
@@ -816,6 +904,7 @@ const MATRIX = [
       // reading twice: going over the allowance is an invoice, never a refusal.
       {
         label: 'What happens past the allowance',
+        hint: 'Going over is a line on an invoice. A build never fails for a billing reason.',
         values: {
           free: 'Nothing breaks',
           pro: 'Billed, never blocked',
@@ -826,6 +915,7 @@ const MATRIX = [
       },
       {
         label: 'Audit history',
+        hint: 'How far back the log stays readable. Older records are pruned.',
         values: {
           free: formatRetention(LIMITS.free.auditRetentionDays),
           pro: formatRetention(LIMITS.pro.auditRetentionDays),
@@ -842,12 +932,29 @@ const MATRIX = [
   {
     title: 'Secrets and data',
     rows: [
-      { label: 'Version history and rollback', values: EVERYWHERE },
-      { label: 'Import from .env, JSON, YAML or shell', values: EVERYWHERE },
-      { label: 'Export as env, JSON, YAML, shell or Docker', values: EVERYWHERE },
-      { label: 'Per-environment encryption, zero-knowledge', values: EVERYWHERE },
+      {
+        label: 'Version history and rollback',
+        hint: 'Every write keeps the value it replaced, and any version can be restored.',
+        values: EVERYWHERE,
+      },
+      {
+        label: 'Import from .env, JSON, YAML or shell',
+        hint: 'Bring existing secrets in without retyping them.',
+        values: EVERYWHERE,
+      },
+      {
+        label: 'Export as env, JSON, YAML, shell or Docker',
+        hint: 'Take them out in whatever shape the thing consuming them wants.',
+        values: EVERYWHERE,
+      },
+      {
+        label: 'Per-environment encryption, zero-knowledge',
+        hint: 'Values are sealed in your browser. The server stores ciphertext it cannot open.',
+        values: EVERYWHERE,
+      },
       {
         label: 'Secret referencing and environment inheritance',
+        hint: 'Point one secret at another instead of copying the value into both.',
         values: {
           free: false,
           pro: NOT_YET,
@@ -858,6 +965,7 @@ const MATRIX = [
       },
       {
         label: 'Personal local overrides',
+        hint: 'Replace a value on your own machine without changing it for the team.',
         values: {
           free: false,
           pro: NOT_YET,
@@ -868,6 +976,7 @@ const MATRIX = [
       },
       {
         label: 'Environment promotion, with a diff',
+        hint: 'Move staging to production after seeing exactly what would change.',
         values: {
           free: false,
           pro: NOT_YET,
@@ -878,6 +987,7 @@ const MATRIX = [
       },
       {
         label: 'Point-in-time restore',
+        hint: 'Roll a whole environment back to how it looked at a moment.',
         values: {
           free: false,
           pro: NOT_YET,
@@ -888,6 +998,7 @@ const MATRIX = [
       },
       {
         label: 'Scheduled and expiring secrets',
+        hint: 'A value that switches on later, or stops working on a date.',
         values: {
           free: false,
           pro: false,
@@ -898,19 +1009,32 @@ const MATRIX = [
       },
       // Not a limitation of a tier — `pull` returns the current value of every
       // secret and there is no bulk history export at all.
-      { label: 'Bulk export of version history', values: NOWHERE_YET },
+      {
+        label: 'Bulk export of version history',
+        hint: 'The full history for an environment, not only its current values.',
+        values: NOWHERE_YET,
+      },
     ],
   },
   {
     title: 'People and access',
     rows: [
-      { label: 'Production marking and hazard hatching', values: EVERYWHERE },
-      { label: 'PIN lock and idle auto-lock', values: EVERYWHERE },
+      {
+        label: 'Production marking and hazard hatching',
+        hint: 'Production is visibly marked everywhere it appears, so nobody edits it by accident.',
+        values: EVERYWHERE,
+      },
+      {
+        label: 'PIN lock and idle auto-lock',
+        hint: 'The vault relocks itself after a period of inactivity.',
+        values: EVERYWHERE,
+      },
       // The row the Pro → Team decision turns on, and the reason Pro can offer
       // unlimited members without undercutting Team: on Pro, everybody reads
       // production. A team with one person who must not is on Team.
       {
         label: 'Roles for members',
+        hint: 'Owner, admin, developer and viewer, applied across the organisation.',
         values: {
           free: false,
           pro: false,
@@ -921,6 +1045,7 @@ const MATRIX = [
       },
       {
         label: 'Per-project and per-environment grants',
+        hint: 'Give somebody staging without giving them production.',
         values: {
           free: false,
           pro: false,
@@ -931,6 +1056,7 @@ const MATRIX = [
       },
       {
         label: 'Change approvals',
+        hint: 'A second person signs off before a production secret changes.',
         values: {
           free: false,
           pro: false,
@@ -941,6 +1067,7 @@ const MATRIX = [
       },
       {
         label: 'Break-glass emergency access',
+        hint: 'A recorded, time-boxed override for the incident at 3am.',
         values: {
           free: false,
           pro: false,
@@ -951,6 +1078,7 @@ const MATRIX = [
       },
       {
         label: 'Custom roles',
+        hint: 'Define your own permission sets when the four built-in roles do not fit.',
         values: {
           free: false,
           pro: false,
@@ -964,6 +1092,7 @@ const MATRIX = [
       // giving it away at this tier affordable.
       {
         label: 'Single sign-on with OIDC',
+        hint: 'Sign in through your own identity provider. Costs nothing extra, because it costs us nothing.',
         values: {
           free: false,
           pro: false,
@@ -977,6 +1106,7 @@ const MATRIX = [
       // its own identity provider and owes us nothing for it.
       {
         label: 'SAML single sign-on',
+        hint: 'For a provider that speaks SAML rather than OIDC. Charged per connection, because it costs us per connection.',
         values: {
           free: false,
           pro: false,
@@ -987,6 +1117,7 @@ const MATRIX = [
       },
       {
         label: 'Directory sync (SCIM)',
+        hint: 'Members added and removed automatically by your directory.',
         values: {
           free: false,
           pro: false,
@@ -1000,13 +1131,34 @@ const MATRIX = [
   {
     title: 'The CLI, CI and the API',
     rows: [
-      { label: 'The CLI, including xecret run', values: EVERYWHERE },
-      { label: 'Encrypted offline cache', values: EVERYWHERE },
-      { label: 'Service tokens, pinned to one environment', values: EVERYWHERE },
-      { label: 'The HTTP API', values: EVERYWHERE },
-      { label: 'GitHub Action, Docker image and install script', values: EVERYWHERE },
+      {
+        label: 'The CLI, including xecret run',
+        hint: 'Inject secrets into a process as environment variables, without ever writing a file.',
+        values: EVERYWHERE,
+      },
+      {
+        label: 'Encrypted offline cache',
+        hint: 'The last fetch is kept sealed on disk, so a network blip does not stop a build.',
+        values: EVERYWHERE,
+      },
+      {
+        label: 'Service tokens, pinned to one environment',
+        hint: 'A leaked CI credential reaches one environment and nothing else.',
+        values: EVERYWHERE,
+      },
+      {
+        label: 'The HTTP API',
+        hint: 'Everything the dashboard does, available to your own tooling.',
+        values: EVERYWHERE,
+      },
+      {
+        label: 'GitHub Action, Docker image and install script',
+        hint: 'The ready-made ways to get secrets into a pipeline.',
+        values: EVERYWHERE,
+      },
       {
         label: 'Token IP allowlists and lifetime policy',
+        hint: 'Restrict where a token may be used from, and how long it lives.',
         values: {
           free: false,
           pro: NOT_YET,
@@ -1017,6 +1169,7 @@ const MATRIX = [
       },
       {
         label: 'GitHub OIDC federation, with no static token',
+        hint: 'CI authenticates with a short-lived identity instead of a stored secret.',
         values: {
           free: false,
           pro: false,
@@ -1027,6 +1180,7 @@ const MATRIX = [
       },
       {
         label: 'Webhooks on secret change',
+        hint: 'Notify your own systems when a value changes.',
         values: {
           free: false,
           pro: NOT_YET,
@@ -1042,6 +1196,7 @@ const MATRIX = [
     rows: [
       {
         label: 'Audit export',
+        hint: 'Download the log as a file, for your own retention.',
         values: {
           free: 'Via the API',
           pro: 'Via the API',
@@ -1052,6 +1207,7 @@ const MATRIX = [
       },
       {
         label: 'Audit streaming to a SIEM',
+        hint: 'Events pushed to your security tooling as they happen.',
         values: {
           free: false,
           pro: false,
@@ -1062,6 +1218,7 @@ const MATRIX = [
       },
       {
         label: 'Where your data sits',
+        hint: 'Which infrastructure holds the ciphertext.',
         values: {
           free: "Cloudflare's network",
           pro: "Cloudflare's network",
@@ -1078,6 +1235,7 @@ const MATRIX = [
       // get to decide.
       {
         label: 'Choose your data region',
+        hint: 'Pin storage to the jurisdiction your contract requires.',
         values: {
           free: false,
           pro: false,
@@ -1088,6 +1246,7 @@ const MATRIX = [
       },
       {
         label: 'Your own root key',
+        hint: 'Hold the key that wraps every other key, with the escrow ceremony to go with it.',
         values: {
           free: false,
           pro: false,
@@ -1098,6 +1257,7 @@ const MATRIX = [
       },
       {
         label: 'Runs on your own infrastructure',
+        hint: 'The whole server, on hardware you control.',
         values: {
           free: false,
           pro: false,
@@ -1108,6 +1268,7 @@ const MATRIX = [
       },
       {
         label: 'Support channel',
+        hint: 'How you reach us, and how quickly we answer.',
         values: {
           free: 'GitHub issues',
           pro: 'Email',
@@ -1120,6 +1281,7 @@ const MATRIX = [
       // the licence is not a tier. A reader scanning for the catch finds this.
       {
         label: 'Licence',
+        hint: 'The terms the server code is available under.',
         values: {
           free: 'AGPL-3.0 + MIT',
           pro: 'AGPL-3.0 + MIT',
@@ -1130,6 +1292,7 @@ const MATRIX = [
       },
       {
         label: 'SLA',
+        hint: 'A contractual uptime commitment, with money behind it.',
         values: {
           free: false,
           pro: false,
@@ -1384,7 +1547,7 @@ function PriceBlock({ value, className }: { value: PlanPrice; className: string 
 function HeaderPrice({ value, className }: { value: PlanPrice; className: string }) {
   return (
     <span className={className}>
-      <span className="text-fg block text-sm font-medium">{value.price}</span>
+      <span className="text-fg block text-lg font-semibold tracking-[-0.02em]">{value.price}</span>
       <span className="text-fg-subtle block text-xs font-normal">{value.unit}</span>
     </span>
   );
@@ -1485,8 +1648,8 @@ async function resolveInitialCurrency(): Promise<CurrencyId> {
  */
 function PriceControls() {
   return (
-    <div className="flex flex-wrap items-center justify-center gap-3">
-      <div className="border-line bg-canvas-inset inline-flex items-center gap-1 rounded-full border p-1">
+    <div className="flex flex-wrap items-center justify-center gap-3 sm:justify-end">
+      <div className={cn(CONTROL_SHELL, 'gap-1')}>
         <label htmlFor="billing-monthly" data-billing="monthly" className={SEGMENT}>
           Monthly
         </label>
@@ -1497,43 +1660,42 @@ function PriceControls() {
       </div>
 
       {/* ── The currency menu ──
-          A `<details>` and not a `<select>`, and the reason is the same one the
-          billing toggle ships no JavaScript for. CSS picks one of eight figures
-          per card from `:checked`, and there is no selector that reads the value
-          of a `<select>` — so a real dropdown means a client component around
-          the prices, which means the card paints $12, the bundle lands, and the
-          number changes under the reader. On the page a person is deciding money
-          on, that is the one thing we do not do.
+          A `<details>` and not a `<select>`, and the reason is the one the
+          prices are built on: CSS picks one of eight figures per card from
+          `:checked`, and no selector reads the value of a `<select>`. A real
+          dropdown would mean the prices becoming client state, which means the
+          card paints $12, the bundle lands, and the number changes under the
+          reader. On the page somebody is deciding money on, that is the one
+          thing this design does not do.
 
           So the radios stay: they remain the control a screen reader and a
-          keyboard operate, and this is the pointer affordance over them. The
-          panel opens on `[open]` *or* while any currency radio holds focus, so
-          tabbing into the group can never leave focus on an option inside a
-          closed menu. */}
-      <details className="x-currency relative">
+          keyboard operate, and this is the pointer affordance over them.
+          `CurrencyMenu` adds dismissal — outside press, Escape, selection — and
+          touches nothing else; without its script the menu still works and every
+          price still switches. */}
+      <CurrencyMenu className="x-currency relative">
         <summary
           className={cn(
-            SEGMENT,
-            'border-line bg-canvas-inset x-currency-summary list-none justify-between',
-            'min-w-28 rounded-full border py-2',
+            CONTROL_SHELL,
+            'x-currency-summary min-w-28 list-none justify-between gap-2 px-4',
           )}
         >
           {/* Four names, one shown — the same mechanism as the prices, so the
               trigger cannot disagree with the figures below it. */}
-          <span>
+          <span className="text-fg text-sm font-medium">
             {CURRENCIES.map((currency) => (
               <span key={currency.id} data-currency-name={currency.id} className="x-currency-name">
                 {currency.label}
               </span>
             ))}
           </span>
-          <ChevronDownIcon className="x-currency-chevron size-4 shrink-0" />
+          <ChevronDownIcon className="x-currency-chevron text-fg-muted size-4 shrink-0" />
         </summary>
 
         <div
           className={cn(
             'x-currency-panel border-line bg-surface shadow-raised absolute top-full',
-            'left-1/2 z-10 mt-2 w-36 -translate-x-1/2 rounded-xl border p-1',
+            'right-0 z-20 mt-2 w-36 rounded-xl border p-1',
           )}
         >
           {CURRENCIES.map((currency) => (
@@ -1557,7 +1719,7 @@ function PriceControls() {
             </label>
           ))}
         </div>
-      </details>
+      </CurrencyMenu>
     </div>
   );
 }
@@ -1583,7 +1745,14 @@ export default async function PricingPage() {
           single sign-on is `notYet` on the Team card and the not-built chip in
           the matrix, so the hero was the one place on the page promising it
           outright. */}
+      {/* `compact`, not the default `tall`. The default holds a 58svh floor and
+          centres within it, so on this page the sentence describing the plans
+          finished a third of the way down the screen and the plans themselves
+          started below the fold — a pricing page whose first screen is mostly
+          the absence of prices. Nothing here needs the room: the hero is three
+          short lines and the thing a reader came for is directly under it. */}
       <PageHero
+        height="compact"
         eyebrow="Pricing"
         title="Secret management pricing, without the sales call."
         description="Four plans and a self-hosted option, published in full — the limits included. Free is genuinely free, Team is $19 per member per month or $12 billed yearly, service tokens and CI never cost anything, and running the whole server yourself is free forever."
@@ -1616,7 +1785,7 @@ export default async function PricingPage() {
             name="currency"
             value={currency.id}
             defaultChecked={currency.id === initialCurrency}
-            className={`x-cur-${currency.id} sr-only`}
+            className={`x-cur-${currency.id} x-price-input`}
           />
         ))}
 
@@ -1626,18 +1795,24 @@ export default async function PricingPage() {
           name="billing"
           value="monthly"
           defaultChecked
-          className="x-billing-monthly sr-only"
+          className="x-billing-monthly x-price-input"
         />
         <input
           id="billing-yearly"
           type="radio"
           name="billing"
           value="yearly"
-          className="x-billing-yearly sr-only"
+          className="x-billing-yearly x-price-input"
         />
 
         <div className="x-billing-body">
-          <Section id="plans" aria-labelledby="plans-heading" tone="canvas">
+          {/* `size="md"` rather than the default: this section sits directly
+              under the hero, which already ends in its own generous run of
+              whitespace, and two full rhythms stacked put a screen's worth of
+              nothing between the sentence that describes the plans and the plans
+              themselves. The documented use of the smaller size is exactly this
+              — a band that follows another. */}
+          <Section id="plans" aria-labelledby="plans-heading" tone="canvas" size="md">
             {/* The prices come first, with no heading introducing them: a reader
                 who opened /pricing does not need to be told that the cards under
                 the word "Pricing" are the plans. The h2 stays as a hidden one
@@ -1649,26 +1824,7 @@ export default async function PricingPage() {
               Plans and prices
             </h2>
 
-            <div className="flex flex-col items-center">
-              <PriceControls />
-
-              {/* Said once, here, rather than under every card. A reader who
-                  did not expect their own currency needs to know it is not an
-                  accident and not a conversion. */}
-              <p className="text-fg-subtle mt-3 max-w-2xl text-center text-sm leading-6">
-                Prices in rupees, yen and Australian dollars are set for those markets rather than
-                converted, and follow your billing country.
-              </p>
-
-              {/* The one sentence left of what used to be a banner between two
-                  sections. It qualifies every figure below it, so it stays —
-                  quietly, and above the first price rather than under the
-                  last one. */}
-              <p className="text-fg-subtle mt-4 max-w-2xl text-center text-sm leading-6">
-                Pre-alpha: every paid feature below is on for every account, and no card is
-                collected anywhere in the product.
-              </p>
-            </div>
+            <PriceControls />
 
             {/* ── Four cards, and why the row no longer overhangs ──
                 At five columns inside an 80rem container each card had about
@@ -1684,7 +1840,7 @@ export default async function PricingPage() {
                 two even rows, where three columns leave one card alone on a
                 second row looking like an afterthought. */}
             <RevealGroup
-              className={cn('mt-10 grid gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-4 xl:gap-5')}
+              className={cn('mt-6 grid gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-4 xl:gap-5')}
             >
               {PRICED_PLANS.map((plan) => (
                 <article
@@ -1787,6 +1943,14 @@ export default async function PricingPage() {
               ))}
             </RevealGroup>
 
+            {/* Under the cards rather than over them. It explains the figures a
+                reader has just seen, and above them it was a caveat about prices
+                nobody had read yet. */}
+            <p className="text-fg-subtle mx-auto mt-6 max-w-2xl text-center text-sm leading-6">
+              Prices in rupees, yen and Australian dollars are set for those markets rather than
+              converted, and follow your billing country.
+            </p>
+
             {/* ── Add-ons ──
             Between the cards and the self-hosting band, because they attach to
             a plan rather than replacing one. Outside the fieldset: neither has
@@ -1810,8 +1974,18 @@ export default async function PricingPage() {
                       </span>
                     ) : null}
                   </div>
+                  {/* Four figures, one shown — the same radios the cards and the
+                      comparison table read, through a rule that keys on currency
+                      alone. An add-on has no yearly rate, so unlike every other
+                      price on the page this one must not follow the period half
+                      of the control: pairing it with `x-price-*-yearly` would
+                      have shown nothing at all whenever Yearly was selected. */}
                   <p className="text-fg mt-2 text-2xl font-semibold tracking-[-0.02em]">
-                    {addon.price}{' '}
+                    {CURRENCIES.map((currency) => (
+                      <span key={currency.id} className={`x-addon-price x-addon-${currency.id}`}>
+                        {addon.prices[currency.id]}
+                      </span>
+                    ))}{' '}
                     <span className="text-fg-subtle text-sm font-normal">{addon.unit}</span>
                   </p>
                   <p className="text-fg-subtle mt-1 text-sm">{addon.from}</p>
@@ -1819,6 +1993,15 @@ export default async function PricingPage() {
                 </div>
               ))}
             </div>
+
+            {/* Said out loud because the band now shows ₹16,900 beside a
+                paragraph that explains a cost in dollars, and a reader comparing
+                it against the plan cards would otherwise reasonably expect the
+                same regional discount and not find it. */}
+            <p className="text-fg-subtle mx-auto mt-4 max-w-3xl text-center text-sm leading-6">
+              Add-on prices are the same figure converted, not set per market like the plans above:
+              each one is a connection billed to us in dollars at the same rate wherever you are.
+            </p>
 
             {/* ── Self-hosting ──
             Deliberately not a sixth card, and deliberately outside the fieldset
@@ -1874,7 +2057,7 @@ export default async function PricingPage() {
                 prices too, and a reader who switched to rupees at the top should
                 not meet dollars again two screens down. Nothing keeps the two in
                 step; there is only one thing to keep. */}
-            <div className="mt-8 flex flex-col items-center">
+            <div className="mt-8">
               <PriceControls />
             </div>
 
@@ -1884,87 +2067,96 @@ export default async function PricingPage() {
             scroll container that only a mouse can move is a table a keyboard
             user can read one third of. The same arrangement as `.doc-table-wrap`
             in docs.css; the global `:focus-visible` rule rings it. */}
-            <div
-              tabIndex={0}
-              role="region"
-              aria-label="Plan comparison"
-              className="border-line bg-surface mt-10 overflow-x-auto rounded-xl border"
-            >
-              {/* `text-[0.9375rem]` rather than `text-sm`: this table is the
+            <RowHintProvider>
+              <div
+                tabIndex={0}
+                role="region"
+                aria-label="Plan comparison"
+                className="border-line bg-surface mt-10 overflow-x-auto rounded-xl border"
+              >
+                {/* `text-[0.9375rem]` rather than `text-sm`: this table is the
                   densest thing on the page and the one a buyer reads most
                   carefully, and 14px across twenty-six rows of capability names
                   is smaller than the body text everywhere else on the site. */}
-              <table className="w-full min-w-[64rem] border-collapse text-[0.9375rem]">
-                <caption className="sr-only">
-                  Every xecret plan compared, capability by capability, in five groups. The header
-                  shows the price for the currency and billing period selected above the table,
-                  which is the same pair the plan cards use. During pre-alpha every feature that
-                  exists is available on every account and nothing is billed.
-                </caption>
-                <thead className="bg-canvas-inset">
-                  <tr className="border-line border-b">
-                    <th scope="col" className="w-[17rem] px-4 py-3 text-left">
-                      <span className="sr-only">Capability</span>
-                    </th>
-                    {PLANS.map((plan) => (
-                      <th key={plan.id} scope="col" className="px-4 py-4 text-center align-bottom">
-                        <span className="text-fg block text-base font-semibold">{plan.name}</span>
-                        {/* Eight figures, one shown — the same markup the cards
+                <table className="w-full min-w-[64rem] border-collapse text-[0.9375rem]">
+                  <caption className="sr-only">
+                    Every xecret plan compared, capability by capability, in five groups. The header
+                    shows the price for the currency and billing period selected above the table,
+                    which is the same pair the plan cards use. During pre-alpha every feature that
+                    exists is available on every account and nothing is billed.
+                  </caption>
+                  <thead className="bg-canvas-inset">
+                    <tr className="border-line border-b">
+                      <th scope="col" className="w-[17rem] px-4 py-3 text-left">
+                        <span className="sr-only">Capability</span>
+                      </th>
+                      {PLANS.map((plan) => (
+                        <th
+                          key={plan.id}
+                          scope="col"
+                          className="px-4 py-4 text-center align-bottom"
+                        >
+                          <span className="text-fg block text-base font-semibold">{plan.name}</span>
+                          {/* Eight figures, one shown — the same markup the cards
                             carry, now that the radios sit above both sections and
                             the sibling chain reaches in here. This used to be a
                             hard-coded monthly USD price with a caption
                             apologising for it, which meant a reader who chose
                             yearly rupees at the top met monthly dollars again
                             here: one page quoting two prices for the same plan. */}
-                        {CURRENCIES.map((currency) => (
-                          <Fragment key={currency.id}>
-                            <HeaderPrice
-                              className={`x-price x-price-${currency.id}-monthly`}
-                              value={plan.prices[currency.id].monthly}
-                            />
-                            <HeaderPrice
-                              className={`x-price x-price-${currency.id}-yearly`}
-                              value={plan.prices[currency.id].yearly}
-                            />
-                          </Fragment>
-                        ))}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                {MATRIX.map((group) => (
-                  <tbody key={group.title}>
-                    <tr className="border-line-subtle bg-canvas-inset/60 border-y">
-                      {/* `colgroup`, not `col`: this heading names the rows beneath
+                          {CURRENCIES.map((currency) => (
+                            <Fragment key={currency.id}>
+                              <HeaderPrice
+                                className={`x-price x-price-${currency.id}-monthly`}
+                                value={plan.prices[currency.id].monthly}
+                              />
+                              <HeaderPrice
+                                className={`x-price x-price-${currency.id}-yearly`}
+                                value={plan.prices[currency.id].yearly}
+                              />
+                            </Fragment>
+                          ))}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  {MATRIX.map((group) => (
+                    <tbody key={group.title}>
+                      <tr className="border-line-subtle bg-canvas-inset/60 border-y">
+                        {/* `colgroup`, not `col`: this heading names the rows beneath
                       it across every plan column, and it is what a screen reader
                       reads out before each row of the group. */}
-                      <th
-                        scope="colgroup"
-                        colSpan={PLANS.length + 1}
-                        className="text-fg-subtle px-4 py-3 text-left text-[0.8125rem] font-semibold tracking-[0.14em] uppercase"
-                      >
-                        {group.title}
-                      </th>
-                    </tr>
-                    {group.rows.map((row) => (
-                      <tr
-                        key={row.label}
-                        className="border-line-subtle hover:bg-surface-hover border-b transition-colors last:border-b-0"
-                      >
-                        <th scope="row" className="text-fg px-4 py-3.5 text-left font-medium">
-                          {row.label}
+                        <th
+                          scope="colgroup"
+                          colSpan={PLANS.length + 1}
+                          className="text-fg px-4 py-3.5 text-left text-[0.9375rem] font-semibold tracking-[0.08em] uppercase"
+                        >
+                          {group.title}
                         </th>
-                        {PLANS.map((plan) => (
-                          <td key={plan.id} className="px-4 py-3.5 text-center whitespace-nowrap">
-                            <CellValue value={row.values[plan.id]} />
-                          </td>
-                        ))}
                       </tr>
-                    ))}
-                  </tbody>
-                ))}
-              </table>
-            </div>
+                      {group.rows.map((row) => (
+                        <tr
+                          key={row.label}
+                          className="border-line-subtle hover:bg-surface-hover border-b transition-colors last:border-b-0"
+                        >
+                          <th scope="row" className="text-fg px-4 py-3.5 text-left font-medium">
+                            <span className="inline-flex items-center gap-1.5">
+                              {row.label}
+                              <RowHint label={row.label} hint={row.hint} />
+                            </span>
+                          </th>
+                          {PLANS.map((plan) => (
+                            <td key={plan.id} className="px-4 py-3.5 text-center whitespace-nowrap">
+                              <CellValue value={row.values[plan.id]} />
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  ))}
+                </table>
+              </div>
+            </RowHintProvider>
 
             <p className="text-fg-muted mx-auto mt-6 max-w-3xl text-center text-sm leading-7">
               SAML and SCIM are named on the plans that will carry them, and every column that names

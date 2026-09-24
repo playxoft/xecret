@@ -69,7 +69,7 @@ describe('the page derives its limits rather than restating them', () => {
     expect(PLANS.free.limits.organizations).toBe(1);
     expect(PLANS.free.limits.projects).toBe(5);
     expect(PLANS.free.limits.environmentsPerProject).toBe(3);
-    expect(PLANS.free.limits.seats).toBe(1);
+    expect(PLANS.free.limits.seats).toBe(3);
     expect(PLANS.free.limits.includedFetchesPerMonth).toBe(20_000);
   });
 });

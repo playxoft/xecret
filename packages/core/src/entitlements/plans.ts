@@ -217,17 +217,23 @@ const ENTERPRISE_FEATURES: PlanFeatures = {
 /**
  * Free — pricing-plan.md §3.
  *
- * The only plan with hard ceilings on organisations, projects and environments.
- * Deliberately generous enough to run one real project and mean enough that a
- * second team member is a decision. One organisation is the sharpest of these:
- * it is what makes a personal account a personal account.
+ * The tightest ceilings in the product, and deliberately generous enough to run
+ * one real project with the two people who would actually run it. One
+ * organisation is the sharpest of these: it is what makes a personal account a
+ * personal account.
+ *
+ * Three seats rather than one. A single seat made Free a demo — the product's
+ * whole subject is a secret *shared* between people, and a plan that cannot be
+ * shared cannot show what it is for. Three is a founder and two others, which is
+ * enough to hit the wall Team exists to solve (somebody who must not read
+ * production) rather than the wall of not being able to invite anyone at all.
  */
 const FREE_LIMITS: PlanLimits = {
   organizations: 1,
   projects: 5,
   environmentsPerProject: 3,
   serviceTokens: 10,
-  seats: 1,
+  seats: 3,
   cliDevicesPerUser: 2,
   webhooks: 0,
   secretsPerEnvironment: 250,
@@ -274,7 +280,7 @@ const PRO_LIMITS: PlanLimits = {
   secretVersionsRetained: 100,
   auditRetentionDays: 30,
   pitrDays: 30,
-  includedFetchesPerMonth: 150_000,
+  includedFetchesPerMonth: 200_000,
 };
 
 /**
@@ -324,6 +330,11 @@ const ENTERPRISE_LIMITS: PlanLimits = {
   secretVersionsRetained: 1_000,
   auditRetentionDays: 365,
   pitrDays: 365,
+  // A default, not a published figure. The pricing page renders "Contracted"
+  // for this column rather than the number, because an Enterprise allowance is
+  // whatever the agreement says and printing one would be quoting a price we
+  // have not agreed. This is what the meter falls back to in the absence of an
+  // override, which is the only thing it is for.
   includedFetchesPerMonth: 10_000_000,
 };
 

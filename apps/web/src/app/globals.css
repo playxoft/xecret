@@ -963,6 +963,49 @@
   display: block;
 }
 
+/* ── The radios themselves ─────────────────────────────────────────────────
+   `sr-only` positions these absolutely at the top of the fieldset, which since
+   the fieldset was hoisted above both sections means at the top of the page. A
+   browser scrolls a newly focused element into view, and clicking a `<label>`
+   focuses the input it names — so choosing a currency beside the comparison
+   table threw the reader back up to the hero, every time.
+
+   `fixed` is the fix and it is the whole fix: an element positioned against the
+   viewport is already in view, so there is nothing to scroll to. Everything else
+   here is `sr-only`'s own recipe, kept because these must stay operable by a
+   screen reader and by a keyboard — they are the real control, and the segmented
+   buttons and the menu are only labels pointing at them. */
+.x-price-input {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  border-width: 0;
+}
+
+/* One add-on price per currency, and **no** billing period.
+   A connection is billed monthly and has no yearly rate, so this keys on the
+   currency half of the control alone. Pairing it with the period half the way
+   the plan prices do would have shown no price at all whenever Yearly was
+   selected — a band advertising a blank. */
+.x-addon-price {
+  display: none;
+}
+
+.x-cur-usd:checked ~ .x-billing-body .x-addon-usd,
+.x-cur-inr:checked ~ .x-billing-body .x-addon-inr,
+.x-cur-jpy:checked ~ .x-billing-body .x-addon-jpy,
+.x-cur-aud:checked ~ .x-billing-body .x-addon-aud {
+  display: inline;
+}
+
 /* The selected half of the segmented control. Unlayered, so it wins over the
    resting `text-fg-muted` the label carries as a utility. */
 .x-billing-monthly:checked ~ .x-billing-body [data-billing='monthly'],
@@ -1049,14 +1092,20 @@
   display: block;
 }
 
-/* Open while any currency radio holds focus, whatever `[open]` says. Without
-   this, tabbing into the radio group lands focus on a label inside a closed
-   menu: operable by keyboard and invisible to one, which is the failure the
-   rule above this section exists to prevent for the billing toggle. */
-.x-cur-usd:focus ~ .x-billing-body .x-currency-panel,
-.x-cur-inr:focus ~ .x-billing-body .x-currency-panel,
-.x-cur-jpy:focus ~ .x-billing-body .x-currency-panel,
-.x-cur-aud:focus ~ .x-billing-body .x-currency-panel {
+/* Open while a currency radio holds focus **from the keyboard**, whatever
+   `[open]` says. Without this, tabbing into the radio group lands focus on a
+   label inside a closed menu: operable by keyboard and invisible to one.
+
+   `:focus-visible` and not `:focus`, and the difference is the whole bug it
+   fixes. Clicking a `<label>` focuses the radio it names, so with plain
+   `:focus` the panel stayed painted after a selection even though the menu had
+   closed — the reader chose a currency and the menu simply would not go away.
+   `:focus-visible` is false for a pointer interaction and true for a keyboard
+   one, which is exactly the distinction this rule always meant. */
+.x-cur-usd:focus-visible ~ .x-billing-body .x-currency-panel,
+.x-cur-inr:focus-visible ~ .x-billing-body .x-currency-panel,
+.x-cur-jpy:focus-visible ~ .x-billing-body .x-currency-panel,
+.x-cur-aud:focus-visible ~ .x-billing-body .x-currency-panel {
   display: block;
 }
 
