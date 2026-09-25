@@ -273,7 +273,7 @@ const MILESTONES = [
     // the product and contradicted this page's own FAQ answer two screens
     // down. What is genuinely absent is SAML and SCIM, and the pricing matrix
     // now says "Not yet" in those rows rather than ticking them.
-    body: 'SAML single sign-on and SCIM provisioning are named on the pricing page as Enterprise, and as per-connection add-ons above Pro. Neither is built, and the comparison table says so in the row rather than in a footnote under it. Roles and per-environment access are built already — those are a plan boundary, not a promise.',
+    body: 'SAML single sign-on is named on the pricing page as a per-connection add-on from Team, and as included with Enterprise. SCIM provisioning is named as an Enterprise add-on and is not sold below that. Neither is built, and the comparison table says so in the row rather than in a footnote under it. Roles and per-environment access are built already — those are a plan boundary, not a promise.',
   },
   {
     state: 'next',

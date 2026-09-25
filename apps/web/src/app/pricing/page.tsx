@@ -114,13 +114,17 @@ import { absoluteUrl, breadcrumbSchema, SITE_KEYWORDS, SITE_NAME } from '@/lib/s
  */
 
 // Both of these name the billing period, and that is not pedantry: $5 and $12
-// are the *yearly* rates, the cards default to monthly, and these two strings
-// are what a search result shows above a page rendering $8 and $19. A rich
-// result advertising a price the page does not show is the failure mode the
-// note at the top of this file is about — it just reaches the metadata too.
+// are the *yearly* rates and $8 and $19 the monthly ones, and these two strings
+// are what a search result shows above the page. The cards open on yearly, so
+// these lead with yearly and name monthly second — they follow the default
+// rather than setting it, and if the toggle ever opens on monthly again they
+// move back with it. A rich result advertising a price the page does not show
+// is the failure mode the note at the top of this file is about; it just
+// reaches the metadata too.
+//
 // Single sign-on came out of the description for the other reason: it is
-// `notYet` on the Team card and `Not yet` in the matrix, so promising it here
-// made the metadata the most optimistic thing about the product.
+// `notYet` on the Team card and `Coming soon` in the matrix, so promising it
+// here made the metadata the most optimistic thing about the product.
 const TITLE = 'Pricing: free forever, or $5 a member billed yearly';
 const DESCRIPTION =
   'Four xecret plans: free for one developer, Pro $5 a member a month billed yearly ($8 monthly), Team $12 billed yearly ($19 monthly), Enterprise by contract, and self-hosted free forever. Service tokens and CI never cost anything, and no card is taken in pre-alpha.';
@@ -236,6 +240,27 @@ const LIMITS = {
   pro: PLAN_DEFINITIONS.pro.limits,
   team: PLAN_DEFINITIONS.team.limits,
   enterprise: PLAN_DEFINITIONS.enterprise.limits,
+} as const;
+
+/**
+ * The smallest number of seats a plan can be bought with.
+ *
+ * Published because it is the one number on this page that can make a bill
+ * larger than the arithmetic a reader just did. `resolveBilledSeats` floors
+ * billed seats at it — `Math.max(billed, minimum)` — so a two-person team
+ * reading "$12 per member per month" computes $288 a year and is invoiced
+ * $432. A page that publishes every ceiling in the product and omits the one
+ * that costs money is not being terse, it is being misleading, and it is the
+ * exact failure the limits import exists to prevent: a customer meeting a
+ * number at checkout that the page never showed them.
+ *
+ * Read from the engine rather than restated, like the limits above it.
+ */
+const MINIMUM_SEATS = {
+  free: PLAN_DEFINITIONS.free.minimumSeats,
+  pro: PLAN_DEFINITIONS.pro.minimumSeats,
+  team: PLAN_DEFINITIONS.team.minimumSeats,
+  enterprise: PLAN_DEFINITIONS.enterprise.minimumSeats,
 } as const;
 
 /**
@@ -398,6 +423,19 @@ interface PlanPrice {
   readonly unit: string;
   /** A third line, where the billing term needs spelling out in full. */
   readonly note?: string | undefined;
+  /**
+   * The same figure as a bare number, for structured data.
+   *
+   * Written beside `price` rather than extracted from it, for the reason
+   * stated at the top of this file: `'₹1,317'` is typography and `1317` is
+   * data, and a regex over the first would publish the wrong second the day a
+   * sheet gains a thousands separator it did not have — which is exactly what
+   * the rupee and yen sheets already have. `pricing-page.test.ts` checks the
+   * two against each other so they cannot drift apart silently.
+   *
+   * Absent where there is no number to publish: `Custom`, and `Free`.
+   */
+  readonly amount?: string | undefined;
 }
 
 /**
@@ -531,6 +569,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '$8', unit: 'per member, per month' },
         yearly: {
           price: '$5',
+          amount: '5',
           unit: 'per member, per month',
           note: '$60 per member, billed yearly',
         },
@@ -539,6 +578,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '€9', unit: 'per member, per month' },
         yearly: {
           price: '€6',
+          amount: '6',
           unit: 'per member, per month',
           note: '€72 per member, billed yearly',
         },
@@ -547,6 +587,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '₹249', unit: 'per member, per month' },
         yearly: {
           price: '₹149',
+          amount: '149',
           unit: 'per member, per month',
           note: '₹1,788 per member, billed yearly',
         },
@@ -555,6 +596,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '¥900', unit: 'per member, per month' },
         yearly: {
           price: '¥567',
+          amount: '567',
           unit: 'per member, per month',
           note: '¥6,800 per member, billed yearly',
         },
@@ -563,6 +605,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: 'A$13', unit: 'per member, per month' },
         yearly: {
           price: 'A$8',
+          amount: '8',
           unit: 'per member, per month',
           note: 'A$96 per member, billed yearly',
         },
@@ -598,6 +641,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '$19', unit: 'per member, per month' },
         yearly: {
           price: '$12',
+          amount: '12',
           unit: 'per member, per month',
           note: '$144 per member, billed yearly',
         },
@@ -606,6 +650,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '€21', unit: 'per member, per month' },
         yearly: {
           price: '€13',
+          amount: '13',
           unit: 'per member, per month',
           note: '€156 per member, billed yearly',
         },
@@ -614,6 +659,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '₹599', unit: 'per member, per month' },
         yearly: {
           price: '₹375',
+          amount: '375',
           unit: 'per member, per month',
           note: '₹4,499 per member, billed yearly',
         },
@@ -622,6 +668,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '¥2,100', unit: 'per member, per month' },
         yearly: {
           price: '¥1,317',
+          amount: '1317',
           unit: 'per member, per month',
           note: '¥15,800 per member, billed yearly',
         },
@@ -630,6 +677,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: 'A$29', unit: 'per member, per month' },
         yearly: {
           price: 'A$19',
+          amount: '19',
           unit: 'per member, per month',
           note: 'A$228 per member, billed yearly',
         },
@@ -639,6 +687,10 @@ const PRICED_PLANS: readonly Plan[] = [
       'For a team with somebody who must not see production — a contractor, a junior, an auditor.',
     features: [
       { text: 'Everything in Pro' },
+      // Stated on the card and not only in the FAQ, because it is the one
+      // number here that can make the bill bigger than the multiplication a
+      // reader has just done in their head.
+      { text: `Billed from ${MINIMUM_SEATS.team} members up` },
       { text: 'Roles and per-environment access' },
       {
         text: `${formatLimit(LIMITS.team.projects)} projects, ${formatLimit(LIMITS.team.secretsPerEnvironment)} secrets per environment`,
@@ -964,6 +1016,17 @@ const MATRIX = [
         'seats',
         'People with a login. Service tokens, CI runners and agents are never counted here.',
       ),
+      {
+        label: 'Smallest billable team',
+        hint: 'The fewest seats a plan can be bought with. Below it you are billed for the minimum, never blocked from using fewer.',
+        values: {
+          free: `${MINIMUM_SEATS.free} member`,
+          pro: `${MINIMUM_SEATS.pro} member`,
+          team: `${MINIMUM_SEATS.team} members`,
+          enterprise: `${MINIMUM_SEATS.enterprise} members`,
+          'self-hosted': 'No minimum',
+        },
+      },
       limitRow(
         'Environments per project',
         'environmentsPerProject',
@@ -1106,10 +1169,15 @@ const MATRIX = [
       {
         label: 'Scheduled and expiring secrets',
         hint: 'A value that switches on later, or stops working on a date.',
+        // Team, not Enterprise: `TEAM_FEATURES.scheduledSecrets` is `true` in
+        // the engine and the Team card names it. This row read `team: false`,
+        // which by the convention above means "your plan does not carry this"
+        // — so the table was selling a Team capability as Enterprise-only
+        // three screens below the card that grants it.
         values: {
           free: false,
           pro: false,
-          team: false,
+          team: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -1281,10 +1349,14 @@ const MATRIX = [
       {
         label: 'GitHub OIDC federation, with no static token',
         hint: 'CI authenticates with a short-lived identity instead of a stored secret.',
+        // Team, for the same reason as scheduled secrets above:
+        // `TEAM_FEATURES.githubOidcFederation` is `true` and the Team card
+        // names it. Both came down from Scale when that tier went, and this
+        // table was the one surface that did not come down with them.
         values: {
           free: false,
           pro: false,
-          team: false,
+          team: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -1450,8 +1522,11 @@ const INCLUDED = [
 const FAQ: readonly FaqItem[] = [
   {
     question: 'What counts as a member?',
-    answer:
-      'Anyone with a seat in your organisation who can sign in and read or write a secret. Service tokens are not members, so a CI pipeline that pulls secrets on every build costs nothing — and neither does a Kubernetes workload or an AI agent. A pending invitation is not counted until it is accepted, and removing someone frees their seat immediately.',
+    // The seat floor belongs in this answer specifically: it is the one that
+    // walks through seat accounting in detail — invitations, removals, what is
+    // and is not a member — so an omission here reads as "there is nothing
+    // else to know about seats".
+    answer: `Anyone with a seat in your organisation who can sign in and read or write a secret. Service tokens are not members, so a CI pipeline that pulls secrets on every build costs nothing — and neither does a Kubernetes workload or an AI agent. A pending invitation is not counted until it is accepted, and removing someone frees their seat immediately. Team is billed from ${MINIMUM_SEATS.team} members up and Enterprise from ${MINIMUM_SEATS.enterprise}, so a smaller group on one of those pays the minimum rather than a lower number; Free and Pro have no floor. Nothing stops you running with fewer people than you are billed for.`,
   },
   {
     question: 'Do machines really cost nothing?',
@@ -1494,7 +1569,7 @@ const FAQ: readonly FaqItem[] = [
   {
     question: 'Is there an annual price?',
     answer:
-      'Yes. Billed yearly, Pro is $5 a member a month and Team is $12 — charged as $60 and $144 a member a year, a third to two fifths below the monthly rate. The exact saving differs by currency, because each sheet is a set of deliberate prices rather than one number converted: it is nearer a third on the euro sheet and nearer two fifths on the rupee one. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both, and neither is billed at all during pre-alpha.',
+      'Yes, and it is what the page opens on. Billed yearly, Pro is $5 a member a month and Team is $12 — charged as $60 and $144 a member a year, a third to two fifths below the monthly rate. The exact saving differs by plan as well as by currency, because each sheet is a set of deliberate prices rather than one number converted: on the euro sheet it is 33 per cent on Pro and 38 on Team, and on the rupee sheet 40 on Pro and 37 on Team. That is why the chip beside the toggle says "up to" — it carries the better of the two figures for whichever sheet you are reading, so it is an upper bound rather than a promise for every card. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both, and neither is billed at all during pre-alpha.',
   },
   {
     question: 'Why is it cheaper in India?',
@@ -1554,39 +1629,78 @@ function offerDescription(plan: Plan): string {
 /**
  * The plans as a `Product` with one `Offer` per plan, derived from `PLANS`.
  *
+ * ── Why this takes the currency ──
+ * It used to be a module constant pinned to `priceCurrency: 'USD'`, which was
+ * true only until `resolveInitialCurrency` landed. After that a visitor in
+ * Bengaluru was served a page painting ₹149 with structured data underneath it
+ * claiming `price: '5', priceCurrency: 'USD'` — wrong on four sheets out of
+ * five, and wrong in the specific way this file's own rule names: an offer
+ * that publishes a number the default render does not show is the same defect
+ * as publishing the wrong one. It is a function now, and it is handed the same
+ * currency the cards open on.
+ *
+ * ── Why the offer says the term ──
+ * The published figure is the yearly rate, which is a per-month price that can
+ * only be bought twelve at a time. `unitText` alone ("member/month") reads to
+ * a shopping surface as a monthly-purchasable price, so the specification
+ * carries `billingDuration: 12` with `billingIncrement` and a unit code — the
+ * difference between "$5 a month" and "$5 a month on an annual term", which is
+ * the difference between an accurate rich result and a complaint.
+ *
  * Enterprise carries no `price` at all rather than a placeholder zero. A `0`
  * there would be published to a shopping surface as free, which is the one
  * mistake in this file that would end up in front of a customer.
  */
-const PRODUCT = {
-  '@type': 'Product',
-  '@id': absoluteUrl('/pricing#plans'),
-  name: `${SITE_NAME} plans`,
-  description: DESCRIPTION,
-  category: 'Secret management',
-  brand: { '@id': absoluteUrl('/#organization') },
-  url: absoluteUrl('/pricing'),
-  offers: PLANS.map((plan) => ({
-    '@type': 'Offer',
-    '@id': absoluteUrl(`/pricing#${plan.id}`),
-    name: plan.name,
-    description: offerDescription(plan),
-    url: absoluteUrl(`/pricing#${plan.id}`),
-    availability: 'https://schema.org/InStock',
-    ...(plan.amount === null
-      ? {}
-      : {
-          price: plan.amount,
-          priceCurrency: 'USD',
-          priceSpecification: {
-            '@type': 'UnitPriceSpecification',
-            price: plan.amount,
-            priceCurrency: 'USD',
-            ...(plan.unitText === null ? {} : { unitText: plan.unitText }),
-          },
-        }),
-  })),
-};
+function productSchema(currency: CurrencyId) {
+  const code = currency.toUpperCase();
+
+  return {
+    '@type': 'Product',
+    '@id': absoluteUrl('/pricing#plans'),
+    name: `${SITE_NAME} plans`,
+    description: DESCRIPTION,
+    category: 'Secret management',
+    brand: { '@id': absoluteUrl('/#organization') },
+    url: absoluteUrl('/pricing'),
+    offers: PLANS.map((plan) => {
+      // The figure the card is painting: this sheet's yearly rate where the
+      // plan has one, falling back to the plan-level amount for Free and
+      // self-hosting, whose price is `0` in every currency.
+      const amount = plan.prices[currency].yearly.amount ?? plan.amount;
+
+      return {
+        '@type': 'Offer',
+        '@id': absoluteUrl(`/pricing#${plan.id}`),
+        name: plan.name,
+        description: offerDescription(plan),
+        url: absoluteUrl(`/pricing#${plan.id}`),
+        availability: 'https://schema.org/InStock',
+        ...(amount === null
+          ? {}
+          : {
+              price: amount,
+              priceCurrency: code,
+              priceSpecification: {
+                '@type': 'UnitPriceSpecification',
+                price: amount,
+                priceCurrency: code,
+                ...(plan.unitText === null ? {} : { unitText: plan.unitText }),
+                // Only where the figure is genuinely an annual-term rate.
+                // Free and self-hosting are `0` on any term, and saying
+                // "billed for 12 months" about free would be nonsense.
+                ...(plan.prices[currency].yearly.amount === undefined
+                  ? {}
+                  : {
+                      billingIncrement: 1,
+                      billingDuration: 12,
+                      unitCode: 'MON',
+                    }),
+              },
+            }),
+      };
+    }),
+  };
+}
 
 /* ── Pieces ────────────────────────────────────────────────────────────────── */
 
@@ -1867,22 +1981,28 @@ export default async function PricingPage() {
 
   return (
     <PublicPage current="pricing">
+      {/* The same currency the cards open on. Structured data that disagreed
+          with the rendered price was wrong on four sheets out of five while
+          this was a constant. */}
       <JsonLd
         data={graph(
-          PRODUCT,
+          productSchema(initialCurrency),
           faqSchema(FAQ),
           breadcrumbSchema([{ name: 'Pricing', path: '/pricing' }]),
         )}
       />
 
-      {/* Two corrections live in the sentence below, and both were the page
-          disagreeing with itself a screen further down. $12 is the yearly rate
-          and monthly is what the cards render by default, so a reader met
-          "$12 per member per month" here and $19 on the Team card — exactly the
-          mismatch the note at the top of this file exists to prevent. And
-          single sign-on is `notYet` on the Team card and the not-built chip in
-          the matrix, so the hero was the one place on the page promising it
-          outright. */}
+      {/* The sentence below names both rates and says which is which, because
+          it sits a screen above the cards and used to disagree with them. It
+          read "$12 per member per month" while the cards opened on monthly and
+          painted $19 — exactly the mismatch the note at the top of this file
+          exists to prevent. The cards now open on yearly, so $12 leads and $19
+          is named as the month-to-month rate; the order follows the default
+          and moves with it.
+
+          Single sign-on stays out of it for the other reason: it is `notYet`
+          on the Team card and the not-built chip in the matrix, so the hero was
+          the one place on the page promising it outright. */}
       {/* `compact`, not the default `tall`. The default holds a 58svh floor and
           centres within it, so on this page the sentence describing the plans
           finished a third of the way down the screen and the plans themselves

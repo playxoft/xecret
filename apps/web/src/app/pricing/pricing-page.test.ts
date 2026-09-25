@@ -65,6 +65,9 @@ const EXPECTED: readonly (readonly [string, string, string])[] = [
 /** Just the ids, for the sheets that are priced in every currency. */
 const PRICED = EXPECTED.map(([id]) => id as string);
 
+/** The five sheets, in the order the selector renders them. */
+const CURRENCIES = ['usd', 'eur', 'inr', 'jpy', 'aud'] as const;
+
 describe('the page derives its limits rather than restating them', () => {
   it('imports the plan definitions the server enforces from', () => {
     expect(SOURCE).toContain("from '@xecret/core/entitlements'");
@@ -389,12 +392,31 @@ describe('one fact, rendered in one place', () => {
  * the structured data publishes, and what the chip beside the toggle claims.
  * Each was correct for the monthly default before it moved.
  */
+/**
+ * `indexOf`, but it fails rather than returning `-1`.
+ *
+ * Every assertion in this suite is positional, and `-1` is a number that
+ * compares happily against every other number: `expect(-1).toBeLessThan(body)`
+ * passes, and `slice(0, -1)` hands back a string that contains nothing anyone
+ * is looking for. So a marker being *renamed* — the most likely way any of
+ * this breaks — would leave the whole suite green while every price and every
+ * saving chip on the page stopped resolving. That is the failure these tests
+ * exist to catch, so the lookup itself has to be the thing that fails.
+ */
+function locate(marker: string): number {
+  const at = SOURCE.indexOf(marker);
+  expect(at, `\`${marker}\` is not in page.tsx — the test's anchor moved`).toBeGreaterThanOrEqual(
+    0,
+  );
+  return at;
+}
+
 describe('the yearly rate is the one the page opens on', () => {
   it('checks the yearly radio and not the monthly one', () => {
-    const yearly = SOURCE.slice(SOURCE.indexOf('id="billing-yearly"'));
+    const yearly = SOURCE.slice(locate('id="billing-yearly"'));
     expect(yearly.slice(0, yearly.indexOf('/>'))).toContain('defaultChecked');
 
-    const monthly = SOURCE.slice(SOURCE.indexOf('id="billing-monthly"'));
+    const monthly = SOURCE.slice(locate('id="billing-monthly"'));
     expect(monthly.slice(0, monthly.indexOf('/>'))).not.toContain('defaultChecked');
   });
 
@@ -402,20 +424,70 @@ describe('the yearly rate is the one the page opens on', () => {
     // `~` only reaches forward. If either input is moved after
     // `.x-billing-body`, every price and every saving chip on the page stops
     // resolving — a failure that renders as a card with no price at all.
-    const body = SOURCE.indexOf('className="x-billing-body"');
-    expect(SOURCE.indexOf('id="billing-monthly"')).toBeLessThan(body);
-    expect(SOURCE.indexOf('id="billing-yearly"')).toBeLessThan(body);
-    expect(SOURCE.indexOf('x-cur-${currency.id}')).toBeLessThan(body);
+    const body = locate('className="x-billing-body"');
+    expect(locate('id="billing-monthly"')).toBeLessThan(body);
+    expect(locate('id="billing-yearly"')).toBeLessThan(body);
+    expect(locate('x-cur-${currency.id}')).toBeLessThan(body);
   });
 
   it('publishes the yearly figure as the structured-data amount', () => {
     // Follows the default. An offer that publishes a number the default render
     // does not show is the same defect as publishing the wrong one.
     for (const [id, , yearly] of EXPECTED) {
-      const block = SOURCE.slice(SOURCE.indexOf(`id: '${id}'`));
+      const block = SOURCE.slice(locate(`id: '${id}'`));
       expect(block.slice(0, block.indexOf('},\n  {'))).toContain(
         `amount: '${yearly.replace('$', '')}'`,
       );
+    }
+  });
+
+  it('carries a machine amount beside every yearly price, in every sheet', () => {
+    // The structured data follows the rendered currency, so each sheet needs a
+    // bare number of its own. Written beside the display string rather than
+    // extracted from it — `'₹1,317'` is typography — and checked against it
+    // here so the two cannot drift.
+    for (const id of PRICED) {
+      const block = SOURCE.slice(locate(`id: '${id}'`));
+      const card = block.slice(0, block.indexOf('audience:'));
+
+      for (const currency of CURRENCIES) {
+        const sheet = card.slice(card.indexOf(`${currency}: {`));
+        const yearly = sheet.slice(sheet.indexOf('yearly:'));
+        const shown = /price: '([^']+)'/.exec(yearly)?.[1] ?? '';
+        const machine = /amount: '([^']+)'/.exec(yearly)?.[1] ?? '';
+
+        expect(machine, `${id}/${currency} yearly has no amount`).not.toBe('');
+        expect(
+          machine,
+          `${id}/${currency} publishes ${machine} while the card paints ${shown}`,
+        ).toBe(shown.replace(/[^0-9.]/g, ''));
+      }
+    }
+  });
+
+  it('says the published rate needs an annual term', () => {
+    // The figure is a per-month price that can only be bought twelve at a
+    // time. `unitText` alone reads as monthly-purchasable to a shopping
+    // surface, which is the difference between an accurate rich result and a
+    // complaint.
+    const schema = SOURCE.slice(locate('function productSchema('));
+    expect(schema).toContain('billingDuration: 12');
+    expect(schema).toContain('billingIncrement: 1');
+  });
+
+  it('publishes the currency the page actually opened on', () => {
+    // Pinned to USD, this was wrong on four sheets out of five: a visitor in
+    // Bengaluru was served ₹149 with `priceCurrency: 'USD'` underneath it.
+    expect(SOURCE).toContain('productSchema(initialCurrency)');
+
+    // Read from the function body, not the file: the docblock above
+    // `productSchema` quotes the old `priceCurrency: 'USD'` to explain why it
+    // is gone, and a match over the whole source fails on the explanation.
+    const body = SOURCE.slice(locate('function productSchema('));
+    const assignments = [...body.matchAll(/priceCurrency: ([^,\n]+)/g)].map((m) => m[1]);
+    expect(assignments.length, 'no priceCurrency is published at all').toBeGreaterThan(0);
+    for (const value of assignments) {
+      expect(value, 'priceCurrency is hard-coded again').toBe('code');
     }
   });
 

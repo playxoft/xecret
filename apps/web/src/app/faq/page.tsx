@@ -254,7 +254,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'How long is audit history kept?',
         answer:
-          'Thirty days on Free, twelve months on Team, and whatever you specify on Enterprise, which can also export the log. Retention decides how far back you can read, not whether an event was recorded.',
+          'Seven days on Free, thirty on Pro, a hundred and eighty on Team, and a year on Enterprise — or whatever an Enterprise agreement specifies above that, which can also export the log. Retention decides how far back you can read, not whether an event was recorded: every event is written on every plan, including Free.',
       },
       {
         question: 'Is self-hosting limited compared to the hosted version?',

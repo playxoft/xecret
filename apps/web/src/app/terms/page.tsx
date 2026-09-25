@@ -237,6 +237,7 @@ const SECTIONS: readonly LegalSection[] = [
           the community, or an Enterprise contract.
         </>,
       ],
+      'Team is billed from a minimum of 3 members and Enterprise from 10, whatever the number of people actually in the organisation. Below the minimum you are billed for it; you are never prevented from running with fewer. Free and Pro have no minimum.',
       'When billing starts, we will tell you before it applies to your organisation and you will have to enter a card yourself. Nothing moves from free to charged silently. Paid plans are then billed in advance, per member, for whichever term you choose — monthly, or yearly at the lower per-member rate. A yearly term is paid up front and does not pro-rate if you leave part-way through it. Prices exclude VAT and sales tax, which we add where we are required to charge it.',
       <>
         Cancelling stops the next renewal, and the organisation returns to Free at the end of the
