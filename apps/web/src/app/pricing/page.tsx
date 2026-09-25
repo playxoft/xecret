@@ -123,7 +123,7 @@ import { absoluteUrl, breadcrumbSchema, SITE_KEYWORDS, SITE_NAME } from '@/lib/s
 // made the metadata the most optimistic thing about the product.
 const TITLE = 'Pricing: free forever, or $5 a member billed yearly';
 const DESCRIPTION =
-  'Four xecret plans: free for one developer, Pro $8 a member a month ($5 billed yearly), Team $19, Enterprise by contract, and self-hosted free forever. Service tokens and CI never cost anything, and no card is taken in pre-alpha.';
+  'Four xecret plans: free for one developer, Pro $5 a member a month billed yearly ($8 monthly), Team $12 billed yearly ($19 monthly), Enterprise by contract, and self-hosted free forever. Service tokens and CI never cost anything, and no card is taken in pre-alpha.';
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -319,6 +319,35 @@ type CurrencyId = (typeof CURRENCIES)[number]['id'];
 const DEFAULT_CURRENCY: CurrencyId = 'usd';
 
 /**
+ * What the yearly rate saves, per sheet, as a whole percentage.
+ *
+ * ── Why these are written down and not computed ──
+ * The rule at the top of this file is that a published number is never parsed
+ * back out of a display string: `'$12'` is typography and `12` is data, and a
+ * regex over the first would publish the wrong second the day a price gains a
+ * suffix. So these are declared beside the prices they describe, the same way
+ * `amount` is — and `pricing-page.test.ts` recomputes every one of them from
+ * the price strings and fails if a sheet and its badge disagree. Parsing in a
+ * test is safe in the way parsing at render is not: the test breaks loudly and
+ * nothing reaches a customer.
+ *
+ * ── Why "up to" ──
+ * Each figure is the *larger* of the two priced plans' savings on that sheet,
+ * floored to a whole number. The two are not the same — the euro sheet saves
+ * 33 per cent on Pro and 38 on Team, because each sheet is a set of deliberate
+ * prices rather than one number converted five ways — so a bare percentage
+ * would sit above a card contradicting it. An upper bound, floored, is true of
+ * every card under it.
+ */
+const YEARLY_SAVING: Readonly<Record<CurrencyId, number>> = {
+  usd: 37,
+  eur: 38,
+  inr: 40,
+  jpy: 37,
+  aud: 38,
+};
+
+/**
  * Which sheet a visitor sees first, by the country Cloudflare reports.
  *
  * Only a default. Every currency is in the markup and the selector switches
@@ -414,10 +443,14 @@ interface Plan {
   };
   readonly recommended: boolean;
   /**
-   * Published as `Offer.price`, and always the **monthly** figure — that is
-   * what the page shows before anybody touches the toggle, and an offer that
+   * Published as `Offer.price`, and always the **yearly** figure — that is what
+   * the page shows before anybody touches the toggle, and an offer that
    * publishes a number the default render does not show is the same defect as
    * publishing the wrong one. `null` where there is genuinely no price.
+   *
+   * It followed the default here when the default moved. If the toggle ever
+   * opens on monthly again, these move back with it; the rule is "whatever the
+   * card paints first", not "whichever rate we would rather advertise".
    */
   readonly amount: string | null;
   /** Published as `unitText`, where the price is per something. */
@@ -554,7 +587,7 @@ const PRICED_PLANS: readonly Plan[] = [
     ],
     cta: { label: 'Start on Pro', href: '/sign-up', external: false },
     recommended: false,
-    amount: '8',
+    amount: '5',
     unitText: 'member/month',
   },
   {
@@ -623,7 +656,7 @@ const PRICED_PLANS: readonly Plan[] = [
     ],
     cta: { label: 'Start on Team', href: '/sign-up', external: false },
     recommended: true,
-    amount: '19',
+    amount: '12',
     unitText: 'member/month',
   },
   {
@@ -1744,13 +1777,23 @@ function PriceControls() {
         </label>
         <label htmlFor="billing-yearly" data-billing="yearly" className={SEGMENT}>
           Yearly
-          {/* "Save" without a number. The figure differs by sheet — 33% on the
-              euro Pro rate, 40% on the rupee one — because each sheet is a set
-              of deliberate prices rather than one number converted five ways.
-              A literal here sat directly above a card contradicting it, and
-              deriving it would mean five chips for a claim that is the same
-              either way: yearly is cheaper. The FAQ carries the arithmetic. */}
-          <span className="text-fg-subtle text-xs font-normal">Save</span>
+          {/* One chip per sheet, and only the checked currency's is shown — the
+              same `.x-cur-*:checked ~ .x-billing-body` mechanism the prices
+              themselves use. A single literal cannot work here: the saving is
+              33 per cent on the euro Pro rate and 40 on the rupee one, so one
+              number would sit directly above a card contradicting it.
+
+              Every chip is rendered and four are `display: none`, never
+              `visibility`, so the hidden ones leave the accessibility tree
+              rather than having the control read out five savings in a row. */}
+          {CURRENCIES.map((currency) => (
+            <span
+              key={currency.id}
+              className={`x-save x-save-${currency.id} text-fg-subtle text-xs font-normal`}
+            >
+              Save up to {YEARLY_SAVING[currency.id]}%
+            </span>
+          ))}
         </label>
       </div>
 
@@ -1850,7 +1893,7 @@ export default async function PricingPage() {
         height="compact"
         eyebrow="Pricing"
         title="Secret management pricing, without the sales call."
-        description="Four plans and a self-hosted option, published in full — the limits included. Free is genuinely free, Team is $19 per member per month or $12 billed yearly, service tokens and CI never cost anything, and running the whole server yourself is free forever."
+        description="Four plans and a self-hosted option, published in full — the limits included. Free is genuinely free, Team is $12 per member per month billed yearly or $19 month to month, service tokens and CI never cost anything, and running the whole server yourself is free forever."
       />
 
       {/* ── One control, two places it appears ──
@@ -1889,12 +1932,21 @@ export default async function PricingPage() {
           />
         ))}
 
+        {/* Yearly opens checked, and the ordering below still has to put
+            monthly first: the reveal rules read
+            `.x-cur-*:checked ~ .x-billing-*:checked ~ .x-billing-body`, and `~`
+            only reaches forward, so both inputs must precede the body. Which of
+            them carries `defaultChecked` is free; where they sit is not.
+
+            Yearly is the rate the page is written around — the title, the
+            description and the FAQ all quote it — so opening on monthly meant
+            the loudest number on the card disagreed with the sentence above it
+            until somebody clicked. */}
         <input
           id="billing-monthly"
           type="radio"
           name="billing"
           value="monthly"
-          defaultChecked
           aria-label="Billed monthly"
           className="x-billing-monthly x-price-input"
         />
@@ -1903,6 +1955,7 @@ export default async function PricingPage() {
           type="radio"
           name="billing"
           value="yearly"
+          defaultChecked
           aria-label="Billed yearly"
           className="x-billing-yearly x-price-input"
         />

@@ -212,21 +212,24 @@ const SECTIONS: readonly LegalSection[] = [
           tokens, community support on GitHub.
         </>,
         <>
-          <strong className="text-fg font-medium">Team — $9 per member per month</strong>, or $7 per
-          member per month billed yearly. Unlimited organisations, projects, members and
-          environments, 12 months of audit history, roles and per-environment access, service
-          tokens, email support.
+          <strong className="text-fg font-medium">Pro — $8 per member per month</strong>, or $5 per
+          member per month billed yearly. 3 organisations, 25 projects, 10 environments per project,
+          1,000 secrets in each, unlimited members, 50 service tokens, 30 days of audit history,
+          200,000 secret fetches a month, email support.
         </>,
         <>
-          <strong className="text-fg font-medium">Business — $19 per member per month</strong>, or
-          $15 per member per month billed yearly. Everything in Team, plus 3 years of audit history,
-          SAML single sign-on, priority support with a one-business-day response target, and
-          invoiced billing.
+          <strong className="text-fg font-medium">Team — $19 per member per month</strong>, or $12
+          per member per month billed yearly. Everything in Pro, plus 10 organisations, 100
+          projects, 25 environments per project, 5,000 secrets in each, 250 service tokens, 180 days
+          of audit history, 1,000,000 secret fetches a month, roles and per-environment access, and
+          priority support with a one-business-day response target.
         </>,
         <>
-          <strong className="text-fg font-medium">Enterprise — custom.</strong> Everything in
-          Business, plus SCIM provisioning, custom audit retention, a self-hosting support contract,
-          a named contact, and a contractual SLA.
+          <strong className="text-fg font-medium">Enterprise — custom.</strong> Everything in Team,
+          without the organisation, project, environment, secret or token ceilings, plus a year of
+          audit history, invoiced billing, a self-hosting support contract, a named contact, and a
+          contractual SLA. SAML single sign-on and SCIM provisioning are named here and are not
+          built yet.
         </>,
         <>
           <strong className="text-fg font-medium">Self-hosted — free, always.</strong> The whole

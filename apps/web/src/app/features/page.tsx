@@ -358,7 +358,7 @@ const FAQ: readonly FaqItem[] = [
   {
     question: 'What does xecret cost?',
     answer:
-      'While xecret is pre-alpha, every paid feature is on for everybody and no card is collected. At 1.0 the free tier is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Team is $9 per member per month — $7 billed yearly — for unlimited organisations, projects, members and environments, 12 months of audit history, roles and per-environment access. Business is $19 per member per month for three years of history and priority support, and names SAML single sign-on, which is not built yet. Enterprise is custom. Self-hosting is free, always.',
+      'While xecret is pre-alpha, every paid feature is on for everybody and no card is collected. At 1.0 the free tier is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro is $5 per member per month billed yearly — $8 month to month — for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of audit history. Team is $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access. Enterprise is custom and drops the ceilings; SAML single sign-on and SCIM provisioning are named there and are not built yet. Self-hosting is free, always.',
   },
 ];
 

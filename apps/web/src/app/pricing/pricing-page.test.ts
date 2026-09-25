@@ -38,6 +38,33 @@ const SOURCE = readFileSync(join(import.meta.dirname, 'page.tsx'), 'utf8');
  */
 const DESCRIPTION_LINE = /const DESCRIPTION =\s*([\s\S]*?);\n/.exec(SOURCE)?.[1] ?? '';
 
+/**
+ * The stylesheet that drives the whole control.
+ *
+ * Read for the same reason the page is: the toggle, the currency menu and the
+ * eight figures per card are a CSS mechanism, so the assertions that matter
+ * about them are assertions about selectors. A rule that stops matching is a
+ * card with no price on it, and nothing in TypeScript would notice.
+ */
+const GLOBALS = readFileSync(join(import.meta.dirname, '..', 'globals.css'), 'utf8');
+
+/**
+ * The two priced self-serve plans, and their USD figures.
+ *
+ * Prices are deliberately *not* imported from the entitlements package — a
+ * price is typography as much as data and varies by currency, where a limit is
+ * a number with one correct value. So they are asserted here instead, against
+ * `.local/plans/pricing-plan.md` §3. Module scope because the yearly-default
+ * suite needs them too.
+ */
+const EXPECTED: readonly (readonly [string, string, string])[] = [
+  ['pro', '$8', '$5'],
+  ['team', '$19', '$12'],
+];
+
+/** Just the ids, for the sheets that are priced in every currency. */
+const PRICED = EXPECTED.map(([id]) => id as string);
+
 describe('the page derives its limits rather than restating them', () => {
   it('imports the plan definitions the server enforces from', () => {
     expect(SOURCE).toContain("from '@xecret/core/entitlements'");
@@ -75,35 +102,12 @@ describe('the page derives its limits rather than restating them', () => {
 });
 
 describe('the prices that are written down', () => {
-  /**
-   * Prices are deliberately *not* imported from the entitlements package — a
-   * price is typography as much as data and varies by currency, where a limit
-   * is a number with one correct value. So they are asserted here instead,
-   * against `.local/plans/pricing-plan.md` §3.
-   */
-  const EXPECTED: readonly (readonly [string, string, string])[] = [
-    ['pro', '$8', '$5'],
-    ['team', '$19', '$12'],
-  ];
-
   it.each(EXPECTED)('%s is %s monthly and %s yearly', (id, monthly, yearly) => {
     const block = SOURCE.slice(SOURCE.indexOf(`id: '${id}'`));
     const card = block.slice(0, block.indexOf('cta:'));
 
     expect(card).toContain(`price: '${monthly}'`);
     expect(card).toContain(`price: '${yearly}'`);
-  });
-
-  it('publishes the monthly figure as the structured-data amount', () => {
-    // The page renders monthly before anybody touches the toggle, and an offer
-    // that publishes a number the default render does not show is the same
-    // defect as publishing the wrong one.
-    for (const [id, monthly] of EXPECTED) {
-      const block = SOURCE.slice(SOURCE.indexOf(`id: '${id}'`));
-      expect(block.slice(0, block.indexOf('},\n  {'))).toContain(
-        `amount: '${monthly.replace('$', '')}'`,
-      );
-    }
   });
 
   /**
@@ -359,14 +363,110 @@ describe('one fact, rendered in one place', () => {
   });
 
   it('names the billing period wherever it names a yearly rate', () => {
-    // $5 and $12 are yearly; the cards default to monthly. The title, the
-    // description and the hero each stated one as the other, which is a rich
-    // result advertising a price the page does not render.
+    // $5 and $12 are yearly. The title, the description and the hero each once
+    // stated one as the other, which is a rich result advertising a price the
+    // page does not render.
+    //
+    // The guard is on the *unqualified* claim, not on the substring: now that
+    // the page opens on yearly the hero legitimately reads "Team is $12 per
+    // member per month billed yearly", and a bare `not.toContain` on the first
+    // half of that sentence failed the corrected copy along with the wrong.
     expect(DESCRIPTION_LINE).toContain('billed yearly');
-    expect(SOURCE).not.toContain('Team is $12 per member per month');
+    expect(SOURCE).not.toMatch(/Team is \$12 per member per month(?! billed yearly)/);
+    expect(SOURCE).not.toMatch(/Team is \$19 per member per month(?! or)/);
   });
 
   it('does not promise single sign-on in the metadata it marks Not yet on the card', () => {
     expect(DESCRIPTION_LINE).not.toContain('single sign-on included');
+  });
+});
+
+/**
+ * The yearly default, and the saving it advertises.
+ *
+ * The page opens on the yearly rate, so three things have to agree with that
+ * and not with each other: which radio carries `defaultChecked`, which figure
+ * the structured data publishes, and what the chip beside the toggle claims.
+ * Each was correct for the monthly default before it moved.
+ */
+describe('the yearly rate is the one the page opens on', () => {
+  it('checks the yearly radio and not the monthly one', () => {
+    const yearly = SOURCE.slice(SOURCE.indexOf('id="billing-yearly"'));
+    expect(yearly.slice(0, yearly.indexOf('/>'))).toContain('defaultChecked');
+
+    const monthly = SOURCE.slice(SOURCE.indexOf('id="billing-monthly"'));
+    expect(monthly.slice(0, monthly.indexOf('/>'))).not.toContain('defaultChecked');
+  });
+
+  it('keeps both billing inputs ahead of the body they reach into', () => {
+    // `~` only reaches forward. If either input is moved after
+    // `.x-billing-body`, every price and every saving chip on the page stops
+    // resolving — a failure that renders as a card with no price at all.
+    const body = SOURCE.indexOf('className="x-billing-body"');
+    expect(SOURCE.indexOf('id="billing-monthly"')).toBeLessThan(body);
+    expect(SOURCE.indexOf('id="billing-yearly"')).toBeLessThan(body);
+    expect(SOURCE.indexOf('x-cur-${currency.id}')).toBeLessThan(body);
+  });
+
+  it('publishes the yearly figure as the structured-data amount', () => {
+    // Follows the default. An offer that publishes a number the default render
+    // does not show is the same defect as publishing the wrong one.
+    for (const [id, , yearly] of EXPECTED) {
+      const block = SOURCE.slice(SOURCE.indexOf(`id: '${id}'`));
+      expect(block.slice(0, block.indexOf('},\n  {'))).toContain(
+        `amount: '${yearly.replace('$', '')}'`,
+      );
+    }
+  });
+
+  it('advertises a saving every sheet actually delivers', () => {
+    // `YEARLY_SAVING` is written down rather than computed, because the page's
+    // rule is that a published number is never parsed back out of a display
+    // string. This recomputes it from the prices anyway and fails if the two
+    // disagree — parsing in a test is safe in the way parsing at render is not.
+    const declared = /const YEARLY_SAVING[^=]*= \{([\s\S]*?)\n\};/.exec(SOURCE)?.[1] ?? '';
+    expect(declared, 'YEARLY_SAVING is not declared').not.toBe('');
+
+    const amount = (price: string) => Number(price.replace(/[^0-9.]/g, ''));
+
+    for (const currency of ['usd', 'eur', 'inr', 'jpy', 'aud'] as const) {
+      // `String.raw` because this is a template literal: written plainly, the
+      // `\s` and `\d` would reach `RegExp` as a bare `s` and `d` and quietly
+      // match nothing, which reads as "no saving declared" rather than as the
+      // typo it is.
+      const claimed = Number(new RegExp(String.raw`${currency}:\s*(\d+)`).exec(declared)?.[1]);
+      expect(claimed, `${currency} has no declared saving`).toBeGreaterThan(0);
+
+      const savings = PRICED.map((id) => {
+        const block = SOURCE.slice(SOURCE.indexOf(`id: '${id}'`));
+        const card = block.slice(0, block.indexOf('audience:'));
+        const sheet = card.slice(card.indexOf(`${currency}: {`));
+        const [monthly, yearly] = [...sheet.matchAll(/price: '([^']+)'/g)].map((m) =>
+          amount(m[1] ?? ''),
+        );
+        expect(monthly, `${id}/${currency} monthly is unreadable`).toBeGreaterThan(0);
+        expect(yearly, `${id}/${currency} yearly is unreadable`).toBeGreaterThan(0);
+        return (1 - (yearly as number) / (monthly as number)) * 100;
+      });
+
+      // The chip says "up to", so it must be an upper bound on every card
+      // under it — and a floored one, so it is not rounded up past the truth.
+      const best = Math.max(...savings);
+      expect(claimed, `${currency} claims more than any plan saves`).toBeLessThanOrEqual(
+        Math.ceil(best),
+      );
+      expect(claimed, `${currency} undersells its own best rate`).toBe(Math.floor(best));
+    }
+  });
+
+  it('shows exactly one saving chip, chosen by the same radios as the prices', () => {
+    // Hidden by default and revealed per currency, so a stylesheet that never
+    // arrives leaves the control silent rather than reading five figures out.
+    expect(GLOBALS).toMatch(/\.x-save\s*\{\s*display:\s*none/);
+    for (const currency of ['usd', 'eur', 'inr', 'jpy', 'aud'] as const) {
+      expect(GLOBALS, `${currency} has no reveal rule`).toContain(
+        `.x-cur-${currency}:checked ~ .x-billing-body .x-save-${currency}`,
+      );
+    }
   });
 });

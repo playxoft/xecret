@@ -263,10 +263,10 @@ const SECTIONS: readonly LegalSection[] = [
     paragraphs: [
       [
         <>
-          <strong className="text-fg font-medium">Audit records</strong> — 7 days on Free, 12 months
-          on Team, 3 years on Business, and whatever an Enterprise agreement states. A single audit
-          query returns at most a 90-day window, which is a limit on the query and not on the
-          retention.
+          <strong className="text-fg font-medium">Audit records</strong> — 7 days on Free, 30 days
+          on Pro, 180 days on Team, a year on Enterprise, and whatever an Enterprise agreement
+          states above that. A single audit query returns at most a 90-day window, which is a limit
+          on the query and not on the retention.
         </>,
         <>
           <strong className="text-fg font-medium">Secrets</strong> — for as long as the environment

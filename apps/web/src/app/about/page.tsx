@@ -273,7 +273,7 @@ const MILESTONES = [
     // the product and contradicted this page's own FAQ answer two screens
     // down. What is genuinely absent is SAML and SCIM, and the pricing matrix
     // now says "Not yet" in those rows rather than ticking them.
-    body: 'SAML single sign-on is named on the pricing page as part of Business, and SCIM provisioning as part of Enterprise. Neither is built, and the comparison table says so in the row rather than in a footnote under it. Roles and per-environment access are built already — those are a plan boundary, not a promise.',
+    body: 'SAML single sign-on and SCIM provisioning are named on the pricing page as Enterprise, and as per-connection add-ons above Pro. Neither is built, and the comparison table says so in the row rather than in a footnote under it. Roles and per-environment access are built already — those are a plan boundary, not a promise.',
   },
   {
     state: 'next',
@@ -338,7 +338,7 @@ const FAQ: readonly FaqItem[] = [
   {
     question: 'How do you make money?',
     answer:
-      'From the hosted service. Free is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Team will be $9 per member per month, or $7 billed yearly, for unlimited organisations, projects, members and environments, 12 months of history, roles and per-environment access. Business will be $19 per member per month for three years of history and priority support, plus SAML single sign-on, which is not built yet. Enterprise is custom, for SCIM, custom audit retention and a self-hosting support contract. Self-hosting is free, always. While xecret is in pre-alpha every paid feature is on for everybody and no card is collected.',
+      'From the hosted service. Free is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro will be $5 per member per month billed yearly, or $8 month to month, for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of history. Team will be $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 180 days of history, roles and per-environment access, and priority support. Enterprise is custom, dropping the ceilings, for a year of audit history, a self-hosting support contract and an SLA — SAML single sign-on and SCIM provisioning are named there and are not built yet. Self-hosting is free, always. While xecret is in pre-alpha every paid feature is on for everybody and no card is collected.',
   },
   {
     question: 'Is xecret production-ready?',
