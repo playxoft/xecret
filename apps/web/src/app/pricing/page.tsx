@@ -1613,15 +1613,18 @@ const FAQ: readonly FaqItem[] = [
  * serving long after the page is right. An unbuilt capability carries its
  * caveat here too: an `Offer` that lists SAML without it is the tick this page
  * refuses to show, published somewhere nobody on the team ever reads back.
+ *
+ * It takes the currency for the same reason `productSchema` does: this string
+ * ends in the annual total, and reading that off `prices.usd` while the node
+ * around it published `priceCurrency: 'INR'` put "Annual equivalent: $60" in
+ * an offer priced ₹149 — the currency mismatch moved rather than fixed.
  */
-function offerDescription(plan: Plan): string {
+function offerDescription(plan: Plan, currency: CurrencyId): string {
   const includes = plan.features
     .map((feature) => (feature.notYet === true ? `${feature.text} (not built yet)` : feature.text))
     .join('; ');
-  const annual =
-    plan.prices.usd.yearly.note === undefined
-      ? ''
-      : ` Annual equivalent: ${plan.prices.usd.yearly.note}.`;
+  const note = plan.prices[currency].yearly.note;
+  const annual = note === undefined ? '' : ` Annual equivalent: ${note}.`;
 
   return `${plan.audience} Includes: ${includes}.${annual}`;
 }
@@ -1658,7 +1661,12 @@ function productSchema(currency: CurrencyId) {
     '@type': 'Product',
     '@id': absoluteUrl('/pricing#plans'),
     name: `${SITE_NAME} plans`,
-    description: DESCRIPTION,
+    // Deliberately *not* `DESCRIPTION`. That string quotes "$5" and "$12"
+    // because it is the meta description and a search result should carry a
+    // figure — but it would sit here in the same `@graph` as offers priced in
+    // euro or rupees, which is the mismatch this function exists to end. The
+    // prices are in the offers; this only has to say what the product is.
+    description: `Every ${SITE_NAME} plan, with the limits each one carries and what it costs. Free forever for a single developer, per-member pricing above that, and the whole server self-hostable at no charge.`,
     category: 'Secret management',
     brand: { '@id': absoluteUrl('/#organization') },
     url: absoluteUrl('/pricing'),
@@ -1672,7 +1680,7 @@ function productSchema(currency: CurrencyId) {
         '@type': 'Offer',
         '@id': absoluteUrl(`/pricing#${plan.id}`),
         name: plan.name,
-        description: offerDescription(plan),
+        description: offerDescription(plan, currency),
         url: absoluteUrl(`/pricing#${plan.id}`),
         availability: 'https://schema.org/InStock',
         ...(amount === null
@@ -1688,13 +1696,17 @@ function productSchema(currency: CurrencyId) {
                 // Only where the figure is genuinely an annual-term rate.
                 // Free and self-hosting are `0` on any term, and saying
                 // "billed for 12 months" about free would be nonsense.
+                //
+                // `billingDuration` is an ISO-8601 `Duration` and not the
+                // number 12: schema.org reads a *numeric* `billingDuration`
+                // against `unitCode`, so pairing `12` with `unitCode: 'MON'`
+                // would have redefined the reference quantity as one month and
+                // contradicted `unitText`, which says it is one member-month.
+                // A `Duration` needs no unit and leaves `unitText` to mean the
+                // one thing it is there to mean.
                 ...(plan.prices[currency].yearly.amount === undefined
                   ? {}
-                  : {
-                      billingIncrement: 1,
-                      billingDuration: 12,
-                      unitCode: 'MON',
-                    }),
+                  : { billingDuration: 'P1Y' }),
               },
             }),
       };

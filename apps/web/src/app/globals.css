@@ -1036,8 +1036,9 @@
    which half is chosen decides which of two prices every card below is
    showing. `--accent`/`--accent-fg` is the token pair meant for a filled
    control and carries AAA contrast in both themes, so the answer is legible
-   at a glance instead of inferred from a shadow. */
-The fill and the colour do the work and the weight is deliberately left
+   at a glance instead of inferred from a shadow.
+
+   The fill and the colour do the work and the weight is deliberately left
    alone: `SEGMENT` is content-width inside an `inline-flex` shell, so
    promoting only the checked half to 600 changes its width and both halves
    slide sideways under the pointer on every toggle. A control that moves when

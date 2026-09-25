@@ -403,6 +403,23 @@ describe('one fact, rendered in one place', () => {
  * saving chip on the page stopped resolving. That is the failure these tests
  * exist to catch, so the lookup itself has to be the thing that fails.
  */
+/**
+ * The same source with its commentary removed.
+ *
+ * Three assertions in this file have now been written, failed, and rewritten
+ * because the page *explains* the thing they forbid: the docblock above
+ * `productSchema` quotes the `priceCurrency: 'USD'` it replaced, and the
+ * comment beside `billingDuration` names the `unitCode` it deliberately does
+ * not emit. A negative assertion over raw source fails on its own
+ * justification, which trains the next person to delete the comment.
+ *
+ * Line comments are stripped only where they begin a line, so the `//` in
+ * `https://schema.org/InStock` survives.
+ */
+function withoutComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+}
+
 function locate(marker: string): number {
   const at = SOURCE.indexOf(marker);
   expect(at, `\`${marker}\` is not in page.tsx — the test's anchor moved`).toBeGreaterThanOrEqual(
@@ -470,9 +487,14 @@ describe('the yearly rate is the one the page opens on', () => {
     // time. `unitText` alone reads as monthly-purchasable to a shopping
     // surface, which is the difference between an accurate rich result and a
     // complaint.
-    const schema = SOURCE.slice(locate('function productSchema('));
-    expect(schema).toContain('billingDuration: 12');
-    expect(schema).toContain('billingIncrement: 1');
+    const schema = withoutComments(SOURCE.slice(locate('function productSchema(')));
+
+    // An ISO-8601 `Duration`, not the number 12. schema.org reads a numeric
+    // `billingDuration` against `unitCode`, so `12` + `unitCode: 'MON'` would
+    // redefine the reference quantity as one month and contradict `unitText`,
+    // which says it is one member-month.
+    expect(schema).toContain("billingDuration: 'P1Y'");
+    expect(schema, 'unitCode is back, and it fights unitText').not.toContain('unitCode');
   });
 
   it('publishes the currency the page actually opened on', () => {
@@ -480,10 +502,10 @@ describe('the yearly rate is the one the page opens on', () => {
     // Bengaluru was served ₹149 with `priceCurrency: 'USD'` underneath it.
     expect(SOURCE).toContain('productSchema(initialCurrency)');
 
-    // Read from the function body, not the file: the docblock above
+    // Read from the code, not the commentary: the docblock above
     // `productSchema` quotes the old `priceCurrency: 'USD'` to explain why it
     // is gone, and a match over the whole source fails on the explanation.
-    const body = SOURCE.slice(locate('function productSchema('));
+    const body = withoutComments(SOURCE);
     const assignments = [...body.matchAll(/priceCurrency: ([^,\n]+)/g)].map((m) => m[1]);
     expect(assignments.length, 'no priceCurrency is published at all').toBeGreaterThan(0);
     for (const value of assignments) {
