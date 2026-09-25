@@ -65,8 +65,21 @@ const EXPECTED: readonly (readonly [string, string, string])[] = [
 /** Just the ids, for the sheets that are priced in every currency. */
 const PRICED = EXPECTED.map(([id]) => id as string);
 
-/** The five sheets, in the order the selector renders them. */
-const CURRENCIES = ['usd', 'eur', 'inr', 'jpy', 'aud'] as const;
+/**
+ * The sheets, read out of the page rather than listed here.
+ *
+ * Listing them meant that adding a sixth currency to `CURRENCIES` in
+ * `page.tsx` — which TypeScript *does* force into `YEARLY_SAVING`, so it feels
+ * covered — left both the saving recomputation and the CSS-reveal check
+ * silently skipping it. A missing `.x-save-<new>` rule would then ship as a
+ * toggle with no chip on that sheet and nothing would fail.
+ */
+const CURRENCIES = (() => {
+  const block = /const CURRENCIES = \[([\s\S]*?)\] as const;/.exec(SOURCE)?.[1] ?? '';
+  const ids = [...block.matchAll(/id: '([a-z]+)'/g)].map((m) => m[1] as string);
+  if (ids.length === 0) throw new Error('CURRENCIES could not be read out of page.tsx');
+  return ids;
+})();
 
 describe('the page derives its limits rather than restating them', () => {
   it('imports the plan definitions the server enforces from', () => {
@@ -542,7 +555,7 @@ describe('the yearly rate is the one the page opens on', () => {
 
     const amount = (price: string) => Number(price.replace(/[^0-9.]/g, ''));
 
-    for (const currency of ['usd', 'eur', 'inr', 'jpy', 'aud'] as const) {
+    for (const currency of CURRENCIES) {
       // `String.raw` because this is a template literal: written plainly, the
       // `\s` and `\d` would reach `RegExp` as a bare `s` and `d` and quietly
       // match nothing, which reads as "no saving declared" rather than as the
@@ -576,7 +589,7 @@ describe('the yearly rate is the one the page opens on', () => {
     // Hidden by default and revealed per currency, so a stylesheet that never
     // arrives leaves the control silent rather than reading five figures out.
     expect(GLOBALS).toMatch(/\.x-save\s*\{\s*display:\s*none/);
-    for (const currency of ['usd', 'eur', 'inr', 'jpy', 'aud'] as const) {
+    for (const currency of CURRENCIES) {
       expect(GLOBALS, `${currency} has no reveal rule`).toContain(
         `.x-cur-${currency}:checked ~ .x-billing-body .x-save-${currency}`,
       );

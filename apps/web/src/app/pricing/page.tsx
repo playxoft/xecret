@@ -892,9 +892,14 @@ const ADDONS = [
     name: 'SAML single sign-on',
     prices: { usd: '$199', eur: '€185', inr: '₹16,900', jpy: '¥29,900', aud: 'A$309' },
     unit: 'per connection, per month',
-    from: 'Team and above',
+    // "Team and above" put a $199 charge in front of an Enterprise buyer whom
+    // three other surfaces — the Enterprise card bullet, the matrix and the
+    // Terms — tell it is included. The Terms are the document they sign, so
+    // the band was the outlier: this is a Team charge and an Enterprise
+    // inclusion, which is the mirror of how SCIM works one entry below.
+    from: 'Team only — included with Enterprise',
     notYet: true,
-    body: 'For an identity provider that speaks SAML rather than OIDC. Brokered through WorkOS, which charges us $125 per connection per month; we charge $199 and keep the difference for the support that comes with it. OIDC single sign-on will be included from Team and cost nothing extra, because it costs us nothing — neither is built yet.',
+    body: 'For an identity provider that speaks SAML rather than OIDC. Brokered through WorkOS, which charges us $125 per connection per month; we charge $199 and keep the difference for the support that comes with it. Enterprise contracts include it rather than paying per connection. OIDC single sign-on will be included from Team and cost nothing extra, because it costs us nothing — neither is built yet.',
   },
   {
     name: 'Directory sync (SCIM)',
@@ -1931,7 +1936,14 @@ function PriceControls() {
 
               Every chip is rendered and four are `display: none`, never
               `visibility`, so the hidden ones leave the accessibility tree
-              rather than having the control read out five savings in a row. */}
+              instead of being reachable text nobody can see.
+
+              Note what this does *not* do: the radio carries an `aria-label`,
+              which overrides label content, so none of these reaches the
+              control's accessible name — see the note on that attribute for
+              why the figure cannot go there either. The chip is a visual
+              affordance, and the discount is stated in words in the label and
+              spelled out with its arithmetic in the FAQ. */}
           {CURRENCIES.map((currency) => (
             <span
               key={currency.id}
@@ -2108,7 +2120,20 @@ export default async function PricingPage() {
           name="billing"
           value="yearly"
           defaultChecked
-          aria-label="Billed yearly"
+          // Names the discount, without naming the figure. The saving chips sit
+          // inside the label, but `aria-label` overrides label content for the
+          // accessible name, so a screen-reader user heard "Billed yearly" and
+          // never learned a discount existed while the visible control said
+          // "Save up to 37%".
+          //
+          // The figure itself cannot come in here. `PriceControls` renders
+          // twice — above the plans and above the matrix — so two labels point
+          // at this one input and dropping `aria-label` would concatenate both
+          // into the name. And the number changes with the currency, which is a
+          // CSS state this server-rendered string cannot follow, so a literal
+          // would be wrong for four sheets out of five the moment somebody
+          // switched. "At a lower rate" is true on every sheet.
+          aria-label="Billed yearly, at a lower rate per member"
           className="x-billing-yearly x-price-input"
         />
 

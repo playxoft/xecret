@@ -123,7 +123,7 @@ const eslintConfig = defineConfig([
     // The ban exists because a `node:fs` import that reaches the worker bundle
     // is a 500 in production, and test files are only *usually* outside it — a
     // shared helper under `__tests__` that runtime code later imports is
-    // exactly how that stops being true. Two files asking for the exemption is
+    // exactly how that stops being true. Three files asking for the exemption is
     // a thing a reviewer can see; every test in the app holding it is not.
     files: [
       'src/app/pricing/pricing-page.test.ts',

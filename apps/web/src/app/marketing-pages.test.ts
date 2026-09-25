@@ -137,16 +137,30 @@ describe('every page that states a price states the current one', () => {
   // price, so it is checked in the retention suite instead.
   const PRICED = ['terms', 'faq', 'features', 'about', '.'] as const;
 
+  /**
+   * `$19`, but not the `$19` inside `$199`.
+   *
+   * `toContain('$19')` was satisfied by the SAML add-on price this same PR
+   * added to all five of these pages, so the Team monthly rate was unpinned on
+   * every page this file claims to pin it on — rewriting every standalone $19
+   * in `/terms` to $21 left the suite green. The fence is on the trailing side
+   * only: no price here is a suffix of another.
+   */
+  function quotes(source: string, price: string): boolean {
+    const escaped = price.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`${escaped}(?!\\d)`).test(source);
+  }
+
   it.each(PRICED)('%s quotes Pro at $8 monthly and $5 yearly', (page) => {
     const source = SOURCES.get(page) ?? '';
-    expect(source).toContain('$8');
-    expect(source).toContain('$5');
+    expect(quotes(source, '$8'), `${page} does not quote Pro monthly`).toBe(true);
+    expect(quotes(source, '$5'), `${page} does not quote Pro yearly`).toBe(true);
   });
 
   it.each(PRICED)('%s quotes Team at $19 monthly and $12 yearly', (page) => {
     const source = SOURCES.get(page) ?? '';
-    expect(source).toContain('$19');
-    expect(source).toContain('$12');
+    expect(quotes(source, '$19'), `${page} does not quote Team monthly`).toBe(true);
+    expect(quotes(source, '$12'), `${page} does not quote Team yearly`).toBe(true);
   });
 });
 
@@ -194,12 +208,30 @@ describe('every limit stated in prose matches the engine', () => {
     }
   });
 
+  /**
+   * Just the sentence (or bullet) describing the free tier.
+   *
+   * Narrowed because `MINIMUM_SEATS.team` and `FREE_LIMITS.seats` are both `3`,
+   * and `/terms` states both — so "a minimum of 3 members", added by this PR,
+   * silently satisfied the Free seat assertion. Changing the Free bullet to
+   * "4 members" left the suite green. Every one of these pages lists Free
+   * first and Pro next, so the free description is what lies between them.
+   */
+  function freeRegion(source: string): string {
+    const start = source.search(/free tier|Free is|Free —/i);
+    if (start < 0) return '';
+    const rest = source.slice(start);
+    const end = rest.search(/\bPro (is|will be|—)/);
+    return end < 0 ? rest : rest.slice(0, end);
+  }
+
   it('every page that states the free ceilings states the engine ones', () => {
     const free = PLANS.free.limits;
 
     for (const [page, source] of SOURCES) {
       // Only the pages that actually enumerate the free tier.
-      if (!/free tier|Free is|Free —/i.test(source)) continue;
+      const region = freeRegion(source);
+      if (region === '') continue;
 
       for (const field of [
         'organizations',
@@ -211,7 +243,7 @@ describe('every limit stated in prose matches the engine', () => {
         const value = free[field];
         if (value === null) continue;
         expect(
-          states(source, value, NOUNS[field]),
+          states(region, value, NOUNS[field]),
           `${page} does not state free.${field} = ${value}`,
         ).toBe(true);
       }
@@ -229,14 +261,19 @@ describe('audit retention agrees with the engine everywhere it is stated', () =>
     ['pro', PLANS.pro.limits.auditRetentionDays],
     ['team', PLANS.team.limits.auditRetentionDays],
     ['enterprise', PLANS.enterprise.limits.auditRetentionDays],
-  ])('privacy states %s retention as %i days', (_plan, days) => {
-    // `/privacy` words these as "7 days on Free, 30 days on Pro, 180 days on
-    // Team, a year on Enterprise", so the noun is the unit rather than the
-    // phrase the plan pages use.
+  ])('privacy states %s retention as %i days', (plan, days) => {
+    // Anchored on the plan name, not the unit. `/privacy` also says
+    // "Sessions — 30 days from creation" and carries a 30-day cookie line, so
+    // `states(source, 30, 'days?')` was satisfied by text that has nothing to
+    // do with audit retention — changing "30 days on Pro" to "45 days on Pro"
+    // left the suite green. The page words the whole group as "7 days on Free,
+    // 30 days on Pro, 180 days on Team, a year on Enterprise".
     const source = SOURCES.get('privacy') ?? '';
-    expect(states(source, days as number, 'days?') || states(source, days as number, 'on')).toBe(
-      true,
-    );
+    expect(
+      states(source, days as number, `days? on ${plan}`) ||
+        states(source, days as number, `on ${plan}`),
+      `privacy does not state ${days} days on ${plan}`,
+    ).toBe(true);
   });
 
   it('no page still claims twelve months or three years of history', () => {
@@ -276,6 +313,22 @@ describe('the add-ons are described the same way everywhere', () => {
   // have mirror-image rules and collapsing them gets both wrong.
   it('no page gates SAML at Enterprise alone', () => {
     expect(ALL).not.toMatch(/SAML single sign-on and SCIM provisioning are named there/i);
+  });
+
+  it('never publishes an add-on price without its unit', () => {
+    // $249 with no unit can be read as a one-off or a per-member charge, and
+    // four of these answers are emitted as `FAQPage` JSON-LD, so the ambiguity
+    // reaches a rich result. Both add-ons are per connection, per month.
+    for (const [page, source] of SOURCES) {
+      const text = source.replace(/\s+/g, ' ');
+      for (const price of ['$199', '$249']) {
+        if (!text.includes(price)) continue;
+        const after = text.slice(text.indexOf(price), text.indexOf(price) + 120);
+        expect(after, `${page} quotes ${price} with no unit beside it`).toMatch(
+          /per[- ]connection/i,
+        );
+      }
+    }
   });
 
   it('every page that prices the add-ons prices them the same', () => {
