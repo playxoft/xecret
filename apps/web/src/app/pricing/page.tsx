@@ -481,16 +481,27 @@ interface Plan {
   };
   readonly recommended: boolean;
   /**
-   * Published as `Offer.price`, and always the **yearly** figure — that is what
-   * the page shows before anybody touches the toggle, and an offer that
-   * publishes a number the default render does not show is the same defect as
-   * publishing the wrong one. `null` where there is genuinely no price.
+   * The published price where it is the same in every currency.
    *
-   * It followed the default here when the default moved. If the toggle ever
-   * opens on monthly again, these move back with it; the rule is "whatever the
-   * card paints first", not "whichever rate we would rather advertise".
+   * Only two values are legitimate here: `'0'` for Free and self-hosting, and
+   * `null` for Enterprise, which has no price to publish at all. A priced plan
+   * leaves this alone — its figure lives on the sheet, as
+   * `prices[currency].yearly.amount`, because `productSchema` publishes the
+   * rate for the currency the page actually opened on and a single number
+   * cannot be that for five sheets.
+   *
+   * It briefly held `'5'` and `'12'` as well, which was worse than redundant:
+   * `productSchema` had stopped reading them, so editing the yearly rate here
+   * changed nothing in the structured data while looking exactly like the place
+   * to do it. A field that silently does nothing is a trap for the next
+   * person, so the priced plans no longer carry one.
+   *
+   * Optional rather than `| null` for that reason: absent means "this plan's
+   * price is on its sheets", which is a different statement from Enterprise's
+   * explicit `null` — "there is no price to publish". The type now makes the
+   * priced plans unable to carry a figure here by accident.
    */
-  readonly amount: string | null;
+  readonly amount?: string | null | undefined;
   /** Published as `unitText`, where the price is per something. */
   readonly unitText: string | null;
 }
@@ -630,7 +641,6 @@ const PRICED_PLANS: readonly Plan[] = [
     ],
     cta: { label: 'Start on Pro', href: '/sign-up', external: false },
     recommended: false,
-    amount: '5',
     unitText: 'member/month',
   },
   {
@@ -708,7 +718,6 @@ const PRICED_PLANS: readonly Plan[] = [
     ],
     cta: { label: 'Start on Team', href: '/sign-up', external: false },
     recommended: true,
-    amount: '12',
     unitText: 'member/month',
   },
   {
@@ -893,7 +902,14 @@ const ADDONS = [
     unit: 'per connection, per month',
     from: 'Enterprise',
     notYet: true,
-    body: 'Members provisioned and deprovisioned by your directory. A second WorkOS connection at the same $125 to us, and the reason it is priced separately rather than folded into a tier: bundling it would mean paying for a connection for every customer on that tier, including the ones who never use it. Included with Enterprise once it is built.',
+    // "Included with Enterprise" is what this sentence used to end with, and it
+    // was the only surface on the site saying so: the matrix cell beside it is
+    // `ADDON_NOT_YET` precisely because SCIM is bought per connection even on
+    // Enterprise, and the Terms — which close with "if they ever disagree with
+    // this section, this section is the one you agreed to" — bill $249 for it.
+    // A prospect reading the band and signing the Terms met two different
+    // answers about the same charge.
+    body: 'Members provisioned and deprovisioned by your directory. A second WorkOS connection at the same $125 to us, and the reason it is priced separately rather than folded into a tier: bundling it would mean paying for a connection for every customer on that tier, including the ones who never use it. Sold at Enterprise only, and charged per connection there too rather than bundled into the contract.',
   },
 ] as const;
 
@@ -1569,7 +1585,7 @@ const FAQ: readonly FaqItem[] = [
   {
     question: 'Is there an annual price?',
     answer:
-      'Yes, and it is what the page opens on. Billed yearly, Pro is $5 a member a month and Team is $12 — charged as $60 and $144 a member a year, a third to two fifths below the monthly rate. The exact saving differs by plan as well as by currency, because each sheet is a set of deliberate prices rather than one number converted: on the euro sheet it is 33 per cent on Pro and 38 on Team, and on the rupee sheet 40 on Pro and 37 on Team. That is why the chip beside the toggle says "up to" — it carries the better of the two figures for whichever sheet you are reading, so it is an upper bound rather than a promise for every card. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both, and neither is billed at all during pre-alpha.',
+      'Yes, and it is what the page opens on. In US dollars, billed yearly, Pro is $5 a member a month and Team is $12 — charged as $60 and $144 a member a year, a third to two fifths below the monthly rate. The other four sheets carry their own figures; the cards above show whichever one you are reading. The exact saving differs by plan as well as by currency, because each sheet is a set of deliberate prices rather than one number converted: on the euro sheet it is 33 per cent on Pro and 38 on Team, and on the rupee sheet 40 on Pro and 37 on Team. That is why the chip beside the toggle says "up to" — it carries the better of the two figures for whichever sheet you are reading, so it is an upper bound rather than a promise for every card. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both, and neither is billed at all during pre-alpha.',
   },
   {
     question: 'Why is it cheaper in India?',
@@ -1674,7 +1690,11 @@ function productSchema(currency: CurrencyId) {
       // The figure the card is painting: this sheet's yearly rate where the
       // plan has one, falling back to the plan-level amount for Free and
       // self-hosting, whose price is `0` in every currency.
-      const amount = plan.prices[currency].yearly.amount ?? plan.amount;
+      // `?? null` so the two ways of having no number — an absent field and
+      // Enterprise's explicit `null` — collapse to one before the check below.
+      // Without it a plan that carried neither would fall through the
+      // `=== null` guard and publish `price: undefined`.
+      const amount = plan.prices[currency].yearly.amount ?? plan.amount ?? null;
 
       return {
         '@type': 'Offer',

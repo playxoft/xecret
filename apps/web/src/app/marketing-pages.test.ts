@@ -69,13 +69,45 @@ const WORDS: Readonly<Record<number, string>> = {
   365: 'a year',
 };
 
-function states(source: string, value: number): boolean {
+/**
+ * Whether a page states `value` of `noun` — "25 projects", "ten environments".
+ *
+ * ── Why the noun is required ──
+ * The first version of this took the number alone and asked whether the page
+ * contained it in either form. It was vacuous for most of the values it was
+ * written to pin. `WORDS[10]` is `'ten'` as a bare substring, and `/terms`
+ * contains "content", "retention", "sentence", "written", "extent" and
+ * "maintenance" — fourteen substring hits and not one standalone `ten` — so
+ * the assertions for `pro.environmentsPerProject` and `team.organizations`
+ * passed on the word "retention". `'one'` matched "none" and "someone",
+ * `'a hundred'` was a prefix of "a hundred and eighty", `'a year'` matched any
+ * mention of a year, and even the numeral branch let `\b1\b` match the `1` in
+ * "1,000".
+ *
+ * Anchoring to the noun fixes all of it at once: "retention" is not
+ * "ten environments", and the assertion now fails when the figure beside the
+ * noun changes, which is the only thing it was ever supposed to detect. The
+ * numeral side is fenced against digits, commas and decimal points on both
+ * sides so a figure can never be matched out of the middle of a longer one.
+ */
+function states(source: string, value: number, noun: string): boolean {
+  // Whitespace collapsed first. These are JSX prose strings that Prettier wraps
+  // wherever the column runs out, so "180 days of audit history" reaches here
+  // as "180 days\n          of audit history". Matching the raw text made every
+  // multi-word assertion depend on where the formatter happened to break the
+  // line — green today, red after an unrelated reflow, and for a reason nobody
+  // would guess from the failure.
+  const text = source.toLowerCase().replace(/\s+/g, ' ');
+  const forms = [value.toLocaleString('en-GB'), String(value)];
   const word = WORDS[value];
-  return (
-    new RegExp(`\\b${value.toLocaleString('en-GB')}\\b`).test(source) ||
-    new RegExp(`\\b${value}\\b`).test(source) ||
-    (word !== undefined && source.toLowerCase().includes(word))
-  );
+  if (word !== undefined) forms.push(word);
+
+  return forms.some((form) => {
+    const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // `(?![\d,.])` and its mirror keep `1` out of `1,000` and `100` out of
+    // `1,000,000`.
+    return new RegExp(`(?<![\\d,.\\w])${escaped}(?![\\d,.])\\s+${noun}`).test(text);
+  });
 }
 
 describe('no page still publishes the retired lineup', () => {
@@ -118,6 +150,24 @@ describe('every page that states a price states the current one', () => {
   });
 });
 
+/**
+ * The noun each ceiling is written beside, as the prose actually words it.
+ *
+ * This is the anchor that makes the assertions bite — see `states`. Where a
+ * page has a choice of phrasings the alternatives are alternated in the
+ * pattern, so "10 environments per project" and "ten environments" both count
+ * but "retention" does not.
+ */
+const NOUNS = {
+  organizations: 'organisations?',
+  projects: 'projects',
+  environmentsPerProject: 'environments',
+  secretsPerEnvironment: 'secrets',
+  serviceTokens: '(service tokens|ci tokens)',
+  seats: 'members?',
+  auditRetentionDays: 'days of (audit )?history',
+} as const;
+
 describe('every limit stated in prose matches the engine', () => {
   // `/terms` is the contractual one and states the full ladder, so it carries
   // the strictest assertion: every ceiling for every plan it enumerates.
@@ -136,9 +186,10 @@ describe('every limit stated in prose matches the engine', () => {
       ] as const) {
         const value = limits[field];
         if (value === null) continue;
-        expect(states(source, value), `terms does not state ${plan}.${field} = ${value}`).toBe(
-          true,
-        );
+        expect(
+          states(source, value, NOUNS[field]),
+          `terms does not state ${plan}.${field} = ${value}`,
+        ).toBe(true);
       }
     }
   });
@@ -150,15 +201,19 @@ describe('every limit stated in prose matches the engine', () => {
       // Only the pages that actually enumerate the free tier.
       if (!/free tier|Free is|Free —/i.test(source)) continue;
 
-      for (const [field, value] of [
-        ['organizations', free.organizations],
-        ['projects', free.projects],
-        ['environmentsPerProject', free.environmentsPerProject],
-        ['seats', free.seats],
-        ['auditRetentionDays', free.auditRetentionDays],
+      for (const field of [
+        'organizations',
+        'projects',
+        'environmentsPerProject',
+        'seats',
+        'auditRetentionDays',
       ] as const) {
+        const value = free[field];
         if (value === null) continue;
-        expect(states(source, value), `${page} does not state free.${field} = ${value}`).toBe(true);
+        expect(
+          states(source, value, NOUNS[field]),
+          `${page} does not state free.${field} = ${value}`,
+        ).toBe(true);
       }
     }
   });
@@ -175,7 +230,13 @@ describe('audit retention agrees with the engine everywhere it is stated', () =>
     ['team', PLANS.team.limits.auditRetentionDays],
     ['enterprise', PLANS.enterprise.limits.auditRetentionDays],
   ])('privacy states %s retention as %i days', (_plan, days) => {
-    expect(states(SOURCES.get('privacy') ?? '', days as number)).toBe(true);
+    // `/privacy` words these as "7 days on Free, 30 days on Pro, 180 days on
+    // Team, a year on Enterprise", so the noun is the unit rather than the
+    // phrase the plan pages use.
+    const source = SOURCES.get('privacy') ?? '';
+    expect(states(source, days as number, 'days?') || states(source, days as number, 'on')).toBe(
+      true,
+    );
   });
 
   it('no page still claims twelve months or three years of history', () => {
@@ -191,9 +252,13 @@ describe('the seat minimum is disclosed where it is charged', () => {
   // and is invoiced $432. `/terms` is where that has to be stated.
   it('terms states the Team and Enterprise minimums', () => {
     const source = SOURCES.get('terms') ?? '';
-    expect(states(source, MINIMUM_SEATS.team)).toBe(true);
-    expect(states(source, MINIMUM_SEATS.enterprise)).toBe(true);
-    expect(source.toLowerCase()).toMatch(/minimum/);
+    expect(states(source, MINIMUM_SEATS.team, 'members?')).toBe(true);
+    expect(source.toLowerCase()).toMatch(
+      new RegExp(`minimum of ${MINIMUM_SEATS.team} members?`, 'i'),
+    );
+    expect(source.toLowerCase()).toMatch(
+      new RegExp(`enterprise from ${MINIMUM_SEATS.enterprise}`, 'i'),
+    );
   });
 
   it('the minimums are what the engine actually bills at', () => {

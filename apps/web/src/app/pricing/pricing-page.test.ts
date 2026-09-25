@@ -450,11 +450,30 @@ describe('the yearly rate is the one the page opens on', () => {
   it('publishes the yearly figure as the structured-data amount', () => {
     // Follows the default. An offer that publishes a number the default render
     // does not show is the same defect as publishing the wrong one.
+    //
+    // Read off the USD *sheet*, not the plan: the plan-level `amount` used to
+    // carry this figure too, `productSchema` stopped reading it, and an
+    // assertion that sliced the whole plan was satisfied by either — so a stale
+    // plan-level value could not fail it.
     for (const [id, , yearly] of EXPECTED) {
-      const block = SOURCE.slice(locate(`id: '${id}'`));
-      expect(block.slice(0, block.indexOf('},\n  {'))).toContain(
+      const card = SOURCE.slice(locate(`id: '${id}'`));
+      const sheet = card.slice(card.indexOf('usd: {'));
+      const yearlyBlock = sheet.slice(sheet.indexOf('yearly:'));
+      expect(yearlyBlock.slice(0, yearlyBlock.indexOf('},'))).toContain(
         `amount: '${yearly.replace('$', '')}'`,
       );
+    }
+  });
+
+  it('keeps no plan-level amount on a plan whose price varies by sheet', () => {
+    // `'0'` and `null` are the only legitimate values: the same in every
+    // currency, or no price at all. A priced plan carrying one is a field that
+    // looks like the place to edit the rate and changes nothing when you do.
+    for (const id of PRICED) {
+      const card = SOURCE.slice(locate(`id: '${id}'`));
+      const plan = card.slice(0, card.indexOf('},\n  {'));
+      const planLevel = /\n {4}amount: ([^,\n]+),/.exec(plan)?.[1];
+      expect(planLevel, `${id} still carries a dead plan-level amount`).toBeUndefined();
     }
   });
 
