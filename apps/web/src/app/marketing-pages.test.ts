@@ -131,8 +131,13 @@ describe('no page still publishes the retired lineup', () => {
   });
 
   it('names only the four plans the engine defines, plus self-hosting', () => {
+    // Word-bounded, because `toContain('Pro')` could not fail: these pages
+    // carry "Production" five times over, plus "Props" and "Protecting", so the
+    // assertion passed with every Pro-plan mention on the site deleted. The
+    // other three arms were genuine by luck of vocabulary rather than by
+    // construction.
     for (const name of ['Free', 'Pro', 'Team', 'Enterprise']) {
-      expect(ALL, `${name} is never named`).toContain(name);
+      expect(ALL, `${name} is never named as a plan`).toMatch(new RegExp(`\\b${name}\\b`));
     }
     expect(Object.keys(PLANS).sort()).toEqual(['enterprise', 'free', 'pro', 'team']);
   });

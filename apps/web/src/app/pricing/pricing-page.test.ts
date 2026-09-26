@@ -668,4 +668,28 @@ describe('the yearly rate is the one the page opens on', () => {
       );
     }
   });
+
+  it('has a reveal rule for every price and add-on figure, on every sheet', () => {
+    // The chip rules were guarded and the *price* rules were not, which had the
+    // severity backwards. Adding a sixth sheet would have failed only on the
+    // missing chip — and a developer who fixed just that would ship a currency
+    // whose cards and table header render no price at all, which is strictly
+    // worse than a toggle with no percentage on it.
+    expect(GLOBALS).toMatch(/\.x-price\s*\{\s*display:\s*none/);
+
+    for (const currency of CURRENCIES) {
+      for (const period of ['monthly', 'yearly'] as const) {
+        expect(GLOBALS, `${currency}/${period} prices have no reveal rule`).toContain(
+          `.x-cur-${currency}:checked ~ .x-billing-${period}:checked ~ ` +
+            `.x-billing-body .x-price-${currency}-${period}`,
+        );
+      }
+
+      // The add-on band switches currency but not period, so it has its own
+      // shorter chain and its own way of going missing.
+      expect(GLOBALS, `${currency} add-on prices have no reveal rule`).toContain(
+        `.x-cur-${currency}:checked ~ .x-billing-body .x-addon-${currency}`,
+      );
+    }
+  });
 });

@@ -148,6 +148,29 @@ function pricingTitle(currency: CurrencyId): string {
   return `Pricing: free forever, or ${planPrices('pro', currency).yearly.price} a member billed yearly`;
 }
 
+/**
+ * The sentence above the cards, in the currency the cards will paint.
+ *
+ * It was the last hard-coded USD string on the page, and the most visible one:
+ * the `<title>`, the meta description and `Offer.priceCurrency` all learned to
+ * follow `CF-IPCountry`, so a visitor resolving to `inr` got a title quoting
+ * ₹149, cards painting ₹375, an INR `Product` graph — and one screen above them
+ * a lede quoting dollars. The comment beside the hero already said this
+ * sentence "sits a screen above the cards and used to disagree with them"; it
+ * disagreed again, in a new way, the moment the rest of the page became
+ * currency-aware.
+ */
+function heroDescription(currency: CurrencyId): string {
+  const team = planPrices('team', currency);
+
+  return (
+    'Four plans and a self-hosted option, published in full — the limits included. Free is ' +
+    `genuinely free, Team is ${team.yearly.price} per member per month billed yearly or ` +
+    `${team.monthly.price} month to month, service tokens and CI never cost anything, and ` +
+    'running the whole server yourself is free forever.'
+  );
+}
+
 function pricingDescription(currency: CurrencyId): string {
   const pro = planPrices('pro', currency);
   const team = planPrices('team', currency);
@@ -578,8 +601,14 @@ interface Plan {
    * as `Includes: … Billed from 3 members up`. A minimum charge is the opposite
    * of an inclusion, and a tick is the one affordance this file's rules say
    * must never sit beside something that is not a benefit. It belongs with the
-   * price it qualifies, so it lives here and is read by neither the bullet
-   * renderer nor the offer description.
+   * price it qualifies, so it lives here rather than in `features`.
+   *
+   * `offerDescription` *does* read it — appended after the annual clause, never
+   * into the `Includes:` list. Leaving it out of the structured data made the
+   * one machine-readable surface the only one hiding the floor, which inverts
+   * the reason `MINIMUM_SEATS` is published at all. The distinction that matters
+   * is "not a bullet", not "not published"; an earlier version of this note said
+   * the latter and contradicted the code two hundred lines down.
    */
   readonly priceCaveat?: string | undefined;
 }
@@ -2217,7 +2246,7 @@ export default async function PricingPage() {
         height="compact"
         eyebrow="Pricing"
         title="Secret management pricing, without the sales call."
-        description="Four plans and a self-hosted option, published in full — the limits included. Free is genuinely free, Team is $12 per member per month billed yearly or $19 month to month, service tokens and CI never cost anything, and running the whole server yourself is free forever."
+        description={heroDescription(initialCurrency)}
       />
 
       {/* ── One control, two places it appears ──
@@ -2376,8 +2405,18 @@ export default async function PricingPage() {
 
                       `min-h` because the yearly figures carry a third line the
                       monthly ones do not; without it every feature list in the
-                      row jumps as the billing toggle is pressed. */}
-                  <div className="mt-4 min-h-[6.25rem]">
+                      row jumps as the billing toggle is pressed.
+
+                      Raised from 6.25rem when `priceCaveat` was added *inside*
+                      this box. On Team that made the monthly block price +
+                      unit + caveat and the yearly block price + unit + note +
+                      caveat, so the tallest state cleared the old floor and the
+                      recommended card started shifting its features and CTA by
+                      about 12px on every toggle — the exact jump the floor
+                      exists to absorb. 7.5rem covers the tallest combination
+                      with room for the caveat wrapping to two lines on a narrow
+                      card. */}
+                  <div className="mt-4 min-h-[7.5rem]">
                     {/* Eight figures, one shown. Every currency and both
                         periods are in the markup, and CSS picks the pair the
                         two radio groups name — so switching either needs no
