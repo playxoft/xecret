@@ -935,12 +935,19 @@
    `display: none` on the figure that is not showing, never `visibility` or
    `opacity`: the hidden one has to leave the accessibility tree, or every card
    announces two prices one after the other. */
-/* Eight figures per card — four currencies by two billing periods — and one
+/* Ten figures per card — five currencies by two billing periods — and one
    shown. Hidden by default and revealed by the pair the two radio groups name,
-   rather than shown by default and hidden seven times: a card that paints eight
-   prices before the stylesheet lands is worse than one that paints none, and
-   this way a stylesheet that fails to load leaves the page priceless rather
-   than lying eight times over.
+   rather than shown by default and hidden nine times: the reveal is one
+   selector list instead of nine overrides fighting each other, and a card
+   mid-paint shows nothing rather than a stack of contradictory prices.
+
+   What this does *not* buy is a no-CSS fallback, and an earlier version of this
+   note claimed it did — "a stylesheet that fails to load leaves the page
+   priceless". It cannot: `display: none` is itself in this stylesheet, so a
+   stylesheet that never arrives renders all ten. The guard is against the gap
+   before it lands, which Next's render-blocking `<link>` already closes;
+   there is no second line of defence here and the comment should not imply
+   one.
 
    The `~ … ~` chain is what ANDs two independent radio groups together without
    `:has()`. It only works because the currency inputs are emitted *before* the
@@ -1009,13 +1016,53 @@
   display: inline;
 }
 
+/* ── The saving chip ────────────────────────────────────────────────────────
+   One per sheet, four hidden. `display: none` and never `visibility`, so the
+   hidden four leave the accessibility tree instead of having the control
+   announce five savings one after another. Same forward-only `~` chain as the
+   prices, so these depend on the currency inputs preceding `.x-billing-body`
+   exactly as those do. */
+.x-save {
+  display: none;
+}
+
+.x-cur-usd:checked ~ .x-billing-body .x-save-usd,
+.x-cur-eur:checked ~ .x-billing-body .x-save-eur,
+.x-cur-inr:checked ~ .x-billing-body .x-save-inr,
+.x-cur-jpy:checked ~ .x-billing-body .x-save-jpy,
+.x-cur-aud:checked ~ .x-billing-body .x-save-aud {
+  display: inline;
+}
+
 /* The selected half of the segmented control. Unlayered, so it wins over the
-   resting `text-fg-muted` the label carries as a utility. */
+   resting `text-fg-muted` the label carries as a utility.
+
+   A filled `--accent` pill rather than the `--surface` card it used to be. The
+   old treatment — white on near-white, separated from its neighbour by a 1px
+   shadow — read as "slightly raised" rather than "chosen", and on this control
+   which half is chosen decides which of two prices every card below is
+   showing. `--accent`/`--accent-fg` is the token pair meant for a filled
+   control and carries AAA contrast in both themes, so the answer is legible
+   at a glance instead of inferred from a shadow.
+
+   The fill and the colour do the work and the weight is deliberately left
+   alone: `SEGMENT` is content-width inside an `inline-flex` shell, so
+   promoting only the checked half to 600 changes its width and both halves
+   slide sideways under the pointer on every toggle. A control that moves when
+   you click it is worse than one that is a shade less bold. */
 .x-billing-monthly:checked ~ .x-billing-body [data-billing='monthly'],
 .x-billing-yearly:checked ~ .x-billing-body [data-billing='yearly'] {
-  background: var(--surface);
-  color: var(--fg);
+  background: var(--accent);
+  color: var(--accent-fg);
   box-shadow: var(--shadow-raised);
+}
+
+/* The chip rides inside the label, so on the selected half it is sitting on
+   `--accent` and its resting `--fg-subtle` would be close to invisible. Held
+   slightly under the label's own colour so it still reads as secondary. */
+.x-billing-yearly:checked ~ .x-billing-body [data-billing='yearly'] .x-save {
+  color: var(--accent-fg);
+  opacity: 0.75;
 }
 
 /* The inputs are `sr-only`, so the base `:focus-visible` outline would be drawn

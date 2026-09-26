@@ -30,8 +30,8 @@ const TITLE = 'Terms of service';
 const DESCRIPTION =
   'The terms for the hosted xecret service: pre-alpha status, plans and billing, your account and your tokens, the AGPL and MIT licences, and liability.';
 
-const UPDATED = '2026-08-16';
-const EFFECTIVE = '2026-08-16';
+const UPDATED = '2026-09-26';
+const EFFECTIVE = '2026-10-26';
 
 const CANONICAL = absoluteUrl('/terms');
 
@@ -212,21 +212,30 @@ const SECTIONS: readonly LegalSection[] = [
           tokens, community support on GitHub.
         </>,
         <>
-          <strong className="text-fg font-medium">Team — $9 per member per month</strong>, or $7 per
-          member per month billed yearly. Unlimited organisations, projects, members and
-          environments, 12 months of audit history, roles and per-environment access, service
-          tokens, email support.
+          <strong className="text-fg font-medium">Pro — $8 per member per month</strong>, or $5 per
+          member per month billed yearly. 3 organisations, 25 projects, 10 environments per project,
+          1,000 secrets in each, unlimited members, 50 service tokens, 30 days of audit history,
+          200,000 secret fetches a month, email support.
         </>,
         <>
-          <strong className="text-fg font-medium">Business — $19 per member per month</strong>, or
-          $15 per member per month billed yearly. Everything in Team, plus 3 years of audit history,
-          SAML single sign-on, priority support with a one-business-day response target, and
-          invoiced billing.
+          <strong className="text-fg font-medium">Team — $19 per member per month</strong>, or $12
+          per member per month billed yearly. Everything in Pro, plus 10 organisations, 100
+          projects, 25 environments per project, 5,000 secrets in each, 250 service tokens, 180 days
+          of audit history, 1,000,000 secret fetches a month, roles and per-environment access, and
+          priority support with a one-business-day response target.
         </>,
         <>
-          <strong className="text-fg font-medium">Enterprise — custom.</strong> Everything in
-          Business, plus SCIM provisioning, custom audit retention, a self-hosting support contract,
-          a named contact, and a contractual SLA.
+          <strong className="text-fg font-medium">Enterprise — custom.</strong> Everything in Team,
+          without the organisation, project, environment, secret or token ceilings, plus a year of
+          audit history, invoiced billing, a self-hosting support contract, a named contact, and a
+          contractual SLA. SAML single sign-on is included at this tier.
+        </>,
+        <>
+          <strong className="text-fg font-medium">Add-ons, charged per connection.</strong> SAML
+          single sign-on is $199 per connection per month from Team, and is included with
+          Enterprise. It is billed per identity-provider connection rather than per member.
+          Directory sync (SCIM) is included with Enterprise and is not sold below it. Neither is
+          built yet — nothing is charged for either until it is.
         </>,
         <>
           <strong className="text-fg font-medium">Self-hosted — free, always.</strong> The whole
@@ -234,6 +243,7 @@ const SECTIONS: readonly LegalSection[] = [
           the community, or an Enterprise contract.
         </>,
       ],
+      'Team is billed from a minimum of 3 members and Enterprise from 10, whatever the number of people actually in the organisation. Below the minimum you are billed for it; you are never prevented from running with fewer. Free and Pro have no minimum.',
       'When billing starts, we will tell you before it applies to your organisation and you will have to enter a card yourself. Nothing moves from free to charged silently. Paid plans are then billed in advance, per member, for whichever term you choose — monthly, or yearly at the lower per-member rate. A yearly term is paid up front and does not pro-rate if you leave part-way through it. Prices exclude VAT and sales tax, which we add where we are required to charge it.',
       <>
         Cancelling stops the next renewal, and the organisation returns to Free at the end of the

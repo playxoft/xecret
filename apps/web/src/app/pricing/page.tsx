@@ -114,36 +114,102 @@ import { absoluteUrl, breadcrumbSchema, SITE_KEYWORDS, SITE_NAME } from '@/lib/s
  */
 
 // Both of these name the billing period, and that is not pedantry: $5 and $12
-// are the *yearly* rates, the cards default to monthly, and these two strings
-// are what a search result shows above a page rendering $8 and $19. A rich
-// result advertising a price the page does not show is the failure mode the
-// note at the top of this file is about — it just reaches the metadata too.
+// are the *yearly* rates and $8 and $19 the monthly ones, and these two strings
+// are what a search result shows above the page. The cards open on yearly, so
+// these lead with yearly and name monthly second — they follow the default
+// rather than setting it, and if the toggle ever opens on monthly again they
+// move back with it. A rich result advertising a price the page does not show
+// is the failure mode the note at the top of this file is about; it just
+// reaches the metadata too.
+//
 // Single sign-on came out of the description for the other reason: it is
-// `notYet` on the Team card and `Not yet` in the matrix, so promising it here
-// made the metadata the most optimistic thing about the product.
-const TITLE = 'Pricing: free forever, or $5 a member billed yearly';
-const DESCRIPTION =
-  'Four xecret plans: free for one developer, Pro $8 a member a month ($5 billed yearly), Team $19, Enterprise by contract, and self-hosted free forever. Service tokens and CI never cost anything, and no card is taken in pre-alpha.';
+// `notYet` on the Team card and `Coming soon` in the matrix, so promising it
+// here made the metadata the most optimistic thing about the product.
+// ── Why these are built per sheet, and not written once ──
+// They quoted dollars unconditionally, which was correct until the body and the
+// JSON-LD both learned to follow `CF-IPCountry`. After that a visitor in
+// Bengaluru got a `<title>` and a `<meta name="description">` saying "$5 a
+// member billed yearly" on the same response as cards painting ₹149 and a
+// `Product` graph priced INR. `productSchema`'s own description dropped its
+// prices for exactly that reason; leaving them here just moved the mismatch
+// into the two strings a search result actually shows.
+//
+// A function rather than a constant means `metadata` has to become
+// `generateMetadata`, which costs nothing here: the route is already dynamic
+// because `resolveInitialCurrency` reads a header, so there is no prerender to
+// give up.
+function planPrices(id: PlanId, currency: CurrencyId) {
+  const plan = PRICED_PLANS.find((candidate) => candidate.id === id);
+  if (plan === undefined) throw new Error(`no priced plan named ${id}`);
+  return plan.prices[currency];
+}
 
-export const metadata: Metadata = {
-  title: TITLE,
-  description: DESCRIPTION,
-  keywords: [
-    'secret management pricing',
-    'secrets manager pricing',
-    'free secrets manager',
-    'self-hosted secret management',
-    ...SITE_KEYWORDS,
-  ],
-  alternates: { canonical: absoluteUrl('/pricing') },
-  openGraph: {
-    type: 'website',
-    url: absoluteUrl('/pricing'),
-    siteName: SITE_NAME,
-    title: `${TITLE} · ${SITE_NAME}`,
-    description: DESCRIPTION,
-  },
-};
+function pricingTitle(currency: CurrencyId): string {
+  return `Pricing: free forever, or ${planPrices('pro', currency).yearly.price} a member billed yearly`;
+}
+
+/**
+ * The sentence above the cards, and why it names no price.
+ *
+ * It quoted "$12 … or $19" for a long time, which was wrong on four sheets out
+ * of five once `resolveInitialCurrency` landed. Resolving it server-side fixed
+ * that and broke something else: the hero is one string, while every other
+ * figure on the page renders all five sheets and reveals one with CSS — and it
+ * sits *before* the `x-cur-*` radios, so the forward-only `~` chain cannot
+ * reach it even if the variants were emitted. A reader who opened on the euro
+ * sheet and clicked USD got $12 on every card and €13 in the lede above them,
+ * which also made `resolveInitialCurrency`'s promise that a wrong guess "costs
+ * one click, not a wrong price" untrue.
+ *
+ * Both arrangements were a price that can disagree with the cards. So the hero
+ * names none: it says what the shape of the pricing is, and the figures are
+ * twenty pixels below it in the currency the reader actually chose. The only
+ * alternative that works is moving the hero inside the radio wrapper, which
+ * buys a sentence a figure it does not need at the cost of the page's
+ * structure.
+ */
+const HERO_DESCRIPTION =
+  'Four plans and a self-hosted option, published in full — the limits included. Free is ' +
+  'genuinely free, every paid plan is per member with a lower yearly rate, service tokens and ' +
+  'CI never cost anything, and running the whole server yourself is free forever.';
+
+function pricingDescription(currency: CurrencyId): string {
+  const pro = planPrices('pro', currency);
+  const team = planPrices('team', currency);
+
+  return (
+    `Four xecret plans: free for one developer, Pro ${pro.yearly.price} a member a month ` +
+    `billed yearly (${pro.monthly.price} monthly), Team ${team.yearly.price} billed yearly ` +
+    `(${team.monthly.price} monthly), Enterprise by contract, and self-hosted free forever. ` +
+    'Service tokens and CI never cost anything, and no card is taken in pre-alpha.'
+  );
+}
+
+export async function generateMetadata(): Promise<Metadata> {
+  const currency = await resolveInitialCurrency();
+  const title = pricingTitle(currency);
+  const description = pricingDescription(currency);
+
+  return {
+    title,
+    description,
+    keywords: [
+      'secret management pricing',
+      'secrets manager pricing',
+      'free secrets manager',
+      'self-hosted secret management',
+      ...SITE_KEYWORDS,
+    ],
+    alternates: { canonical: absoluteUrl('/pricing') },
+    openGraph: {
+      type: 'website',
+      url: absoluteUrl('/pricing'),
+      siteName: SITE_NAME,
+      title: `${title} · ${SITE_NAME}`,
+      description,
+    },
+  };
+}
 
 // Underlined at rest rather than on hover. With the accent gone monochrome
 // there is no colour left to say "link", and foreground text that only reveals
@@ -239,6 +305,27 @@ const LIMITS = {
 } as const;
 
 /**
+ * The smallest number of seats a plan can be bought with.
+ *
+ * Published because it is the one number on this page that can make a bill
+ * larger than the arithmetic a reader just did. `resolveBilledSeats` floors
+ * billed seats at it — `Math.max(billed, minimum)` — so a two-person team
+ * reading "$12 per member per month" computes $288 a year and is invoiced
+ * $432. A page that publishes every ceiling in the product and omits the one
+ * that costs money is not being terse, it is being misleading, and it is the
+ * exact failure the limits import exists to prevent: a customer meeting a
+ * number at checkout that the page never showed them.
+ *
+ * Read from the engine rather than restated, like the limits above it.
+ */
+const MINIMUM_SEATS = {
+  free: PLAN_DEFINITIONS.free.minimumSeats,
+  pro: PLAN_DEFINITIONS.pro.minimumSeats,
+  team: PLAN_DEFINITIONS.team.minimumSeats,
+  enterprise: PLAN_DEFINITIONS.enterprise.minimumSeats,
+} as const;
+
+/**
  * A ceiling as a cell or a bullet: the number, or the word for `null`.
  *
  * Every countable on Pro and Team is a number now, and Enterprise is where
@@ -263,6 +350,97 @@ function formatCount(value: number): string {
     return `${Number.isInteger(millions) ? millions : millions.toFixed(1)} million`;
   }
   return value.toLocaleString('en-GB');
+}
+
+/**
+ * A seat floor as a cell: the number, or the words for "there isn't one".
+ *
+ * A floor of one is not a floor, and printing "1 member" said the opposite of
+ * the FAQ and the Terms, which both state that Free and Pro have none. Free is
+ * worse than redundant there: `resolveBilledSeats` returns `billed: 1` for it
+ * unconditionally and it is never invoiced, so a billing figure in that column
+ * describes a bill that does not exist. Pluralised rather than suffixed with a
+ * bare "members", so a floor that ever moves to 1 cannot render "1 members".
+ */
+function seatFloor(seats: number): string {
+  if (seats <= 1) return 'No minimum';
+  return `${seats} members`;
+}
+
+/**
+ * The floor as a sentence fragment: "Billed from 3 members up", or nothing.
+ *
+ * Every surface that states a floor goes through this or `seatFloor`, and that
+ * is the point. The matrix cell was converted to a helper and the two card
+ * caveats and the FAQ answer were left interpolating `${…} members` directly —
+ * so a floor moved to 1 would have printed "No minimum" in the table, "Billed
+ * from 1 members up" on the card, and an FAQ asserting a floor that no longer
+ * existed. Three renderings of one constant, one of them guarded, which is the
+ * arrangement the matrix comment says the helper exists to prevent.
+ *
+ * Returns `undefined` rather than an empty string so a plan with no floor
+ * carries no `priceCaveat` at all, instead of an empty paragraph.
+ */
+function seatFloorCaveat(seats: number): string | undefined {
+  if (seats <= 1) return undefined;
+  return `Billed from ${seats} members up`;
+}
+
+/**
+ * The FAQ's sentence about floors, composed from which plans actually have one.
+ *
+ * It used to name Team and Enterprise and then assert "Free and Pro have no
+ * floor" as a literal, which is three claims about `MINIMUM_SEATS` and none of
+ * them derived: a floor added to Pro would have left the page denying it. Both
+ * halves are built from the constant now, so the sentence cannot outlive the
+ * arrangement it describes.
+ */
+function seatFloorSentence(): string {
+  const NAMES = { free: 'Free', pro: 'Pro', team: 'Team', enterprise: 'Enterprise' } as const;
+  const ALL = ['free', 'pro', 'team', 'enterprise'] as const;
+
+  // Both halves partition the *same* list. An earlier version derived the
+  // floored plans from ['pro', 'team', 'enterprise'] and the unfloored ones from
+  // all four, so a floor added to Free would have appeared in neither clause —
+  // dropped from a sentence whose whole point is that it cannot outlive the
+  // arrangement it describes.
+  const withFloor = ALL.filter((id) => MINIMUM_SEATS[id] > 1);
+  const without = ALL.filter((id) => MINIMUM_SEATS[id] <= 1);
+
+  // 'A', 'A and B', 'A, B and C' — reads as English at every length. The
+  // previous one joined three or more with commas and no conjunction, and
+  // rendered the empty case as 'no plan' against a plural verb.
+  const list = (parts: readonly string[]): string => {
+    if (parts.length === 0) return '';
+    if (parts.length === 1) return parts[0] as string;
+    return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1] as string}`;
+  };
+
+  const floors = list(withFloor.map((id) => `${NAMES[id]} from ${MINIMUM_SEATS[id]}`));
+
+  if (withFloor.length === 0) return 'No plan has a seat minimum.';
+  if (without.length === 0) {
+    return `Every plan is billed from a minimum — ${floors} — so a smaller group pays the minimum rather than a lower number.`;
+  }
+
+  return (
+    `Seats are billed from a minimum on some plans — ${floors} — so a smaller group on one of ` +
+    `those pays the minimum rather than a lower number; ${list(without.map((id) => NAMES[id]))} ` +
+    `${without.length === 1 ? 'has' : 'have'} no floor.`
+  );
+}
+
+/**
+ * The billing floor for a plan, or `1` where the plan has none.
+ *
+ * A function rather than an index because `PlanId` here spans two things the
+ * engine does not: `self-hosted`, which is not a plan the engine bills at all,
+ * and any future card added before its entitlements land. Indexing
+ * `MINIMUM_SEATS` by `plan.id` would need a cast, and a cast is how
+ * `undefined > 1` gets written by accident.
+ */
+function minimumSeats(id: PlanId): number {
+  return id === 'self-hosted' ? 1 : MINIMUM_SEATS[id];
 }
 
 /**
@@ -319,6 +497,35 @@ type CurrencyId = (typeof CURRENCIES)[number]['id'];
 const DEFAULT_CURRENCY: CurrencyId = 'usd';
 
 /**
+ * What the yearly rate saves, per sheet, as a whole percentage.
+ *
+ * ── Why these are written down and not computed ──
+ * The rule at the top of this file is that a published number is never parsed
+ * back out of a display string: `'$12'` is typography and `12` is data, and a
+ * regex over the first would publish the wrong second the day a price gains a
+ * suffix. So these are declared beside the prices they describe, the same way
+ * `amount` is — and `pricing-page.test.ts` recomputes every one of them from
+ * the price strings and fails if a sheet and its badge disagree. Parsing in a
+ * test is safe in the way parsing at render is not: the test breaks loudly and
+ * nothing reaches a customer.
+ *
+ * ── Why "up to" ──
+ * Each figure is the *larger* of the two priced plans' savings on that sheet,
+ * floored to a whole number. The two are not the same — the euro sheet saves
+ * 33 per cent on Pro and 38 on Team, because each sheet is a set of deliberate
+ * prices rather than one number converted five ways — so a bare percentage
+ * would sit above a card contradicting it. An upper bound, floored, is true of
+ * every card under it.
+ */
+const YEARLY_SAVING: Readonly<Record<CurrencyId, number>> = {
+  usd: 37,
+  eur: 38,
+  inr: 40,
+  jpy: 37,
+  aud: 38,
+};
+
+/**
  * Which sheet a visitor sees first, by the country Cloudflare reports.
  *
  * Only a default. Every currency is in the markup and the selector switches
@@ -369,6 +576,19 @@ interface PlanPrice {
   readonly unit: string;
   /** A third line, where the billing term needs spelling out in full. */
   readonly note?: string | undefined;
+  /**
+   * The same figure as a bare number, for structured data.
+   *
+   * Written beside `price` rather than extracted from it, for the reason
+   * stated at the top of this file: `'₹1,317'` is typography and `1317` is
+   * data, and a regex over the first would publish the wrong second the day a
+   * sheet gains a thousands separator it did not have — which is exactly what
+   * the rupee and yen sheets already have. `pricing-page.test.ts` checks the
+   * two against each other so they cannot drift apart silently.
+   *
+   * Absent where there is no number to publish: `Custom`, and `Free`.
+   */
+  readonly amount?: string | undefined;
 }
 
 /**
@@ -414,14 +634,48 @@ interface Plan {
   };
   readonly recommended: boolean;
   /**
-   * Published as `Offer.price`, and always the **monthly** figure — that is
-   * what the page shows before anybody touches the toggle, and an offer that
-   * publishes a number the default render does not show is the same defect as
-   * publishing the wrong one. `null` where there is genuinely no price.
+   * The published price where it is the same in every currency.
+   *
+   * Only two values are legitimate here: `'0'` for Free and self-hosting, and
+   * `null` for Enterprise, which has no price to publish at all. A priced plan
+   * leaves this alone — its figure lives on the sheet, as
+   * `prices[currency].yearly.amount`, because `productSchema` publishes the
+   * rate for the currency the page actually opened on and a single number
+   * cannot be that for five sheets.
+   *
+   * It briefly held `'5'` and `'12'` as well, which was worse than redundant:
+   * `productSchema` had stopped reading them, so editing the yearly rate here
+   * changed nothing in the structured data while looking exactly like the place
+   * to do it. A field that silently does nothing is a trap for the next
+   * person, so the priced plans no longer carry one.
+   *
+   * Optional rather than `| null` for that reason: absent means "this plan's
+   * price is on its sheets", which is a different statement from Enterprise's
+   * explicit `null` — "there is no price to publish". The type now makes the
+   * priced plans unable to carry a figure here by accident.
    */
-  readonly amount: string | null;
+  readonly amount?: string | null | undefined;
   /** Published as `unitText`, where the price is per something. */
   readonly unitText: string | null;
+  /**
+   * A condition on the price, rendered under it and never as a bullet.
+   *
+   * The seat floor lived in `features` for one commit, which gave it a
+   * `CheckIcon` beside "Roles and per-environment access" and — because
+   * `offerDescription` maps the same array — published it to shopping surfaces
+   * as `Includes: … Billed from 3 members up`. A minimum charge is the opposite
+   * of an inclusion, and a tick is the one affordance this file's rules say
+   * must never sit beside something that is not a benefit. It belongs with the
+   * price it qualifies, so it lives here rather than in `features`.
+   *
+   * `offerDescription` *does* read it — appended after the annual clause, never
+   * into the `Includes:` list. Leaving it out of the structured data made the
+   * one machine-readable surface the only one hiding the floor, which inverts
+   * the reason `MINIMUM_SEATS` is published at all. The distinction that matters
+   * is "not a bullet", not "not published"; an earlier version of this note said
+   * the latter and contradicted the code two hundred lines down.
+   */
+  readonly priceCaveat?: string | undefined;
 }
 
 /**
@@ -498,6 +752,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '$8', unit: 'per member, per month' },
         yearly: {
           price: '$5',
+          amount: '5',
           unit: 'per member, per month',
           note: '$60 per member, billed yearly',
         },
@@ -506,6 +761,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '€9', unit: 'per member, per month' },
         yearly: {
           price: '€6',
+          amount: '6',
           unit: 'per member, per month',
           note: '€72 per member, billed yearly',
         },
@@ -514,6 +770,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '₹249', unit: 'per member, per month' },
         yearly: {
           price: '₹149',
+          amount: '149',
           unit: 'per member, per month',
           note: '₹1,788 per member, billed yearly',
         },
@@ -522,6 +779,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '¥900', unit: 'per member, per month' },
         yearly: {
           price: '¥567',
+          amount: '567',
           unit: 'per member, per month',
           note: '¥6,800 per member, billed yearly',
         },
@@ -530,6 +788,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: 'A$13', unit: 'per member, per month' },
         yearly: {
           price: 'A$8',
+          amount: '8',
           unit: 'per member, per month',
           note: 'A$96 per member, billed yearly',
         },
@@ -554,7 +813,6 @@ const PRICED_PLANS: readonly Plan[] = [
     ],
     cta: { label: 'Start on Pro', href: '/sign-up', external: false },
     recommended: false,
-    amount: '8',
     unitText: 'member/month',
   },
   {
@@ -565,6 +823,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '$19', unit: 'per member, per month' },
         yearly: {
           price: '$12',
+          amount: '12',
           unit: 'per member, per month',
           note: '$144 per member, billed yearly',
         },
@@ -573,6 +832,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '€21', unit: 'per member, per month' },
         yearly: {
           price: '€13',
+          amount: '13',
           unit: 'per member, per month',
           note: '€156 per member, billed yearly',
         },
@@ -581,6 +841,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '₹599', unit: 'per member, per month' },
         yearly: {
           price: '₹375',
+          amount: '375',
           unit: 'per member, per month',
           note: '₹4,499 per member, billed yearly',
         },
@@ -589,6 +850,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: '¥2,100', unit: 'per member, per month' },
         yearly: {
           price: '¥1,317',
+          amount: '1317',
           unit: 'per member, per month',
           note: '¥15,800 per member, billed yearly',
         },
@@ -597,6 +859,7 @@ const PRICED_PLANS: readonly Plan[] = [
         monthly: { price: 'A$29', unit: 'per member, per month' },
         yearly: {
           price: 'A$19',
+          amount: '19',
           unit: 'per member, per month',
           note: 'A$228 per member, billed yearly',
         },
@@ -623,7 +886,7 @@ const PRICED_PLANS: readonly Plan[] = [
     ],
     cta: { label: 'Start on Team', href: '/sign-up', external: false },
     recommended: true,
-    amount: '19',
+    priceCaveat: seatFloorCaveat(MINIMUM_SEATS.team),
     unitText: 'member/month',
   },
   {
@@ -658,14 +921,14 @@ const PRICED_PLANS: readonly Plan[] = [
       { text: 'No ceiling on projects, environments, secrets or tokens' },
       { text: 'Custom roles', notYet: true },
       { text: 'Audit streamed to your SIEM', notYet: true },
-      // Was "SAML and SCIM included rather than charged as add-ons", which the
-      // add-on band contradicts: SCIM is listed there at a per-connection price
-      // marked `from: 'Enterprise'`. Three surfaces, three answers, on the one
-      // capability this page charges separately for — the exact divergence
-      // `ADDON_NOT_YET` exists to kill. SAML *is* included at Enterprise; SCIM
-      // is bought per connection, and the card now says so.
+      // Both included, which is what `pricing-plan.md` §3 and §8.4 say: the
+      // $1,500 Enterprise floor is sized to absorb the two WorkOS connections.
+      // This bullet spent a few commits claiming SCIM was charged per
+      // connection here, because the matrix cell said `Add-on` and everything
+      // else was changed to agree with it. That is the wrong direction — the
+      // plan of record is the tie-breaker and it includes both.
       { text: 'SAML single sign-on included', notYet: true },
-      { text: `Directory sync (SCIM) at the published per-connection price`, notYet: true },
+      { text: 'Directory sync (SCIM) included', notYet: true },
       // Chipped, because it is not built. `packages/core/src/crypto/escrow.ts`
       // is the recovery-share format for an account, not a customer-held root
       // key — the hosted service holds the root key for every plan today, which
@@ -693,6 +956,12 @@ const PRICED_PLANS: readonly Plan[] = [
     // beside the form, for the questions that genuinely are better in the open.
     cta: { label: 'Contact sales', href: '/contact', external: false },
     recommended: false,
+    // Enterprise has a floor too, and a larger one than Team — ten seats
+    // against three. It was stated in the matrix, the FAQ and the Terms but not
+    // on the card, which is the omission the `MINIMUM_SEATS` docblock calls
+    // misleading rather than terse, applied to one of the two plans that has a
+    // floor and not the other.
+    priceCaveat: seatFloorCaveat(MINIMUM_SEATS.enterprise),
     amount: null,
     unitText: null,
   },
@@ -769,17 +1038,31 @@ const PLANS: readonly Plan[] = [...PRICED_PLANS, SELF_HOSTED];
  * shows the receipt is making a claim that can be checked.
  */
 /**
- * The two add-ons, and the tier each one starts from.
+ * The add-ons, and the tier each one starts from.
  *
- * `notYet` is on both because neither is built, and this band was the last
- * surface on the page still saying otherwise: every matrix cell that names them
- * reads `Add-on, not yet` and the paragraph under the table says "neither is
- * built for anybody, at any price", while the band rendered $199 and $249 as
- * live prices. `from` is here for the same reason — the matrix gates SCIM at
- * Enterprise, and a band that omits the gate tells a Team reader they can buy
- * it.
- */
-/**
+ * ── Why there is only SAML here ──
+ * SCIM used to sit beside it at $249. It should not have: `pricing-plan.md` §3
+ * marks SCIM `✅ included` in the Enterprise column and `add-on` in *Scale*,
+ * and §8.3 says in as many words "offer it as a $249/mo add-on on Scale, and
+ * include it in Enterprise", with §8.4 titled "Enterprise includes both,
+ * because the floor pays for them". Scale was removed in #101, so the tier that
+ * bought the add-on no longer exists, and §8.3's other half — "never bundle it
+ * below Enterprise" — rules out moving the charge down to Team. That leaves
+ * SCIM as a plain Enterprise inclusion with no price to publish.
+ *
+ * This was resolved the wrong way round once already. The band originally read
+ * "Included with Enterprise", the matrix cell read `ADDON_NOT_YET`, and the
+ * inconsistency was settled by believing the cell — which put a $249 charge in
+ * front of Enterprise customers in the contractual Terms, for something the
+ * $1,500 floor is documented as already absorbing. The plan of record was the
+ * tie-breaker and it says included.
+ *
+ * `notYet` stays because SAML is not built, and this band was the last surface
+ * still implying otherwise: the matrix cells read `Add-on, coming soon` and the
+ * paragraph under the table says "neither is built for anybody, at any price",
+ * while the band rendered a live price. `from` is here for the same reason — a
+ * band that omits the gate tells a Free reader they can buy it.
+ *
  * ── Why the add-on sheets are converted and the plan sheets are not ──
  * Every plan price on this page is *set* for its market: India is about 65 per
  * cent below the US sheet because a price that is reasonable in San Francisco is
@@ -798,17 +1081,14 @@ const ADDONS = [
     name: 'SAML single sign-on',
     prices: { usd: '$199', eur: '€185', inr: '₹16,900', jpy: '¥29,900', aud: 'A$309' },
     unit: 'per connection, per month',
-    from: 'Team and above',
+    // "Team and above" put a $199 charge in front of an Enterprise buyer whom
+    // three other surfaces — the Enterprise card bullet, the matrix and the
+    // Terms — tell it is included. The Terms are the document they sign, so
+    // the band was the outlier: this is a Team charge and an Enterprise
+    // inclusion, which is the mirror of how SCIM works one entry below.
+    from: 'Team only — included with Enterprise',
     notYet: true,
-    body: 'For an identity provider that speaks SAML rather than OIDC. Brokered through WorkOS, which charges us $125 per connection per month; we charge $199 and keep the difference for the support that comes with it. OIDC single sign-on will be included from Team and cost nothing extra, because it costs us nothing — neither is built yet.',
-  },
-  {
-    name: 'Directory sync (SCIM)',
-    prices: { usd: '$249', eur: '€229', inr: '₹21,200', jpy: '¥37,400', aud: 'A$389' },
-    unit: 'per connection, per month',
-    from: 'Enterprise',
-    notYet: true,
-    body: 'Members provisioned and deprovisioned by your directory. A second WorkOS connection at the same $125 to us, and the reason it is priced separately rather than folded into a tier: bundling it would mean paying for a connection for every customer on that tier, including the ones who never use it. Included with Enterprise once it is built.',
+    body: 'For an identity provider that speaks SAML rather than OIDC. Brokered through WorkOS, which charges us $125 per connection per month; we charge $199 and keep the difference for the support that comes with it. Enterprise contracts include it rather than paying per connection. OIDC single sign-on will be included from Team and cost nothing extra, because it costs us nothing — neither is built yet.',
   },
 ] as const;
 
@@ -931,6 +1211,28 @@ const MATRIX = [
         'seats',
         'People with a login. Service tokens, CI runners and agents are never counted here.',
       ),
+      {
+        label: 'Smallest billable team',
+        hint: 'The fewest seats a plan can be bought with. Below it you are billed for the minimum, never blocked from using fewer.',
+        // A floor of one is not a floor, and printing "1 member" here said the
+        // opposite of the FAQ and the Terms, which both state that Free and Pro
+        // have none. Free is worse than redundant: `resolveBilledSeats` returns
+        // `billed: 1` for it unconditionally and it is never invoiced at all,
+        // so a billing figure in that column describes a bill that does not
+        // exist. `MINIMUM_SEATS` is still what decides which columns get a
+        // number, so the row cannot drift from the engine.
+        // All four columns go through the same helper. Two of them used to
+        // interpolate `${…} members` directly, so a floor moved to 1 would have
+        // printed "1 members" *and* contradicted the FAQ sentence built from
+        // the same constant — the drift this row reads `MINIMUM_SEATS` to avoid.
+        values: {
+          free: seatFloor(MINIMUM_SEATS.free),
+          pro: seatFloor(MINIMUM_SEATS.pro),
+          team: seatFloor(MINIMUM_SEATS.team),
+          enterprise: seatFloor(MINIMUM_SEATS.enterprise),
+          'self-hosted': 'No minimum',
+        },
+      },
       limitRow(
         'Environments per project',
         'environmentsPerProject',
@@ -1073,10 +1375,15 @@ const MATRIX = [
       {
         label: 'Scheduled and expiring secrets',
         hint: 'A value that switches on later, or stops working on a date.',
+        // Team, not Enterprise: `TEAM_FEATURES.scheduledSecrets` is `true` in
+        // the engine and the Team card names it. This row read `team: false`,
+        // which by the convention above means "your plan does not carry this"
+        // — so the table was selling a Team capability as Enterprise-only
+        // three screens below the card that grants it.
         values: {
           free: false,
           pro: false,
-          team: false,
+          team: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -1196,11 +1503,14 @@ const MATRIX = [
           free: false,
           pro: false,
           team: false,
-          // `ADDON_NOT_YET`, not a bare chip: this is bought per connection at a
-          // published price even on Enterprise, and a cell that omits the price
-          // half tells a reader it comes with the tier. The add-on band says
-          // otherwise two screens up.
-          enterprise: ADDON_NOT_YET,
+          // A bare chip, not `ADDON_NOT_YET`: SCIM is *included* at Enterprise.
+          // `pricing-plan.md` §3 marks it `✅ included` in this column and §8.4
+          // explains why — the $1,500 floor absorbs the two WorkOS connections
+          // at 17 per cent of revenue. This cell said `Add-on` for a while and
+          // the whole site was changed to agree with it, which billed Enterprise
+          // customers $249 for something the tier covers. The cell was wrong,
+          // not the band.
+          enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
       },
@@ -1248,10 +1558,14 @@ const MATRIX = [
       {
         label: 'GitHub OIDC federation, with no static token',
         hint: 'CI authenticates with a short-lived identity instead of a stored secret.',
+        // Team, for the same reason as scheduled secrets above:
+        // `TEAM_FEATURES.githubOidcFederation` is `true` and the Team card
+        // names it. Both came down from Scale when that tier went, and this
+        // table was the one surface that did not come down with them.
         values: {
           free: false,
           pro: false,
-          team: false,
+          team: NOT_YET,
           enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
@@ -1417,8 +1731,11 @@ const INCLUDED = [
 const FAQ: readonly FaqItem[] = [
   {
     question: 'What counts as a member?',
-    answer:
-      'Anyone with a seat in your organisation who can sign in and read or write a secret. Service tokens are not members, so a CI pipeline that pulls secrets on every build costs nothing — and neither does a Kubernetes workload or an AI agent. A pending invitation is not counted until it is accepted, and removing someone frees their seat immediately.',
+    // The seat floor belongs in this answer specifically: it is the one that
+    // walks through seat accounting in detail — invitations, removals, what is
+    // and is not a member — so an omission here reads as "there is nothing
+    // else to know about seats".
+    answer: `Anyone with a seat in your organisation who can sign in and read or write a secret. Service tokens are not members, so a CI pipeline that pulls secrets on every build costs nothing — and neither does a Kubernetes workload or an AI agent. A pending invitation is not counted until it is accepted, and removing someone frees their seat immediately. ${seatFloorSentence()} Nothing stops you running with fewer people than you are billed for.`,
   },
   {
     question: 'Do machines really cost nothing?',
@@ -1441,7 +1758,7 @@ const FAQ: readonly FaqItem[] = [
     // republishes every answer as `FAQPage` structured data — so an answer
     // nobody reads back is still an answer Google indexes and quotes.
     answer:
-      'It will not be. OIDC single sign-on is not built yet, and when it lands it is included from Team at no extra cost rather than priced separately — we are building it ourselves, so it costs us nothing per customer and charging for it would be indefensible. SAML is the exception and will be a $199 per connection add-on, because it is brokered through WorkOS and they charge us $125 per connection per month whether anyone signs in or not. Neither is available today, on any plan. Self-hosted deployments will bring their own identity provider and pay nothing for either.',
+      'It will not be. OIDC single sign-on is not built yet, and when it lands it is included from Team at no extra cost rather than priced separately — we are building it ourselves, so it costs us nothing per customer and charging for it would be indefensible. SAML is the exception and will be a $199 per connection add-on from Team, because it is brokered through WorkOS and they charge us $125 per connection per month whether anyone signs in or not; Enterprise includes it, because the contract floor already covers the connection. Directory sync is included with Enterprise on the same reasoning and is not sold below it. None of this is available today, on any plan. Self-hosted deployments will bring their own identity provider and pay nothing for any of it.',
   },
   {
     question: 'What happens when I exceed the free tier?',
@@ -1461,7 +1778,7 @@ const FAQ: readonly FaqItem[] = [
   {
     question: 'Is there an annual price?',
     answer:
-      'Yes. Billed yearly, Pro is $5 a member a month and Team is $12 — charged as $60 and $144 a member a year, a third to two fifths below the monthly rate. The exact saving differs by currency, because each sheet is a set of deliberate prices rather than one number converted: it is nearer a third on the euro sheet and nearer two fifths on the rupee one. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both, and neither is billed at all during pre-alpha.',
+      'Yes, and it is what the page opens on. In US dollars, billed yearly, Pro is $5 a member a month and Team is $12 — charged as $60 and $144 a member a year, a third to two fifths below the monthly rate. The other four sheets carry their own figures; the cards above show whichever one you are reading. The exact saving differs by plan as well as by currency, because each sheet is a set of deliberate prices rather than one number converted: on the euro sheet it is 33 per cent on Pro and 38 on Team, and on the rupee sheet 40 on Pro and 37 on Team. That is why the chip beside the toggle says "up to" — it carries the better of the two figures for whichever sheet you are reading, so it is an upper bound rather than a promise for every card. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both, and neither is billed at all during pre-alpha.',
   },
   {
     question: 'Why is it cheaper in India?',
@@ -1505,55 +1822,154 @@ const FAQ: readonly FaqItem[] = [
  * serving long after the page is right. An unbuilt capability carries its
  * caveat here too: an `Offer` that lists SAML without it is the tick this page
  * refuses to show, published somewhere nobody on the team ever reads back.
+ *
+ * It takes the currency for the same reason `productSchema` does: this string
+ * ends in the annual total, and reading that off `prices.usd` while the node
+ * around it published `priceCurrency: 'INR'` put "Annual equivalent: $60" in
+ * an offer priced ₹149 — the currency mismatch moved rather than fixed.
+ *
+ * `priceCaveat` is appended, and appended *after* the `Includes:` list rather
+ * than into it. Keeping it out of `features` was right — a minimum charge is
+ * not something the plan includes — but leaving it out of this string too made
+ * the one machine-readable surface the only one that omits the seat floor,
+ * which is the opposite of the argument the `MINIMUM_SEATS` docblock makes for
+ * publishing it at all. A shopping surface rendering "Team, $12 per
+ * member/month billed annually" with no floor is how a two-person team
+ * computes $288 and is invoiced $432.
  */
-function offerDescription(plan: Plan): string {
+function offerDescription(plan: Plan, currency: CurrencyId): string {
   const includes = plan.features
     .map((feature) => (feature.notYet === true ? `${feature.text} (not built yet)` : feature.text))
     .join('; ');
-  const annual =
-    plan.prices.usd.yearly.note === undefined
-      ? ''
-      : ` Annual equivalent: ${plan.prices.usd.yearly.note}.`;
+  const note = plan.prices[currency].yearly.note;
+  const annual = note === undefined ? '' : ` Annual equivalent: ${note}.`;
+  const caveat = plan.priceCaveat === undefined ? '' : ` ${plan.priceCaveat}.`;
 
-  return `${plan.audience} Includes: ${includes}.${annual}`;
+  return `${plan.audience} Includes: ${includes}.${annual}${caveat}`;
 }
 
 /**
  * The plans as a `Product` with one `Offer` per plan, derived from `PLANS`.
  *
+ * ── Why this takes the currency ──
+ * It used to be a module constant pinned to `priceCurrency: 'USD'`, which was
+ * true only until `resolveInitialCurrency` landed. After that a visitor in
+ * Bengaluru was served a page painting ₹149 with structured data underneath it
+ * claiming `price: '5', priceCurrency: 'USD'` — wrong on four sheets out of
+ * five, and wrong in the specific way this file's own rule names: an offer
+ * that publishes a number the default render does not show is the same defect
+ * as publishing the wrong one. It is a function now, and it is handed the same
+ * currency the cards open on.
+ *
+ * ── Why the offer says the term, in words ──
+ * The published figure is the yearly rate, which is a per-month price that can
+ * only be bought twelve at a time. A bare "member/month" reads to a shopping
+ * surface as a monthly-purchasable price, so the unit string says
+ * "member/month, billed annually" instead — the difference between "$5 a month"
+ * and "$5 a month on an annual term", which is the difference between an
+ * accurate rich result and a complaint.
+ *
+ * It is deliberately *not* `billingDuration`. Both spellings of that field were
+ * wrong here: `12` with `unitCode: 'MON'` redefines the reference quantity and
+ * contradicts the unit text, and `'P1Y'` means — per schema.org's own wording,
+ * "for how long this price will be billed" — that five dollars covers the year,
+ * understating the real $60 twelvefold. Google does not document the property
+ * for `Offer` either, so neither spelling would have reached a rich result. The
+ * note beside the field records this so it is not reintroduced a third time.
+ *
  * Enterprise carries no `price` at all rather than a placeholder zero. A `0`
  * there would be published to a shopping surface as free, which is the one
  * mistake in this file that would end up in front of a customer.
  */
-const PRODUCT = {
-  '@type': 'Product',
-  '@id': absoluteUrl('/pricing#plans'),
-  name: `${SITE_NAME} plans`,
-  description: DESCRIPTION,
-  category: 'Secret management',
-  brand: { '@id': absoluteUrl('/#organization') },
-  url: absoluteUrl('/pricing'),
-  offers: PLANS.map((plan) => ({
-    '@type': 'Offer',
-    '@id': absoluteUrl(`/pricing#${plan.id}`),
-    name: plan.name,
-    description: offerDescription(plan),
-    url: absoluteUrl(`/pricing#${plan.id}`),
-    availability: 'https://schema.org/InStock',
-    ...(plan.amount === null
-      ? {}
-      : {
-          price: plan.amount,
-          priceCurrency: 'USD',
-          priceSpecification: {
-            '@type': 'UnitPriceSpecification',
-            price: plan.amount,
-            priceCurrency: 'USD',
-            ...(plan.unitText === null ? {} : { unitText: plan.unitText }),
-          },
-        }),
-  })),
-};
+function productSchema(currency: CurrencyId) {
+  const code = currency.toUpperCase();
+
+  return {
+    '@type': 'Product',
+    '@id': absoluteUrl('/pricing#plans'),
+    name: `${SITE_NAME} plans`,
+    // Deliberately *not* `DESCRIPTION`. That string quotes "$5" and "$12"
+    // because it is the meta description and a search result should carry a
+    // figure — but it would sit here in the same `@graph` as offers priced in
+    // euro or rupees, which is the mismatch this function exists to end. The
+    // prices are in the offers; this only has to say what the product is.
+    description: `Every ${SITE_NAME} plan, with the limits each one carries and what it costs. Free forever for a single developer, per-member pricing above that, and the whole server self-hostable at no charge.`,
+    category: 'Secret management',
+    brand: { '@id': absoluteUrl('/#organization') },
+    url: absoluteUrl('/pricing'),
+    offers: PLANS.map((plan) => {
+      // The figure the card is painting: this sheet's yearly rate where the
+      // plan has one, falling back to the plan-level amount for Free and
+      // self-hosting, whose price is `0` in every currency.
+      // `?? null` so the two ways of having no number — an absent field and
+      // Enterprise's explicit `null` — collapse to one before the check below.
+      // Without it a plan that carried neither would fall through the
+      // `=== null` guard and publish `price: undefined`.
+      const amount = plan.prices[currency].yearly.amount ?? plan.amount ?? null;
+
+      return {
+        '@type': 'Offer',
+        '@id': absoluteUrl(`/pricing#${plan.id}`),
+        name: plan.name,
+        description: offerDescription(plan, currency),
+        url: absoluteUrl(`/pricing#${plan.id}`),
+        availability: 'https://schema.org/InStock',
+        // Outside the price branch, because Enterprise has the *larger* floor —
+        // ten seats against Team's three — and carries no price, so nesting this
+        // under `amount !== null` published it for the smaller floor only. The
+        // round-10 commit added `priceCaveat` to Enterprise to close exactly
+        // this asymmetry on the card and left it open in the structured data.
+        // `eligibleQuantity` qualifies the offer, not the figure, so it belongs
+        // here whether or not there is a figure.
+        ...(minimumSeats(plan.id) > 1
+          ? {
+              eligibleQuantity: {
+                '@type': 'QuantitativeValue',
+                minValue: minimumSeats(plan.id),
+                unitText: 'member',
+              },
+            }
+          : {}),
+        ...(amount === null
+          ? {}
+          : {
+              price: amount,
+              priceCurrency: code,
+              priceSpecification: {
+                '@type': 'UnitPriceSpecification',
+                price: amount,
+                priceCurrency: code,
+                // The term lives in the unit string, and `billingDuration` is
+                // gone. Two goes at that field were both wrong in opposite
+                // directions. `billingDuration: 12` with `unitCode: 'MON'`
+                // redefines the reference quantity and contradicts
+                // `unitText`; `billingDuration: 'P1Y'` reads, by schema.org's
+                // own definition — "for how long this price will be billed" —
+                // as *five dollars covering a year*, which understates the
+                // real $60 by a factor of twelve. And it buys nothing even
+                // when correct: `billingDuration` is not among the properties
+                // Google documents for `Offer`, so the disclosure it was added
+                // to publish never reached a rich result either way.
+                //
+                // A plain unit string cannot be misparsed, and the annual
+                // total is already spelled out in the offer description, which
+                // *is* read. Free and self-hosting keep the bare unit: they
+                // are `0` on any term, and "billed annually" about free is
+                // nonsense.
+                ...(plan.unitText === null
+                  ? {}
+                  : {
+                      unitText:
+                        plan.prices[currency].yearly.amount === undefined
+                          ? plan.unitText
+                          : `${plan.unitText}, billed annually`,
+                    }),
+              },
+            }),
+      };
+    }),
+  };
+}
 
 /* ── Pieces ────────────────────────────────────────────────────────────────── */
 
@@ -1596,16 +2012,47 @@ function PlanFeatureItem({ feature }: { feature: PlanFeature }) {
 /**
  * One currency and one billing period's figures, inside a card.
  *
- * All eight are rendered on every card and seven are `display: none` — not
+ * All ten are rendered on every card and nine are `display: none` — not
  * `visibility: hidden`, which would leave every card announcing eight prices
  * one after another to a screen reader.
  */
-function PriceBlock({ value, className }: { value: PlanPrice; className: string }) {
+function PriceBlock({
+  value,
+  className,
+  reserveNote,
+}: {
+  value: PlanPrice;
+  className: string;
+  reserveNote: boolean;
+}) {
   return (
     <div className={className}>
       <p className="text-fg text-3xl font-semibold tracking-[-0.02em]">{value.price}</p>
       <p className="text-fg-subtle mt-1 text-sm">{value.unit}</p>
-      {value.note === undefined ? null : (
+      {/* The annual total, and where the plan has one for the *other* period, an
+          invisible line of the same height in its place.
+
+          This is what keeps the toggle from moving the page, and it replaces a
+          `min-h` on the box. The cards sit in one grid row, so the row is as
+          tall as the tallest card and pressing Yearly — which adds this line to
+          two of the five — used to move every feature list and CTA in the row.
+          A floor on the box fixed that by being as tall as the tallest yearly
+          state, which meant Free carried four rems of empty space to hold a line
+          it never renders.
+
+          Reserving the line per card instead makes each card's two states the
+          same height, so no card changes height, so the row cannot. Nothing is
+          padded that does not need it, and the arithmetic stays correct on its
+          own if a sheet gains or loses a note. `aria-hidden` because it is
+          `invisible` rather than `hidden` — it occupies space, so it is still in
+          the accessibility tree without it. */}
+      {value.note === undefined ? (
+        reserveNote ? (
+          <p aria-hidden="true" className="invisible mt-1 text-xs leading-5">
+            &nbsp;
+          </p>
+        ) : null
+      ) : (
         <p className="text-fg-subtle mt-1 text-xs leading-5">{value.note}</p>
       )}
     </div>
@@ -1615,18 +2062,50 @@ function PriceBlock({ value, className }: { value: PlanPrice; className: string 
 /**
  * One plan's price in a comparison-table column header.
  *
- * The compact sibling of `PriceBlock`: same eight-figures-one-shown mechanism
+ * The compact sibling of `PriceBlock`: same ten-figures-one-shown mechanism
  * and the same `x-price` classes, sized for a header cell rather than a card.
- * Two components rather than a prop, because the card version carries a third
- * line for the yearly total and this one deliberately does not — a column header
- * that grew a line when somebody pressed Yearly would shift twenty-six rows of
- * table down the page.
+ * Two components rather than a prop, because the card version carries the
+ * yearly *total* on its third line and this one carries the billing *term* —
+ * "billed yearly" or "month to month" — which is a different fact in the same
+ * position.
+ *
+ * Both periods get that line even though only one of them adds information,
+ * and that is the whole trick: a column header that grew a line when somebody
+ * pressed Yearly would shift every row of the table down the page, so the two
+ * states are kept the same height rather than one of them kept short. An
+ * earlier version of this note said the header "deliberately does not" carry a
+ * third line, which stopped being true when the yearly default made "$12 per
+ * member, per month" a rate nobody can buy by the month.
  */
-function HeaderPrice({ value, className }: { value: PlanPrice; className: string }) {
+function HeaderPrice({
+  value,
+  className,
+  term,
+}: {
+  value: PlanPrice;
+  className: string;
+  term: string;
+}) {
   return (
     <span className={className}>
       <span className="text-fg block text-lg font-semibold tracking-[-0.02em]">{value.price}</span>
       <span className="text-fg-subtle block text-xs font-normal">{value.unit}</span>
+      {/* The billing term, and it is rendered for *both* periods even though
+          only the yearly one carries new information. The card gets a third
+          line naming the annual total and this header deliberately does not —
+          a column header that grew a line when somebody pressed Yearly would
+          shift the whole table down the page. Giving monthly its own one-word
+          term keeps the two states the same height, which is what buys the
+          disclosure without the reflow.
+
+          It matters now in a way it did not before: with yearly as the opening
+          state, a reader who deep-links to `#compare` met "$12 per member, per
+          month" for a rate that cannot be bought by the month. The real
+          month-to-month figure is $19, and the caption that explained the
+          control is `sr-only`. */}
+      {term === '' ? null : (
+        <span className="text-fg-subtle block text-[0.6875rem] font-normal">{term}</span>
+      )}
     </span>
   );
 }
@@ -1744,13 +2223,30 @@ function PriceControls() {
         </label>
         <label htmlFor="billing-yearly" data-billing="yearly" className={SEGMENT}>
           Yearly
-          {/* "Save" without a number. The figure differs by sheet — 33% on the
-              euro Pro rate, 40% on the rupee one — because each sheet is a set
-              of deliberate prices rather than one number converted five ways.
-              A literal here sat directly above a card contradicting it, and
-              deriving it would mean five chips for a claim that is the same
-              either way: yearly is cheaper. The FAQ carries the arithmetic. */}
-          <span className="text-fg-subtle text-xs font-normal">Save</span>
+          {/* One chip per sheet, and only the checked currency's is shown — the
+              same `.x-cur-*:checked ~ .x-billing-body` mechanism the prices
+              themselves use. A single literal cannot work here: the saving is
+              33 per cent on the euro Pro rate and 40 on the rupee one, so one
+              number would sit directly above a card contradicting it.
+
+              Every chip is rendered and four of the five are `display: none`, never
+              `visibility`, so the hidden ones leave the accessibility tree
+              instead of being reachable text nobody can see.
+
+              Note what this does *not* do: the radio carries an `aria-label`,
+              which overrides label content, so none of these reaches the
+              control's accessible name — see the note on that attribute for
+              why the figure cannot go there either. The chip is a visual
+              affordance, and the discount is stated in words in the label and
+              spelled out with its arithmetic in the FAQ. */}
+          {CURRENCIES.map((currency) => (
+            <span
+              key={currency.id}
+              className={`x-save x-save-${currency.id} text-fg-subtle text-xs font-normal`}
+            >
+              Save up to {YEARLY_SAVING[currency.id]}%
+            </span>
+          ))}
         </label>
       </div>
 
@@ -1775,7 +2271,7 @@ function PriceControls() {
             'x-currency-summary min-w-28 list-none justify-between gap-2 px-4',
           )}
         >
-          {/* Four names, one shown — the same mechanism as the prices, so the
+          {/* Five names, one shown — the same mechanism as the prices, so the
               trigger cannot disagree with the figures below it. */}
           <span className="text-fg text-sm font-medium">
             {CURRENCIES.map((currency) => (
@@ -1824,22 +2320,28 @@ export default async function PricingPage() {
 
   return (
     <PublicPage current="pricing">
+      {/* The same currency the cards open on. Structured data that disagreed
+          with the rendered price was wrong on four sheets out of five while
+          this was a constant. */}
       <JsonLd
         data={graph(
-          PRODUCT,
+          productSchema(initialCurrency),
           faqSchema(FAQ),
           breadcrumbSchema([{ name: 'Pricing', path: '/pricing' }]),
         )}
       />
 
-      {/* Two corrections live in the sentence below, and both were the page
-          disagreeing with itself a screen further down. $12 is the yearly rate
-          and monthly is what the cards render by default, so a reader met
-          "$12 per member per month" here and $19 on the Team card — exactly the
-          mismatch the note at the top of this file exists to prevent. And
-          single sign-on is `notYet` on the Team card and the not-built chip in
-          the matrix, so the hero was the one place on the page promising it
-          outright. */}
+      {/* The sentence below names both rates and says which is which, because
+          it sits a screen above the cards and used to disagree with them. It
+          read "$12 per member per month" while the cards opened on monthly and
+          painted $19 — exactly the mismatch the note at the top of this file
+          exists to prevent. The cards now open on yearly, so $12 leads and $19
+          is named as the month-to-month rate; the order follows the default
+          and moves with it.
+
+          Single sign-on stays out of it for the other reason: it is `notYet`
+          on the Team card and the not-built chip in the matrix, so the hero was
+          the one place on the page promising it outright. */}
       {/* `compact`, not the default `tall`. The default holds a 58svh floor and
           centres within it, so on this page the sentence describing the plans
           finished a third of the way down the screen and the plans themselves
@@ -1850,7 +2352,7 @@ export default async function PricingPage() {
         height="compact"
         eyebrow="Pricing"
         title="Secret management pricing, without the sales call."
-        description="Four plans and a self-hosted option, published in full — the limits included. Free is genuinely free, Team is $19 per member per month or $12 billed yearly, service tokens and CI never cost anything, and running the whole server yourself is free forever."
+        description={HERO_DESCRIPTION}
       />
 
       {/* ── One control, two places it appears ──
@@ -1889,12 +2391,21 @@ export default async function PricingPage() {
           />
         ))}
 
+        {/* Yearly opens checked, and the ordering below still has to put
+            monthly first: the reveal rules read
+            `.x-cur-*:checked ~ .x-billing-*:checked ~ .x-billing-body`, and `~`
+            only reaches forward, so both inputs must precede the body. Which of
+            them carries `defaultChecked` is free; where they sit is not.
+
+            Yearly is the rate the page is written around — the title, the
+            description and the FAQ all quote it — so opening on monthly meant
+            the loudest number on the card disagreed with the sentence above it
+            until somebody clicked. */}
         <input
           id="billing-monthly"
           type="radio"
           name="billing"
           value="monthly"
-          defaultChecked
           aria-label="Billed monthly"
           className="x-billing-monthly x-price-input"
         />
@@ -1903,7 +2414,21 @@ export default async function PricingPage() {
           type="radio"
           name="billing"
           value="yearly"
-          aria-label="Billed yearly"
+          defaultChecked
+          // Names the discount, without naming the figure. The saving chips sit
+          // inside the label, but `aria-label` overrides label content for the
+          // accessible name, so a screen-reader user heard "Billed yearly" and
+          // never learned a discount existed while the visible control said
+          // "Save up to 37%".
+          //
+          // The figure itself cannot come in here. `PriceControls` renders
+          // twice — above the plans and above the matrix — so two labels point
+          // at this one input and dropping `aria-label` would concatenate both
+          // into the name. And the number changes with the currency, which is a
+          // CSS state this server-rendered string cannot follow, so a literal
+          // would be wrong for four sheets out of five the moment somebody
+          // switched. "At a lower rate" is true on every sheet.
+          aria-label="Billed yearly, at a lower rate per member"
           className="x-billing-yearly x-price-input"
         />
 
@@ -1984,28 +2509,48 @@ export default async function PricingPage() {
                       the price against it puts every figure on one baseline. The
                       audience line follows, where a varying height costs nothing.
 
-                      `min-h` because the yearly figures carry a third line the
-                      monthly ones do not; without it every feature list in the
-                      row jumps as the billing toggle is pressed. */}
-                  <div className="mt-4 min-h-[6.25rem]">
-                    {/* Eight figures, one shown. Every currency and both
+                      No `min-h` here any more. This box used to carry one,
+                      because the yearly figures have a third line the monthly
+                      ones do not and the cards share a grid row — so pressing
+                      Yearly made the row taller and moved every feature list and
+                      CTA in it. A floor equal to the tallest yearly state fixed
+                      the movement and cost Free about four rems of empty space
+                      held open for a line it never renders, which is a poor
+                      trade on the one card whose whole message is that it is
+                      simple.
+
+                      `PriceBlock` reserves the line per card instead — see the
+                      note there. Each card's two states are the same height, so
+                      no card changes height, so the row cannot, and nothing is
+                      padded that does not need padding. */}
+                  <div className="mt-4">
+                    {/* Ten figures, one shown. Every currency and both
                         periods are in the markup, and CSS picks the pair the
                         two radio groups name — so switching either needs no
                         request and no JavaScript. `display: none` on the seven
                         that are hidden, never `visibility`, or every card
-                        announces eight prices in a row to a screen reader. */}
+                        announces ten prices in a row to a screen reader. */}
                     {CURRENCIES.map((currency) => (
                       <Fragment key={currency.id}>
                         <PriceBlock
                           className={`x-price x-price-${currency.id}-monthly`}
                           value={plan.prices[currency.id].monthly}
+                          reserveNote={plan.prices[currency.id].yearly.note !== undefined}
                         />
                         <PriceBlock
                           className={`x-price x-price-${currency.id}-yearly`}
                           value={plan.prices[currency.id].yearly}
+                          reserveNote={false}
                         />
                       </Fragment>
                     ))}
+
+                    {/* A condition on the figure, so it sits with the figure —
+                        no tick, because it is a floor on the bill rather than
+                        something the plan includes. */}
+                    {plan.priceCaveat === undefined ? null : (
+                      <p className="text-fg-subtle mt-2 text-xs leading-5">{plan.priceCaveat}</p>
+                    )}
                   </div>
 
                   {/* Ruled off from the price above it. With the figure moved up,
@@ -2060,14 +2605,20 @@ export default async function PricingPage() {
             **Inside** `.x-billing-body`, and it has to be: the rule that reveals
             one add-on price per currency is
             `.x-cur-*:checked ~ .x-billing-body .x-addon-*`, so moving this band
-            out blanks all ten figures. This comment used to say the opposite.
+            out blanks all five figures. This comment used to say the opposite.
             What is true is that add-ons have no *yearly* rate, which is why the
             rule keys on currency alone and not on the period.
 
-            The body text states what each costs us. That is deliberate — see
-            the note on ADDONS — and it is the part of this page most likely to
-            be trimmed by somebody tidying marketing copy. It should not be. */}
-            <div className="border-line bg-surface mt-6 grid gap-6 rounded-xl border p-6 sm:grid-cols-2 sm:p-7">
+            One column, not two. `sm:grid-cols-2` was right while SCIM sat here
+            at $249; with SCIM restored to an Enterprise inclusion there is a
+            single add-on, and a two-column grid rendered it at half width with
+            an empty column beside it. `sm:max-w-xl` keeps the one card from
+            running the full width of the section instead.
+
+            The body text states what it costs us. That is deliberate — see the
+            note on ADDONS — and it is the part of this page most likely to be
+            trimmed by somebody tidying marketing copy. It should not be. */}
+            <div className="border-line bg-surface mt-6 grid gap-6 rounded-xl border p-6 sm:max-w-xl sm:p-7">
               {ADDONS.map((addon) => (
                 <div key={addon.name}>
                   {/* The chip carries the same word the matrix cells and the card
@@ -2081,7 +2632,7 @@ export default async function PricingPage() {
                       </span>
                     ) : null}
                   </div>
-                  {/* Four figures, one shown — the same radios the cards and the
+                  {/* Five figures, one shown — the same radios the cards and the
                       comparison table read, through a rule that keys on currency
                       alone. An add-on has no yearly rate, so unlike every other
                       price on the page this one must not follow the period half
@@ -2216,7 +2767,7 @@ export default async function PricingPage() {
                           className="px-4 py-4 text-center align-bottom"
                         >
                           <span className="text-fg block text-base font-semibold">{plan.name}</span>
-                          {/* Eight figures, one shown — the same markup the cards
+                          {/* Ten figures, one shown — the same markup the cards
                             carry, now that the radios sit above both sections and
                             the sibling chain reaches in here. This used to be a
                             hard-coded monthly USD price with a caption
@@ -2228,10 +2779,20 @@ export default async function PricingPage() {
                               <HeaderPrice
                                 className={`x-price x-price-${currency.id}-monthly`}
                                 value={plan.prices[currency.id].monthly}
+                                term={
+                                  plan.prices[currency.id].yearly.note === undefined
+                                    ? ''
+                                    : 'month to month'
+                                }
                               />
                               <HeaderPrice
                                 className={`x-price x-price-${currency.id}-yearly`}
                                 value={plan.prices[currency.id].yearly}
+                                term={
+                                  plan.prices[currency.id].yearly.note === undefined
+                                    ? ''
+                                    : 'billed yearly'
+                                }
                               />
                             </Fragment>
                           ))}
@@ -2279,15 +2840,20 @@ export default async function PricingPage() {
 
             <p className="text-fg-muted mx-auto mt-6 max-w-3xl text-center text-sm leading-7">
               SAML and SCIM are named on the plans that will carry them, and every column that names
-              them says <span className="text-fg font-medium">coming soon</span> — the plans that
-              would buy them per connection read{' '}
-              <span className="text-fg font-medium">{ADDON_NOT_YET}</span>, Enterprise reads{' '}
-              <span className="text-fg font-medium">{NOT_YET}</span>, and the plans that were never
-              going to carry them read a dash. Neither is built for anybody, at any price. The chips
-              on the cards and the rows in this table say so deliberately: the first contract that
-              needs them is what gets them written, and until then you should plan as though they do
-              not exist. Enterprise is a conversation rather than a checkout, which is why the card
-              has no price and there is no form to fill in.
+              them says <span className="text-fg font-medium">coming soon</span>. Only one of them
+              is ever charged separately: SAML is bought per connection from Team, so Team reads{' '}
+              <span className="text-fg font-medium">{ADDON_NOT_YET}</span>, and it is included with
+              Enterprise, which reads <span className="text-fg font-medium">{NOT_YET}</span>. SCIM
+              is Enterprise only and included there rather than charged, so it reads{' '}
+              <span className="text-fg font-medium">{NOT_YET}</span> in that column and a dash
+              everywhere below it. Self-hosting reads{' '}
+              <span className="text-fg font-medium">{NOT_YET}</span> for both, because nothing is
+              held back there and nothing is charged for either — they simply do not exist yet.
+              Neither is built for anybody, at any price. The chips on the cards and the rows in
+              this table say so deliberately: the first contract that needs them is what gets them
+              written, and until then you should plan as though they do not exist. Enterprise is a
+              conversation rather than a checkout, which is why the card has no price and there is
+              no form to fill in.
             </p>
 
             <div className="mt-5 flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm">
