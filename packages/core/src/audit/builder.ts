@@ -195,6 +195,8 @@ const LIMITS = {
   slug: 128,
   email: 320,
   role: 64,
+  customRoleId: 64,
+  customRoleName: 128,
   accessLevel: 32,
   tokenPrefix: 32,
   deviceName: 128,
@@ -331,6 +333,20 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   }
   if (metadata.newRole !== undefined) {
     clean.newRole = sanitizeMetadataString(metadata.newRole, LIMITS.role);
+  }
+  // An organisation names its own roles, so the name is as attacker-influenced
+  // as a secret name and is cleaned the same way.
+  if (metadata.previousCustomRoleId !== undefined) {
+    clean.previousCustomRoleId = sanitizeMetadataString(
+      metadata.previousCustomRoleId,
+      LIMITS.customRoleId,
+    );
+  }
+  if (metadata.previousCustomRoleName !== undefined) {
+    clean.previousCustomRoleName = sanitizeMetadataString(
+      metadata.previousCustomRoleName,
+      LIMITS.customRoleName,
+    );
   }
   if (metadata.previousAccessLevel !== undefined) {
     clean.previousAccessLevel = sanitizeMetadataString(

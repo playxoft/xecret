@@ -120,6 +120,13 @@
       "when": 1786926060000,
       "tag": "0016_plans_and_entitlements",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1786926120000,
+      "tag": "0017_custom_roles",
+      "breakpoints": true
     }
   ]
 }

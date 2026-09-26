@@ -180,7 +180,15 @@ function scope(
       encryptionMode: 'e2ee',
     } as unknown as EnvironmentRecord,
     actor: { kind: 'user', userId, orgId: ORG_ID },
-    membership: { orgId: ORG_ID, userId, memberId: userId, role, status: 'active', grants: [] },
+    membership: {
+      orgId: ORG_ID,
+      userId,
+      memberId: userId,
+      role,
+      status: 'active',
+      customRole: undefined,
+      grants: [],
+    },
   };
 }
 

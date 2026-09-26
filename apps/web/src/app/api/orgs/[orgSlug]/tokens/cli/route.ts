@@ -22,7 +22,8 @@ type Params = { orgSlug: string };
 
 export const GET = authenticatedRoute<Params>(async ({ params, principal, services }) => {
   const scope = await resolveOrg(principal, params.orgSlug, services);
-  // Settles suspended membership; every active role holds it.
+  // Settles suspended membership; every active role holds it, custom roles
+  // included (`CUSTOM_ROLE_FLOOR`).
   authorize(scope, 'member.read');
 
   if (principal.kind === 'serviceToken') {

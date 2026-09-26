@@ -596,8 +596,10 @@ function failure(
   const log = logger.at('failure');
 
   // An authorization denial is a value, not an exception — but `assertCan`
-  // throws so handlers can stay linear. Its decision already distinguishes
-  // notFound from forbidden, which is the distinction that must not be lost.
+  // throws so handlers can stay linear, and so do the authority checks in
+  // `members-service.ts` (always `forbidden`, with a fixed message of their
+  // own). Its decision already distinguishes notFound from forbidden, which is
+  // the distinction that must not be lost.
   if (cause instanceof AuthorizationError) {
     const error =
       cause.decision.reason === 'notFound'
@@ -612,8 +614,8 @@ function failure(
       cause.decision.reason === 'notFound'
         ? `Refused to ${doing.base} ${doing.object}, and answered "not found" rather than ` +
             '"forbidden" so the caller cannot learn whether the resource exists'
-        : `Refused to ${doing.base} ${doing.object} — the caller's role does not carry the ` +
-            'capability this action requires',
+        : `Refused to ${doing.base} ${doing.object} — the caller does not hold the authority ` +
+            'this action requires, by role or by level',
       { reason: cause.decision.reason, status: error.status },
     );
 

@@ -1,4 +1,5 @@
-import { AuthorizationError } from '@xecret/core/authz';
+import { auditingDenials, AuthorizationError } from '@xecret/core/authz';
+import type { Denial } from '@xecret/core/authz';
 import {
   createInvitation,
   listEnvironmentsForOrganization,
@@ -12,6 +13,7 @@ import { json, parseJsonBody, parseQuery } from '@/server/http';
 import { invitationMail } from '@/server/invitation-mail';
 import { describeMailFailure, mailerFrom } from '@/server/mail';
 import {
+  assertInvitationGrantsWithinAuthority,
   assertRoleAuthority,
   effectiveAccess,
   mapMembershipError,
@@ -30,10 +32,11 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  * Who is in this organisation — and the door new people come through.
  *
  * `member.read` is the capability behind the listing, and every active role
- * holds it — a developer needs to know who to ask for production access as much
- * as an owner needs to know who has it. A *suspended* member holds nothing,
- * which is the case this check is really settling: `resolveOrg` proves
- * membership exists, and `authorize` proves it is still active.
+ * holds it, custom roles included (`CUSTOM_ROLE_FLOOR`): a developer needs to
+ * know who to ask for production access as much as an owner needs to know who
+ * has it. A *suspended* member holds nothing, which is the case this check is
+ * really settling: `resolveOrg` proves membership exists, and `authorize`
+ * proves it is still active.
  *
  * ── What the listing returns, and what it does not ──
  * Name, email, role, status, join date, and the seat count. Emails are visible
@@ -50,7 +53,9 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  * An invitation is a minted credential, so the rules that govern credential
  * minting apply: browser session only (a bearer token may not mint further
  * credentials — the same rule as `/api/cli/authorize`), the `member.invite`
- * capability, and the role hierarchy — nobody hands out a role above their own.
+ * capability, and "you can't hand out what you don't hold" — nobody invites at
+ * a role beyond their own authority, or with initial grants above the level
+ * they hold where each one lands.
  * The invitation email is sent after the response via `waitUntil`; the token is
  * also returned once in the response, because mail is optional in a self-hosted
  * install and an invitation that cannot be delivered by hand would make mail a
@@ -124,22 +129,28 @@ export const POST = authenticatedRoute<Params>(
     // one noisy tenant must not spend the sending reputation of all of them.
     await enforce(services.env, 'RL_INVITE', rateLimitKey([orgId]));
 
-    try {
-      authorize(scope, 'member.invite');
-    } catch (cause) {
-      if (cause instanceof AuthorizationError) {
-        record(
-          audit(orgId).denied('member.invited', { type: 'invitation', id: null }, cause.decision),
-        );
-      }
-      throw cause;
-    }
+    auditingDenials(
+      (decision) =>
+        record(audit(orgId).denied('member.invited', { type: 'invitation', id: null }, decision)),
+      () => authorize(scope, 'member.invite'),
+    );
 
     const inviter = requireSessionPrincipal(principal);
     const membership = requireMembership(scope);
 
     const body = await parseJsonBody(request, memberInviteSchema);
-    assertRoleAuthority(membership.role, body.role);
+
+    // A refusal past this point is the inviter reaching beyond their own
+    // authority, and is filed as such — naming who, and as what.
+    const refused = (decision: Denial): void =>
+      record(
+        audit(orgId).denied('member.invited', { type: 'invitation', id: null }, decision, {
+          targetEmail: body.email,
+          newRole: body.role,
+        }),
+      );
+
+    auditingDenials(refused, () => assertRoleAuthority(membership, body.role));
 
     // Resolved to ids now, while the inviter is present to fix a bad slug.
     // Present-but-empty is meaningful: it makes the membership deny-by-default
@@ -148,6 +159,15 @@ export const POST = authenticatedRoute<Params>(
       body.grants === undefined
         ? undefined
         : await resolveInvitationGrants(services.db, orgId, body.grants);
+
+    // The same limit as a grant written directly: an invitation is a grant
+    // with a delay, and acceptance writes these rows without asking anybody.
+    if (initialGrants !== undefined && initialGrants.length > 0) {
+      const grid = await listEnvironmentsForOrganization(services.db, orgId);
+      auditingDenials(refused, () =>
+        assertInvitationGrantsWithinAuthority(membership, body.role, initialGrants, grid),
+      );
+    }
 
     const issued = await createInvitation(services.db, {
       orgId,

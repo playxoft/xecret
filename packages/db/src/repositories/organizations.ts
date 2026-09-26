@@ -17,7 +17,7 @@ import { environments, projects } from '../schema/resources';
 import { orgSubscriptions } from '../schema/billing';
 import { orgMembers, organizations } from '../schema/tenancy';
 import { addMember } from './membership';
-import type { MemberRecord } from './membership';
+import type { WrittenMemberRecord } from './membership';
 import { QuotaExceededError, RepositoryError } from './shared';
 import type { Executor } from './shared';
 import { createFreeSubscription, entitlementColumns, entitlementsFromRow } from './subscriptions';
@@ -248,8 +248,8 @@ export async function countOrganizationsHeldBy(
  * account that was *invited* into somebody else's Team organisation is measured
  * against the plans it bought itself, and being a member of a paid tenant does
  * not raise its personal allowance. Anything wider would make a colleague's
- * purchase spend on your behalf, and would let one Scale organisation hand an
- * unlimited ceiling to everybody it ever invited.
+ * purchase spend on your behalf, and would let one Enterprise organisation hand
+ * an unlimited ceiling to everybody it ever invited.
  *
  * Chosen over the alternatives because each of those punishes somebody who paid.
  * Taking the *lowest* of the set would mean starting a second Free organisation
@@ -423,7 +423,7 @@ export interface ProvisionOrganizationParams {
 
 export interface ProvisionedOrganization {
   organization: Organization;
-  membership: MemberRecord;
+  membership: WrittenMemberRecord;
 }
 
 /**

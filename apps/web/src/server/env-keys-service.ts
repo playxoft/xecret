@@ -1,5 +1,5 @@
 import { can, roleDefaultAccessLevel } from '@xecret/core/authz';
-import type { Action, Membership, ResolvedGrant } from '@xecret/core/authz';
+import type { Action, ResolvedGrant } from '@xecret/core/authz';
 import {
   addEnvKeyGrants,
   canClaimInvitationGrants,
@@ -48,7 +48,7 @@ import type {
   RecipientsPayload,
   UnsealablePayload,
 } from './schemas/env-keys';
-import { authorize, toGrantContext } from './tenancy';
+import { authorize, toGrantContext, toMembership } from './tenancy';
 import type { EnvironmentScope } from './tenancy';
 
 /**
@@ -966,11 +966,12 @@ function invitationReaches(
     });
   }
 
-  const membership: Membership = {
-    role: invitation.role,
-    memberStatus: 'active',
+  // The member acceptance will create, through the same seam as every stored
+  // member — no custom role, since an invitation cannot carry one.
+  const membership = toMembership(
+    { role: invitation.role, status: 'active', customRole: undefined },
     grants,
-  };
+  );
 
   return can(
     // The invitee has no user id yet, and `can()` does not consult one for a
