@@ -273,9 +273,10 @@ const MILESTONES = [
     // the product and contradicted this page's own FAQ answer two screens
     // down. What is genuinely absent is SAML and SCIM, and the pricing matrix
     // now says "Coming soon" in those rows rather than ticking them — as
-    // "Add-on, coming soon" where the capability is bought per connection,
-    // because at those tiers it is both unbuilt and separately charged.
-    body: 'SAML single sign-on is named on the pricing page as a per-connection add-on from Team, and as included with Enterprise. SCIM provisioning is named as an Enterprise add-on and is not sold below that. Neither is built, and the comparison table says so in the row rather than in a footnote under it. Roles and per-environment access are built already — those are a plan boundary, not a promise.',
+    // "Add-on, coming soon" in the one column that buys SAML per connection,
+    // because there it is both unbuilt and separately charged. SCIM is included
+    // with Enterprise, so it carries the plain chip everywhere it appears.
+    body: 'SAML single sign-on is named on the pricing page as a per-connection add-on from Team, and as included with Enterprise. SCIM provisioning is included with Enterprise and not sold below it. Neither is built, and the comparison table says so in the row rather than in a footnote under it. Roles and per-environment access are built already — those are a plan boundary, not a promise.',
   },
   {
     state: 'next',
@@ -340,7 +341,7 @@ const FAQ: readonly FaqItem[] = [
   {
     question: 'How do you make money?',
     answer:
-      'From the hosted service. Free is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro will be $5 per member per month billed yearly, or $8 month to month, for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of history. Team will be $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access, and priority support. Enterprise is custom, dropping the ceilings, for a year of audit history, a self-hosting support contract and an SLA — SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is $249 per connection per month at Enterprise only. Both are charged per identity-provider connection rather than per member, and neither is built yet. Self-hosting is free, always. While xecret is in pre-alpha every paid feature is on for everybody and no card is collected.',
+      'From the hosted service. Free is $0 forever for 1 organisation, 5 projects, 3 members, 3 environments per project and 7 days of audit history. Pro will be $5 per member per month billed yearly, or $8 month to month, for 3 organisations, 25 projects, 10 environments per project, unlimited members and 30 days of history. Team will be $12 billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of history, roles and per-environment access, and priority support. Enterprise is custom, dropping the ceilings, for a year of audit history, a self-hosting support contract and an SLA — SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free, always. While xecret is in pre-alpha every paid feature is on for everybody and no card is collected.',
   },
   {
     question: 'Is xecret production-ready?',

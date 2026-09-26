@@ -232,9 +232,9 @@ const SECTIONS: readonly LegalSection[] = [
         </>,
         <>
           <strong className="text-fg font-medium">Add-ons, charged per connection.</strong> SAML
-          single sign-on is $199 per connection per month from Team, and included with Enterprise.
-          Directory sync (SCIM) is $249 per connection per month and is sold at Enterprise only.
-          Both are billed per identity-provider connection rather than per member, and neither is
+          single sign-on is $199 per connection per month from Team, and is included with
+          Enterprise. It is billed per identity-provider connection rather than per member.
+          Directory sync (SCIM) is included with Enterprise and is not sold below it. Neither is
           built yet — nothing is charged for either until it is.
         </>,
         <>

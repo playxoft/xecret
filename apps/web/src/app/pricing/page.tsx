@@ -149,27 +149,29 @@ function pricingTitle(currency: CurrencyId): string {
 }
 
 /**
- * The sentence above the cards, in the currency the cards will paint.
+ * The sentence above the cards, and why it names no price.
  *
- * It was the last hard-coded USD string on the page, and the most visible one:
- * the `<title>`, the meta description and `Offer.priceCurrency` all learned to
- * follow `CF-IPCountry`, so a visitor resolving to `inr` got a title quoting
- * ₹149, cards painting ₹375, an INR `Product` graph — and one screen above them
- * a lede quoting dollars. The comment beside the hero already said this
- * sentence "sits a screen above the cards and used to disagree with them"; it
- * disagreed again, in a new way, the moment the rest of the page became
- * currency-aware.
+ * It quoted "$12 … or $19" for a long time, which was wrong on four sheets out
+ * of five once `resolveInitialCurrency` landed. Resolving it server-side fixed
+ * that and broke something else: the hero is one string, while every other
+ * figure on the page renders all five sheets and reveals one with CSS — and it
+ * sits *before* the `x-cur-*` radios, so the forward-only `~` chain cannot
+ * reach it even if the variants were emitted. A reader who opened on the euro
+ * sheet and clicked USD got $12 on every card and €13 in the lede above them,
+ * which also made `resolveInitialCurrency`'s promise that a wrong guess "costs
+ * one click, not a wrong price" untrue.
+ *
+ * Both arrangements were a price that can disagree with the cards. So the hero
+ * names none: it says what the shape of the pricing is, and the figures are
+ * twenty pixels below it in the currency the reader actually chose. The only
+ * alternative that works is moving the hero inside the radio wrapper, which
+ * buys a sentence a figure it does not need at the cost of the page's
+ * structure.
  */
-function heroDescription(currency: CurrencyId): string {
-  const team = planPrices('team', currency);
-
-  return (
-    'Four plans and a self-hosted option, published in full — the limits included. Free is ' +
-    `genuinely free, Team is ${team.yearly.price} per member per month billed yearly or ` +
-    `${team.monthly.price} month to month, service tokens and CI never cost anything, and ` +
-    'running the whole server yourself is free forever.'
-  );
-}
+const HERO_DESCRIPTION =
+  'Four plans and a self-hosted option, published in full — the limits included. Free is ' +
+  'genuinely free, every paid plan is per member with a lower yearly rate, service tokens and ' +
+  'CI never cost anything, and running the whole server yourself is free forever.';
 
 function pricingDescription(currency: CurrencyId): string {
   const pro = planPrices('pro', currency);
@@ -363,6 +365,63 @@ function formatCount(value: number): string {
 function seatFloor(seats: number): string {
   if (seats <= 1) return 'No minimum';
   return `${seats} members`;
+}
+
+/**
+ * The floor as a sentence fragment: "Billed from 3 members up", or nothing.
+ *
+ * Every surface that states a floor goes through this or `seatFloor`, and that
+ * is the point. The matrix cell was converted to a helper and the two card
+ * caveats and the FAQ answer were left interpolating `${…} members` directly —
+ * so a floor moved to 1 would have printed "No minimum" in the table, "Billed
+ * from 1 members up" on the card, and an FAQ asserting a floor that no longer
+ * existed. Three renderings of one constant, one of them guarded, which is the
+ * arrangement the matrix comment says the helper exists to prevent.
+ *
+ * Returns `undefined` rather than an empty string so a plan with no floor
+ * carries no `priceCaveat` at all, instead of an empty paragraph.
+ */
+function seatFloorCaveat(seats: number): string | undefined {
+  if (seats <= 1) return undefined;
+  return `Billed from ${seats} members up`;
+}
+
+/**
+ * The FAQ's sentence about floors, composed from which plans actually have one.
+ *
+ * It used to name Team and Enterprise and then assert "Free and Pro have no
+ * floor" as a literal, which is three claims about `MINIMUM_SEATS` and none of
+ * them derived: a floor added to Pro would have left the page denying it. Both
+ * halves are built from the constant now, so the sentence cannot outlive the
+ * arrangement it describes.
+ */
+function seatFloorSentence(): string {
+  const withFloor = (['pro', 'team', 'enterprise'] as const).filter((id) => MINIMUM_SEATS[id] > 1);
+  const without = (['free', 'pro', 'team', 'enterprise'] as const).filter(
+    (id) => MINIMUM_SEATS[id] <= 1,
+  );
+
+  const names = { free: 'Free', pro: 'Pro', team: 'Team', enterprise: 'Enterprise' } as const;
+  const list = (ids: readonly (keyof typeof names)[]) =>
+    ids.length < 2
+      ? ids.map((id) => names[id]).join('') || 'no plan'
+      : `${ids
+          .slice(0, -1)
+          .map((id) => names[id])
+          .join(', ')} and ${names[ids[ids.length - 1] as keyof typeof names]}`;
+
+  if (withFloor.length === 0) return 'No plan has a seat minimum.';
+
+  const floors = withFloor
+    .map((id) => `${names[id]} from ${MINIMUM_SEATS[id]}`)
+    .join(withFloor.length > 2 ? ', ' : ' and ');
+
+  return (
+    `Seats are billed from a minimum on some plans — ${floors} — so a smaller group on one of ` +
+    `those pays the minimum rather than a lower number; ${list(without)} ${
+      without.length === 1 ? 'has' : 'have'
+    } no floor.`
+  );
 }
 
 /**
@@ -821,7 +880,7 @@ const PRICED_PLANS: readonly Plan[] = [
     ],
     cta: { label: 'Start on Team', href: '/sign-up', external: false },
     recommended: true,
-    priceCaveat: `Billed from ${MINIMUM_SEATS.team} members up`,
+    priceCaveat: seatFloorCaveat(MINIMUM_SEATS.team),
     unitText: 'member/month',
   },
   {
@@ -856,14 +915,14 @@ const PRICED_PLANS: readonly Plan[] = [
       { text: 'No ceiling on projects, environments, secrets or tokens' },
       { text: 'Custom roles', notYet: true },
       { text: 'Audit streamed to your SIEM', notYet: true },
-      // Was "SAML and SCIM included rather than charged as add-ons", which the
-      // add-on band contradicts: SCIM is listed there at a per-connection price
-      // marked `from: 'Enterprise'`. Three surfaces, three answers, on the one
-      // capability this page charges separately for — the exact divergence
-      // `ADDON_NOT_YET` exists to kill. SAML *is* included at Enterprise; SCIM
-      // is bought per connection, and the card now says so.
+      // Both included, which is what `pricing-plan.md` §3 and §8.4 say: the
+      // $1,500 Enterprise floor is sized to absorb the two WorkOS connections.
+      // This bullet spent a few commits claiming SCIM was charged per
+      // connection here, because the matrix cell said `Add-on` and everything
+      // else was changed to agree with it. That is the wrong direction — the
+      // plan of record is the tie-breaker and it includes both.
       { text: 'SAML single sign-on included', notYet: true },
-      { text: `Directory sync (SCIM) at the published per-connection price`, notYet: true },
+      { text: 'Directory sync (SCIM) included', notYet: true },
       // Chipped, because it is not built. `packages/core/src/crypto/escrow.ts`
       // is the recovery-share format for an account, not a customer-held root
       // key — the hosted service holds the root key for every plan today, which
@@ -896,7 +955,7 @@ const PRICED_PLANS: readonly Plan[] = [
     // on the card, which is the omission the `MINIMUM_SEATS` docblock calls
     // misleading rather than terse, applied to one of the two plans that has a
     // floor and not the other.
-    priceCaveat: `Billed from ${MINIMUM_SEATS.enterprise} members up`,
+    priceCaveat: seatFloorCaveat(MINIMUM_SEATS.enterprise),
     amount: null,
     unitText: null,
   },
@@ -973,17 +1032,31 @@ const PLANS: readonly Plan[] = [...PRICED_PLANS, SELF_HOSTED];
  * shows the receipt is making a claim that can be checked.
  */
 /**
- * The two add-ons, and the tier each one starts from.
+ * The add-ons, and the tier each one starts from.
  *
- * `notYet` is on both because neither is built, and this band was the last
- * surface on the page still saying otherwise: every matrix cell that names them
- * reads `Add-on, not yet` and the paragraph under the table says "neither is
- * built for anybody, at any price", while the band rendered $199 and $249 as
- * live prices. `from` is here for the same reason — the matrix gates SCIM at
- * Enterprise, and a band that omits the gate tells a Team reader they can buy
- * it.
- */
-/**
+ * ── Why there is only SAML here ──
+ * SCIM used to sit beside it at $249. It should not have: `pricing-plan.md` §3
+ * marks SCIM `✅ included` in the Enterprise column and `add-on` in *Scale*,
+ * and §8.3 says in as many words "offer it as a $249/mo add-on on Scale, and
+ * include it in Enterprise", with §8.4 titled "Enterprise includes both,
+ * because the floor pays for them". Scale was removed in #101, so the tier that
+ * bought the add-on no longer exists, and §8.3's other half — "never bundle it
+ * below Enterprise" — rules out moving the charge down to Team. That leaves
+ * SCIM as a plain Enterprise inclusion with no price to publish.
+ *
+ * This was resolved the wrong way round once already. The band originally read
+ * "Included with Enterprise", the matrix cell read `ADDON_NOT_YET`, and the
+ * inconsistency was settled by believing the cell — which put a $249 charge in
+ * front of Enterprise customers in the contractual Terms, for something the
+ * $1,500 floor is documented as already absorbing. The plan of record was the
+ * tie-breaker and it says included.
+ *
+ * `notYet` stays because SAML is not built, and this band was the last surface
+ * still implying otherwise: the matrix cells read `Add-on, coming soon` and the
+ * paragraph under the table says "neither is built for anybody, at any price",
+ * while the band rendered a live price. `from` is here for the same reason — a
+ * band that omits the gate tells a Free reader they can buy it.
+ *
  * ── Why the add-on sheets are converted and the plan sheets are not ──
  * Every plan price on this page is *set* for its market: India is about 65 per
  * cent below the US sheet because a price that is reasonable in San Francisco is
@@ -1010,21 +1083,6 @@ const ADDONS = [
     from: 'Team only — included with Enterprise',
     notYet: true,
     body: 'For an identity provider that speaks SAML rather than OIDC. Brokered through WorkOS, which charges us $125 per connection per month; we charge $199 and keep the difference for the support that comes with it. Enterprise contracts include it rather than paying per connection. OIDC single sign-on will be included from Team and cost nothing extra, because it costs us nothing — neither is built yet.',
-  },
-  {
-    name: 'Directory sync (SCIM)',
-    prices: { usd: '$249', eur: '€229', inr: '₹21,200', jpy: '¥37,400', aud: 'A$389' },
-    unit: 'per connection, per month',
-    from: 'Enterprise',
-    notYet: true,
-    // "Included with Enterprise" is what this sentence used to end with, and it
-    // was the only surface on the site saying so: the matrix cell beside it is
-    // `ADDON_NOT_YET` precisely because SCIM is bought per connection even on
-    // Enterprise, and the Terms — which close with "if they ever disagree with
-    // this section, this section is the one you agreed to" — bill $249 for it.
-    // A prospect reading the band and signing the Terms met two different
-    // answers about the same charge.
-    body: 'Members provisioned and deprovisioned by your directory. A second WorkOS connection at the same $125 to us, and the reason it is priced separately rather than folded into a tier: bundling it would mean paying for a connection for every customer on that tier, including the ones who never use it. Sold at Enterprise only, and charged per connection there too rather than bundled into the contract.',
   },
 ] as const;
 
@@ -1439,11 +1497,14 @@ const MATRIX = [
           free: false,
           pro: false,
           team: false,
-          // `ADDON_NOT_YET`, not a bare chip: this is bought per connection at a
-          // published price even on Enterprise, and a cell that omits the price
-          // half tells a reader it comes with the tier. The add-on band says
-          // otherwise two screens up.
-          enterprise: ADDON_NOT_YET,
+          // A bare chip, not `ADDON_NOT_YET`: SCIM is *included* at Enterprise.
+          // `pricing-plan.md` §3 marks it `✅ included` in this column and §8.4
+          // explains why — the $1,500 floor absorbs the two WorkOS connections
+          // at 17 per cent of revenue. This cell said `Add-on` for a while and
+          // the whole site was changed to agree with it, which billed Enterprise
+          // customers $249 for something the tier covers. The cell was wrong,
+          // not the band.
+          enterprise: NOT_YET,
           'self-hosted': NOT_YET,
         },
       },
@@ -1668,7 +1729,7 @@ const FAQ: readonly FaqItem[] = [
     // walks through seat accounting in detail — invitations, removals, what is
     // and is not a member — so an omission here reads as "there is nothing
     // else to know about seats".
-    answer: `Anyone with a seat in your organisation who can sign in and read or write a secret. Service tokens are not members, so a CI pipeline that pulls secrets on every build costs nothing — and neither does a Kubernetes workload or an AI agent. A pending invitation is not counted until it is accepted, and removing someone frees their seat immediately. Team is billed from ${MINIMUM_SEATS.team} members up and Enterprise from ${MINIMUM_SEATS.enterprise}, so a smaller group on one of those pays the minimum rather than a lower number; Free and Pro have no floor. Nothing stops you running with fewer people than you are billed for.`,
+    answer: `Anyone with a seat in your organisation who can sign in and read or write a secret. Service tokens are not members, so a CI pipeline that pulls secrets on every build costs nothing — and neither does a Kubernetes workload or an AI agent. A pending invitation is not counted until it is accepted, and removing someone frees their seat immediately. ${seatFloorSentence()} Nothing stops you running with fewer people than you are billed for.`,
   },
   {
     question: 'Do machines really cost nothing?',
@@ -1691,7 +1752,7 @@ const FAQ: readonly FaqItem[] = [
     // republishes every answer as `FAQPage` structured data — so an answer
     // nobody reads back is still an answer Google indexes and quotes.
     answer:
-      'It will not be. OIDC single sign-on is not built yet, and when it lands it is included from Team at no extra cost rather than priced separately — we are building it ourselves, so it costs us nothing per customer and charging for it would be indefensible. SAML is the exception and will be a $199 per connection add-on, because it is brokered through WorkOS and they charge us $125 per connection per month whether anyone signs in or not. Neither is available today, on any plan. Self-hosted deployments will bring their own identity provider and pay nothing for either.',
+      'It will not be. OIDC single sign-on is not built yet, and when it lands it is included from Team at no extra cost rather than priced separately — we are building it ourselves, so it costs us nothing per customer and charging for it would be indefensible. SAML is the exception and will be a $199 per connection add-on from Team, because it is brokered through WorkOS and they charge us $125 per connection per month whether anyone signs in or not; Enterprise includes it, because the contract floor already covers the connection. Directory sync is included with Enterprise on the same reasoning and is not sold below it. None of this is available today, on any plan. Self-hosted deployments will bring their own identity provider and pay nothing for any of it.',
   },
   {
     question: 'What happens when I exceed the free tier?',
@@ -1945,7 +2006,7 @@ function PlanFeatureItem({ feature }: { feature: PlanFeature }) {
 /**
  * One currency and one billing period's figures, inside a card.
  *
- * All eight are rendered on every card and seven are `display: none` — not
+ * All ten are rendered on every card and nine are `display: none` — not
  * `visibility: hidden`, which would leave every card announcing eight prices
  * one after another to a screen reader.
  */
@@ -1964,12 +2025,20 @@ function PriceBlock({ value, className }: { value: PlanPrice; className: string 
 /**
  * One plan's price in a comparison-table column header.
  *
- * The compact sibling of `PriceBlock`: same eight-figures-one-shown mechanism
+ * The compact sibling of `PriceBlock`: same ten-figures-one-shown mechanism
  * and the same `x-price` classes, sized for a header cell rather than a card.
- * Two components rather than a prop, because the card version carries a third
- * line for the yearly total and this one deliberately does not — a column header
- * that grew a line when somebody pressed Yearly would shift twenty-six rows of
- * table down the page.
+ * Two components rather than a prop, because the card version carries the
+ * yearly *total* on its third line and this one carries the billing *term* —
+ * "billed yearly" or "month to month" — which is a different fact in the same
+ * position.
+ *
+ * Both periods get that line even though only one of them adds information,
+ * and that is the whole trick: a column header that grew a line when somebody
+ * pressed Yearly would shift every row of the table down the page, so the two
+ * states are kept the same height rather than one of them kept short. An
+ * earlier version of this note said the header "deliberately does not" carry a
+ * third line, which stopped being true when the yearly default made "$12 per
+ * member, per month" a rate nobody can buy by the month.
  */
 function HeaderPrice({
   value,
@@ -2123,7 +2192,7 @@ function PriceControls() {
               33 per cent on the euro Pro rate and 40 on the rupee one, so one
               number would sit directly above a card contradicting it.
 
-              Every chip is rendered and four are `display: none`, never
+              Every chip is rendered and four of the five are `display: none`, never
               `visibility`, so the hidden ones leave the accessibility tree
               instead of being reachable text nobody can see.
 
@@ -2165,7 +2234,7 @@ function PriceControls() {
             'x-currency-summary min-w-28 list-none justify-between gap-2 px-4',
           )}
         >
-          {/* Four names, one shown — the same mechanism as the prices, so the
+          {/* Five names, one shown — the same mechanism as the prices, so the
               trigger cannot disagree with the figures below it. */}
           <span className="text-fg text-sm font-medium">
             {CURRENCIES.map((currency) => (
@@ -2246,7 +2315,7 @@ export default async function PricingPage() {
         height="compact"
         eyebrow="Pricing"
         title="Secret management pricing, without the sales call."
-        description={heroDescription(initialCurrency)}
+        description={HERO_DESCRIPTION}
       />
 
       {/* ── One control, two places it appears ──
@@ -2413,11 +2482,19 @@ export default async function PricingPage() {
                       caveat, so the tallest state cleared the old floor and the
                       recommended card started shifting its features and CTA by
                       about 12px on every toggle — the exact jump the floor
-                      exists to absorb. 7.5rem covers the tallest combination
-                      with room for the caveat wrapping to two lines on a narrow
-                      card. */}
-                  <div className="mt-4 min-h-[7.5rem]">
-                    {/* Eight figures, one shown. Every currency and both
+                      exists to absorb.
+
+                      The floor is measured, not guessed: price 2.25rem + unit
+                      1.5 + note 1.5 + caveat 1.75 = 7rem for the tallest state
+                      (Team, yearly), against 6.75rem for its monthly one. 8rem
+                      clears both with a line of slack, which is what a wrapped
+                      caveat would cost — "Billed from 3 members up" needs about
+                      130px at this size against roughly 240px of content box,
+                      so it does not wrap today, but the slack is the difference
+                      between a comment that is true and one that merely has not
+                      been tested at a narrower width. */}
+                  <div className="mt-4 min-h-[8rem]">
+                    {/* Ten figures, one shown. Every currency and both
                         periods are in the markup, and CSS picks the pair the
                         two radio groups name — so switching either needs no
                         request and no JavaScript. `display: none` on the seven
@@ -2517,7 +2594,7 @@ export default async function PricingPage() {
                       </span>
                     ) : null}
                   </div>
-                  {/* Four figures, one shown — the same radios the cards and the
+                  {/* Five figures, one shown — the same radios the cards and the
                       comparison table read, through a rule that keys on currency
                       alone. An add-on has no yearly rate, so unlike every other
                       price on the page this one must not follow the period half
@@ -2652,7 +2729,7 @@ export default async function PricingPage() {
                           className="px-4 py-4 text-center align-bottom"
                         >
                           <span className="text-fg block text-base font-semibold">{plan.name}</span>
-                          {/* Eight figures, one shown — the same markup the cards
+                          {/* Ten figures, one shown — the same markup the cards
                             carry, now that the radios sit above both sections and
                             the sibling chain reaches in here. This used to be a
                             hard-coded monthly USD price with a caption
@@ -2725,14 +2802,13 @@ export default async function PricingPage() {
 
             <p className="text-fg-muted mx-auto mt-6 max-w-3xl text-center text-sm leading-7">
               SAML and SCIM are named on the plans that will carry them, and every column that names
-              them says <span className="text-fg font-medium">coming soon</span>. Their tiers are
-              mirror images, so their cells are too: SAML is bought per connection from Team and
-              included with Enterprise, so Team reads{' '}
-              <span className="text-fg font-medium">{ADDON_NOT_YET}</span> and Enterprise reads{' '}
-              <span className="text-fg font-medium">{NOT_YET}</span>. SCIM is sold at Enterprise
-              only and charged per connection there too, so Enterprise reads{' '}
-              <span className="text-fg font-medium">{ADDON_NOT_YET}</span>. The plans that were
-              never going to carry either read a dash, and self-hosting reads{' '}
+              them says <span className="text-fg font-medium">coming soon</span>. Only one of them
+              is ever charged separately: SAML is bought per connection from Team, so Team reads{' '}
+              <span className="text-fg font-medium">{ADDON_NOT_YET}</span>, and it is included with
+              Enterprise, which reads <span className="text-fg font-medium">{NOT_YET}</span>. SCIM
+              is Enterprise only and included there rather than charged, so it reads{' '}
+              <span className="text-fg font-medium">{NOT_YET}</span> in that column and a dash
+              everywhere below it. Self-hosting reads{' '}
               <span className="text-fg font-medium">{NOT_YET}</span> for both, because nothing is
               held back there and nothing is charged for either — they simply do not exist yet.
               Neither is built for anybody, at any price. The chips on the cards and the rows in

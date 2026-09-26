@@ -54,6 +54,25 @@ function idx(haystack: string, needle: string): number {
 }
 
 /**
+ * The published prose only, with the code commentary removed.
+ *
+ * Three assertions in this suite have now been tripped by a comment rather than
+ * by copy: these pages explain their own pricing rules in `//` notes beside the
+ * strings, so a rule of the form "no page may say X" matches the note that
+ * records why X is wrong. Comments are not published, so they are not what these
+ * assertions are about.
+ *
+ * Line comments are stripped only where they begin a line, so a `//` inside a
+ * URL in body copy survives.
+ */
+const PROSE = new Map(
+  [...SOURCES].map(([page, source]) => [
+    page,
+    source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, ''),
+  ]),
+);
+
+/**
  * `25` also written as `twenty-five`.
  *
  * The home page spells its numbers out — "three organisations, twenty-five
@@ -413,29 +432,50 @@ describe('the add-ons are described the same way everywhere', () => {
   });
 
   it('never publishes an add-on price without its unit', () => {
-    // $249 with no unit can be read as a one-off or a per-member charge, and
+    // $199 with no unit can be read as a one-off or a per-member charge, and
     // four of these answers are emitted as `FAQPage` JSON-LD, so the ambiguity
-    // reaches a rich result. Both add-ons are per connection, per month.
+    // reaches a rich result.
     for (const [page, source] of SOURCES) {
       const text = source.replace(/\s+/g, ' ');
-      for (const price of ['$199', '$249']) {
-        if (!text.includes(price)) continue;
-        const after = text.slice(text.indexOf(price), text.indexOf(price) + 120);
-        expect(after, `${page} quotes ${price} with no unit beside it`).toMatch(
-          /per[- ]connection/i,
-        );
-      }
+      if (!text.includes('$199')) continue;
+      const after = text.slice(text.indexOf('$199'), text.indexOf('$199') + 120);
+      expect(after, `${page} quotes $199 with no unit beside it`).toMatch(/per[- ]connection/i);
     }
   });
 
-  it('every page that prices the add-ons prices them the same', () => {
+  it('every page that prices the add-on prices it the same', () => {
     // Keyed on "per connection" rather than on a `$` anywhere after the word
     // SAML: these pages quote plan prices too, so the looser test fired on
     // every page that merely mentions single sign-on near a figure.
     for (const [page, source] of SOURCES) {
       if (!/per[- ]connection/i.test(source)) continue;
       expect(source, `${page} prices SAML at something other than $199`).toContain('$199');
-      expect(source, `${page} prices SCIM at something other than $249`).toContain('$249');
+    }
+  });
+
+  it('never charges Enterprise for directory sync', () => {
+    // `pricing-plan.md` §3 marks SCIM `✅ included` in the Enterprise column and
+    // §8.4 explains why — the $1,500 floor absorbs both WorkOS connections at
+    // 17 per cent of revenue. The $249 figure belonged to Scale, which #101
+    // removed, and §8.3's "never bundle it below Enterprise" rules out moving
+    // the charge to Team.
+    //
+    // This was published the wrong way round for several commits: the matrix
+    // cell read `Add-on` and every other surface, including the contractual
+    // Terms, was changed to agree with it. The guard is on the money, not the
+    // wording, because that is what a customer pays.
+    expect(ALL, 'the retired $249 SCIM charge is back').not.toContain('$249');
+
+    // Read from `PROSE`: `/about` explains this rule in a comment beside the
+    // copy, and a guard over raw source matches the explanation.
+    for (const [page, source] of PROSE) {
+      if (!source.includes('SCIM')) continue;
+      const text = source.replace(/\s+/g, ' ');
+      const after = text.slice(text.indexOf('SCIM'));
+      const clause = after.slice(0, Math.min(...[';', '.'].map((d) => idx(after, d))));
+      expect(clause, `${page} charges for SCIM rather than including it`).not.toMatch(
+        /\$\d|per[- ]connection|add-on/i,
+      );
     }
   });
 });
