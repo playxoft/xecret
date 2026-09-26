@@ -299,6 +299,21 @@ function formatCount(value: number): string {
  * supposed to prevent. A year is the only retention worth rewording, so the
  * rewording lives here and every column goes through it.
  */
+/**
+ * A seat floor as a cell: the number, or the words for "there isn't one".
+ *
+ * A floor of one is not a floor, and printing "1 member" said the opposite of
+ * the FAQ and the Terms, which both state that Free and Pro have none. Free is
+ * worse than redundant there: `resolveBilledSeats` returns `billed: 1` for it
+ * unconditionally and it is never invoiced, so a billing figure in that column
+ * describes a bill that does not exist. Pluralised rather than suffixed with a
+ * bare "members", so a floor that ever moves to 1 cannot render "1 members".
+ */
+function seatFloor(seats: number): string {
+  if (seats <= 1) return 'No minimum';
+  return `${seats} members`;
+}
+
 function formatRetention(days: number): string {
   if (days % 365 === 0) {
     const years = days / 365;
@@ -710,9 +725,6 @@ const PRICED_PLANS: readonly Plan[] = [
       'For a team with somebody who must not see production — a contractor, a junior, an auditor.',
     features: [
       { text: 'Everything in Pro' },
-      // Stated on the card and not only in the FAQ, because it is the one
-      // number here that can make the bill bigger than the multiplication a
-      // reader has just done in their head.
       { text: 'Roles and per-environment access' },
       {
         text: `${formatLimit(LIMITS.team.projects)} projects, ${formatLimit(LIMITS.team.secretsPerEnvironment)} secrets per environment`,
@@ -1060,11 +1072,15 @@ const MATRIX = [
         // so a billing figure in that column describes a bill that does not
         // exist. `MINIMUM_SEATS` is still what decides which columns get a
         // number, so the row cannot drift from the engine.
+        // All four columns go through the same helper. Two of them used to
+        // interpolate `${…} members` directly, so a floor moved to 1 would have
+        // printed "1 members" *and* contradicted the FAQ sentence built from
+        // the same constant — the drift this row reads `MINIMUM_SEATS` to avoid.
         values: {
-          free: MINIMUM_SEATS.free > 1 ? `${MINIMUM_SEATS.free} members` : 'No minimum',
-          pro: MINIMUM_SEATS.pro > 1 ? `${MINIMUM_SEATS.pro} members` : 'No minimum',
-          team: `${MINIMUM_SEATS.team} members`,
-          enterprise: `${MINIMUM_SEATS.enterprise} members`,
+          free: seatFloor(MINIMUM_SEATS.free),
+          pro: seatFloor(MINIMUM_SEATS.pro),
+          team: seatFloor(MINIMUM_SEATS.team),
+          enterprise: seatFloor(MINIMUM_SEATS.enterprise),
           'self-hosted': 'No minimum',
         },
       },
@@ -1659,6 +1675,15 @@ const FAQ: readonly FaqItem[] = [
  * ends in the annual total, and reading that off `prices.usd` while the node
  * around it published `priceCurrency: 'INR'` put "Annual equivalent: $60" in
  * an offer priced ₹149 — the currency mismatch moved rather than fixed.
+ *
+ * `priceCaveat` is appended, and appended *after* the `Includes:` list rather
+ * than into it. Keeping it out of `features` was right — a minimum charge is
+ * not something the plan includes — but leaving it out of this string too made
+ * the one machine-readable surface the only one that omits the seat floor,
+ * which is the opposite of the argument the `MINIMUM_SEATS` docblock makes for
+ * publishing it at all. A shopping surface rendering "Team, $12 per
+ * member/month billed annually" with no floor is how a two-person team
+ * computes $288 and is invoiced $432.
  */
 function offerDescription(plan: Plan, currency: CurrencyId): string {
   const includes = plan.features
@@ -1666,8 +1691,9 @@ function offerDescription(plan: Plan, currency: CurrencyId): string {
     .join('; ');
   const note = plan.prices[currency].yearly.note;
   const annual = note === undefined ? '' : ` Annual equivalent: ${note}.`;
+  const caveat = plan.priceCaveat === undefined ? '' : ` ${plan.priceCaveat}.`;
 
-  return `${plan.audience} Includes: ${includes}.${annual}`;
+  return `${plan.audience} Includes: ${includes}.${annual}${caveat}`;
 }
 
 /**

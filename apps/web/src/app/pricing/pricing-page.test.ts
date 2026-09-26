@@ -388,8 +388,19 @@ describe('one fact, rendered in one place', () => {
     // member per month billed yearly", and a bare `not.toContain` on the first
     // half of that sentence failed the corrected copy along with the wrong.
     expect(DESCRIPTION_LINE).toContain('billed yearly');
-    expect(SOURCE).not.toMatch(/Team is \$12 per member per month(?! billed yearly)/);
-    expect(SOURCE).not.toMatch(/Team is \$19 per member per month(?! or)/);
+
+    // Stated as "a rate is always qualified within a short window", not as two
+    // negative lookaheads. The lookaheads rejected correct copy: the natural
+    // monthly sentence "Team is $19 per member per month, or $12 billed
+    // yearly" is true, but `(?! or)` sees the comma and fails it — so a future
+    // reversion to a monthly default written with ordinary punctuation would
+    // have tripped a guard that exists to catch the opposite mistake.
+    for (const match of SOURCE.matchAll(/Team is (\$\d+) per member per month/g)) {
+      const window = SOURCE.slice(match.index, match.index + 140);
+      expect(window, `an unqualified Team rate: ${match[1]}`).toMatch(
+        /billed yearly|month to month|, or \$\d+/,
+      );
+    }
   });
 
   it('does not promise single sign-on in the metadata it marks Not yet on the card', () => {

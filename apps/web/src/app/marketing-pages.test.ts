@@ -191,24 +191,49 @@ const NOUNS = {
 describe('every limit stated in prose matches the engine', () => {
   // `/terms` is the contractual one and states the full ladder, so it carries
   // the strictest assertion: every ceiling for every plan it enumerates.
-  it('terms states the Pro and Team ceilings the engine enforces', () => {
-    const source = SOURCES.get('terms') ?? '';
+  /**
+   * Which ceilings each page actually enumerates.
+   *
+   * `/terms` states the full ladder. The others state a subset in a sentence —
+   * and until this map existed only `/terms` was checked, so the four pages that
+   * emit these figures inside `FAQPage` JSON-LD were unpinned. Verified by
+   * mutation: rewriting `/faq`'s "25 projects" to "35 projects" and `/about`'s
+   * "180 days of history" to "999 days" both left the suite green, which is
+   * exactly the drift this file's docblock says it exists to stop.
+   */
+  const STATES_CEILINGS: Readonly<Record<string, readonly (keyof typeof NOUNS)[]>> = {
+    terms: [
+      'organizations',
+      'projects',
+      'environmentsPerProject',
+      'secretsPerEnvironment',
+      'serviceTokens',
+      'auditRetentionDays',
+    ],
+    faq: ['organizations', 'projects', 'environmentsPerProject', 'auditRetentionDays'],
+    features: ['organizations', 'projects', 'environmentsPerProject', 'auditRetentionDays'],
+    about: ['organizations', 'projects', 'environmentsPerProject', 'auditRetentionDays'],
+    '.': ['organizations', 'projects', 'environmentsPerProject', 'auditRetentionDays'],
+  };
+
+  // `Object.keys` widens to `string[]`, and `SOURCES` is keyed by the literal
+  // union, so the cast is what keeps the map's keys checked against `PAGES`
+  // rather than silently accepting a page name that does not exist.
+  const CEILING_PAGES = Object.keys(STATES_CEILINGS) as (typeof PAGES)[number][];
+
+  it.each(CEILING_PAGES)('%s states the Pro and Team ceilings', (page) => {
+    const source = SOURCES.get(page) ?? '';
+    const fields = STATES_CEILINGS[page] ?? [];
+    expect(fields.length, `${page} has no fields listed`).toBeGreaterThan(0);
 
     for (const plan of ['pro', 'team'] as const) {
       const limits = PLANS[plan].limits;
-      for (const field of [
-        'organizations',
-        'projects',
-        'environmentsPerProject',
-        'secretsPerEnvironment',
-        'serviceTokens',
-        'auditRetentionDays',
-      ] as const) {
+      for (const field of fields) {
         const value = limits[field];
         if (value === null) continue;
         expect(
           states(source, value, NOUNS[field]),
-          `terms does not state ${plan}.${field} = ${value}`,
+          `${page} does not state ${plan}.${field} = ${value}`,
         ).toBe(true);
       }
     }
@@ -311,7 +336,14 @@ describe('the seat minimum is disclosed where it is charged', () => {
   // and is invoiced $432. `/terms` is where that has to be stated.
   it('terms states the Team and Enterprise minimums', () => {
     const source = SOURCES.get('terms') ?? '';
-    expect(states(source, MINIMUM_SEATS.team, 'members?')).toBe(true);
+
+    // The bare `states(source, MINIMUM_SEATS.team, 'members?')` that used to
+    // lead here could not fail: `MINIMUM_SEATS.team` and `FREE_LIMITS.seats`
+    // are both 3, and the Free bullet says "3 members", so deleting the entire
+    // seat-minimum paragraph left it green. The two phrase-anchored assertions
+    // below were always the ones doing the work, so it is gone rather than
+    // scoped — the same 3/3 collision the `freeRegion` note records, in the
+    // other direction.
     expect(source.toLowerCase()).toMatch(
       new RegExp(`minimum of ${MINIMUM_SEATS.team} members?`, 'i'),
     );
