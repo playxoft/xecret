@@ -28,15 +28,25 @@ import { PLANS } from '@xecret/core/entitlements';
 const SOURCE = readFileSync(join(import.meta.dirname, 'page.tsx'), 'utf8');
 
 /**
- * Just the `DESCRIPTION` constant.
+ * The body of `pricingDescription`, which builds the meta description.
  *
  * Narrowed out of `SOURCE` because the assertions about it are negative ones —
  * that it does not promise single sign-on, that it does not state a yearly rate
  * as monthly — and the page discusses both of those in the comment that
  * explains why. Matched against the whole file, the explanation would fail the
  * rule it documents.
+ *
+ * It was a `const DESCRIPTION` until the string learned to follow the currency:
+ * a fixed description quoting "$5" shipped above cards painting ₹149 once
+ * `resolveInitialCurrency` landed, so it is composed per sheet now and this
+ * reads the function that composes it.
  */
-const DESCRIPTION_LINE = /const DESCRIPTION =\s*([\s\S]*?);\n/.exec(SOURCE)?.[1] ?? '';
+const DESCRIPTION_LINE = (() => {
+  const at = SOURCE.indexOf('function pricingDescription(');
+  if (at < 0) throw new Error('pricingDescription is gone — this anchor needs updating');
+  const body = SOURCE.slice(at);
+  return body.slice(0, body.indexOf('\n}'));
+})();
 
 /**
  * The stylesheet that drives the whole control.
@@ -560,6 +570,32 @@ describe('the yearly rate is the one the page opens on', () => {
     expect(usage).toContain("'billed yearly'");
   });
 
+  it('builds the metadata from the sheet the page opened on', () => {
+    // A static `metadata` export quoting "$5" shipped above cards painting
+    // ₹149 once the body and the JSON-LD both followed `CF-IPCountry` — the two
+    // strings a search result actually shows were the last USD holdout.
+    const code = withoutComments(SOURCE);
+    expect(code).toContain('export async function generateMetadata()');
+    expect(code).toContain('await resolveInitialCurrency()');
+    expect(code, 'metadata is a static export again').not.toMatch(/export const metadata\s*[:=]/);
+
+    // And built from the plan data rather than retyped, so a sheet change
+    // cannot leave the title quoting last month's price.
+    const body = SOURCE.slice(locate('function pricingDescription('));
+    expect(body.slice(0, body.indexOf('\n}'))).toContain('.yearly.price');
+  });
+
+  it('publishes the seat floor as a field, not only as prose', () => {
+    // `Offer.description` mentions it, but a consumer reading the offer
+    // structurally saw `price: '12'` with no floor — which is how a two-person
+    // team computes $288 and is invoiced $432. `eligibleQuantity.minValue` is
+    // the schema.org field for "this price applies from N units up".
+    const schema = withoutComments(SOURCE.slice(locate('function productSchema(')));
+    expect(schema).toContain('eligibleQuantity');
+    expect(schema).toContain('minValue');
+    expect(schema).toContain('minimumSeats(plan.id)');
+  });
+
   it('publishes the currency the page actually opened on', () => {
     // Pinned to USD, this was wrong on four sheets out of five: a visitor in
     // Bengaluru was served ₹149 with `priceCurrency: 'USD'` underneath it.
@@ -617,8 +653,14 @@ describe('the yearly rate is the one the page opens on', () => {
   });
 
   it('shows exactly one saving chip, chosen by the same radios as the prices', () => {
-    // Hidden by default and revealed per currency, so a stylesheet that never
-    // arrives leaves the control silent rather than reading five figures out.
+    // Hidden by default and revealed per currency, so the reveal is one
+    // selector list rather than four overrides fighting each other.
+    //
+    // Not a no-CSS fallback, which an earlier version of this comment claimed:
+    // `.x-save { display: none }` is in the same stylesheet, so if it never
+    // loads the label renders all five chips at once — "Yearly Save up to 37%
+    // Save up to 38% …". The same inversion was in the `.x-price` note and is
+    // corrected there too.
     expect(GLOBALS).toMatch(/\.x-save\s*\{\s*display:\s*none/);
     for (const currency of CURRENCIES) {
       expect(GLOBALS, `${currency} has no reveal rule`).toContain(

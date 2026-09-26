@@ -125,29 +125,66 @@ import { absoluteUrl, breadcrumbSchema, SITE_KEYWORDS, SITE_NAME } from '@/lib/s
 // Single sign-on came out of the description for the other reason: it is
 // `notYet` on the Team card and `Coming soon` in the matrix, so promising it
 // here made the metadata the most optimistic thing about the product.
-const TITLE = 'Pricing: free forever, or $5 a member billed yearly';
-const DESCRIPTION =
-  'Four xecret plans: free for one developer, Pro $5 a member a month billed yearly ($8 monthly), Team $12 billed yearly ($19 monthly), Enterprise by contract, and self-hosted free forever. Service tokens and CI never cost anything, and no card is taken in pre-alpha.';
+// ── Why these are built per sheet, and not written once ──
+// They quoted dollars unconditionally, which was correct until the body and the
+// JSON-LD both learned to follow `CF-IPCountry`. After that a visitor in
+// Bengaluru got a `<title>` and a `<meta name="description">` saying "$5 a
+// member billed yearly" on the same response as cards painting ₹149 and a
+// `Product` graph priced INR. `productSchema`'s own description dropped its
+// prices for exactly that reason; leaving them here just moved the mismatch
+// into the two strings a search result actually shows.
+//
+// A function rather than a constant means `metadata` has to become
+// `generateMetadata`, which costs nothing here: the route is already dynamic
+// because `resolveInitialCurrency` reads a header, so there is no prerender to
+// give up.
+function planPrices(id: PlanId, currency: CurrencyId) {
+  const plan = PRICED_PLANS.find((candidate) => candidate.id === id);
+  if (plan === undefined) throw new Error(`no priced plan named ${id}`);
+  return plan.prices[currency];
+}
 
-export const metadata: Metadata = {
-  title: TITLE,
-  description: DESCRIPTION,
-  keywords: [
-    'secret management pricing',
-    'secrets manager pricing',
-    'free secrets manager',
-    'self-hosted secret management',
-    ...SITE_KEYWORDS,
-  ],
-  alternates: { canonical: absoluteUrl('/pricing') },
-  openGraph: {
-    type: 'website',
-    url: absoluteUrl('/pricing'),
-    siteName: SITE_NAME,
-    title: `${TITLE} · ${SITE_NAME}`,
-    description: DESCRIPTION,
-  },
-};
+function pricingTitle(currency: CurrencyId): string {
+  return `Pricing: free forever, or ${planPrices('pro', currency).yearly.price} a member billed yearly`;
+}
+
+function pricingDescription(currency: CurrencyId): string {
+  const pro = planPrices('pro', currency);
+  const team = planPrices('team', currency);
+
+  return (
+    `Four xecret plans: free for one developer, Pro ${pro.yearly.price} a member a month ` +
+    `billed yearly (${pro.monthly.price} monthly), Team ${team.yearly.price} billed yearly ` +
+    `(${team.monthly.price} monthly), Enterprise by contract, and self-hosted free forever. ` +
+    'Service tokens and CI never cost anything, and no card is taken in pre-alpha.'
+  );
+}
+
+export async function generateMetadata(): Promise<Metadata> {
+  const currency = await resolveInitialCurrency();
+  const title = pricingTitle(currency);
+  const description = pricingDescription(currency);
+
+  return {
+    title,
+    description,
+    keywords: [
+      'secret management pricing',
+      'secrets manager pricing',
+      'free secrets manager',
+      'self-hosted secret management',
+      ...SITE_KEYWORDS,
+    ],
+    alternates: { canonical: absoluteUrl('/pricing') },
+    openGraph: {
+      type: 'website',
+      url: absoluteUrl('/pricing'),
+      siteName: SITE_NAME,
+      title: `${title} · ${SITE_NAME}`,
+      description,
+    },
+  };
+}
 
 // Underlined at rest rather than on hover. With the accent gone monochrome
 // there is no colour left to say "link", and foreground text that only reveals
@@ -291,15 +328,6 @@ function formatCount(value: number): string {
 }
 
 /**
- * `7` → `7 days`, `365` → `1 year`.
- *
- * One column used to carry the literal `'1 year'` while the rest read
- * `LIMITS.*.auditRetentionDays`, which meant it could stop matching the server
- * with every test still green — the single thing importing the limits at all was
- * supposed to prevent. A year is the only retention worth rewording, so the
- * rewording lives here and every column goes through it.
- */
-/**
  * A seat floor as a cell: the number, or the words for "there isn't one".
  *
  * A floor of one is not a floor, and printing "1 member" said the opposite of
@@ -314,6 +342,28 @@ function seatFloor(seats: number): string {
   return `${seats} members`;
 }
 
+/**
+ * The billing floor for a plan, or `1` where the plan has none.
+ *
+ * A function rather than an index because `PlanId` here spans two things the
+ * engine does not: `self-hosted`, which is not a plan the engine bills at all,
+ * and any future card added before its entitlements land. Indexing
+ * `MINIMUM_SEATS` by `plan.id` would need a cast, and a cast is how
+ * `undefined > 1` gets written by accident.
+ */
+function minimumSeats(id: PlanId): number {
+  return id === 'self-hosted' ? 1 : MINIMUM_SEATS[id];
+}
+
+/**
+ * `7` → `7 days`, `365` → `1 year`.
+ *
+ * One column used to carry the literal `'1 year'` while the rest read
+ * `LIMITS.*.auditRetentionDays`, which meant it could stop matching the server
+ * with every test still green — the single thing importing the limits at all was
+ * supposed to prevent. A year is the only retention worth rewording, so the
+ * rewording lives here and every column goes through it.
+ */
 function formatRetention(days: number): string {
   if (days % 365 === 0) {
     const years = days / 365;
@@ -812,6 +862,12 @@ const PRICED_PLANS: readonly Plan[] = [
     // beside the form, for the questions that genuinely are better in the open.
     cta: { label: 'Contact sales', href: '/contact', external: false },
     recommended: false,
+    // Enterprise has a floor too, and a larger one than Team — ten seats
+    // against three. It was stated in the matrix, the FAQ and the Terms but not
+    // on the card, which is the omission the `MINIMUM_SEATS` docblock calls
+    // misleading rather than terse, applied to one of the two plans that has a
+    // floor and not the other.
+    priceCaveat: `Billed from ${MINIMUM_SEATS.enterprise} members up`,
     amount: null,
     unitText: null,
   },
@@ -1796,6 +1852,22 @@ function productSchema(currency: CurrencyId) {
                           ? plan.unitText
                           : `${plan.unitText}, billed annually`,
                     }),
+                // The seat floor, structurally and not only as prose in the
+                // description. `eligibleQuantity` with a `minValue` is the
+                // field schema.org has for "this price applies from N units
+                // up", so a consumer reading the offer by its fields — rather
+                // than parsing a sentence — still sees that a two-person team
+                // on Team is invoiced for three. Emitted only where there is a
+                // floor above one, because `minValue: 1` says nothing.
+                ...(minimumSeats(plan.id) > 1
+                  ? {
+                      eligibleQuantity: {
+                        '@type': 'QuantitativeValue',
+                        minValue: minimumSeats(plan.id),
+                        unitText: 'member',
+                      },
+                    }
+                  : {}),
               },
             }),
       };
@@ -2620,12 +2692,15 @@ export default async function PricingPage() {
               <span className="text-fg font-medium">{ADDON_NOT_YET}</span> and Enterprise reads{' '}
               <span className="text-fg font-medium">{NOT_YET}</span>. SCIM is sold at Enterprise
               only and charged per connection there too, so Enterprise reads{' '}
-              <span className="text-fg font-medium">{ADDON_NOT_YET}</span> and every plan below it
-              reads a dash. Neither is built for anybody, at any price. The chips on the cards and
-              the rows in this table say so deliberately: the first contract that needs them is what
-              gets them written, and until then you should plan as though they do not exist.
-              Enterprise is a conversation rather than a checkout, which is why the card has no
-              price and there is no form to fill in.
+              <span className="text-fg font-medium">{ADDON_NOT_YET}</span>. The plans that were
+              never going to carry either read a dash, and self-hosting reads{' '}
+              <span className="text-fg font-medium">{NOT_YET}</span> for both, because nothing is
+              held back there and nothing is charged for either — they simply do not exist yet.
+              Neither is built for anybody, at any price. The chips on the cards and the rows in
+              this table say so deliberately: the first contract that needs them is what gets them
+              written, and until then you should plan as though they do not exist. Enterprise is a
+              conversation rather than a checkout, which is why the card has no price and there is
+              no form to fill in.
             </p>
 
             <div className="mt-5 flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm">

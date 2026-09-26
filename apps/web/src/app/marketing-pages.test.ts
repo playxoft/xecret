@@ -382,12 +382,22 @@ describe('the add-ons are described the same way everywhere', () => {
       // Never Enterprise-only: that is SCIM's rule, not SAML's, and the one
       // sentence that used to cover both got each wrong in opposite directions.
       //
-      // Clipped at the clause, not a character count. A 200-character window
-      // ran past the semicolon into "directory sync (SCIM) is $249 … at
-      // Enterprise only" and failed on SCIM's rule while claiming SAML's.
-      const after = text.slice(text.indexOf('SAML'));
-      const clause = after.slice(0, Math.min(...[';', '.'].map((d) => idx(after, d))));
-      expect(clause, `${page} calls SAML Enterprise-only`).not.toMatch(/enterprise[- ]only/i);
+      // Every occurrence, not the first. Taking only `indexOf('SAML')` meant
+      // that on `/about` the clause examined was inside a `//` code comment and
+      // the published `body:` sentence was never looked at, and on `/terms` it
+      // was the Enterprise bullet rather than the Add-ons paragraph where the
+      // tier rule actually lives — so an edit making a *later* mention read
+      // "Enterprise only" shipped green under a test whose name forbade it.
+      //
+      // Each clause is clipped at the punctuation rather than a character
+      // count: a 200-character window ran past the semicolon into "directory
+      // sync (SCIM) is $249 … at Enterprise only" and failed on SCIM's rule
+      // while claiming SAML's.
+      for (const match of text.matchAll(/SAML/g)) {
+        const after = text.slice(match.index);
+        const clause = after.slice(0, Math.min(...[';', '.'].map((d) => idx(after, d))));
+        expect(clause, `${page} calls SAML Enterprise-only`).not.toMatch(/enterprise[- ]only/i);
+      }
 
       // Any page that quotes the price has to say where it starts.
       if (!text.includes('$199')) continue;
