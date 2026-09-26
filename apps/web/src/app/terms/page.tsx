@@ -30,7 +30,7 @@ const TITLE = 'Terms of service';
 const DESCRIPTION =
   'The terms for the hosted xecret service: pre-alpha status, plans and billing, your account and your tokens, the AGPL and MIT licences, and liability.';
 
-const UPDATED = '2026-08-16';
+const UPDATED = '2026-09-26';
 const EFFECTIVE = '2026-08-16';
 
 const CANONICAL = absoluteUrl('/terms');

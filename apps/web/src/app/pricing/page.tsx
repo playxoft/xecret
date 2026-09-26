@@ -504,6 +504,19 @@ interface Plan {
   readonly amount?: string | null | undefined;
   /** Published as `unitText`, where the price is per something. */
   readonly unitText: string | null;
+  /**
+   * A condition on the price, rendered under it and never as a bullet.
+   *
+   * The seat floor lived in `features` for one commit, which gave it a
+   * `CheckIcon` beside "Roles and per-environment access" and — because
+   * `offerDescription` maps the same array — published it to shopping surfaces
+   * as `Includes: … Billed from 3 members up`. A minimum charge is the opposite
+   * of an inclusion, and a tick is the one affordance this file's rules say
+   * must never sit beside something that is not a benefit. It belongs with the
+   * price it qualifies, so it lives here and is read by neither the bullet
+   * renderer nor the offer description.
+   */
+  readonly priceCaveat?: string | undefined;
 }
 
 /**
@@ -700,7 +713,6 @@ const PRICED_PLANS: readonly Plan[] = [
       // Stated on the card and not only in the FAQ, because it is the one
       // number here that can make the bill bigger than the multiplication a
       // reader has just done in their head.
-      { text: `Billed from ${MINIMUM_SEATS.team} members up` },
       { text: 'Roles and per-environment access' },
       {
         text: `${formatLimit(LIMITS.team.projects)} projects, ${formatLimit(LIMITS.team.secretsPerEnvironment)} secrets per environment`,
@@ -718,6 +730,7 @@ const PRICED_PLANS: readonly Plan[] = [
     ],
     cta: { label: 'Start on Team', href: '/sign-up', external: false },
     recommended: true,
+    priceCaveat: `Billed from ${MINIMUM_SEATS.team} members up`,
     unitText: 'member/month',
   },
   {
@@ -1040,9 +1053,16 @@ const MATRIX = [
       {
         label: 'Smallest billable team',
         hint: 'The fewest seats a plan can be bought with. Below it you are billed for the minimum, never blocked from using fewer.',
+        // A floor of one is not a floor, and printing "1 member" here said the
+        // opposite of the FAQ and the Terms, which both state that Free and Pro
+        // have none. Free is worse than redundant: `resolveBilledSeats` returns
+        // `billed: 1` for it unconditionally and it is never invoiced at all,
+        // so a billing figure in that column describes a bill that does not
+        // exist. `MINIMUM_SEATS` is still what decides which columns get a
+        // number, so the row cannot drift from the engine.
         values: {
-          free: `${MINIMUM_SEATS.free} member`,
-          pro: `${MINIMUM_SEATS.pro} member`,
+          free: MINIMUM_SEATS.free > 1 ? `${MINIMUM_SEATS.free} members` : 'No minimum',
+          pro: MINIMUM_SEATS.pro > 1 ? `${MINIMUM_SEATS.pro} members` : 'No minimum',
           team: `${MINIMUM_SEATS.team} members`,
           enterprise: `${MINIMUM_SEATS.enterprise} members`,
           'self-hosted': 'No minimum',
@@ -1824,11 +1844,35 @@ function PriceBlock({ value, className }: { value: PlanPrice; className: string 
  * that grew a line when somebody pressed Yearly would shift twenty-six rows of
  * table down the page.
  */
-function HeaderPrice({ value, className }: { value: PlanPrice; className: string }) {
+function HeaderPrice({
+  value,
+  className,
+  term,
+}: {
+  value: PlanPrice;
+  className: string;
+  term: string;
+}) {
   return (
     <span className={className}>
       <span className="text-fg block text-lg font-semibold tracking-[-0.02em]">{value.price}</span>
       <span className="text-fg-subtle block text-xs font-normal">{value.unit}</span>
+      {/* The billing term, and it is rendered for *both* periods even though
+          only the yearly one carries new information. The card gets a third
+          line naming the annual total and this header deliberately does not —
+          a column header that grew a line when somebody pressed Yearly would
+          shift the whole table down the page. Giving monthly its own one-word
+          term keeps the two states the same height, which is what buys the
+          disclosure without the reflow.
+
+          It matters now in a way it did not before: with yearly as the opening
+          state, a reader who deep-links to `#compare` met "$12 per member, per
+          month" for a rate that cannot be bought by the month. The real
+          month-to-month figure is $19, and the caption that explained the
+          control is `sr-only`. */}
+      {term === '' ? null : (
+        <span className="text-fg-subtle block text-[0.6875rem] font-normal">{term}</span>
+      )}
     </span>
   );
 }
@@ -2254,6 +2298,13 @@ export default async function PricingPage() {
                         />
                       </Fragment>
                     ))}
+
+                    {/* A condition on the figure, so it sits with the figure —
+                        no tick, because it is a floor on the bill rather than
+                        something the plan includes. */}
+                    {plan.priceCaveat === undefined ? null : (
+                      <p className="text-fg-subtle mt-2 text-xs leading-5">{plan.priceCaveat}</p>
+                    )}
                   </div>
 
                   {/* Ruled off from the price above it. With the figure moved up,
@@ -2476,10 +2527,20 @@ export default async function PricingPage() {
                               <HeaderPrice
                                 className={`x-price x-price-${currency.id}-monthly`}
                                 value={plan.prices[currency.id].monthly}
+                                term={
+                                  plan.prices[currency.id].yearly.note === undefined
+                                    ? ''
+                                    : 'month to month'
+                                }
                               />
                               <HeaderPrice
                                 className={`x-price x-price-${currency.id}-yearly`}
                                 value={plan.prices[currency.id].yearly}
+                                term={
+                                  plan.prices[currency.id].yearly.note === undefined
+                                    ? ''
+                                    : 'billed yearly'
+                                }
                               />
                             </Fragment>
                           ))}
@@ -2527,15 +2588,18 @@ export default async function PricingPage() {
 
             <p className="text-fg-muted mx-auto mt-6 max-w-3xl text-center text-sm leading-7">
               SAML and SCIM are named on the plans that will carry them, and every column that names
-              them says <span className="text-fg font-medium">coming soon</span> — the plans that
-              would buy them per connection read{' '}
-              <span className="text-fg font-medium">{ADDON_NOT_YET}</span>, Enterprise reads{' '}
-              <span className="text-fg font-medium">{NOT_YET}</span>, and the plans that were never
-              going to carry them read a dash. Neither is built for anybody, at any price. The chips
-              on the cards and the rows in this table say so deliberately: the first contract that
-              needs them is what gets them written, and until then you should plan as though they do
-              not exist. Enterprise is a conversation rather than a checkout, which is why the card
-              has no price and there is no form to fill in.
+              them says <span className="text-fg font-medium">coming soon</span>. Their tiers are
+              mirror images, so their cells are too: SAML is bought per connection from Team and
+              included with Enterprise, so Team reads{' '}
+              <span className="text-fg font-medium">{ADDON_NOT_YET}</span> and Enterprise reads{' '}
+              <span className="text-fg font-medium">{NOT_YET}</span>. SCIM is sold at Enterprise
+              only and charged per connection there too, so Enterprise reads{' '}
+              <span className="text-fg font-medium">{ADDON_NOT_YET}</span> and every plan below it
+              reads a dash. Neither is built for anybody, at any price. The chips on the cards and
+              the rows in this table say so deliberately: the first contract that needs them is what
+              gets them written, and until then you should plan as though they do not exist.
+              Enterprise is a conversation rather than a checkout, which is why the card has no
+              price and there is no form to fill in.
             </p>
 
             <div className="mt-5 flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm">

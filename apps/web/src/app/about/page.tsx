@@ -272,7 +272,9 @@ const MILESTONES = [
     // preview, documented in guides/teams.md — so saying otherwise understated
     // the product and contradicted this page's own FAQ answer two screens
     // down. What is genuinely absent is SAML and SCIM, and the pricing matrix
-    // now says "Not yet" in those rows rather than ticking them.
+    // now says "Coming soon" in those rows rather than ticking them — as
+    // "Add-on, coming soon" where the capability is bought per connection,
+    // because at those tiers it is both unbuilt and separately charged.
     body: 'SAML single sign-on is named on the pricing page as a per-connection add-on from Team, and as included with Enterprise. SCIM provisioning is named as an Enterprise add-on and is not sold below that. Neither is built, and the comparison table says so in the row rather than in a footnote under it. Roles and per-environment access are built already — those are a plan boundary, not a promise.',
   },
   {

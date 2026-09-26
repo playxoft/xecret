@@ -533,6 +533,22 @@ describe('the yearly rate is the one the page opens on', () => {
     expect(schema, 'unitCode is back, and it fights unitText').not.toContain('unitCode');
   });
 
+  it('states the billing term in the comparison header, not just on the cards', () => {
+    // The cards carry a third line naming the annual total; the table header
+    // deliberately does not, because a header that grew a line on toggle would
+    // shift the whole table. With yearly as the opening state that left a
+    // reader who deep-links to `#compare` looking at "$12 per member, per
+    // month" for a rate that cannot be bought by the month — and the caption
+    // that explains the control is `sr-only`. Both periods carry a term line
+    // now, which is what keeps the heights equal.
+    const header = withoutComments(SOURCE.slice(locate('function HeaderPrice(')));
+    expect(header).toContain('term');
+
+    const usage = withoutComments(SOURCE.slice(locate('<HeaderPrice')));
+    expect(usage).toContain("'month to month'");
+    expect(usage).toContain("'billed yearly'");
+  });
+
   it('publishes the currency the page actually opened on', () => {
     // Pinned to USD, this was wrong on four sheets out of five: a visitor in
     // Bengaluru was served ₹149 with `priceCurrency: 'USD'` underneath it.

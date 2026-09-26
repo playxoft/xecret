@@ -33,7 +33,7 @@ const TITLE = 'Privacy policy';
 const DESCRIPTION =
   'What xecret stores, what our encryption model does and does not protect, who else processes it, how long we keep it, and how to exercise your rights.';
 
-const UPDATED = '2026-08-16';
+const UPDATED = '2026-09-26';
 const EFFECTIVE = '2026-08-16';
 
 const CANONICAL = absoluteUrl('/privacy');
