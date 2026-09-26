@@ -23,8 +23,23 @@ export const organizations = pgTable(
     id: uuid('id').primaryKey(),
     name: text('name').notNull(),
     slug: citext('slug').notNull().unique(),
-    // Billing is not implemented in v1 (ADR: see plan §"Deliberately NOT in v1").
-    // This column is the only hook it needs, so adding billing later is additive.
+    /**
+     * The seat ceiling **invitations are actually refused against**, by
+     * `assertSeatAvailable` under the organisation's row lock.
+     *
+     * Not the same number as `FREE_LIMITS.seats`, which is 3. This column
+     * predates the plans table, nothing sets it from the plan at provisioning
+     * time, and the default of 5 is therefore what a Free organisation gets.
+     * The gap has narrowed — it was 1 against 5 — and it is still a gap. The
+     * divergence is deliberate and documented at both ends — see the note on
+     * `seats` in `packages/core/src/entitlements/plans.ts` — and it closes when
+     * payments land.
+     *
+     * Two columns rather than one once billing exists: this is what the member
+     * service enforces, `org_subscriptions.seats` is what the invoice says, and
+     * their failure modes differ. `setBilledSeats` writes the pair in one
+     * transaction so nothing can move one without the other.
+     */
     seatLimit: integer('seat_limit').notNull().default(5),
     createdBy: uuid('created_by')
       .notNull()

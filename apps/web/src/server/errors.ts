@@ -263,6 +263,26 @@ export const errors = {
   unavailable: (logDetail: string): ApiError =>
     new ApiError('unavailable', 'The service is temporarily unavailable.', { logDetail }),
 
+  /**
+   * A contact enquiry that could not be delivered.
+   *
+   * Its own constructor rather than `unavailable` with a custom string, because
+   * messages live in this file and nowhere else — a handler that composes its
+   * own is how a request field ends up in a response body. The same 503, and a
+   * message that names what to do instead: this is the one endpoint where the
+   * generic sentence leaves somebody with a question and no way to ask it.
+   *
+   * Nothing about *why* appears here. The provider, its status and its body go
+   * to the log, where the person who can act on them will look.
+   */
+  contactUndeliverable: (logDetail: string): ApiError =>
+    new ApiError(
+      'unavailable',
+      'We could not deliver your message. Please try again shortly, or open an issue at ' +
+        'github.com/playxoft/xecret/issues.',
+      { logDetail },
+    ),
+
   internal: (logDetail: string): ApiError =>
     new ApiError('internal_error', 'Something went wrong.', { logDetail }),
 } as const;

@@ -125,6 +125,16 @@ name = "RL_SLUG_CHECK"
 namespace_id = "1007"
 simple = { limit = 120, period = 60 }
 
+# The contact form, which is the only unauthenticated write in the product.
+# Tight, because every accepted request puts a message in a channel a person
+# reads: the unit of abuse here is a message rather than an attempt, and a
+# handful an hour from one address covers anybody with a genuine question
+# twice over.
+[[env.production.ratelimits]]
+name = "RL_CONTACT"
+namespace_id = "1008"
+simple = { limit = 5, period = 3600 }
+
 # ── staging ─────────────────────────────────────────────────────────────────
 #
 # A stub: no routes and no bindings, so a deploy of it produces a Worker with no
@@ -142,6 +152,8 @@ XECRET_PUBLIC_URL = "https://xecret-staging.playxoft.com"
 # NOT IN THIS FILE — credentials, and the two ways to hold them
 #
 #   ZEPTOMAIL_TOKEN           authorises sending as your domain
+#   DISCORD_CONTACT_WEBHOOK_URL  where the contact form posts; the token is a
+#                             path segment, so the whole URL is the credential
 #   BETTERSTACK_SOURCE_TOKEN  authorises writing into your log stream
 #   BETTERSTACK_INGEST_URL    the source's own https://<id>.betterstackdata.com
 #   XECRET_LOG_LEVEL          debug | info | warn | error, for an incident

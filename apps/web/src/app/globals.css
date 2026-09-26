@@ -935,25 +935,134 @@
    `display: none` on the figure that is not showing, never `visibility` or
    `opacity`: the hidden one has to leave the accessibility tree, or every card
    announces two prices one after the other. */
-.x-price-yearly {
+/* Ten figures per card — five currencies by two billing periods — and one
+   shown. Hidden by default and revealed by the pair the two radio groups name,
+   rather than shown by default and hidden nine times: the reveal is one
+   selector list instead of nine overrides fighting each other, and a card
+   mid-paint shows nothing rather than a stack of contradictory prices.
+
+   What this does *not* buy is a no-CSS fallback, and an earlier version of this
+   note claimed it did — "a stylesheet that fails to load leaves the page
+   priceless". It cannot: `display: none` is itself in this stylesheet, so a
+   stylesheet that never arrives renders all ten. The guard is against the gap
+   before it lands, which Next's render-blocking `<link>` already closes;
+   there is no second line of defence here and the comment should not imply
+   one.
+
+   The `~ … ~` chain is what ANDs two independent radio groups together without
+   `:has()`. It only works because the currency inputs are emitted *before* the
+   billing inputs, which are before `.x-billing-body` — the general sibling
+   combinator reaches forward and never back. Reordering those three blocks in
+   the JSX makes every price on the page disappear, which is why the markup says
+   so where the order is set. */
+.x-price {
   display: none;
 }
 
-.x-billing-yearly:checked ~ .x-billing-body .x-price-monthly {
-  display: none;
-}
-
-.x-billing-yearly:checked ~ .x-billing-body .x-price-yearly {
+.x-cur-usd:checked ~ .x-billing-monthly:checked ~ .x-billing-body .x-price-usd-monthly,
+.x-cur-usd:checked ~ .x-billing-yearly:checked ~ .x-billing-body .x-price-usd-yearly,
+.x-cur-eur:checked ~ .x-billing-monthly:checked ~ .x-billing-body .x-price-eur-monthly,
+.x-cur-eur:checked ~ .x-billing-yearly:checked ~ .x-billing-body .x-price-eur-yearly,
+.x-cur-inr:checked ~ .x-billing-monthly:checked ~ .x-billing-body .x-price-inr-monthly,
+.x-cur-inr:checked ~ .x-billing-yearly:checked ~ .x-billing-body .x-price-inr-yearly,
+.x-cur-jpy:checked ~ .x-billing-monthly:checked ~ .x-billing-body .x-price-jpy-monthly,
+.x-cur-jpy:checked ~ .x-billing-yearly:checked ~ .x-billing-body .x-price-jpy-yearly,
+.x-cur-aud:checked ~ .x-billing-monthly:checked ~ .x-billing-body .x-price-aud-monthly,
+.x-cur-aud:checked ~ .x-billing-yearly:checked ~ .x-billing-body .x-price-aud-yearly {
   display: block;
 }
 
+/* ── The radios themselves ─────────────────────────────────────────────────
+   `sr-only` positions these absolutely at the top of the fieldset, which since
+   the fieldset was hoisted above both sections means at the top of the page. A
+   browser scrolls a newly focused element into view, and clicking a `<label>`
+   focuses the input it names — so choosing a currency beside the comparison
+   table threw the reader back up to the hero, every time.
+
+   `fixed` is the fix and it is the whole fix: an element positioned against the
+   viewport is already in view, so there is nothing to scroll to. Everything else
+   here is `sr-only`'s own recipe, kept because these must stay operable by a
+   screen reader and by a keyboard — they are the real control, and the segmented
+   buttons and the menu are only labels pointing at them. */
+.x-price-input {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  border-width: 0;
+}
+
+/* One add-on price per currency, and **no** billing period.
+   A connection is billed monthly and has no yearly rate, so this keys on the
+   currency half of the control alone. Pairing it with the period half the way
+   the plan prices do would have shown no price at all whenever Yearly was
+   selected — a band advertising a blank. */
+.x-addon-price {
+  display: none;
+}
+
+.x-cur-usd:checked ~ .x-billing-body .x-addon-usd,
+.x-cur-eur:checked ~ .x-billing-body .x-addon-eur,
+.x-cur-inr:checked ~ .x-billing-body .x-addon-inr,
+.x-cur-jpy:checked ~ .x-billing-body .x-addon-jpy,
+.x-cur-aud:checked ~ .x-billing-body .x-addon-aud {
+  display: inline;
+}
+
+/* ── The saving chip ────────────────────────────────────────────────────────
+   One per sheet, four hidden. `display: none` and never `visibility`, so the
+   hidden four leave the accessibility tree instead of having the control
+   announce five savings one after another. Same forward-only `~` chain as the
+   prices, so these depend on the currency inputs preceding `.x-billing-body`
+   exactly as those do. */
+.x-save {
+  display: none;
+}
+
+.x-cur-usd:checked ~ .x-billing-body .x-save-usd,
+.x-cur-eur:checked ~ .x-billing-body .x-save-eur,
+.x-cur-inr:checked ~ .x-billing-body .x-save-inr,
+.x-cur-jpy:checked ~ .x-billing-body .x-save-jpy,
+.x-cur-aud:checked ~ .x-billing-body .x-save-aud {
+  display: inline;
+}
+
 /* The selected half of the segmented control. Unlayered, so it wins over the
-   resting `text-fg-muted` the label carries as a utility. */
+   resting `text-fg-muted` the label carries as a utility.
+
+   A filled `--accent` pill rather than the `--surface` card it used to be. The
+   old treatment — white on near-white, separated from its neighbour by a 1px
+   shadow — read as "slightly raised" rather than "chosen", and on this control
+   which half is chosen decides which of two prices every card below is
+   showing. `--accent`/`--accent-fg` is the token pair meant for a filled
+   control and carries AAA contrast in both themes, so the answer is legible
+   at a glance instead of inferred from a shadow.
+
+   The fill and the colour do the work and the weight is deliberately left
+   alone: `SEGMENT` is content-width inside an `inline-flex` shell, so
+   promoting only the checked half to 600 changes its width and both halves
+   slide sideways under the pointer on every toggle. A control that moves when
+   you click it is worse than one that is a shade less bold. */
 .x-billing-monthly:checked ~ .x-billing-body [data-billing='monthly'],
 .x-billing-yearly:checked ~ .x-billing-body [data-billing='yearly'] {
-  background: var(--surface);
-  color: var(--fg);
+  background: var(--accent);
+  color: var(--accent-fg);
   box-shadow: var(--shadow-raised);
+}
+
+/* The chip rides inside the label, so on the selected half it is sitting on
+   `--accent` and its resting `--fg-subtle` would be close to invisible. Held
+   slightly under the label's own colour so it still reads as secondary. */
+.x-billing-yearly:checked ~ .x-billing-body [data-billing='yearly'] .x-save {
+  color: var(--accent-fg);
+  opacity: 0.75;
 }
 
 /* The inputs are `sr-only`, so the base `:focus-visible` outline would be drawn
@@ -964,6 +1073,115 @@
 .x-billing-yearly:focus-visible ~ .x-billing-body [data-billing='yearly'] {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
+}
+
+/* ── The currency menu ──────────────────────────────────────────────────────
+   A `<details>` rather than a `<select>`, for the reason the whole control
+   ships no JavaScript: no selector reads the value of a `<select>`, so a real
+   dropdown would mean a client component around the prices — and a price that
+   changes after hydration is the one thing this page cannot do. The four radios
+   are still the control; this is the pointer affordance drawn over them.
+
+   Everything below reaches from `:checked` or `:focus` on those radios, which
+   sit before `.x-billing-body`, exactly like the price rules above. */
+
+/* Marker off in every engine: `list-style` covers Firefox and Chrome, the
+   pseudo-element covers Safari, which ignores the first. */
+.x-currency-summary {
+  list-style: none;
+}
+
+.x-currency-summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Four names in the trigger, one shown — the same mechanism as the figures, so
+   the trigger cannot disagree with the prices under it. Hidden by default for
+   the same reason: a stylesheet that fails to load leaves the trigger blank
+   rather than reading "USD INR JPY AUD". */
+.x-currency-name {
+  display: none;
+}
+
+.x-cur-usd:checked ~ .x-billing-body [data-currency-name='usd'],
+.x-cur-eur:checked ~ .x-billing-body [data-currency-name='eur'],
+.x-cur-inr:checked ~ .x-billing-body [data-currency-name='inr'],
+.x-cur-jpy:checked ~ .x-billing-body [data-currency-name='jpy'],
+.x-cur-aud:checked ~ .x-billing-body [data-currency-name='aud'] {
+  display: inline;
+}
+
+/* The tick marks the current option. `visibility` rather than `display` so the
+   four rows keep one width and the menu does not reflow as the eye moves down
+   it; the row is already named by the radio, so nothing is lost to the
+   accessibility tree by leaving the tick in it. */
+.x-currency-tick {
+  visibility: hidden;
+}
+
+.x-cur-usd:checked ~ .x-billing-body [data-currency-option='usd'] .x-currency-tick,
+.x-cur-eur:checked ~ .x-billing-body [data-currency-option='eur'] .x-currency-tick,
+.x-cur-inr:checked ~ .x-billing-body [data-currency-option='inr'] .x-currency-tick,
+.x-cur-jpy:checked ~ .x-billing-body [data-currency-option='jpy'] .x-currency-tick,
+.x-cur-aud:checked ~ .x-billing-body [data-currency-option='aud'] .x-currency-tick {
+  visibility: visible;
+}
+
+.x-cur-usd:checked ~ .x-billing-body [data-currency-option='usd'],
+.x-cur-eur:checked ~ .x-billing-body [data-currency-option='eur'],
+.x-cur-inr:checked ~ .x-billing-body [data-currency-option='inr'],
+.x-cur-jpy:checked ~ .x-billing-body [data-currency-option='jpy'],
+.x-cur-aud:checked ~ .x-billing-body [data-currency-option='aud'] {
+  color: var(--fg);
+}
+
+/* Closed unless the disclosure is open. The panel is in the markup either way,
+   so a reader with no CSS gets four plain labels rather than nothing. */
+.x-currency-panel {
+  display: none;
+}
+
+.x-currency[open] .x-currency-panel {
+  display: block;
+}
+
+/* A focus ring on the trigger while a currency radio holds keyboard focus.
+   The radios are visually hidden, so without this the control is operable by
+   keyboard and invisible to one.
+
+   This used to open the *panel* instead, and did it to both of them: the two
+   controls share one `.x-billing-body` ancestor, so a descendant selector cannot
+   tell one from the other. Tabbing into the radios at the top of the page popped
+   the menu open over the comparison table two screens down, and Escape could not
+   close either — `CurrencyMenu` keys its handler on `details.open`, which was
+   still false because CSS, not the disclosure, had done the opening.
+
+   Feedback survives without it: the trigger's own label follows the selection
+   live, through the `[data-currency-name]` rules above. */
+.x-cur-usd:focus-visible ~ .x-billing-body .x-currency-summary,
+.x-cur-eur:focus-visible ~ .x-billing-body .x-currency-summary,
+.x-cur-inr:focus-visible ~ .x-billing-body .x-currency-summary,
+.x-cur-jpy:focus-visible ~ .x-billing-body .x-currency-summary,
+.x-cur-aud:focus-visible ~ .x-billing-body .x-currency-summary {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.x-cur-usd:focus-visible ~ .x-billing-body [data-currency-option='usd'],
+.x-cur-eur:focus-visible ~ .x-billing-body [data-currency-option='eur'],
+.x-cur-inr:focus-visible ~ .x-billing-body [data-currency-option='inr'],
+.x-cur-jpy:focus-visible ~ .x-billing-body [data-currency-option='jpy'],
+.x-cur-aud:focus-visible ~ .x-billing-body [data-currency-option='aud'] {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.x-currency-chevron {
+  transition: transform 150ms ease;
+}
+
+.x-currency[open] .x-currency-chevron {
+  transform: rotate(180deg);
 }
 
 /* Honour the OS setting. Motion here is decorative — a dialog that appears

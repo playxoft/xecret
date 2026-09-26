@@ -117,6 +117,39 @@ const eslintConfig = defineConfig([
     },
   },
 
+  {
+    name: 'xecret/tests-never-reach-the-edge',
+    // Scoped to the tests that need it, named one by one, not to `**/*.test.ts`.
+    // The ban exists because a `node:fs` import that reaches the worker bundle
+    // is a 500 in production, and test files are only *usually* outside it — a
+    // shared helper under `__tests__` that runtime code later imports is
+    // exactly how that stops being true. Three files asking for the exemption is
+    // a thing a reviewer can see; every test in the app holding it is not.
+    files: [
+      'src/app/pricing/pricing-page.test.ts',
+      'src/app/marketing-pages.test.ts',
+      'src/server/bindings.test.ts',
+    ],
+    rules: {
+      // Same reasoning as the block above, one step further out: these files
+      // are not in the worker bundle at all, and each asserts a property of the
+      // *source* rather than of a value, so the source is what they have to
+      // read. `pricing-page.test.ts` checks that the published limits are still
+      // derived from the entitlements package rather than typed in by hand.
+      // `bindings.test.ts` checks that every string binding declared on
+      // `CloudflareEnv` also appears in `PROCESS_SUPPLIED` — the two have to
+      // agree, and when they do not, `phase run` injects a value the
+      // application cannot see and every request answers 503 while the
+      // configuration looks correct everywhere somebody would think to look.
+      //
+      // Stated as the narrower rule rather than as `'off'`, for the reason
+      // spelled out above: ESLint replaces a rule's configuration wholesale,
+      // and switching this one off to permit `node:fs` would also switch off
+      // ADR 0003's `firebase-admin` ban across every test in the app.
+      'no-restricted-imports': ['error', FIREBASE_ADMIN_BAN],
+    },
+  },
+
   globalIgnores([
     '.next/**',
     'out/**',

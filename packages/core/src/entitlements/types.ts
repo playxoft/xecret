@@ -20,8 +20,35 @@
  * See `.local/plans/v2/01-billing.md` §P11 and `.local/plans/pricing-plan.md` §3.
  */
 
-/** The five rungs. Ordered weakest to strongest; `PLAN_RANK` depends on it. */
-export type PlanId = 'free' | 'pro' | 'team' | 'scale' | 'enterprise';
+/**
+ * The four rungs. Ordered weakest to strongest; `PLAN_RANK` depends on it.
+ *
+ * There were five. `scale` sat between Team and Enterprise and was removed —
+ * four self-serve tiers asked a buyer to make a distinction they had no basis
+ * for making, and the two capabilities that justified the tier belong with the
+ * contract that asks for them. The Postgres enum still carries the value because
+ * enums are additive-only; `RETIRED_PLANS` is what maps it back onto this union.
+ */
+export type PlanId = 'free' | 'pro' | 'team' | 'enterprise';
+
+/**
+ * A plan value a row can still hold, but which is no longer sold.
+ *
+ * Separate from `PlanId` so the two cannot be confused at a type level: `PlanId`
+ * is what the product offers and what enforcement branches on, this is what the
+ * database may contain. `resolvePlanId` is the only crossing between them.
+ */
+export type RetiredPlanId = 'scale';
+
+/**
+ * What `org_subscriptions.plan` can actually hold.
+ *
+ * Wider than `PlanId` because a Postgres enum is additive-only: a value this
+ * product stopped selling stays in the type for as long as the column does. Use
+ * this for anything read out of a row, and `PlanId` for anything decided from
+ * it.
+ */
+export type StoredPlanId = PlanId | RetiredPlanId;
 
 /** How a paid plan is billed. `null` on Free, which is never billed. */
 export type BillingInterval = 'monthly' | 'yearly';
@@ -169,17 +196,26 @@ export interface Entitlements {
   readonly features: PlanFeatures;
   readonly addons: OrgAddons;
   /**
-   * False when the subscription has lapsed past any grace.
+   * False once the subscription has lapsed — `cancelled` or `expired`.
    *
    * Control-plane writes are refused; **the data plane is untouched**. See
    * `isDataPlaneActive`.
+   *
+   * Derived from `status` alone, and no date is consulted. A customer who
+   * cancels mid-month keeps the month they paid for, but that is carried by the
+   * status rather than by `currentPeriodEnd`: cancelling sets
+   * `cancel_at_period_end` and leaves the status `active` until the provider's
+   * webhook moves it at the boundary. Comparing a stored date to a clock here
+   * would make a pure function on the authorization path resolve the same row
+   * two different ways depending on when it was asked.
    */
   readonly controlPlaneActive: boolean;
 }
 
 /** The input `resolveEntitlements` works from — one organisation's billing row. */
 export interface SubscriptionState {
-  readonly plan: PlanId;
+  /** As stored, which may be a plan that is no longer sold. See `StoredPlanId`. */
+  readonly plan: StoredPlanId;
   readonly status: SubscriptionStatus;
   readonly addonSaml: boolean;
   readonly addonDirectorySync: boolean;
@@ -192,7 +228,15 @@ export interface SubscriptionState {
    * so an override can never be used to quietly downgrade someone.
    */
   readonly limitOverrides?: Readonly<Record<string, number | null>> | undefined;
-  /** When the paid period ends. Access survives to here after cancellation. */
+  /**
+   * When the paid period ends.
+   *
+   * **Carried, not consulted.** Nothing in this module reads it, and that is the
+   * design rather than an omission — see `controlPlaneActive`. It travels on
+   * `SubscriptionState` because the two things that *do* need it, the dashboard's
+   * billing panel and the reconciler that sweeps ended periods, take the same
+   * shape from the same row and would otherwise each re-read it.
+   */
   readonly currentPeriodEnd?: Date | null | undefined;
 }
 

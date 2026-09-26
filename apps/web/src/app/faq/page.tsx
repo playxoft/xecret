@@ -234,7 +234,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'What does xecret cost?',
         answer:
-          'Free is $0 forever: 1 organisation, 5 projects, 3 members, 3 environments per project, 7 days of audit history, the CLI and CI tokens, and community support on GitHub. Team is $9 per member per month, or $7 billed yearly, and adds unlimited organisations, projects, members and environments, 12 months of audit history, roles and per-environment access, service tokens and email support. Business is $19 per member per month, or $15 billed yearly, for three years of audit history and priority support, and names SAML single sign-on, which is not built yet. Enterprise is custom and covers SCIM provisioning, custom audit retention, a self-hosting support contract, invoiced billing and an SLA. Self-hosting is free, always.',
+          'Free is $0 forever: 1 organisation, 5 projects, 3 members, 3 environments per project, 7 days of audit history, the CLI and CI tokens, and community support on GitHub. Pro is $5 per member per month billed yearly, or $8 month to month, and adds 3 organisations, 25 projects, 10 environments per project, unlimited members, 30 days of audit history and email support. Team is $12 per member per month billed yearly, or $19 month to month, for 10 organisations, 100 projects, 25 environments per project, 180 days of audit history, roles and per-environment access, and priority support. Enterprise is custom and drops the ceilings, with a year of audit history, invoiced billing, a self-hosting support contract and an SLA; SAML single sign-on is a $199 per connection per month add-on from Team, and is included with Enterprise; directory sync (SCIM) is included with Enterprise and not sold below it. Neither is built yet. Self-hosting is free, always.',
       },
       {
         question: 'Do I need a card to try it?',
@@ -254,7 +254,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'How long is audit history kept?',
         answer:
-          'Thirty days on Free, twelve months on Team, and whatever you specify on Enterprise, which can also export the log. Retention decides how far back you can read, not whether an event was recorded.',
+          'Seven days on Free, thirty on Pro, a hundred and eighty on Team, and a year on Enterprise — or whatever an Enterprise agreement specifies above that, which can also export the log. Retention decides how far back you can read, not whether an event was recorded: every event is written on every plan, including Free.',
       },
       {
         question: 'Is self-hosting limited compared to the hosted version?',
