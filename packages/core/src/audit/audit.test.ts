@@ -596,6 +596,8 @@ describe('every declared metadata field survives sanitisation', () => {
       targetEmail: 'new@example.com',
       previousRole: 'viewer',
       newRole: 'developer',
+      previousCustomRoleId: '0192f0c4-5b1e-7a3c-8d2e-3f4a5b6c7d8e',
+      previousCustomRoleName: 'Deployer',
       previousAccessLevel: 'read',
       newAccessLevel: 'write',
       tokenPrefix: 'xst_live_abc',
@@ -624,6 +626,8 @@ describe('every declared metadata field survives sanitisation', () => {
       targetEmail: 'new@example.com',
       previousRole: 'viewer',
       newRole: 'developer',
+      previousCustomRoleId: '0192f0c4-5b1e-7a3c-8d2e-3f4a5b6c7d8e',
+      previousCustomRoleName: 'Deployer',
       previousAccessLevel: 'read',
       newAccessLevel: 'write',
       // A display prefix still matches the credential detector — it is the
@@ -651,10 +655,13 @@ describe('every declared metadata field survives sanitisation', () => {
   it('sanitises the attacker-influenced additions like every other string', () => {
     const record = builderWith().success('token.created', null, {
       deviceName: 'lap\ntop\u0000',
+      // An organisation names its own roles.
+      previousCustomRoleName: 'Dep\nloyer\u0000',
       previousAccessLevel: 'read only',
     });
 
     expect(record.metadata.deviceName).toBe('lap top');
+    expect(record.metadata.previousCustomRoleName).toBe('Dep loyer');
     expect(record.metadata.previousAccessLevel).toBe('read only');
   });
 

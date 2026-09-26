@@ -28,7 +28,10 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  *
  *  - **The role hierarchy**, on both sides of the change. An admin may not
  *    touch an owner, and may not hand out `owner` — either would be exercising
- *    authority the admin does not hold (see `members-service.ts`).
+ *    authority the admin does not hold. A caller holding a custom role is
+ *    measured by what it leaves them, not by its rank: one narrowed to member
+ *    management cannot promote a developer to a full admin (see
+ *    `assertRoleAuthority` in `members-service.ts`).
  *  - **No self-service.** Changing your own role or removing yourself is
  *    refused outright. Demoting yourself mid-session is a mistake with no undo
  *    (the demoted you cannot re-promote you), and "leave organisation" as a
@@ -90,7 +93,21 @@ export const PATCH = authenticatedRoute<Params>(
         audit(orgId).success(
           'member.role_changed',
           { type: 'member', id: target.id },
-          { targetEmail: target.user.email, previousRole: target.role, newRole: updated.role },
+          {
+            targetEmail: target.user.email,
+            previousRole: target.role,
+            newRole: updated.role,
+            // An owner cannot hold a custom role, so the repository clears it in
+            // the same write that makes somebody one. Said here, or the trail
+            // shows a narrowed member becoming an owner and nothing about the
+            // narrowing that went with it.
+            ...(updated.role === 'owner' && target.customRole !== undefined
+              ? {
+                  previousCustomRoleId: target.customRole.id,
+                  previousCustomRoleName: target.customRole.name,
+                }
+              : {}),
+          },
         ),
       );
 

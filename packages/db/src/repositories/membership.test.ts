@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import type { Sql } from 'postgres';
+import { can, resolveAccessLevel } from '@xecret/core/authz';
+import type { Action, Membership } from '@xecret/core/authz';
 import * as schema from '../schema';
 import type { Database } from '../client';
 import {
@@ -13,6 +15,7 @@ import {
   reinstateMember,
   removeMember,
   suspendMember,
+  toAuthorizationContext,
   updateMemberRole,
 } from './membership';
 
@@ -41,6 +44,8 @@ const MEMBER_ID = '01930000-0000-7000-8000-000000000003';
 const ROLE_ID = '01930000-0000-7000-8000-000000000004';
 const OTHER_USER_ID = '01930000-0000-7000-8000-000000000005';
 const OTHER_MEMBER_ID = '01930000-0000-7000-8000-000000000006';
+const PROJECT_ID = '01930000-0000-7000-8000-000000000007';
+const ENVIRONMENT_ID = '01930000-0000-7000-8000-000000000008';
 
 interface RecordedStatement {
   sql: string;
@@ -166,12 +171,77 @@ describe('every read that answers for a member', () => {
 
     const member = await findMembership(db, ORG_ID, USER_ID);
 
+    // Based on `viewer` whatever the stored role — `admin` here — so every
+    // reader of `effectiveRole` sees the minimum, not only the capability table.
     expect(member?.customRole).toMatchObject({
       id: ROLE_ID,
-      baseRole: 'admin',
+      baseRole: 'viewer',
       allowedActions: [],
       accessCeiling: { nonProduction: 'none', production: 'none' },
     });
+    expect(member?.role).toBe('admin');
+
+    // The shape is only half the claim; the other half is what the engine
+    // does with it. An explicit project-wide `admin` grant is included on
+    // purpose: the ceiling has to hold against a grant, not only a default.
+    const membership: Membership = {
+      role: member!.role,
+      memberStatus: member!.status,
+      customRole: member!.customRole,
+      grants: [{ projectId: PROJECT_ID, environmentId: null, accessLevel: 'admin' }],
+    };
+    const actor = { kind: 'user', userId: USER_ID, orgId: ORG_ID } as const;
+    const environment = {
+      kind: 'environment',
+      orgId: ORG_ID,
+      projectId: PROJECT_ID,
+      environmentId: ENVIRONMENT_ID,
+    } as const;
+
+    for (const isProduction of [false, true]) {
+      for (const action of ['secret.read', 'secret.update'] satisfies Action[]) {
+        expect(
+          can(actor, action, environment, { membership, isProduction }).allowed,
+          `${action}, production: ${isProduction}`,
+        ).toBe(false);
+      }
+      expect(resolveAccessLevel({ ...membership, isProduction }, PROJECT_ID, ENVIRONMENT_ID)).toBe(
+        'none',
+      );
+      expect(resolveAccessLevel({ ...membership, isProduction }, PROJECT_ID, null)).toBe('none');
+    }
+    expect(
+      can(
+        actor,
+        'member.invite',
+        { kind: 'org', orgId: ORG_ID },
+        { membership, isProduction: false },
+      ).allowed,
+    ).toBe(false);
+  });
+
+  it('fails closed on a half-set ceiling, reading the missing half as none', async () => {
+    // `custom_roles_ceiling_check` forbids the row. Should one arrive anyway,
+    // dropping the whole ceiling would hand the member their unnarrowed level in
+    // both kinds of environment; capping the missing half at `none` does not.
+    const [, name, base, actions] = STAGING_OPERATOR;
+    const halfSet = [
+      [ROLE_ID, name, base, actions, 'admin', null],
+      [ROLE_ID, name, base, actions, null, 'read'],
+    ];
+
+    const ceilings = [];
+    for (const columns of halfSet) {
+      const { db } = recorder((sql) =>
+        sql.includes('from "org_members"') ? [[...MEMBER_ROW, ...columns]] : [],
+      );
+      ceilings.push((await findMembership(db, ORG_ID, USER_ID))?.customRole?.accessCeiling);
+    }
+
+    expect(ceilings).toEqual([
+      { nonProduction: 'admin', production: 'none' },
+      { nonProduction: 'none', production: 'read' },
+    ]);
   });
 });
 
@@ -223,6 +293,67 @@ describe('member writes', () => {
       expect(sql).toContain(' returning ');
       expect(sql).not.toContain('custom_roles');
     }
+  });
+
+  /** Runs one role change and returns the UPDATE it sent. */
+  async function roleUpdate(role: 'owner' | 'admin' | 'developer' | 'viewer') {
+    const { db, statements } = recorder((sql) => {
+      if (sql.includes('from "organizations"')) return [[ORG_ID]];
+      if (sql.startsWith('update "org_members"'))
+        return [[MEMBER_ID, ORG_ID, USER_ID, role, 'active']];
+      if (sql.includes('from "org_members"')) return [MEMBER_ROW];
+      return [];
+    });
+
+    await updateMemberRole(db, { orgId: ORG_ID, memberId: MEMBER_ID, role });
+
+    const update = statements.find(({ sql }) => sql.startsWith('update "org_members"'));
+    expect(update).toBeDefined();
+    return update!;
+  }
+
+  it('clears the custom role in the same UPDATE that makes somebody an owner', async () => {
+    // `org_members_owner_custom_role_check` rejects an owner holding a custom
+    // role, so a promotion that left the reference in place would be a CHECK
+    // violation — a 500 — for every narrowed member ever promoted.
+    const { sql, params } = await roleUpdate('owner');
+
+    const setClause = /^update "org_members" set (.+?) where /.exec(sql)?.[1] ?? '';
+    const role = /"role" = \$(\d+)/.exec(setClause);
+    const customRole = /"custom_role_id" = \$(\d+)/.exec(setClause);
+
+    expect(role, `no role assignment in: ${sql}`).not.toBeNull();
+    expect(customRole, `custom_role_id is not cleared in: ${sql}`).not.toBeNull();
+    expect(params[Number(role![1]) - 1]).toBe('owner');
+    expect(params[Number(customRole![1]) - 1]).toBeNull();
+  });
+
+  it.each(['admin', 'developer', 'viewer'] as const)(
+    'leaves the custom role alone on a change to %s',
+    async (role) => {
+      // A narrowing is only ever dropped by the promotion that subsumes it;
+      // every other role change keeps it exactly as it was.
+      const { sql } = await roleUpdate(role);
+      expect(sql).not.toContain('custom_role_id');
+    },
+  );
+
+  it('return a record an authorization context cannot be built from', async () => {
+    // `RETURNING` cannot name `custom_roles`, so a write's record has no
+    // `customRole` because none was loaded — and `toAuthorizationContext` would
+    // read that absence as "holds none". Nothing stops it at runtime, which is
+    // why the type does; `tsc` fails this file if the directive stops being
+    // needed.
+    const { db } = recorder((sql) => {
+      if (sql.includes('from "organizations"')) return [[ORG_ID]];
+      return sql.includes('"org_members"') ? [MEMBER_ROW] : [];
+    });
+
+    const written = await suspendMember(db, { orgId: ORG_ID, memberId: MEMBER_ID });
+
+    // @ts-expect-error — a WrittenMemberRecord is not a joined read.
+    const context = toAuthorizationContext(written, []);
+    expect(context).not.toHaveProperty('customRole');
   });
 });
 

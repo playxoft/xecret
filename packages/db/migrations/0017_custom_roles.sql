@@ -2,16 +2,27 @@
 --
 -- ── The property this table is built around ──
 -- A custom role can only **subtract**. Every row names a `base_role`, and the
--- authorization engine resolves a member as `base AND custom`, never as the
--- custom row alone (`effectiveCapabilities` in @xecret/core/authz). There is
--- therefore no row here — malformed, hand-edited, or written by somebody who
--- reached the database — that grants a capability the base role does not
--- already hold. Escalation through this table is unreachable, rather than
--- prevented by validation that could be bypassed.
+-- authorization engine resolves a member through the lower of their own `role`
+-- and that `base_role` — the effective role — ANDed with the row's action list,
+-- never through the custom row alone (`effectiveRole` and
+-- `effectiveCapabilities` in @xecret/core/authz). There is therefore no row
+-- here — malformed, hand-edited, or written by somebody who reached the
+-- database — that grants a capability the member's own role does not already
+-- hold. Escalation through this table is unreachable, rather than prevented by
+-- validation that could be bypassed.
 --
 -- That is the same one-way shape as `limit_overrides` on `org_subscriptions`,
 -- chosen for the same reason: a mechanism with a single direction has no bugs
 -- in the other one.
+--
+-- ── Owners are never narrowed ──
+-- No custom role is based on `owner`, and no owner holds a custom role: two
+-- CHECKs below, one per table. Together they keep "a stored `owner`" and "an
+-- effective owner" the same set of members. The last-owner rule counts the
+-- first; authority follows the second. If the two could differ, an
+-- organisation's sole owner could be narrowed to a role that cannot manage
+-- members — still counted as the owner that keeps the organisation alive, no
+-- longer able to act as one, and with nobody above them to repair it.
 --
 -- ── Read this before running it ──
 -- Additive only. `org_members.custom_role_id` is nullable and every existing
@@ -20,7 +31,8 @@
 -- to backfill.
 --
 -- ── Order ──
--- The table, then the column that references it, then the grants.
+-- The table, then the column that references it and the rules on that column,
+-- then the grants.
 
 CREATE TABLE "custom_roles" (
 	"id" uuid PRIMARY KEY NOT NULL,
@@ -47,7 +59,16 @@ CREATE TABLE "custom_roles" (
 	CONSTRAINT "custom_roles_ceiling_check" CHECK (
 		("custom_roles"."ceiling_non_production" IS NULL)
 		= ("custom_roles"."ceiling_production" IS NULL)
-	)
+	),
+	-- Half of "owners are never narrowed" (see the top of this file). An
+	-- owner-based role behaves differently from the same role based on `admin`
+	-- only while an owner holds it — for anybody else the lower role governs,
+	-- and that is their own — and `org_members_owner_custom_role_check` forbids
+	-- an owner holding any. So the base could only mean something in a state
+	-- the schema refuses, and it is refused here too rather than left as a row
+	-- that exists to be assigned one day. `canDefineCustomRole` refuses it
+	-- first; this is what holds when that is bypassed.
+	CONSTRAINT "custom_roles_base_role_check" CHECK ("custom_roles"."base_role" <> 'owner')
 );--> statement-breakpoint
 
 ALTER TABLE "custom_roles"
@@ -61,9 +82,10 @@ ALTER TABLE "custom_roles"
 	ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 
 -- ── org_members.custom_role_id ──────────────────────────────────────────────
--- `role` stays authoritative. This is a narrowing applied on top of it, never a
--- replacement, which is what keeps `canAssignRole` meaningful and what makes a
--- NULL here mean precisely what it meant before the column existed.
+-- `role` is never replaced. This is a narrowing applied on top of it — the
+-- lower of `role` and the custom role's `base_role` governs, ANDed with the
+-- role's action list — which is what keeps `canAssignRole` meaningful and what
+-- makes a NULL here mean precisely what it meant before the column existed.
 
 ALTER TABLE "org_members" ADD COLUMN "custom_role_id" uuid;--> statement-breakpoint
 
@@ -116,9 +138,24 @@ ALTER TABLE "org_members"
 	REFERENCES "public"."custom_roles"("org_id", "id")
 	ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 
--- Read by the "is this role still in use?" check that guards deletion, by the
--- foreign key's own check when a role is deleted, and by the roster view that
--- shows who holds which role. Partial, because the overwhelming majority of
+-- The other half of "owners are never narrowed" (see the top of this file).
+-- With it, "is this member an active owner?" is answered by `role` and
+-- `status` alone, which is all the last-owner guard and the account-deletion
+-- summary read — so neither has to join `custom_roles` to count owners
+-- correctly, and neither can get it wrong by forgetting to.
+--
+-- A promotion to owner therefore has to clear `custom_role_id` in the same
+-- UPDATE, or this rejects it; `updateMemberRole` does. Assigning a custom role
+-- to an owner is refused outright. Every existing row has a NULL
+-- `custom_role_id` — the column is new — so every row passes, and the scan
+-- that proves it runs under the lock the ADD COLUMN above already holds.
+ALTER TABLE "org_members"
+	ADD CONSTRAINT "org_members_owner_custom_role_check"
+	CHECK ("org_members"."custom_role_id" IS NULL OR "org_members"."role" <> 'owner');--> statement-breakpoint
+
+-- Read by the foreign key's own check when a role is deleted, and by the "is
+-- this role still in use?" and "who holds this role?" questions the
+-- role-management API will ask. Partial, because the overwhelming majority of
 -- rows carry NULL and none of them are ever the answer.
 CREATE INDEX "org_members_custom_role_idx"
 	ON "org_members" USING btree ("custom_role_id")

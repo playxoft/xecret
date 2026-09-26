@@ -25,7 +25,10 @@ import type { Executor } from './shared';
  * **The last-owner invariant.** An organisation always retains at least one
  * active owner. It is enforced here, inside the transaction that performs the
  * write, because getting it wrong locks an organisation out of its own account
- * with no self-service repair.
+ * with no self-service repair. It counts stored `role = 'owner'` rows, which is
+ * right only because an owner can never hold a custom role
+ * (`org_members_owner_custom_role_check`): every stored owner is an effective
+ * one.
  */
 
 export type MemberStatus = (typeof orgMembers.$inferSelect)['status'];
@@ -38,13 +41,31 @@ export interface MemberRecord {
   status: MemberStatus;
   /**
    * The organisation's narrowing of `role`, resolved from the joined row.
+   * Absent means the member holds none.
    *
-   * Carried here rather than left as six loose columns so that exactly one
-   * place in the codebase knows how the join maps onto the shape `can()` reads,
-   * and every caller gets the same answer.
+   * Carried here rather than left as six loose columns so that one function —
+   * `toCustomRole`, which every joined read reaches through `toMemberRecord` —
+   * is all that knows how the join maps onto the shape `can()` reads, and
+   * every caller gets the same answer.
+   *
+   * Only a joined read can say "none", so only a joined read returns this
+   * type. A write's result is a `WrittenMemberRecord`, which has no such field.
    */
   customRole?: CustomRole | undefined;
 }
+
+/**
+ * A member as a write returns it: `org_members` alone, with no `customRole`.
+ *
+ * Not a `MemberRecord`, on purpose. On a `MemberRecord` an absent `customRole`
+ * means "holds none", and `toAuthorizationContext` reads it that way. A write's
+ * `RETURNING` cannot name `custom_roles`, so here the field is absent because
+ * it was never loaded — and a record that passed for the other kind would hand
+ * a narrowed member on unnarrowed. `toAuthorizationContext` refuses this type
+ * at compile time; read `findMembership` or `findMemberWithUser` when the
+ * narrowing matters.
+ */
+export type WrittenMemberRecord = Omit<MemberRecord, 'customRole'>;
 
 /** A row of `access_grants`, as the authorization engine consumes it. */
 export interface MemberGrant {
@@ -117,8 +138,10 @@ export interface MemberPage {
  * `org_members` alone, on purpose. This is the set every `RETURNING` uses, and a
  * `RETURNING` list can name only the table being written — a `custom_roles`
  * column in it fails the statement, which is every membership write at once. It
- * is also what the lookups that decide nothing about access read: the last-owner
- * guard needs a role and a status, not the narrowing on top of them.
+ * is also what the last-owner guard reads, and a role and a status are enough
+ * for it *because* `org_members_owner_custom_role_check` keeps custom roles off
+ * owners: whether a member is an active owner cannot depend on a narrowing an
+ * owner is never allowed to hold.
  */
 const MEMBER_COLUMNS = {
   id: orgMembers.id,
@@ -136,8 +159,8 @@ const MEMBER_COLUMNS = {
  * that is NULL for almost everybody would be paid by everybody.
  *
  * Never selected without `customRoleJoin()` in the same statement: every column
- * but the first belongs to `custom_roles`, and PostgreSQL refuses a column whose
- * table is not in the `FROM` clause.
+ * after `customRoleId` belongs to `custom_roles`, and PostgreSQL refuses a
+ * column whose table is not in the `FROM` clause.
  */
 const JOINED_MEMBER_COLUMNS = {
   ...MEMBER_COLUMNS,
@@ -191,7 +214,14 @@ function customRoleJoin() {
   return and(eq(customRoles.id, orgMembers.customRoleId), eq(customRoles.orgId, orgMembers.orgId));
 }
 
-/** What an unresolved reference is called wherever the role's name is shown. */
+/**
+ * The name an unresolved reference carries.
+ *
+ * Nothing serialises a custom role's name today — the roster payload carries
+ * the built-in role only. This is so that whatever first does shows a row the
+ * join could not resolve as exactly that, rather than as a blank or as a role
+ * the member does not hold.
+ */
 const UNRESOLVED_CUSTOM_ROLE_NAME = 'Unresolved custom role';
 
 /**
@@ -206,12 +236,26 @@ const UNRESOLVED_CUSTOM_ROLE_NAME = 'Unresolved custom role';
  * foreign key admits neither a dangling reference nor one into another
  * organisation — so seeing it means that guarantee was lost somewhere. Reading
  * it as "no custom role" would hand the member their full built-in role: the
- * silent widening `ON DELETE RESTRICT` exists to prevent, arrived at by another
- * route. So it resolves to a role that permits nothing and reaches nothing, and
- * the member stays shut out until somebody repairs the row on purpose.
+ * silent widening the foreign key's `ON DELETE NO ACTION` exists to prevent,
+ * arrived at by another route. So it resolves to a role based on `viewer`, the
+ * lowest there is, with no actions and a `none` ceiling: it permits nothing a
+ * custom role can withhold and reaches nothing, and the member stays shut out
+ * until somebody repairs the row on purpose.
  *
- * A row whose ceiling columns are half-set cannot exist: `custom_roles_ceiling_check`
- * forbids it at the database. The check here is for the type, not the data.
+ * `viewer` rather than the member's stored `role`, because `effectiveRole` is
+ * read for more than the capability table — the access defaults too, and the
+ * actor's side of `canAssignRole`. Every one of those should see the minimum
+ * for a row nobody can vouch for, not whatever the member was before.
+ *
+ * Nothing is logged here. This package has no logger at the repository layer
+ * and does not invent one for a state the schema forbids; the member finding
+ * themselves shut out is what surfaces it.
+ *
+ * ── A half-set ceiling ──
+ * Cannot exist either: `custom_roles_ceiling_check` forbids it. Should one
+ * arrive anyway, the missing half reads as `none` — failing closed, like the
+ * unresolved reference — rather than the whole ceiling being dropped, which
+ * would hand the member their unnarrowed level in both kinds of environment.
  */
 function toCustomRole(row: JoinedMemberRow): CustomRole | undefined {
   if (row.customRoleId === null) return undefined;
@@ -224,19 +268,19 @@ function toCustomRole(row: JoinedMemberRow): CustomRole | undefined {
     return {
       id: row.customRoleId,
       name: UNRESOLVED_CUSTOM_ROLE_NAME,
-      baseRole: row.role,
+      baseRole: 'viewer',
       allowedActions: [],
       accessCeiling: { nonProduction: 'none', production: 'none' },
     };
   }
 
   const ceiling =
-    row.customRoleCeilingNonProduction !== null && row.customRoleCeilingProduction !== null
-      ? {
-          nonProduction: row.customRoleCeilingNonProduction,
-          production: row.customRoleCeilingProduction,
-        }
-      : undefined;
+    row.customRoleCeilingNonProduction === null && row.customRoleCeilingProduction === null
+      ? undefined
+      : {
+          nonProduction: row.customRoleCeilingNonProduction ?? 'none',
+          production: row.customRoleCeilingProduction ?? 'none',
+        };
 
   return {
     id: row.customRoleId,
@@ -425,9 +469,23 @@ export async function lockOrganization(tx: Executor, orgId: string): Promise<voi
   if (!organization) throw new RepositoryError('notFound', 'Organisation not found.');
 }
 
-/** Pure row-to-context mapping, so the shape can be tested without a database. */
-export function toAuthorizationContext(
-  member: MemberRecord,
+/**
+ * `M` when it is a record a joined read produced, `never` when it is a write's
+ * result — told apart by whether the type declares `customRole` at all, since
+ * TypeScript would otherwise accept a `WrittenMemberRecord` wherever a
+ * `MemberRecord` is asked for (the field is optional there).
+ */
+type JoinedMemberRecord<M> = 'customRole' extends keyof M ? M : never;
+
+/**
+ * Pure row-to-context mapping, so the shape can be tested without a database.
+ *
+ * Takes only a record from a joined read. A `WrittenMemberRecord` does not
+ * compile here: its missing `customRole` means "not loaded", and read by this
+ * function it would mean "none" — a narrowed member's context, built unnarrowed.
+ */
+export function toAuthorizationContext<M extends MemberRecord>(
+  member: M & JoinedMemberRecord<M>,
   grants: MemberGrant[],
 ): AuthorizationContext {
   return {
@@ -498,10 +556,14 @@ export interface AddMemberParams {
  * this handles is ordinary — one invitation link opened in two tabs — and it must
  * read as a conflict, not as a 500 from an escaped driver error.
  *
- * The record carries no `customRole`, and here that is simply true: a member is
- * created without one.
+ * Returns a `WrittenMemberRecord`, like every write here. A member is created
+ * without a custom role, so for this one the absence happens to be true — but
+ * the type says what `RETURNING` can know, not what this call happens to.
  */
-export async function addMember(exec: Executor, params: AddMemberParams): Promise<MemberRecord> {
+export async function addMember(
+  exec: Executor,
+  params: AddMemberParams,
+): Promise<WrittenMemberRecord> {
   const now = new Date();
   const [row] = await exec
     .insert(orgMembers)
@@ -534,24 +596,43 @@ export interface UpdateMemberRoleParams {
 /**
  * Changes a member's role, refusing to demote the last active owner.
  *
+ * ── A promotion to owner clears the custom role ──
+ * An owner can never hold one (`org_members_owner_custom_role_check`), so the
+ * UPDATE that makes somebody an owner sets `custom_role_id` to NULL in the same
+ * statement — left in place, it would turn the promotion into a CHECK violation
+ * and a 500. Dropping a narrowing without being asked is exactly what the
+ * foreign key's `ON DELETE NO ACTION` refuses to do when a role is deleted, and
+ * it is right here for three reasons. Promotion to owner is itself the widest
+ * change there is, so the narrowing it drops is subsumed by the act rather than
+ * lost to it. Only an owner can make it (`canAssignRole`), and an owner is
+ * never narrowed themselves. And it is already an audited `member.role_changed`
+ * naming the new role — a deliberate act by somebody entitled to it, not a
+ * widening that happened as a side effect of tidying.
+ *
+ * Any other role leaves `custom_role_id` exactly as it was.
+ *
  * ── What the returned record leaves out ──
  * This and the other status writes below return the row as `RETURNING` sees it,
- * which is `org_members` alone, so the record has **no `customRole`** even when
- * the member holds one. Treat it as "the write landed, with this role and
- * status", not as an authorization answer; read `findMembership` or
+ * which is `org_members` alone — a `WrittenMemberRecord`, with no `customRole`
+ * even when the member holds one. Treat it as "the write landed, with this role
+ * and status", not as an authorization answer; read `findMembership` or
  * `findMemberWithUser` when the narrowing matters.
  */
 export async function updateMemberRole(
   exec: Executor,
   params: UpdateMemberRoleParams,
-): Promise<MemberRecord> {
+): Promise<WrittenMemberRecord> {
   return exec.transaction(async (tx) => {
     const member = await lockOrgAndLoadMember(tx, params.orgId, params.memberId);
     await assertOwnershipSurvives(tx, member, { role: params.role, status: member.status });
 
     const [row] = await tx
       .update(orgMembers)
-      .set({ role: params.role, updatedAt: new Date() })
+      .set({
+        role: params.role,
+        ...(params.role === 'owner' ? { customRoleId: null } : {}),
+        updatedAt: new Date(),
+      })
       .where(and(eq(orgMembers.id, params.memberId), eq(orgMembers.orgId, params.orgId)))
       .returning(MEMBER_COLUMNS);
 
@@ -589,9 +670,12 @@ export async function removeMember(exec: Executor, params: MemberRef): Promise<v
  * owner, so suspending the only one strands the organisation just as thoroughly
  * as deleting them.
  *
- * Returns the record without `customRole`, as `updateMemberRole` explains.
+ * Returns a `WrittenMemberRecord`, as `updateMemberRole` explains.
  */
-export async function suspendMember(exec: Executor, params: MemberRef): Promise<MemberRecord> {
+export async function suspendMember(
+  exec: Executor,
+  params: MemberRef,
+): Promise<WrittenMemberRecord> {
   return exec.transaction(async (tx) => {
     const member = await lockOrgAndLoadMember(tx, params.orgId, params.memberId);
     await assertOwnershipSurvives(tx, member, { role: member.role, status: 'suspended' });
@@ -615,9 +699,12 @@ export async function suspendMember(exec: Executor, params: MemberRef): Promise<
  * taken so the write serialises with the guards that do count owners — a
  * reinstatement racing a demotion must not slip between its count and commit.
  *
- * Returns the record without `customRole`, as `updateMemberRole` explains.
+ * Returns a `WrittenMemberRecord`, as `updateMemberRole` explains.
  */
-export async function reinstateMember(exec: Executor, params: MemberRef): Promise<MemberRecord> {
+export async function reinstateMember(
+  exec: Executor,
+  params: MemberRef,
+): Promise<WrittenMemberRecord> {
   return exec.transaction(async (tx) => {
     const member = await lockOrgAndLoadMember(tx, params.orgId, params.memberId);
 
@@ -876,9 +963,11 @@ export function membersPageQuery(exec: Executor, orgId: string, page: number, pa
       .select(MEMBER_LIST_COLUMNS)
       .from(orgMembers)
       .innerJoin(users, and(eq(users.id, orgMembers.userId), isNull(users.deletedAt)))
-      // The roster shows which role each member holds, and for a member on a
-      // custom role the built-in name alone would be actively misleading —
-      // "developer" beside somebody who cannot write anywhere.
+      // Not for display — the roster payload (`toMember` in apps/web) carries
+      // the built-in role only. For the access preview computed from each row
+      // (`effectiveAccess`, on the roster and the project members page), which
+      // has to apply the narrowing or it shows a member levels the engine will
+      // refuse them.
       .leftJoin(customRoles, customRoleJoin())
       .where(eq(orgMembers.orgId, orgId))
       .orderBy(asc(orgMembers.createdAt), asc(orgMembers.id))
@@ -905,14 +994,18 @@ export function membersPageQuery(exec: Executor, orgId: string, page: number, pa
  * this: one row, on writes that are rare by nature, with no advisory-lock
  * bookkeeping and no `SERIALIZABLE` retry loop for callers to get wrong.
  *
- * The member is read with `MEMBER_COLUMNS` and no custom-role join: the
- * last-owner guard is the only reader, and it asks about role and status alone.
+ * The member is read with `MEMBER_COLUMNS` and no custom-role join. The
+ * last-owner guard is the only reader that decides anything from it, and role
+ * and status answer "is this an active owner?" completely *because*
+ * `org_members_owner_custom_role_check` keeps a custom role off every owner —
+ * a stored owner is an effective one. Hence a `WrittenMemberRecord`: the row
+ * says nothing about a narrowing, and must not be mistaken for a read that does.
  */
 async function lockOrgAndLoadMember(
   tx: Executor,
   orgId: string,
   memberId: string,
-): Promise<MemberRecord> {
+): Promise<WrittenMemberRecord> {
   await lockOrganization(tx, orgId);
 
   const [member] = await tx
@@ -932,10 +1025,14 @@ async function lockOrgAndLoadMember(
  * member is being removed. Must be called inside the transaction that performs
  * the write, after `lockOrgAndLoadMember` — the count is only meaningful while
  * the organisation row is locked.
+ *
+ * Stored roles throughout, and that is sound only because an owner cannot hold
+ * a custom role (`org_members_owner_custom_role_check`): authority follows the
+ * effective role, and for an owner the two are always the same.
  */
 async function assertOwnershipSurvives(
   tx: Executor,
-  member: MemberRecord,
+  member: WrittenMemberRecord,
   next: { role: OrgRole; status: MemberStatus } | null,
 ): Promise<void> {
   const memberIsActiveOwner = member.role === 'owner' && member.status === 'active';
@@ -953,6 +1050,7 @@ async function assertOwnershipSurvives(
   }
 }
 
+/** Stored `owner` rows — every one an effective owner; see `assertOwnershipSurvives`. */
 async function countActiveOwners(tx: Executor, orgId: string): Promise<number> {
   const [row] = await tx
     .select({ value: count() })
@@ -1048,7 +1146,11 @@ export interface AccountMembership {
   status: MemberStatus;
   /** Every membership row in the organisation, the leaver and any status included. */
   totalMembers: number;
-  /** Active owners including the leaver, when they are one. */
+  /**
+   * Active owners including the leaver, when they are one. Counted from stored
+   * `role`, which is every effective owner: an owner cannot hold a custom role
+   * (`org_members_owner_custom_role_check`).
+   */
   activeOwners: number;
 }
 

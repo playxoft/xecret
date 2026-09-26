@@ -3,6 +3,7 @@ import {
   findEnvironmentBySlug,
   findMemberWithUser,
   findProjectBySlug,
+  listEnvironments,
   listGrantsForMember,
   removeAccessGrant,
   upsertAccessGrant,
@@ -10,6 +11,9 @@ import {
 import { errors } from '@/server/errors';
 import { json, noContent, parseJsonBody } from '@/server/http';
 import {
+  assertGrantWithinAuthority,
+  assertMayChangeOwnGrants,
+  assertRemovalWithinAuthority,
   assertRoleAuthority,
   mapMembershipError,
   requireMembership,
@@ -30,11 +34,25 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  * let alone acceptable (threat T2). The repository re-verifies the scope
  * anyway; defence in depth is the policy, not an accident.
  *
- * The role hierarchy applies to the *member being granted*: an admin may not
- * edit an owner's grants. It deliberately does not apply to the access level —
- * levels and roles are different axes, and `write` on production is not "above"
- * any role. What stops a viewer being over-granted is the capability gate:
- * grants raise what a member may *reach*, never what their role may *do*.
+ * You can't hand out what you don't hold, and a grant is handed out two ways:
+ *
+ *  - **The member** must be within the caller's authority
+ *    (`assertRoleAuthority`): an admin may not edit an owner's grants.
+ *  - **The level** must be one the caller holds where it lands. On PUT that is
+ *    the level written (`assertGrantWithinAuthority`); on DELETE it is the
+ *    level the member falls back to, which can be *higher* than the row removed
+ *    — a developer's explicit production `none`, deleted, lets a project-wide
+ *    `write` take over — so a removal that raises the member anywhere must
+ *    stay within what the caller holds there (`assertRemovalWithinAuthority`).
+ *    Nobody hands out production `write` without holding it, whether a custom
+ *    role's ceiling or an explicit grant on themselves holds them below it.
+ *  - **Nobody edits their own grants**, except an owner
+ *    (`assertMayChangeOwnGrants`). A restriction its holder can delete is not
+ *    one; an owner keeps the way back from a restriction they placed on
+ *    themselves, and is measured by the owner role rather than by it.
+ *
+ * What stops a viewer being over-granted is still the capability gate: grants
+ * raise what a member may *reach*, never what their role may *do*.
  *
  * Reads are absent on purpose. The member's grants — and what they resolve to —
  * are returned by `[memberId]/access`, which answers the whole question at
@@ -66,6 +84,9 @@ export const PUT = authenticatedRoute<Params>(
 
     const target = await findMemberWithUser(services.db, orgId, params.memberId);
     if (!target) throw errors.notFound('no such member in organisation');
+
+    const self = target.userId === actor.user.id;
+    if (self) assertMayChangeOwnGrants(membership);
     assertRoleAuthority(membership, target.role);
 
     const body = await parseJsonBody(request, grantWriteSchema);
@@ -80,6 +101,24 @@ export const PUT = authenticatedRoute<Params>(
           null);
     if (body.environmentSlug != null && environment === null) {
       throw errors.notFound('no environment with slug in project');
+    }
+
+    // You can't hand out what you don't hold. A project-wide row reaches every
+    // environment in the project, so it is measured against all of them. An
+    // owner setting their own grants is measured by the owner role instead,
+    // which every level is within — see `assertMayChangeOwnGrants`.
+    if (!self) {
+      assertGrantWithinAuthority(
+        membership,
+        body.accessLevel,
+        environment === null
+          ? {
+              projectId: project.id,
+              environment: null,
+              projectEnvironments: await listEnvironments(services.db, orgId, project.id),
+            }
+          : { projectId: project.id, environment },
+      );
     }
 
     // Read before write so the audit record can say what the level *was* —
@@ -169,6 +208,9 @@ export const DELETE = authenticatedRoute<Params>(
 
     const target = await findMemberWithUser(services.db, orgId, params.memberId);
     if (!target) throw errors.notFound('no such member in organisation');
+
+    const self = target.userId === actor.user.id;
+    if (self) assertMayChangeOwnGrants(membership);
     assertRoleAuthority(membership, target.role);
 
     const body = await parseJsonBody(request, grantRemoveSchema);
@@ -183,6 +225,25 @@ export const DELETE = authenticatedRoute<Params>(
           null);
     if (body.environmentSlug != null && environment === null) {
       throw errors.notFound('no environment with slug in project');
+    }
+
+    // A removal can raise the member — they fall back to whatever the row was
+    // overriding — so it is held to the same limit as a grant written. Not for
+    // an owner lifting their own restriction: what they fall back to is the
+    // owner role's own default.
+    if (!self) {
+      assertRemovalWithinAuthority(
+        membership,
+        target,
+        await listGrantsForMember(services.db, orgId, target.id),
+        environment === null
+          ? {
+              projectId: project.id,
+              environment: null,
+              projectEnvironments: await listEnvironments(services.db, orgId, project.id),
+            }
+          : { projectId: project.id, environment },
+      );
     }
 
     const removed = await removeAccessGrant(services.db, {

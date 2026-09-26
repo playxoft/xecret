@@ -1,6 +1,11 @@
 import { resolveAccessLevel } from './grants';
 import type { Membership } from './grants';
-import { accessLevelAtLeast, ACTION_REQUIREMENTS, effectiveCapabilities } from './roles';
+import {
+  accessLevelAtLeast,
+  ACTION_REQUIREMENTS,
+  compareAccessLevel,
+  effectiveCapabilities,
+} from './roles';
 import type { RequiredAccessLevel } from './roles';
 import type { AccessLevel, Action, Actor, Decision, Resource } from './types';
 
@@ -189,7 +194,8 @@ function memberDecision(
 
   // The built-in table when there is no custom role, and `base AND custom` when
   // there is — where `base` is the lower of `role` and the custom role's
-  // `baseRole`. Never the custom role alone — see `CustomRole` in roles.ts.
+  // `baseRole`, and `custom` always includes `CUSTOM_ROLE_FLOOR`. Never the
+  // custom role alone — see `CustomRole` in roles.ts.
   if (!effectiveCapabilities(membership.role, membership.customRole)[action]) return forbidden();
 
   const requirement = ACTION_REQUIREMENTS[action];
@@ -218,8 +224,26 @@ function memberDecision(
   // request arrived through a production environment: production is a property
   // of an environment, and letting it apply to a project-level question would
   // deny a developer the project itself because of where the link came from.
+  const projectLevel = resolveAccessLevel(
+    { ...membership, isProduction: false },
+    resource.projectId,
+    null,
+  );
+  if (requirement.includesProduction !== true) {
+    return levelDecision(projectLevel, requirement.minimum);
+  }
+
+  // …except where the action's reach includes the project's production
+  // environments (`project.delete`). Then the project's production level must
+  // clear the bar as well, or a custom role capped at `none` on production
+  // could destroy production by deleting the project around it.
+  const productionLevel = resolveAccessLevel(
+    { ...membership, isProduction: true },
+    resource.projectId,
+    null,
+  );
   return levelDecision(
-    resolveAccessLevel({ ...membership, isProduction: false }, resource.projectId, null),
+    compareAccessLevel(productionLevel, projectLevel) < 0 ? productionLevel : projectLevel,
     requirement.minimum,
   );
 }

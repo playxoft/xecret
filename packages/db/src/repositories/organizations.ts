@@ -17,7 +17,7 @@ import { environments, projects } from '../schema/resources';
 import { orgSubscriptions } from '../schema/billing';
 import { orgMembers, organizations } from '../schema/tenancy';
 import { addMember } from './membership';
-import type { MemberRecord } from './membership';
+import type { WrittenMemberRecord } from './membership';
 import { QuotaExceededError, RepositoryError } from './shared';
 import type { Executor } from './shared';
 import { createFreeSubscription, entitlementColumns, entitlementsFromRow } from './subscriptions';
@@ -423,7 +423,7 @@ export interface ProvisionOrganizationParams {
 
 export interface ProvisionedOrganization {
   organization: Organization;
-  membership: MemberRecord;
+  membership: WrittenMemberRecord;
 }
 
 /**

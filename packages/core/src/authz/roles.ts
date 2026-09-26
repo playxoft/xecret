@@ -76,10 +76,12 @@ export function compareOrgRole(a: OrgRole, b: OrgRole): number {
  * check it against the member's current role too, or an admin could "demote" an
  * owner — which is removing an owner's authority without holding it.
  *
- * For an actor holding a custom role, `actorRole` is their `effectiveRole` —
- * see `canDefineCustomRole` below. The subject side is the member's stored
- * `role`, which is never lower than their effective one, so it is the stricter
- * of the two to be measured against.
+ * This is the rank comparison alone, and rank is all a built-in role has. It is
+ * not enough for an actor who may hold a custom role: an admin-based role
+ * narrowed to member management still ranks as `admin`, and would pass this for
+ * a plain `admin` it holds almost none of. Routes ask `roleWithinAuthority`,
+ * which is this for a member without a custom role and strictly more for one
+ * with.
  */
 export function canAssignRole(actorRole: OrgRole, role: OrgRole): boolean {
   return compareOrgRole(actorRole, role) >= 0;
@@ -267,7 +269,16 @@ export type RequiredAccessLevel = Exclude<AccessLevel, 'none'>;
  */
 export type ActionRequirement =
   | { scope: 'org' }
-  | { scope: 'project'; minimum: RequiredAccessLevel }
+  | {
+      scope: 'project';
+      minimum: RequiredAccessLevel;
+      /**
+       * Also require `minimum` at the project's *production* level, and take
+       * the lower of the two. For a project action whose blast radius includes
+       * the project's production environments — see `project.delete` below.
+       */
+      includesProduction?: true;
+    }
   | { scope: 'environment'; minimum: RequiredAccessLevel };
 
 /**
@@ -282,12 +293,25 @@ export type ActionRequirement =
  * empty. `environment.update` needs `admin` even though it looks like the
  * gentler operation, because it can flip `is_production` — and that flag is
  * what makes production deny-by-default for everybody else.
+ *
+ * `project.delete` is the one project action that `includesProduction`. A
+ * project-level question is otherwise asked with production left out (see
+ * `can()`), which is right for reading a project or renaming it — but deleting
+ * one deletes every environment in it, production included, and a member whose
+ * custom role caps them at `none` on production would otherwise do exactly
+ * that through the project door. `project.update` edits a name and a
+ * description; `environment.create` adds an empty environment and puts nothing
+ * that exists at risk. Neither reaches production data, so neither pays the
+ * stricter check. For a member without a custom role the production level of a
+ * project equals its non-production level wherever `project.delete` is a
+ * capability at all — `admin` and `owner` default to `admin` on both — so this
+ * changes no decision for them; the tests pin that.
  */
 export const ACTION_REQUIREMENTS: Record<Action, ActionRequirement> = {
   'project.read': { scope: 'project', minimum: 'read' },
   'project.create': { scope: 'org' },
   'project.update': { scope: 'project', minimum: 'admin' },
-  'project.delete': { scope: 'project', minimum: 'admin' },
+  'project.delete': { scope: 'project', minimum: 'admin', includesProduction: true },
   'environment.read': { scope: 'environment', minimum: 'read' },
   'environment.create': { scope: 'project', minimum: 'write' },
   'environment.update': { scope: 'environment', minimum: 'admin' },
@@ -313,31 +337,46 @@ export const ACTION_REQUIREMENTS: Record<Action, ActionRequirement> = {
 /**
  * A role an organisation defined for itself.
  *
- * ── The one rule that makes this safe: a custom role can only SUBTRACT ──
+ * ── For the member holding it, a custom role can only SUBTRACT ──
  * Every custom role names a built-in `baseRole` and is resolved as
  * `base AND custom` — never `custom` alone. There is therefore no arrangement
- * of rows in the database, malformed or malicious, that grants a capability the
- * base role does not already have. Privilege escalation through custom roles is
- * not prevented by validation that could be bypassed; it is unreachable.
+ * of rows in the database, malformed or malicious, under which a custom role
+ * gives the member who holds it a capability or a level their built-in role
+ * does not already carry. That half is not guarded by validation that could be
+ * bypassed; it is unreachable.
  *
  * It is the same shape as `limitOverrides` in the entitlements engine, for the
  * same reason: a mechanism with only one direction has no bugs in the other.
  *
+ * ── What subtraction does not settle: what the holder can hand OUT ──
+ * A narrowed member keeps whatever member management their list names, and
+ * member management confers authority on *somebody else*. Measured by rank
+ * alone, an admin-based role narrowed to `member.*` and capped at `none` on
+ * production could invite a plain admin, promote a developer to one, or write
+ * a production grant it cannot use itself — "only subtracts" true of the
+ * holder and false of the organisation. So anything that hands authority out
+ * is measured against what the actor actually holds rather than what they rank
+ * as: `roleWithinAuthority` for roles, the actor's own resolved level for
+ * grants and service tokens (the member and token routes apply it), and
+ * `canDefineCustomRole` for definitions. Those are checks, not structure — the
+ * part a new route that confers authority has to remember.
+ *
  * ── Two built-in roles are in play, and the LOWER one governs ──
  * A member holds a built-in `role` *and*, through the custom role, a
- * `baseRole`. Nothing forces the two to agree — an `admin` can be assigned a
- * custom role based on `viewer` — so every question a built-in role answers is
- * asked of `effectiveRole`, the lesser of the two: the capability table, the
- * access defaults, and the actor's side of `canAssignRole`. Taking the member's
- * `role` alone would let a custom role based on `viewer` that lists
- * `secret.update`, assigned to an admin, write secrets — the base role's
- * ceiling would be decorative. Taking `baseRole` alone would let a viewer
- * assigned a role based on `owner` become one. The minimum is the only choice
- * under which both fields can only ever narrow.
+ * `baseRole`. Nothing in the engine forces the two to agree — an `admin` can be
+ * assigned a custom role based on `viewer` — so every question a built-in role
+ * answers is asked of `effectiveRole`, the lesser of the two: the capability
+ * table, the access defaults, and the rank half of `roleWithinAuthority`.
+ * Taking the member's `role` alone would let a custom role based on `viewer`
+ * that lists `secret.update`, assigned to an admin, write secrets — the base
+ * role's ceiling would be decorative. Taking `baseRole` alone would let a
+ * viewer assigned a role based on `owner` become one. The minimum is the only
+ * choice under which both fields can only ever narrow.
  *
- * An admin cannot mint a custom role whose base is `owner`
- * (`canDefineCustomRole`), and could not reach owner authority through one
- * anyway: the lower role governs, and theirs is `admin`.
+ * No custom role is based on `owner`, and no owner holds one: the first is
+ * refused by `canDefineCustomRole`, and the database refuses both. Nothing here
+ * relies on that — such a row would resolve like any other pairing — but it
+ * keeps "the owner" meaning one thing.
  *
  * ── Why `allowedActions` is a positive list and not a deny list ──
  * A deny list would mean any `Action` added to the union later is silently
@@ -345,6 +384,7 @@ export const ACTION_REQUIREMENTS: Record<Action, ActionRequirement> = {
  * action is denied until an administrator opts in — the same fail-closed choice
  * `SERVICE_TOKEN_ACTIONS` makes, and for the same reason: a capability that
  * arrives without anyone deciding it should is exactly the kind nobody audits.
+ * The one exception is `CUSTOM_ROLE_FLOOR`, the price of being a member at all.
  *
  * The cost is real and accepted: an organisation that adds a capability to the
  * product will not see it in its custom roles until somebody edits them. That
@@ -359,31 +399,60 @@ export interface CustomRole {
    * member's own `role`'s are, whichever is lower (`effectiveRole`).
    */
   readonly baseRole: OrgRole;
-  /** Actions this role may perform, intersected with the effective role's. */
+  /**
+   * Actions this role may perform, intersected with the effective role's.
+   * `CUSTOM_ROLE_FLOOR` is kept whether or not it is listed.
+   */
   readonly allowedActions: readonly Action[];
   /**
    * An optional ceiling on the level this role reaches, per environment kind —
-   * everywhere, explicit grants included.
-   *
-   * Where no grant speaks, the member gets the weaker of this and the effective
-   * role's default (`narrowAccessDefaults`). Where a grant does, they get the
-   * grant capped at this. It never raises anything: a ceiling above the role
-   * default leaves the default alone, and a ceiling above a grant leaves the
-   * grant alone.
+   * everywhere, explicit grants and role defaults alike (`capAtCeiling` in
+   * `grants.ts`). It never raises anything: a ceiling above a level leaves that
+   * level alone.
    */
   readonly accessCeiling?: RoleAccessDefaults | undefined;
 }
+
+/** The part of a membership that says which role governs it. */
+export interface RoleHolder {
+  readonly role: OrgRole;
+  readonly customRole?: CustomRole | undefined;
+}
+
+/**
+ * Capabilities a custom role cannot take away — kept wherever the effective
+ * role's own table grants them, whatever `allowedActions` says.
+ *
+ * `member.read` is how the rest of the product asks "is this an active member
+ * of the organisation?". The `Action` union has no `org.read`, so the
+ * organisation summary, the project listing, CLI device approval and the device
+ * list, and a member's view of their own access all settle membership with it,
+ * on the understanding that every active member holds it. A custom role that
+ * omitted it — easily done, since the list is positive and `member.read` does
+ * not look like what any role is *for* — would lock its holder out of the
+ * organisation while leaving them every secret their list names, reachable
+ * only through URLs the dashboard could no longer render.
+ *
+ * It stays inside the base: the floor is kept only where the effective role's
+ * table already says `true`, so it adds nothing and "a custom role only
+ * subtracts" holds unchanged. The cost is that no custom role can hide the
+ * member list from its holder — which no built-in role does either, for the
+ * reason `members/route.ts` gives. Keep this to what membership itself costs;
+ * anything that lets a member *do* something belongs on the list, where
+ * somebody decides it.
+ */
+export const CUSTOM_ROLE_FLOOR: readonly Action[] = ['member.read'];
 
 /**
  * The built-in role that actually governs a member: the lower of their own
  * `role` and their custom role's `baseRole`.
  *
  * Every decision a built-in role makes for a member goes through this — the
- * capability table (`effectiveCapabilities`), the access defaults
- * (`narrowAccessDefaults`, and so `resolveAccessLevel`'s fall-through), and the
- * actor's side of `canAssignRole` / `canDefineCustomRole`. See `CustomRole` for
- * why the minimum, and not either field alone, is what keeps "a custom role can
- * only subtract" true for any row in the database.
+ * capability table (`effectiveCapabilities`), the access defaults (the
+ * fall-through in `resolveAccessLevel`), and the rank half of
+ * `roleWithinAuthority`. See `CustomRole` for why the minimum, and not either
+ * field alone, is what keeps "a custom role can only subtract" true for any row
+ * in the database.
  *
  * Returns `role` itself when there is no custom role, so the common path is
  * the built-in one exactly.
@@ -396,9 +465,10 @@ export function effectiveRole(role: OrgRole, custom: CustomRole | undefined): Or
 /**
  * The effective capability table for a member, custom role or not.
  *
- * `effectiveRole`'s table AND the custom role's positive list. Returns the
- * built-in table unchanged when there is no custom role, so the common path
- * allocates nothing and the two cases cannot diverge.
+ * `effectiveRole`'s table AND (the custom role's positive list OR
+ * `CUSTOM_ROLE_FLOOR`). Returns the built-in table unchanged when there is no
+ * custom role, so the common path allocates nothing and the two cases cannot
+ * diverge.
  */
 export function effectiveCapabilities(
   role: OrgRole,
@@ -407,12 +477,13 @@ export function effectiveCapabilities(
   const base = ROLE_CAPABILITIES[effectiveRole(role, custom)];
   if (custom === undefined) return base;
 
-  const allowed = new Set<Action>(custom.allowedActions);
+  const allowed = new Set<Action>([...custom.allowedActions, ...CUSTOM_ROLE_FLOOR]);
   const result = {} as Record<Action, boolean>;
 
   // Iterating the base table rather than the custom list is what makes the
   // intersection total: every action gets an answer, and an action the custom
-  // role names that the base role lacks contributes nothing.
+  // role names — or the floor names — that the base role lacks contributes
+  // nothing.
   for (const action of Object.keys(base) as Action[]) {
     result[action] = base[action] && allowed.has(action);
   }
@@ -421,17 +492,13 @@ export function effectiveCapabilities(
 }
 
 /**
- * The level a member reaches where no grant says otherwise: the weaker of
- * `effectiveRole`'s defaults and the custom role's ceiling.
+ * The level a member reaches where no grant says otherwise, per environment
+ * kind: the weaker of `effectiveRole`'s defaults and the custom role's ceiling.
  *
- * Per environment kind, because a role that is narrowed in production and left
- * alone elsewhere is the single most common thing an organisation wants from
- * this feature.
- *
- * This is the *default*, not the cap. An explicit grant is capped at the
- * ceiling alone (see `capAtCeiling` in `grants.ts`) — capping it here would
- * mean any ceiling at all pins a member to their role default and silently
- * discards every grant written above it.
+ * Derived, not a step of resolution: `resolveAccessLevel` falls through to the
+ * plain role default and lets `capAtCeiling` narrow it, which comes to the same
+ * thing. It exists for questions asked about a role rather than a resource —
+ * `roleWithinAuthority` measures what an actor can confer with it.
  */
 export function narrowAccessDefaults(
   role: OrgRole,
@@ -454,19 +521,86 @@ export function narrowAccessDefaults(
 }
 
 /**
- * Whether an actor may create or edit a custom role with this base.
+ * Whether an actor may hand out — or take away — `subjectRole`, measured by
+ * everything the actor holds rather than by rank alone.
  *
- * The same "no role above your own" rule as `canAssignRole`, applied to the
- * base. Without it, an admin could define a custom role based on `owner`,
- * assign it to themselves, and hold owner capabilities under another name —
- * the exact escalation `canAssignRole` exists to close, routed around.
+ * True iff all three hold:
  *
- * `actorRole` must be the actor's `effectiveRole`, not their stored `role`, and
- * the same goes for every caller of `canAssignRole`. An owner narrowed to a
- * custom role based on `admin` is an admin for every other purpose; comparing
- * their stored `owner` here would let them define — or hand out — the owner
- * authority their own custom role withholds from them.
+ *  1. `canAssignRole(effectiveRole(actor), subjectRole)` — no role above your
+ *     own, with your own being the lower of your two.
+ *  2. Every capability `subjectRole` carries is one the actor holds
+ *     (`effectiveCapabilities`).
+ *  3. `subjectRole`'s access defaults are no higher than the actor's own, per
+ *     environment kind (`narrowAccessDefaults`, ceiling included).
+ *
+ * (2) and (3) are what "you can't hand out what you don't hold" means for a
+ * custom role. An admin-based role that lists only `member.*`, or is capped at
+ * `none` on production, ranks as `admin` — and would otherwise invite, promote
+ * or reinstate a plain admin, who holds on day one everything the actor's own
+ * role was defined to withhold. Anybody the actor could appoint is somebody
+ * they could then act through.
+ *
+ * For a member without a custom role this is exactly `canAssignRole`: the
+ * built-in tables are nested — each role's capabilities and defaults contain
+ * those of every role below it — so (2) and (3) follow from (1). The tests pin
+ * that over every pair, so a table edit that broke the nesting would fail the
+ * build rather than quietly change who plain admins may appoint.
+ *
+ * It measures roles, not grants. What an actor may write as an explicit grant —
+ * or mint as a service token — is measured against their resolved level on
+ * that resource, by the routes that write them.
  */
-export function canDefineCustomRole(actorRole: OrgRole, baseRole: OrgRole): boolean {
-  return canAssignRole(actorRole, baseRole);
+export function roleWithinAuthority(actor: RoleHolder, subjectRole: OrgRole): boolean {
+  if (!canAssignRole(effectiveRole(actor.role, actor.customRole), subjectRole)) return false;
+
+  const held = effectiveCapabilities(actor.role, actor.customRole);
+  const conferred = ROLE_CAPABILITIES[subjectRole];
+  for (const action of Object.keys(conferred) as Action[]) {
+    if (conferred[action] && !held[action]) return false;
+  }
+
+  const heldDefaults = narrowAccessDefaults(actor.role, actor.customRole);
+  const conferredDefaults = ROLE_ACCESS_DEFAULTS[subjectRole];
+  return (
+    accessLevelAtLeast(heldDefaults.nonProduction, conferredDefaults.nonProduction) &&
+    accessLevelAtLeast(heldDefaults.production, conferredDefaults.production)
+  );
+}
+
+/**
+ * Whether an actor may create a custom role with this base.
+ *
+ * Refused outright to three kinds of request:
+ *
+ *  - **An actor who holds a custom role.** A narrowed actor defining roles is a
+ *    narrowed actor writing the rules they are narrowed by — and, at the limit,
+ *    editing the very role they hold. Measuring the new role against theirs is
+ *    possible, but "a restricted member cannot redefine restriction" is a rule
+ *    nobody has to reason about, and the ones who need to define roles are the
+ *    unrestricted admins and owners who assign them.
+ *  - **A base of `owner`.** The owner is the role that cannot be removed while
+ *    it is the last of its kind and the only one that can delete the
+ *    organisation; a narrowed copy of it is a contradiction. The database
+ *    refuses the row too.
+ *  - **A base above the actor's own role** (`canAssignRole`). Without it an
+ *    admin could define a role on a higher base and assign it — the escalation
+ *    `canAssignRole` exists to close, routed around.
+ *
+ * ── What the part-2 routes must check on top of this ──
+ * This answers for *creating* a definition, which on its own confers nothing.
+ * The routes that make a definition reach people carry the rest:
+ *
+ *  - **Editing a role** must pass this for both the current and the new base,
+ *    and `roleWithinAuthority(actor, holder.role)` for every member currently
+ *    holding it — widening a role's list or ceiling raises each holder, and an
+ *    actor may not raise somebody they could not otherwise manage.
+ *  - **Assigning or unassigning one** must pass `roleWithinAuthority` over the
+ *    member's stored `role`. Assignment only narrows, but unassignment returns
+ *    a member to the whole of that role, and so does swapping one custom role
+ *    for a wider one.
+ */
+export function canDefineCustomRole(actor: RoleHolder, baseRole: OrgRole): boolean {
+  if (actor.customRole !== undefined) return false;
+  if (baseRole === 'owner') return false;
+  return canAssignRole(actor.role, baseRole);
 }

@@ -14,6 +14,7 @@ export {
   ACTION_REQUIREMENTS,
   canAssignRole,
   canDefineCustomRole,
+  CUSTOM_ROLE_FLOOR,
   effectiveCapabilities,
   effectiveRole,
   narrowAccessDefaults,
@@ -22,11 +23,13 @@ export {
   ROLE_ACCESS_DEFAULTS,
   ROLE_CAPABILITIES,
   roleDefaultAccessLevel,
+  roleWithinAuthority,
 } from './roles';
 export type {
   ActionRequirement,
   CustomRole,
   RequiredAccessLevel,
   RoleAccessDefaults,
+  RoleHolder,
 } from './roles';
 export type { AccessLevel, Action, Actor, Decision, OrgRole, Resource } from './types';

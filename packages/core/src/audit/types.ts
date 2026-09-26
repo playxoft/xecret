@@ -320,6 +320,19 @@ export interface AuditMetadata {
   previousRole?: string;
   newRole?: string;
   /**
+   * The custom role a member held before a role change removed it, by id and
+   * by name.
+   *
+   * Only a promotion to `owner` does that today: an owner cannot hold a custom
+   * role, so the repository clears it in the same write. Without these the
+   * trail would show a narrowed member becoming an owner and say nothing about
+   * the narrowing that went with it. The id survives a rename; the name is what
+   * a reviewer reads. The role's definition — its actions, its ceiling — is not
+   * copied: it lives on the role, and it is not what changed.
+   */
+  previousCustomRoleId?: string;
+  previousCustomRoleName?: string;
+  /**
    * The access level a grant held before and after a change, e.g. `read`.
    *
    * Level names, never values. `access.granted` without them says a grant

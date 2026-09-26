@@ -75,7 +75,10 @@ export const organizations = pgTable(
  *
  * INVARIANT, enforced in application code and tested explicitly: an
  * organisation always retains at least one active `owner`. Removing or demoting
- * the last owner is rejected.
+ * the last owner is rejected. Counting `role = 'owner'` rows answers it
+ * correctly only because an owner cannot hold a custom role
+ * (`org_members_owner_custom_role_check`, below) — so every stored owner is an
+ * effective one.
  */
 export const orgMembers = pgTable(
   'org_members',
@@ -92,10 +95,12 @@ export const orgMembers = pgTable(
     /**
      * A custom role narrowing `role`, or null for the built-in role as-is.
      *
-     * **`role` stays authoritative.** The custom role is a narrowing applied on
-     * top, never a replacement — which is what keeps `canAssignRole` meaningful
-     * and what makes a null here mean exactly what it meant before this column
-     * existed.
+     * **`role` is never replaced.** The custom role is a narrowing applied on
+     * top — the lower of `role` and its `baseRole` governs, ANDed with its
+     * action list — which is what keeps `canAssignRole` meaningful and what
+     * makes a null here mean exactly what it meant before this column existed.
+     *
+     * Always null for an owner (`org_members_owner_custom_role_check`, below).
      *
      * The foreign key is composite — `(org_id, custom_role_id)` against
      * `custom_roles (org_id, id)`, declared with the table's constraints below
@@ -145,13 +150,27 @@ export const orgMembers = pgTable(
     })
       .onDelete('no action')
       .onUpdate('no action'),
-    // Read by the "is this role still in use?" check that guards deletion, by
-    // the foreign key's own check when a role is deleted, and by the roster
-    // view. Partial, because nearly every row carries null and none of them is
-    // ever the answer.
+    // Read by the foreign key's own check when a role is deleted, and by the
+    // "is this role still in use?" and "who holds this role?" questions the
+    // role-management API will ask. Partial, because nearly every row carries
+    // null and none of them is ever the answer.
     index('org_members_custom_role_idx')
       .on(t.customRoleId)
       .where(sql`${t.customRoleId} is not null`),
+    // An owner is never narrowed. With `custom_roles_base_role_check` this keeps
+    // "stored `owner`" and "effective owner" the same set of members, so the
+    // last-owner guard and the account-deletion summary can count owners from
+    // `role` and `status` alone and still count the ones who can act as owners.
+    // Without it, a sole owner narrowed to a role that cannot manage members
+    // would be counted as the owner keeping the organisation alive while unable
+    // to be one, with nobody above them to repair it.
+    //
+    // `updateMemberRole` clears the reference in the same UPDATE that promotes
+    // somebody to owner, since this would otherwise reject the promotion.
+    check(
+      'org_members_owner_custom_role_check',
+      sql`${t.customRoleId} is null or ${t.role} <> 'owner'`,
+    ),
   ],
 );
 

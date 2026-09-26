@@ -1,5 +1,11 @@
 import type { AccessLevel, Membership, OrgRole } from '@xecret/core/authz';
-import { canAssignRole, effectiveRole, resolveAccessLevel } from '@xecret/core/authz';
+import {
+  compareAccessLevel,
+  effectiveRole,
+  resolveAccessLevel,
+  roleDefaultAccessLevel,
+  roleWithinAuthority,
+} from '@xecret/core/authz';
 import type { Database, InvitationGrantSeed } from '@xecret/db';
 import { findEnvironmentBySlug, findProjectBySlug, RepositoryError } from '@xecret/db/repositories';
 import type {
@@ -10,6 +16,7 @@ import type {
 } from '@xecret/db/repositories';
 import type { Principal } from './actor';
 import { errors } from './errors';
+import { toGrantContext } from './tenancy';
 import type { OrgScope } from './tenancy';
 
 /**
@@ -17,13 +24,15 @@ import type { OrgScope } from './tenancy';
  *
  * Three concerns live here rather than in the routes:
  *
- *  1. **The role hierarchy.** `can()` answers whether a role may manage members
- *     at all; it does not compare the two roles involved. Without the second
- *     check, an admin could mint an owner and act through them. The predicate
- *     is `canAssignRole` from `@xecret/core/authz`; this module is where it is
- *     applied to both sides of every change — the role being handed out *and*
- *     the role currently held by the member being touched — measured against
- *     the caller's *effective* role, custom role included.
+ *  1. **You can't hand out what you don't hold.** `can()` answers whether a
+ *     role may manage members at all; it does not compare the caller with what
+ *     they are conferring. Without that second check, an admin could mint an
+ *     owner and act through them — or, holding a custom role, mint the plain
+ *     admin their own role was narrowed from. Roles are measured by
+ *     `roleWithinAuthority` from `@xecret/core/authz`, applied to both sides of
+ *     every change: the role being handed out *and* the role currently held by
+ *     the member being touched. Grant levels are measured against the level
+ *     the caller resolves to on the same resource (`assertGrantWithinAuthority`).
  *
  *  2. **The session requirement.** Inviting someone mints a credential (the
  *     invitation token), and the standing rule from the CLI authorization flow
@@ -63,30 +72,277 @@ export function requireMembership(scope: OrgScope): StoredAuthorizationContext {
 export type RoleAuthority = Pick<StoredAuthorizationContext, 'role' | 'customRole'>;
 
 /**
- * Refuses a change that touches a role above the caller's own.
+ * Refuses a change that touches a role beyond the caller's own authority.
  *
  * Applied to the target's *current* role when managing an existing member, and
  * to the *new* role when assigning one. The message does not name either role:
  * it is a fixed string, and the caller already knows what they asked for.
  *
- * ── The caller's side is their effective role, and takes the membership ──
- * An owner narrowed to a custom role based on `admin` passes `can()` for
- * `member.update` exactly as an admin would — and is one, for every purpose the
- * custom role decides. Compared by their stored `owner`, they could still mint
- * owners, which is the authority their own custom role withholds. So the
- * caller is measured by `effectiveRole`, the lower of the two.
+ * ── Measured by what the caller holds, and takes the membership ──
+ * The predicate is `roleWithinAuthority`: for a caller without a custom role it
+ * is exactly the rank rule (`canAssignRole`) — no role above your own — and for
+ * one with a custom role it also asks whether the caller holds every
+ * capability, and every default level, the role would confer. An admin-based
+ * custom role narrowed to member management passes `can()` for `member.update`
+ * exactly as an admin would; measured by rank alone, it could invite a plain
+ * admin, or promote a developer to one, and act through them.
  *
  * It takes the membership rather than a role so that this cannot be got wrong
  * at a call site: a route that passes `membership.role` does not compile, where
- * one that forgot to narrow a role it passed would compile and escalate.
+ * one that forgot the custom role would compile and escalate.
  *
  * The subject's side stays their stored `role`. It is never lower than their
  * effective one, so it is the stricter thing to be measured against — an admin
  * may not touch an owner however narrowly that owner is currently scoped.
  */
 export function assertRoleAuthority(actor: RoleAuthority, subjectRole: OrgRole): void {
-  if (!canAssignRole(effectiveRole(actor.role, actor.customRole), subjectRole)) {
+  if (!roleWithinAuthority(actor, subjectRole)) {
     throw errors.forbidden('You cannot manage a role above your own.');
+  }
+}
+
+/** One environment, as far as a grant's reach is concerned. */
+export interface ReachedEnvironment {
+  id: string;
+  isProduction: boolean;
+}
+
+/**
+ * Where an explicit grant would take effect: one environment, or a whole
+ * project — together with every environment the project has now, because a
+ * project-wide row is what each of them falls back to.
+ */
+export type GrantReach =
+  | { projectId: string; environment: ReachedEnvironment }
+  | {
+      projectId: string;
+      environment: null;
+      projectEnvironments: readonly ReachedEnvironment[];
+    };
+
+/**
+ * The most the caller may grant across `reach`: the lowest level they resolve
+ * to anywhere the grant would land.
+ *
+ * Levels come from `resolveAccessLevel` over the caller's own membership — the
+ * enforcement path — so a caller is measured by exactly what `can()` would let
+ * them do there, custom-role ceiling and explicit grants included.
+ *
+ * ── A project-wide grant reaches further than it looks ──
+ * It is the fall-back for every environment in the project that has no row of
+ * its own, production included, and for every environment created later. So
+ * the caller must hold the level on each environment the project has now, on
+ * the project itself, *and* at the project's production level — the level they
+ * would hold on a production environment added tomorrow, and the one
+ * `project.delete` now asks for. Anything less lets a caller capped at `none`
+ * on production write a project-wide `write` that lands on production.
+ */
+export function grantableAccessLevel(actor: Membership, reach: GrantReach): AccessLevel {
+  return reachPoints(reach)
+    .map((point) => levelAt(actor, reach.projectId, point))
+    .reduce((lowest, level) => (compareAccessLevel(level, lowest) < 0 ? level : lowest));
+}
+
+/** One place a grant row takes effect: an environment, or the project itself. */
+interface ReachPoint {
+  environmentId: string | null;
+  isProduction: boolean;
+}
+
+/**
+ * Every place `reach` takes effect — the environment itself, or, for a whole
+ * project, the project at both production levels and each of its environments.
+ * See `grantableAccessLevel` for why the project appears twice.
+ */
+function reachPoints(reach: GrantReach): ReachPoint[] {
+  if (reach.environment !== null) {
+    return [{ environmentId: reach.environment.id, isProduction: reach.environment.isProduction }];
+  }
+  return [
+    { environmentId: null, isProduction: false },
+    { environmentId: null, isProduction: true },
+    ...reach.projectEnvironments.map((environment) => ({
+      environmentId: environment.id,
+      isProduction: environment.isProduction,
+    })),
+  ];
+}
+
+function levelAt(membership: Membership, projectId: string, point: ReachPoint): AccessLevel {
+  return resolveAccessLevel(
+    { ...membership, isProduction: point.isProduction },
+    projectId,
+    point.environmentId,
+  );
+}
+
+/**
+ * Refuses an explicit grant above what the caller holds where it lands.
+ *
+ * The other half of "you can't hand out what you don't hold": a role is
+ * measured by `assertRoleAuthority`, a grant by this. Before it, a grant's
+ * level was limited by nothing but the target's role — so any member manager
+ * could write production `admin` for anybody they could manage, whatever their
+ * own access to production was.
+ *
+ * Universal, not only for callers holding a custom role. An owner or admin
+ * with no restrictive grant of their own resolves to `admin` everywhere and
+ * notices nothing. One who *has* been restricted — by a custom role's ceiling,
+ * or by an explicit grant on themselves — can now hand out only what they
+ * still hold, which is the point: a restriction that its holder can route
+ * around by granting the access to a colleague, or to a second account, is not
+ * a restriction.
+ *
+ * `none` always passes: taking access away confers nothing.
+ */
+export function assertGrantWithinAuthority(
+  actor: StoredAuthorizationContext,
+  level: AccessLevel,
+  reach: GrantReach,
+): void {
+  if (compareAccessLevel(level, grantableAccessLevel(toGrantContext(actor), reach)) > 0) {
+    throw errors.forbidden(GRANT_ABOVE_AUTHORITY);
+  }
+}
+
+const GRANT_ABOVE_AUTHORITY = 'You cannot grant more access than you hold.';
+
+/**
+ * Refuses removing a grant when what the member falls back to would raise them
+ * above what the caller holds.
+ *
+ * Removing a row is not only ever a narrowing. The member falls back to the
+ * next rule down — a project-wide row, or their role's default — and that can
+ * be *higher*: a developer's explicit `none` on production, removed, lets a
+ * project-wide `write` take over there. Unchecked, a caller capped at `none` on
+ * production could grant production by deletion exactly as the level check on
+ * PUT stops them granting it by writing.
+ *
+ * So, at every place the removed row took effect (the same reach as PUT), the
+ * member's level with the row gone is compared with their level now:
+ *
+ *  - not higher → fine. Removing a grant that lowers or keeps access confers
+ *    nothing, whoever does it.
+ *  - higher → the fallback must be within the caller's own level *at that same
+ *    place*. Per place rather than the lowest across the reach, because the
+ *    fallback differs per place: removing a developer's project-wide `read`
+ *    raises staging to their role's `write` and leaves production at `none`,
+ *    and a caller capped only on production holds everything that raise needs.
+ *
+ * `member` is the target's record and `memberGrants` their whole grant list —
+ * both the enforcement path's inputs, so "what they fall back to" is what
+ * `can()` would resolve for them the moment the row is gone.
+ */
+export function assertRemovalWithinAuthority(
+  actor: StoredAuthorizationContext,
+  member: Pick<MemberListEntry, 'role' | 'status' | 'customRole'>,
+  memberGrants: readonly MemberGrant[],
+  reach: GrantReach,
+): void {
+  const caller = toGrantContext(actor);
+  const before: Membership = {
+    role: member.role,
+    memberStatus: member.status,
+    ...(member.customRole === undefined ? {} : { customRole: member.customRole }),
+    grants: memberGrants.map((grant) => ({
+      projectId: grant.projectId,
+      environmentId: grant.environmentId,
+      accessLevel: grant.accessLevel,
+    })),
+  };
+  const removedEnvironmentId = reach.environment?.id ?? null;
+  const after: Membership = {
+    ...before,
+    grants: before.grants.filter(
+      (grant) =>
+        !(grant.projectId === reach.projectId && grant.environmentId === removedEnvironmentId),
+    ),
+  };
+
+  for (const point of reachPoints(reach)) {
+    const fallback = levelAt(after, reach.projectId, point);
+    if (compareAccessLevel(fallback, levelAt(before, reach.projectId, point)) <= 0) continue;
+    if (compareAccessLevel(fallback, levelAt(caller, reach.projectId, point)) > 0) {
+      throw errors.forbidden(GRANT_ABOVE_AUTHORITY);
+    }
+  }
+}
+
+/**
+ * Refuses a caller changing their own grants — unless they are an owner.
+ *
+ * The same reasoning as "you cannot change your own role": a restriction its
+ * holder can lift is not a restriction. Without this, an admin an owner held to
+ * `read` on production deletes the grant that says so, or writes a wider one
+ * over it, and is an unrestricted admin again.
+ *
+ * ── Why owners are the exception ──
+ * An owner restricting themselves — so a routine mistake cannot reach
+ * production — is a practice worth keeping, and it needs a way back: a sole
+ * owner who could not lift their own restriction would need an owner who does
+ * not exist. It is safe because an owner cannot hold a custom role, so the
+ * most any change to their own grants can give them is the owner role's own
+ * default — authority the role already carries. The routes measure an owner
+ * acting on themselves against that, not against the restriction being lifted.
+ *
+ * Effective owner, not stored owner: the two are the same today (the database
+ * refuses a custom role on an owner), and checking the effective role keeps it
+ * true if that ever changes.
+ */
+export function assertMayChangeOwnGrants(actor: RoleAuthority): void {
+  if (effectiveRole(actor.role, actor.customRole) !== 'owner') {
+    throw errors.forbidden('You cannot change your own access grants.');
+  }
+}
+
+/**
+ * The reach of one resolved invitation seed, read off the organisation's
+ * environment grid.
+ *
+ * An environment missing from the grid — deleted between the slug lookup and
+ * here — is measured as production, the stricter of the two kinds; acceptance
+ * would skip it anyway.
+ */
+export function invitationSeedReach(
+  seed: InvitationGrantSeed,
+  grid: readonly OrganizationEnvironment[],
+): GrantReach {
+  if (seed.environmentId === null) {
+    return {
+      projectId: seed.projectId,
+      environment: null,
+      projectEnvironments: grid.filter((environment) => environment.projectId === seed.projectId),
+    };
+  }
+  const environment = grid.find((candidate) => candidate.id === seed.environmentId);
+  return {
+    projectId: seed.projectId,
+    environment: { id: seed.environmentId, isProduction: environment?.isProduction ?? true },
+  };
+}
+
+/**
+ * Refuses an invitation whose initial grants exceed what the inviter holds.
+ *
+ * Each seed is measured at the level acceptance will actually write: the one
+ * it names, or — for a seed that names none — the invited role's
+ * *non-production* default, which acceptance writes even on a production
+ * environment (see `applyInitialGrants`). Measuring an unstated level as "the
+ * role default for this environment" would under-count exactly there.
+ */
+export function assertInvitationGrantsWithinAuthority(
+  actor: StoredAuthorizationContext,
+  invitedRole: OrgRole,
+  seeds: readonly InvitationGrantSeed[],
+  grid: readonly OrganizationEnvironment[],
+): void {
+  const fallback = roleDefaultAccessLevel(invitedRole, false);
+  for (const seed of seeds) {
+    assertGrantWithinAuthority(
+      actor,
+      seed.accessLevel ?? fallback,
+      invitationSeedReach(seed, grid),
+    );
   }
 }
 
@@ -130,7 +386,11 @@ export interface EffectiveEnvironmentAccess {
 export interface EffectiveProjectAccess {
   name: string;
   slug: string;
-  /** The level for project-scoped actions, which ignore production status. */
+  /**
+   * The level for project-scoped actions, which leave production out — all
+   * but `project.delete`, which also needs the project's production level
+   * (`includesProduction` in `ACTION_REQUIREMENTS`).
+   */
   projectLevel: AccessLevel;
   environments: EffectiveEnvironmentAccess[];
 }
