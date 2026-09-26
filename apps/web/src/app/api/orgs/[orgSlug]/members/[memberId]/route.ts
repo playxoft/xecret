@@ -1,5 +1,5 @@
 import type { AuditAction, AuditResource } from '@xecret/core/audit';
-import { afterRoleChange, capabilitiesGained } from '@xecret/core/authz';
+import { afterRoleChange, auditingDenials, capabilitiesGained } from '@xecret/core/authz';
 import type { Database } from '@xecret/db';
 import {
   findMemberWithUser,
@@ -23,7 +23,7 @@ import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 import { recordKeyReconciliation, reconcileMemberKeyAccess } from '@/server/member-keys';
 import { memberPatchSchema, toMember } from '@/server/schemas/members';
-import { auditingDenials, authorize, resolveOrg } from '@/server/tenancy';
+import { authorize, resolveOrg } from '@/server/tenancy';
 
 /**
  * One member: change their role, suspend or reinstate them, remove them.

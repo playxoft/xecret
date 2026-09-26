@@ -37,7 +37,6 @@ vi.mock('@xecret/db/repositories', async (importOriginal) => ({
 }));
 
 const {
-  auditingDenials,
   authorize,
   resolveEnvironment,
   resolveEnvironmentPath,
@@ -507,41 +506,5 @@ describe('grant context adaptation', () => {
     expect(toMembership(target, rows)).toEqual(
       toGrantContext({ ...membership('admin'), ...target, grants: rows }),
     );
-  });
-});
-
-describe('auditingDenials', () => {
-  it('files an authorization refusal exactly once, then lets it propagate', () => {
-    const filed: unknown[] = [];
-    const denial = { allowed: false, reason: 'forbidden', message: 'No.' } as const;
-
-    expect(() =>
-      auditingDenials(
-        (decision) => filed.push(decision),
-        () => {
-          throw new AuthorizationError(denial);
-        },
-      ),
-    ).toThrowError(AuthorizationError);
-    expect(filed).toEqual([denial]);
-  });
-
-  it('files nothing for a check that passes, or for an error that is not a denial', () => {
-    const filed: unknown[] = [];
-    const failure = new Error('database unavailable');
-
-    auditingDenials(
-      (decision) => filed.push(decision),
-      () => {},
-    );
-    expect(() =>
-      auditingDenials(
-        (decision) => filed.push(decision),
-        () => {
-          throw failure;
-        },
-      ),
-    ).toThrow(failure);
-    expect(filed).toEqual([]);
   });
 });

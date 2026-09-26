@@ -274,3 +274,39 @@ export function assertCan(
   const decision = can(actor, action, resource, context);
   if (!decision.allowed) throw new AuthorizationError(decision);
 }
+
+/**
+ * Runs authorization checks, handing each refusal to `file` before it
+ * propagates.
+ *
+ * A refusal from `assertCan` and one from an authority check both arrive as an
+ * `AuthorizationError`; whichever it is, `file` is called once with its
+ * decision and the error is rethrown to become the response. Anything else
+ * passes through untouched — a lookup that fails is not a denial.
+ *
+ * The point is the trail. Routes pass a `file` that writes a `denied` audit
+ * record naming the action that was attempted, because a burst of those is how
+ * probing shows up in the audit log, and a check that refused without filing
+ * one — "grant production `write`", "reinstate the member who holds it", tried
+ * in turn by somebody capped below it — would let the probing happen in
+ * silence. Every check that can refuse *above the caller's authority* goes
+ * inside one of these.
+ *
+ * It lives here, beside the exception it catches, because it decides nothing
+ * and knows nothing of requests. Where routes import it from also shows in the
+ * Worker bundle. Turbopack emits the ~0.5 MB server chunk every API route
+ * loads (drizzle, postgres, the route wrapper) byte-identical under several
+ * names, one per distinct set of those modules a route imports directly, as
+ * far as the build output shows. Each name ships as a full copy. Two routes
+ * that imported this from the web app's `tenancy.ts`, and so no longer
+ * imported `@xecret/core/authz` themselves, got a copy of their own: 0.17 MB
+ * gzipped.
+ */
+export function auditingDenials(file: (decision: Denial) => void, checks: () => void): void {
+  try {
+    checks();
+  } catch (cause) {
+    if (cause instanceof AuthorizationError) file(cause.decision);
+    throw cause;
+  }
+}

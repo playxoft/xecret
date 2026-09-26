@@ -1,3 +1,4 @@
+import { auditingDenials } from '@xecret/core/authz';
 import type { Denial } from '@xecret/core/authz';
 import {
   countSecrets,
@@ -17,7 +18,7 @@ import {
   environmentPatchSchema,
   toEnvironment,
 } from '@/server/schemas/resources';
-import { auditingDenials, authorize, resolveEnvironmentPath } from '@/server/tenancy';
+import { authorize, resolveEnvironmentPath } from '@/server/tenancy';
 
 /**
  * One environment: its detail, its editable fields, and its removal.

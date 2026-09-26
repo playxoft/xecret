@@ -1,4 +1,4 @@
-import { AuthorizationError } from '@xecret/core/authz';
+import { auditingDenials, AuthorizationError } from '@xecret/core/authz';
 import type { Denial } from '@xecret/core/authz';
 import {
   createInvitation,
@@ -26,7 +26,7 @@ import { authenticatedRoute } from '@/server/route';
 import { decodePublicKey } from '@/server/schemas/env-keys';
 import { memberInviteSchema, toInvitation, toMember, toSeats } from '@/server/schemas/members';
 import { listQuery } from '@/server/schemas/secrets';
-import { auditingDenials, authorize, resolveOrg } from '@/server/tenancy';
+import { authorize, resolveOrg } from '@/server/tenancy';
 
 /**
  * Who is in this organisation — and the door new people come through.

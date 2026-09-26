@@ -85,9 +85,10 @@ export type RoleAuthority = Pick<StoredAuthorizationContext, 'role' | 'customRol
  *
  * An `AuthorizationError` — the exception `can()`'s denials travel as — rather
  * than an `ApiError`, so that the route files it through the same path as a
- * capability denial (`auditingDenials` in `tenancy.ts`), and a caller probing
- * past their authority leaves the same trail as one probing past their role.
- * The route boundary answers it exactly as it would `errors.forbidden(message)`.
+ * capability denial (`auditingDenials`, in `@xecret/core/authz`), and a
+ * caller probing past their authority leaves the same trail as one probing
+ * past their role. The route boundary answers it exactly as it would
+ * `errors.forbidden(message)`.
  */
 function refuse(message: string): never {
   throw new AuthorizationError({ allowed: false, reason: 'forbidden', message });

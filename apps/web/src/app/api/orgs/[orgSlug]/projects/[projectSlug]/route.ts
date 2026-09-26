@@ -1,3 +1,4 @@
+import { auditingDenials } from '@xecret/core/authz';
 import type { Denial } from '@xecret/core/authz';
 import {
   listEnvironments,
@@ -18,7 +19,7 @@ import {
   toEnvironment,
   toProject,
 } from '@/server/schemas/resources';
-import { auditingDenials, authorize, resolveProjectPath } from '@/server/tenancy';
+import { authorize, resolveProjectPath } from '@/server/tenancy';
 
 /**
  * One project: its detail, its editable fields, and its removal.

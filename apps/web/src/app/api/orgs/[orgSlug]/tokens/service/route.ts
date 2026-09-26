@@ -1,4 +1,4 @@
-import { serviceTokenActionsAt } from '@xecret/core/authz';
+import { auditingDenials, serviceTokenActionsAt } from '@xecret/core/authz';
 import {
   createServiceToken,
   listEnvironmentsForOrganization,
@@ -15,13 +15,7 @@ import {
   serviceTokenCreateSchema,
   toServiceToken,
 } from '@/server/schemas/tokens';
-import {
-  auditingDenials,
-  authorize,
-  resolveEnvironment,
-  resolveOrg,
-  resolveProject,
-} from '@/server/tenancy';
+import { authorize, resolveEnvironment, resolveOrg, resolveProject } from '@/server/tenancy';
 
 /**
  * Service tokens — the CI credential (threat T5).

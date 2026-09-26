@@ -1,9 +1,8 @@
-import { assertCan, AuthorizationError } from '@xecret/core/authz';
+import { assertCan } from '@xecret/core/authz';
 import type {
   AccessLevel,
   Action,
   Actor,
-  Denial,
   Membership,
   Resource,
   ResolvedGrant,
@@ -274,31 +273,6 @@ export function authorize(
     // the honest answer: there is no environment in scope.
     isProduction: environment?.isProduction ?? false,
   });
-}
-
-/**
- * Runs authorization checks, filing a refusal as a `denied` audit record.
- *
- * A refusal from `authorize()` and one from an authority check in
- * `members-service.ts` both arrive as an `AuthorizationError`; whichever it
- * is, `file` is called once with its decision and the error propagates to
- * become the response. Anything else passes through untouched — a lookup that
- * fails is not a denial.
- *
- * The point is the trail. A burst of `denied` records is how probing shows up
- * in the audit log, and a check that refused without filing one — "grant
- * production `write`", "reinstate the member who holds it", tried in turn by
- * somebody capped below it — would let the probing happen in silence. Routes
- * put every check that can refuse *above the caller's authority* inside one of
- * these, with `file` naming the action that was attempted.
- */
-export function auditingDenials(file: (decision: Denial) => void, checks: () => void): void {
-  try {
-    checks();
-  } catch (cause) {
-    if (cause instanceof AuthorizationError) file(cause.decision);
-    throw cause;
-  }
 }
 
 /**

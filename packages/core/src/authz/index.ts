@@ -12,6 +12,7 @@ export {
 export type { GrantReach, GridEnvironment, ReachedEnvironment, ReachPoint } from './authority';
 export {
   assertCan,
+  auditingDenials,
   AuthorizationError,
   can,
   FORBIDDEN_MESSAGE,

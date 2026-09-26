@@ -1,4 +1,5 @@
 import type { AuditResource } from '@xecret/core/audit';
+import { auditingDenials } from '@xecret/core/authz';
 import type { GrantReach } from '@xecret/core/authz';
 import type { Database } from '@xecret/db';
 import {
@@ -26,7 +27,7 @@ import { recordKeyReconciliation, reconcileMemberKeyAccess } from '@/server/memb
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 import { grantRemoveSchema, grantWriteSchema } from '@/server/schemas/members';
-import { auditingDenials, authorize, resolveOrg } from '@/server/tenancy';
+import { authorize, resolveOrg } from '@/server/tenancy';
 
 /**
  * One member's access grants: create or replace one (PUT), remove one (DELETE).
