@@ -248,8 +248,8 @@ export async function countOrganizationsHeldBy(
  * account that was *invited* into somebody else's Team organisation is measured
  * against the plans it bought itself, and being a member of a paid tenant does
  * not raise its personal allowance. Anything wider would make a colleague's
- * purchase spend on your behalf, and would let one Scale organisation hand an
- * unlimited ceiling to everybody it ever invited.
+ * purchase spend on your behalf, and would let one Enterprise organisation hand
+ * an unlimited ceiling to everybody it ever invited.
  *
  * Chosen over the alternatives because each of those punishes somebody who paid.
  * Taking the *lowest* of the set would mean starting a second Free organisation

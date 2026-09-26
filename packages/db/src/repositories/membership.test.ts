@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import type { Sql } from 'postgres';
 import { can, resolveAccessLevel } from '@xecret/core/authz';
-import type { Action, Membership } from '@xecret/core/authz';
+import type { Action, CustomRole, Membership } from '@xecret/core/authz';
 import * as schema from '../schema';
 import type { Database } from '../client';
 import {
@@ -18,6 +18,7 @@ import {
   toAuthorizationContext,
   updateMemberRole,
 } from './membership';
+import type { AuthorizationContext, MemberRecord, WrittenMemberRecord } from './membership';
 
 /**
  * Where a member's custom role is read, and where it must not be.
@@ -36,6 +37,9 @@ import {
  * in the order the column sets declare them. What that cannot prove — that
  * PostgreSQL accepts the SQL at all — is the standing caveat `resources.test.ts`
  * records, and it applies here unchanged.
+ *
+ * Unlike that recorder, this one also writes `begin` and `commit` markers
+ * around each transaction, so a test can say which statements ran inside one.
  */
 
 const ORG_ID = '01930000-0000-7000-8000-000000000001';
@@ -69,7 +73,12 @@ function recorder(rowsFor: (sql: string) => unknown[]): {
       result.values = () => Promise.resolve(rows);
       return result;
     },
-    begin: <T>(run: (client: unknown) => Promise<T>) => run(client),
+    begin: async <T>(run: (client: unknown) => Promise<T>) => {
+      statements.push({ sql: 'begin', params: [] });
+      const result = await run(client);
+      statements.push({ sql: 'commit', params: [] });
+      return result;
+    },
     savepoint: <T>(run: (client: unknown) => Promise<T>) => run(client),
   };
 
@@ -123,9 +132,10 @@ describe('the org-wide authorization loader', () => {
       accessCeiling: { nonProduction: 'admin', production: 'none' },
     });
 
-    // And a member without one is handed on exactly as before the column existed.
+    // And a member without one resolves to `undefined` — what `can()` saw
+    // before the column existed.
     expect(plain!.memberId).toBe(OTHER_MEMBER_ID);
-    expect(plain).not.toHaveProperty('customRole');
+    expect(plain!.customRole).toBeUndefined();
   });
 });
 
@@ -271,11 +281,41 @@ async function everyMemberStatement(): Promise<RecordedStatement[]> {
   await listMembers(db, ORG_ID);
   await addMember(db, { orgId: ORG_ID, userId: USER_ID, role: 'developer', invitedBy: null });
   await updateMemberRole(db, { ...ref, role: 'developer' });
+  // A promotion to owner too: it is the one role change that reads the
+  // custom role, to report the one it clears.
+  await updateMemberRole(db, { ...ref, role: 'owner' });
   await suspendMember(db, ref);
   await reinstateMember(db, ref);
   await removeMember(db, ref);
 
   return statements;
+}
+
+/**
+ * Runs one role change against a member who, before it, holds `held` — the
+ * joined custom-role columns, positionally — and returns what it sent and what
+ * it returned.
+ */
+async function roleChange(
+  role: 'owner' | 'admin' | 'developer' | 'viewer',
+  held: readonly unknown[],
+) {
+  const { db, statements } = recorder((sql) => {
+    if (sql.includes('from "organizations"')) return [[ORG_ID]];
+    if (sql.startsWith('update "org_members"')) {
+      return [[MEMBER_ID, ORG_ID, USER_ID, role, 'active']];
+    }
+    if (sql.includes('from "org_members"')) {
+      return sql.includes('"custom_roles"') ? [[...MEMBER_ROW, ...held]] : [MEMBER_ROW];
+    }
+    return [];
+  });
+
+  const result = await updateMemberRole(db, { orgId: ORG_ID, memberId: MEMBER_ID, role });
+
+  const update = statements.find(({ sql }) => sql.startsWith('update "org_members"'));
+  expect(update).toBeDefined();
+  return { result, statements, update: update! };
 }
 
 describe('member writes', () => {
@@ -288,35 +328,21 @@ describe('member writes', () => {
         sql.startsWith('insert into "org_members"') || sql.startsWith('update "org_members"'),
     );
 
-    expect(writes).toHaveLength(4);
+    // Two of them role changes: one to `developer`, one to `owner`.
+    expect(writes).toHaveLength(5);
     for (const { sql } of writes) {
       expect(sql).toContain(' returning ');
       expect(sql).not.toContain('custom_roles');
     }
   });
 
-  /** Runs one role change and returns the UPDATE it sent. */
-  async function roleUpdate(role: 'owner' | 'admin' | 'developer' | 'viewer') {
-    const { db, statements } = recorder((sql) => {
-      if (sql.includes('from "organizations"')) return [[ORG_ID]];
-      if (sql.startsWith('update "org_members"'))
-        return [[MEMBER_ID, ORG_ID, USER_ID, role, 'active']];
-      if (sql.includes('from "org_members"')) return [MEMBER_ROW];
-      return [];
-    });
-
-    await updateMemberRole(db, { orgId: ORG_ID, memberId: MEMBER_ID, role });
-
-    const update = statements.find(({ sql }) => sql.startsWith('update "org_members"'));
-    expect(update).toBeDefined();
-    return update!;
-  }
-
   it('clears the custom role in the same UPDATE that makes somebody an owner', async () => {
     // `org_members_owner_custom_role_check` rejects an owner holding a custom
     // role, so a promotion that left the reference in place would be a CHECK
     // violation — a 500 — for every narrowed member ever promoted.
-    const { sql, params } = await roleUpdate('owner');
+    const {
+      update: { sql, params },
+    } = await roleChange('owner', STAGING_OPERATOR);
 
     const setClause = /^update "org_members" set (.+?) where /.exec(sql)?.[1] ?? '';
     const role = /"role" = \$(\d+)/.exec(setClause);
@@ -333,17 +359,19 @@ describe('member writes', () => {
     async (role) => {
       // A narrowing is only ever dropped by the promotion that subsumes it;
       // every other role change keeps it exactly as it was.
-      const { sql } = await roleUpdate(role);
+      const {
+        update: { sql },
+      } = await roleChange(role, STAGING_OPERATOR);
       expect(sql).not.toContain('custom_role_id');
     },
   );
 
-  it('return a record an authorization context cannot be built from', async () => {
+  it('return a record that is not a MemberRecord by any route', async () => {
     // `RETURNING` cannot name `custom_roles`, so a write's record has no
-    // `customRole` because none was loaded — and `toAuthorizationContext` would
-    // read that absence as "holds none". Nothing stops it at runtime, which is
-    // why the type does; `tsc` fails this file if the directive stops being
-    // needed.
+    // `customRole` because none was loaded — and anything taking a
+    // `MemberRecord` would read that absence as "holds none". Nothing stops it
+    // at runtime, which is why the type does. `tsc` checks every line below:
+    // this file is in the package's program.
     const { db } = recorder((sql) => {
       if (sql.includes('from "organizations"')) return [[ORG_ID]];
       return sql.includes('"org_members"') ? [MEMBER_ROW] : [];
@@ -351,10 +379,95 @@ describe('member writes', () => {
 
     const written = await suspendMember(db, { orgId: ORG_ID, memberId: MEMBER_ID });
 
-    // @ts-expect-error — a WrittenMemberRecord is not a joined read.
-    const context = toAuthorizationContext(written, []);
-    expect(context).not.toHaveProperty('customRole');
+    // The key is required — present, whatever its value — on both the record
+    // and the context built from it. `toEqualTypeOf` tells `customRole?:` from
+    // `customRole:`, so an optional key fails here rather than passing.
+    expectTypeOf<Pick<MemberRecord, 'customRole'>>().toEqualTypeOf<{
+      customRole: CustomRole | undefined;
+    }>();
+    expectTypeOf<Pick<AuthorizationContext, 'customRole'>>().toEqualTypeOf<{
+      customRole: CustomRole | undefined;
+    }>();
+
+    // A write's record is a `MemberRecord` less exactly that key, and so is not
+    // one: not assignable, and so not widenable, through a helper or otherwise.
+    expectTypeOf<
+      WrittenMemberRecord & Pick<MemberRecord, 'customRole'>
+    >().branded.toEqualTypeOf<MemberRecord>();
+    expectTypeOf<WrittenMemberRecord>().not.toExtend<MemberRecord>();
+    expectTypeOf(toAuthorizationContext).parameter(0).toEqualTypeOf<MemberRecord>();
+
+    // The same, as a call site meets it. The two lines differ only in whether
+    // `customRole` is written down, so the directive on the second is satisfied
+    // by nothing but its absence — and `tsc` fails this file if it stops being
+    // needed. Writing it down, even as `undefined`, is a statement somebody
+    // made about the member; leaving it out is not.
+    const stated: MemberRecord = { ...written, customRole: undefined };
+    // @ts-expect-error — `customRole` is missing; nothing else differs from `stated`.
+    const laundered: MemberRecord = { ...written };
+
+    expect(toAuthorizationContext(stated, []).customRole).toBeUndefined();
+    expect(laundered).not.toHaveProperty('customRole');
   });
+});
+
+describe('a role change', () => {
+  it('reports the custom role a promotion to owner cleared, read inside the write', async () => {
+    // The audit record of the promotion names the narrowing it dropped. Read
+    // here, beside the UPDATE that drops it, the answer cannot disagree with
+    // the write — as a read before the transaction, by the route, could.
+    const { result, statements } = await roleChange('owner', STAGING_OPERATOR);
+
+    expect(result.clearedCustomRole).toEqual({ id: ROLE_ID, name: 'Staging operator' });
+    expect(result.role).toBe('owner');
+    // The id and name, not the role: the rest is nobody's business once it is gone.
+    expect(result).not.toHaveProperty('customRole');
+
+    // Begin, the organisation lock, the locked read, the UPDATE, commit — in
+    // that order, so the read is inside the transaction and behind the lock.
+    const kind = ({ sql }: RecordedStatement) =>
+      sql === 'begin' || sql === 'commit'
+        ? sql
+        : sql.includes('from "organizations"')
+          ? 'lock'
+          : sql.includes('"custom_roles"')
+            ? 'read'
+            : sql.startsWith('update "org_members"')
+              ? 'update'
+              : null;
+    expect(statements.map(kind).filter((step) => step !== null)).toEqual([
+      'begin',
+      'lock',
+      'read',
+      'update',
+      'commit',
+    ]);
+
+    // The member row locked as the UPDATE will lock it, one statement early.
+    const read = statements.find(({ sql }) => sql.includes('"custom_roles"'))!;
+    expect(read.sql).toMatch(/ for no key update of "org_members"$/);
+  });
+
+  it('reports an unresolved reference it cleared under the name every read gives one', async () => {
+    const { result } = await roleChange('owner', [ROLE_ID, null, null, null, null, null]);
+    expect(result.clearedCustomRole).toEqual({ id: ROLE_ID, name: 'Unresolved custom role' });
+  });
+
+  it('reports nothing cleared on the promotion of a member who held no custom role', async () => {
+    const { result } = await roleChange('owner', NO_CUSTOM_ROLE);
+    expect(result.clearedCustomRole).toBeNull();
+  });
+
+  it.each(['admin', 'developer', 'viewer'] as const)(
+    'reports nothing cleared on a change to %s, and reads no custom role to say so',
+    async (role) => {
+      // The member holds one throughout; only a promotion to owner drops it,
+      // so only a promotion to owner pays for the read.
+      const { result, statements } = await roleChange(role, STAGING_OPERATOR);
+      expect(result.clearedCustomRole).toBeNull();
+      expect(statements.filter(({ sql }) => sql.includes('custom_roles'))).toEqual([]);
+    },
+  );
 });
 
 describe('the join onto custom_roles', () => {
@@ -367,8 +480,9 @@ describe('the join onto custom_roles', () => {
     const touching = statements.filter(({ sql }) => sql.includes('custom_roles'));
 
     // findMembership, loadAuthorizationContext, the org-wide loader,
-    // findMemberWithUser and listMembers: five reads, and nothing else.
-    expect(touching).toHaveLength(5);
+    // findMemberWithUser, listMembers, and the read a promotion to owner makes
+    // of the role it clears: six reads, and nothing else.
+    expect(touching).toHaveLength(6);
     for (const { sql } of touching) {
       expect(sql.startsWith('select')).toBe(true);
 

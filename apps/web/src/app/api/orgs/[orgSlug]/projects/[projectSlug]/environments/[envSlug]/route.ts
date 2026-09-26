@@ -1,4 +1,4 @@
-import { AuthorizationError } from '@xecret/core/authz';
+import type { Denial } from '@xecret/core/authz';
 import {
   countSecrets,
   RepositoryError,
@@ -17,7 +17,7 @@ import {
   environmentPatchSchema,
   toEnvironment,
 } from '@/server/schemas/resources';
-import { authorize, resolveEnvironmentPath } from '@/server/tenancy';
+import { auditingDenials, authorize, resolveEnvironmentPath } from '@/server/tenancy';
 
 /**
  * One environment: its detail, its editable fields, and its removal.
@@ -60,33 +60,51 @@ export const PATCH = authenticatedRoute<Params>(
       environmentId: scope.environment.id,
     };
 
-    try {
-      /**
-       * `environment.update` requires `admin` on this environment — a stronger
-       * level than deleting a secret in it — and that is not an oversight.
-       *
-       * This endpoint can flip `is_production`, and that flag is what makes
-       * production deny-by-default for everyone below admin: turning it off
-       * hands every developer in the organisation write access to an
-       * environment that still holds the production secrets it accumulated
-       * while the flag was on. No data moves, no permission is granted, and
-       * nothing in the audit log for the *secrets* changes — the entire effect
-       * is that a boolean now reads `false`. It is the cheapest privilege
-       * escalation in the product, so it is gated at the level that also gates
-       * granting someone access outright.
-       */
-      authorize(scope, 'environment.update');
-    } catch (cause) {
-      if (cause instanceof AuthorizationError) {
-        record(audit(orgId).denied('environment.updated', resource, cause.decision));
-      }
-      throw cause;
-    }
+    const refused = (decision: Denial): void =>
+      record(audit(orgId).denied('environment.updated', resource, decision));
+
+    /**
+     * `environment.update` requires `admin` on this environment — a stronger
+     * level than deleting a secret in it — and that is not an oversight.
+     *
+     * This endpoint can flip `is_production`, and that flag is what makes
+     * production deny-by-default for everyone below admin: turning it off
+     * hands every developer in the organisation write access to an
+     * environment that still holds the production secrets it accumulated
+     * while the flag was on. No data moves, no permission is granted, and
+     * nothing in the audit log for the *secrets* changes — the entire effect
+     * is that a boolean now reads `false`. It is the cheapest privilege
+     * escalation in the product, so it is gated at the level that also gates
+     * granting someone access outright.
+     */
+    auditingDenials(refused, () => authorize(scope, 'environment.update'));
 
     const patch = await parseJsonBody(request, environmentPatchSchema);
     assertSlugImmutable(patch, 'environment');
 
     const previouslyProduction = scope.environment.isProduction;
+
+    /**
+     * Turning the flag *on* is asked again, of the environment as it will be.
+     *
+     * Everything already written against this environment keeps working once
+     * it is production: every grant on it, and every service token pinned to
+     * it — a token's level is its own, and never consults the flag. So a
+     * caller whose authority stops short of production (a custom role's
+     * ceiling of `none` there) could write a colleague `admin` here, or mint
+     * a `write` token, while it is staging, then reclassify it: production
+     * access past a ceiling nobody lifted. Asking `environment.update` with
+     * the flag set asks whether the caller holds `admin` on this environment
+     * *as production* — the most anything written here could then confer.
+     */
+    if (patch.isProduction === true && !previouslyProduction) {
+      auditingDenials(refused, () =>
+        authorize(
+          { ...scope, environment: { ...scope.environment, isProduction: true } },
+          'environment.update',
+        ),
+      );
+    }
 
     const environment = await updateEnvironment(services.db, orgId, scope.environment.id, {
       name: patch.name,
@@ -139,14 +157,10 @@ export const DELETE = authenticatedRoute<Params>(
       environmentId: scope.environment.id,
     };
 
-    try {
-      authorize(scope, 'environment.delete');
-    } catch (cause) {
-      if (cause instanceof AuthorizationError) {
-        record(audit(orgId).denied('environment.deleted', resource, cause.decision));
-      }
-      throw cause;
-    }
+    auditingDenials(
+      (decision) => record(audit(orgId).denied('environment.deleted', resource, decision)),
+      () => authorize(scope, 'environment.delete'),
+    );
 
     const body = await parseJsonBody(request, destructiveRequestSchema);
 

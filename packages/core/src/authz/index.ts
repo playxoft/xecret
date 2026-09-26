@@ -1,4 +1,16 @@
 export {
+  afterRoleChange,
+  capabilitiesGained,
+  grantableAccessLevel,
+  grantReach,
+  grantWithinAuthority,
+  heldGrantsWithinAuthority,
+  reachPoints,
+  removalWithinAuthority,
+  serviceTokenActionsAt,
+} from './authority';
+export type { GrantReach, GridEnvironment, ReachedEnvironment, ReachPoint } from './authority';
+export {
   assertCan,
   AuthorizationError,
   can,

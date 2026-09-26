@@ -269,16 +269,7 @@ export type RequiredAccessLevel = Exclude<AccessLevel, 'none'>;
  */
 export type ActionRequirement =
   | { scope: 'org' }
-  | {
-      scope: 'project';
-      minimum: RequiredAccessLevel;
-      /**
-       * Also require `minimum` at the project's *production* level, and take
-       * the lower of the two. For a project action whose blast radius includes
-       * the project's production environments — see `project.delete` below.
-       */
-      includesProduction?: true;
-    }
+  | { scope: 'project'; minimum: RequiredAccessLevel }
   | { scope: 'environment'; minimum: RequiredAccessLevel };
 
 /**
@@ -294,24 +285,22 @@ export type ActionRequirement =
  * gentler operation, because it can flip `is_production` — and that flag is
  * what makes production deny-by-default for everybody else.
  *
- * `project.delete` is the one project action that `includesProduction`. A
- * project-level question is otherwise asked with production left out (see
- * `can()`), which is right for reading a project or renaming it — but deleting
- * one deletes every environment in it, production included, and a member whose
- * custom role caps them at `none` on production would otherwise do exactly
- * that through the project door. `project.update` edits a name and a
- * description; `environment.create` adds an empty environment and puts nothing
- * that exists at risk. Neither reaches production data, so neither pays the
- * stricter check. For a member without a custom role the production level of a
- * project equals its non-production level wherever `project.delete` is a
- * capability at all — `admin` and `owner` default to `admin` on both — so this
- * changes no decision for them; the tests pin that.
+ * `project.delete` is decided here at the project, with production left out
+ * like every project-level question (see `can()`) — which on its own would be
+ * too little, because deleting a project deletes every environment in it. So
+ * the route deleting one also asks `environment.delete` of each environment the
+ * project holds, and the level each of those resolves to decides: a member
+ * whose custom role caps them at `none` on production, or whom an explicit
+ * `none` keeps off one environment, cannot take that environment out through
+ * the project door. It is asked per environment rather than folded into this
+ * table because a project-wide level cannot see a restriction written against
+ * a single environment.
  */
 export const ACTION_REQUIREMENTS: Record<Action, ActionRequirement> = {
   'project.read': { scope: 'project', minimum: 'read' },
   'project.create': { scope: 'org' },
   'project.update': { scope: 'project', minimum: 'admin' },
-  'project.delete': { scope: 'project', minimum: 'admin', includesProduction: true },
+  'project.delete': { scope: 'project', minimum: 'admin' },
   'environment.read': { scope: 'environment', minimum: 'read' },
   'environment.create': { scope: 'project', minimum: 'write' },
   'environment.update': { scope: 'environment', minimum: 'admin' },
@@ -356,10 +345,18 @@ export const ACTION_REQUIREMENTS: Record<Action, ActionRequirement> = {
  * a production grant it cannot use itself — "only subtracts" true of the
  * holder and false of the organisation. So anything that hands authority out
  * is measured against what the actor actually holds rather than what they rank
- * as: `roleWithinAuthority` for roles, the actor's own resolved level for
- * grants and service tokens (the member and token routes apply it), and
- * `canDefineCustomRole` for definitions. Those are checks, not structure — the
- * part a new route that confers authority has to remember.
+ * as: `roleWithinAuthority` for roles, the functions in `authority.ts` for
+ * grants, reinstatements, capability-widening role changes and service tokens,
+ * and `canDefineCustomRole` for definitions. Those are checks, not structure —
+ * the part a new route that confers authority has to remember.
+ *
+ * Because the ceiling and the action list are part of the role, both kinds of
+ * check see them, and a custom role *contains* its holder: they cannot appoint
+ * anybody, or write anything, past it. An explicit grant on a plain admin is
+ * different — it restricts that admin's own access and bounds what they grant,
+ * mint or unblock directly, but `roleWithinAuthority` measures roles by role,
+ * so it does not stop them appointing another plain admin. Containing a member
+ * manager is what a custom role is for.
  *
  * ── Two built-in roles are in play, and the LOWER one governs ──
  * A member holds a built-in `role` *and*, through the custom role, a
@@ -546,9 +543,15 @@ export function narrowAccessDefaults(
  * that over every pair, so a table edit that broke the nesting would fail the
  * build rather than quietly change who plain admins may appoint.
  *
- * It measures roles, not grants. What an actor may write as an explicit grant —
- * or mint as a service token — is measured against their resolved level on
- * that resource, by the routes that write them.
+ * It measures roles, not grants: the actor's side is their role and custom
+ * role, and explicit grants on the actor play no part. A plain admin whom an
+ * owner held to `read` on production with a grant still passes this for
+ * `admin`, and may appoint a plain admin — the grant restricts their own
+ * access, not their management authority; a custom role's ceiling, which is
+ * part of the role, is what (3) measures and what contains a member manager.
+ * What an actor may write as an explicit grant, unblock by removing one, turn
+ * back on by reinstating a member, or mint as a service token is measured
+ * against their resolved level where it lands — `authority.ts`.
  */
 export function roleWithinAuthority(actor: RoleHolder, subjectRole: OrgRole): boolean {
   if (!canAssignRole(effectiveRole(actor.role, actor.customRole), subjectRole)) return false;
@@ -598,6 +601,10 @@ export function roleWithinAuthority(actor: RoleHolder, subjectRole: OrgRole): bo
  *    member's stored `role`. Assignment only narrows, but unassignment returns
  *    a member to the whole of that role, and so does swapping one custom role
  *    for a wider one.
+ *  - **Any of these that gains the member capabilities** (`capabilitiesGained`
+ *    in `authority.ts`) turns on grant rows the member already holds, and must
+ *    pass `heldGrantsWithinAuthority` over them — as the member route does for
+ *    a built-in role change.
  */
 export function canDefineCustomRole(actor: RoleHolder, baseRole: OrgRole): boolean {
   if (actor.customRole !== undefined) return false;

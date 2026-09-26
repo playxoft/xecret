@@ -60,8 +60,8 @@ export interface Membership {
    * access defaults, and for the rank half of `roleWithinAuthority` — so
    * neither field can raise the other, and this field can only narrow the
    * member who holds it. What that member may confer on *others* is a separate
-   * question, answered by `roleWithinAuthority` and the routes' level checks;
-   * see `CustomRole` in `roles.ts`.
+   * question, answered by `roleWithinAuthority` and `authority.ts`; see
+   * `CustomRole` in `roles.ts`.
    */
   customRole?: CustomRole | undefined;
   /**

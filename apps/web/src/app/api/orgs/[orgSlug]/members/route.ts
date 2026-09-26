@@ -1,4 +1,5 @@
 import { AuthorizationError } from '@xecret/core/authz';
+import type { Denial } from '@xecret/core/authz';
 import {
   createInvitation,
   listEnvironmentsForOrganization,
@@ -25,7 +26,7 @@ import { authenticatedRoute } from '@/server/route';
 import { decodePublicKey } from '@/server/schemas/env-keys';
 import { memberInviteSchema, toInvitation, toMember, toSeats } from '@/server/schemas/members';
 import { listQuery } from '@/server/schemas/secrets';
-import { authorize, resolveOrg } from '@/server/tenancy';
+import { auditingDenials, authorize, resolveOrg } from '@/server/tenancy';
 
 /**
  * Who is in this organisation — and the door new people come through.
@@ -128,22 +129,28 @@ export const POST = authenticatedRoute<Params>(
     // one noisy tenant must not spend the sending reputation of all of them.
     await enforce(services.env, 'RL_INVITE', rateLimitKey([orgId]));
 
-    try {
-      authorize(scope, 'member.invite');
-    } catch (cause) {
-      if (cause instanceof AuthorizationError) {
-        record(
-          audit(orgId).denied('member.invited', { type: 'invitation', id: null }, cause.decision),
-        );
-      }
-      throw cause;
-    }
+    auditingDenials(
+      (decision) =>
+        record(audit(orgId).denied('member.invited', { type: 'invitation', id: null }, decision)),
+      () => authorize(scope, 'member.invite'),
+    );
 
     const inviter = requireSessionPrincipal(principal);
     const membership = requireMembership(scope);
 
     const body = await parseJsonBody(request, memberInviteSchema);
-    assertRoleAuthority(membership, body.role);
+
+    // A refusal past this point is the inviter reaching beyond their own
+    // authority, and is filed as such — naming who, and as what.
+    const refused = (decision: Denial): void =>
+      record(
+        audit(orgId).denied('member.invited', { type: 'invitation', id: null }, decision, {
+          targetEmail: body.email,
+          newRole: body.role,
+        }),
+      );
+
+    auditingDenials(refused, () => assertRoleAuthority(membership, body.role));
 
     // Resolved to ids now, while the inviter is present to fix a bad slug.
     // Present-but-empty is meaningful: it makes the membership deny-by-default
@@ -156,11 +163,9 @@ export const POST = authenticatedRoute<Params>(
     // The same limit as a grant written directly: an invitation is a grant
     // with a delay, and acceptance writes these rows without asking anybody.
     if (initialGrants !== undefined && initialGrants.length > 0) {
-      assertInvitationGrantsWithinAuthority(
-        membership,
-        body.role,
-        initialGrants,
-        await listEnvironmentsForOrganization(services.db, orgId),
+      const grid = await listEnvironmentsForOrganization(services.db, orgId);
+      auditingDenials(refused, () =>
+        assertInvitationGrantsWithinAuthority(membership, body.role, initialGrants, grid),
       );
     }
 

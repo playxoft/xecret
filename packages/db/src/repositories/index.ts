@@ -169,6 +169,7 @@ export type {
   MemberStatus,
   OwnershipChange,
   RemoveAccessGrantParams,
+  RoleChangeResult,
   UpdateMemberRoleParams,
   WrittenMemberRecord,
 } from './membership';

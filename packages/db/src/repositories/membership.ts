@@ -40,30 +40,36 @@ export interface MemberRecord {
   role: OrgRole;
   status: MemberStatus;
   /**
-   * The organisation's narrowing of `role`, resolved from the joined row.
-   * Absent means the member holds none.
+   * The organisation's narrowing of `role`, resolved from the joined row, or
+   * `undefined` when the member holds none.
    *
    * Carried here rather than left as six loose columns so that one function —
    * `toCustomRole`, which every joined read reaches through `toMemberRecord` —
    * is all that knows how the join maps onto the shape `can()` reads, and
    * every caller gets the same answer.
    *
+   * ── Required, even though it may be `undefined` ──
    * Only a joined read can say "none", so only a joined read returns this
-   * type. A write's result is a `WrittenMemberRecord`, which has no such field.
+   * type. A write's result is a `WrittenMemberRecord`, which lacks the key
+   * because `RETURNING` cannot load it. Were the key optional, that record
+   * would pass for this one wherever it was assigned, widened or spread, and
+   * its "never loaded" would read as "holds none" — a narrowed member handed
+   * on unnarrowed. Required, a record without it is not a `MemberRecord` by
+   * any route, and whoever builds one by hand has to write down what the
+   * member holds, even when the answer is `undefined`.
    */
-  customRole?: CustomRole | undefined;
+  customRole: CustomRole | undefined;
 }
 
 /**
  * A member as a write returns it: `org_members` alone, with no `customRole`.
  *
- * Not a `MemberRecord`, on purpose. On a `MemberRecord` an absent `customRole`
- * means "holds none", and `toAuthorizationContext` reads it that way. A write's
- * `RETURNING` cannot name `custom_roles`, so here the field is absent because
- * it was never loaded — and a record that passed for the other kind would hand
- * a narrowed member on unnarrowed. `toAuthorizationContext` refuses this type
- * at compile time; read `findMembership` or `findMemberWithUser` when the
- * narrowing matters.
+ * Not a `MemberRecord`, on purpose: its missing `customRole` means "not
+ * loaded", where a `MemberRecord`'s `undefined` means "holds none". A write's
+ * `RETURNING` cannot name `custom_roles`, so this is all a write can know.
+ * Nothing that takes a `MemberRecord` — `toAuthorizationContext` included —
+ * accepts it; read `findMembership` or `findMemberWithUser` when the narrowing
+ * matters.
  */
 export type WrittenMemberRecord = Omit<MemberRecord, 'customRole'>;
 
@@ -92,12 +98,16 @@ export interface AuthorizationContext {
   role: OrgRole;
   status: MemberStatus;
   /**
-   * The organisation's own narrowing of `role`, when the member holds one.
+   * The organisation's own narrowing of `role`, or `undefined` when the member
+   * holds none — which is almost everybody. `role` stays authoritative either
+   * way: this only ever subtracts from it.
    *
-   * Absent for almost everybody. `role` stays authoritative either way — this
-   * only ever subtracts from it.
+   * Required for the reason `MemberRecord.customRole` is. A context assembled
+   * by hand has to say which, and a `Pick` of this type — what a role-authority
+   * check takes — refuses a `WrittenMemberRecord`, which would otherwise pass
+   * as a member who holds none.
    */
-  customRole?: CustomRole | undefined;
+  customRole: CustomRole | undefined;
   grants: MemberGrant[];
 }
 
@@ -217,10 +227,11 @@ function customRoleJoin() {
 /**
  * The name an unresolved reference carries.
  *
- * Nothing serialises a custom role's name today — the roster payload carries
- * the built-in role only. This is so that whatever first does shows a row the
- * join could not resolve as exactly that, rather than as a blank or as a role
- * the member does not hold.
+ * The roster payload carries the built-in role only; where a custom role's name
+ * does leave this module is the `member.role_changed` audit record, as the role
+ * a promotion to owner cleared (`RoleChangeResult.clearedCustomRole`). A
+ * reference the join could not resolve reaches that record as exactly this,
+ * rather than as a blank or as a role the member does not hold.
  */
 const UNRESOLVED_CUSTOM_ROLE_NAME = 'Unresolved custom role';
 
@@ -243,9 +254,10 @@ const UNRESOLVED_CUSTOM_ROLE_NAME = 'Unresolved custom role';
  * until somebody repairs the row on purpose.
  *
  * `viewer` rather than the member's stored `role`, because `effectiveRole` is
- * read for more than the capability table — the access defaults too, and the
- * actor's side of `canAssignRole`. Every one of those should see the minimum
- * for a row nobody can vouch for, not whatever the member was before.
+ * read for more than the capability table — the access defaults too, and
+ * `roleWithinAuthority`'s measure of which roles the member may hand out.
+ * Every one of those should see the minimum for a row nobody can vouch for,
+ * not whatever the member was before.
  *
  * Nothing is logged here. This package has no logger at the repository layer
  * and does not invent one for a state the schema forbids; the member finding
@@ -294,19 +306,19 @@ function toCustomRole(row: JoinedMemberRow): CustomRole | undefined {
 /**
  * One joined row, as the rest of this module wants it.
  *
- * The only place the loose `customRole*` columns are read. Everything that
- * leaves this module carries `customRole` or nothing, so the columns cannot
- * reach a caller — or a response body built from one.
+ * The only place the loose `customRole*` columns are read. What leaves this
+ * module carries the resolved `customRole` — or, from `updateMemberRole`, the
+ * id and name of the one it cleared, taken from the same — so the columns
+ * cannot reach a caller, or a response body built from one.
  */
 function toMemberRecord(row: JoinedMemberRow): MemberRecord {
-  const customRole = toCustomRole(row);
   return {
     id: row.id,
     orgId: row.orgId,
     userId: row.userId,
     role: row.role,
     status: row.status,
-    ...(customRole ? { customRole } : {}),
+    customRole: toCustomRole(row),
   };
 }
 
@@ -470,22 +482,15 @@ export async function lockOrganization(tx: Executor, orgId: string): Promise<voi
 }
 
 /**
- * `M` when it is a record a joined read produced, `never` when it is a write's
- * result — told apart by whether the type declares `customRole` at all, since
- * TypeScript would otherwise accept a `WrittenMemberRecord` wherever a
- * `MemberRecord` is asked for (the field is optional there).
- */
-type JoinedMemberRecord<M> = 'customRole' extends keyof M ? M : never;
-
-/**
  * Pure row-to-context mapping, so the shape can be tested without a database.
  *
- * Takes only a record from a joined read. A `WrittenMemberRecord` does not
- * compile here: its missing `customRole` means "not loaded", and read by this
- * function it would mean "none" — a narrowed member's context, built unnarrowed.
+ * Takes a `MemberRecord`, which only a joined read produces. A
+ * `WrittenMemberRecord` does not compile here — `MemberRecord.customRole` is
+ * required — because its missing field means "not loaded", and read by this
+ * function it would mean "none": a narrowed member's context, built unnarrowed.
  */
-export function toAuthorizationContext<M extends MemberRecord>(
-  member: M & JoinedMemberRecord<M>,
+export function toAuthorizationContext(
+  member: MemberRecord,
   grants: MemberGrant[],
 ): AuthorizationContext {
   return {
@@ -494,7 +499,7 @@ export function toAuthorizationContext<M extends MemberRecord>(
     memberId: member.id,
     role: member.role,
     status: member.status,
-    ...(member.customRole ? { customRole: member.customRole } : {}),
+    customRole: member.customRole,
     grants,
   };
 }
@@ -593,6 +598,21 @@ export interface UpdateMemberRoleParams {
   role: OrgRole;
 }
 
+/** What `updateMemberRole` wrote, and the narrowing the write dropped. */
+export interface RoleChangeResult extends WrittenMemberRecord {
+  /**
+   * The custom role this change cleared, or `null` when it cleared none.
+   *
+   * Set only by a promotion to owner of a member who held one — the one role
+   * change that drops a narrowing. Read inside the write's transaction, with
+   * the member's row locked, so it names what the UPDATE removed rather than
+   * what some earlier read last saw. A reference the join could not resolve
+   * comes back under `UNRESOLVED_CUSTOM_ROLE_NAME`, as every joined read
+   * reports it.
+   */
+  clearedCustomRole: { id: string; name: string } | null;
+}
+
 /**
  * Changes a member's role, refusing to demote the last active owner.
  *
@@ -604,10 +624,15 @@ export interface UpdateMemberRoleParams {
  * foreign key's `ON DELETE NO ACTION` refuses to do when a role is deleted, and
  * it is right here for three reasons. Promotion to owner is itself the widest
  * change there is, so the narrowing it drops is subsumed by the act rather than
- * lost to it. Only an owner can make it (`canAssignRole`), and an owner is
- * never narrowed themselves. And it is already an audited `member.role_changed`
- * naming the new role — a deliberate act by somebody entitled to it, not a
+ * lost to it. Only an owner can make it (`roleWithinAuthority`), and an owner
+ * is never narrowed themselves. And it is already an audited
+ * `member.role_changed` — a deliberate act by somebody entitled to it, not a
  * widening that happened as a side effect of tidying.
+ *
+ * That record should name what was dropped as well as the new role, so the
+ * result says: `clearedCustomRole`. The rule for when a promotion clears one
+ * is stated once, here, and the answer is read under the same lock as the
+ * write — one extra read, and only on a promotion to owner.
  *
  * Any other role leaves `custom_role_id` exactly as it was.
  *
@@ -621,23 +646,31 @@ export interface UpdateMemberRoleParams {
 export async function updateMemberRole(
   exec: Executor,
   params: UpdateMemberRoleParams,
-): Promise<WrittenMemberRecord> {
+): Promise<RoleChangeResult> {
   return exec.transaction(async (tx) => {
     const member = await lockOrgAndLoadMember(tx, params.orgId, params.memberId);
     await assertOwnershipSurvives(tx, member, { role: params.role, status: member.status });
+
+    const clearsCustomRole = params.role === 'owner';
+    const cleared = clearsCustomRole
+      ? await lockMemberCustomRole(tx, params.orgId, params.memberId)
+      : undefined;
 
     const [row] = await tx
       .update(orgMembers)
       .set({
         role: params.role,
-        ...(params.role === 'owner' ? { customRoleId: null } : {}),
+        ...(clearsCustomRole ? { customRoleId: null } : {}),
         updatedAt: new Date(),
       })
       .where(and(eq(orgMembers.id, params.memberId), eq(orgMembers.orgId, params.orgId)))
       .returning(MEMBER_COLUMNS);
 
     if (!row) throw new RepositoryError('notFound', 'Member not found in this organisation.');
-    return row;
+    return {
+      ...row,
+      clearedCustomRole: cleared ? { id: cleared.id, name: cleared.name } : null,
+    };
   });
 }
 
@@ -1000,6 +1033,8 @@ export function membersPageQuery(exec: Executor, orgId: string, page: number, pa
  * `org_members_owner_custom_role_check` keeps a custom role off every owner —
  * a stored owner is an effective one. Hence a `WrittenMemberRecord`: the row
  * says nothing about a narrowing, and must not be mistaken for a read that does.
+ * The one write that needs the narrowing — a promotion to owner, which clears
+ * it — reads it separately, through `lockMemberCustomRole`.
  */
 async function lockOrgAndLoadMember(
   tx: Executor,
@@ -1016,6 +1051,39 @@ async function lockOrgAndLoadMember(
   if (!member) throw new RepositoryError('notFound', 'Member not found in this organisation.');
 
   return member;
+}
+
+/**
+ * The custom role a member holds, read inside a write that is about to change
+ * it, or `undefined` when they hold none.
+ *
+ * Through the same join and the same mapper as every other joined read, so an
+ * unresolved reference comes back as `toCustomRole` reports it. Must run after
+ * `lockOrgAndLoadMember`, in the same transaction.
+ *
+ * `FOR NO KEY UPDATE OF org_members` is the lock the following UPDATE takes on
+ * the row anyway, taken one statement earlier — so it adds no contention the
+ * write did not already cause. The organisation lock serialises every write in
+ * this module; the row lock keeps "the role the UPDATE cleared" true against a
+ * writer of `custom_role_id` that does not take it. `OF org_members`, because
+ * the nullable side of a LEFT JOIN cannot be locked, and nothing in
+ * `custom_roles` needs to be.
+ */
+async function lockMemberCustomRole(
+  tx: Executor,
+  orgId: string,
+  memberId: string,
+): Promise<CustomRole | undefined> {
+  const [row] = await tx
+    .select(JOINED_MEMBER_COLUMNS)
+    .from(orgMembers)
+    .leftJoin(customRoles, customRoleJoin())
+    .where(and(eq(orgMembers.id, memberId), eq(orgMembers.orgId, orgId)))
+    .limit(1)
+    .for('no key update', { of: orgMembers });
+  if (!row) throw new RepositoryError('notFound', 'Member not found in this organisation.');
+
+  return toMemberRecord(row).customRole;
 }
 
 /**

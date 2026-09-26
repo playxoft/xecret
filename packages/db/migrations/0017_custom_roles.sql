@@ -7,9 +7,14 @@
 -- never through the custom row alone (`effectiveRole` and
 -- `effectiveCapabilities` in @xecret/core/authz). There is therefore no row
 -- here — malformed, hand-edited, or written by somebody who reached the
--- database — that grants a capability the member's own role does not already
--- hold. Escalation through this table is unreachable, rather than prevented by
+-- database — that gives the member holding it a capability their own role does
+-- not already hold. That escalation is unreachable, rather than prevented by
 -- validation that could be bypassed.
+--
+-- It is a claim about the holder alone. What a narrowed member may hand *out* —
+-- a role, a grant, a token — is not settled by this table's shape; the
+-- application measures it against what they actually hold
+-- (`roleWithinAuthority` in @xecret/core/authz, and the checks beside it).
 --
 -- That is the same one-way shape as `limit_overrides` on `org_subscriptions`,
 -- chosen for the same reason: a mechanism with a single direction has no bugs

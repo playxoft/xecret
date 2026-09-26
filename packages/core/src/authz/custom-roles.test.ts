@@ -760,8 +760,8 @@ describe('roleWithinAuthority', () => {
 });
 
 /* ───────────────────────────────────────────────────────────────────────────
- * Project scope: evaluated without production — except where the action
- * reaches production anyway.
+ * Project scope: evaluated without production. An action that reaches the
+ * project's environments asks each of them as well, at the route.
  * ─────────────────────────────────────────────────────────────────────────── */
 describe('the ceiling at project scope', () => {
   function projectContext(over: Partial<Membership> & { customRole?: CustomRole | undefined }): {
@@ -818,72 +818,57 @@ describe('the ceiling at project scope', () => {
   });
 });
 
-describe('project.delete answers for the production inside the project', () => {
-  it('is the only action that includes production at project scope', () => {
-    const including = ALL_ACTIONS.filter((action) => {
-      const requirement = ACTION_REQUIREMENTS[action];
-      return requirement.scope === 'project' && requirement.includesProduction === true;
+describe('project.delete at the project, and the environments it takes with it', () => {
+  const productionCapped = customRole({
+    baseRole: 'admin',
+    allowedActions: ALL_ACTIONS,
+    accessCeiling: { nonProduction: 'admin', production: 'none' },
+  });
+
+  it('is decided at the project like every project action, with production left out', () => {
+    // The project-level question cannot see production, and is not asked to.
+    // What stops a production-capped member deleting production through the
+    // project is the route asking `environment.delete` of each environment the
+    // project holds — pinned at the engine by the next test.
+    const capped = membership({ role: 'admin', customRole: productionCapped });
+
+    expect(
+      can(actor(), 'project.delete', project(), { membership: capped, isProduction: false })
+        .allowed,
+    ).toBe(true);
+  });
+
+  it('leaves environment.delete to refuse each environment the member cannot reach', () => {
+    const capped = membership({ role: 'admin', customRole: productionCapped });
+
+    expect(
+      can(actor(), 'environment.delete', environment(), { membership: capped, isProduction: true })
+        .allowed,
+    ).toBe(false);
+    expect(
+      can(actor(), 'environment.delete', environment(), { membership: capped, isProduction: false })
+        .allowed,
+    ).toBe(true);
+
+    // An explicit `none` on one environment, on a plain admin: invisible to any
+    // project-wide level, refused by the environment's own.
+    const keptOff = membership({
+      role: 'admin',
+      grants: [{ projectId: PROJECT_ID, environmentId: ENV_ID, accessLevel: 'none' }],
     });
-
-    expect(including).toEqual(['project.delete']);
+    expect(
+      can(actor(), 'project.delete', project(), { membership: keptOff, isProduction: false })
+        .allowed,
+    ).toBe(true);
+    expect(
+      can(actor(), 'environment.delete', environment(), { membership: keptOff, isProduction: true })
+        .allowed,
+    ).toBe(false);
   });
 
-  it('is refused to a member capped at none on production', () => {
-    // The finding: without this, deleting the project was the way round a
-    // production ceiling of `none` — it deletes every environment in it.
-    const decision = can(actor(), 'project.delete', project(), {
-      membership: membership({
-        role: 'admin',
-        customRole: customRole({
-          baseRole: 'admin',
-          allowedActions: ALL_ACTIONS,
-          accessCeiling: { nonProduction: 'admin', production: 'none' },
-        }),
-      }),
-      isProduction: false,
-    });
-
-    expect(decision.allowed).toBe(false);
-  });
-
-  it('caps a project grant at the production ceiling for this action alone', () => {
-    const context = {
-      membership: membership({
-        role: 'admin',
-        customRole: customRole({
-          baseRole: 'admin',
-          allowedActions: ALL_ACTIONS,
-          accessCeiling: { nonProduction: 'admin', production: 'write' },
-        }),
-        grants: [{ projectId: PROJECT_ID, environmentId: null, accessLevel: 'admin' as const }],
-      }),
-      isProduction: false,
-    };
-
-    expect(can(actor(), 'project.delete', project(), context).allowed).toBe(false);
-    expect(can(actor(), 'project.update', project(), context).allowed).toBe(true);
-  });
-
-  it('is allowed where the production ceiling permits admin', () => {
-    const decision = can(actor(), 'project.delete', project(), {
-      membership: membership({
-        role: 'admin',
-        customRole: customRole({
-          baseRole: 'admin',
-          allowedActions: ALL_ACTIONS,
-          accessCeiling: { nonProduction: 'admin', production: 'admin' },
-        }),
-      }),
-      isProduction: false,
-    });
-
-    expect(decision.allowed).toBe(true);
-  });
-
-  it('changes no decision for a member without a custom role', () => {
+  it('decides every project action by capability and the non-production project level', () => {
     // Exhaustive over roles × {no grant, every project-grant level} × every
-    // project-scoped action, against the rule as it stood before: capability,
-    // then the project level with production left out.
+    // project-scoped action: nothing at project scope consults production.
     const projectActions = ALL_ACTIONS.filter(
       (action) => ACTION_REQUIREMENTS[action].scope === 'project',
     );
@@ -902,7 +887,7 @@ describe('project.delete answers for the production inside the project', () => {
           const requirement = ACTION_REQUIREMENTS[action];
           if (requirement.scope !== 'project') continue;
 
-          const before =
+          const expected =
             ROLE_CAPABILITIES[role][action] &&
             compareAccessLevel(
               resolveAccessLevel({ ...plain, isProduction: false }, PROJECT_ID, null),
@@ -912,7 +897,7 @@ describe('project.delete answers for the production inside the project', () => {
           expect(
             can(actor(), action, project(), { membership: plain, isProduction: false }).allowed,
             `${role}, project grant ${granted ?? '(none written)'}, ${action}`,
-          ).toBe(before);
+          ).toBe(expected);
         }
       }
     }

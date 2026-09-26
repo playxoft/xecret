@@ -1,8 +1,9 @@
-import { assertCan } from '@xecret/core/authz';
+import { assertCan, AuthorizationError } from '@xecret/core/authz';
 import type {
   AccessLevel,
   Action,
   Actor,
+  Denial,
   Membership,
   Resource,
   ResolvedGrant,
@@ -276,37 +277,88 @@ export function authorize(
 }
 
 /**
- * Adapts the storage layer's context to the policy layer's.
+ * Runs authorization checks, filing a refusal as a `denied` audit record.
  *
- * The two are declared independently on purpose — `@xecret/db` does not import
- * the authorization types, and `@xecret/core/authz` does not know what a table
- * looks like. This function is the seam, and it is the only place the two
- * vocabularies meet.
+ * A refusal from `authorize()` and one from an authority check in
+ * `members-service.ts` both arrive as an `AuthorizationError`; whichever it
+ * is, `file` is called once with its decision and the error propagates to
+ * become the response. Anything else passes through untouched — a lookup that
+ * fails is not a denial.
+ *
+ * The point is the trail. A burst of `denied` records is how probing shows up
+ * in the audit log, and a check that refused without filing one — "grant
+ * production `write`", "reinstate the member who holds it", tried in turn by
+ * somebody capped below it — would let the probing happen in silence. Routes
+ * put every check that can refuse *above the caller's authority* inside one of
+ * these, with `file` naming the action that was attempted.
+ */
+export function auditingDenials(file: (decision: Denial) => void, checks: () => void): void {
+  try {
+    checks();
+  } catch (cause) {
+    if (cause instanceof AuthorizationError) file(cause.decision);
+    throw cause;
+  }
+}
+
+/**
+ * The part of a stored member the policy layer reads — carried the same way by
+ * the caller's own context and by any other member's record.
+ *
+ * `customRole` is a required key, as it is on the repository's types: a
+ * record that never loaded it — a write's `RETURNING` — must not pass for one
+ * whose member holds none. Write `customRole: undefined` to say "none".
+ */
+export type StoredRoleAndStatus = Pick<
+  StoredAuthorizationContext,
+  'role' | 'status' | 'customRole'
+>;
+
+/**
+ * Adapts a stored member and their grant rows to the policy layer's
+ * `Membership`.
+ *
+ * The two vocabularies are declared independently on purpose — `@xecret/db`
+ * does not import the authorization types, and `@xecret/core/authz` does not
+ * know what a table looks like. This function and `toGrantContext`, which is
+ * this over the caller's own context, are the seam: every `Membership` built
+ * from stored rows is built here — the caller's for `can()`, and a target
+ * member's for the authority checks and the effective-access preview.
  *
  * ── Everything that narrows must cross ──
  * Every request-time decision — `authorize()`, the CLI token routes, the
  * key-grant checks in `env-keys-service.ts`, the key reconciliation in
- * `member-keys.ts` — reaches `can()` through here. A field dropped at this
- * seam is not a missing feature, it is a missing restriction: a custom role
- * that never arrives is a member resolved as their unnarrowed built-in role,
- * with every capability and every level the organisation meant to take away.
+ * `member-keys.ts` — reaches `can()` through here, and every measure of one
+ * member against another in `members-service.ts` does too. A field dropped at
+ * this seam is not a missing feature, it is a missing restriction: a custom
+ * role that never arrives is a member resolved as their unnarrowed built-in
+ * role, with every capability and every level the organisation meant to take
+ * away.
  */
-export function toGrantContext(stored: StoredAuthorizationContext): Membership {
-  const grants: ResolvedGrant[] = stored.grants.map((grant) => ({
-    projectId: grant.projectId,
-    environmentId: grant.environmentId,
-    accessLevel: grant.accessLevel,
-  }));
-
+export function toMembership(
+  member: StoredRoleAndStatus,
+  grants: readonly Pick<ResolvedGrant, 'projectId' | 'environmentId' | 'accessLevel'>[],
+): Membership {
   // `isProduction` is deliberately not part of this mapping: it is a property of
   // the environment being asked about, not of the member, and `can()` takes it
   // separately so it cannot be carried around stale on a membership object.
   return {
-    role: stored.role,
-    memberStatus: stored.status,
+    role: member.role,
+    memberStatus: member.status,
     // Spread only when present, so a member without one maps to exactly the
     // shape it always did.
-    ...(stored.customRole === undefined ? {} : { customRole: stored.customRole }),
-    grants,
+    ...(member.customRole === undefined ? {} : { customRole: member.customRole }),
+    // Copied field by field, so a storage row's extra columns (its id) never
+    // travel into the policy layer.
+    grants: grants.map((grant) => ({
+      projectId: grant.projectId,
+      environmentId: grant.environmentId,
+      accessLevel: grant.accessLevel,
+    })),
   };
+}
+
+/** The caller's own stored context, as the policy layer's `Membership`. */
+export function toGrantContext(stored: StoredAuthorizationContext): Membership {
+  return toMembership(stored, stored.grants);
 }

@@ -18,15 +18,21 @@ import { organizations } from './tenancy';
  * also says why it stops there rather than at Team). Nothing in this table
  * enforces the plan: the entitlement gate belongs to whatever writes it.
  *
- * ── A custom role only ever subtracts ──
+ * ── For the member holding it, a custom role only ever subtracts ──
  * Every row names a `base_role`, and a member holding it is resolved through
  * their effective role — the lower of their own `role` and this `base_role` —
  * ANDed with the row's action list, never through the custom row alone
  * (`effectiveRole` and `effectiveCapabilities` in `@xecret/core/authz`). So no
  * row in this table — malformed, hand-edited, or written by an attacker who
- * reached the database — can grant a member a capability their own role does
- * not already hold. Escalation through this table is unreachable rather than
+ * reached the database — can give the member holding it a capability their own
+ * role does not already hold. That escalation is unreachable rather than
  * validated against, which is the only version of that claim worth making.
+ *
+ * It is a claim about the holder alone. What a narrowed member may hand *out*
+ * — a role, a grant, a token — is not settled by this table's shape: it is
+ * measured against what they actually hold, by `roleWithinAuthority` and the
+ * checks `CustomRole` in `@xecret/core/authz` lists beside it. Those are
+ * checks, not structure.
  *
  * It is the same one-way shape as `limitOverrides` on `org_subscriptions`: a
  * mechanism with a single direction has no bugs in the other one.

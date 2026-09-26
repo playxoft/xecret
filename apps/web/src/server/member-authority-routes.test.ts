@@ -7,12 +7,18 @@ import { createLogger } from './logging';
 import type { RequestLog } from './logging';
 
 /**
- * You can't hand out what you don't hold — at the four doors authority leaves
- * by: an invitation, a role change, an explicit grant, and a service token.
+ * You can't hand out what you don't hold — at every door authority leaves by:
+ * an invitation, a role change, a reinstatement, an explicit grant written or
+ * removed, a service token, an environment reclassified as production, and a
+ * project deleted around environments the caller could not delete.
+ *
+ * Every refusal here is also filed as exactly one `denied` audit record of the
+ * change attempted — a caller probing past their authority leaves the same
+ * trail as one probing past their role.
  *
  * ── Why the handlers are invoked for real ──
- * The predicates are tested where they are pure (`members.test.ts`, and
- * `custom-roles.test.ts` in core). What can only be tested here is that each
+ * The predicates are tested where they are pure (`authority.test.ts` and
+ * `custom-roles.test.ts` in core, the wrappers in `members.test.ts`). What can only be tested here is that each
  * route *asks* them — with the caller's whole membership, against the right
  * environment, before anything is written. A route that measured the caller by
  * rank, or skipped the level check on a project-wide grant, would pass every
@@ -59,6 +65,11 @@ const repositories = vi.hoisted(() => ({
   listGrantsForMember: vi.fn(),
   upsertAccessGrant: vi.fn(),
   updateMemberRole: vi.fn(),
+  reinstateMember: vi.fn(),
+  suspendMember: vi.fn(),
+  removeMember: vi.fn(),
+  updateEnvironment: vi.fn(),
+  softDeleteProject: vi.fn(),
   createInvitation: vi.fn(),
   setInvitationPublicKey: vi.fn(),
   createServiceToken: vi.fn(),
@@ -90,12 +101,16 @@ vi.mock('@xecret/db/repositories', async (importOriginal) => ({
 }));
 
 const { POST: inviteRoute } = await import('@/app/api/orgs/[orgSlug]/members/route');
-const { PATCH: patchMemberRoute } =
+const { PATCH: patchMemberRoute, DELETE: removeMemberRoute } =
   await import('@/app/api/orgs/[orgSlug]/members/[memberId]/route');
 const { PUT: putGrantRoute, DELETE: deleteGrantRoute } =
   await import('@/app/api/orgs/[orgSlug]/members/[memberId]/grants/route');
 const { POST: mintServiceTokenRoute } =
   await import('@/app/api/orgs/[orgSlug]/tokens/service/route');
+const { PATCH: patchEnvironmentRoute } =
+  await import('@/app/api/orgs/[orgSlug]/projects/[projectSlug]/environments/[envSlug]/route');
+const { DELETE: deleteProjectRoute } =
+  await import('@/app/api/orgs/[orgSlug]/projects/[projectSlug]/route');
 
 const ORG_ID = uuidv7();
 const PROJECT_ID = uuidv7();
@@ -167,7 +182,7 @@ function callerIs(caller: Caller): void {
     memberId: ACTOR_MEMBER_ID,
     role: caller.role,
     status: 'active',
-    ...(caller.customRole === undefined ? {} : { customRole: caller.customRole }),
+    customRole: caller.customRole,
     grants: (caller.grants ?? []).map((grant) => ({ id: uuidv7(), ...grant })),
   });
 }
@@ -206,14 +221,14 @@ function environmentRow(id: string, slug: string, isProduction: boolean) {
 const staging = environmentRow(STAGING_ID, 'staging', false);
 const production = environmentRow(PRODUCTION_ID, 'production', true);
 
-function target(role: Role, held?: CustomRole) {
+function target(role: Role, held?: CustomRole, status: 'active' | 'suspended' = 'active') {
   return {
     id: TARGET_MEMBER_ID,
     orgId: ORG_ID,
     userId: TARGET_USER_ID,
     role,
-    status: 'active' as const,
-    ...(held === undefined ? {} : { customRole: held }),
+    status,
+    customRole: held,
     seatAssigned: true,
     createdAt: EPOCH,
     user: {
@@ -270,6 +285,11 @@ function jsonRequest(method: string, path: string, body: unknown): Request {
 
 async function errorOf(response: Response): Promise<{ code: string; message: string }> {
   return ((await response.json()) as { error: { code: string; message: string } }).error;
+}
+
+/** The `denied` audit records the request filed, once its deferred work has run. */
+async function denials(): Promise<AuditRecord[]> {
+  return (await recorded()).filter((record) => record.outcome === 'denied');
 }
 
 beforeEach(() => {
@@ -379,8 +399,35 @@ beforeEach(() => {
       userId: TARGET_USER_ID,
       role: params.role,
       status: 'active',
+      clearedCustomRole: null,
     }),
   );
+  for (const [write, status] of [
+    [repositories.reinstateMember, 'active'],
+    [repositories.suspendMember, 'suspended'],
+  ] as const) {
+    write.mockResolvedValue({
+      id: TARGET_MEMBER_ID,
+      orgId: ORG_ID,
+      userId: TARGET_USER_ID,
+      role: 'developer',
+      status,
+    });
+  }
+  repositories.removeMember.mockResolvedValue(undefined);
+  repositories.updateEnvironment.mockImplementation(
+    async (
+      _db: unknown,
+      _orgId: string,
+      id: string,
+      patch: { name?: string; isProduction?: boolean },
+    ) => ({
+      ...(id === PRODUCTION_ID ? production : staging),
+      ...(patch.name === undefined ? {} : { name: patch.name }),
+      ...(patch.isProduction === undefined ? {} : { isProduction: patch.isProduction }),
+    }),
+  );
+  repositories.softDeleteProject.mockResolvedValue(project);
   repositories.createInvitation.mockImplementation(
     async (_db: unknown, params: { email: string; role: Role }) => ({
       token: 'invitation-token',
@@ -580,7 +627,10 @@ describe('PATCH /members/{id} — a role change confers no more than the caller 
 
   it('changes nothing for a plain admin, explicit restrictions and all', async () => {
     // Roles are measured by role: an explicit grant on the caller limits the
-    // grants they write, not whom they may appoint.
+    // grants they write, mint or unblock, not whom they may appoint — it
+    // restricts this admin's own access and does not contain their management
+    // authority. A custom role's ceiling does (the production-capped admin
+    // above is refused this same promotion).
     callerIs(RESTRICTED_ADMIN);
 
     const response = await patch({ role: 'admin' });
@@ -603,8 +653,23 @@ describe('PATCH /members/{id} — the custom role a promotion to owner drops', (
     return (await recorded()).find((record) => record.action === 'member.role_changed');
   }
 
-  it('names it in the audit record, since the repository clears it in the same write', async () => {
+  /** The repository's answer for a promotion that cleared `cleared`. */
+  function clearing(cleared: CustomRole): void {
+    repositories.updateMemberRole.mockImplementation(
+      async (_db: unknown, params: { role: Role }) => ({
+        id: TARGET_MEMBER_ID,
+        orgId: ORG_ID,
+        userId: TARGET_USER_ID,
+        role: params.role,
+        status: 'active',
+        clearedCustomRole: { id: cleared.id, name: cleared.name },
+      }),
+    );
+  }
+
+  it('names it in the audit metadata, as the repository reports clearing it', async () => {
     repositories.findMemberWithUser.mockResolvedValue(target('developer', deployer));
+    clearing(deployer);
 
     const response = await patch({ role: 'owner' });
 
@@ -614,6 +679,21 @@ describe('PATCH /members/{id} — the custom role a promotion to owner drops', (
       newRole: 'owner',
       previousCustomRoleId: deployer.id,
       previousCustomRoleName: 'Deployer',
+    });
+  });
+
+  it('names the role the write cleared, not the one an earlier read saw', async () => {
+    // The route read `Deployer`; by the time the locked write ran, the member
+    // held `Release manager`. The record must say what was actually dropped.
+    const replacement = customRole({ name: 'Release manager', baseRole: 'developer' });
+    repositories.findMemberWithUser.mockResolvedValue(target('developer', deployer));
+    clearing(replacement);
+
+    await patch({ role: 'owner' });
+
+    expect((await roleChange())?.metadata).toMatchObject({
+      previousCustomRoleId: replacement.id,
+      previousCustomRoleName: 'Release manager',
     });
   });
 
@@ -738,7 +818,7 @@ describe('PUT /members/{id}/grants — a grant confers no more than the caller h
   });
 });
 
-/* ── Service tokens ───────────────────────────────────────────────────────── */
+/* ── Removing a grant ─────────────────────────────────────────────────────── */
 
 describe('DELETE /members/{id}/grants — a removal confers no more than the caller holds', () => {
   function remove(body: Record<string, unknown>): Promise<Response> {
@@ -862,13 +942,14 @@ describe('/members/{id}/grants on yourself — owners only', () => {
   });
 
   it('refuses a restricted admin writing a wider grant over their own restriction', async () => {
+    // `write` over the `read` the owner left them.
     callerIs(RESTRICTED_ADMIN);
     repositories.findMemberWithUser.mockResolvedValue(self('admin'));
 
     const response = await putOwn({
       projectSlug: 'api',
       environmentSlug: 'production',
-      accessLevel: 'read',
+      accessLevel: 'write',
     });
 
     expect(response.status).toBe(403);
@@ -907,6 +988,8 @@ describe('/members/{id}/grants on yourself — owners only', () => {
     expect(response.status).toBe(200);
   });
 });
+
+/* ── Service tokens ───────────────────────────────────────────────────────── */
 
 describe('POST /tokens/service — a token can do no more than its minter', () => {
   function mint(body: Record<string, unknown>): Promise<Response> {
@@ -997,5 +1080,524 @@ describe('POST /tokens/service — a token can do no more than its minter', () =
     });
 
     expect(response.status).toBe(201);
+  });
+});
+
+/* ── Shared requests for the doors below ──────────────────────────────────── */
+
+const memberParams = { params: Promise.resolve({ orgSlug: 'acme', memberId: TARGET_MEMBER_ID }) };
+
+function inviteMember(body: Record<string, unknown>): Promise<Response> {
+  return inviteRoute(jsonRequest('POST', '/api/orgs/acme/members', body), {
+    params: Promise.resolve({ orgSlug: 'acme' }),
+  });
+}
+
+function patchMember(body: Record<string, unknown>): Promise<Response> {
+  return patchMemberRoute(
+    jsonRequest('PATCH', `/api/orgs/acme/members/${TARGET_MEMBER_ID}`, body),
+    memberParams,
+  );
+}
+
+function removeMember(): Promise<Response> {
+  return removeMemberRoute(
+    new Request(`https://xecret.playxoft.com/api/orgs/acme/members/${TARGET_MEMBER_ID}`, {
+      method: 'DELETE',
+      headers: { origin: 'https://xecret.playxoft.com' },
+    }),
+    memberParams,
+  );
+}
+
+function writeGrant(body: Record<string, unknown>): Promise<Response> {
+  return putGrantRoute(
+    jsonRequest('PUT', `/api/orgs/acme/members/${TARGET_MEMBER_ID}/grants`, body),
+    memberParams,
+  );
+}
+
+function removeGrant(body: Record<string, unknown>): Promise<Response> {
+  return deleteGrantRoute(
+    jsonRequest('DELETE', `/api/orgs/acme/members/${TARGET_MEMBER_ID}/grants`, body),
+    memberParams,
+  );
+}
+
+function mintToken(body: Record<string, unknown>): Promise<Response> {
+  return mintServiceTokenRoute(
+    jsonRequest('POST', '/api/orgs/acme/tokens/service', { name: 'deploy', ...body }),
+    { params: Promise.resolve({ orgSlug: 'acme' }) },
+  );
+}
+
+function patchEnvironment(envSlug: string, body: Record<string, unknown>): Promise<Response> {
+  return patchEnvironmentRoute(
+    jsonRequest('PATCH', `/api/orgs/acme/projects/api/environments/${envSlug}`, body),
+    { params: Promise.resolve({ orgSlug: 'acme', projectSlug: 'api', envSlug }) },
+  );
+}
+
+function deleteProject(): Promise<Response> {
+  return deleteProjectRoute(
+    jsonRequest('DELETE', '/api/orgs/acme/projects/api', { confirm: 'api' }),
+    { params: Promise.resolve({ orgSlug: 'acme', projectSlug: 'api' }) },
+  );
+}
+
+/** Owners and admins with nothing written against them — never refused any of this. */
+const UNRESTRICTED: readonly Caller[] = [{ role: 'owner' }, { role: 'admin' }];
+
+const HELD_GRANTS_ABOVE_AUTHORITY = 'This member holds access grants beyond your own.';
+
+/* ── Suspension does not hide a removal ───────────────────────────────────── */
+
+describe('DELETE /members/{id}/grants — a suspended member is measured as the active one they will be', () => {
+  /** A developer whose production a project-wide `write` would reach, but for a `none`. */
+  const heldOffProduction = [grantRow(null, 'write'), grantRow(PRODUCTION_ID, 'none')];
+
+  it('refuses the removal it would refuse were the member active', async () => {
+    // Suspended, the developer resolves to `none` everywhere, and measured as
+    // they stand nothing looks raised — but the row is still gone when they
+    // are reinstated.
+    callerIs(PRODUCTION_CAPPED);
+    repositories.findMemberWithUser.mockResolvedValue(target('developer', undefined, 'suspended'));
+    repositories.listGrantsForMember.mockResolvedValue(heldOffProduction);
+
+    const response = await removeGrant({ projectSlug: 'api', environmentSlug: 'production' });
+
+    expect(response.status).toBe(403);
+    expect(await errorOf(response)).toMatchObject({
+      code: 'forbidden',
+      message: 'You cannot grant more access than you hold.',
+    });
+    expect(repositories.removeAccessGrant).not.toHaveBeenCalled();
+  });
+
+  it('closes suspend, remove the restriction, reinstate — at the removal', async () => {
+    callerIs(PRODUCTION_CAPPED);
+    repositories.listGrantsForMember.mockResolvedValue(heldOffProduction);
+
+    repositories.findMemberWithUser.mockResolvedValue(target('developer'));
+    const suspended = await patchMember({ status: 'suspended' });
+    repositories.findMemberWithUser.mockResolvedValue(target('developer', undefined, 'suspended'));
+    const removed = await removeGrant({ projectSlug: 'api', environmentSlug: 'production' });
+
+    expect(suspended.status).toBe(200);
+    expect(removed.status).toBe(403);
+    expect(repositories.removeAccessGrant).not.toHaveBeenCalled();
+  });
+
+  it('changes nothing for an owner or an unrestricted admin', async () => {
+    for (const caller of UNRESTRICTED) {
+      callerIs(caller);
+      repositories.findMemberWithUser.mockResolvedValue(
+        target('developer', undefined, 'suspended'),
+      );
+      repositories.listGrantsForMember.mockResolvedValue(heldOffProduction);
+
+      const response = await removeGrant({ projectSlug: 'api', environmentSlug: 'production' });
+
+      expect(response.status, caller.role).toBe(204);
+    }
+  });
+});
+
+/* ── Reinstatement ────────────────────────────────────────────────────────── */
+
+describe('PATCH /members/{id} — a reinstatement turns on only what the caller holds', () => {
+  function suspendedDeveloperHolding(...grants: ReturnType<typeof grantRow>[]): void {
+    repositories.findMemberWithUser.mockResolvedValue(target('developer', undefined, 'suspended'));
+    repositories.listGrantsForMember.mockResolvedValue(grants);
+  }
+
+  it('refuses a production-capped admin reinstating a developer an owner granted production', async () => {
+    callerIs(PRODUCTION_CAPPED);
+    suspendedDeveloperHolding(grantRow(PRODUCTION_ID, 'write'));
+
+    const response = await patchMember({ status: 'active' });
+
+    expect(response.status).toBe(403);
+    expect(await errorOf(response)).toMatchObject({
+      code: 'forbidden',
+      message: HELD_GRANTS_ABOVE_AUTHORITY,
+    });
+    expect(repositories.reinstateMember).not.toHaveBeenCalled();
+  });
+
+  it('refuses a project-wide grant, which lands on production too', async () => {
+    callerIs(PRODUCTION_CAPPED);
+    suspendedDeveloperHolding(grantRow(null, 'read'));
+
+    const response = await patchMember({ status: 'active' });
+
+    expect(response.status).toBe(403);
+  });
+
+  it('permits the same caller a member whose every grant they hold', async () => {
+    callerIs(PRODUCTION_CAPPED);
+    suspendedDeveloperHolding(grantRow(STAGING_ID, 'write'), grantRow(PRODUCTION_ID, 'none'));
+
+    const response = await patchMember({ status: 'active' });
+
+    expect(response.status).toBe(200);
+    expect(repositories.reinstateMember).toHaveBeenCalledOnce();
+  });
+
+  it('holds a plain admin to the level an explicit grant left them', async () => {
+    callerIs(RESTRICTED_ADMIN);
+
+    suspendedDeveloperHolding(grantRow(PRODUCTION_ID, 'write'));
+    const above = await patchMember({ status: 'active' });
+    suspendedDeveloperHolding(grantRow(PRODUCTION_ID, 'read'));
+    const at = await patchMember({ status: 'active' });
+
+    expect(above.status).toBe(403);
+    expect(at.status).toBe(200);
+  });
+
+  it('asks nothing of a suspension, which turns nothing on', async () => {
+    callerIs(PRODUCTION_CAPPED);
+    repositories.listGrantsForMember.mockResolvedValue([grantRow(PRODUCTION_ID, 'write')]);
+
+    const response = await patchMember({ status: 'suspended' });
+
+    expect(response.status).toBe(200);
+  });
+
+  it('changes nothing for an owner or an unrestricted admin', async () => {
+    for (const caller of UNRESTRICTED) {
+      callerIs(caller);
+      suspendedDeveloperHolding(grantRow(null, 'admin'), grantRow(PRODUCTION_ID, 'write'));
+
+      const response = await patchMember({ status: 'active' });
+
+      expect(response.status, caller.role).toBe(200);
+    }
+  });
+});
+
+/* ── Role changes that gain capabilities ──────────────────────────────────── */
+
+describe('PATCH /members/{id} — a role change turns on only what the caller holds', () => {
+  it('refuses promoting a viewer whose production grant would start writing', async () => {
+    // An owner wrote production `write` for a viewer — who can therefore read
+    // production. As a developer the same row writes it.
+    callerIs(PRODUCTION_CAPPED);
+    repositories.findMemberWithUser.mockResolvedValue(target('viewer'));
+    repositories.listGrantsForMember.mockResolvedValue([grantRow(PRODUCTION_ID, 'write')]);
+
+    const response = await patchMember({ role: 'developer' });
+
+    expect(response.status).toBe(403);
+    expect(await errorOf(response)).toMatchObject({
+      code: 'forbidden',
+      message: HELD_GRANTS_ABOVE_AUTHORITY,
+    });
+    expect(repositories.updateMemberRole).not.toHaveBeenCalled();
+  });
+
+  it('permits the promotion when the caller holds every grant it turns on', async () => {
+    callerIs(PRODUCTION_CAPPED);
+    repositories.findMemberWithUser.mockResolvedValue(target('viewer'));
+    repositories.listGrantsForMember.mockResolvedValue([grantRow(STAGING_ID, 'write')]);
+
+    const response = await patchMember({ role: 'developer' });
+
+    expect(response.status).toBe(200);
+  });
+
+  it('asks nothing of a change that gains nothing, whatever the grants', async () => {
+    callerIs(PRODUCTION_CAPPED);
+    repositories.findMemberWithUser.mockResolvedValue(target('developer'));
+    repositories.listGrantsForMember.mockResolvedValue([grantRow(PRODUCTION_ID, 'write')]);
+
+    const response = await patchMember({ role: 'viewer' });
+
+    expect(response.status).toBe(200);
+  });
+
+  it('measures the gain through the member’s own custom role', async () => {
+    // Developer-based and listing only `secret.read`: promoted from viewer to
+    // developer, the member still only reads — so the row does no more.
+    callerIs(PRODUCTION_CAPPED);
+    repositories.findMemberWithUser.mockResolvedValue(
+      target('viewer', customRole({ baseRole: 'developer', allowedActions: ['secret.read'] })),
+    );
+    repositories.listGrantsForMember.mockResolvedValue([grantRow(PRODUCTION_ID, 'write')]);
+
+    const response = await patchMember({ role: 'developer' });
+
+    expect(response.status).toBe(200);
+  });
+
+  it('changes nothing for an owner or an unrestricted admin', async () => {
+    for (const caller of UNRESTRICTED) {
+      callerIs(caller);
+      repositories.findMemberWithUser.mockResolvedValue(target('viewer'));
+      repositories.listGrantsForMember.mockResolvedValue([
+        grantRow(null, 'admin'),
+        grantRow(PRODUCTION_ID, 'write'),
+      ]);
+
+      const response = await patchMember({ role: 'developer' });
+
+      expect(response.status, caller.role).toBe(200);
+    }
+  });
+});
+
+/* ── Reclassifying an environment ─────────────────────────────────────────── */
+
+describe('PATCH /environments/{env} — making it production confers what was written there', () => {
+  it('refuses a caller who wrote an admin grant on staging, then reclassifies it', async () => {
+    callerIs(PRODUCTION_CAPPED);
+
+    const granted = await writeGrant({
+      projectSlug: 'api',
+      environmentSlug: 'staging',
+      accessLevel: 'admin',
+    });
+    const reclassified = await patchEnvironment('staging', { isProduction: true });
+
+    expect(granted.status).toBe(200);
+    expect(reclassified.status).toBe(403);
+    expect(repositories.updateEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('refuses a caller who minted a write token on staging, then reclassifies it', async () => {
+    // A token's level never consults the flag: reclassified, it writes production.
+    callerIs(PRODUCTION_CAPPED);
+
+    const minted = await mintToken({
+      projectSlug: 'api',
+      environmentSlug: 'staging',
+      accessLevel: 'write',
+    });
+    const reclassified = await patchEnvironment('staging', { isProduction: true });
+
+    expect(minted.status).toBe(201);
+    expect(reclassified.status).toBe(403);
+    expect(repositories.updateEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('lets the same caller edit staging in every other way', async () => {
+    callerIs(PRODUCTION_CAPPED);
+
+    const renamed = await patchEnvironment('staging', { name: 'Pre-production' });
+    const stillStaging = await patchEnvironment('staging', { isProduction: false });
+
+    expect(renamed.status).toBe(200);
+    expect(stillStaging.status).toBe(200);
+  });
+
+  it('changes nothing for an owner or an unrestricted admin', async () => {
+    for (const caller of UNRESTRICTED) {
+      callerIs(caller);
+
+      const response = await patchEnvironment('staging', { isProduction: true });
+
+      expect(response.status, caller.role).toBe(200);
+    }
+    expect(repositories.updateEnvironment).toHaveBeenCalledTimes(UNRESTRICTED.length);
+  });
+});
+
+/* ── Deleting a project ───────────────────────────────────────────────────── */
+
+describe('DELETE /projects/{project} — no further than each environment could be deleted', () => {
+  it('refuses a plain admin an explicit none keeps off production', async () => {
+    // Refused `environment.delete` on production, so refused the project door too.
+    callerIs({
+      role: 'admin',
+      grants: [{ projectId: PROJECT_ID, environmentId: PRODUCTION_ID, accessLevel: 'none' }],
+    });
+
+    const response = await deleteProject();
+
+    expect(response.status).toBe(403);
+    expect(repositories.softDeleteProject).not.toHaveBeenCalled();
+  });
+
+  it('refuses one kept off a non-production environment the same way', async () => {
+    callerIs({
+      role: 'admin',
+      grants: [{ projectId: PROJECT_ID, environmentId: STAGING_ID, accessLevel: 'none' }],
+    });
+
+    const response = await deleteProject();
+
+    expect(response.status).toBe(403);
+    expect(repositories.softDeleteProject).not.toHaveBeenCalled();
+  });
+
+  it('refuses a production-capped admin a project with production in it', async () => {
+    callerIs(PRODUCTION_CAPPED);
+
+    const response = await deleteProject();
+
+    expect(response.status).toBe(403);
+    expect(repositories.softDeleteProject).not.toHaveBeenCalled();
+  });
+
+  it('permits the same caller a project with no production in it', async () => {
+    // Nothing in it is beyond them, so nothing is taken past their authority.
+    callerIs(PRODUCTION_CAPPED);
+    repositories.listEnvironments.mockResolvedValue([staging]);
+
+    const response = await deleteProject();
+
+    expect(response.status).toBe(204);
+    expect(repositories.softDeleteProject).toHaveBeenCalledOnce();
+  });
+
+  it('changes nothing for an owner or an unrestricted admin', async () => {
+    for (const caller of UNRESTRICTED) {
+      callerIs(caller);
+
+      const response = await deleteProject();
+
+      expect(response.status, caller.role).toBe(204);
+    }
+  });
+});
+
+/* ── The trail ────────────────────────────────────────────────────────────── */
+
+describe('every refusal above the caller’s authority files exactly one denied record', () => {
+  const cases: readonly [string, () => void, () => Promise<Response>, AuditRecord['action']][] = [
+    [
+      'an invitation at a role above theirs',
+      () => callerIs(MEMBER_MANAGER),
+      () => inviteMember({ email: 'alt@example.com', role: 'admin' }),
+      'member.invited',
+    ],
+    [
+      'an invitation with grants above their level',
+      () => callerIs(PRODUCTION_CAPPED),
+      () =>
+        inviteMember({
+          email: 'alt@example.com',
+          role: 'developer',
+          grants: [{ projectSlug: 'api', environmentSlug: 'production', accessLevel: 'write' }],
+        }),
+      'member.invited',
+    ],
+    [
+      'a promotion to a role above theirs',
+      () => callerIs(PRODUCTION_CAPPED),
+      () => patchMember({ role: 'admin' }),
+      'member.role_changed',
+    ],
+    [
+      'a promotion onto grants above theirs',
+      () => {
+        callerIs(PRODUCTION_CAPPED);
+        repositories.findMemberWithUser.mockResolvedValue(target('viewer'));
+        repositories.listGrantsForMember.mockResolvedValue([grantRow(PRODUCTION_ID, 'write')]);
+      },
+      () => patchMember({ role: 'developer' }),
+      'member.role_changed',
+    ],
+    [
+      'a reinstatement onto grants above theirs',
+      () => {
+        callerIs(PRODUCTION_CAPPED);
+        repositories.findMemberWithUser.mockResolvedValue(
+          target('developer', undefined, 'suspended'),
+        );
+        repositories.listGrantsForMember.mockResolvedValue([grantRow(PRODUCTION_ID, 'write')]);
+      },
+      () => patchMember({ status: 'active' }),
+      'member.reinstated',
+    ],
+    [
+      'a suspension of a role above theirs',
+      () => {
+        callerIs({ role: 'admin' });
+        repositories.findMemberWithUser.mockResolvedValue(target('owner'));
+      },
+      () => patchMember({ status: 'suspended' }),
+      'member.suspended',
+    ],
+    [
+      'a removal of a role above theirs',
+      () => {
+        callerIs({ role: 'admin' });
+        repositories.findMemberWithUser.mockResolvedValue(target('owner'));
+      },
+      () => removeMember(),
+      'member.removed',
+    ],
+    [
+      'a grant on a member above them',
+      () => {
+        callerIs({ role: 'admin' });
+        repositories.findMemberWithUser.mockResolvedValue(target('owner'));
+      },
+      () => writeGrant({ projectSlug: 'api', environmentSlug: 'staging', accessLevel: 'read' }),
+      'access.granted',
+    ],
+    [
+      'a grant above their level',
+      () => callerIs(PRODUCTION_CAPPED),
+      () => writeGrant({ projectSlug: 'api', environmentSlug: 'production', accessLevel: 'write' }),
+      'access.granted',
+    ],
+    [
+      'a change to their own grants',
+      () => {
+        callerIs(RESTRICTED_ADMIN);
+        repositories.findMemberWithUser.mockResolvedValue(self('admin'));
+      },
+      () => writeGrant({ projectSlug: 'api', environmentSlug: 'production', accessLevel: 'write' }),
+      'access.granted',
+    ],
+    [
+      'a removal that raises past their level',
+      () => {
+        callerIs(PRODUCTION_CAPPED);
+        repositories.listGrantsForMember.mockResolvedValue([
+          grantRow(null, 'write'),
+          grantRow(PRODUCTION_ID, 'none'),
+        ]);
+      },
+      () => removeGrant({ projectSlug: 'api', environmentSlug: 'production' }),
+      'access.revoked',
+    ],
+    [
+      'a service token past their level',
+      () => callerIs(PRODUCTION_CAPPED),
+      () => mintToken({ projectSlug: 'api', environmentSlug: 'production' }),
+      'token.created',
+    ],
+    [
+      'reclassifying an environment as production',
+      () => callerIs(PRODUCTION_CAPPED),
+      () => patchEnvironment('staging', { isProduction: true }),
+      'environment.updated',
+    ],
+    [
+      'deleting a project around an environment they cannot delete',
+      () => callerIs(PRODUCTION_CAPPED),
+      () => deleteProject(),
+      'project.deleted',
+    ],
+  ];
+
+  it.each(cases)('%s', async (_label, arrange, act, action) => {
+    arrange();
+
+    const response = await act();
+
+    expect(response.status).toBe(403);
+    expect((await errorOf(response)).code).toBe('forbidden');
+    const filed = await denials();
+    expect(filed).toHaveLength(1);
+    expect(filed[0]).toMatchObject({
+      action,
+      outcome: 'denied',
+      metadata: { reason: 'forbidden' },
+    });
   });
 });

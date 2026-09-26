@@ -1,5 +1,4 @@
-import { accessLevelAtLeast, AuthorizationError, SERVICE_TOKEN_ACTIONS } from '@xecret/core/authz';
-import type { AccessLevel, Action } from '@xecret/core/authz';
+import { serviceTokenActionsAt } from '@xecret/core/authz';
 import {
   createServiceToken,
   listEnvironmentsForOrganization,
@@ -16,7 +15,13 @@ import {
   serviceTokenCreateSchema,
   toServiceToken,
 } from '@/server/schemas/tokens';
-import { authorize, resolveEnvironment, resolveOrg, resolveProject } from '@/server/tenancy';
+import {
+  auditingDenials,
+  authorize,
+  resolveEnvironment,
+  resolveOrg,
+  resolveProject,
+} from '@/server/tenancy';
 
 /**
  * Service tokens — the CI credential (threat T5).
@@ -43,23 +48,17 @@ import { authorize, resolveEnvironment, resolveOrg, resolveProject } from '@/ser
  * ── You can't mint what you don't hold ──
  * `token.create` is org-scoped: it says the minter may issue tokens, not which.
  * So the minter must also pass `can()`, on the pinned environment, for every
- * action the token will be able to perform there — `secret.read` for a `read`
- * token; that and `secret.create` / `secret.update` for a `write` one. That is
- * the capability and the level in one question, asked of the one decision
- * function: an admin capped at `none` on production (by a custom role's
- * ceiling, or by an explicit grant on themselves) cannot mint a production
- * token, and one whose custom role omits `secret.update` cannot mint a token
- * that writes. A token that could do what its minter cannot is a way round
- * every restriction the minter is under, and it acts as nobody.
+ * action the token will be able to perform there (`serviceTokenActionsAt`) —
+ * `secret.read` for a `read` token; that and `secret.create` / `secret.update`
+ * for a `write` one. That is the capability and the level in one question,
+ * asked of the one decision function: an admin capped at `none` on production
+ * (by a custom role's ceiling, or by an explicit grant on themselves) cannot
+ * mint a production token, and one whose custom role omits `secret.update`
+ * cannot mint a token that writes. A token that could do what its minter
+ * cannot is a way round every restriction the minter is under, and it acts as
+ * nobody. A refusal is filed as a denied `token.created` naming the
+ * environment, like the capability refusal before it.
  */
-
-/** Every action a token issued at `level` can perform — see `SERVICE_TOKEN_ACTIONS`. */
-function actionsConferredAt(level: AccessLevel): Action[] {
-  return (Object.keys(SERVICE_TOKEN_ACTIONS) as Action[]).filter((action) => {
-    const minimum = SERVICE_TOKEN_ACTIONS[action];
-    return minimum !== undefined && accessLevelAtLeast(level, minimum);
-  });
-}
 
 type Params = { orgSlug: string };
 
@@ -97,14 +96,11 @@ export const POST = authenticatedRoute<Params>(
 
     await enforce(services.env, 'RL_MUTATION', rateLimitKey([orgId, 'tokens']));
 
-    try {
-      authorize(scope, 'token.create');
-    } catch (cause) {
-      if (cause instanceof AuthorizationError) {
-        record(audit(orgId).denied('token.created', { type: 'token', id: null }, cause.decision));
-      }
-      throw cause;
-    }
+    auditingDenials(
+      (decision) =>
+        record(audit(orgId).denied('token.created', { type: 'token', id: null }, decision)),
+      () => authorize(scope, 'token.create'),
+    );
 
     const minter = requireSessionPrincipal(principal);
     requireMembership(scope);
@@ -115,16 +111,31 @@ export const POST = authenticatedRoute<Params>(
     const environmentScope = await resolveEnvironment(projectScope, body.environmentSlug, services);
 
     const accessLevel = body.accessLevel ?? 'read';
-    try {
-      for (const action of actionsConferredAt(accessLevel)) {
-        authorize(environmentScope, action);
-      }
-    } catch (cause) {
-      if (cause instanceof AuthorizationError) {
-        record(audit(orgId).denied('token.created', { type: 'token', id: null }, cause.decision));
-      }
-      throw cause;
-    }
+    auditingDenials(
+      (decision) =>
+        record(
+          audit(orgId).denied(
+            'token.created',
+            {
+              type: 'token',
+              id: null,
+              projectId: projectScope.project.id,
+              environmentId: environmentScope.environment.id,
+            },
+            decision,
+            {
+              projectSlug: projectScope.project.slug,
+              environmentSlug: environmentScope.environment.slug,
+              newAccessLevel: accessLevel,
+            },
+          ),
+        ),
+      () => {
+        for (const action of serviceTokenActionsAt(accessLevel)) {
+          authorize(environmentScope, action);
+        }
+      },
+    );
 
     // Both directions, in one place, with the reasoning: see
     // `assertKeypairMatchesMode`.

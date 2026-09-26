@@ -1,6 +1,10 @@
-import { AuthorizationError } from '@xecret/core/authz';
+import type { AuditAction, AuditResource } from '@xecret/core/audit';
+import { afterRoleChange, capabilitiesGained } from '@xecret/core/authz';
+import type { Database } from '@xecret/db';
 import {
   findMemberWithUser,
+  listEnvironmentsForOrganization,
+  listGrantsForMember,
   reinstateMember,
   removeMember,
   suspendMember,
@@ -9,6 +13,7 @@ import {
 import { errors } from '@/server/errors';
 import { json, noContent, parseJsonBody } from '@/server/http';
 import {
+  assertHeldGrantsWithinAuthority,
   assertRoleAuthority,
   mapMembershipError,
   requireMembership,
@@ -18,12 +23,12 @@ import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 import { recordKeyReconciliation, reconcileMemberKeyAccess } from '@/server/member-keys';
 import { memberPatchSchema, toMember } from '@/server/schemas/members';
-import { authorize, resolveOrg } from '@/server/tenancy';
+import { auditingDenials, authorize, resolveOrg } from '@/server/tenancy';
 
 /**
  * One member: change their role, suspend or reinstate them, remove them.
  *
- * Three guards stack on top of `member.update` / `member.remove`, and each
+ * Four guards stack on top of `member.update` / `member.remove`, and each
  * stops a distinct failure:
  *
  *  - **The role hierarchy**, on both sides of the change. An admin may not
@@ -32,6 +37,13 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  *    measured by what it leaves them, not by its rank: one narrowed to member
  *    management cannot promote a developer to a full admin (see
  *    `assertRoleAuthority` in `members-service.ts`).
+ *  - **The grants the change switches on.** A reinstatement turns every grant
+ *    row the member holds back on, and a role change that gains capabilities
+ *    lets the same rows do more — a viewer's production `write` row reads, a
+ *    developer's writes. Either is refused unless every such row is one the
+ *    caller could have written (`assertHeldGrantsWithinAuthority`), so an
+ *    admin capped below production cannot hand production back, or on, to
+ *    somebody an owner granted it.
  *  - **No self-service.** Changing your own role or removing yourself is
  *    refused outright. Demoting yourself mid-session is a mistake with no undo
  *    (the demoted you cannot re-promote you), and "leave organisation" as a
@@ -41,6 +53,9 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  *  - **The last-owner invariant**, enforced inside the repository transaction
  *    under the organisation lock, where it cannot race (threat: an
  *    organisation stranded with no active owner and no self-service repair).
+ *
+ * A refusal by the first two is filed as a `denied` audit record of the change
+ * attempted, as a capability denial is.
  */
 
 type Params = { orgSlug: string; memberId: string };
@@ -49,23 +64,14 @@ export const PATCH = authenticatedRoute<Params>(
   async ({ request, params, principal, services, audit, record }) => {
     const scope = await resolveOrg(principal, params.orgSlug, services);
     const orgId = scope.organization.id;
+    const resource: AuditResource = { type: 'member', id: params.memberId };
 
     await enforce(services.env, 'RL_MUTATION', rateLimitKey([orgId, params.memberId]));
 
-    try {
-      authorize(scope, 'member.update');
-    } catch (cause) {
-      if (cause instanceof AuthorizationError) {
-        record(
-          audit(orgId).denied(
-            'member.role_changed',
-            { type: 'member', id: params.memberId },
-            cause.decision,
-          ),
-        );
-      }
-      throw cause;
-    }
+    auditingDenials(
+      (decision) => record(audit(orgId).denied('member.role_changed', resource, decision)),
+      () => authorize(scope, 'member.update'),
+    );
 
     const actor = requireSessionPrincipal(principal);
     const membership = requireMembership(scope);
@@ -76,13 +82,42 @@ export const PATCH = authenticatedRoute<Params>(
     if (target.userId === actor.user.id) {
       throw errors.forbidden('You cannot change your own role or status.');
     }
-    assertRoleAuthority(membership, target.role);
 
     const body = await parseJsonBody(request, memberPatchSchema);
+    const attempted: AuditAction =
+      body.role !== undefined
+        ? 'member.role_changed'
+        : body.status === 'suspended'
+          ? 'member.suspended'
+          : 'member.reinstated';
+
+    // What the change switches on. A reinstatement always — the member's rows
+    // are dormant until it lands, whether or not they read as suspended a
+    // moment ago. A role change only when the new role, through the member's
+    // own custom role, can do something the old one could not; one that gains
+    // nothing lets no row do more than it did.
+    const switchesOnGrants =
+      body.role !== undefined
+        ? capabilitiesGained(target, afterRoleChange(target, body.role)).length > 0
+        : body.status === 'active';
+    const held = switchesOnGrants ? await heldAccess(services.db, orgId, target.id) : null;
+
+    auditingDenials(
+      (decision) =>
+        record(
+          audit(orgId).denied(attempted, resource, decision, {
+            targetEmail: target.user.email,
+            ...(body.role === undefined ? {} : { previousRole: target.role, newRole: body.role }),
+          }),
+        ),
+      () => {
+        assertRoleAuthority(membership, target.role);
+        if (body.role !== undefined) assertRoleAuthority(membership, body.role);
+        if (held !== null) assertHeldGrantsWithinAuthority(membership, held.grants, held.grid);
+      },
+    );
 
     if (body.role !== undefined) {
-      assertRoleAuthority(membership, body.role);
-
       const updated = await updateMemberRole(services.db, {
         orgId,
         memberId: target.id,
@@ -97,16 +132,17 @@ export const PATCH = authenticatedRoute<Params>(
             targetEmail: target.user.email,
             previousRole: target.role,
             newRole: updated.role,
-            // An owner cannot hold a custom role, so the repository clears it in
-            // the same write that makes somebody one. Said here, or the trail
-            // shows a narrowed member becoming an owner and nothing about the
-            // narrowing that went with it.
-            ...(updated.role === 'owner' && target.customRole !== undefined
-              ? {
-                  previousCustomRoleId: target.customRole.id,
-                  previousCustomRoleName: target.customRole.name,
-                }
-              : {}),
+            // An owner cannot hold a custom role, so the repository clears it
+            // in the same write that makes somebody one, and reports what it
+            // cleared — read under the lock, so it is the role the member
+            // actually held. Recorded in the audit metadata, or nothing in the
+            // log would say a narrowing went with the promotion.
+            ...(updated.clearedCustomRole === null
+              ? {}
+              : {
+                  previousCustomRoleId: updated.clearedCustomRole.id,
+                  previousCustomRoleName: updated.clearedCustomRole.name,
+                }),
           },
         ),
       );
@@ -168,23 +204,14 @@ export const DELETE = authenticatedRoute<Params>(
   async ({ params, principal, services, audit, record }) => {
     const scope = await resolveOrg(principal, params.orgSlug, services);
     const orgId = scope.organization.id;
+    const resource: AuditResource = { type: 'member', id: params.memberId };
 
     await enforce(services.env, 'RL_MUTATION', rateLimitKey([orgId, params.memberId]));
 
-    try {
-      authorize(scope, 'member.remove');
-    } catch (cause) {
-      if (cause instanceof AuthorizationError) {
-        record(
-          audit(orgId).denied(
-            'member.removed',
-            { type: 'member', id: params.memberId },
-            cause.decision,
-          ),
-        );
-      }
-      throw cause;
-    }
+    auditingDenials(
+      (decision) => record(audit(orgId).denied('member.removed', resource, decision)),
+      () => authorize(scope, 'member.remove'),
+    );
 
     const actor = requireSessionPrincipal(principal);
     const membership = requireMembership(scope);
@@ -195,7 +222,15 @@ export const DELETE = authenticatedRoute<Params>(
     if (target.userId === actor.user.id) {
       throw errors.forbidden('You cannot remove yourself from an organisation.');
     }
-    assertRoleAuthority(membership, target.role);
+    auditingDenials(
+      (decision) =>
+        record(
+          audit(orgId).denied('member.removed', resource, decision, {
+            targetEmail: target.user.email,
+          }),
+        ),
+      () => assertRoleAuthority(membership, target.role),
+    );
 
     await removeMember(services.db, { orgId, memberId: target.id }).catch(mapMembershipError);
 
@@ -231,3 +266,12 @@ export const DELETE = authenticatedRoute<Params>(
     return noContent();
   },
 );
+
+/** The member's grant rows and the environment grid they are measured against. */
+async function heldAccess(db: Database, orgId: string, memberId: string) {
+  const [grants, grid] = await Promise.all([
+    listGrantsForMember(db, orgId, memberId),
+    listEnvironmentsForOrganization(db, orgId),
+  ]);
+  return { grants, grid };
+}

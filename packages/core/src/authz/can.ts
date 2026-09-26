@@ -1,21 +1,25 @@
 import { resolveAccessLevel } from './grants';
 import type { Membership } from './grants';
-import {
-  accessLevelAtLeast,
-  ACTION_REQUIREMENTS,
-  compareAccessLevel,
-  effectiveCapabilities,
-} from './roles';
+import { accessLevelAtLeast, ACTION_REQUIREMENTS, effectiveCapabilities } from './roles';
 import type { RequiredAccessLevel } from './roles';
 import type { AccessLevel, Action, Actor, Decision, Resource } from './types';
 
 /**
  * The authorization decision.
  *
- * `can()` is the **only** authorization function in xecret. Every protected
- * route calls it, and no route implements its own check — the moment a second
+ * `can()` is the **only** function that decides whether an actor may perform
+ * an action on a resource. Every protected route calls it, and no route
+ * implements its own version of that check — the moment a second
  * implementation exists the two drift, and the gap between them is the breach
  * (threat T2, the most likely real one).
+ *
+ * It is not the only authorization *question*. What an actor may confer on
+ * somebody else — a role, a grant, a service token's reach — is a comparison
+ * between two parties that `can()` does not make, and it is answered by
+ * `roleWithinAuthority` (`roles.ts`) and the functions in `authority.ts`. Those
+ * never re-derive a level or a capability: they measure the actor through
+ * `resolveAccessLevel` and `effectiveCapabilities`, the same functions this
+ * one calls, so the two answers cannot drift apart.
  *
  * It is total and throw-free. Every input, including a nonsensical one,
  * produces a `Decision`; a denial is an ordinary value that the caller has to
@@ -27,7 +31,7 @@ import type { AccessLevel, Action, Actor, Decision, Resource } from './types';
  */
 
 /**
- * The two messages a denial can carry.
+ * The two messages a denial from `can()` carries.
  *
  * Constants, never interpolated. A message that names the project, the action,
  * or an id hands back a fact the caller was just denied the right to learn, and
@@ -224,26 +228,13 @@ function memberDecision(
   // request arrived through a production environment: production is a property
   // of an environment, and letting it apply to a project-level question would
   // deny a developer the project itself because of where the link came from.
-  const projectLevel = resolveAccessLevel(
-    { ...membership, isProduction: false },
-    resource.projectId,
-    null,
-  );
-  if (requirement.includesProduction !== true) {
-    return levelDecision(projectLevel, requirement.minimum);
-  }
-
-  // …except where the action's reach includes the project's production
-  // environments (`project.delete`). Then the project's production level must
-  // clear the bar as well, or a custom role capped at `none` on production
-  // could destroy production by deleting the project around it.
-  const productionLevel = resolveAccessLevel(
-    { ...membership, isProduction: true },
-    resource.projectId,
-    null,
-  );
+  //
+  // An action whose reach includes the project's environments — deleting the
+  // project deletes every one of them — is not settled here alone: the route
+  // also asks the environment-scoped action of each environment it would take
+  // with it (see `project.delete` in `ACTION_REQUIREMENTS`).
   return levelDecision(
-    compareAccessLevel(productionLevel, projectLevel) < 0 ? productionLevel : projectLevel,
+    resolveAccessLevel({ ...membership, isProduction: false }, resource.projectId, null),
     requirement.minimum,
   );
 }
@@ -254,6 +245,11 @@ function memberDecision(
  * Carries the whole `Decision` so the error handler can map `reason` to 404 or
  * 403 without re-deciding anything, and so the audit record of the denial says
  * the same thing the client was told.
+ *
+ * Raised by `assertCan`, and also for a refusal by one of the authority checks
+ * (`authority.ts`, `roleWithinAuthority`) — always `forbidden`, with a fixed
+ * message of its own — so that every refusal reaches the same error mapping
+ * and the same `denied` audit record, whichever question refused it.
  */
 export class AuthorizationError extends Error {
   constructor(readonly decision: Denial) {

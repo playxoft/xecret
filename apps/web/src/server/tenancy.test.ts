@@ -37,12 +37,14 @@ vi.mock('@xecret/db/repositories', async (importOriginal) => ({
 }));
 
 const {
+  auditingDenials,
   authorize,
   resolveEnvironment,
   resolveEnvironmentPath,
   resolveOrg,
   resolveProject,
   toGrantContext,
+  toMembership,
 } = await import('./tenancy');
 
 type Services = Parameters<typeof resolveOrg>[2];
@@ -107,6 +109,7 @@ function membership(role: 'owner' | 'admin' | 'developer' | 'viewer' = 'owner') 
     memberId: MEMBER_ID,
     role,
     status: 'active' as const,
+    customRole: undefined,
     grants: [],
   };
 }
@@ -337,10 +340,13 @@ describe('authorization', () => {
   });
 
   it('applies a custom role’s access ceiling at request time', async () => {
+    // An admin on an admin-based role — the pairing that exists: the database
+    // refuses a custom role on an owner, and one based on `owner`.
     repositories.loadAuthorizationContext.mockResolvedValue({
-      ...membership('owner'),
+      ...membership('admin'),
       customRole: customRole({
-        baseRole: 'owner',
+        baseRole: 'admin',
+        allowedActions: ['environment.read', 'secret.read'],
         accessCeiling: { nonProduction: 'admin', production: 'none' },
       }),
     });
@@ -352,6 +358,15 @@ describe('authorization', () => {
     );
 
     expect(() => authorize(scope, 'secret.read')).toThrowError(AuthorizationError);
+
+    // The same member outside production: the ceiling, not the list, refused.
+    repositories.findEnvironmentBySlug.mockResolvedValue({ ...environment, isProduction: false });
+    const staging = await resolveEnvironmentPath(
+      userPrincipal,
+      { orgSlug: 'playxoft', projectSlug: 'default', envSlug: 'production' },
+      services,
+    );
+    expect(() => authorize(staging, 'secret.read')).not.toThrow();
   });
 
   it('denies a viewer any write', async () => {
@@ -465,5 +480,68 @@ describe('grant context adaptation', () => {
 
   it('maps a member without a custom role to exactly the shape it always had', () => {
     expect(Object.keys(toGrantContext(membership()))).toEqual(['role', 'memberStatus', 'grants']);
+  });
+
+  // The same seam for a member who is not the caller — the target of a grant
+  // change, a reinstatement, or the effective-access preview.
+  it('maps another member’s record and grant rows the same way', () => {
+    const role = customRole({ baseRole: 'developer' });
+    const target = {
+      id: uuidv7(),
+      orgId: ORG_ID,
+      userId: uuidv7(),
+      role: 'admin' as const,
+      status: 'suspended' as const,
+      customRole: role,
+    };
+    const rows = [
+      { id: uuidv7(), projectId: PROJECT_ID, environmentId: null, accessLevel: 'read' as const },
+    ];
+
+    expect(toMembership(target, rows)).toEqual({
+      role: 'admin',
+      memberStatus: 'suspended',
+      customRole: role,
+      grants: [{ projectId: PROJECT_ID, environmentId: null, accessLevel: 'read' }],
+    });
+    expect(toMembership(target, rows)).toEqual(
+      toGrantContext({ ...membership('admin'), ...target, grants: rows }),
+    );
+  });
+});
+
+describe('auditingDenials', () => {
+  it('files an authorization refusal exactly once, then lets it propagate', () => {
+    const filed: unknown[] = [];
+    const denial = { allowed: false, reason: 'forbidden', message: 'No.' } as const;
+
+    expect(() =>
+      auditingDenials(
+        (decision) => filed.push(decision),
+        () => {
+          throw new AuthorizationError(denial);
+        },
+      ),
+    ).toThrowError(AuthorizationError);
+    expect(filed).toEqual([denial]);
+  });
+
+  it('files nothing for a check that passes, or for an error that is not a denial', () => {
+    const filed: unknown[] = [];
+    const failure = new Error('database unavailable');
+
+    auditingDenials(
+      (decision) => filed.push(decision),
+      () => {},
+    );
+    expect(() =>
+      auditingDenials(
+        (decision) => filed.push(decision),
+        () => {
+          throw failure;
+        },
+      ),
+    ).toThrow(failure);
+    expect(filed).toEqual([]);
   });
 });
