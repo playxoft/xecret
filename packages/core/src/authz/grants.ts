@@ -1,4 +1,4 @@
-import { compareAccessLevel, narrowAccessDefaults, roleDefaultAccessLevel } from './roles';
+import { compareAccessLevel, narrowAccessDefaults } from './roles';
 import type { CustomRole } from './roles';
 import type { AccessLevel, OrgRole } from './types';
 
@@ -10,6 +10,11 @@ import type { AccessLevel, OrgRole } from './types';
  *     1. a grant for (member, project, environment)   ← most specific
  *     2. a grant for (member, project, NULL)          ← the whole project
  *     3. the role default, production-aware
+ *
+ * and whichever of those answers, a custom role's access ceiling then caps it.
+ * The role default in step 3 is `effectiveRole`'s — the lower of the member's
+ * `role` and their custom role's `baseRole` — already narrowed by that ceiling
+ * (`narrowAccessDefaults`).
  *
  * The search stops at the first level that has anything to say. Specificity
  * beats permissiveness in *both* directions: an environment grant of `read`
@@ -51,8 +56,10 @@ export interface Membership {
   /**
    * A role the organisation defined, narrowing `role`.
    *
-   * Never replaces `role`: the built-in role remains the ceiling and the thing
-   * `canAssignRole` compares. See `CustomRole` in `roles.ts` for why a custom
+   * Never replaces `role`. The built-in role that governs is the LOWER of
+   * `role` and `customRole.baseRole` (`effectiveRole`), for capabilities, for
+   * access defaults, and on the actor's side of `canAssignRole` — so neither
+   * field can raise the other. See `CustomRole` in `roles.ts` for why a custom
    * role can only subtract, and why that makes escalation through this field
    * unreachable rather than merely guarded against.
    */
@@ -93,7 +100,7 @@ export function resolveAccessLevel(
   // explicit grant.
   if (context.memberStatus === 'suspended') return 'none';
 
-  return capAtCustomRole(context, resolveFromGrants(context, projectId, environmentId));
+  return capAtCeiling(context, resolveFromGrants(context, projectId, environmentId));
 }
 
 function resolveFromGrants(
@@ -115,11 +122,16 @@ function resolveFromGrants(
   );
   if (forProject !== undefined) return forProject.accessLevel;
 
-  return roleDefaultAccessLevel(context.role, context.isProduction);
+  // The effective role's default, narrowed by any ceiling — not `context.role`'s.
+  // An admin holding a custom role based on `developer` gets a developer's
+  // `none` on production here, exactly as their capability row is a
+  // developer's.
+  const defaults = narrowAccessDefaults(context.role, context.customRole);
+  return context.isProduction ? defaults.production : defaults.nonProduction;
 }
 
 /**
- * Applies a custom role's ceiling to the level the grants produced.
+ * Applies a custom role's access ceiling to the level the grants produced.
  *
  * ── Why this caps an explicit grant and not only the role default ──
  * A ceiling that a grant can exceed is not a ceiling. The whole reason an
@@ -133,11 +145,22 @@ function resolveFromGrants(
  * That is the right direction to be surprised in, and the effective-permission
  * preview shows the resolved level rather than the stored one, so "what can
  * Alice actually see?" still answers honestly.
+ *
+ * ── Why the cap is the ceiling itself, not `narrowAccessDefaults` ──
+ * The narrowed defaults are the lesser of the role default and the ceiling,
+ * and capping a grant at *that* looks equivalent but is not: it pins every
+ * grant to the role default. A developer — production default `none` — holding
+ * a custom role with a production ceiling of `read` and an explicit production
+ * grant of `read` would resolve to `none`, so a ceiling of any kind would
+ * quietly erase every elevation an admin ever wrote for them. The ceiling is
+ * the limit the organisation stated; the role default is only what applies
+ * where nobody stated anything, and `resolveFromGrants` already takes the
+ * lesser of the two on that path.
  */
-function capAtCustomRole(context: GrantContext, level: AccessLevel): AccessLevel {
-  if (context.customRole?.accessCeiling === undefined) return level;
+function capAtCeiling(context: GrantContext, level: AccessLevel): AccessLevel {
+  const ceiling = context.customRole?.accessCeiling;
+  if (ceiling === undefined) return level;
 
-  const ceiling = narrowAccessDefaults(context.role, context.customRole);
   const limit = context.isProduction ? ceiling.production : ceiling.nonProduction;
 
   return compareAccessLevel(level, limit) > 0 ? limit : level;

@@ -1,8 +1,13 @@
 import { sql } from 'drizzle-orm';
-import { check, index, pgTable, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { check, pgTable, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 import type { Action } from '@xecret/core/authz';
 import { accessLevelEnum, orgRoleEnum } from './enums';
 import { users } from './identity';
+// A cycle: ./tenancy imports `customRoles` back for the foreign key on
+// `org_members`. Safe, because neither side reads the other's binding while
+// its module is evaluating — this one only inside a `references()` thunk, that
+// one only inside the table's extra-config callback, which drizzle calls
+// lazily from `getTableConfig`.
 import { organizations } from './tenancy';
 
 /**
@@ -66,7 +71,14 @@ export const customRoles = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    // Also the index behind every "this organisation's roles" read: its btree
+    // leads with org_id, so no separate index on org_id is needed.
     unique('custom_roles_org_name_unique').on(t.orgId, t.name),
+    // Redundant as a uniqueness rule — `id` alone is already unique — and there
+    // only to be the target of the composite foreign key from `org_members`
+    // (`orgMembers` in ./tenancy), which is what stops a member of one
+    // organisation holding another organisation's role.
+    unique('custom_roles_org_id_id_unique').on(t.orgId, t.id),
     // Both halves of a ceiling or neither. A half-set ceiling would apply in one
     // kind of environment and not the other, which is a rule nobody can state
     // and therefore a rule nobody can audit.
@@ -74,6 +86,5 @@ export const customRoles = pgTable(
       'custom_roles_ceiling_check',
       sql`(${t.ceilingNonProduction} is null) = (${t.ceilingProduction} is null)`,
     ),
-    index('custom_roles_org_idx').on(t.orgId, t.name),
   ],
 );

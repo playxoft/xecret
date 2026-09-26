@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { resolveAccessLevel } from '@xecret/core/authz';
-import type { OrgRole } from '@xecret/core/authz';
+import type { CustomRole, OrgRole } from '@xecret/core/authz';
 import { uuidv7 } from '@xecret/core/ids';
 import { RepositoryError } from '@xecret/db/repositories';
 import type { MemberGrant, OrganizationEnvironment } from '@xecret/db/repositories';
@@ -25,6 +25,16 @@ import {
 const ROLES: readonly OrgRole[] = ['owner', 'admin', 'developer', 'viewer'];
 const RANK: Record<OrgRole, number> = { owner: 3, admin: 2, developer: 1, viewer: 0 };
 
+function customRole(over: Partial<CustomRole> = {}): CustomRole {
+  return {
+    id: uuidv7(),
+    name: 'Narrowed',
+    baseRole: 'admin',
+    allowedActions: ['member.read', 'member.invite', 'member.update', 'member.remove'],
+    ...over,
+  };
+}
+
 describe('the role hierarchy at the API boundary', () => {
   it('refuses any role above the caller’s own, on either side of a change', () => {
     for (const actor of ROLES) {
@@ -32,19 +42,44 @@ describe('the role hierarchy at the API boundary', () => {
         const permitted = RANK[actor] >= RANK[subject];
 
         if (permitted) {
-          expect(() => assertRoleAuthority(actor, subject)).not.toThrow();
+          expect(() => assertRoleAuthority({ role: actor }, subject)).not.toThrow();
         } else {
-          expect(() => assertRoleAuthority(actor, subject), `${actor} vs ${subject}`).toThrow(
-            ApiError,
-          );
+          expect(
+            () => assertRoleAuthority({ role: actor }, subject),
+            `${actor} vs ${subject}`,
+          ).toThrow(ApiError);
         }
       }
     }
   });
 
+  // An owner narrowed to an admin-based custom role passes `can()` for member
+  // management exactly as an admin does. Measured by the stored `owner`, they
+  // could still mint owners — the authority their own role withholds.
+  it('measures a caller holding a custom role by the lower of their two roles', () => {
+    const narrowedOwner = { role: 'owner' as const, customRole: customRole({ baseRole: 'admin' }) };
+
+    expect(() => assertRoleAuthority(narrowedOwner, 'owner')).toThrow(ApiError);
+    expect(() => assertRoleAuthority(narrowedOwner, 'admin')).not.toThrow();
+
+    const narrowedAdmin = {
+      role: 'admin' as const,
+      customRole: customRole({ baseRole: 'viewer' }),
+    };
+    expect(() => assertRoleAuthority(narrowedAdmin, 'developer')).toThrow(ApiError);
+    expect(() => assertRoleAuthority(narrowedAdmin, 'viewer')).not.toThrow();
+  });
+
+  it('does not let a custom role based above the caller’s role raise it', () => {
+    const inflated = { role: 'developer' as const, customRole: customRole({ baseRole: 'owner' }) };
+
+    expect(() => assertRoleAuthority(inflated, 'admin')).toThrow(ApiError);
+    expect(() => assertRoleAuthority(inflated, 'owner')).toThrow(ApiError);
+  });
+
   it('reports the refusal as forbidden, never as not_found — membership is already established', () => {
     try {
-      assertRoleAuthority('admin', 'owner');
+      assertRoleAuthority({ role: 'admin' }, 'owner');
       expect.unreachable('admin touching an owner must be refused');
     } catch (cause) {
       expect(cause).toBeInstanceOf(ApiError);
@@ -162,6 +197,81 @@ describe('the effective-access preview', () => {
       expect(cell.level, cell.slug).toBe('none');
       expect(cell.source, cell.slug).toBe('suspended');
     }
+  });
+
+  // The preview must apply the same narrowing enforcement does, or it shows a
+  // level the member will be refused on their first request.
+  it('agrees with resolveAccessLevel for a member holding a custom role', () => {
+    const grants = [grant(PRODUCTION, 'write'), grant(null, 'admin')];
+    const member = {
+      role: 'admin',
+      status: 'active',
+      customRole: customRole({
+        baseRole: 'developer',
+        accessCeiling: { nonProduction: 'write', production: 'read' },
+      }),
+    } as const;
+
+    const [api] = effectiveAccess(member, grants, grid);
+
+    for (const cell of api?.environments ?? []) {
+      const engine = resolveAccessLevel(
+        {
+          role: member.role,
+          memberStatus: member.status,
+          customRole: member.customRole,
+          grants,
+          isProduction: cell.isProduction,
+        },
+        PROJECT,
+        cell.slug === 'staging' ? STAGING : PRODUCTION,
+      );
+      expect(cell.level, cell.slug).toBe(engine);
+    }
+  });
+
+  it('caps every level at a custom role’s ceiling, grants included', () => {
+    const grants = [grant(PRODUCTION, 'write'), grant(null, 'admin')];
+    const [api] = effectiveAccess(
+      {
+        role: 'developer',
+        status: 'active',
+        customRole: customRole({
+          baseRole: 'developer',
+          accessCeiling: { nonProduction: 'read', production: 'read' },
+        }),
+      },
+      grants,
+      grid,
+    );
+
+    // Attributed to the grant that matched, at the level the ceiling allows.
+    expect(api?.environments.find((cell) => cell.slug === 'staging')).toMatchObject({
+      level: 'read',
+      source: 'project-grant',
+    });
+    expect(api?.environments.find((cell) => cell.slug === 'production')).toMatchObject({
+      level: 'read',
+      source: 'environment-grant',
+    });
+    expect(api?.projectLevel).toBe('read');
+  });
+
+  it('takes role defaults from the lower of the member’s role and the custom role’s base', () => {
+    const [api] = effectiveAccess(
+      { role: 'admin', status: 'active', customRole: customRole({ baseRole: 'developer' }) },
+      [],
+      grid,
+    );
+
+    expect(api?.environments.find((cell) => cell.slug === 'staging')).toMatchObject({
+      level: 'write',
+      source: 'role-default',
+    });
+    expect(api?.environments.find((cell) => cell.slug === 'production')).toMatchObject({
+      level: 'none',
+      source: 'role-default',
+    });
   });
 
   it('shows production deny-by-default for a developer with no grants', () => {

@@ -188,7 +188,8 @@ function memberDecision(
   if (membership.memberStatus !== 'active') return forbidden();
 
   // The built-in table when there is no custom role, and `base AND custom` when
-  // there is. Never the custom role alone — see `CustomRole` in roles.ts.
+  // there is — where `base` is the lower of `role` and the custom role's
+  // `baseRole`. Never the custom role alone — see `CustomRole` in roles.ts.
   if (!effectiveCapabilities(membership.role, membership.customRole)[action]) return forbidden();
 
   const requirement = ACTION_REQUIREMENTS[action];

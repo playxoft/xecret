@@ -6,13 +6,15 @@ import type { Membership } from './grants';
 import {
   canAssignRole,
   canDefineCustomRole,
+  compareOrgRole,
   effectiveCapabilities,
+  effectiveRole,
   narrowAccessDefaults,
   ROLE_ACCESS_DEFAULTS,
   ROLE_CAPABILITIES,
 } from './roles';
 import type { CustomRole } from './roles';
-import type { Action, Actor, OrgRole, Resource } from './types';
+import type { AccessLevel, Action, Actor, OrgRole, Resource } from './types';
 
 /**
  * Custom roles, and the single property they stand on.
@@ -33,6 +35,12 @@ const PROJECT_ID = 'project-1';
 const ENV_ID = 'env-1';
 
 const ALL_ACTIONS = Object.keys(ROLE_CAPABILITIES.owner) as Action[];
+const ROLES: readonly OrgRole[] = ['viewer', 'developer', 'admin', 'owner'];
+
+/** The lesser of two roles, written out independently of `effectiveRole`. */
+function lower(a: OrgRole, b: OrgRole): OrgRole {
+  return compareOrgRole(a, b) <= 0 ? a : b;
+}
 
 function actor(): Actor {
   return { kind: 'user', userId: 'user-1', orgId: ORG_ID };
@@ -111,6 +119,132 @@ describe('a custom role can only subtract', () => {
 
     expect(effective['org.delete']).toBe(false);
     expect(effective['secret.read']).toBe(true);
+  });
+});
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * A member's `role` and their custom role's `baseRole` need not agree. The
+ * lower of the two governs — for capabilities, defaults, and role authority.
+ * ─────────────────────────────────────────────────────────────────────────── */
+describe('effectiveRole', () => {
+  it('is the member’s own role when there is no custom role', () => {
+    for (const role of ROLES) {
+      expect(effectiveRole(role, undefined)).toBe(role);
+    }
+  });
+
+  it('is the base role when the base is below the member’s role', () => {
+    expect(effectiveRole('admin', customRole({ baseRole: 'viewer' }))).toBe('viewer');
+    expect(effectiveRole('owner', customRole({ baseRole: 'admin' }))).toBe('admin');
+  });
+
+  it('is the member’s role when the base is above it — a base never raises', () => {
+    // A viewer assigned a custom role based on `owner` is still a viewer. The
+    // row is nonsense, and nonsense must resolve in the safe direction.
+    expect(effectiveRole('viewer', customRole({ baseRole: 'owner' }))).toBe('viewer');
+    expect(effectiveRole('developer', customRole({ baseRole: 'admin' }))).toBe('developer');
+  });
+
+  it('is the lower of the two for every pair', () => {
+    for (const role of ROLES) {
+      for (const base of ROLES) {
+        expect(effectiveRole(role, customRole({ baseRole: base })), `${role} + ${base}`).toBe(
+          lower(role, base),
+        );
+      }
+    }
+  });
+});
+
+describe('a base role below the member’s own role', () => {
+  it('caps capabilities at the lower role, whatever the pairing', () => {
+    // The exhaustive form of the escalation this closes: a custom role that
+    // claims every action, on any base, assigned to any member, is worth
+    // exactly the capability row of the lower of the two roles.
+    for (const role of ROLES) {
+      for (const base of ROLES) {
+        const greedy = customRole({ baseRole: base, allowedActions: ALL_ACTIONS });
+        const effective = effectiveCapabilities(role, greedy);
+
+        for (const action of ALL_ACTIONS) {
+          expect(effective[action], `${role} + base ${base} gained "${action}"`).toBe(
+            ROLE_CAPABILITIES[lower(role, base)][action],
+          );
+        }
+      }
+    }
+  });
+
+  it('an admin holding a viewer-based role that lists writes cannot write or invite', () => {
+    // "Auditor": based on `viewer`, but with an allow list that names writes.
+    // On an admin, reading the member's own role would have let the list
+    // through, and the base role's ceiling would have been decorative.
+    const auditor = customRole({
+      name: 'Auditor',
+      baseRole: 'viewer',
+      allowedActions: ['secret.read', 'secret.update', 'member.invite'],
+    });
+
+    const write = can(actor(), 'secret.update', environment(), {
+      membership: membership({
+        role: 'admin',
+        customRole: auditor,
+        grants: [{ projectId: PROJECT_ID, environmentId: ENV_ID, accessLevel: 'admin' }],
+      }),
+      isProduction: false,
+    });
+    const invite = can(actor(), 'member.invite', org(), {
+      membership: membership({ role: 'admin', customRole: auditor }),
+      isProduction: false,
+    });
+    const read = can(actor(), 'secret.read', environment(), {
+      membership: membership({ role: 'admin', customRole: auditor }),
+      isProduction: false,
+    });
+
+    expect(write.allowed).toBe(false);
+    expect(invite.allowed).toBe(false);
+    // What the base permits and the list names still works.
+    expect(read.allowed).toBe(true);
+  });
+
+  it('takes the access defaults from the lower role too', () => {
+    // An admin's default is `admin` everywhere; a developer's is `none` on
+    // production. On a developer-based custom role, the admin gets the latter.
+    const defaults = narrowAccessDefaults('admin', customRole({ baseRole: 'developer' }));
+
+    expect(defaults).toEqual(ROLE_ACCESS_DEFAULTS.developer);
+  });
+
+  it('resolves an ungranted environment to the lower role’s default', () => {
+    const context = membership({
+      role: 'admin',
+      customRole: customRole({ baseRole: 'developer' }),
+    });
+
+    expect(resolveAccessLevel({ ...context, isProduction: true }, PROJECT_ID, ENV_ID)).toBe('none');
+    expect(resolveAccessLevel({ ...context, isProduction: false }, PROJECT_ID, ENV_ID)).toBe(
+      'write',
+    );
+  });
+
+  it('refuses production end to end to an admin on a developer-based role with no grant', () => {
+    const decision = can(actor(), 'secret.read', environment(), {
+      membership: membership({
+        role: 'admin',
+        customRole: customRole({ baseRole: 'developer', allowedActions: ALL_ACTIONS }),
+      }),
+      isProduction: true,
+    });
+
+    expect(decision.allowed).toBe(false);
+  });
+
+  it('a base above the member’s role raises neither capabilities nor defaults', () => {
+    const inflated = customRole({ baseRole: 'owner', allowedActions: ALL_ACTIONS });
+
+    expect(effectiveCapabilities('viewer', inflated)).toEqual(ROLE_CAPABILITIES.viewer);
+    expect(narrowAccessDefaults('viewer', inflated)).toEqual(ROLE_ACCESS_DEFAULTS.viewer);
   });
 });
 
@@ -264,6 +398,82 @@ describe('the access ceiling', () => {
   });
 });
 
+describe('the ceiling caps grants at the ceiling, not at the role default', () => {
+  // A developer's production default is `none`. A production ceiling of `read`
+  // says "never more than read" — it must not also mean "never more than
+  // none", which is what capping at the narrowed default would make of it.
+  const readOnlyProduction = customRole({
+    allowedActions: ['secret.read', 'secret.update'],
+    accessCeiling: { nonProduction: 'write', production: 'read' },
+  });
+
+  function productionLevel(grant: AccessLevel | undefined): AccessLevel {
+    return resolveAccessLevel(
+      {
+        ...membership({
+          customRole: readOnlyProduction,
+          grants:
+            grant === undefined
+              ? []
+              : [{ projectId: PROJECT_ID, environmentId: ENV_ID, accessLevel: grant }],
+        }),
+        isProduction: true,
+      },
+      PROJECT_ID,
+      ENV_ID,
+    );
+  }
+
+  it('lets an explicit grant at the ceiling through', () => {
+    expect(productionLevel('read')).toBe('read');
+  });
+
+  it('caps an explicit grant above the ceiling to the ceiling', () => {
+    expect(productionLevel('write')).toBe('read');
+    expect(productionLevel('admin')).toBe('read');
+  });
+
+  it('still falls back to the role default where no grant speaks', () => {
+    // The ceiling is a limit, not a grant: without an explicit row the member
+    // gets the weaker of the role default (`none`) and the ceiling (`read`).
+    expect(productionLevel(undefined)).toBe('none');
+  });
+
+  it('lets a capped production grant read, and still refuses the write it was written for', () => {
+    const context = {
+      membership: membership({
+        customRole: readOnlyProduction,
+        grants: [{ projectId: PROJECT_ID, environmentId: ENV_ID, accessLevel: 'write' as const }],
+      }),
+      isProduction: true,
+    };
+
+    expect(can(actor(), 'secret.read', environment(), context).allowed).toBe(true);
+    expect(can(actor(), 'secret.update', environment(), context).allowed).toBe(false);
+  });
+
+  it('caps a role default above the ceiling to the ceiling', () => {
+    // The other direction: an admin's default is `admin`, and a ceiling of
+    // `read` brings it down whether or not anybody wrote a grant.
+    const level = resolveAccessLevel(
+      {
+        ...membership({
+          role: 'admin',
+          customRole: customRole({
+            baseRole: 'admin',
+            accessCeiling: { nonProduction: 'read', production: 'read' },
+          }),
+        }),
+        isProduction: true,
+      },
+      PROJECT_ID,
+      ENV_ID,
+    );
+
+    expect(level).toBe('read');
+  });
+});
+
 /* ───────────────────────────────────────────────────────────────────────────
  * Who may define one.
  * ─────────────────────────────────────────────────────────────────────────── */
@@ -281,6 +491,17 @@ describe('canDefineCustomRole', () => {
     expect(canDefineCustomRole('owner', 'owner')).toBe(true);
     expect(canDefineCustomRole('admin', 'admin')).toBe(true);
     expect(canDefineCustomRole('admin', 'viewer')).toBe(true);
+  });
+
+  it('measures an actor holding a custom role by their effective role', () => {
+    // An owner narrowed to an admin-based custom role is an admin for every
+    // other purpose. Measured by their stored `owner`, they could hand out —
+    // or define — the owner authority their own custom role withholds.
+    const narrowedOwner = effectiveRole('owner', customRole({ baseRole: 'admin' }));
+
+    expect(canAssignRole(narrowedOwner, 'owner')).toBe(false);
+    expect(canDefineCustomRole(narrowedOwner, 'owner')).toBe(false);
+    expect(canAssignRole(narrowedOwner, 'admin')).toBe(true);
   });
 
   it('is the same predicate as canAssignRole, so the two cannot drift', () => {

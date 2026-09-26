@@ -73,12 +73,12 @@ export const PATCH = authenticatedRoute<Params>(
     if (target.userId === actor.user.id) {
       throw errors.forbidden('You cannot change your own role or status.');
     }
-    assertRoleAuthority(membership.role, target.role);
+    assertRoleAuthority(membership, target.role);
 
     const body = await parseJsonBody(request, memberPatchSchema);
 
     if (body.role !== undefined) {
-      assertRoleAuthority(membership.role, body.role);
+      assertRoleAuthority(membership, body.role);
 
       const updated = await updateMemberRole(services.db, {
         orgId,
@@ -178,7 +178,7 @@ export const DELETE = authenticatedRoute<Params>(
     if (target.userId === actor.user.id) {
       throw errors.forbidden('You cannot remove yourself from an organisation.');
     }
-    assertRoleAuthority(membership.role, target.role);
+    assertRoleAuthority(membership, target.role);
 
     await removeMember(services.db, { orgId, memberId: target.id }).catch(mapMembershipError);
 

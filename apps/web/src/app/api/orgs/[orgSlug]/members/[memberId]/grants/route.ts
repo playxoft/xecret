@@ -66,7 +66,7 @@ export const PUT = authenticatedRoute<Params>(
 
     const target = await findMemberWithUser(services.db, orgId, params.memberId);
     if (!target) throw errors.notFound('no such member in organisation');
-    assertRoleAuthority(membership.role, target.role);
+    assertRoleAuthority(membership, target.role);
 
     const body = await parseJsonBody(request, grantWriteSchema);
 
@@ -169,7 +169,7 @@ export const DELETE = authenticatedRoute<Params>(
 
     const target = await findMemberWithUser(services.db, orgId, params.memberId);
     if (!target) throw errors.notFound('no such member in organisation');
-    assertRoleAuthority(membership.role, target.role);
+    assertRoleAuthority(membership, target.role);
 
     const body = await parseJsonBody(request, grantRemoveSchema);
 

@@ -15,6 +15,7 @@ export {
   canAssignRole,
   canDefineCustomRole,
   effectiveCapabilities,
+  effectiveRole,
   narrowAccessDefaults,
   compareAccessLevel,
   compareOrgRole,

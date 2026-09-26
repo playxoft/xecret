@@ -282,6 +282,14 @@ export function authorize(
  * the authorization types, and `@xecret/core/authz` does not know what a table
  * looks like. This function is the seam, and it is the only place the two
  * vocabularies meet.
+ *
+ * ── Everything that narrows must cross ──
+ * Every request-time decision — `authorize()`, the CLI token routes, the
+ * key-grant checks in `env-keys-service.ts`, the key reconciliation in
+ * `member-keys.ts` — reaches `can()` through here. A field dropped at this
+ * seam is not a missing feature, it is a missing restriction: a custom role
+ * that never arrives is a member resolved as their unnarrowed built-in role,
+ * with every capability and every level the organisation meant to take away.
  */
 export function toGrantContext(stored: StoredAuthorizationContext): Membership {
   const grants: ResolvedGrant[] = stored.grants.map((grant) => ({
@@ -293,5 +301,12 @@ export function toGrantContext(stored: StoredAuthorizationContext): Membership {
   // `isProduction` is deliberately not part of this mapping: it is a property of
   // the environment being asked about, not of the member, and `can()` takes it
   // separately so it cannot be carried around stale on a membership object.
-  return { role: stored.role, memberStatus: stored.status, grants };
+  return {
+    role: stored.role,
+    memberStatus: stored.status,
+    // Spread only when present, so a member without one maps to exactly the
+    // shape it always did.
+    ...(stored.customRole === undefined ? {} : { customRole: stored.customRole }),
+    grants,
+  };
 }

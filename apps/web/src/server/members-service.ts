@@ -1,5 +1,5 @@
-import type { AccessLevel, OrgRole } from '@xecret/core/authz';
-import { canAssignRole, resolveAccessLevel } from '@xecret/core/authz';
+import type { AccessLevel, Membership, OrgRole } from '@xecret/core/authz';
+import { canAssignRole, effectiveRole, resolveAccessLevel } from '@xecret/core/authz';
 import type { Database, InvitationGrantSeed } from '@xecret/db';
 import { findEnvironmentBySlug, findProjectBySlug, RepositoryError } from '@xecret/db/repositories';
 import type {
@@ -22,7 +22,8 @@ import type { OrgScope } from './tenancy';
  *     check, an admin could mint an owner and act through them. The predicate
  *     is `canAssignRole` from `@xecret/core/authz`; this module is where it is
  *     applied to both sides of every change — the role being handed out *and*
- *     the role currently held by the member being touched.
+ *     the role currently held by the member being touched — measured against
+ *     the caller's *effective* role, custom role included.
  *
  *  2. **The session requirement.** Inviting someone mints a credential (the
  *     invitation token), and the standing rule from the CLI authorization flow
@@ -56,14 +57,35 @@ export function requireMembership(scope: OrgScope): StoredAuthorizationContext {
 }
 
 /**
+ * The part of the caller's membership that decides whose role they may touch:
+ * their built-in role and, when they hold one, the custom role narrowing it.
+ */
+export type RoleAuthority = Pick<StoredAuthorizationContext, 'role' | 'customRole'>;
+
+/**
  * Refuses a change that touches a role above the caller's own.
  *
  * Applied to the target's *current* role when managing an existing member, and
  * to the *new* role when assigning one. The message does not name either role:
  * it is a fixed string, and the caller already knows what they asked for.
+ *
+ * ── The caller's side is their effective role, and takes the membership ──
+ * An owner narrowed to a custom role based on `admin` passes `can()` for
+ * `member.update` exactly as an admin would — and is one, for every purpose the
+ * custom role decides. Compared by their stored `owner`, they could still mint
+ * owners, which is the authority their own custom role withholds. So the
+ * caller is measured by `effectiveRole`, the lower of the two.
+ *
+ * It takes the membership rather than a role so that this cannot be got wrong
+ * at a call site: a route that passes `membership.role` does not compile, where
+ * one that forgot to narrow a role it passed would compile and escalate.
+ *
+ * The subject's side stays their stored `role`. It is never lower than their
+ * effective one, so it is the stricter thing to be measured against — an admin
+ * may not touch an owner however narrowly that owner is currently scoped.
  */
-export function assertRoleAuthority(actorRole: OrgRole, subjectRole: OrgRole): void {
-  if (!canAssignRole(actorRole, subjectRole)) {
+export function assertRoleAuthority(actor: RoleAuthority, subjectRole: OrgRole): void {
+  if (!canAssignRole(effectiveRole(actor.role, actor.customRole), subjectRole)) {
     throw errors.forbidden('You cannot manage a role above your own.');
   }
 }
@@ -120,15 +142,25 @@ export interface EffectiveProjectAccess {
  * *attribution* is computed here, by looking at which grant row matched. The
  * two walks agree by construction because they read the same rows in the same
  * precedence order; the tests pin that.
+ *
+ * `member` carries the custom role along with the built-in one, because the
+ * engine applies it — its base role to the defaults, its ceiling to every
+ * level — and a preview built without it would show the unnarrowed level: the
+ * one thing a preview must never do. Pass the repository's member record
+ * whole; it carries `customRole` from the same join that loaded the role.
+ *
+ * The attribution is of the rule that *matched*: a grant capped by a custom
+ * role's ceiling is still reported as that grant, at the capped level.
  */
 export function effectiveAccess(
-  member: Pick<MemberListEntry, 'role' | 'status'>,
+  member: Pick<MemberListEntry, 'role' | 'status' | 'customRole'>,
   grants: readonly MemberGrant[],
   environments: readonly OrganizationEnvironment[],
 ): EffectiveProjectAccess[] {
-  const membership = {
+  const membership: Membership = {
     role: member.role,
     memberStatus: member.status,
+    ...(member.customRole === undefined ? {} : { customRole: member.customRole }),
     grants: grants.map((grant) => ({
       projectId: grant.projectId,
       environmentId: grant.environmentId,
