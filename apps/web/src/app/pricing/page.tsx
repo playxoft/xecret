@@ -396,31 +396,37 @@ function seatFloorCaveat(seats: number): string | undefined {
  * arrangement it describes.
  */
 function seatFloorSentence(): string {
-  const withFloor = (['pro', 'team', 'enterprise'] as const).filter((id) => MINIMUM_SEATS[id] > 1);
-  const without = (['free', 'pro', 'team', 'enterprise'] as const).filter(
-    (id) => MINIMUM_SEATS[id] <= 1,
-  );
+  const NAMES = { free: 'Free', pro: 'Pro', team: 'Team', enterprise: 'Enterprise' } as const;
+  const ALL = ['free', 'pro', 'team', 'enterprise'] as const;
 
-  const names = { free: 'Free', pro: 'Pro', team: 'Team', enterprise: 'Enterprise' } as const;
-  const list = (ids: readonly (keyof typeof names)[]) =>
-    ids.length < 2
-      ? ids.map((id) => names[id]).join('') || 'no plan'
-      : `${ids
-          .slice(0, -1)
-          .map((id) => names[id])
-          .join(', ')} and ${names[ids[ids.length - 1] as keyof typeof names]}`;
+  // Both halves partition the *same* list. An earlier version derived the
+  // floored plans from ['pro', 'team', 'enterprise'] and the unfloored ones from
+  // all four, so a floor added to Free would have appeared in neither clause —
+  // dropped from a sentence whose whole point is that it cannot outlive the
+  // arrangement it describes.
+  const withFloor = ALL.filter((id) => MINIMUM_SEATS[id] > 1);
+  const without = ALL.filter((id) => MINIMUM_SEATS[id] <= 1);
+
+  // 'A', 'A and B', 'A, B and C' — reads as English at every length. The
+  // previous one joined three or more with commas and no conjunction, and
+  // rendered the empty case as 'no plan' against a plural verb.
+  const list = (parts: readonly string[]): string => {
+    if (parts.length === 0) return '';
+    if (parts.length === 1) return parts[0] as string;
+    return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1] as string}`;
+  };
+
+  const floors = list(withFloor.map((id) => `${NAMES[id]} from ${MINIMUM_SEATS[id]}`));
 
   if (withFloor.length === 0) return 'No plan has a seat minimum.';
-
-  const floors = withFloor
-    .map((id) => `${names[id]} from ${MINIMUM_SEATS[id]}`)
-    .join(withFloor.length > 2 ? ', ' : ' and ');
+  if (without.length === 0) {
+    return `Every plan is billed from a minimum — ${floors} — so a smaller group pays the minimum rather than a lower number.`;
+  }
 
   return (
     `Seats are billed from a minimum on some plans — ${floors} — so a smaller group on one of ` +
-    `those pays the minimum rather than a lower number; ${list(without)} ${
-      without.length === 1 ? 'has' : 'have'
-    } no floor.`
+    `those pays the minimum rather than a lower number; ${list(without.map((id) => NAMES[id]))} ` +
+    `${without.length === 1 ? 'has' : 'have'} no floor.`
   );
 }
 
@@ -1908,6 +1914,22 @@ function productSchema(currency: CurrencyId) {
         description: offerDescription(plan, currency),
         url: absoluteUrl(`/pricing#${plan.id}`),
         availability: 'https://schema.org/InStock',
+        // Outside the price branch, because Enterprise has the *larger* floor —
+        // ten seats against Team's three — and carries no price, so nesting this
+        // under `amount !== null` published it for the smaller floor only. The
+        // round-10 commit added `priceCaveat` to Enterprise to close exactly
+        // this asymmetry on the card and left it open in the structured data.
+        // `eligibleQuantity` qualifies the offer, not the figure, so it belongs
+        // here whether or not there is a figure.
+        ...(minimumSeats(plan.id) > 1
+          ? {
+              eligibleQuantity: {
+                '@type': 'QuantitativeValue',
+                minValue: minimumSeats(plan.id),
+                unitText: 'member',
+              },
+            }
+          : {}),
         ...(amount === null
           ? {}
           : {
@@ -1942,22 +1964,6 @@ function productSchema(currency: CurrencyId) {
                           ? plan.unitText
                           : `${plan.unitText}, billed annually`,
                     }),
-                // The seat floor, structurally and not only as prose in the
-                // description. `eligibleQuantity` with a `minValue` is the
-                // field schema.org has for "this price applies from N units
-                // up", so a consumer reading the offer by its fields — rather
-                // than parsing a sentence — still sees that a two-person team
-                // on Team is invoiced for three. Emitted only where there is a
-                // floor above one, because `minValue: 1` says nothing.
-                ...(minimumSeats(plan.id) > 1
-                  ? {
-                      eligibleQuantity: {
-                        '@type': 'QuantitativeValue',
-                        minValue: minimumSeats(plan.id),
-                        unitText: 'member',
-                      },
-                    }
-                  : {}),
               },
             }),
       };
@@ -2010,12 +2016,43 @@ function PlanFeatureItem({ feature }: { feature: PlanFeature }) {
  * `visibility: hidden`, which would leave every card announcing eight prices
  * one after another to a screen reader.
  */
-function PriceBlock({ value, className }: { value: PlanPrice; className: string }) {
+function PriceBlock({
+  value,
+  className,
+  reserveNote,
+}: {
+  value: PlanPrice;
+  className: string;
+  reserveNote: boolean;
+}) {
   return (
     <div className={className}>
       <p className="text-fg text-3xl font-semibold tracking-[-0.02em]">{value.price}</p>
       <p className="text-fg-subtle mt-1 text-sm">{value.unit}</p>
-      {value.note === undefined ? null : (
+      {/* The annual total, and where the plan has one for the *other* period, an
+          invisible line of the same height in its place.
+
+          This is what keeps the toggle from moving the page, and it replaces a
+          `min-h` on the box. The cards sit in one grid row, so the row is as
+          tall as the tallest card and pressing Yearly — which adds this line to
+          two of the five — used to move every feature list and CTA in the row.
+          A floor on the box fixed that by being as tall as the tallest yearly
+          state, which meant Free carried four rems of empty space to hold a line
+          it never renders.
+
+          Reserving the line per card instead makes each card's two states the
+          same height, so no card changes height, so the row cannot. Nothing is
+          padded that does not need it, and the arithmetic stays correct on its
+          own if a sheet gains or loses a note. `aria-hidden` because it is
+          `invisible` rather than `hidden` — it occupies space, so it is still in
+          the accessibility tree without it. */}
+      {value.note === undefined ? (
+        reserveNote ? (
+          <p aria-hidden="true" className="invisible mt-1 text-xs leading-5">
+            &nbsp;
+          </p>
+        ) : null
+      ) : (
         <p className="text-fg-subtle mt-1 text-xs leading-5">{value.note}</p>
       )}
     </div>
@@ -2472,43 +2509,38 @@ export default async function PricingPage() {
                       the price against it puts every figure on one baseline. The
                       audience line follows, where a varying height costs nothing.
 
-                      `min-h` because the yearly figures carry a third line the
-                      monthly ones do not; without it every feature list in the
-                      row jumps as the billing toggle is pressed.
+                      No `min-h` here any more. This box used to carry one,
+                      because the yearly figures have a third line the monthly
+                      ones do not and the cards share a grid row — so pressing
+                      Yearly made the row taller and moved every feature list and
+                      CTA in it. A floor equal to the tallest yearly state fixed
+                      the movement and cost Free about four rems of empty space
+                      held open for a line it never renders, which is a poor
+                      trade on the one card whose whole message is that it is
+                      simple.
 
-                      Raised from 6.25rem when `priceCaveat` was added *inside*
-                      this box. On Team that made the monthly block price +
-                      unit + caveat and the yearly block price + unit + note +
-                      caveat, so the tallest state cleared the old floor and the
-                      recommended card started shifting its features and CTA by
-                      about 12px on every toggle — the exact jump the floor
-                      exists to absorb.
-
-                      The floor is measured, not guessed: price 2.25rem + unit
-                      1.5 + note 1.5 + caveat 1.75 = 7rem for the tallest state
-                      (Team, yearly), against 6.75rem for its monthly one. 8rem
-                      clears both with a line of slack, which is what a wrapped
-                      caveat would cost — "Billed from 3 members up" needs about
-                      130px at this size against roughly 240px of content box,
-                      so it does not wrap today, but the slack is the difference
-                      between a comment that is true and one that merely has not
-                      been tested at a narrower width. */}
-                  <div className="mt-4 min-h-[8rem]">
+                      `PriceBlock` reserves the line per card instead — see the
+                      note there. Each card's two states are the same height, so
+                      no card changes height, so the row cannot, and nothing is
+                      padded that does not need padding. */}
+                  <div className="mt-4">
                     {/* Ten figures, one shown. Every currency and both
                         periods are in the markup, and CSS picks the pair the
                         two radio groups name — so switching either needs no
                         request and no JavaScript. `display: none` on the seven
                         that are hidden, never `visibility`, or every card
-                        announces eight prices in a row to a screen reader. */}
+                        announces ten prices in a row to a screen reader. */}
                     {CURRENCIES.map((currency) => (
                       <Fragment key={currency.id}>
                         <PriceBlock
                           className={`x-price x-price-${currency.id}-monthly`}
                           value={plan.prices[currency.id].monthly}
+                          reserveNote={plan.prices[currency.id].yearly.note !== undefined}
                         />
                         <PriceBlock
                           className={`x-price x-price-${currency.id}-yearly`}
                           value={plan.prices[currency.id].yearly}
+                          reserveNote={false}
                         />
                       </Fragment>
                     ))}
@@ -2573,14 +2605,20 @@ export default async function PricingPage() {
             **Inside** `.x-billing-body`, and it has to be: the rule that reveals
             one add-on price per currency is
             `.x-cur-*:checked ~ .x-billing-body .x-addon-*`, so moving this band
-            out blanks all ten figures. This comment used to say the opposite.
+            out blanks all five figures. This comment used to say the opposite.
             What is true is that add-ons have no *yearly* rate, which is why the
             rule keys on currency alone and not on the period.
 
-            The body text states what each costs us. That is deliberate — see
-            the note on ADDONS — and it is the part of this page most likely to
-            be trimmed by somebody tidying marketing copy. It should not be. */}
-            <div className="border-line bg-surface mt-6 grid gap-6 rounded-xl border p-6 sm:grid-cols-2 sm:p-7">
+            One column, not two. `sm:grid-cols-2` was right while SCIM sat here
+            at $249; with SCIM restored to an Enterprise inclusion there is a
+            single add-on, and a two-column grid rendered it at half width with
+            an empty column beside it. `sm:max-w-xl` keeps the one card from
+            running the full width of the section instead.
+
+            The body text states what it costs us. That is deliberate — see the
+            note on ADDONS — and it is the part of this page most likely to be
+            trimmed by somebody tidying marketing copy. It should not be. */}
+            <div className="border-line bg-surface mt-6 grid gap-6 rounded-xl border p-6 sm:max-w-xl sm:p-7">
               {ADDONS.map((addon) => (
                 <div key={addon.name}>
                   {/* The chip carries the same word the matrix cells and the card

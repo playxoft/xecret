@@ -596,6 +596,62 @@ describe('the yearly rate is the one the page opens on', () => {
     expect(schema).toContain('minimumSeats(plan.id)');
   });
 
+  it('never charges for directory sync, on the page the charge lived on', () => {
+    // `marketing-pages.test.ts` guards `$249` across the six prose pages, which
+    // is every page except the one the add-on was actually declared in. Re-adding
+    // a SCIM entry to `ADDONS` here passed all 75 tests: the guard did not cover
+    // the regression's home.
+    //
+    // `pricing-plan.md` §3 marks SCIM `✅ included` at Enterprise and §8.3
+    // prices the add-on on Scale, which #101 removed. There is no tier left that
+    // buys it, so there is no price to publish.
+    // Comment-stripped, because the page explains at length why this charge is
+    // gone and quotes the figure five times doing it. That explanation is the
+    // thing most worth keeping, so the assertion reads the code instead.
+    const code = withoutComments(SOURCE);
+    expect(code, 'the retired $249 SCIM charge is back').not.toContain('$249');
+
+    const addons = code.slice(code.indexOf('const ADDONS = ['));
+    const band = addons.slice(0, addons.indexOf('] as const;'));
+    expect(band, 'SCIM is an add-on again').not.toContain('SCIM');
+  });
+
+  it('pins the seat floor, which is the one number that can enlarge a bill', () => {
+    // Nothing tested this. Deleting both `priceCaveat` lines — which removes the
+    // floor from the cards *and* from `offerDescription`, so from the JSON-LD —
+    // left all 75 tests green, as did replacing the matrix cell with a literal.
+    // The `MINIMUM_SEATS` docblock calls it the one published number that can
+    // make a bill larger than the reader's arithmetic, and it was the only one
+    // on the page with no guard.
+    const code = withoutComments(SOURCE);
+
+    // Read from the engine, never retyped.
+    expect(code).toContain('PLAN_DEFINITIONS.team.minimumSeats');
+    expect(code).toContain('PLAN_DEFINITIONS.enterprise.minimumSeats');
+
+    // Disclosed on both cards that have a floor, and in the matrix.
+    for (const tier of ['team', 'enterprise'] as const) {
+      expect(code, `${tier} card does not disclose its floor`).toContain(
+        `priceCaveat: seatFloorCaveat(MINIMUM_SEATS.${tier})`,
+      );
+    }
+    expect(code, 'the matrix row is gone').toContain("label: 'Smallest billable team'");
+    expect(code, 'the matrix row stopped deriving').toContain('seatFloor(MINIMUM_SEATS.team)');
+
+    // And in the FAQ, composed rather than asserted.
+    expect(code).toContain('seatFloorSentence()');
+
+    // Every floor above one reaches the structured data as a field.
+    const schema = withoutComments(SOURCE.slice(locate('function productSchema(')));
+    expect(schema).toContain('eligibleQuantity');
+    expect(schema).toContain('minimumSeats(plan.id)');
+
+    // And the engine still has floors worth publishing, so none of the above is
+    // vacuously satisfied by every plan having none.
+    expect(PLANS.team.minimumSeats).toBeGreaterThan(1);
+    expect(PLANS.enterprise.minimumSeats).toBeGreaterThan(1);
+  });
+
   it('publishes the currency the page actually opened on', () => {
     // Pinned to USD, this was wrong on four sheets out of five: a visitor in
     // Bengaluru was served ₹149 with `priceCurrency: 'USD'` underneath it.

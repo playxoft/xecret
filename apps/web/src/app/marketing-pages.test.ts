@@ -453,6 +453,32 @@ describe('the add-ons are described the same way everywhere', () => {
     }
   });
 
+  it('gives the notice the legal pages promise before a change takes effect', () => {
+    // §Changes: "for a material change we will give notice … before it takes
+    // effect, 30 days ahead where we reasonably can". This PR rewrote the
+    // contractual plan ladder, which is material by any reading.
+    //
+    // The date has been wrong in both directions here. It first stayed at the
+    // old value, so a customer got no signal that the prices binding them had
+    // changed. Then it moved to the publish date, which made the page promise
+    // advance notice and give none — and fed `datePublished`, so the new table
+    // claimed to have been in force before it was written. It leads the publish
+    // date now, which is the only arrangement the document's own §Changes
+    // supports.
+    for (const page of ['terms', 'privacy'] as const) {
+      const source = SOURCES.get(page) ?? '';
+      const updated = /const UPDATED = '([\d-]+)'/.exec(source)?.[1];
+      const effective = /const EFFECTIVE = '([\d-]+)'/.exec(source)?.[1];
+
+      expect(updated, `${page} has no UPDATED date`).toBeDefined();
+      expect(effective, `${page} has no EFFECTIVE date`).toBeDefined();
+      expect(
+        Date.parse(effective as string),
+        `${page} takes effect before it was published`,
+      ).toBeGreaterThanOrEqual(Date.parse(updated as string));
+    }
+  });
+
   it('never charges Enterprise for directory sync', () => {
     // `pricing-plan.md` §3 marks SCIM `✅ included` in the Enterprise column and
     // §8.4 explains why — the $1,500 floor absorbs both WorkOS connections at
