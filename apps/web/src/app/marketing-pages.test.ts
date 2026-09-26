@@ -47,6 +47,12 @@ const SOURCES = new Map(
 /** Every page's text at once, for the "nowhere on the site" assertions. */
 const ALL = [...SOURCES.values()].join('\n');
 
+/** `indexOf`, but a miss sorts last instead of first. */
+function idx(haystack: string, needle: string): number {
+  const at = haystack.indexOf(needle);
+  return at < 0 ? haystack.length : at;
+}
+
 /**
  * `25` also written as `twenty-five`.
  *
@@ -225,13 +231,29 @@ describe('every limit stated in prose matches the engine', () => {
     return end < 0 ? rest : rest.slice(0, end);
   }
 
+  /**
+   * The pages that enumerate the free tier, and therefore must be checked.
+   *
+   * Named explicitly because the alternative was a silent skip: `freeRegion`
+   * finds its region by three literal phrasings and returns `''` otherwise, and
+   * the caller used to `continue` on that — so rewording `/terms`'s
+   * "Free — $0, forever." to "Free: $0 forever." would switch off all five free
+   * ceiling assertions on the contractual page and a later drift from 3 members
+   * to 9 would ship green. `/privacy` states retention but never enumerates the
+   * tier, and it already took that branch, so the no-op path was live rather
+   * than hypothetical.
+   */
+  const ENUMERATES_FREE = ['terms', 'faq', 'features', 'about', '.'] as const;
+
   it('every page that states the free ceilings states the engine ones', () => {
     const free = PLANS.free.limits;
 
-    for (const [page, source] of SOURCES) {
-      // Only the pages that actually enumerate the free tier.
+    for (const page of ENUMERATES_FREE) {
+      const source = SOURCES.get(page) ?? '';
       const region = freeRegion(source);
-      if (region === '') continue;
+      // Loud, not skipped: an unfindable region means the phrasing moved, and
+      // the answer to that is a failing test rather than five fewer checks.
+      expect(region, `${page} enumerates the free tier but no region was found`).not.toBe('');
 
       for (const field of [
         'organizations',
@@ -311,8 +333,36 @@ describe('the add-ons are described the same way everywhere', () => {
   // Enterprise-only add-on. Four pages used to gate both at Enterprise, which
   // told a Team reader SAML was out of reach and SCIM was within it — the two
   // have mirror-image rules and collapsing them gets both wrong.
-  it('no page gates SAML at Enterprise alone', () => {
-    expect(ALL).not.toMatch(/SAML single sign-on and SCIM provisioning are named there/i);
+  it('every page that names SAML says it starts at Team', () => {
+    // The previous version of this banned one literal sentence — and that
+    // sentence existed in neither `main` nor `HEAD`, only inside the assertion
+    // itself. It was written against a string the same commit had already
+    // replaced, so it could never fail and tested nothing its name claimed.
+    //
+    // Two invariants, and both are page-level rather than sentence-level. A
+    // per-sentence version fired on `/terms`'s Enterprise bullet — "SAML single
+    // sign-on is included at this tier" is a true statement that names no Team,
+    // because the Team half is a paragraph further down.
+    for (const [page, source] of SOURCES) {
+      if (!source.includes('SAML')) continue;
+      const text = source.replace(/\s+/g, ' ');
+
+      // Never Enterprise-only: that is SCIM's rule, not SAML's, and the one
+      // sentence that used to cover both got each wrong in opposite directions.
+      //
+      // Clipped at the clause, not a character count. A 200-character window
+      // ran past the semicolon into "directory sync (SCIM) is $249 … at
+      // Enterprise only" and failed on SCIM's rule while claiming SAML's.
+      const after = text.slice(text.indexOf('SAML'));
+      const clause = after.slice(0, Math.min(...[';', '.'].map((d) => idx(after, d))));
+      expect(clause, `${page} calls SAML Enterprise-only`).not.toMatch(/enterprise[- ]only/i);
+
+      // Any page that quotes the price has to say where it starts.
+      if (!text.includes('$199')) continue;
+      expect(text, `${page} prices SAML without saying it starts at Team`).toMatch(
+        /(from|only)[^.]{0,40}Team|Team[^.]{0,40}(and above|only)/,
+      );
+    }
   });
 
   it('never publishes an add-on price without its unit', () => {

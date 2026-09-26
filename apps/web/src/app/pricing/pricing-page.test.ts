@@ -521,11 +521,15 @@ describe('the yearly rate is the one the page opens on', () => {
     // complaint.
     const schema = withoutComments(SOURCE.slice(locate('function productSchema(')));
 
-    // An ISO-8601 `Duration`, not the number 12. schema.org reads a numeric
-    // `billingDuration` against `unitCode`, so `12` + `unitCode: 'MON'` would
-    // redefine the reference quantity as one month and contradict `unitText`,
-    // which says it is one member-month.
-    expect(schema).toContain("billingDuration: 'P1Y'");
+    // In the unit string, where it cannot be misparsed. Both spellings of
+    // `billingDuration` were wrong — `12` + `unitCode: 'MON'` redefines the
+    // reference quantity and fights `unitText`, and `'P1Y'` means "$5 covers
+    // the year", a twelvefold understatement of the $60 actually charged — and
+    // Google documents neither for `Offer`, so the disclosure never landed.
+    expect(schema).toContain('billed annually');
+    expect(schema, 'billingDuration is back; read the note beside it').not.toContain(
+      'billingDuration',
+    );
     expect(schema, 'unitCode is back, and it fights unitText').not.toContain('unitCode');
   });
 

@@ -1663,13 +1663,21 @@ function offerDescription(plan: Plan, currency: CurrencyId): string {
  * as publishing the wrong one. It is a function now, and it is handed the same
  * currency the cards open on.
  *
- * ── Why the offer says the term ──
+ * ── Why the offer says the term, in words ──
  * The published figure is the yearly rate, which is a per-month price that can
- * only be bought twelve at a time. `unitText` alone ("member/month") reads to
- * a shopping surface as a monthly-purchasable price, so the specification
- * carries `billingDuration: 12` with `billingIncrement` and a unit code — the
- * difference between "$5 a month" and "$5 a month on an annual term", which is
- * the difference between an accurate rich result and a complaint.
+ * only be bought twelve at a time. A bare "member/month" reads to a shopping
+ * surface as a monthly-purchasable price, so the unit string says
+ * "member/month, billed annually" instead — the difference between "$5 a month"
+ * and "$5 a month on an annual term", which is the difference between an
+ * accurate rich result and a complaint.
+ *
+ * It is deliberately *not* `billingDuration`. Both spellings of that field were
+ * wrong here: `12` with `unitCode: 'MON'` redefines the reference quantity and
+ * contradicts the unit text, and `'P1Y'` means — per schema.org's own wording,
+ * "for how long this price will be billed" — that five dollars covers the year,
+ * understating the real $60 twelvefold. Google does not document the property
+ * for `Offer` either, so neither spelling would have reached a rich result. The
+ * note beside the field records this so it is not reintroduced a third time.
  *
  * Enterprise carries no `price` at all rather than a placeholder zero. A `0`
  * there would be published to a shopping surface as free, which is the one
@@ -1717,21 +1725,31 @@ function productSchema(currency: CurrencyId) {
                 '@type': 'UnitPriceSpecification',
                 price: amount,
                 priceCurrency: code,
-                ...(plan.unitText === null ? {} : { unitText: plan.unitText }),
-                // Only where the figure is genuinely an annual-term rate.
-                // Free and self-hosting are `0` on any term, and saying
-                // "billed for 12 months" about free would be nonsense.
+                // The term lives in the unit string, and `billingDuration` is
+                // gone. Two goes at that field were both wrong in opposite
+                // directions. `billingDuration: 12` with `unitCode: 'MON'`
+                // redefines the reference quantity and contradicts
+                // `unitText`; `billingDuration: 'P1Y'` reads, by schema.org's
+                // own definition — "for how long this price will be billed" —
+                // as *five dollars covering a year*, which understates the
+                // real $60 by a factor of twelve. And it buys nothing even
+                // when correct: `billingDuration` is not among the properties
+                // Google documents for `Offer`, so the disclosure it was added
+                // to publish never reached a rich result either way.
                 //
-                // `billingDuration` is an ISO-8601 `Duration` and not the
-                // number 12: schema.org reads a *numeric* `billingDuration`
-                // against `unitCode`, so pairing `12` with `unitCode: 'MON'`
-                // would have redefined the reference quantity as one month and
-                // contradicted `unitText`, which says it is one member-month.
-                // A `Duration` needs no unit and leaves `unitText` to mean the
-                // one thing it is there to mean.
-                ...(plan.prices[currency].yearly.amount === undefined
+                // A plain unit string cannot be misparsed, and the annual
+                // total is already spelled out in the offer description, which
+                // *is* read. Free and self-hosting keep the bare unit: they
+                // are `0` on any term, and "billed annually" about free is
+                // nonsense.
+                ...(plan.unitText === null
                   ? {}
-                  : { billingDuration: 'P1Y' }),
+                  : {
+                      unitText:
+                        plan.prices[currency].yearly.amount === undefined
+                          ? plan.unitText
+                          : `${plan.unitText}, billed annually`,
+                    }),
               },
             }),
       };
