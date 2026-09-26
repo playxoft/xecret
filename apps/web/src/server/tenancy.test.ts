@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { uuidv7 } from '@xecret/core/ids';
 import { AuthorizationError } from '@xecret/core/authz';
+import type { CustomRole } from '@xecret/core/authz';
 import type { ApiError } from './errors';
 
 /**
@@ -107,6 +108,16 @@ function membership(role: 'owner' | 'admin' | 'developer' | 'viewer' = 'owner') 
     role,
     status: 'active' as const,
     grants: [],
+  };
+}
+
+function customRole(over: Partial<CustomRole> = {}): CustomRole {
+  return {
+    id: uuidv7(),
+    name: 'Auditor',
+    baseRole: 'viewer',
+    allowedActions: ['project.read', 'environment.read', 'secret.read', 'secret.update'],
+    ...over,
   };
 }
 
@@ -304,6 +315,45 @@ describe('authorization', () => {
     expect(() => authorize(scope, 'secret.update')).not.toThrow();
   });
 
+  // The stored context carries the custom role from the membership join, and
+  // `authorize()` must hand it to `can()`: dropped at the seam, the member below
+  // resolves as a plain admin and writes secrets.
+  it('narrows a request by the custom role the stored membership carries', async () => {
+    repositories.loadAuthorizationContext.mockResolvedValue({
+      ...membership('admin'),
+      customRole: customRole(),
+    });
+    repositories.findEnvironmentBySlug.mockResolvedValue({ ...environment, isProduction: false });
+
+    const scope = await resolveEnvironmentPath(
+      userPrincipal,
+      { orgSlug: 'playxoft', projectSlug: 'default', envSlug: 'development' },
+      services,
+    );
+
+    // Viewer-based: the `secret.update` its list names is not the base's to give.
+    expect(() => authorize(scope, 'secret.update')).toThrowError(AuthorizationError);
+    expect(() => authorize(scope, 'secret.read')).not.toThrow();
+  });
+
+  it('applies a custom role’s access ceiling at request time', async () => {
+    repositories.loadAuthorizationContext.mockResolvedValue({
+      ...membership('owner'),
+      customRole: customRole({
+        baseRole: 'owner',
+        accessCeiling: { nonProduction: 'admin', production: 'none' },
+      }),
+    });
+
+    const scope = await resolveEnvironmentPath(
+      userPrincipal,
+      { orgSlug: 'playxoft', projectSlug: 'default', envSlug: 'production' },
+      services,
+    );
+
+    expect(() => authorize(scope, 'secret.read')).toThrowError(AuthorizationError);
+  });
+
   it('denies a viewer any write', async () => {
     repositories.loadAuthorizationContext.mockResolvedValue(membership('viewer'));
     repositories.findEnvironmentBySlug.mockResolvedValue({ ...environment, isProduction: false });
@@ -403,5 +453,17 @@ describe('grant context adaptation', () => {
 
   it('preserves a suspended status, which denies everything downstream', () => {
     expect(toGrantContext({ ...membership(), status: 'suspended' }).memberStatus).toBe('suspended');
+  });
+
+  // The seam every request-time decision passes through. A custom role left
+  // behind here is a restriction that never reaches `can()`.
+  it('carries the custom role across, unchanged', () => {
+    const role = customRole({ accessCeiling: { nonProduction: 'read', production: 'none' } });
+
+    expect(toGrantContext({ ...membership('admin'), customRole: role }).customRole).toBe(role);
+  });
+
+  it('maps a member without a custom role to exactly the shape it always had', () => {
+    expect(Object.keys(toGrantContext(membership()))).toEqual(['role', 'memberStatus', 'grants']);
   });
 });

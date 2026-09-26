@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import {
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -16,6 +17,9 @@ import type { AccessLevel } from '@xecret/core/authz';
 import { bytea, citext } from './columns';
 import { memberStatusEnum, orgRoleEnum } from './enums';
 import { users } from './identity';
+// A cycle — ./roles imports `organizations` from here. Safe for the reason
+// given at the `foreignKey` below; the note on the other side says the same.
+import { customRoles } from './roles';
 
 export const organizations = pgTable(
   'organizations',
@@ -84,6 +88,36 @@ export const orgMembers = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     role: orgRoleEnum('role').notNull(),
+
+    /**
+     * A custom role narrowing `role`, or null for the built-in role as-is.
+     *
+     * **`role` stays authoritative.** The custom role is a narrowing applied on
+     * top, never a replacement — which is what keeps `canAssignRole` meaningful
+     * and what makes a null here mean exactly what it meant before this column
+     * existed.
+     *
+     * The foreign key is composite — `(org_id, custom_role_id)` against
+     * `custom_roles (org_id, id)`, declared with the table's constraints below
+     * — so a member can only ever hold a role of their own organisation. A null
+     * skips it (MATCH SIMPLE) and needs no row to point at.
+     *
+     * `ON DELETE NO ACTION`, deliberately. The other actions are worse:
+     *   - `SET NULL` would silently **widen** every member holding the role the
+     *     moment it was deleted — a "Deployer" who could not touch production
+     *     becomes a plain developer who can, with no act that looks like a
+     *     permission change and nothing in the audit log that reads as one.
+     *   - `CASCADE` would delete the members.
+     * So a role in use cannot be deleted until its members are moved off it,
+     * and the widening becomes something an administrator did on purpose.
+     *
+     * NO ACTION rather than `restrict`: Postgres blocks the same deletes with
+     * either, but `restrict` changed its error from 23503 to 23001 in Postgres
+     * 18, and "role still in use" is an error the application maps. Migration
+     * 0017 explains why hard-deleting the organisation still cascades cleanly,
+     * whichever of the two cascades from `organizations` fires first.
+     */
+    customRoleId: uuid('custom_role_id'),
     status: memberStatusEnum('status').notNull().default('active'),
     seatAssigned: boolean('seat_assigned').notNull().default(true),
     invitedBy: uuid('invited_by').references(() => users.id),
@@ -100,6 +134,24 @@ export const orgMembers = pgTable(
     index('org_members_org_idx')
       .on(t.orgId)
       .where(sql`${t.status} = 'active'`),
+    // See `customRoleId`. Here, in the extra config, because a composite key
+    // cannot be written with `.references()` — and it is also what makes the
+    // import cycle with ./roles safe: drizzle calls this callback lazily, from
+    // `getTableConfig`, after both modules have finished evaluating.
+    foreignKey({
+      name: 'org_members_org_id_custom_role_id_custom_roles_org_id_id_fk',
+      columns: [t.orgId, t.customRoleId],
+      foreignColumns: [customRoles.orgId, customRoles.id],
+    })
+      .onDelete('no action')
+      .onUpdate('no action'),
+    // Read by the "is this role still in use?" check that guards deletion, by
+    // the foreign key's own check when a role is deleted, and by the roster
+    // view. Partial, because nearly every row carries null and none of them is
+    // ever the answer.
+    index('org_members_custom_role_idx')
+      .on(t.customRoleId)
+      .where(sql`${t.customRoleId} is not null`),
   ],
 );
 

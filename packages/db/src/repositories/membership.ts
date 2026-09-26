@@ -1,7 +1,9 @@
 import { and, asc, count, eq, isNull, sql } from 'drizzle-orm';
-import type { AccessLevel, OrgRole } from '@xecret/core/authz';
+import type { GetColumnData, InferColumnsDataTypes } from 'drizzle-orm';
+import type { AccessLevel, CustomRole, OrgRole } from '@xecret/core/authz';
 import { uuidv7 } from '@xecret/core/ids';
 import { accessGrants } from '../schema/access';
+import { customRoles } from '../schema/roles';
 import { users } from '../schema/identity';
 import { environments, projects } from '../schema/resources';
 import { orgMembers, organizations } from '../schema/tenancy';
@@ -34,6 +36,14 @@ export interface MemberRecord {
   userId: string;
   role: OrgRole;
   status: MemberStatus;
+  /**
+   * The organisation's narrowing of `role`, resolved from the joined row.
+   *
+   * Carried here rather than left as six loose columns so that exactly one
+   * place in the codebase knows how the join maps onto the shape `can()` reads,
+   * and every caller gets the same answer.
+   */
+  customRole?: CustomRole | undefined;
 }
 
 /** A row of `access_grants`, as the authorization engine consumes it. */
@@ -60,6 +70,13 @@ export interface AuthorizationContext {
   memberId: string;
   role: OrgRole;
   status: MemberStatus;
+  /**
+   * The organisation's own narrowing of `role`, when the member holds one.
+   *
+   * Absent for almost everybody. `role` stays authoritative either way — this
+   * only ever subtracts from it.
+   */
+  customRole?: CustomRole | undefined;
   grants: MemberGrant[];
 }
 
@@ -94,7 +111,15 @@ export interface MemberPage {
   hasMore: boolean;
 }
 
-/** The columns a member is read and returned as, kept in one place. */
+/**
+ * The columns of `org_members` a member is written and returned as.
+ *
+ * `org_members` alone, on purpose. This is the set every `RETURNING` uses, and a
+ * `RETURNING` list can name only the table being written — a `custom_roles`
+ * column in it fails the statement, which is every membership write at once. It
+ * is also what the lookups that decide nothing about access read: the last-owner
+ * guard needs a role and a status, not the narrowing on top of them.
+ */
 const MEMBER_COLUMNS = {
   id: orgMembers.id,
   orgId: orgMembers.orgId,
@@ -103,7 +128,157 @@ const MEMBER_COLUMNS = {
   status: orgMembers.status,
 } as const;
 
-/** Likewise for a grant. */
+/**
+ * The narrowing, carried on the same row that carries the role it narrows.
+ *
+ * Joined rather than fetched separately because it is read on every
+ * authorization decision, and a second query per request to answer a question
+ * that is NULL for almost everybody would be paid by everybody.
+ *
+ * Never selected without `customRoleJoin()` in the same statement: every column
+ * but the first belongs to `custom_roles`, and PostgreSQL refuses a column whose
+ * table is not in the `FROM` clause.
+ */
+const JOINED_MEMBER_COLUMNS = {
+  ...MEMBER_COLUMNS,
+  customRoleId: orgMembers.customRoleId,
+  customRoleName: customRoles.name,
+  customRoleBase: customRoles.baseRole,
+  customRoleActions: customRoles.allowedActions,
+  customRoleCeilingNonProduction: customRoles.ceilingNonProduction,
+  customRoleCeilingProduction: customRoles.ceilingProduction,
+} as const;
+
+/** What the roster and the single-member page read: the joined member and the person. */
+const MEMBER_LIST_COLUMNS = {
+  ...JOINED_MEMBER_COLUMNS,
+  seatAssigned: orgMembers.seatAssigned,
+  createdAt: orgMembers.createdAt,
+  user: {
+    id: users.id,
+    email: users.email,
+    displayName: users.displayName,
+    avatarUrl: users.avatarUrl,
+  },
+} as const;
+
+type CustomRoleColumns = Omit<typeof JOINED_MEMBER_COLUMNS, keyof typeof MEMBER_COLUMNS>;
+
+/**
+ * One joined row, derived from the column sets so that adding a column is one
+ * edit. The `custom_roles` half is nullable whatever the table says: the join is
+ * LEFT, so it is all nulls for a member who holds no role.
+ */
+type JoinedMemberRow = InferColumnsDataTypes<typeof MEMBER_COLUMNS> & {
+  [K in keyof CustomRoleColumns]: GetColumnData<CustomRoleColumns[K]> | null;
+};
+
+/**
+ * The one join condition onto `custom_roles`, used by every query that selects
+ * `JOINED_MEMBER_COLUMNS`.
+ *
+ * LEFT, because almost every member has no custom role and an inner join would
+ * make them all disappear — which would read as "not a member" and deny them
+ * everything.
+ *
+ * Both columns, not the id alone. The role must belong to the organisation the
+ * membership does, so a row pointing at another tenant's role — a bug, or a
+ * write by somebody who reached the database — can never be what shapes this
+ * organisation's authorization. The composite foreign key says the same thing
+ * at the schema; this is the read refusing to depend on it.
+ */
+function customRoleJoin() {
+  return and(eq(customRoles.id, orgMembers.customRoleId), eq(customRoles.orgId, orgMembers.orgId));
+}
+
+/** What an unresolved reference is called wherever the role's name is shown. */
+const UNRESOLVED_CUSTOM_ROLE_NAME = 'Unresolved custom role';
+
+/**
+ * Rebuilds the `CustomRole` the engine consumes from the joined columns.
+ *
+ * Returns `undefined` — not a permissive default — when the member holds no
+ * custom role, so the common path hands `can()` exactly what it handed before
+ * this column existed.
+ *
+ * ── A reference the join did not resolve ──
+ * `custom_role_id` set with nothing joined should be impossible — the composite
+ * foreign key admits neither a dangling reference nor one into another
+ * organisation — so seeing it means that guarantee was lost somewhere. Reading
+ * it as "no custom role" would hand the member their full built-in role: the
+ * silent widening `ON DELETE RESTRICT` exists to prevent, arrived at by another
+ * route. So it resolves to a role that permits nothing and reaches nothing, and
+ * the member stays shut out until somebody repairs the row on purpose.
+ *
+ * A row whose ceiling columns are half-set cannot exist: `custom_roles_ceiling_check`
+ * forbids it at the database. The check here is for the type, not the data.
+ */
+function toCustomRole(row: JoinedMemberRow): CustomRole | undefined {
+  if (row.customRoleId === null) return undefined;
+
+  if (
+    row.customRoleName === null ||
+    row.customRoleBase === null ||
+    row.customRoleActions === null
+  ) {
+    return {
+      id: row.customRoleId,
+      name: UNRESOLVED_CUSTOM_ROLE_NAME,
+      baseRole: row.role,
+      allowedActions: [],
+      accessCeiling: { nonProduction: 'none', production: 'none' },
+    };
+  }
+
+  const ceiling =
+    row.customRoleCeilingNonProduction !== null && row.customRoleCeilingProduction !== null
+      ? {
+          nonProduction: row.customRoleCeilingNonProduction,
+          production: row.customRoleCeilingProduction,
+        }
+      : undefined;
+
+  return {
+    id: row.customRoleId,
+    name: row.customRoleName,
+    baseRole: row.customRoleBase,
+    allowedActions: row.customRoleActions,
+    ...(ceiling ? { accessCeiling: ceiling } : {}),
+  };
+}
+
+/**
+ * One joined row, as the rest of this module wants it.
+ *
+ * The only place the loose `customRole*` columns are read. Everything that
+ * leaves this module carries `customRole` or nothing, so the columns cannot
+ * reach a caller — or a response body built from one.
+ */
+function toMemberRecord(row: JoinedMemberRow): MemberRecord {
+  const customRole = toCustomRole(row);
+  return {
+    id: row.id,
+    orgId: row.orgId,
+    userId: row.userId,
+    role: row.role,
+    status: row.status,
+    ...(customRole ? { customRole } : {}),
+  };
+}
+
+/** Likewise for the roster's rows, which add the person to the member. */
+function toMemberListEntry(
+  row: JoinedMemberRow & Omit<MemberListEntry, keyof MemberRecord>,
+): MemberListEntry {
+  return {
+    ...toMemberRecord(row),
+    seatAssigned: row.seatAssigned,
+    createdAt: row.createdAt,
+    user: row.user,
+  };
+}
+
+/** The columns a grant is read and returned as, kept in one place. */
 const GRANT_COLUMNS = {
   id: accessGrants.id,
   projectId: accessGrants.projectId,
@@ -117,7 +292,7 @@ export async function findMembership(
   userId: string,
 ): Promise<MemberRecord | null> {
   const [row] = await membershipQuery(exec, orgId, userId);
-  return row ?? null;
+  return row ? toMemberRecord(row) : null;
 }
 
 /**
@@ -179,13 +354,14 @@ export async function loadOrganizationAuthorizationContexts(
   params: { orgId: string; projectId?: string | undefined },
 ): Promise<AuthorizationContext[]> {
   const members = await exec
-    .select(MEMBER_COLUMNS)
+    .select(JOINED_MEMBER_COLUMNS)
     .from(orgMembers)
     .innerJoin(users, and(eq(users.id, orgMembers.userId), isNull(users.deletedAt)))
     .innerJoin(
       organizations,
       and(eq(organizations.id, orgMembers.orgId), isNull(organizations.deletedAt)),
     )
+    .leftJoin(customRoles, customRoleJoin())
     .where(and(eq(orgMembers.orgId, params.orgId), eq(orgMembers.status, 'active')))
     .orderBy(asc(orgMembers.createdAt), asc(orgMembers.id));
 
@@ -213,7 +389,13 @@ export async function loadOrganizationAuthorizationContexts(
     else byMember.set(memberId, [grant]);
   }
 
-  return members.map((member) => toAuthorizationContext(member, byMember.get(member.id) ?? []));
+  // Through `toMemberRecord`, like every other joined read. Handing the raw row
+  // on dropped the custom role on exactly this path — the one that decides who
+  // an environment key is sealed to — so a production ceiling never applied and
+  // a key went to somebody the role exists to keep out of production.
+  return members.map((row) =>
+    toAuthorizationContext(toMemberRecord(row), byMember.get(row.id) ?? []),
+  );
 }
 
 /**
@@ -254,6 +436,7 @@ export function toAuthorizationContext(
     memberId: member.id,
     role: member.role,
     status: member.status,
+    ...(member.customRole ? { customRole: member.customRole } : {}),
     grants,
   };
 }
@@ -272,23 +455,14 @@ export async function findMemberWithUser(
   memberId: string,
 ): Promise<MemberListEntry | null> {
   const [row] = await exec
-    .select({
-      ...MEMBER_COLUMNS,
-      seatAssigned: orgMembers.seatAssigned,
-      createdAt: orgMembers.createdAt,
-      user: {
-        id: users.id,
-        email: users.email,
-        displayName: users.displayName,
-        avatarUrl: users.avatarUrl,
-      },
-    })
+    .select(MEMBER_LIST_COLUMNS)
     .from(orgMembers)
     .innerJoin(users, and(eq(users.id, orgMembers.userId), isNull(users.deletedAt)))
+    .leftJoin(customRoles, customRoleJoin())
     .where(and(eq(orgMembers.id, memberId), eq(orgMembers.orgId, orgId)))
     .limit(1);
 
-  return row ?? null;
+  return row ? toMemberListEntry(row) : null;
 }
 
 export async function listMembers(
@@ -301,7 +475,7 @@ export async function listMembers(
   const rows = await membersPageQuery(exec, orgId, pageNumber, pageSize);
 
   return {
-    members: rows.slice(0, pageSize),
+    members: rows.slice(0, pageSize).map(toMemberListEntry),
     page: pageNumber,
     pageSize,
     hasMore: rows.length > pageSize,
@@ -323,6 +497,9 @@ export interface AddMemberParams {
  * is the arbiter either way, and an empty result is a complete answer. The case
  * this handles is ordinary — one invitation link opened in two tabs — and it must
  * read as a conflict, not as a 500 from an escaped driver error.
+ *
+ * The record carries no `customRole`, and here that is simply true: a member is
+ * created without one.
  */
 export async function addMember(exec: Executor, params: AddMemberParams): Promise<MemberRecord> {
   const now = new Date();
@@ -354,7 +531,16 @@ export interface UpdateMemberRoleParams {
   role: OrgRole;
 }
 
-/** Changes a member's role, refusing to demote the last active owner. */
+/**
+ * Changes a member's role, refusing to demote the last active owner.
+ *
+ * ── What the returned record leaves out ──
+ * This and the other status writes below return the row as `RETURNING` sees it,
+ * which is `org_members` alone, so the record has **no `customRole`** even when
+ * the member holds one. Treat it as "the write landed, with this role and
+ * status", not as an authorization answer; read `findMembership` or
+ * `findMemberWithUser` when the narrowing matters.
+ */
 export async function updateMemberRole(
   exec: Executor,
   params: UpdateMemberRoleParams,
@@ -402,6 +588,8 @@ export async function removeMember(exec: Executor, params: MemberRef): Promise<v
  * Runs the same last-owner guard as removal: a suspended owner is not an active
  * owner, so suspending the only one strands the organisation just as thoroughly
  * as deleting them.
+ *
+ * Returns the record without `customRole`, as `updateMemberRole` explains.
  */
 export async function suspendMember(exec: Executor, params: MemberRef): Promise<MemberRecord> {
   return exec.transaction(async (tx) => {
@@ -426,6 +614,8 @@ export async function suspendMember(exec: Executor, params: MemberRef): Promise<
  * ownership invariant, never violate it. The transaction and lock are still
  * taken so the write serialises with the guards that do count owners — a
  * reinstatement racing a demotion must not slip between its count and commit.
+ *
+ * Returns the record without `customRole`, as `updateMemberRole` explains.
  */
 export async function reinstateMember(exec: Executor, params: MemberRef): Promise<MemberRecord> {
   return exec.transaction(async (tx) => {
@@ -623,12 +813,13 @@ export function wouldStrandOrganization(change: OwnershipChange): boolean {
  */
 export function membershipQuery(exec: Executor, orgId: string, userId: string) {
   return exec
-    .select(MEMBER_COLUMNS)
+    .select(JOINED_MEMBER_COLUMNS)
     .from(orgMembers)
     .innerJoin(
       organizations,
       and(eq(organizations.id, orgMembers.orgId), isNull(organizations.deletedAt)),
     )
+    .leftJoin(customRoles, customRoleJoin())
     .where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, userId)))
     .limit(1);
 }
@@ -680,24 +871,20 @@ export function memberGrantsQuery(
  * them invites an operator to act on a row that no longer represents anyone.
  */
 export function membersPageQuery(exec: Executor, orgId: string, page: number, pageSize: number) {
-  return exec
-    .select({
-      ...MEMBER_COLUMNS,
-      seatAssigned: orgMembers.seatAssigned,
-      createdAt: orgMembers.createdAt,
-      user: {
-        id: users.id,
-        email: users.email,
-        displayName: users.displayName,
-        avatarUrl: users.avatarUrl,
-      },
-    })
-    .from(orgMembers)
-    .innerJoin(users, and(eq(users.id, orgMembers.userId), isNull(users.deletedAt)))
-    .where(eq(orgMembers.orgId, orgId))
-    .orderBy(asc(orgMembers.createdAt), asc(orgMembers.id))
-    .limit(pageSize + 1)
-    .offset((page - 1) * pageSize);
+  return (
+    exec
+      .select(MEMBER_LIST_COLUMNS)
+      .from(orgMembers)
+      .innerJoin(users, and(eq(users.id, orgMembers.userId), isNull(users.deletedAt)))
+      // The roster shows which role each member holds, and for a member on a
+      // custom role the built-in name alone would be actively misleading —
+      // "developer" beside somebody who cannot write anywhere.
+      .leftJoin(customRoles, customRoleJoin())
+      .where(eq(orgMembers.orgId, orgId))
+      .orderBy(asc(orgMembers.createdAt), asc(orgMembers.id))
+      .limit(pageSize + 1)
+      .offset((page - 1) * pageSize)
+  );
 }
 
 /**
@@ -717,6 +904,9 @@ export function membersPageQuery(exec: Executor, orgId: string, page: number, pa
  * rejected. `SELECT … FOR UPDATE` is the cheapest serialisation that achieves
  * this: one row, on writes that are rare by nature, with no advisory-lock
  * bookkeeping and no `SERIALIZABLE` retry loop for callers to get wrong.
+ *
+ * The member is read with `MEMBER_COLUMNS` and no custom-role join: the
+ * last-owner guard is the only reader, and it asks about role and status alone.
  */
 async function lockOrgAndLoadMember(
   tx: Executor,

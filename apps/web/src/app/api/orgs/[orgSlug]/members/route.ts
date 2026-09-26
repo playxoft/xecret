@@ -139,7 +139,7 @@ export const POST = authenticatedRoute<Params>(
     const membership = requireMembership(scope);
 
     const body = await parseJsonBody(request, memberInviteSchema);
-    assertRoleAuthority(membership.role, body.role);
+    assertRoleAuthority(membership, body.role);
 
     // Resolved to ids now, while the inviter is present to fix a bad slug.
     // Present-but-empty is meaningful: it makes the membership deny-by-default
