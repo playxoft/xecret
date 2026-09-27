@@ -16,14 +16,23 @@
  * one's own source map. Chunks under 8 KiB are ignored: a handful of small
  * repeats costs less than the noise of reporting them.
  *
- * Run after `opennextjs-cloudflare build`.
+ * Only chunks in the same directory are compared, because that is the scope
+ * the dedupe works in: `chunks/` and `chunks/ssr/` are loaded by two separate
+ * Turbopack runtimes, and it deliberately never points one at the other's
+ * files. An identical pair split across the two would fail a wider check with
+ * nothing in the build able to fix it, and would train people to ignore it.
+ *
+ * Run after `opennextjs-cloudflare build` — by the CI bundle job, and by
+ * `scripts/deploy-web.sh` before it uploads anything. Paths resolve from this
+ * file, so it runs the same from any directory.
  */
 
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const WEB_DIR = resolve(process.cwd(), 'apps/web');
+const WEB_DIR = fileURLToPath(new URL('../apps/web', import.meta.url));
 const METAFILE = resolve(
   WEB_DIR,
   '.open-next/server-functions/default/apps/web/handler.mjs.meta.json',
@@ -50,17 +59,17 @@ if (chunks.length === 0) {
   process.exit(1);
 }
 
-/** Content digest → the chunks with that content, and its size. */
+/** Directory and content digest → the chunks there with that content, and its size. */
 const byContent = new Map();
 for (const chunk of chunks) {
   const source = readFileSync(resolve(WEB_DIR, chunk), 'utf8').replace(SOURCE_MAP_COMMENT, '');
   const bytes = Buffer.byteLength(source);
   if (bytes < MIN_BYTES) continue;
 
-  const digest = createHash('sha256').update(source).digest('hex');
-  const entry = byContent.get(digest) ?? { bytes, paths: [] };
+  const key = `${dirname(chunk)} ${createHash('sha256').update(source).digest('hex')}`;
+  const entry = byContent.get(key) ?? { bytes, paths: [] };
   entry.paths.push(chunk.replace(/^.*\/\.next\/server\//, ''));
-  byContent.set(digest, entry);
+  byContent.set(key, entry);
 }
 
 const repeated = [...byContent.values()].filter((entry) => entry.paths.length > 1);

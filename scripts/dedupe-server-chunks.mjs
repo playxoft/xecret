@@ -54,8 +54,16 @@ const CHUNKS_DIR = join(REPO_ROOT, 'apps/web/.next/standalone/apps/web/.next/ser
 /** Turbopack's chunk loader. Loaded and patched by name, so never a candidate. */
 const RUNTIME = '[turbopack]_runtime.js';
 
-/** How every Turbopack server chunk starts — a CommonJS array of module factories. */
-const CHUNK_PREFIX = 'module.exports=';
+/**
+ * How every Turbopack server chunk starts — a CommonJS array of module
+ * factories.
+ *
+ * The `[` is what makes a second run a no-op. A stub this script wrote starts
+ * `module.exports=require(`, so it is never taken for a chunk; matching on
+ * `module.exports=` alone re-pointed stubs at other stubs when the step ran
+ * twice over one build.
+ */
+const CHUNK_PREFIX = 'module.exports=[';
 
 /** The trailing `//# sourceMappingURL=<own name>.map`, which differs between copies. */
 const SOURCE_MAP_COMMENT = /\n?\/\/# sourceMappingURL=[^\n]*\s*$/;
