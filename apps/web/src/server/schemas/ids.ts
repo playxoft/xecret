@@ -32,3 +32,17 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 export function uuidField(message: string) {
   return z.string().check(z.length(36, message), z.regex(UUID_PATTERN, message));
 }
+
+/**
+ * Whether a path segment is a canonical UUID.
+ *
+ * For ids that arrive in a URL rather than a body, where there is no field to
+ * report a validation error against: a route answers `not_found` for a segment
+ * outside the pattern, because it addresses a resource that cannot exist, and
+ * answering "invalid" would tell a caller entitled to neither which of the two
+ * it was. Checked before the id reaches a bound parameter, for the reason at
+ * the top of this file.
+ */
+export function isUuid(value: string): boolean {
+  return value.length === 36 && UUID_PATTERN.test(value);
+}

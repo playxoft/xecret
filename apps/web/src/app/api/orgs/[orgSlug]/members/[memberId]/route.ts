@@ -1,5 +1,6 @@
-import type { AuditAction, AuditResource } from '@xecret/core/audit';
+import type { AuditAction, AuditBuilder, AuditRecord, AuditResource } from '@xecret/core/audit';
 import { afterRoleChange, auditingDenials, capabilitiesGained } from '@xecret/core/authz';
+import type { Denial } from '@xecret/core/authz';
 import type { Database } from '@xecret/db';
 import {
   findMemberWithUser,
@@ -7,15 +8,21 @@ import {
   listGrantsForMember,
   reinstateMember,
   removeMember,
+  setMemberCustomRole,
   suspendMember,
+  toEngineCustomRole,
   updateMemberRole,
 } from '@xecret/db/repositories';
+import type { MemberListEntry } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
 import { json, noContent, parseJsonBody } from '@/server/http';
 import {
+  assertCustomRoleChangeWithinAuthority,
   assertHeldGrantsWithinAuthority,
   assertRoleAuthority,
+  mapAuditedMembershipError,
   mapMembershipError,
+  requireCustomRolesPlan,
   requireMembership,
   requireSessionPrincipal,
 } from '@/server/members-service';
@@ -24,9 +31,12 @@ import { authenticatedRoute } from '@/server/route';
 import { recordKeyReconciliation, reconcileMemberKeyAccess } from '@/server/member-keys';
 import { memberPatchSchema, toMember } from '@/server/schemas/members';
 import { authorize, resolveOrg } from '@/server/tenancy';
+import type { OrgScope } from '@/server/tenancy';
+import type { ServiceContext } from '@/server/context';
 
 /**
- * One member: change their role, suspend or reinstate them, remove them.
+ * One member: change their role, suspend or reinstate them, move them onto or
+ * off a custom role, remove them.
  *
  * Four guards stack on top of `member.update` / `member.remove`, and each
  * stops a distinct failure:
@@ -56,6 +66,17 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  *
  * A refusal by the first two is filed as a `denied` audit record of the change
  * attempted, as a capability denial is.
+ *
+ * ── A custom role (`{ customRoleId }`) ──
+ * `null` takes the member's custom role off; an id puts them on one, or moves
+ * them from one to another. The same guards, applied under the organisation
+ * lock to the member as they stand when the write lands
+ * (`setMemberCustomRole`): the member's stored role within the caller's
+ * authority, and — for a change that widens them, which unassigning and a swap
+ * to a wider role both can — every grant row they hold within it too. Putting
+ * somebody on a role is plan-gated (`customRoles`); taking them off never is.
+ * An owner cannot hold one: 409, before the database's CHECK has to say so.
+ * Audited as `member.custom_role_changed`, naming the role before and after.
  */
 
 type Params = { orgSlug: string; memberId: string };
@@ -84,6 +105,19 @@ export const PATCH = authenticatedRoute<Params>(
     }
 
     const body = await parseJsonBody(request, memberPatchSchema);
+
+    if (body.customRoleId !== undefined) {
+      return changeCustomRole({
+        scope,
+        services,
+        audit,
+        record,
+        target,
+        customRoleId: body.customRoleId,
+        actorUserId: actor.user.id,
+      });
+    }
+
     const attempted: AuditAction =
       body.role !== undefined
         ? 'member.role_changed'
@@ -162,7 +196,17 @@ export const PATCH = authenticatedRoute<Params>(
       );
 
       return json({
-        member: toMember({ ...target, role: updated.role, status: updated.status }, actor.user.id),
+        member: toMember(
+          {
+            ...target,
+            role: updated.role,
+            status: updated.status,
+            // A promotion to owner clears the custom role in the same write;
+            // the record read before it still carries the one that went.
+            customRole: updated.clearedCustomRole === null ? target.customRole : undefined,
+          },
+          actor.user.id,
+        ),
       });
     }
 
@@ -266,6 +310,121 @@ export const DELETE = authenticatedRoute<Params>(
     return noContent();
   },
 );
+
+/**
+ * Moves `target` onto the custom role `customRoleId`, from one to another, or
+ * off theirs with `null`.
+ *
+ * The checks run inside `setMemberCustomRole`'s transaction, on the member,
+ * the role and the member's grant rows as read under the organisation lock —
+ * so the "before" the widening test compares with is the role the write
+ * replaces, not whatever an earlier read saw.
+ */
+async function changeCustomRole(params: {
+  scope: OrgScope;
+  services: ServiceContext;
+  audit: (orgId: string) => AuditBuilder;
+  record: (...events: AuditRecord[]) => void;
+  target: MemberListEntry;
+  customRoleId: string | null;
+  actorUserId: string;
+}): Promise<Response> {
+  const { scope, services, audit, record, target, customRoleId } = params;
+  const orgId = scope.organization.id;
+  const membership = requireMembership(scope);
+  const resource: AuditResource = { type: 'member', id: target.id };
+  const attempted = {
+    targetEmail: target.user.email,
+    ...(customRoleId === null ? {} : { customRoleId }),
+  };
+
+  // Taking a role off is never gated: an organisation that has left the plan
+  // must still be able to undo what it did while it had it.
+  if (customRoleId !== null) {
+    requireCustomRolesPlan(scope.entitlements, () =>
+      record(
+        audit(orgId).error('member.custom_role_changed', resource, 'quotaExceeded', {
+          ...attempted,
+          limitName: 'customRoles',
+          plan: scope.entitlements.plan,
+        }),
+      ),
+    );
+  }
+
+  const grid = await listEnvironmentsForOrganization(services.db, orgId);
+
+  const change = await setMemberCustomRole(
+    services.db,
+    { orgId, memberId: target.id, customRoleId },
+    ({ member, next, grants }) =>
+      auditingDenials(
+        (decision: Denial) =>
+          record(
+            audit(orgId).denied('member.custom_role_changed', resource, decision, {
+              ...attempted,
+              ...(next === null ? {} : { customRoleName: next.name }),
+              ...(member.customRole === undefined
+                ? {}
+                : {
+                    previousCustomRoleId: member.customRole.id,
+                    previousCustomRoleName: member.customRole.name,
+                  }),
+            }),
+          ),
+        () =>
+          assertCustomRoleChangeWithinAuthority(
+            membership,
+            member,
+            next === null ? undefined : toEngineCustomRole(next),
+            grants,
+            grid,
+          ),
+      ),
+  ).catch(
+    mapAuditedMembershipError((reason) =>
+      record(audit(orgId).error('member.custom_role_changed', resource, reason, attempted)),
+    ),
+  );
+
+  const nextRole = change.next === null ? undefined : toEngineCustomRole(change.next);
+  const member = toMember(
+    { ...target, role: change.member.role, status: change.member.status, customRole: nextRole },
+    params.actorUserId,
+  );
+
+  // Asking for the role the member already holds changes nothing, and is
+  // recorded as nothing.
+  if ((change.previous?.id ?? null) === (change.next?.id ?? null)) return json({ member });
+
+  record(
+    audit(orgId).success('member.custom_role_changed', resource, {
+      targetEmail: target.user.email,
+      ...(change.next === null
+        ? {}
+        : { customRoleId: change.next.id, customRoleName: change.next.name }),
+      ...(change.previous === null
+        ? {}
+        : {
+            previousCustomRoleId: change.previous.id,
+            previousCustomRoleName: change.previous.name,
+          }),
+    }),
+  );
+
+  // The role decides what the member may read — its ceiling above all — so
+  // their environment keys follow it, exactly as after a built-in role change.
+  recordKeyReconciliation(
+    await reconcileMemberKeyAccess(services, {
+      orgId,
+      userId: target.userId,
+      actorUserId: params.actorUserId,
+    }),
+    { orgId, audit, record, targetEmail: target.user.email },
+  );
+
+  return json({ member });
+}
 
 /** The member's grant rows and the environment grid they are measured against. */
 async function heldAccess(db: Database, orgId: string, memberId: string) {

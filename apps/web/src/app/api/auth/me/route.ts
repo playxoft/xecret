@@ -3,6 +3,7 @@ import { errors } from '@/server/errors';
 import { json } from '@/server/http';
 import { vaultStatus } from '@/server/vault-service';
 import { authenticatedRoute } from '@/server/route';
+import { toAuthorityPayload } from '@/server/schemas/roles';
 
 /**
  * The signed-in identity and the organisations it can act in.
@@ -77,7 +78,19 @@ export const GET = authenticatedRoute(
         id: membership.organization.id,
         name: membership.organization.name,
         slug: membership.organization.slug,
+        // The stored role, still: it is what the member *is*, what the switcher
+        // and the lists label them with, and what `xecret whoami` prints.
         role: membership.role,
+        /**
+         * What the member may *do* here, which is what the dashboard's
+         * controls ask: their effective role, their capabilities, the roles
+         * they may hand out and the bases they may define a custom role on —
+         * `authoritySummary` over the stored role and the custom role that
+         * narrows it. Without it the dashboard gated on `role` alone, and drew
+         * every admin control for an admin whose custom role withholds them.
+         * A convenience, like the rest of this response.
+         */
+        authority: toAuthorityPayload(membership.role, membership.customRole),
       })),
     });
   },

@@ -492,6 +492,14 @@ A `custom_role_id` that does not resolve inside the organisation — which the f
 impossible — is read as a role based on `viewer` with no actions and a `none` ceiling, never as
 "no custom role".
 
+**Who may write one.** The management API (api.md, "Custom roles") defines, edits and deletes
+roles and moves members onto and off them. Defining needs an actor who holds no custom role and a
+base no higher than their own; editing also measures every current holder, and — where the edit
+widens them — every grant row they hold, because a lifted ceiling switches on grants it was
+holding down. Each of those writes takes the organisation lock first and makes its checks on
+rows read under it (`custom-roles.ts`), so a concurrent assignment cannot slip a holder in
+between a check and a write. An organisation may define at most 100 roles.
+
 ---
 
 ## 7. Machine credentials
@@ -711,9 +719,7 @@ anywhere. Migrations run as a separate, more privileged role.
 
 ## 11. Deferred to later phases
 
-The custom-role management API — defining, editing, deleting and assigning roles, and the plan
-gate on doing so (custom roles part 2; the storage exists since 0017 and every read path already
-applies it, but nothing defines or assigns a role yet) · `webhooks` · `secret_references` for
+`webhooks` · `secret_references` for
 cross-environment inheritance · `billing_*` (the `seat_limit` column is the only hook needed
 now) · `oidc_trust_policies` for GitHub Actions federation (Phase 8 designs the token table
 for it; the feature is v2).

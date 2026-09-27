@@ -23,13 +23,16 @@ import { errors } from './errors';
  * viewer a writer, and an owner on Free still cannot read an environment they
  * hold no grant on.
  *
- * ── ⚠ NOTHING IN THIS FILE HAS A CALL SITE YET. THAT IS DELIBERATE. ──
- * Every function below is written, tested and unused. Do not read the presence
- * of `requireCapacity` as evidence that project, seat, service-token,
- * environment, secret or webhook ceilings are enforced anywhere: they are not.
- * The only entitlement enforced in the product today is the organisations-per-
- * account ceiling, which lives in `provisionOrganization` because it needs a row
- * lock rather than a route-layer check.
+ * ── ⚠ ONE CALL SITE, AND ONLY ONE. THAT IS DELIBERATE. ──
+ * `requireFeature` gates exactly one feature today: `customRoles`, through
+ * `requireCustomRolesPlan` in `members-service.ts`, on defining, editing and
+ * assigning a custom role. Everything else below is written, tested and
+ * unused. Do not read the presence of `requireCapacity` as evidence that
+ * project, seat, service-token, environment, secret or webhook ceilings are
+ * enforced anywhere: they are not. The only *limit* enforced in the product
+ * today is the organisations-per-account ceiling, which lives in
+ * `provisionOrganization` because it needs a row lock rather than a route-layer
+ * check.
  *
  * Why staged rather than wired: payments are the *eleventh* of twelve phases in
  * `.local/plans/v2/01-billing.md`, and this is the first. Every organisation is
@@ -39,6 +42,12 @@ import { errors } from './errors';
  * checkout that makes them answerable, and they exist now so that the phases
  * between here and there have something to call rather than each growing its own
  * temporary way to ask the same question.
+ *
+ * Custom roles are the exception because they are a *new* capability rather
+ * than a ceiling on an existing one: gating one takes nothing away from anybody
+ * who has it today, and the Enterprise contracts that buy it are set by hand
+ * through the operator tool (`npm run plan:set`), which is the manual bridge
+ * the billing plan provides for exactly this.
  *
  * The seats ceiling is the one to know about, because it is enforced by a
  * *different* mechanism and the two numbers disagree: `FREE_LIMITS.seats` is 3,
