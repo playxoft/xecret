@@ -255,11 +255,8 @@ export function assertMayChangeOwnGrants(actor: RoleAuthority): void {
  * Whether the plan lets this organisation define and assign custom roles, and
  * the cheapest plan that would — what `GET …/roles` tells the dashboard so it
  * can say why the controls are absent rather than let a request discover it.
- *
- * Answered here rather than in the route so the route imports nothing its
- * sibling member routes do not: in this build, a route that imports one extra
- * module from the shared server chunk gets a whole copy of that chunk (see
- * `auditingDenials` in `@xecret/core/authz`).
+ * Beside `requireCustomRolesPlan`, so the answer the listing gives and the
+ * refusal a write gets are read from the same place.
  */
 export function customRolesFeature(entitlements: Entitlements): {
   enabled: boolean;
