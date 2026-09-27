@@ -293,14 +293,7 @@ export function assertCan(
  * inside one of these.
  *
  * It lives here, beside the exception it catches, because it decides nothing
- * and knows nothing of requests. Where routes import it from also shows in the
- * Worker bundle. Turbopack emits the ~0.5 MB server chunk every API route
- * loads (drizzle, postgres, the route wrapper) byte-identical under several
- * names, one per distinct set of those modules a route imports directly, as
- * far as the build output shows. Each name ships as a full copy. Two routes
- * that imported this from the web app's `tenancy.ts`, and so no longer
- * imported `@xecret/core/authz` themselves, got a copy of their own: 0.17 MB
- * gzipped.
+ * and knows nothing of requests.
  */
 export function auditingDenials(file: (decision: Denial) => void, checks: () => void): void {
   try {
