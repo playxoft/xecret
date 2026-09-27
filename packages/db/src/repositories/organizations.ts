@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, isNull } from 'drizzle-orm';
-import type { OrgRole } from '@xecret/core/authz';
+import type { CustomRole, OrgRole } from '@xecret/core/authz';
 import { DEFAULT_PLAN, FAIR_USE, PLANS } from '@xecret/core/entitlements';
 import { randomBytes } from '@xecret/core/crypto';
 import type { EnvelopeService } from '@xecret/core/crypto';
@@ -15,8 +15,9 @@ import { users } from '../schema/identity';
 import { orgKeys } from '../schema/keys';
 import { environments, projects } from '../schema/resources';
 import { orgSubscriptions } from '../schema/billing';
+import { customRoles } from '../schema/roles';
 import { orgMembers, organizations } from '../schema/tenancy';
-import { addMember } from './membership';
+import { addMember, CUSTOM_ROLE_COLUMNS, customRoleJoin, toCustomRole } from './membership';
 import type { WrittenMemberRecord } from './membership';
 import { QuotaExceededError, RepositoryError } from './shared';
 import type { Executor } from './shared';
@@ -38,6 +39,16 @@ export type Environment = typeof environments.$inferSelect;
 export interface OrganizationMembership {
   organization: Organization;
   role: OrgRole;
+  /**
+   * The custom role narrowing `role`, or `undefined` when they hold none.
+   *
+   * Carried so a client can be told what the member may actually do rather
+   * than what their stored role alone would allow — `GET /api/auth/me` turns
+   * the pair into an `authoritySummary`. Read through the same join and the
+   * same mapper as every other membership read (`toCustomRole`), so an
+   * unresolved reference arrives as the deny-everything role, not as none.
+   */
+  customRole: CustomRole | undefined;
 }
 
 const SLUG_UNIQUE_CONSTRAINT = 'organizations_slug_unique';
@@ -130,7 +141,12 @@ export async function listOrganizationsForUser(
   exec: Executor,
   userId: string,
 ): Promise<OrganizationMembership[]> {
-  return organizationsForUserQuery(exec, userId);
+  const rows = await organizationsForUserQuery(exec, userId);
+  return rows.map((row) => ({
+    organization: row.organization,
+    role: row.role,
+    customRole: toCustomRole(row),
+  }));
 }
 
 /** What `countOrganizationsHeldBy` found. */
@@ -803,16 +819,21 @@ function rethrowSlugCollision(error: unknown): never {
  * carries the tenancy predicate, without needing a database to prove it.
  */
 export function organizationsForUserQuery(exec: Executor, userId: string) {
-  return exec
-    .select({ organization: organizations, role: orgMembers.role })
-    .from(orgMembers)
-    .innerJoin(organizations, eq(organizations.id, orgMembers.orgId))
-    .where(
-      and(
-        eq(orgMembers.userId, userId),
-        eq(orgMembers.status, 'active'),
-        isNull(organizations.deletedAt),
-      ),
-    )
-    .orderBy(asc(organizations.name), asc(organizations.id));
+  return (
+    exec
+      .select({ organization: organizations, role: orgMembers.role, ...CUSTOM_ROLE_COLUMNS })
+      .from(orgMembers)
+      .innerJoin(organizations, eq(organizations.id, orgMembers.orgId))
+      // The narrowing, on the one join every membership read shares — LEFT, so a
+      // member without a custom role (almost everybody) is still listed.
+      .leftJoin(customRoles, customRoleJoin())
+      .where(
+        and(
+          eq(orgMembers.userId, userId),
+          eq(orgMembers.status, 'active'),
+          isNull(organizations.deletedAt),
+        ),
+      )
+      .orderBy(asc(organizations.name), asc(organizations.id))
+  );
 }

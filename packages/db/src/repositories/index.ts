@@ -138,6 +138,7 @@ export {
   findMembership,
   findMemberWithUser,
   listGrantsForMember,
+  listGrantsForMembers,
   listGrantsForOrganization,
   listMembers,
   loadAuthorizationContext,
@@ -173,6 +174,32 @@ export type {
   UpdateMemberRoleParams,
   WrittenMemberRecord,
 } from './membership';
+
+export {
+  createCustomRole,
+  CUSTOM_ROLES_PER_ORGANIZATION,
+  deleteCustomRole,
+  findCustomRole,
+  listCustomRoles,
+  setMemberCustomRole,
+  toEngineCustomRole,
+  updateCustomRole,
+} from './custom-roles';
+export type {
+  CreateCustomRoleParams,
+  CustomRoleAssignment,
+  CustomRoleCeiling,
+  CustomRoleDefinition,
+  CustomRoleEdit,
+  CustomRoleHolder,
+  CustomRoleListEntry,
+  CustomRoleRecord,
+  DeleteCustomRoleParams,
+  MemberCustomRoleChange,
+  SetMemberCustomRoleParams,
+  UpdateCustomRoleParams,
+  UpdatedCustomRole,
+} from './custom-roles';
 
 export {
   createProject,

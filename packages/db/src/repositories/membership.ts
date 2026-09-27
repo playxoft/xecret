@@ -1,4 +1,4 @@
-import { and, asc, count, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { GetColumnData, InferColumnsDataTypes } from 'drizzle-orm';
 import type { AccessLevel, CustomRole, OrgRole } from '@xecret/core/authz';
 import { uuidv7 } from '@xecret/core/ids';
@@ -162,6 +162,23 @@ const MEMBER_COLUMNS = {
 } as const;
 
 /**
+ * A member's custom role, as columns beside the member: its id from
+ * `org_members`, the rest from the joined `custom_roles` row.
+ *
+ * @internal Exported for `organizations.ts`, whose membership listing carries
+ * the narrowing too — through this set, `customRoleJoin()` and
+ * `toCustomRole`, so there is one reading of the join rather than two.
+ */
+export const CUSTOM_ROLE_COLUMNS = {
+  customRoleId: orgMembers.customRoleId,
+  customRoleName: customRoles.name,
+  customRoleBase: customRoles.baseRole,
+  customRoleActions: customRoles.allowedActions,
+  customRoleCeilingNonProduction: customRoles.ceilingNonProduction,
+  customRoleCeilingProduction: customRoles.ceilingProduction,
+} as const;
+
+/**
  * The narrowing, carried on the same row that carries the role it narrows.
  *
  * Joined rather than fetched separately because it is read on every
@@ -174,12 +191,7 @@ const MEMBER_COLUMNS = {
  */
 const JOINED_MEMBER_COLUMNS = {
   ...MEMBER_COLUMNS,
-  customRoleId: orgMembers.customRoleId,
-  customRoleName: customRoles.name,
-  customRoleBase: customRoles.baseRole,
-  customRoleActions: customRoles.allowedActions,
-  customRoleCeilingNonProduction: customRoles.ceilingNonProduction,
-  customRoleCeilingProduction: customRoles.ceilingProduction,
+  ...CUSTOM_ROLE_COLUMNS,
 } as const;
 
 /** What the roster and the single-member page read: the joined member and the person. */
@@ -195,20 +207,26 @@ const MEMBER_LIST_COLUMNS = {
   },
 } as const;
 
-type CustomRoleColumns = Omit<typeof JOINED_MEMBER_COLUMNS, keyof typeof MEMBER_COLUMNS>;
+type CustomRoleColumns = typeof CUSTOM_ROLE_COLUMNS;
 
 /**
- * One joined row, derived from the column sets so that adding a column is one
- * edit. The `custom_roles` half is nullable whatever the table says: the join is
- * LEFT, so it is all nulls for a member who holds no role.
+ * The custom-role half of a joined row. Nullable whatever the table says: the
+ * join is LEFT, so it is all nulls for a member who holds no role.
  */
-type JoinedMemberRow = InferColumnsDataTypes<typeof MEMBER_COLUMNS> & {
+export type CustomRoleColumnsRow = {
   [K in keyof CustomRoleColumns]: GetColumnData<CustomRoleColumns[K]> | null;
 };
 
 /**
+ * One joined row, derived from the column sets so that adding a column is one
+ * edit.
+ */
+type JoinedMemberRow = InferColumnsDataTypes<typeof MEMBER_COLUMNS> & CustomRoleColumnsRow;
+
+/**
  * The one join condition onto `custom_roles`, used by every query that selects
- * `JOINED_MEMBER_COLUMNS`.
+ * `CUSTOM_ROLE_COLUMNS` — here, in `organizations.ts` and in
+ * `custom-roles.ts`.
  *
  * LEFT, because almost every member has no custom role and an inner join would
  * make them all disappear — which would read as "not a member" and deny them
@@ -220,18 +238,19 @@ type JoinedMemberRow = InferColumnsDataTypes<typeof MEMBER_COLUMNS> & {
  * organisation's authorization. The composite foreign key says the same thing
  * at the schema; this is the read refusing to depend on it.
  */
-function customRoleJoin() {
+export function customRoleJoin() {
   return and(eq(customRoles.id, orgMembers.customRoleId), eq(customRoles.orgId, orgMembers.orgId));
 }
 
 /**
  * The name an unresolved reference carries.
  *
- * The roster payload carries the built-in role only; where a custom role's name
- * does leave this module is the `member.role_changed` audit record, as the role
- * a promotion to owner cleared (`RoleChangeResult.clearedCustomRole`). A
- * reference the join could not resolve reaches that record as exactly this,
- * rather than as a blank or as a role the member does not hold.
+ * A custom role's name leaves this module in the roster payload (`toMember` in
+ * apps/web), the `/api/auth/me` summary, and the audit records of a change that
+ * dropped or replaced it (`RoleChangeResult.clearedCustomRole`,
+ * `member.custom_role_changed`). A reference the join could not resolve reaches
+ * each of them as exactly this, rather than as a blank or as a role the member
+ * does not hold.
  */
 const UNRESOLVED_CUSTOM_ROLE_NAME = 'Unresolved custom role';
 
@@ -269,7 +288,7 @@ const UNRESOLVED_CUSTOM_ROLE_NAME = 'Unresolved custom role';
  * unresolved reference — rather than the whole ceiling being dropped, which
  * would hand the member their unnarrowed level in both kinds of environment.
  */
-function toCustomRole(row: JoinedMemberRow): CustomRole | undefined {
+export function toCustomRole(row: CustomRoleColumnsRow): CustomRole | undefined {
   if (row.customRoleId === null) return undefined;
 
   if (
@@ -878,6 +897,37 @@ export async function listGrantsForMember(
 }
 
 /**
+ * The grant rows of several members at once, each naming its member — one
+ * statement whatever the number of members.
+ *
+ * For a change that reaches every member holding a custom role: editing the
+ * role asks, of each of them, whether the rows they already hold are ones the
+ * caller could have written. The same tenancy join as `memberGrantsQuery`, so
+ * a row pointing at another tenant's project, or at a deleted one, does not
+ * come back. An empty list of members reads nothing.
+ */
+export async function listGrantsForMembers(
+  exec: Executor,
+  orgId: string,
+  memberIds: readonly string[],
+): Promise<(MemberGrant & { memberId: string })[]> {
+  if (memberIds.length === 0) return [];
+
+  return exec
+    .select({ ...GRANT_COLUMNS, memberId: accessGrants.orgMemberId })
+    .from(accessGrants)
+    .innerJoin(
+      projects,
+      and(
+        eq(projects.id, accessGrants.projectId),
+        eq(projects.orgId, orgId),
+        isNull(projects.deletedAt),
+      ),
+    )
+    .where(inArray(accessGrants.orgMemberId, [...memberIds]));
+}
+
+/**
  * Every grant in the organisation, each row naming its member.
  *
  * One query instead of one per member, for the callers that answer a question
@@ -996,11 +1046,11 @@ export function membersPageQuery(exec: Executor, orgId: string, page: number, pa
       .select(MEMBER_LIST_COLUMNS)
       .from(orgMembers)
       .innerJoin(users, and(eq(users.id, orgMembers.userId), isNull(users.deletedAt)))
-      // Not for display — the roster payload (`toMember` in apps/web) carries
-      // the built-in role only. For the access preview computed from each row
-      // (`effectiveAccess`, on the roster and the project members page), which
-      // has to apply the narrowing or it shows a member levels the engine will
-      // refuse them.
+      // For the access preview computed from each row (`effectiveAccess`, on
+      // the roster and the project members page), which has to apply the
+      // narrowing or it shows a member levels the engine will refuse them —
+      // and for the roster's own label, which names the role beside the
+      // built-in one (`toMember` in apps/web).
       .leftJoin(customRoles, customRoleJoin())
       .where(eq(orgMembers.orgId, orgId))
       .orderBy(asc(orgMembers.createdAt), asc(orgMembers.id))
@@ -1074,6 +1124,25 @@ async function lockMemberCustomRole(
   orgId: string,
   memberId: string,
 ): Promise<CustomRole | undefined> {
+  return (await lockMemberRecord(tx, orgId, memberId)).customRole;
+}
+
+/**
+ * One member with their custom role, read inside a write that is about to
+ * change them, row-locked for it.
+ *
+ * The lock and the join `lockMemberCustomRole` describes, returning the whole
+ * record — which is what a write that decides from the member's current role
+ * *and* custom role needs (`setMemberCustomRole` in `custom-roles.ts`). Must
+ * run after `lockOrganization`, in the same transaction.
+ *
+ * @internal Exported for `custom-roles.ts`.
+ */
+export async function lockMemberRecord(
+  tx: Executor,
+  orgId: string,
+  memberId: string,
+): Promise<MemberRecord> {
   const [row] = await tx
     .select(JOINED_MEMBER_COLUMNS)
     .from(orgMembers)
@@ -1083,7 +1152,7 @@ async function lockMemberCustomRole(
     .for('no key update', { of: orgMembers });
   if (!row) throw new RepositoryError('notFound', 'Member not found in this organisation.');
 
-  return toMemberRecord(row).customRole;
+  return toMemberRecord(row);
 }
 
 /**
