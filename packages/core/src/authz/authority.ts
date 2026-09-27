@@ -1,7 +1,16 @@
 import { SERVICE_TOKEN_ACTIONS } from './can';
 import { resolveAccessLevel } from './grants';
 import type { Membership, ResolvedGrant } from './grants';
-import { accessLevelAtLeast, compareAccessLevel, effectiveCapabilities } from './roles';
+import {
+  accessLevelAtLeast,
+  canDefineCustomRole,
+  compareAccessLevel,
+  CUSTOM_ROLE_BASE_ROLES,
+  effectiveCapabilities,
+  effectiveRole,
+  narrowAccessDefaults,
+  roleWithinAuthority,
+} from './roles';
 import type { RoleHolder } from './roles';
 import type { AccessLevel, Action, OrgRole } from './types';
 
@@ -277,6 +286,121 @@ export function capabilitiesGained(from: RoleHolder, to: RoleHolder): Action[] {
   const before = effectiveCapabilities(from.role, from.customRole);
   const after = effectiveCapabilities(to.role, to.customRole);
   return (Object.keys(after) as Action[]).filter((action) => after[action] && !before[action]);
+}
+
+/* ── Changing a custom role, or which one a member holds ──────────────── */
+
+/**
+ * The most a holder's resolved level can be, per environment kind: the custom
+ * role's ceiling, or `admin` — no cap — without one.
+ *
+ * Every level a member resolves to, explicit grants included, is capped here
+ * (`capAtCeiling` in `grants.ts`), so this is what decides how far their
+ * existing grant rows reach.
+ */
+function levelCap(holder: RoleHolder, isProduction: boolean): AccessLevel {
+  const ceiling = holder.customRole?.accessCeiling;
+  if (ceiling === undefined) return 'admin';
+  return isProduction ? ceiling.production : ceiling.nonProduction;
+}
+
+/**
+ * Whether `to` lets a member reach a higher level than `from` anywhere — in
+ * either kind of environment, through a grant or through a default.
+ *
+ * Two things can rise, and either is enough:
+ *
+ *  - **The cap.** A ceiling that goes up, or goes away, lets grant rows the old
+ *    ceiling held down resolve to what they say. A production `write` row
+ *    written for somebody capped at `none` there is dormant; lift the cap and
+ *    it is production write access nobody wrote just now.
+ *  - **The defaults** (`narrowAccessDefaults`). Moving the base from
+ *    `developer` to `admin` takes an ungranted production environment from
+ *    `none` to `admin`.
+ *
+ * Measured per kind, like everything else about levels: raising production
+ * while lowering staging is still a raise.
+ */
+export function levelsRaised(from: RoleHolder, to: RoleHolder): boolean {
+  const before = narrowAccessDefaults(from.role, from.customRole);
+  const after = narrowAccessDefaults(to.role, to.customRole);
+
+  return (
+    compareAccessLevel(levelCap(to, false), levelCap(from, false)) > 0 ||
+    compareAccessLevel(levelCap(to, true), levelCap(from, true)) > 0 ||
+    compareAccessLevel(after.nonProduction, before.nonProduction) > 0 ||
+    compareAccessLevel(after.production, before.production) > 0
+  );
+}
+
+/**
+ * Whether moving a member from `from` to `to` hands them anything they did not
+ * have: a capability (`capabilitiesGained`) or a level (`levelsRaised`).
+ *
+ * The question every custom-role change asks of each member it touches —
+ * assigning one, swapping one for another, unassigning one (which returns the
+ * member to the whole of their built-in role), and editing the definition of
+ * one they hold. A change that widens turns on grant rows the member already
+ * holds, so the route that makes it must also pass `heldGrantsWithinAuthority`
+ * over them, exactly as a built-in role change that gains capabilities does.
+ *
+ * Deliberately broader than "gains a capability". A swap to a role with the
+ * same action list and a higher production ceiling gains no capability and
+ * still wakes a production grant the old ceiling capped — and a check that
+ * only counted capabilities would let it through without asking whether the
+ * caller could have written that grant.
+ */
+export function widensHolder(from: RoleHolder, to: RoleHolder): boolean {
+  return capabilitiesGained(from, to).length > 0 || levelsRaised(from, to);
+}
+
+/* ── What a member may do, summarised for a client ──────────────────────── */
+
+/** Every built-in role, highest first — the order every menu lists them in. */
+const ROLES_DESCENDING: readonly OrgRole[] = ['owner', 'admin', 'developer', 'viewer'];
+
+/**
+ * A member's authority in one organisation, as the dashboard needs it to decide
+ * which controls to draw.
+ *
+ * Every field is derived from the functions the server enforces with, so a
+ * control is drawn exactly when the org-wide half of the check behind it would
+ * pass — and never as a substitute for the check: per-resource levels, the
+ * last-owner rule and everything else only the server can see still decide. A
+ * client that lies to itself about this gains nothing.
+ */
+export interface AuthoritySummary {
+  /** The built-in role that governs: the lower of `role` and the custom base. */
+  readonly effectiveRole: OrgRole;
+  /** Every action `effectiveCapabilities` grants, in table order. */
+  readonly capabilities: readonly Action[];
+  /**
+   * The roles this member may assign, invite at, or manage somebody holding
+   * (`roleWithinAuthority`), highest first.
+   */
+  readonly assignableRoles: readonly OrgRole[];
+  /**
+   * The bases this member may define a custom role on (`canDefineCustomRole`),
+   * highest first. Empty for anyone holding a custom role.
+   */
+  readonly definableBaseRoles: readonly OrgRole[];
+}
+
+/**
+ * Summarises what `holder` may do and hand out, for a client to render from.
+ *
+ * Pure and total, so the answer is the same wherever it is computed —
+ * `GET /api/auth/me` builds one per organisation from the membership rows it
+ * already reads.
+ */
+export function authoritySummary(holder: RoleHolder): AuthoritySummary {
+  const table = effectiveCapabilities(holder.role, holder.customRole);
+  return {
+    effectiveRole: effectiveRole(holder.role, holder.customRole),
+    capabilities: (Object.keys(table) as Action[]).filter((action) => table[action]),
+    assignableRoles: ROLES_DESCENDING.filter((role) => roleWithinAuthority(holder, role)),
+    definableBaseRoles: CUSTOM_ROLE_BASE_ROLES.filter((base) => canDefineCustomRole(holder, base)),
+  };
 }
 
 /* ── Minting a service token ────────────────────────────────────────────── */

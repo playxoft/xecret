@@ -18,4 +18,11 @@ export {
   sanitizeMetadataString,
 } from './redaction';
 
-export type { ActorType, AuditAction, AuditEvent, AuditMetadata, AuditOutcome } from './types';
+export type {
+  ActorType,
+  AuditAccessCeiling,
+  AuditAction,
+  AuditEvent,
+  AuditMetadata,
+  AuditOutcome,
+} from './types';

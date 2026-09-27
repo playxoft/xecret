@@ -1,15 +1,24 @@
 export {
   afterRoleChange,
+  authoritySummary,
   capabilitiesGained,
   grantableAccessLevel,
   grantReach,
   grantWithinAuthority,
   heldGrantsWithinAuthority,
+  levelsRaised,
   reachPoints,
   removalWithinAuthority,
   serviceTokenActionsAt,
+  widensHolder,
 } from './authority';
-export type { GrantReach, GridEnvironment, ReachedEnvironment, ReachPoint } from './authority';
+export type {
+  AuthoritySummary,
+  GrantReach,
+  GridEnvironment,
+  ReachedEnvironment,
+  ReachPoint,
+} from './authority';
 export {
   assertCan,
   auditingDenials,
@@ -25,8 +34,11 @@ export type { GrantContext, MemberStatus, Membership, ResolvedGrant } from './gr
 export {
   accessLevelAtLeast,
   ACTION_REQUIREMENTS,
+  actionsBeyondBase,
+  actionsForBase,
   canAssignRole,
   canDefineCustomRole,
+  CUSTOM_ROLE_BASE_ROLES,
   CUSTOM_ROLE_FLOOR,
   effectiveCapabilities,
   effectiveRole,

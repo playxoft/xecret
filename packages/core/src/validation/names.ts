@@ -52,3 +52,17 @@ export function truncateName(name: string, maxLength: number): string {
   if (lastSpace >= Math.floor(maxLength / 2)) return cut.slice(0, lastSpace).trimEnd();
   return cut.trimEnd();
 }
+
+/**
+ * How long a custom role's name may be.
+ *
+ * A custom role is a job title — "Deployer", "Release manager", "Contractor
+ * (read-only)" — and it is rendered beside the built-in role on every row of
+ * the member list and in the menu that assigns it. Forty characters is room
+ * for any title a person would actually use, and short enough that two of
+ * them side by side in a badge stay tellable apart.
+ *
+ * Shared by the API, which refuses a longer one, and the dashboard, which
+ * caps the input at it — for the reason `ORGANIZATION_NAME_MAX_LENGTH` is.
+ */
+export const CUSTOM_ROLE_NAME_MAX_LENGTH = 40;

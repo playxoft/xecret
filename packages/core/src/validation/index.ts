@@ -19,7 +19,7 @@ export {
 } from './value-type';
 export type { SecretValueType, SecretValueTypeDescriptor, ValueTypeCheck } from './value-type';
 
-export { ORGANIZATION_NAME_MAX_LENGTH, truncateName } from './names';
+export { CUSTOM_ROLE_NAME_MAX_LENGTH, ORGANIZATION_NAME_MAX_LENGTH, truncateName } from './names';
 
 export { checkXmlWellFormed } from './xml';
 export type { XmlProblem } from './xml';
