@@ -130,8 +130,27 @@ boundary is and always was.
 | `rate_limited` | 429 | Bucket exhausted |
 | `csrf_failed` | 403 | Double-submit pair missing or mismatched |
 | `session_locked` | 403 | Authenticated, but the session's vault is locked — see §4 Auth |
+| `plan_limit` | 403 | The organisation's plan does not allow it; `plan` populated |
 | `unavailable` | 503 | Misconfigured deployment — a missing binding, an unreachable database |
 | `internal_error` | 500 | Unhandled fault |
+
+`plan_limit` carries an extra `plan` object beside `fields`, and it is the one code whose
+403 means something the caller can fix by paying rather than by asking for permission:
+
+```json
+{
+  "error": {
+    "code": "plan_limit",
+    "message": "…",
+    "requestId": "8f2a…",
+    "plan": { "resource": "projects", "limit": 5, "current": 5, "plan": "free", "upgradeTo": "pro" }
+  }
+}
+```
+
+`limit`, `current` and `upgradeTo` are each nullable — a capability refusal has no count,
+and some refusals have no plan that would allow them. Never an amount of money: prices vary
+by currency and interval and belong on the pricing page.
 
 **404 and 403 are not interchangeable.** 403 is only ever returned once membership in the
 organisation is already established, so it reveals nothing new. Everything else — wrong

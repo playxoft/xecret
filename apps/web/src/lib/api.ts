@@ -49,6 +49,17 @@ export type ApiErrorCode =
   | 'csrf_failed'
   /** The session is authenticated but its vault is locked. The dashboard shows the lock screen. */
   | 'session_locked'
+  /**
+   * The organisation's plan does not allow it. Carries `ApiError.plan`.
+   *
+   * Distinct from `forbidden` even though both answer 403, and the distinction
+   * is the whole reason the code exists: `forbidden` means the *actor* may not,
+   * and the only remedy is somebody granting them more. This means the
+   * *organisation* has not paid for it, and the remedy is a button. A client
+   * that cannot tell them apart shows "you do not have permission" to an owner,
+   * who plainly does.
+   */
+  | 'plan_limit'
   | 'internal_error'
   | 'unavailable'
   | 'network_error';
@@ -58,12 +69,40 @@ export interface FieldProblem {
   message: string;
 }
 
+/**
+ * The detail on a `plan_limit` refusal. Mirrors `PlanProblem` in
+ * `server/errors.ts`; §3 of the contract is what keeps the two agreeing.
+ *
+ * Never a price. Amounts vary by currency and interval and belong on the pricing
+ * page, and one quoted in an error body is one that will eventually be wrong.
+ */
+export interface PlanProblem {
+  /** The resource or capability refused, e.g. `projects`, `oidcSso`. */
+  resource: string;
+  /** The ceiling, or `null` where the refusal was about a capability rather than a count. */
+  limit: number | null;
+  current: number | null;
+  /** The plan the organisation holds now. */
+  plan: string;
+  /** The cheapest plan that would allow it, or `null` when none would. */
+  upgradeTo: string | null;
+}
+
 export class ApiError extends Error {
   readonly code: ApiErrorCode;
   readonly status: number;
   /** Correlates with the server log line. Surface it in error UI. */
   readonly requestId: string | null;
   readonly fields: readonly FieldProblem[];
+  /**
+   * Present only on `plan_limit`, and the reason that code is worth having.
+   *
+   * `upgradeTo` is what lets the dashboard render one button instead of the
+   * whole pricing table, so dropping this block on the way in would leave the
+   * entire `PlanProblem` shape — server-side type, wire field and all — with
+   * nothing able to read it.
+   */
+  readonly plan: PlanProblem | null;
 
   constructor(init: {
     code: ApiErrorCode;
@@ -71,6 +110,7 @@ export class ApiError extends Error {
     status: number;
     requestId: string | null;
     fields?: readonly FieldProblem[];
+    plan?: PlanProblem | null;
   }) {
     super(init.message);
     this.name = 'ApiError';
@@ -78,6 +118,7 @@ export class ApiError extends Error {
     this.status = init.status;
     this.requestId = init.requestId;
     this.fields = init.fields ?? [];
+    this.plan = init.plan ?? null;
   }
 
   /** Field errors keyed by field name, for wiring into `<Field error>`. */
@@ -144,6 +185,37 @@ function isFieldProblem(value: unknown): value is FieldProblem {
   return typeof candidate['field'] === 'string' && typeof candidate['message'] === 'string';
 }
 
+/** A nullable count from the wire: a number, or `null`, and nothing else. */
+function optionalCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Validates the `plan` block rather than casting it.
+ *
+ * `resource` and `plan` are required because the two things the dashboard does
+ * with this — name what was refused, and offer the upgrade — are impossible
+ * without them; a half-parsed block that renders "You have reached your
+ * undefined limit" is worse than no block at all. `upgradeTo` is genuinely
+ * nullable: some refusals have no plan that would allow them.
+ */
+function toPlanProblem(value: unknown): PlanProblem | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const candidate = value as Record<string, unknown>;
+
+  if (typeof candidate['resource'] !== 'string' || typeof candidate['plan'] !== 'string') {
+    return null;
+  }
+
+  return {
+    resource: candidate['resource'],
+    limit: optionalCount(candidate['limit']),
+    current: optionalCount(candidate['current']),
+    plan: candidate['plan'],
+    upgradeTo: typeof candidate['upgradeTo'] === 'string' ? candidate['upgradeTo'] : null,
+  };
+}
+
 const ERROR_CODES = new Set<string>([
   'bad_request',
   'validation_failed',
@@ -155,6 +227,7 @@ const ERROR_CODES = new Set<string>([
   'rate_limited',
   'csrf_failed',
   'session_locked',
+  'plan_limit',
   'internal_error',
   'unavailable',
 ]);
@@ -175,6 +248,7 @@ async function toApiError(response: Response): Promise<ApiError> {
   let message = FALLBACK_MESSAGE;
   let requestId = headerRequestId;
   let fields: FieldProblem[] = [];
+  let plan: PlanProblem | null = null;
 
   try {
     const body: unknown = await response.json();
@@ -197,13 +271,21 @@ async function toApiError(response: Response): Promise<ApiError> {
       if (Array.isArray(error['fields'])) {
         fields = error['fields'].filter(isFieldProblem);
       }
+      // Read whatever the envelope carries rather than gating on
+      // `code === 'plan_limit'`: the code is validated against a set this client
+      // holds its own copy of, and a server that grows a new plan-shaped code
+      // before this file is redeployed should still hand the dashboard the block
+      // it needs to render an upgrade button.
+      if (error['plan'] !== undefined) {
+        plan = toPlanProblem(error['plan']);
+      }
     }
   } catch {
     // Body was absent or not JSON. Nothing about it is recorded: see the note
     // at the top of this file about response bodies.
   }
 
-  return new ApiError({ code, message, status: response.status, requestId, fields });
+  return new ApiError({ code, message, status: response.status, requestId, fields, plan });
 }
 
 function redirectToSignIn(): void {

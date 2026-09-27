@@ -43,7 +43,7 @@ const auditSink = vi.hoisted(() => ({ write: vi.fn() }));
 const logging = vi.hoisted(() => ({ createRequestLog: vi.fn() }));
 
 const repositories = vi.hoisted(() => ({
-  findOrganizationBySlug: vi.fn(),
+  findOrganizationBySlugWithEntitlements: vi.fn(),
   loadAuthorizationContext: vi.fn(),
   findProjectBySlug: vi.fn(),
   listMembers: vi.fn(),
@@ -226,15 +226,20 @@ beforeEach(() => {
   actor.isUnlocked.mockReturnValue(true);
   actor.actorId.mockReturnValue(OWNER_USER_ID);
 
-  repositories.findOrganizationBySlug.mockResolvedValue({
-    id: ORG_ID,
-    name: 'Acme',
-    slug: 'acme',
-    seatLimit: 5,
-    createdBy: OWNER_USER_ID,
-    createdAt: EPOCH,
-    updatedAt: EPOCH,
-    deletedAt: null,
+  repositories.findOrganizationBySlugWithEntitlements.mockResolvedValue({
+    // Free, because nothing this route does is entitlement-gated beyond the
+    // project ceiling, and the fixture creates one project.
+    entitlements: null,
+    organization: {
+      id: ORG_ID,
+      name: 'Acme',
+      slug: 'acme',
+      seatLimit: 5,
+      createdBy: OWNER_USER_ID,
+      createdAt: EPOCH,
+      updatedAt: EPOCH,
+      deletedAt: null,
+    },
   });
 
   // The *caller's* membership, which `authorize` reads. Owner by default.

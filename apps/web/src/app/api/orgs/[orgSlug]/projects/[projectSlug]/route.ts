@@ -1,4 +1,5 @@
-import { AuthorizationError } from '@xecret/core/authz';
+import { auditingDenials } from '@xecret/core/authz';
+import type { Denial } from '@xecret/core/authz';
 import {
   listEnvironments,
   RepositoryError,
@@ -60,14 +61,10 @@ export const PATCH = authenticatedRoute<Params>(
       projectId: scope.project.id,
     };
 
-    try {
-      authorize(scope, 'project.update');
-    } catch (cause) {
-      if (cause instanceof AuthorizationError) {
-        record(audit(orgId).denied('project.updated', resource, cause.decision));
-      }
-      throw cause;
-    }
+    auditingDenials(
+      (decision) => record(audit(orgId).denied('project.updated', resource, decision)),
+      () => authorize(scope, 'project.update'),
+    );
 
     const patch = await parseJsonBody(request, projectPatchSchema);
     assertSlugImmutable(patch, 'project');
@@ -103,20 +100,35 @@ export const DELETE = authenticatedRoute<Params>(
       projectId: scope.project.id,
     };
 
-    try {
-      // The strongest permission a project has: `project.delete` is denied to
-      // developers and viewers at the capability gate, where no grant can reach
-      // it, and requires `admin` on this project besides.
-      authorize(scope, 'project.delete');
-    } catch (cause) {
-      if (cause instanceof AuthorizationError) {
-        record(audit(orgId).denied('project.deleted', resource, cause.decision));
+    const refused = (decision: Denial): void =>
+      record(audit(orgId).denied('project.deleted', resource, decision));
+
+    // The strongest permission a project has: `project.delete` is denied to
+    // developers and viewers at the capability gate, where no grant can reach
+    // it, and requires `admin` on this project besides.
+    auditingDenials(refused, () => authorize(scope, 'project.delete'));
+
+    const environments = await listEnvironments(services.db, orgId, scope.project.id);
+
+    /**
+     * Deleting the project deletes every environment in it, so the caller must
+     * be able to delete each of them on its own.
+     *
+     * The project-level decision leaves production out, as every project-level
+     * question does, and cannot see a restriction written against a single
+     * environment. Asked per environment, `environment.delete` resolves each
+     * one's own level: an admin capped at `none` on production by a custom
+     * role, or kept off one environment by an explicit `none`, cannot take
+     * that environment out through the project door — the answer the
+     * environment's own DELETE route would give them.
+     */
+    auditingDenials(refused, () => {
+      for (const environment of environments) {
+        authorize({ ...scope, environment }, 'environment.delete');
       }
-      throw cause;
-    }
+    });
 
     const body = await parseJsonBody(request, destructiveRequestSchema);
-    const environments = await listEnvironments(services.db, orgId, scope.project.id);
 
     /**
      * A production environment raises the bar from "may they?" to "did they

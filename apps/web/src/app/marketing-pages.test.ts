@@ -1,0 +1,507 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+import { MINIMUM_SEATS, PLANS } from '@xecret/core/entitlements';
+
+/**
+ * The prose pages against the engine, and against each other.
+ *
+ * ── Why this file exists ──
+ * `/pricing` derives every ceiling it publishes from `@xecret/core/entitlements`
+ * and `pricing-page.test.ts` fails the build if it stops doing so. Six other
+ * pages state the same numbers in *sentences* — "3 organisations, 25 projects,
+ * 10 environments per project" — and a sentence cannot be interpolated from a
+ * constant without reading like a spreadsheet. So they are written by hand, and
+ * until this file they were written by hand with nothing checking them.
+ *
+ * That is not a hypothetical. The lineup these pages carried before this suite
+ * existed — Free (3 members) / Team $9 / Business $19 — had been retired an
+ * entire release earlier, and four of the six pages publish their version
+ * inside JSON-LD, so the site was serving Google two contradictory price sets
+ * for the same plan names. `/terms` states prices contractually and closes with
+ * "if they ever disagree with this section, this section is the one you agreed
+ * to", which is the sentence that makes a stale number here expensive rather
+ * than untidy.
+ *
+ * ── What it asserts ──
+ * Not that the prose is well written — that every *number* and every *plan
+ * name* in it still matches the engine, and that no retired one survives
+ * anywhere. Read as source text rather than rendered, because what is worth
+ * pinning is which figures are written down.
+ */
+
+const PAGES = [
+  'terms',
+  'faq',
+  'features',
+  'about',
+  'privacy',
+  '.', // the home page, `src/app/page.tsx`
+] as const;
+
+const SOURCES = new Map(
+  PAGES.map((page) => [page, readFileSync(join(import.meta.dirname, page, 'page.tsx'), 'utf8')]),
+);
+
+/** Every page's text at once, for the "nowhere on the site" assertions. */
+const ALL = [...SOURCES.values()].join('\n');
+
+/** `indexOf`, but a miss sorts last instead of first. */
+function idx(haystack: string, needle: string): number {
+  const at = haystack.indexOf(needle);
+  return at < 0 ? haystack.length : at;
+}
+
+/**
+ * The published prose only, with the code commentary removed.
+ *
+ * Three assertions in this suite have now been tripped by a comment rather than
+ * by copy: these pages explain their own pricing rules in `//` notes beside the
+ * strings, so a rule of the form "no page may say X" matches the note that
+ * records why X is wrong. Comments are not published, so they are not what these
+ * assertions are about.
+ *
+ * Line comments are stripped only where they begin a line, so a `//` inside a
+ * URL in body copy survives.
+ */
+const PROSE = new Map(
+  [...SOURCES].map(([page, source]) => [
+    page,
+    source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, ''),
+  ]),
+);
+
+/**
+ * `25` also written as `twenty-five`.
+ *
+ * The home page spells its numbers out — "three organisations, twenty-five
+ * projects" — because it is prose at the top of the site rather than a table.
+ * So a figure counts as present if either form is, and the pages that use
+ * numerals are not forced to change to satisfy the one that does not.
+ */
+const WORDS: Readonly<Record<number, string>> = {
+  1: 'one',
+  3: 'three',
+  5: 'five',
+  7: 'seven',
+  10: 'ten',
+  25: 'twenty-five',
+  30: 'thirty',
+  100: 'a hundred',
+  180: 'a hundred and eighty',
+  250: 'two hundred and fifty',
+  365: 'a year',
+};
+
+/**
+ * Whether a page states `value` of `noun` — "25 projects", "ten environments".
+ *
+ * ── Why the noun is required ──
+ * The first version of this took the number alone and asked whether the page
+ * contained it in either form. It was vacuous for most of the values it was
+ * written to pin. `WORDS[10]` is `'ten'` as a bare substring, and `/terms`
+ * contains "content", "retention", "sentence", "written", "extent" and
+ * "maintenance" — fourteen substring hits and not one standalone `ten` — so
+ * the assertions for `pro.environmentsPerProject` and `team.organizations`
+ * passed on the word "retention". `'one'` matched "none" and "someone",
+ * `'a hundred'` was a prefix of "a hundred and eighty", `'a year'` matched any
+ * mention of a year, and even the numeral branch let `\b1\b` match the `1` in
+ * "1,000".
+ *
+ * Anchoring to the noun fixes all of it at once: "retention" is not
+ * "ten environments", and the assertion now fails when the figure beside the
+ * noun changes, which is the only thing it was ever supposed to detect. The
+ * numeral side is fenced against digits, commas and decimal points on both
+ * sides so a figure can never be matched out of the middle of a longer one.
+ */
+function states(source: string, value: number, noun: string): boolean {
+  // Whitespace collapsed first. These are JSX prose strings that Prettier wraps
+  // wherever the column runs out, so "180 days of audit history" reaches here
+  // as "180 days\n          of audit history". Matching the raw text made every
+  // multi-word assertion depend on where the formatter happened to break the
+  // line — green today, red after an unrelated reflow, and for a reason nobody
+  // would guess from the failure.
+  const text = source.toLowerCase().replace(/\s+/g, ' ');
+  const forms = [value.toLocaleString('en-GB'), String(value)];
+  const word = WORDS[value];
+  if (word !== undefined) forms.push(word);
+
+  return forms.some((form) => {
+    const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // `(?![\d,.])` and its mirror keep `1` out of `1,000` and `100` out of
+    // `1,000,000`.
+    return new RegExp(`(?<![\\d,.\\w])${escaped}(?![\\d,.])\\s+${noun}`).test(text);
+  });
+}
+
+describe('no page still publishes the retired lineup', () => {
+  // Free / Team $9 / Business $19 was replaced a release before these pages
+  // were updated, and it survived on six of them. Each of these strings was
+  // live on the site.
+  it.each([
+    ['the Business tier', /\bBusiness\b/],
+    ['the $9 Team rate', /\$9\b/],
+    ['the $7 yearly rate', /\$7\b/],
+    ['the $15 yearly rate', /\$15\b/],
+    ['a sellable Scale tier', /\bScale (plan|tier)\b/],
+  ])('does not mention %s anywhere', (_label, pattern) => {
+    expect(ALL).not.toMatch(pattern);
+  });
+
+  it('names only the four plans the engine defines, plus self-hosting', () => {
+    // Word-bounded, because `toContain('Pro')` could not fail: these pages
+    // carry "Production" five times over, plus "Props" and "Protecting", so the
+    // assertion passed with every Pro-plan mention on the site deleted. The
+    // other three arms were genuine by luck of vocabulary rather than by
+    // construction.
+    for (const name of ['Free', 'Pro', 'Team', 'Enterprise']) {
+      expect(ALL, `${name} is never named as a plan`).toMatch(new RegExp(`\\b${name}\\b`));
+    }
+    expect(Object.keys(PLANS).sort()).toEqual(['enterprise', 'free', 'pro', 'team']);
+  });
+});
+
+describe('every page that states a price states the current one', () => {
+  // The pages that quote figures at all. `/privacy` states retention but no
+  // price, so it is checked in the retention suite instead.
+  const PRICED = ['terms', 'faq', 'features', 'about', '.'] as const;
+
+  /**
+   * `$19`, but not the `$19` inside `$199`.
+   *
+   * `toContain('$19')` was satisfied by the SAML add-on price this same PR
+   * added to all five of these pages, so the Team monthly rate was unpinned on
+   * every page this file claims to pin it on — rewriting every standalone $19
+   * in `/terms` to $21 left the suite green. The fence is on the trailing side
+   * only: no price here is a suffix of another.
+   */
+  function quotes(source: string, price: string): boolean {
+    const escaped = price.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`${escaped}(?!\\d)`).test(source);
+  }
+
+  it.each(PRICED)('%s quotes Pro at $8 monthly and $5 yearly', (page) => {
+    const source = SOURCES.get(page) ?? '';
+    expect(quotes(source, '$8'), `${page} does not quote Pro monthly`).toBe(true);
+    expect(quotes(source, '$5'), `${page} does not quote Pro yearly`).toBe(true);
+  });
+
+  it.each(PRICED)('%s quotes Team at $19 monthly and $12 yearly', (page) => {
+    const source = SOURCES.get(page) ?? '';
+    expect(quotes(source, '$19'), `${page} does not quote Team monthly`).toBe(true);
+    expect(quotes(source, '$12'), `${page} does not quote Team yearly`).toBe(true);
+  });
+});
+
+/**
+ * The noun each ceiling is written beside, as the prose actually words it.
+ *
+ * This is the anchor that makes the assertions bite — see `states`. Where a
+ * page has a choice of phrasings the alternatives are alternated in the
+ * pattern, so "10 environments per project" and "ten environments" both count
+ * but "retention" does not.
+ */
+const NOUNS = {
+  organizations: 'organisations?',
+  projects: 'projects',
+  environmentsPerProject: 'environments',
+  secretsPerEnvironment: 'secrets',
+  serviceTokens: '(service tokens|ci tokens)',
+  seats: 'members?',
+  auditRetentionDays: 'days of (audit )?history',
+} as const;
+
+describe('every limit stated in prose matches the engine', () => {
+  // `/terms` is the contractual one and states the full ladder, so it carries
+  // the strictest assertion: every ceiling for every plan it enumerates.
+  /**
+   * Which ceilings each page actually enumerates.
+   *
+   * `/terms` states the full ladder. The others state a subset in a sentence —
+   * and until this map existed only `/terms` was checked, so the four pages that
+   * emit these figures inside `FAQPage` JSON-LD were unpinned. Verified by
+   * mutation: rewriting `/faq`'s "25 projects" to "35 projects" and `/about`'s
+   * "180 days of history" to "999 days" both left the suite green, which is
+   * exactly the drift this file's docblock says it exists to stop.
+   */
+  const STATES_CEILINGS: Readonly<Record<string, readonly (keyof typeof NOUNS)[]>> = {
+    terms: [
+      'organizations',
+      'projects',
+      'environmentsPerProject',
+      'secretsPerEnvironment',
+      'serviceTokens',
+      'auditRetentionDays',
+    ],
+    faq: ['organizations', 'projects', 'environmentsPerProject', 'auditRetentionDays'],
+    features: ['organizations', 'projects', 'environmentsPerProject', 'auditRetentionDays'],
+    about: ['organizations', 'projects', 'environmentsPerProject', 'auditRetentionDays'],
+    '.': ['organizations', 'projects', 'environmentsPerProject', 'auditRetentionDays'],
+  };
+
+  // `Object.keys` widens to `string[]`, and `SOURCES` is keyed by the literal
+  // union, so the cast is what keeps the map's keys checked against `PAGES`
+  // rather than silently accepting a page name that does not exist.
+  const CEILING_PAGES = Object.keys(STATES_CEILINGS) as (typeof PAGES)[number][];
+
+  it.each(CEILING_PAGES)('%s states the Pro and Team ceilings', (page) => {
+    const source = SOURCES.get(page) ?? '';
+    const fields = STATES_CEILINGS[page] ?? [];
+    expect(fields.length, `${page} has no fields listed`).toBeGreaterThan(0);
+
+    for (const plan of ['pro', 'team'] as const) {
+      const limits = PLANS[plan].limits;
+      for (const field of fields) {
+        const value = limits[field];
+        if (value === null) continue;
+        expect(
+          states(source, value, NOUNS[field]),
+          `${page} does not state ${plan}.${field} = ${value}`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  /**
+   * Just the sentence (or bullet) describing the free tier.
+   *
+   * Narrowed because `MINIMUM_SEATS.team` and `FREE_LIMITS.seats` are both `3`,
+   * and `/terms` states both — so "a minimum of 3 members", added by this PR,
+   * silently satisfied the Free seat assertion. Changing the Free bullet to
+   * "4 members" left the suite green. Every one of these pages lists Free
+   * first and Pro next, so the free description is what lies between them.
+   */
+  function freeRegion(source: string): string {
+    const start = source.search(/free tier|Free is|Free —/i);
+    if (start < 0) return '';
+    const rest = source.slice(start);
+    const end = rest.search(/\bPro (is|will be|—)/);
+    return end < 0 ? rest : rest.slice(0, end);
+  }
+
+  /**
+   * The pages that enumerate the free tier, and therefore must be checked.
+   *
+   * Named explicitly because the alternative was a silent skip: `freeRegion`
+   * finds its region by three literal phrasings and returns `''` otherwise, and
+   * the caller used to `continue` on that — so rewording `/terms`'s
+   * "Free — $0, forever." to "Free: $0 forever." would switch off all five free
+   * ceiling assertions on the contractual page and a later drift from 3 members
+   * to 9 would ship green. `/privacy` states retention but never enumerates the
+   * tier, and it already took that branch, so the no-op path was live rather
+   * than hypothetical.
+   */
+  const ENUMERATES_FREE = ['terms', 'faq', 'features', 'about', '.'] as const;
+
+  it('every page that states the free ceilings states the engine ones', () => {
+    const free = PLANS.free.limits;
+
+    for (const page of ENUMERATES_FREE) {
+      const source = SOURCES.get(page) ?? '';
+      const region = freeRegion(source);
+      // Loud, not skipped: an unfindable region means the phrasing moved, and
+      // the answer to that is a failing test rather than five fewer checks.
+      expect(region, `${page} enumerates the free tier but no region was found`).not.toBe('');
+
+      for (const field of [
+        'organizations',
+        'projects',
+        'environmentsPerProject',
+        'seats',
+        'auditRetentionDays',
+      ] as const) {
+        const value = free[field];
+        if (value === null) continue;
+        expect(
+          states(region, value, NOUNS[field]),
+          `${page} does not state free.${field} = ${value}`,
+        ).toBe(true);
+      }
+    }
+  });
+});
+
+describe('audit retention agrees with the engine everywhere it is stated', () => {
+  // This is the number that was wrong in two places at once: `/privacy` said
+  // 12 months on Team and 3 years on Business, and the `/faq` answer two
+  // entries below a corrected one still said "Thirty days on Free, twelve
+  // months on Team" — published as `FAQPage` structured data.
+  it.each([
+    ['free', PLANS.free.limits.auditRetentionDays],
+    ['pro', PLANS.pro.limits.auditRetentionDays],
+    ['team', PLANS.team.limits.auditRetentionDays],
+    ['enterprise', PLANS.enterprise.limits.auditRetentionDays],
+  ])('privacy states %s retention as %i days', (plan, days) => {
+    // Anchored on the plan name, not the unit. `/privacy` also says
+    // "Sessions — 30 days from creation" and carries a 30-day cookie line, so
+    // `states(source, 30, 'days?')` was satisfied by text that has nothing to
+    // do with audit retention — changing "30 days on Pro" to "45 days on Pro"
+    // left the suite green. The page words the whole group as "7 days on Free,
+    // 30 days on Pro, 180 days on Team, a year on Enterprise".
+    const source = SOURCES.get('privacy') ?? '';
+    expect(
+      states(source, days as number, `days? on ${plan}`) ||
+        states(source, days as number, `on ${plan}`),
+      `privacy does not state ${days} days on ${plan}`,
+    ).toBe(true);
+  });
+
+  it('no page still claims twelve months or three years of history', () => {
+    expect(ALL).not.toMatch(/12 months of (audit )?history/i);
+    expect(ALL).not.toMatch(/twelve months on Team/i);
+    expect(ALL).not.toMatch(/(3|three) years of (audit )?history/i);
+  });
+});
+
+describe('the seat minimum is disclosed where it is charged', () => {
+  // `resolveBilledSeats` floors billed seats at `MINIMUM_SEATS`, so a
+  // two-person team reading "$12 per member per month" computes $288 a year
+  // and is invoiced $432. `/terms` is where that has to be stated.
+  it('terms states the Team and Enterprise minimums', () => {
+    const source = SOURCES.get('terms') ?? '';
+
+    // The bare `states(source, MINIMUM_SEATS.team, 'members?')` that used to
+    // lead here could not fail: `MINIMUM_SEATS.team` and `FREE_LIMITS.seats`
+    // are both 3, and the Free bullet says "3 members", so deleting the entire
+    // seat-minimum paragraph left it green. The two phrase-anchored assertions
+    // below were always the ones doing the work, so it is gone rather than
+    // scoped — the same 3/3 collision the `freeRegion` note records, in the
+    // other direction.
+    expect(source.toLowerCase()).toMatch(
+      new RegExp(`minimum of ${MINIMUM_SEATS.team} members?`, 'i'),
+    );
+    expect(source.toLowerCase()).toMatch(
+      new RegExp(`enterprise from ${MINIMUM_SEATS.enterprise}`, 'i'),
+    );
+  });
+
+  it('the minimums are what the engine actually bills at', () => {
+    expect(MINIMUM_SEATS.free).toBe(1);
+    expect(MINIMUM_SEATS.pro).toBe(1);
+    expect(MINIMUM_SEATS.team).toBeGreaterThan(1);
+    expect(MINIMUM_SEATS.enterprise).toBeGreaterThan(MINIMUM_SEATS.team);
+  });
+});
+
+describe('the add-ons are described the same way everywhere', () => {
+  // SAML is an add-on from Team and included with Enterprise; SCIM is an
+  // Enterprise-only add-on. Four pages used to gate both at Enterprise, which
+  // told a Team reader SAML was out of reach and SCIM was within it — the two
+  // have mirror-image rules and collapsing them gets both wrong.
+  it('every page that names SAML says it starts at Team', () => {
+    // The previous version of this banned one literal sentence — and that
+    // sentence existed in neither `main` nor `HEAD`, only inside the assertion
+    // itself. It was written against a string the same commit had already
+    // replaced, so it could never fail and tested nothing its name claimed.
+    //
+    // Two invariants, and both are page-level rather than sentence-level. A
+    // per-sentence version fired on `/terms`'s Enterprise bullet — "SAML single
+    // sign-on is included at this tier" is a true statement that names no Team,
+    // because the Team half is a paragraph further down.
+    for (const [page, source] of SOURCES) {
+      if (!source.includes('SAML')) continue;
+      const text = source.replace(/\s+/g, ' ');
+
+      // Never Enterprise-only: that is SCIM's rule, not SAML's, and the one
+      // sentence that used to cover both got each wrong in opposite directions.
+      //
+      // Every occurrence, not the first. Taking only `indexOf('SAML')` meant
+      // that on `/about` the clause examined was inside a `//` code comment and
+      // the published `body:` sentence was never looked at, and on `/terms` it
+      // was the Enterprise bullet rather than the Add-ons paragraph where the
+      // tier rule actually lives — so an edit making a *later* mention read
+      // "Enterprise only" shipped green under a test whose name forbade it.
+      //
+      // Each clause is clipped at the punctuation rather than a character
+      // count: a 200-character window ran past the semicolon into "directory
+      // sync (SCIM) is $249 … at Enterprise only" and failed on SCIM's rule
+      // while claiming SAML's.
+      for (const match of text.matchAll(/SAML/g)) {
+        const after = text.slice(match.index);
+        const clause = after.slice(0, Math.min(...[';', '.'].map((d) => idx(after, d))));
+        expect(clause, `${page} calls SAML Enterprise-only`).not.toMatch(/enterprise[- ]only/i);
+      }
+
+      // Any page that quotes the price has to say where it starts.
+      if (!text.includes('$199')) continue;
+      expect(text, `${page} prices SAML without saying it starts at Team`).toMatch(
+        /(from|only)[^.]{0,40}Team|Team[^.]{0,40}(and above|only)/,
+      );
+    }
+  });
+
+  it('never publishes an add-on price without its unit', () => {
+    // $199 with no unit can be read as a one-off or a per-member charge, and
+    // four of these answers are emitted as `FAQPage` JSON-LD, so the ambiguity
+    // reaches a rich result.
+    for (const [page, source] of SOURCES) {
+      const text = source.replace(/\s+/g, ' ');
+      if (!text.includes('$199')) continue;
+      const after = text.slice(text.indexOf('$199'), text.indexOf('$199') + 120);
+      expect(after, `${page} quotes $199 with no unit beside it`).toMatch(/per[- ]connection/i);
+    }
+  });
+
+  it('every page that prices the add-on prices it the same', () => {
+    // Keyed on "per connection" rather than on a `$` anywhere after the word
+    // SAML: these pages quote plan prices too, so the looser test fired on
+    // every page that merely mentions single sign-on near a figure.
+    for (const [page, source] of SOURCES) {
+      if (!/per[- ]connection/i.test(source)) continue;
+      expect(source, `${page} prices SAML at something other than $199`).toContain('$199');
+    }
+  });
+
+  it('gives the notice the legal pages promise before a change takes effect', () => {
+    // §Changes: "for a material change we will give notice … before it takes
+    // effect, 30 days ahead where we reasonably can". This PR rewrote the
+    // contractual plan ladder, which is material by any reading.
+    //
+    // The date has been wrong in both directions here. It first stayed at the
+    // old value, so a customer got no signal that the prices binding them had
+    // changed. Then it moved to the publish date, which made the page promise
+    // advance notice and give none — and fed `datePublished`, so the new table
+    // claimed to have been in force before it was written. It leads the publish
+    // date now, which is the only arrangement the document's own §Changes
+    // supports.
+    for (const page of ['terms', 'privacy'] as const) {
+      const source = SOURCES.get(page) ?? '';
+      const updated = /const UPDATED = '([\d-]+)'/.exec(source)?.[1];
+      const effective = /const EFFECTIVE = '([\d-]+)'/.exec(source)?.[1];
+
+      expect(updated, `${page} has no UPDATED date`).toBeDefined();
+      expect(effective, `${page} has no EFFECTIVE date`).toBeDefined();
+      expect(
+        Date.parse(effective as string),
+        `${page} takes effect before it was published`,
+      ).toBeGreaterThanOrEqual(Date.parse(updated as string));
+    }
+  });
+
+  it('never charges Enterprise for directory sync', () => {
+    // `pricing-plan.md` §3 marks SCIM `✅ included` in the Enterprise column and
+    // §8.4 explains why — the $1,500 floor absorbs both WorkOS connections at
+    // 17 per cent of revenue. The $249 figure belonged to Scale, which #101
+    // removed, and §8.3's "never bundle it below Enterprise" rules out moving
+    // the charge to Team.
+    //
+    // This was published the wrong way round for several commits: the matrix
+    // cell read `Add-on` and every other surface, including the contractual
+    // Terms, was changed to agree with it. The guard is on the money, not the
+    // wording, because that is what a customer pays.
+    expect(ALL, 'the retired $249 SCIM charge is back').not.toContain('$249');
+
+    // Read from `PROSE`: `/about` explains this rule in a comment beside the
+    // copy, and a guard over raw source matches the explanation.
+    for (const [page, source] of PROSE) {
+      if (!source.includes('SCIM')) continue;
+      const text = source.replace(/\s+/g, ' ');
+      const after = text.slice(text.indexOf('SCIM'));
+      const clause = after.slice(0, Math.min(...[';', '.'].map((d) => idx(after, d))));
+      expect(clause, `${page} charges for SCIM rather than including it`).not.toMatch(
+        /\$\d|per[- ]connection|add-on/i,
+      );
+    }
+  });
+});

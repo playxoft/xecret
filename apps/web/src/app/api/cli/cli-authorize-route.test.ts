@@ -35,7 +35,7 @@ const actor = vi.hoisted(() => ({
 }));
 
 const repository = vi.hoisted(() => ({
-  findOrganizationBySlug: vi.fn(),
+  findOrganizationBySlugWithEntitlements: vi.fn(),
   loadAuthorizationContext: vi.fn(),
   createCliAuthCode: vi.fn(),
 }));
@@ -195,7 +195,10 @@ describe('POST /api/cli/authorize — which organisation may be named', () => {
    * be authorised for the CLI at all.
    */
   it('approves for an organisation whose slug is on the reserved list', async () => {
-    repository.findOrganizationBySlug.mockResolvedValue(organization('playxoft'));
+    repository.findOrganizationBySlugWithEntitlements.mockResolvedValue({
+      organization: organization('playxoft'),
+      entitlements: null,
+    });
 
     const response = await route.POST(approve('playxoft'));
 
@@ -205,7 +208,10 @@ describe('POST /api/cli/authorize — which organisation may be named', () => {
   });
 
   it('approves for an ordinary slug too', async () => {
-    repository.findOrganizationBySlug.mockResolvedValue(organization('acme-corp'));
+    repository.findOrganizationBySlugWithEntitlements.mockResolvedValue({
+      organization: organization('acme-corp'),
+      entitlements: null,
+    });
 
     expect((await route.POST(approve('acme-corp'))).status).toBe(200);
   });
@@ -216,7 +222,7 @@ describe('POST /api/cli/authorize — which organisation may be named', () => {
    * is a member of, and `resolveOrg` — not the schema — is what settles that.
    */
   it('still refuses a slug that resolves to nothing, without minting a code', async () => {
-    repository.findOrganizationBySlug.mockResolvedValue(null);
+    repository.findOrganizationBySlugWithEntitlements.mockResolvedValue(null);
 
     const response = await route.POST(approve('no-such-org'));
 
@@ -235,6 +241,6 @@ describe('POST /api/cli/authorize — which organisation may be named', () => {
     expect(await body(response)).toMatchObject({
       error: { code: 'validation_failed', fields: [{ field: 'orgSlug' }] },
     });
-    expect(repository.findOrganizationBySlug).not.toHaveBeenCalled();
+    expect(repository.findOrganizationBySlugWithEntitlements).not.toHaveBeenCalled();
   });
 });

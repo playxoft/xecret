@@ -10,7 +10,7 @@ import { environments, projects } from '../schema/resources';
 import { invitations, orgMembers, organizations } from '../schema/tenancy';
 import type { InvitationGrantSeed } from '../schema/tenancy';
 import { addMember } from './membership';
-import type { MemberRecord } from './membership';
+import type { WrittenMemberRecord } from './membership';
 import { MAX_PAGE_SIZE, RepositoryError } from './shared';
 import type { Executor } from './shared';
 
@@ -91,7 +91,7 @@ export interface AcceptInvitationParams {
 }
 
 export interface AcceptedInvitation {
-  member: MemberRecord;
+  member: WrittenMemberRecord;
   invitation: InvitationRecord;
   organization: { id: string; name: string; slug: string };
   /**
