@@ -1,12 +1,12 @@
 import type { AuditResource } from '@xecret/core/audit';
 import { actionsBeyondBase, auditingDenials } from '@xecret/core/authz';
 import type { Denial } from '@xecret/core/authz';
-import { cheapestPlanWithFeature } from '@xecret/core/entitlements';
 import { createCustomRole, listCustomRoles } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import {
   assertMayDefineCustomRole,
+  customRolesFeature,
   mapAuditedMembershipError,
   requireCustomRolesPlan,
   requireMembership,
@@ -55,7 +55,6 @@ export const GET = authenticatedRoute<Params>(async ({ params, principal, servic
   authorize(scope, 'member.update');
 
   const roles = await listCustomRoles(services.db, scope.organization.id);
-  const enabled = scope.entitlements.features.customRoles;
 
   return json({
     data: roles.map((role) => toCustomRolePayload(role, role.holderCount)),
@@ -64,10 +63,7 @@ export const GET = authenticatedRoute<Params>(async ({ params, principal, servic
      * plan that would. Reading is never gated; this is what lets the dashboard
      * say why the controls are absent rather than let a request discover it.
      */
-    feature: {
-      enabled,
-      upgradeTo: enabled ? null : cheapestPlanWithFeature('customRoles'),
-    },
+    feature: customRolesFeature(scope.entitlements),
   });
 });
 

@@ -27,6 +27,7 @@ import type {
   RepositoryErrorCode,
 } from '@xecret/db/repositories';
 import type { AuditErrorReason } from '@xecret/core/audit';
+import { cheapestPlanWithFeature } from '@xecret/core/entitlements';
 import type { Entitlements } from '@xecret/core/entitlements';
 import type { Principal } from './actor';
 import { requireFeature } from './entitlements';
@@ -249,6 +250,24 @@ export function assertMayChangeOwnGrants(actor: RoleAuthority): void {
 }
 
 /* ── Custom roles ──────────────────────────────────────────────────────── */
+
+/**
+ * Whether the plan lets this organisation define and assign custom roles, and
+ * the cheapest plan that would — what `GET …/roles` tells the dashboard so it
+ * can say why the controls are absent rather than let a request discover it.
+ *
+ * Answered here rather than in the route so the route imports nothing its
+ * sibling member routes do not: in this build, a route that imports one extra
+ * module from the shared server chunk gets a whole copy of that chunk (see
+ * `auditingDenials` in `@xecret/core/authz`).
+ */
+export function customRolesFeature(entitlements: Entitlements): {
+  enabled: boolean;
+  upgradeTo: string | null;
+} {
+  const enabled = entitlements.features.customRoles;
+  return { enabled, upgradeTo: enabled ? null : cheapestPlanWithFeature('customRoles') };
+}
 
 /**
  * Refuses a custom-role write the organisation's plan does not include, with

@@ -84,8 +84,12 @@ const ALL_PROJECTS = 'all';
 export function MembersScreen({ orgSlug }: { orgSlug: string }) {
   const organization = useOrganization(orgSlug);
   const canManage = canAdminister(organization, 'member.update');
-  const canInvite = canAdminister(organization, 'member.invite');
   const assignableRoles = organization?.authority.assignableRoles ?? [];
+  // Inviting needs a role to invite *at*: a narrowed inviter whose role leaves
+  // them none to hand out gets no button rather than a dialog with an empty
+  // role menu.
+  const seesInvitations = canAdminister(organization, 'member.invite');
+  const canInvite = seesInvitations && assignableRoles.length > 0;
 
   const members = useApiResource<MemberListResponse>(apiPath.members(orgSlug));
   // Invitations are fetched only for people who could see them; asking and
@@ -95,7 +99,7 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
   // roles and the grantable levels likewise, for the row controls that use
   // them.
   const invitations = useApiResource<InvitationListResponse>(
-    canInvite ? apiPath.invitations(orgSlug) : null,
+    seesInvitations ? apiPath.invitations(orgSlug) : null,
   );
   const projects = useApiResource<ProjectListResponse>(
     canManage ? apiPath.projects(orgSlug) : null,
@@ -462,7 +466,7 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
           {/* Below the members, not above them: the people who are actually in
               the organisation are the answer to this page, and the ones who
               have merely been asked are the footnote. */}
-          {canInvite && invitations.data !== null ? (
+          {seesInvitations && invitations.data !== null ? (
             <InvitationsSection
               orgSlug={orgSlug}
               invitations={invitations.data.data}

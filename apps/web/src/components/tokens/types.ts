@@ -59,7 +59,12 @@ export interface AuditEvent {
   outcome: 'success' | 'denied' | 'error';
   ipAddress: string | null;
   requestId: string | null;
-  metadata: Readonly<Record<string, string | number | undefined>>;
+  /**
+   * Mostly strings and numbers; a custom role's definition adds an action list
+   * and a ceiling object, and `null` for "no ceiling". Read by key, with a
+   * type check on each value, never rendered wholesale.
+   */
+  metadata: Readonly<Record<string, unknown>>;
   createdAt: string;
 }
 
