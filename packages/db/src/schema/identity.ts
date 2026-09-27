@@ -35,8 +35,15 @@ export const users = pgTable(
      */
     firebaseUid: text('firebase_uid').unique(),
     /**
-     * The WorkOS user id — `user_…`. Null only between a row being created and
-     * its first authenticated login during the transition.
+     * The WorkOS user id — `user_…`. Null for an account that has not signed
+     * in through WorkOS yet: every row from the Firebase era, until the backfill
+     * or its first WorkOS login links it.
+     *
+     * The unique constraint's own index is the lookup index. There is no
+     * partial one beside it, unlike `users_firebase_uid_idx`: the linking pass
+     * reads this column *including* soft-deleted rows, on purpose, so that a
+     * deleted account is refused as deleted rather than taken for nobody — and
+     * an index that left those rows out could not answer that read.
      */
     workosUserId: text('workos_user_id').unique(),
     email: citext('email').notNull().unique(),
@@ -52,16 +59,12 @@ export const users = pgTable(
     index('users_firebase_uid_idx')
       .on(t.firebaseUid)
       .where(sql`${t.deletedAt} is null`),
-    // Mirrors the Firebase index exactly, including the partial predicate: the
-    // lookup on every single login filters soft-deleted rows, and an index that
-    // did not would make the hot path of the whole product read rows it must
-    // then discard.
-    index('users_workos_user_id_idx')
-      .on(t.workosUserId)
-      .where(sql`${t.deletedAt} is null`),
     // A row must be reachable by *some* provider. Without this, a bug in the
     // linking pass could write a user nobody can ever authenticate as — a row
     // that exists, owns organisations and secrets, and has no way back in.
+    //
+    // Dropping `firebase_uid` drops this constraint with it, silently; the
+    // decommission migration must put an equivalent back. See 0018.
     check(
       'users_identity_present_check',
       sql`${t.firebaseUid} is not null or ${t.workosUserId} is not null`,

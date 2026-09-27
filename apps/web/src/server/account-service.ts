@@ -34,8 +34,13 @@ import type { ServiceContext } from './context';
  *    inside an organisation nobody can administer; erasing it would destroy
  *    other people's secrets. Ownership must move first, and the error says so.
  *  - Every session and CLI token dies in the same transaction, and the user
- *    row is soft-deleted — which `upsertUserFromIdentity` treats as terminal:
- *    the same identity is refused at the next sign-in, not silently revived.
+ *    row is soft-deleted — which both sign-in paths treat as terminal. The
+ *    Firebase upsert (`upsertUserFromFirebaseIdentity`) refuses the same
+ *    Firebase identity; the WorkOS linking pass (`upsertUserFromWorkosIdentity`)
+ *    refuses the row whether it reaches it by WorkOS identity or by email
+ *    address, so the account is neither revived nor re-created around its
+ *    address. Either refusal is `notFound` — a terminal "deleted", never a new
+ *    account.
  *
  * Deletion is all-or-nothing: one blocked organisation rolls the whole thing
  * back, because "your account is half-deleted" is not a state anyone can be
@@ -86,9 +91,10 @@ export function planAccountDeletion(
  * directly would be the second place in the codebase that has to remember that.
  *
  * The provider no longer overwrites this field once the row exists
- * (`upsertUserFromIdentity`), which is what makes the change outlive the next
- * sign-in. Everything else on the profile — the email address, the verified
- * flag, the avatar — is still mirrored and still not editable here.
+ * (`upsertUserFromFirebaseIdentity`, and the WorkOS linking pass after it),
+ * which is what makes the change outlive the next sign-in. Everything else on
+ * the profile — the email address, the verified flag, the avatar — is still
+ * mirrored and still not editable here.
  */
 export async function updateDisplayName(
   services: ServiceContext,

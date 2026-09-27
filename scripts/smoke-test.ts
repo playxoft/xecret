@@ -9,10 +9,10 @@
  * great deal and proves nothing about whether the thing works. This is the
  * first code that finds out.
  *
- * It covers the path a first sign-in actually takes — create the user,
- * bootstrap their organisation and its master key, make a project and an
- * environment, store an encrypted secret, read it back — plus the properties the
- * design rests on and that no unit test can reach:
+ * It covers the path a first sign-in actually takes — create the user through
+ * the WorkOS linking pass, bootstrap their organisation and its master key,
+ * make a project and an environment, store an encrypted secret, read it back —
+ * plus the properties the design rests on and that no unit test can reach:
  *
  *  - a ciphertext moved to another row fails to decrypt (the AAD binding);
  *  - the `value_type` CHECK refuses a write that bypassed the application;
@@ -44,7 +44,7 @@ import {
   markSessionUnlocked,
   provisionOrganization,
   updateSecretMetadata,
-  upsertUserFromIdentity,
+  upsertUserFromWorkosIdentity,
 } from '../packages/db/src/repositories/index.ts';
 import { EnvelopeService, keyProviderFromEnv } from '../packages/core/src/crypto/index.ts';
 import { DecryptionError } from '../packages/core/src/crypto/types.ts';
@@ -53,6 +53,7 @@ import {
   hashToken,
   hashUnlockVerifier,
   isVaultUnlocked,
+  workosIdentity,
 } from '../packages/core/src/auth/index.ts';
 import { randomBytes } from '../packages/core/src/crypto/encoding.ts';
 import { uuidv7 } from '../packages/core/src/ids/index.ts';
@@ -104,18 +105,32 @@ async function main(): Promise<void> {
   try {
     await db.transaction(async (tx) => {
       // ── 1. First sign-in ────────────────────────────────────────────────
-      const user = await upsertUserFromIdentity(tx, {
-        subject: `smoke-test-${uuidv7()}`,
-        email: `smoke-${uuidv7()}@example.invalid`,
-        emailVerified: true,
-        displayName: 'Smoke Test',
-        // Seconds since the epoch, as a verified token carries it. The freshness
-        // rules that read this belong to the routes, not to the repository, but
-        // the field is required and a smoke test that invented a value outside
-        // the unit it is stored in would be the first thing to mislead somebody.
-        authTime: Math.floor(Date.now() / 1000),
-      });
-      step('user created', true, `id ${user.id.slice(0, 8)}…`);
+      // Through the WorkOS linking pass, which is the sign-in path from the
+      // provider swap on: the Firebase upsert is deleted with its route, and
+      // the linker is the code whose three steps, soft-delete refusals and
+      // `users_identity_present_check` only a real database can exercise. The
+      // subject is a well-formed WorkOS id (`user_…`) that nobody holds, and
+      // the address is one nobody holds, so this is step 3 — a new account.
+      const { user, outcome } = await upsertUserFromWorkosIdentity(
+        tx,
+        workosIdentity({
+          subject: `user_smoke${uuidv7().replaceAll('-', '')}`,
+          email: `smoke-${uuidv7()}@example.invalid`,
+          emailVerified: true,
+          displayName: 'Smoke Test',
+          // Seconds since the epoch, as a verified identity carries it. The
+          // freshness rules that read this belong to the routes, not to the
+          // repository, but the field is required and a smoke test that
+          // invented a value outside the unit it is stored in would be the first
+          // thing to mislead somebody.
+          authTime: Math.floor(Date.now() / 1000),
+        }),
+      );
+      step(
+        'user created',
+        outcome === 'created' && user.workosUserId !== null && user.firebaseUid === null,
+        `id ${user.id.slice(0, 8)}…, outcome "${outcome}", WorkOS id only`,
+      );
 
       // ── 2. Organisation bootstrap: the org, the membership, the master key ─
       const account = await provisionOrganization(tx, {

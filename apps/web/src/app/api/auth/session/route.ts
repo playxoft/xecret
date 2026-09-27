@@ -24,7 +24,7 @@ import {
   provisionOrganization,
   RepositoryError,
   revokeSession,
-  upsertUserFromIdentity,
+  upsertUserFromFirebaseIdentity,
 } from '@xecret/db/repositories';
 import type { OrganizationMembership } from '@xecret/db/repositories';
 import { DatabaseAuditSink } from '@/server/audit-sink';
@@ -81,25 +81,27 @@ export const POST = publicRoute(async ({ request, services }) => {
     throw errors.forbidden('Verify your email address before signing in.');
   }
 
+  // The *Firebase* upsert, keyed on and writing `firebase_uid` only — never the
+  // WorkOS linking pass. `identity.subject` here is a Firebase uid: the linker
+  // would store it as a WorkOS id, and would sign a *different* Firebase
+  // account into an existing one because the two share a verified address. Its
+  // parameter type refuses this identity, and that is the point. This route and
+  // this function are deleted together in WS-2, when the WorkOS callback
+  // replaces them.
+  //
   // A soft-deleted account is terminal: the repository refuses to revive the
-  // row (`setWhere` in `upsertUserFromIdentity`), and that refusal surfaces
-  // here as a plain statement rather than a 500. 403, not 404: this caller has
-  // just proven control of the identity, so "this account was deleted" reveals
-  // nothing they are not entitled to know.
-  // `outcome` is discarded here and consumed by the WorkOS callback that
-  // replaces this route: it distinguishes an ordinary login from a
-  // pre-existing account being adopted by verified email, and the second is an
-  // event worth auditing on its own. This route is deleted with the Firebase
-  // path, so wiring it up here would be writing code with a known expiry date.
-  const { user } = await upsertUserFromIdentity(services.db, identity).catch((cause: unknown) => {
-    if (cause instanceof RepositoryError && cause.code === 'notFound') {
-      throw errors.forbidden('This account was deleted and cannot be signed in to again.');
-    }
-    if (cause instanceof RepositoryError && cause.code === 'forbidden') {
-      throw errors.forbidden('Verify your email address before signing in.');
-    }
-    throw cause;
-  });
+  // row (`setWhere` in `upsertUserFromFirebaseIdentity`), and that refusal
+  // surfaces here as a plain statement rather than a 500. 403, not 404: this
+  // caller has just proven control of the identity, so "this account was
+  // deleted" reveals nothing they are not entitled to know.
+  const user = await upsertUserFromFirebaseIdentity(services.db, identity).catch(
+    (cause: unknown) => {
+      if (cause instanceof RepositoryError && cause.code === 'notFound') {
+        throw errors.forbidden('This account was deleted and cannot be signed in to again.');
+      }
+      throw cause;
+    },
+  );
 
   // First login has no organisation yet. Bootstrapping one here — rather than
   // asking the user to create it — is what makes the product usable within a

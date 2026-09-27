@@ -59,9 +59,13 @@ export const organizations = pgTable(
      * When true, a member of this organisation may only sign in through its own
      * SSO connection.
      *
-     * The column ships with the enforcement in the callback, because the flag
-     * without the check is worse than neither: it tells an administrator that a
-     * bypass is closed when it is open.
+     * The column ships ahead of its enforcement, and is inert until then: it is
+     * false on every row and nothing in the codebase can set it. The setter
+     * lands in the same change as the check in the sign-in callback (WS-2), and
+     * must not land before it, because the flag without the check is worse than
+     * neither — it tells an administrator that a bypass is closed when it is
+     * open. (`setOrgWorkosOrgId` says the same beside the setter that *does*
+     * exist.)
      *
      * Enforcement always exempts at least one owner. An identity provider that
      * is misconfigured after this is switched on would otherwise lock an

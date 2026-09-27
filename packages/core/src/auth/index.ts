@@ -76,11 +76,12 @@ export type {
   VaultUnlockState,
 } from './vault';
 
-export { IdentityVerificationError } from './types';
+export { IdentityVerificationError, workosIdentity } from './types';
 export type {
   IdentityProvider,
   Session,
   SessionRejection,
   SessionResolution,
   VerifiedIdentity,
+  WorkosIdentity,
 } from './types';

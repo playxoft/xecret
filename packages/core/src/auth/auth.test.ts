@@ -16,6 +16,8 @@ import {
 } from './session';
 import type { SessionRecord } from './session';
 import { INVITATION_TTL_MS, invitationExpiryFrom, invitationState } from './invitation';
+import { IdentityVerificationError, workosIdentity } from './types';
+import type { VerifiedIdentity } from './types';
 import {
   generateToken,
   hashToken,
@@ -461,4 +463,34 @@ describe('invitation lifecycle', () => {
       'accepted',
     );
   });
+});
+
+describe('the WorkOS identity brand', () => {
+  const base: VerifiedIdentity = {
+    subject: 'user_01HZX4QK3V9M7N2P5R8T6W1Y0A',
+    email: 'alice@example.com',
+    emailVerified: true,
+    authTime: 1_790_000_000,
+  };
+
+  it('marks a WorkOS-shaped identity, keeping every field', () => {
+    const identity = workosIdentity(base);
+
+    expect(identity).toEqual({ ...base, provider: 'workos' });
+  });
+
+  it('refuses a Firebase uid, which is the mix-up the brand exists to prevent', () => {
+    // A Firebase uid is 28 bare alphanumerics. Stored as a WorkOS id it would
+    // collide with the person's real WorkOS id at their first WorkOS login.
+    expect(() => workosIdentity({ ...base, subject: 'Xk3pQ9mZ2vB7nR4tY6wL8sD1fG0h' })).toThrow(
+      IdentityVerificationError,
+    );
+  });
+
+  it.each(['', 'user_', 'user_01-HZX', 'User_01HZX', 'org_01HZX', ' user_01HZX'])(
+    'refuses the malformed subject %j',
+    (subject) => {
+      expect(() => workosIdentity({ ...base, subject })).toThrow(IdentityVerificationError);
+    },
+  );
 });

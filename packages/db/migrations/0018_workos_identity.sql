@@ -2,7 +2,8 @@
 --
 -- Nothing is dropped here, and that is the whole design of this migration.
 -- `firebase_uid` stays — it becomes nullable, keeps its unique constraint and
--- keeps its index — for two reasons, and the second is the important one:
+-- keeps its index — for two reasons, and the second is the important one (and
+-- see the warning at `users_identity_present_check` before ever dropping it):
 --
 --   1. It is the join key the user backfill matches on. The WorkOS import
 --      produces a `firebase_uid → workos_user_id` mapping, and a second pass
@@ -39,15 +40,14 @@ ALTER TABLE "users" ALTER COLUMN "firebase_uid" DROP NOT NULL;--> statement-brea
 -- ── users.workos_user_id ────────────────────────────────────────────────────
 ALTER TABLE "users" ADD COLUMN "workos_user_id" text;--> statement-breakpoint
 
+-- The unique constraint's own index is the lookup index, and deliberately the
+-- only one. A partial index beside it (`WHERE deleted_at IS NULL`, mirroring
+-- `users_firebase_uid_idx`) would be redundant — a unique btree already answers
+-- an equality lookup on its column — and it could not even serve the query that
+-- matters: the linking pass reads this column *including* soft-deleted rows, so
+-- that a deleted account is refused as deleted instead of mistaken for nobody.
 ALTER TABLE "users"
 	ADD CONSTRAINT "users_workos_user_id_unique" UNIQUE("workos_user_id");--> statement-breakpoint
-
--- Mirrors `users_firebase_uid_idx` exactly, partial predicate included. This is
--- read on every single login; an index without the predicate would have the hot
--- path of the entire product fetch soft-deleted rows in order to discard them.
-CREATE INDEX "users_workos_user_id_idx"
-	ON "users" USING btree ("workos_user_id")
-	WHERE "deleted_at" IS NULL;--> statement-breakpoint
 
 -- A row must remain reachable by *some* provider.
 --
@@ -58,6 +58,17 @@ CREATE INDEX "users_workos_user_id_idx"
 --
 -- Satisfiable at the moment it is added because every existing row still has a
 -- `firebase_uid`, which is why the NOT NULL was dropped first.
+--
+-- ⚠ For the decommission migration that eventually drops `firebase_uid`:
+-- `ALTER TABLE users DROP COLUMN firebase_uid` drops this constraint with it,
+-- silently — PostgreSQL removes a table constraint that references a dropped
+-- column without CASCADE and without a word. Nothing would then stop a row
+-- with no provider id at all. That migration has to replace it in the same
+-- transaction: first deal with every row that still has no `workos_user_id`
+-- (soft-deleted accounts that never linked, and anybody the import missed —
+-- decide per row, do not assume), then `ALTER COLUMN workos_user_id SET NOT
+-- NULL`, which is this constraint's natural successor once there is only one
+-- provider.
 ALTER TABLE "users"
 	ADD CONSTRAINT "users_identity_present_check"
 	CHECK ("firebase_uid" IS NOT NULL OR "workos_user_id" IS NOT NULL);--> statement-breakpoint
@@ -74,8 +85,12 @@ ALTER TABLE "organizations"
 
 -- ── organizations.sso_required ──────────────────────────────────────────────
 -- A member of this organisation may only sign in through its own SSO
--- connection. Ships together with the enforcement in the callback, because the
--- flag without the check is worse than having neither: it tells an
+-- connection.
+--
+-- The column ships ahead of its enforcement and is inert until then: false on
+-- every row, and no code path can set it. The setter arrives in the same change
+-- as the check in the sign-in callback (WS-2) and must not arrive before it,
+-- because the flag without the check is worse than having neither: it tells an
 -- administrator a bypass is closed while it is open.
 --
 -- Enforcement always exempts at least one owner. A misconfigured identity

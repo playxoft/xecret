@@ -33,6 +33,52 @@ export interface VerifiedIdentity {
   avatarUrl?: string | undefined;
 }
 
+/** Only this module can name it, so only {@link workosIdentity} can mint the brand. */
+declare const workosAttested: unique symbol;
+
+/**
+ * An identity WorkOS attested to: `subject` is a WorkOS user id (`user_…`).
+ *
+ * ── Why a distinct type, when the fields are the same ──
+ * `subject` means a different thing per provider, and the two meanings must
+ * never cross. The WorkOS linking pass (`upsertUserFromWorkosIdentity`) writes
+ * `subject` into `users.workos_user_id` and adopts accounts by verified email;
+ * handing it a Firebase identity writes a Firebase uid where a WorkOS id
+ * belongs, and the first real WorkOS login for that person then collides with
+ * it. That happened once, in review, because both functions took a plain
+ * `VerifiedIdentity` and the compiler had no way to object. With the brand, a
+ * `VerifiedIdentity` from the Firebase verifier does not type-check as an
+ * argument to the linker at all.
+ *
+ * `provider` is the runtime half, for logs and for the `provider?: never` guard
+ * on the Firebase path; the unique-symbol brand is the compile-time half, and it
+ * is what makes {@link workosIdentity} the only way to produce one.
+ */
+export type WorkosIdentity = VerifiedIdentity & {
+  readonly provider: 'workos';
+  readonly [workosAttested]: true;
+};
+
+/**
+ * Marks an identity as attested by WorkOS.
+ *
+ * Call it only on a user object WorkOS itself returned — the result of an
+ * authenticated API call such as `authenticateWithCode` — never on anything a
+ * client sent or another provider verified.
+ *
+ * The subject is checked against WorkOS's documented `user_` prefix as a last
+ * line of defence against exactly the mix-up this type exists to prevent: a
+ * Firebase uid is 28 bare alphanumerics and fails it. A failure is a
+ * verification failure, so the caller's existing mapping answers it with a 401
+ * rather than writing anything.
+ */
+export function workosIdentity(identity: VerifiedIdentity): WorkosIdentity {
+  if (!/^user_[0-9A-Za-z]+$/.test(identity.subject)) {
+    throw new IdentityVerificationError('malformed-subject');
+  }
+  return { ...identity, provider: 'workos' } as WorkosIdentity;
+}
+
 /**
  * Verifies a credential issued by an external identity provider.
  *
