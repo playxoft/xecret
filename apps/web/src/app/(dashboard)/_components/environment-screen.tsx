@@ -23,7 +23,7 @@ import type { SecretListResponse, SecretSummary } from '@/components/secrets/typ
 import { apiPath, appPath, withQuery } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState } from './resource-states';
-import { isOrgAdmin, useOrganization } from './session';
+import { canAdminister, useOrganization } from './session';
 
 /** The API clamps `limit` to 200. Most environments arrive in one request. */
 const PAGE_SIZE = 200;
@@ -83,7 +83,7 @@ export function EnvironmentScreen({
    * dialog reads the recipient list first and would fail there instead, after
    * they had read the whole ceremony.
    */
-  const canRotate = organization !== null && isOrgAdmin(organization.role);
+  const canRotate = canAdminister(organization, 'environment.update');
 
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);

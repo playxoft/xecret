@@ -22,6 +22,7 @@ import {
 } from '@/components/ui';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import { useApiResource } from '@/app/(dashboard)/_lib/use-api-resource';
+import type { GrantableLevel } from '@/app/(dashboard)/_lib/use-authority';
 import { LevelToggle } from './level-toggle';
 import type { EffectiveProject, Member, MemberAccessResponse } from './types';
 
@@ -70,6 +71,7 @@ export function MemberAccessPanel({
   orgSlug,
   member,
   mayEdit,
+  grantable,
   onCollapse,
   onChanged,
 }: {
@@ -77,6 +79,11 @@ export function MemberAccessPanel({
   member: Member;
   /** Whether the viewer may change grants; the server re-checks every change. */
   mayEdit: boolean;
+  /**
+   * The most the viewer could grant on each environment. Capsule segments
+   * above it are disabled — the grant route would refuse them.
+   */
+  grantable: GrantableLevel;
   /** Folds this panel — Cancel ends here; a save leaves the panel open. */
   onCollapse: () => void;
   /** Grants changed on the server; the member list's project reach is stale. */
@@ -373,6 +380,7 @@ export function MemberAccessPanel({
                             <LevelToggle
                               level={level}
                               disabled={!mayEdit || saving}
+                              maxLevel={grantable(project.slug, environment.slug)}
                               scopeLabel={`${project.name} ${environment.name}`}
                               onSelect={(next) =>
                                 stageLevel(project.slug, environment.slug, environment.level, next)

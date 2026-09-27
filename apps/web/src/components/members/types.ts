@@ -1,4 +1,4 @@
-import type { AccessLevel, OrgRole } from '@xecret/core/authz';
+import type { AccessLevel, Action, OrgRole } from '@xecret/core/authz';
 import type { BadgeTone } from '@/components/ui';
 
 /**
@@ -14,7 +14,14 @@ export interface Member {
   email: string;
   displayName: string | null;
   avatarUrl: string | null;
+  /** The stored built-in role — what the member *is*. */
   role: OrgRole;
+  /**
+   * The custom role narrowing `role`, or `null`. Shown beside it: a member
+   * labelled only "Admin" whom the organisation narrowed to member management
+   * would be misdescribed to everyone deciding whom to ask.
+   */
+  customRole: CustomRoleRef | null;
   status: 'active' | 'suspended';
   joinedAt: string;
   isYou: boolean;
@@ -25,6 +32,29 @@ export interface Member {
    * list endpoint tells it only to the people who can change it.
    */
   projects?: readonly string[];
+}
+
+/** A custom role as a member row names it. */
+export interface CustomRoleRef {
+  id: string;
+  name: string;
+  baseRole: OrgRole;
+}
+
+/** One custom role, as `GET /api/orgs/{org}/roles` lists it. */
+export interface CustomRole extends CustomRoleRef {
+  allowedActions: readonly Action[];
+  /** `null` when the role sets no ceiling. */
+  accessCeiling: { nonProduction: AccessLevel; production: AccessLevel } | null;
+  holderCount?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustomRoleListResponse {
+  data: readonly CustomRole[];
+  /** Whether the plan lets this organisation define and assign roles, and the plan that would. */
+  feature: { enabled: boolean; upgradeTo: string | null };
 }
 
 export interface Seats {

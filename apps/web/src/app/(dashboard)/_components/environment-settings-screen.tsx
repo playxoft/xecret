@@ -8,7 +8,7 @@ import type { EnvironmentResponse } from '@/components/projects/types';
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState, FormSkeleton } from './resource-states';
-import { isOrgAdmin, useOrganization } from './session';
+import { canAdminister, useOrganization } from './session';
 
 export function EnvironmentSettingsScreen({
   orgSlug,
@@ -27,7 +27,7 @@ export function EnvironmentSettingsScreen({
     apiPath.environment(orgSlug, projectSlug, envSlug),
   );
 
-  const canManage = organization !== null && isOrgAdmin(organization.role);
+  const canManage = canAdminister(organization, 'environment.update');
 
   return (
     // Centred, for the reason the organisation settings screen gives: this is

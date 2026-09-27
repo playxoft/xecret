@@ -39,7 +39,7 @@ import type {
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState } from './resource-states';
-import { isOrgAdmin, useOrganization } from './session';
+import { canAdminister, useOrganization } from './session';
 
 /**
  * Tokens — the organisation's standing credentials, and your own devices.
@@ -58,7 +58,7 @@ import { isOrgAdmin, useOrganization } from './session';
 
 export function TokensScreen({ orgSlug }: { orgSlug: string }) {
   const organization = useOrganization(orgSlug);
-  const canManage = organization !== null && isOrgAdmin(organization.role);
+  const canManage = canAdminister(organization, 'token.create');
 
   const serviceTokens = useApiResource<ServiceTokenListResponse>(
     canManage ? apiPath.serviceTokens(orgSlug) : null,

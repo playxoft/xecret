@@ -77,18 +77,17 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   // Built before the early returns below, because hooks cannot run
   // conditionally. It issues no request until there is an organisation in the
   // *URL* — `projectsOrgSlug`, not the resolved slug — so the loading and
-  // locked paths, and the account area, cost nothing extra. The role is
+  // locked paths, and the account area, cost nothing extra. The membership is
   // threaded in from the session resource because this runs above the
   // SessionProvider, and is read for the same organisation the hrefs are built
-  // from, so the admin-only items can never describe one organisation's role
-  // over another's links.
-  const viewerRole =
-    memberships?.find((organization) => organization.slug === navOrgSlug)?.role ?? null;
+  // from, so the admin-only items can never describe one organisation's
+  // authority over another's links.
+  const viewer = memberships?.find((organization) => organization.slug === navOrgSlug) ?? null;
   const nav = useDashboardNav({
     ...location,
     orgSlug: navOrgSlug,
     projectsOrgSlug: location.orgSlug,
-    viewerRole,
+    viewer,
   });
 
   // Locking re-reads the session, which re-renders this component and lands on
@@ -227,6 +226,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
     slug: organization.slug,
     name: organization.name,
     role: organization.role,
+    customRole: organization.authority.customRole?.name ?? null,
     href: appPath.org(organization.slug),
   }));
 

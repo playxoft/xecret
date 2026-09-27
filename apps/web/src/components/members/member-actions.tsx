@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 
-import { canAssignRole } from '@xecret/core/authz';
 import type { OrgRole } from '@xecret/core/authz';
 import { api } from '@/lib/api';
 import { errorMessage } from '@/lib/api';
@@ -17,28 +16,40 @@ import {
   SelectValue,
   useToast,
 } from '@/components/ui';
+import { CustomRoleSelect } from './custom-role-select';
+import type { CustomRoleChoices } from './custom-role-select';
 import { ROLE_LABELS, ROLES_DESCENDING } from './types';
 import type { Member } from './types';
 
 /**
  * The controls on one member row: the role select and the action buttons.
  *
- * Rendered only when the viewer can plausibly complete the action — their role
- * is at least `admin`, the row is not their own, and the member's role is not
- * above theirs. The server re-checks all three (plus the last-owner guard,
- * which only the database can answer); what happens here is merely that a
- * control which would certainly fail is not drawn. `session.tsx` explains the
- * rule: role decides what is rendered, never what is permitted.
+ * Rendered only when the viewer can plausibly complete the action — their
+ * authority includes `member.update`, the row is not their own, and the
+ * member's role is one the viewer may manage (`assignableRoles`, which the
+ * server computes with `roleWithinAuthority`, custom role included). The
+ * server re-checks all of it (plus the last-owner guard, which only the
+ * database can answer); what happens here is merely that a control which would
+ * certainly fail is not drawn. `session.tsx` explains the rule: authority
+ * decides what is rendered, never what is permitted.
  */
 export function MemberRowActions({
   orgSlug,
   member,
-  viewerRole,
+  assignableRoles,
+  customRoles,
   onChanged,
 }: {
   orgSlug: string;
   member: Member;
-  viewerRole: OrgRole;
+  /** The roles the viewer may manage and hand out, from their session authority. */
+  assignableRoles: readonly OrgRole[];
+  /**
+   * The organisation's custom roles and whether its plan lets a member be put
+   * on one, or `null` when they are unknown — not loaded, or not the viewer's
+   * to manage — in which case no custom-role control is drawn.
+   */
+  customRoles: CustomRoleChoices | null;
   onChanged: () => void;
 }) {
   const { toast } = useToast();
@@ -46,12 +57,12 @@ export function MemberRowActions({
   const [removing, setRemoving] = useState(false);
   const [suspending, setSuspending] = useState(false);
 
-  const mayManage = !member.isYou && canAssignRole(viewerRole, member.role);
+  const mayManage = !member.isYou && assignableRoles.includes(member.role);
 
   // Roles the viewer may hand out. The member's current role is always shown
   // so the select reads correctly even when it is the only entry.
   const offeredRoles = ROLES_DESCENDING.filter(
-    (candidate) => candidate === member.role || canAssignRole(viewerRole, candidate),
+    (candidate) => candidate === member.role || assignableRoles.includes(candidate),
   );
 
   async function changeRole(role: OrgRole) {
@@ -101,6 +112,15 @@ export function MemberRowActions({
           ))}
         </SelectContent>
       </Select>
+
+      {customRoles !== null ? (
+        <CustomRoleSelect
+          orgSlug={orgSlug}
+          member={member}
+          choices={customRoles}
+          onChanged={onChanged}
+        />
+      ) : null}
 
       {/* Inline text buttons rather than icons or a menu: the words are their
           own labels, nothing important hides behind a hover, and the one that

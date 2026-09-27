@@ -83,6 +83,16 @@ export interface LevelToggleProps {
    * result the caller silently drops is a control that looks broken.
    */
   clearable?: boolean;
+  /**
+   * The most the viewer could grant here, when it is known.
+   *
+   * Segments above it are drawn and disabled rather than hidden, so the
+   * capsule keeps its shape and says why: the viewer's own access here is
+   * lower, and the server would refuse the write. The lit segment always stays
+   * clickable — clearing to `none` takes access away, which is never beyond
+   * anybody's authority.
+   */
+  maxLevel?: AccessLevel | undefined;
   className?: string;
 }
 
@@ -94,6 +104,7 @@ export function LevelToggle({
   size = 'md',
   levels = GRANTABLE_LEVELS,
   clearable = true,
+  maxLevel,
   className,
 }: LevelToggleProps) {
   return (
@@ -109,15 +120,24 @@ export function LevelToggle({
       {levels.map((segment) => {
         const lit = LEVEL_RANK[level] >= LEVEL_RANK[segment];
         // The lit segment is the clearing gesture, so where clearing is not
-        // offered it is the one segment with nothing left to do.
-        const inert = disabled || (segment === level && !clearable);
+        // offered it is the one segment with nothing left to do. A segment
+        // above what the viewer could grant is inert too — unless it is the
+        // lit one, whose click takes access away.
+        const beyond =
+          maxLevel !== undefined && LEVEL_RANK[segment] > LEVEL_RANK[maxLevel] && segment !== level;
+        const inert = disabled || (segment === level && !clearable) || beyond;
 
         return (
           <button
             key={segment}
             type="button"
             aria-pressed={lit}
-            aria-label={`${ACCESS_LEVEL_LABELS[segment]} access to ${scopeLabel}`}
+            aria-label={
+              beyond
+                ? `${ACCESS_LEVEL_LABELS[segment]} access to ${scopeLabel} — more than you can grant here`
+                : `${ACCESS_LEVEL_LABELS[segment]} access to ${scopeLabel}`
+            }
+            title={beyond ? 'More than you can grant here' : undefined}
             disabled={inert}
             // The one rule of the control: clicking the current level clears
             // everything; clicking anything else *is* the new level.

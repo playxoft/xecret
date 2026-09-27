@@ -5,10 +5,10 @@ import { useMemo } from 'react';
 import { apiPath, appPath, withQuery } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { BoxIcon, FileTextIcon, SettingsIcon, TerminalIcon, UsersIcon } from '@/components/ui';
-import type { OrgRole } from '@xecret/core/authz';
 import type { NavSection } from '@/components/layout';
 import type { ProjectListResponse } from '@/components/projects/types';
-import { isOrgAdmin } from './session';
+import { canAdminister } from './session';
+import type { SessionOrganization } from './session';
 
 /**
  * The sidebar's contents.
@@ -59,7 +59,7 @@ import { isOrgAdmin } from './session';
 export interface DashboardNavParams {
   /**
    * The organisation the sidebar describes: every href here is built from it,
-   * and `viewerRole` is the role in it.
+   * and `viewer` is the viewer's membership of it.
    *
    * Taken from the URL where there is one, and from the last organisation the
    * tab visited where there is not — the account area and the organisation
@@ -85,12 +85,13 @@ export interface DashboardNavParams {
   projectsOrgSlug: string | null;
   projectSlug: string | null;
   /**
-   * The viewer's role in the current organisation, or `null` while the
-   * session is still resolving. Passed in rather than read from `useSession`,
-   * because this hook runs in the chrome — *above* the `SessionProvider` the
-   * chrome renders — where the session is a resource, not yet a context.
+   * The viewer's membership of the current organisation — its authority is
+   * what decides the admin-only items — or `null` while the session is still
+   * resolving. Passed in rather than read from `useSession`, because this hook
+   * runs in the chrome — *above* the `SessionProvider` the chrome renders —
+   * where the session is a resource, not yet a context.
    */
-  viewerRole: OrgRole | null;
+  viewer: SessionOrganization | null;
 }
 
 /** Enough projects for the sidebar; the projects page pages properly. */
@@ -100,7 +101,7 @@ export function useDashboardNav({
   orgSlug,
   projectsOrgSlug,
   projectSlug,
-  viewerRole,
+  viewer,
 }: DashboardNavParams): readonly NavSection[] {
   const projects = useApiResource<ProjectListResponse>(
     projectsOrgSlug === null
@@ -108,11 +109,13 @@ export function useDashboardNav({
       : withQuery(apiPath.projects(projectsOrgSlug), { limit: PROJECT_LIMIT }),
   );
 
-  // Tokens and the audit log are rendered only for roles that can open them —
-  // the usual rule: role decides what is drawn, the server decides what is
-  // permitted. (The tokens page has a "your devices" half everyone could use,
-  // but it lives with account-adjacent things for non-admins in a later pass.)
-  const showAdminPages = viewerRole !== null && isOrgAdmin(viewerRole);
+  // Tokens and the audit log are rendered only for viewers whose authority can
+  // open them — the usual rule: authority decides what is drawn, the server
+  // decides what is permitted. (The tokens page has a "your devices" half
+  // everyone could use, but it lives with account-adjacent things for
+  // non-admins in a later pass.)
+  const showTokens = canAdminister(viewer, 'token.create');
+  const showAudit = canAdminister(viewer, 'audit.read');
 
   return useMemo(() => {
     // Reachable only for an account with no memberships at all — which the
@@ -163,7 +166,7 @@ export function useDashboardNav({
             icon: <UsersIcon />,
             shortcut: ['M'],
           },
-          ...(showAdminPages
+          ...(showTokens
             ? [
                 {
                   href: appPath.tokens(orgSlug),
@@ -171,6 +174,10 @@ export function useDashboardNav({
                   icon: <TerminalIcon />,
                   shortcut: ['T'],
                 },
+              ]
+            : []),
+          ...(showAudit
+            ? [
                 {
                   href: appPath.audit(orgSlug),
                   label: 'Audit',
@@ -194,5 +201,5 @@ export function useDashboardNav({
         ],
       },
     ];
-  }, [orgSlug, projectSlug, projects.data, showAdminPages]);
+  }, [orgSlug, projectSlug, projects.data, showTokens, showAudit]);
 }
