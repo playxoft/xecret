@@ -1,4 +1,5 @@
 import { defineCloudflareConfig } from '@opennextjs/cloudflare';
+import type { OpenNextConfig } from '@opennextjs/cloudflare';
 import staticAssetsIncrementalCache from '@opennextjs/cloudflare/overrides/incremental-cache/static-assets-incremental-cache';
 
 /**
@@ -32,7 +33,24 @@ import staticAssetsIncrementalCache from '@opennextjs/cloudflare/overrides/incre
  * The one thing it cannot serve is Next's composable cache (`use cache`), which
  * this application does not use. Reach for the R2 adapter if that changes, or
  * if a route ever needs genuine on-demand revalidation.
+ *
+ * ── Why the build command is not the default ──
+ * `npm run build` is what OpenNext runs anyway; the second half removes the
+ * byte-identical copies Turbopack makes of the server chunk every API route
+ * loads, before OpenNext bundles them. Without it the Worker carries twenty of
+ * them — 3.1 MB of its gzipped size. `scripts/dedupe-server-chunks.mjs` says
+ * why they exist and why removing them changes nothing at runtime. It runs from
+ * this directory, which is where OpenNext runs the build command.
+ *
+ * `--skipNextBuild` skips it along with `next build`: bundling a `.next` that a
+ * plain `next build` produced gives the fat Worker, and the bundle job's
+ * duplicate check fails on it.
  */
-export default defineCloudflareConfig({
-  incrementalCache: staticAssetsIncrementalCache,
-});
+const config: OpenNextConfig = {
+  ...defineCloudflareConfig({
+    incrementalCache: staticAssetsIncrementalCache,
+  }),
+  buildCommand: 'npm run build && node ../../scripts/dedupe-server-chunks.mjs',
+};
+
+export default config;
