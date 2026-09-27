@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { VerifiedIdentity } from '@xecret/core/auth';
-import { createTestDatabase } from '@xecret/db/testing';
+import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '@xecret/db/testing';
 import type { TestDatabase } from '@xecret/db/testing';
 import { createLogger } from './logging';
 import type { RequestLog } from './logging';
@@ -85,7 +85,7 @@ let t: TestDatabase;
 
 beforeAll(async () => {
   t = await createTestDatabase();
-});
+}, TEST_DATABASE_TIMEOUT_MS);
 
 afterAll(async () => {
   await t.close();

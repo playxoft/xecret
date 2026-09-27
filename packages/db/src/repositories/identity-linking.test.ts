@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { workosIdentity } from '@xecret/core/auth';
 import type { VerifiedIdentity, WorkosIdentity } from '@xecret/core/auth';
-import { createTestDatabase } from '../testing/pglite';
+import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '../testing/pglite';
 import type { TestDatabase } from '../testing/pglite';
 import { RepositoryError } from './shared';
 import {
@@ -38,7 +38,7 @@ let t: TestDatabase;
 
 beforeAll(async () => {
   t = await createTestDatabase();
-});
+}, TEST_DATABASE_TIMEOUT_MS);
 
 afterAll(async () => {
   await t.close();

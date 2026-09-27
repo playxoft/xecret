@@ -68,6 +68,16 @@ export interface TestDatabase {
   close(): Promise<void>;
 }
 
+/**
+ * The hook timeout for a `beforeAll` that calls `createTestDatabase`.
+ *
+ * Starting PGlite and applying every migration takes about a second alone, but
+ * well over vitest's 10s default when `npm test` runs every workspace's files
+ * in parallel on a busy machine — and a suite that fails only under load is a
+ * suite people learn to rerun rather than read.
+ */
+export const TEST_DATABASE_TIMEOUT_MS = 60_000;
+
 export async function createTestDatabase(): Promise<TestDatabase> {
   const pg = await PGlite.create({ extensions: { citext } });
   await migrate(drizzle({ client: pg }), { migrationsFolder: MIGRATIONS_FOLDER });

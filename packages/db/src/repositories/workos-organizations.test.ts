@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { createTestDatabase } from '../testing/pglite';
+import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '../testing/pglite';
 import type { TestDatabase } from '../testing/pglite';
 import * as repositories from './index';
 import { findOrgByWorkosOrgId, setOrgWorkosOrgId } from './organizations';
@@ -23,7 +23,7 @@ beforeAll(async () => {
     `fb-${founderId}`,
     `founder-${founderId.slice(0, 8)}@example.com`,
   ]);
-});
+}, TEST_DATABASE_TIMEOUT_MS);
 
 afterAll(async () => {
   await t.close();
