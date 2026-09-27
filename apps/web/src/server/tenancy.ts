@@ -7,9 +7,11 @@ import type {
   Resource,
   ResolvedGrant,
 } from '@xecret/core/authz';
+import type { Entitlements } from '@xecret/core/entitlements';
 import {
+  entitlementsFromRow,
   findEnvironmentBySlug,
-  findOrganizationBySlug,
+  findOrganizationBySlugWithEntitlements,
   findProjectBySlug,
   loadAuthorizationContext,
 } from '@xecret/db/repositories';
@@ -45,6 +47,19 @@ export interface OrgScope {
   actor: Actor;
   /** Absent for a service token, which has no membership to resolve. */
   membership: StoredAuthorizationContext | undefined;
+  /**
+   * The third gate, resolved from the same row that found the organisation.
+   *
+   * Present for every principal including a service token, because a limit
+   * belongs to the organisation rather than to whoever is asking. It costs no
+   * extra query: `findOrganizationBySlugWithEntitlements` carries the columns
+   * along on the lookup `resolveOrg` was already making.
+   *
+   * Holding it here — rather than fetching it where it is checked — is what
+   * keeps "no extra query on the hot path" a structural property instead of a
+   * thing each route has to remember.
+   */
+  entitlements: Entitlements;
 }
 
 export interface ProjectScope extends OrgScope {
@@ -68,8 +83,11 @@ export async function resolveOrg(
   slug: string,
   services: ServiceContext,
 ): Promise<OrgScope> {
-  const organization = await findOrganizationBySlug(services.db, slug);
-  if (!organization) throw errors.notFound(`no organisation with slug`);
+  const found = await findOrganizationBySlugWithEntitlements(services.db, slug);
+  if (!found) throw errors.notFound(`no organisation with slug`);
+
+  const { organization } = found;
+  const entitlements = entitlementsFromRow(found.entitlements);
 
   if (principal.kind === 'serviceToken') {
     // A service token carries its organisation; it does not get to name one.
@@ -89,6 +107,7 @@ export async function resolveOrg(
         environmentId: principal.environmentId,
       },
       membership: undefined,
+      entitlements,
     };
   }
 
@@ -109,6 +128,7 @@ export async function resolveOrg(
         ? { kind: 'user', userId, orgId: organization.id }
         : { kind: 'cliToken', tokenId: principal.tokenId, userId, orgId: organization.id },
     membership,
+    entitlements,
   };
 }
 
@@ -256,22 +276,63 @@ export function authorize(
 }
 
 /**
- * Adapts the storage layer's context to the policy layer's.
+ * The part of a stored member the policy layer reads — carried the same way by
+ * the caller's own context and by any other member's record.
  *
- * The two are declared independently on purpose — `@xecret/db` does not import
- * the authorization types, and `@xecret/core/authz` does not know what a table
- * looks like. This function is the seam, and it is the only place the two
- * vocabularies meet.
+ * `customRole` is a required key, as it is on the repository's types: a
+ * record that never loaded it — a write's `RETURNING` — must not pass for one
+ * whose member holds none. Write `customRole: undefined` to say "none".
  */
-export function toGrantContext(stored: StoredAuthorizationContext): Membership {
-  const grants: ResolvedGrant[] = stored.grants.map((grant) => ({
-    projectId: grant.projectId,
-    environmentId: grant.environmentId,
-    accessLevel: grant.accessLevel,
-  }));
+export type StoredRoleAndStatus = Pick<
+  StoredAuthorizationContext,
+  'role' | 'status' | 'customRole'
+>;
 
+/**
+ * Adapts a stored member and their grant rows to the policy layer's
+ * `Membership`.
+ *
+ * The two vocabularies are declared independently on purpose — `@xecret/db`
+ * does not import the authorization types, and `@xecret/core/authz` does not
+ * know what a table looks like. This function and `toGrantContext`, which is
+ * this over the caller's own context, are the seam: every `Membership` built
+ * from stored rows is built here — the caller's for `can()`, and a target
+ * member's for the authority checks and the effective-access preview.
+ *
+ * ── Everything that narrows must cross ──
+ * Every request-time decision — `authorize()`, the CLI token routes, the
+ * key-grant checks in `env-keys-service.ts`, the key reconciliation in
+ * `member-keys.ts` — reaches `can()` through here, and every measure of one
+ * member against another in `members-service.ts` does too. A field dropped at
+ * this seam is not a missing feature, it is a missing restriction: a custom
+ * role that never arrives is a member resolved as their unnarrowed built-in
+ * role, with every capability and every level the organisation meant to take
+ * away.
+ */
+export function toMembership(
+  member: StoredRoleAndStatus,
+  grants: readonly Pick<ResolvedGrant, 'projectId' | 'environmentId' | 'accessLevel'>[],
+): Membership {
   // `isProduction` is deliberately not part of this mapping: it is a property of
   // the environment being asked about, not of the member, and `can()` takes it
   // separately so it cannot be carried around stale on a membership object.
-  return { role: stored.role, memberStatus: stored.status, grants };
+  return {
+    role: member.role,
+    memberStatus: member.status,
+    // Spread only when present, so a member without one maps to exactly the
+    // shape it always did.
+    ...(member.customRole === undefined ? {} : { customRole: member.customRole }),
+    // Copied field by field, so a storage row's extra columns (its id) never
+    // travel into the policy layer.
+    grants: grants.map((grant) => ({
+      projectId: grant.projectId,
+      environmentId: grant.environmentId,
+      accessLevel: grant.accessLevel,
+    })),
+  };
+}
+
+/** The caller's own stored context, as the policy layer's `Membership`. */
+export function toGrantContext(stored: StoredAuthorizationContext): Membership {
+  return toMembership(stored, stored.grants);
 }

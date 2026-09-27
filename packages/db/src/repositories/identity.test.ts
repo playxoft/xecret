@@ -397,6 +397,7 @@ describe('the authorization context handed to can()', () => {
     userId: USER_ID,
     role: 'developer',
     status: 'active',
+    customRole: undefined,
   };
 
   const grants: MemberGrant[] = [

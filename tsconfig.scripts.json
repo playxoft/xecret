@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./tsconfig.base.json",
+
+  "// why": [
+    "`scripts/` was in no tsconfig at all, so `npm run typecheck` — which runs",
+    "--workspaces — never saw a line of it. The operator tool that writes plans",
+    "and seats by hand was therefore the one consumer of the StoredPlanId/PlanId",
+    "split that nothing policed, and it passed a stored `scale` into a PlanId",
+    "parameter: MINIMUM_SEATS['scale'] is undefined, Math.max(n, undefined) is",
+    "NaN, and NaN reached two integer columns.",
+    "",
+    "`include` names files rather than globbing `scripts/**`, because several of",
+    "the older scripts do not compile under these settings today —",
+    "check-deploy.ts has an implicit any, rotate-root-key.ts has ArrayBufferLike",
+    "variance errors — and turning those into a build failure is a different",
+    "change from this one. A list that grows is honest about which files are",
+    "covered; a glob with a red build is a check somebody switches off."
+  ],
+
+  "compilerOptions": {
+    "types": ["node"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+
+  "include": ["scripts/plan-set.ts", "scripts/contact-smoke.ts", "apps/web/src/cloudflare-env.d.ts"]
+}

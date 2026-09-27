@@ -105,6 +105,8 @@ is the single most performance-critical index in the schema.
 
 **Invariant enforced in application code, tested explicitly:** an organisation always has at
 least one `owner` with `status = 'active'`. Removing or demoting the last owner is rejected.
+Counting stored `role = 'owner'` rows is enough because an owner can never hold a custom role
+(`org_members_owner_custom_role_check`, §6): every stored owner is an effective one.
 
 ```sql
 CREATE TABLE invitations (
@@ -415,7 +417,7 @@ plain unique constraint would permit duplicate project-wide grants.
 ```
 1. Explicit grant for (member, project, environment)   ← most specific
 2. Explicit grant for (member, project, NULL)
-3. Role default from org_members.role
+3. Role default from org_members.role   ← narrowed by a custom role, if held (below)
 ```
 
 | Role | Default | Notes |
@@ -428,8 +430,67 @@ plain unique constraint would permit duplicate project-wide grants.
 Production being deny-by-default even for developers is the deliberate safe default. Granting
 it is a conscious act that appears in the audit log.
 
-**Custom roles are not in v1.** The enum can gain values and a `custom_roles` table can be
-added without migrating existing data.
+### Custom roles
+
+Enterprise only (`customRoles` in the plan features). Added by migration 0017.
+
+```sql
+CREATE TABLE custom_roles (
+  id                     uuid         PRIMARY KEY,
+  org_id                 uuid         NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  name                   text         NOT NULL,
+  base_role              org_role     NOT NULL,
+  allowed_actions        text[]       NOT NULL DEFAULT '{}',
+  ceiling_non_production access_level,
+  ceiling_production     access_level,
+  created_by             uuid         REFERENCES users(id),
+  created_at             timestamptz  NOT NULL DEFAULT now(),
+  updated_at             timestamptz  NOT NULL DEFAULT now(),
+  CONSTRAINT custom_roles_org_name_unique  UNIQUE (org_id, name),
+  CONSTRAINT custom_roles_org_id_id_unique UNIQUE (org_id, id),  -- target of the FK below
+  CONSTRAINT custom_roles_ceiling_check
+    CHECK ((ceiling_non_production IS NULL) = (ceiling_production IS NULL)),
+  CONSTRAINT custom_roles_base_role_check  CHECK (base_role <> 'owner')
+);
+
+ALTER TABLE org_members ADD COLUMN custom_role_id uuid;         -- NULL = the built-in role as-is
+ALTER TABLE org_members ADD CONSTRAINT org_members_org_id_custom_role_id_custom_roles_org_id_id_fk
+  FOREIGN KEY (org_id, custom_role_id) REFERENCES custom_roles (org_id, id) ON DELETE NO ACTION;
+ALTER TABLE org_members ADD CONSTRAINT org_members_owner_custom_role_check
+  CHECK (custom_role_id IS NULL OR role <> 'owner');
+CREATE INDEX org_members_custom_role_idx ON org_members (custom_role_id)
+  WHERE custom_role_id IS NOT NULL;
+```
+
+**A custom role can only subtract.** A member holding one is resolved through their *effective
+role* — the lower of `org_members.role` and `custom_roles.base_role` — never through the custom
+row alone. Their capabilities are the effective role's row ANDed with `allowed_actions`, with one
+floor: `member.read` is kept whenever the effective role has it. Their defaults are the effective
+role's, narrowed by the ceiling, and every resolved level — explicit grants included — is capped
+at the ceiling. No row, however it was written, grants anything the member's own role lacks.
+`allowed_actions` is a positive list, so an action added to the product later is denied to every
+existing custom role until somebody opts in.
+
+**Same organisation only.** The foreign key is composite, `(org_id, custom_role_id)` against
+`(org_id, id)`, so a member can never hold another organisation's role. A NULL `custom_role_id`
+skips the check (MATCH SIMPLE) and means exactly what it meant before 0017.
+
+**No silent widening.** `ON DELETE NO ACTION`: a role in use cannot be deleted until its members
+are moved off it, one audited role change at a time. `SET NULL` would hand every holder their
+unnarrowed role with nothing in the audit log that reads as a permission change; `CASCADE` would
+delete the members. NO ACTION rather than RESTRICT because RESTRICT's SQLSTATE changed in
+PostgreSQL 18 (23503 → 23001) and "role still in use" is an error the application maps.
+
+**Owners are never narrowed.** No custom role is based on `owner`, and no owner holds a custom
+role — one CHECK on each table. Together they keep "stored `owner`" and "effective owner" the same
+set of members, which is what lets the last-owner invariant (§2) count `role = 'owner'` rows and
+still count the members who can act as owners. A promotion to owner clears `custom_role_id` in the
+same UPDATE (`updateMemberRole`); the promotion is itself the widest change there is, only an owner
+can make it, and it is already an audited `member.role_changed`.
+
+A `custom_role_id` that does not resolve inside the organisation — which the foreign key makes
+impossible — is read as a role based on `viewer` with no actions and a `none` ceiling, never as
+"no custom role".
 
 ---
 
@@ -586,6 +647,8 @@ users ──┬──< sessions
                                                     secrets ──< secret_versions
 
 secret_versions references env_keys OR env_data_keys — exactly one, by CHECK.
+org_members.custom_role_id references custom_roles (org_id, id) — same organisation, by
+  composite FK; organizations ──< custom_roles (0017, not drawn above)
 audit_logs — no FKs by design; references are soft
 ```
 
@@ -611,6 +674,10 @@ audit_logs — no FKs by design; references are soft
 0014  env_key_grants.recipient_public_key — the one signed field the row did not carry
 0015  unlock convenience: user_keys.auto_lock_minutes becomes nullable and
       range-checked [15, 720]; vault_pin_peppers (the server half of a device PIN)
+0016  plans and entitlements (org_subscriptions, org_usage_counters,
+      billing_webhook_events)
+0017  custom roles (custom_roles, org_members.custom_role_id) — additive, every
+      existing member keeps NULL
 ```
 
 Migration 0013 drops nothing and loses nothing. Every existing environment keeps its `env_keys`
@@ -644,7 +711,9 @@ anywhere. Migrations run as a separate, more privileged role.
 
 ## 11. Deferred to later phases
 
-`custom_roles` and `role_permissions` (Phase 7+) · `webhooks` · `secret_references` for
+The custom-role management API — defining, editing, deleting and assigning roles, and the plan
+gate on doing so (custom roles part 2; the storage exists since 0017 and every read path already
+applies it, but nothing defines or assigns a role yet) · `webhooks` · `secret_references` for
 cross-environment inheritance · `billing_*` (the `seat_limit` column is the only hook needed
 now) · `oidc_trust_policies` for GitHub Actions federation (Phase 8 designs the token table
 for it; the feature is v2).

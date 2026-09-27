@@ -1,11 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { resolveAccessLevel } from '@xecret/core/authz';
-import type { OrgRole } from '@xecret/core/authz';
+import { AuthorizationError, resolveAccessLevel, ROLE_CAPABILITIES } from '@xecret/core/authz';
+import type { AccessLevel, Action, CustomRole, OrgRole } from '@xecret/core/authz';
 import { uuidv7 } from '@xecret/core/ids';
 import { RepositoryError } from '@xecret/db/repositories';
-import type { MemberGrant, OrganizationEnvironment } from '@xecret/db/repositories';
+import type {
+  AuthorizationContext as StoredAuthorizationContext,
+  MemberGrant,
+  OrganizationEnvironment,
+} from '@xecret/db/repositories';
 import { ApiError } from './errors';
-import { assertRoleAuthority, effectiveAccess, mapMembershipError } from './members-service';
+import {
+  assertGrantWithinAuthority,
+  assertHeldGrantsWithinAuthority,
+  assertInvitationGrantsWithinAuthority,
+  assertMayChangeOwnGrants,
+  assertRemovalWithinAuthority,
+  assertRoleAuthority,
+  effectiveAccess,
+  mapMembershipError,
+} from './members-service';
 import {
   grantWriteSchema,
   memberInviteSchema,
@@ -14,42 +27,240 @@ import {
 } from './schemas/members';
 
 /**
- * The member-management layer, tested where it is pure: the role hierarchy,
- * the repository-to-API error mapping, the effective-access computation, and
- * the request schemas. Route wiring is covered by `route.test.ts`'s wrapper
- * guarantees; the transactional invariants (last owner, seats, atomic accept)
- * are repository behaviour that needs a real database — see the standing
- * caveat in the plan.
+ * The member-management layer, tested where it is pure: the wrappers over the
+ * authority checks, the repository-to-API error mapping, the effective-access
+ * computation, and the request schemas.
+ *
+ * The authority rules themselves — which roles, levels and removals are within
+ * whose authority — are pinned in `@xecret/core/authz` (`authority.test.ts`,
+ * `custom-roles.test.ts`). What is tested here is what the wrappers add: that
+ * they read the caller's *stored* context whole, custom role and grants
+ * included; that a refusal is a `forbidden` `AuthorizationError` with a fixed
+ * message, so the routes can file it as a denial; and the invitation rule,
+ * which only exists here. That each route asks them is
+ * `member-authority-routes.test.ts`.
  */
 
-const ROLES: readonly OrgRole[] = ['owner', 'admin', 'developer', 'viewer'];
-const RANK: Record<OrgRole, number> = { owner: 3, admin: 2, developer: 1, viewer: 0 };
+const ALL_ACTIONS = Object.keys(ROLE_CAPABILITIES.owner) as Action[];
 
-describe('the role hierarchy at the API boundary', () => {
-  it('refuses any role above the caller’s own, on either side of a change', () => {
-    for (const actor of ROLES) {
-      for (const subject of ROLES) {
-        const permitted = RANK[actor] >= RANK[subject];
+const PROJECT = uuidv7();
+const STAGING = uuidv7();
+const PRODUCTION = uuidv7();
 
-        if (permitted) {
-          expect(() => assertRoleAuthority(actor, subject)).not.toThrow();
-        } else {
-          expect(() => assertRoleAuthority(actor, subject), `${actor} vs ${subject}`).toThrow(
-            ApiError,
-          );
-        }
-      }
-    }
+const production = { id: PRODUCTION, isProduction: true };
+
+function customRole(over: Partial<CustomRole> = {}): CustomRole {
+  return {
+    id: uuidv7(),
+    name: 'Narrowed',
+    baseRole: 'admin',
+    allowedActions: ['member.read', 'member.invite', 'member.update', 'member.remove'],
+    ...over,
+  };
+}
+
+const productionCapped = customRole({
+  allowedActions: ALL_ACTIONS,
+  accessCeiling: { nonProduction: 'admin', production: 'none' },
+});
+
+/** The caller's stored context, as `requireMembership` returns it. */
+function caller(
+  over: {
+    role?: OrgRole;
+    customRole?: CustomRole;
+    grants?: { projectId: string; environmentId: string | null; accessLevel: AccessLevel }[];
+  } = {},
+): StoredAuthorizationContext {
+  return {
+    orgId: uuidv7(),
+    userId: uuidv7(),
+    memberId: uuidv7(),
+    role: over.role ?? 'admin',
+    status: 'active',
+    customRole: over.customRole,
+    grants: (over.grants ?? []).map((grant) => ({ id: uuidv7(), ...grant })),
+  };
+}
+
+function row(environmentId: string | null, accessLevel: AccessLevel): MemberGrant {
+  return { id: uuidv7(), projectId: PROJECT, environmentId, accessLevel };
+}
+
+function gridRow(id: string, isProduction: boolean): OrganizationEnvironment {
+  return {
+    id,
+    projectId: PROJECT,
+    name: id,
+    slug: id,
+    isProduction,
+    encryptionMode: 'server',
+    sortOrder: 0,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+    deletedAt: null,
+    project: { id: PROJECT, name: 'API', slug: 'api' },
+  };
+}
+
+const grid = [gridRow(STAGING, false), gridRow(PRODUCTION, true)];
+
+/** The refusal `check` raised, asserted to be the kind the routes file as a denial. */
+function refusal(check: () => void): AuthorizationError {
+  try {
+    check();
+  } catch (cause) {
+    expect(cause).toBeInstanceOf(AuthorizationError);
+    return cause as AuthorizationError;
+  }
+  return expect.unreachable('the check must refuse');
+}
+
+describe('refusals are forbidden, never not_found, and carry a fixed message', () => {
+  // Membership is already established by the time any of these run, so
+  // `forbidden` leaks nothing; the messages are constants, never the request.
+  it.each([
+    [
+      'a role above the caller',
+      () => assertRoleAuthority(caller(), 'owner'),
+      'You cannot manage a role above your own.',
+    ],
+    [
+      'a grant above the caller',
+      () =>
+        assertGrantWithinAuthority(caller({ customRole: productionCapped }), 'read', {
+          projectId: PROJECT,
+          environment: production,
+        }),
+      'You cannot grant more access than you hold.',
+    ],
+    [
+      'a removal that raises past the caller',
+      () =>
+        assertRemovalWithinAuthority(
+          caller({ customRole: productionCapped }),
+          { role: 'developer', status: 'active', customRole: undefined },
+          [row(null, 'write'), row(PRODUCTION, 'none')],
+          { projectId: PROJECT, environment: production },
+        ),
+      'You cannot grant more access than you hold.',
+    ],
+    [
+      'held grants beyond the caller',
+      () =>
+        assertHeldGrantsWithinAuthority(
+          caller({ customRole: productionCapped }),
+          [row(PRODUCTION, 'write')],
+          grid,
+        ),
+      'This member holds access grants beyond your own.',
+    ],
+    [
+      'the caller’s own grants',
+      () => assertMayChangeOwnGrants(caller()),
+      'You cannot change your own access grants.',
+    ],
+  ])('refuses %s', (_label, check, message) => {
+    expect(refusal(check).decision).toEqual({ allowed: false, reason: 'forbidden', message });
+  });
+});
+
+describe('the wrappers measure the caller’s whole stored context', () => {
+  // A wrapper that read `role` alone would pass every core test and still let
+  // a narrowed caller act as the role they rank as.
+  it('reads the custom role when measuring roles', () => {
+    expect(() => assertRoleAuthority(caller(), 'admin')).not.toThrow();
+    expect(() => assertRoleAuthority(caller({ customRole: customRole() }), 'viewer')).toThrow(
+      AuthorizationError,
+    );
   });
 
-  it('reports the refusal as forbidden, never as not_found — membership is already established', () => {
-    try {
-      assertRoleAuthority('admin', 'owner');
-      expect.unreachable('admin touching an owner must be refused');
-    } catch (cause) {
-      expect(cause).toBeInstanceOf(ApiError);
-      expect((cause as ApiError).code).toBe('forbidden');
+  it('reads the custom role and the caller’s own grants when measuring levels', () => {
+    const reach = { projectId: PROJECT, environment: production };
+    const restricted = caller({
+      grants: [{ projectId: PROJECT, environmentId: PRODUCTION, accessLevel: 'read' }],
+    });
+
+    expect(() => assertGrantWithinAuthority(caller(), 'admin', reach)).not.toThrow();
+    expect(() => assertGrantWithinAuthority(restricted, 'write', reach)).toThrow(
+      AuthorizationError,
+    );
+    expect(() => assertGrantWithinAuthority(restricted, 'read', reach)).not.toThrow();
+    expect(() =>
+      assertHeldGrantsWithinAuthority(restricted, [row(PRODUCTION, 'write')], grid),
+    ).toThrow(AuthorizationError);
+  });
+
+  it('measures a suspended target as the active member a removal will apply to', () => {
+    // The target record crosses `toMembership` with its status; the rule, not
+    // the mapping, sets it aside.
+    expect(() =>
+      assertRemovalWithinAuthority(
+        caller({ customRole: productionCapped }),
+        { role: 'developer', status: 'suspended', customRole: undefined },
+        [row(null, 'write'), row(PRODUCTION, 'none')],
+        { projectId: PROJECT, environment: production },
+      ),
+    ).toThrow(AuthorizationError);
+  });
+
+  it('lets only an owner change their own grants', () => {
+    expect(() => assertMayChangeOwnGrants(caller({ role: 'owner' }))).not.toThrow();
+    for (const role of ['admin', 'developer', 'viewer'] as const) {
+      expect(() => assertMayChangeOwnGrants(caller({ role })), role).toThrow(AuthorizationError);
     }
+  });
+});
+
+describe('invitation seeds', () => {
+  it('measures a seed without a level at the role’s non-production default', () => {
+    // Acceptance writes a developer's `write` even onto production, so that is
+    // what the inviter must hold there.
+    const restricted = caller({
+      grants: [{ projectId: PROJECT, environmentId: PRODUCTION, accessLevel: 'read' }],
+    });
+    const seeds = [{ projectId: PROJECT, environmentId: PRODUCTION }];
+
+    expect(() =>
+      assertInvitationGrantsWithinAuthority(restricted, 'developer', seeds, grid),
+    ).toThrow(AuthorizationError);
+    // A viewer's non-production default is `read`, which the caller holds.
+    expect(() =>
+      assertInvitationGrantsWithinAuthority(restricted, 'viewer', seeds, grid),
+    ).not.toThrow();
+  });
+
+  it('refuses the whole invitation when any one seed exceeds the inviter', () => {
+    expect(() =>
+      assertInvitationGrantsWithinAuthority(
+        caller({ customRole: productionCapped }),
+        'developer',
+        [
+          { projectId: PROJECT, environmentId: STAGING, accessLevel: 'write' },
+          { projectId: PROJECT, environmentId: PRODUCTION, accessLevel: 'read' },
+        ],
+        grid,
+      ),
+    ).toThrow(AuthorizationError);
+  });
+
+  it('reads each seed’s reach off the grid, a project-wide one landing on production too', () => {
+    expect(() =>
+      assertInvitationGrantsWithinAuthority(
+        caller({ customRole: productionCapped }),
+        'developer',
+        [{ projectId: PROJECT, environmentId: null, accessLevel: 'read' }],
+        [gridRow(STAGING, false)],
+      ),
+    ).toThrow(AuthorizationError);
+    expect(() =>
+      assertInvitationGrantsWithinAuthority(
+        caller({ customRole: productionCapped }),
+        'developer',
+        [{ projectId: PROJECT, environmentId: STAGING, accessLevel: 'write' }],
+        grid,
+      ),
+    ).not.toThrow();
   });
 });
 
@@ -116,7 +327,7 @@ describe('the effective-access preview', () => {
 
   it('agrees with resolveAccessLevel on every cell — the preview must not lie', () => {
     const grants = [grant(PRODUCTION, 'read'), grant(null, 'admin')];
-    const member = { role: 'developer', status: 'active' } as const;
+    const member = { role: 'developer', status: 'active', customRole: undefined } as const;
 
     const [api] = effectiveAccess(member, grants, grid);
 
@@ -137,7 +348,11 @@ describe('the effective-access preview', () => {
 
   it('attributes each level to the rule that produced it', () => {
     const grants = [grant(PRODUCTION, 'read'), grant(null, 'admin')];
-    const [api] = effectiveAccess({ role: 'developer', status: 'active' }, grants, grid);
+    const [api] = effectiveAccess(
+      { role: 'developer', status: 'active', customRole: undefined },
+      grants,
+      grid,
+    );
 
     const staging = api?.environments.find((cell) => cell.slug === 'staging');
     const production = api?.environments.find((cell) => cell.slug === 'production');
@@ -148,7 +363,11 @@ describe('the effective-access preview', () => {
 
   it('shows an explicit none as the denial it is, not as the role default', () => {
     const grants = [grant(STAGING, 'none')];
-    const [api] = effectiveAccess({ role: 'admin', status: 'active' }, grants, grid);
+    const [api] = effectiveAccess(
+      { role: 'admin', status: 'active', customRole: undefined },
+      grants,
+      grid,
+    );
 
     const staging = api?.environments.find((cell) => cell.slug === 'staging');
     expect(staging).toMatchObject({ level: 'none', source: 'environment-grant' });
@@ -156,7 +375,11 @@ describe('the effective-access preview', () => {
 
   it('flattens everything to none for a suspended member, whatever their grants', () => {
     const grants = [grant(null, 'admin')];
-    const [api] = effectiveAccess({ role: 'owner', status: 'suspended' }, grants, grid);
+    const [api] = effectiveAccess(
+      { role: 'owner', status: 'suspended', customRole: undefined },
+      grants,
+      grid,
+    );
 
     for (const cell of api?.environments ?? []) {
       expect(cell.level, cell.slug).toBe('none');
@@ -164,8 +387,87 @@ describe('the effective-access preview', () => {
     }
   });
 
+  // The preview must apply the same narrowing enforcement does, or it shows a
+  // level the member will be refused on their first request.
+  it('agrees with resolveAccessLevel for a member holding a custom role', () => {
+    const grants = [grant(PRODUCTION, 'write'), grant(null, 'admin')];
+    const member = {
+      role: 'admin',
+      status: 'active',
+      customRole: customRole({
+        baseRole: 'developer',
+        accessCeiling: { nonProduction: 'write', production: 'read' },
+      }),
+    } as const;
+
+    const [api] = effectiveAccess(member, grants, grid);
+
+    for (const cell of api?.environments ?? []) {
+      const engine = resolveAccessLevel(
+        {
+          role: member.role,
+          memberStatus: member.status,
+          customRole: member.customRole,
+          grants,
+          isProduction: cell.isProduction,
+        },
+        PROJECT,
+        cell.slug === 'staging' ? STAGING : PRODUCTION,
+      );
+      expect(cell.level, cell.slug).toBe(engine);
+    }
+  });
+
+  it('caps every level at a custom role’s ceiling, grants included', () => {
+    const grants = [grant(PRODUCTION, 'write'), grant(null, 'admin')];
+    const [api] = effectiveAccess(
+      {
+        role: 'developer',
+        status: 'active',
+        customRole: customRole({
+          baseRole: 'developer',
+          accessCeiling: { nonProduction: 'read', production: 'read' },
+        }),
+      },
+      grants,
+      grid,
+    );
+
+    // Attributed to the grant that matched, at the level the ceiling allows.
+    expect(api?.environments.find((cell) => cell.slug === 'staging')).toMatchObject({
+      level: 'read',
+      source: 'project-grant',
+    });
+    expect(api?.environments.find((cell) => cell.slug === 'production')).toMatchObject({
+      level: 'read',
+      source: 'environment-grant',
+    });
+    expect(api?.projectLevel).toBe('read');
+  });
+
+  it('takes role defaults from the lower of the member’s role and the custom role’s base', () => {
+    const [api] = effectiveAccess(
+      { role: 'admin', status: 'active', customRole: customRole({ baseRole: 'developer' }) },
+      [],
+      grid,
+    );
+
+    expect(api?.environments.find((cell) => cell.slug === 'staging')).toMatchObject({
+      level: 'write',
+      source: 'role-default',
+    });
+    expect(api?.environments.find((cell) => cell.slug === 'production')).toMatchObject({
+      level: 'none',
+      source: 'role-default',
+    });
+  });
+
   it('shows production deny-by-default for a developer with no grants', () => {
-    const [api] = effectiveAccess({ role: 'developer', status: 'active' }, [], grid);
+    const [api] = effectiveAccess(
+      { role: 'developer', status: 'active', customRole: undefined },
+      [],
+      grid,
+    );
 
     expect(api?.environments.find((cell) => cell.slug === 'staging')).toMatchObject({
       level: 'write',

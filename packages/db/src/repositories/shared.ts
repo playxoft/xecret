@@ -63,6 +63,30 @@ export class RepositoryError extends Error {
   }
 }
 
+/**
+ * A `quotaExceeded` refusal that carries the number it was refused against.
+ *
+ * The ceiling is not a constant any more: `accountOrganizationCeiling` resolves
+ * it from the plans of the organisations an account already holds, so it is one
+ * on Free and ten on anything paid. A route that wants to *state* the ceiling
+ * therefore cannot know it — the transaction that computed it is the only place
+ * it existed, and it used to be thrown away with the message.
+ *
+ * Carried as a field rather than parsed back out of the message, because a
+ * message is not an API contract (see `RepositoryError`) and a regular
+ * expression over one is exactly the coupling that rule exists to prevent.
+ */
+export class QuotaExceededError extends RepositoryError {
+  constructor(
+    message: string,
+    /** The ceiling that was applied, after the plan and the abuse cap were reconciled. */
+    readonly ceiling: number,
+  ) {
+    super('quotaExceeded', message);
+    this.name = 'QuotaExceededError';
+  }
+}
+
 export type RepositoryErrorCode =
   | 'conflict'
   | 'notFound'

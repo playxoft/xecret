@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import {
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -16,6 +17,9 @@ import type { AccessLevel } from '@xecret/core/authz';
 import { bytea, citext } from './columns';
 import { memberStatusEnum, orgRoleEnum } from './enums';
 import { users } from './identity';
+// A cycle — ./roles imports `organizations` from here. Safe for the reason
+// given at the `foreignKey` below; the note on the other side says the same.
+import { customRoles } from './roles';
 
 export const organizations = pgTable(
   'organizations',
@@ -23,8 +27,23 @@ export const organizations = pgTable(
     id: uuid('id').primaryKey(),
     name: text('name').notNull(),
     slug: citext('slug').notNull().unique(),
-    // Billing is not implemented in v1 (ADR: see plan §"Deliberately NOT in v1").
-    // This column is the only hook it needs, so adding billing later is additive.
+    /**
+     * The seat ceiling **invitations are actually refused against**, by
+     * `assertSeatAvailable` under the organisation's row lock.
+     *
+     * Not the same number as `FREE_LIMITS.seats`, which is 3. This column
+     * predates the plans table, nothing sets it from the plan at provisioning
+     * time, and the default of 5 is therefore what a Free organisation gets.
+     * The gap has narrowed — it was 1 against 5 — and it is still a gap. The
+     * divergence is deliberate and documented at both ends — see the note on
+     * `seats` in `packages/core/src/entitlements/plans.ts` — and it closes when
+     * payments land.
+     *
+     * Two columns rather than one once billing exists: this is what the member
+     * service enforces, `org_subscriptions.seats` is what the invoice says, and
+     * their failure modes differ. `setBilledSeats` writes the pair in one
+     * transaction so nothing can move one without the other.
+     */
     seatLimit: integer('seat_limit').notNull().default(5),
     /**
      * The WorkOS Organization this maps to, or null.
@@ -80,7 +99,10 @@ export const organizations = pgTable(
  *
  * INVARIANT, enforced in application code and tested explicitly: an
  * organisation always retains at least one active `owner`. Removing or demoting
- * the last owner is rejected.
+ * the last owner is rejected. Counting `role = 'owner'` rows answers it
+ * correctly only because an owner cannot hold a custom role
+ * (`org_members_owner_custom_role_check`, below) — so every stored owner is an
+ * effective one.
  */
 export const orgMembers = pgTable(
   'org_members',
@@ -93,6 +115,38 @@ export const orgMembers = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     role: orgRoleEnum('role').notNull(),
+
+    /**
+     * A custom role narrowing `role`, or null for the built-in role as-is.
+     *
+     * **`role` is never replaced.** The custom role is a narrowing applied on
+     * top — the lower of `role` and its `baseRole` governs, ANDed with its
+     * action list — which is what keeps `canAssignRole` meaningful and what
+     * makes a null here mean exactly what it meant before this column existed.
+     *
+     * Always null for an owner (`org_members_owner_custom_role_check`, below).
+     *
+     * The foreign key is composite — `(org_id, custom_role_id)` against
+     * `custom_roles (org_id, id)`, declared with the table's constraints below
+     * — so a member can only ever hold a role of their own organisation. A null
+     * skips it (MATCH SIMPLE) and needs no row to point at.
+     *
+     * `ON DELETE NO ACTION`, deliberately. The other actions are worse:
+     *   - `SET NULL` would silently **widen** every member holding the role the
+     *     moment it was deleted — a "Deployer" who could not touch production
+     *     becomes a plain developer who can, with no act that looks like a
+     *     permission change and nothing in the audit log that reads as one.
+     *   - `CASCADE` would delete the members.
+     * So a role in use cannot be deleted until its members are moved off it,
+     * and the widening becomes something an administrator did on purpose.
+     *
+     * NO ACTION rather than `restrict`: Postgres blocks the same deletes with
+     * either, but `restrict` changed its error from 23503 to 23001 in Postgres
+     * 18, and "role still in use" is an error the application maps. Migration
+     * 0017 explains why hard-deleting the organisation still cascades cleanly,
+     * whichever of the two cascades from `organizations` fires first.
+     */
+    customRoleId: uuid('custom_role_id'),
     status: memberStatusEnum('status').notNull().default('active'),
     seatAssigned: boolean('seat_assigned').notNull().default(true),
     invitedBy: uuid('invited_by').references(() => users.id),
@@ -109,6 +163,38 @@ export const orgMembers = pgTable(
     index('org_members_org_idx')
       .on(t.orgId)
       .where(sql`${t.status} = 'active'`),
+    // See `customRoleId`. Here, in the extra config, because a composite key
+    // cannot be written with `.references()` — and it is also what makes the
+    // import cycle with ./roles safe: drizzle calls this callback lazily, from
+    // `getTableConfig`, after both modules have finished evaluating.
+    foreignKey({
+      name: 'org_members_org_id_custom_role_id_custom_roles_org_id_id_fk',
+      columns: [t.orgId, t.customRoleId],
+      foreignColumns: [customRoles.orgId, customRoles.id],
+    })
+      .onDelete('no action')
+      .onUpdate('no action'),
+    // Read by the foreign key's own check when a role is deleted, and by the
+    // "is this role still in use?" and "who holds this role?" questions the
+    // role-management API will ask. Partial, because nearly every row carries
+    // null and none of them is ever the answer.
+    index('org_members_custom_role_idx')
+      .on(t.customRoleId)
+      .where(sql`${t.customRoleId} is not null`),
+    // An owner is never narrowed. With `custom_roles_base_role_check` this keeps
+    // "stored `owner`" and "effective owner" the same set of members, so the
+    // last-owner guard and the account-deletion summary can count owners from
+    // `role` and `status` alone and still count the ones who can act as owners.
+    // Without it, a sole owner narrowed to a role that cannot manage members
+    // would be counted as the owner keeping the organisation alive while unable
+    // to be one, with nobody above them to repair it.
+    //
+    // `updateMemberRole` clears the reference in the same UPDATE that promotes
+    // somebody to owner, since this would otherwise reject the promotion.
+    check(
+      'org_members_owner_custom_role_check',
+      sql`${t.customRoleId} is null or ${t.role} <> 'owner'`,
+    ),
   ],
 );
 

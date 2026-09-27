@@ -35,9 +35,10 @@ export const GET = authenticatedRoute<Params>(async ({ params, principal, servic
   // `member.read`, not `project.read`. The `Action` union has no `org.read`, and
   // a project-scoped action asked about an organisation is denied outright by
   // `can()` — correctly, since there is no project to resolve a grant against.
-  // `member.read` is the org-scoped read capability: every role holds it, and a
-  // suspended member holds nothing, which is exactly the question to settle
-  // before returning anything about the organisation at all.
+  // `member.read` is the org-scoped read capability: every role holds it — a
+  // custom role cannot remove it (`CUSTOM_ROLE_FLOOR`) — and a suspended member
+  // holds nothing, which is exactly the question to settle before returning
+  // anything about the organisation at all.
   authorize(scope, 'member.read');
 
   return json({

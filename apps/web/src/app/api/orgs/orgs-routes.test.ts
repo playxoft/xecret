@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuditRecord } from '@xecret/core/audit';
 import { uuidv7 } from '@xecret/core/ids';
-import { RepositoryError } from '@xecret/db/repositories';
+import { QuotaExceededError } from '@xecret/db/repositories';
 import type { RequestLog } from '@/server/logging';
 import { createLogger } from '@/server/logging';
 import { ORGANIZATIONS_PER_ACCOUNT_LIMIT } from '@/server/schemas/resources';
@@ -268,13 +268,17 @@ describe('POST /api/orgs — who may create one', () => {
   });
 });
 
-/** The refusal `provisionOrganization` raises from inside its transaction. */
-function atTheLimit(): void {
+/**
+ * The refusal `provisionOrganization` raises from inside its transaction.
+ *
+ * It carries the ceiling, because the ceiling is no longer a constant: the
+ * transaction computes `min(abuse cap, plan ceiling)` from the plans of the
+ * organisations the account already holds, and on Free that is one. The route
+ * has no way to know the number except from this error.
+ */
+function atTheLimit(ceiling: number = ORGANIZATIONS_PER_ACCOUNT_LIMIT): void {
   repository.provisionOrganization.mockRejectedValue(
-    new RepositoryError(
-      'quotaExceeded',
-      `An account can hold at most ${ORGANIZATIONS_PER_ACCOUNT_LIMIT} organisations.`,
-    ),
+    new QuotaExceededError(`An account can hold at most ${ceiling} organisations.`, ceiling),
   );
 }
 
@@ -416,6 +420,24 @@ describe('POST /api/orgs — how many an account may hold', () => {
     expect(error.code).toBe('conflict');
     expect(error.message).toContain(String(ORGANIZATIONS_PER_ACCOUNT_LIMIT));
     expect(JSON.stringify(payload)).not.toContain('acme');
+  });
+
+  /**
+   * The regression: the route threw a message built from the abuse cap while the
+   * transaction had refused at the plan ceiling. A Free account holding exactly
+   * one organisation was told it could hold ten — a sentence that is false, and
+   * that describes no rule the system is following.
+   */
+  it('states the ceiling the transaction applied, not the abuse cap', async () => {
+    atTheLimit(1);
+    repository.countOrganizationsHeldBy.mockResolvedValue({ total: 1, latestId: ORG_ID });
+
+    const payload = await body(await orgs.POST(createRequest({ name: 'Acme', slug: 'acme' })));
+    const error = payload['error'] as { code: string; message: string };
+
+    expect(error.code).toBe('conflict');
+    expect(error.message).not.toContain(String(ORGANIZATIONS_PER_ACCOUNT_LIMIT));
+    expect(error.message).toContain('one organisation');
   });
 });
 

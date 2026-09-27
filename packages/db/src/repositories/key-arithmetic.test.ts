@@ -329,7 +329,11 @@ describe('loadOrganizationAuthorizationContexts', () => {
     // assertion is on its absence rather than on a number.
     const { db, statements } = recorder((sql) =>
       sql.includes('from "org_members"')
-        ? [['member-1', ORG_ID, USER_ID, 'developer', 'active']]
+        ? // Six trailing nulls: the custom-role columns joined onto every member
+          // row. Null is the ordinary case — almost nobody holds a custom role —
+          // and it resolves to `undefined`, which is what `can()` saw before the
+          // column existed.
+          [['member-1', ORG_ID, USER_ID, 'developer', 'active', null, null, null, null, null, null]]
         : [],
     );
 

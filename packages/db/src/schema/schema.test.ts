@@ -3,11 +3,13 @@ import { getTableConfig } from 'drizzle-orm/pg-core';
 import {
   auditLogs,
   cliTokens,
+  customRoles,
   envDataKeys,
   envHmacKeys,
   envKeyGrants,
   environments,
   invitations,
+  orgMembers,
   pendingKeyGrants,
   secretVersions,
   secrets,
@@ -523,5 +525,64 @@ describe('the user vault', () => {
     // wrong rather than that two people share a key.
     expect(columnsOf(userPasskeys)['credential_id']!.isUnique).toBe(true);
     expect(columnsOf(userPasskeys)['credential_id']!.getSQLType()).toBe('bytea');
+  });
+});
+
+describe('custom roles', () => {
+  // Imported through ./index, which evaluates ./roles and ./tenancy in whatever
+  // order the barrel lists them. `getTableConfig(orgMembers)` is what runs the
+  // extra-config callback naming `customRoles`, so these also prove the import
+  // cycle between the two resolves: a broken one leaves `customRoles`
+  // undefined there and the first test throws rather than passing.
+
+  it('are held only inside the organisation that defined them', () => {
+    // Composite, so a member of one organisation can never point at another's
+    // role — resolving through rules somebody else wrote, and pinning that role
+    // against deletion by the organisation that owns it.
+    const fk = getTableConfig(orgMembers).foreignKeys.find(
+      (entry) => entry.getName() === 'org_members_org_id_custom_role_id_custom_roles_org_id_id_fk',
+    );
+    expect(fk, 'the composite custom-role foreign key must exist').toBeDefined();
+
+    const reference = fk!.reference();
+    expect(reference.foreignTable).toBe(customRoles);
+    expect(reference.columns.map((column) => column.name)).toEqual(['org_id', 'custom_role_id']);
+    expect(reference.foreignColumns.map((column) => column.name)).toEqual(['org_id', 'id']);
+  });
+
+  it('cannot be deleted out from under the members holding them', () => {
+    // NO ACTION, never SET NULL: deleting a role must not silently hand every
+    // member who held it their unnarrowed built-in role. And not CASCADE, which
+    // would delete the members. RESTRICT would block the same deletes but
+    // changed its SQLSTATE in Postgres 18 — migration 0017 has the detail.
+    const fk = getTableConfig(orgMembers).foreignKeys.find(
+      (entry) => entry.getName() === 'org_members_org_id_custom_role_id_custom_roles_org_id_id_fk',
+    );
+    expect(fk!.onDelete).toBe('no action');
+    expect(fk!.onUpdate).toBe('no action');
+  });
+
+  it('index only the members who hold one', () => {
+    const index = getTableConfig(orgMembers).indexes.find(
+      (entry) => entry.config.name === 'org_members_custom_role_idx',
+    );
+
+    expect(index).toBeDefined();
+    expect(index!.config.columns.map((column) => ('name' in column ? column.name : ''))).toEqual([
+      'custom_role_id',
+    ]);
+    expect(index!.config.where).toBeDefined();
+  });
+
+  it('never narrow an owner, from either side', () => {
+    // The last-owner rule counts stored `role = 'owner'` rows while authority
+    // follows the effective role. These two keep those the same set of members:
+    // no owner holds a custom role, and no custom role is based on `owner`.
+    const member = checkSql(orgMembers, 'org_members_owner_custom_role_check');
+    expect(member).toContain('custom_role_id is null');
+    expect(member).toContain(`role <> 'owner'`);
+
+    const role = checkSql(customRoles, 'custom_roles_base_role_check');
+    expect(role).toContain(`base_role <> 'owner'`);
   });
 });

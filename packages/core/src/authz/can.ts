@@ -1,16 +1,25 @@
 import { resolveAccessLevel } from './grants';
 import type { Membership } from './grants';
-import { accessLevelAtLeast, ACTION_REQUIREMENTS, ROLE_CAPABILITIES } from './roles';
+import { accessLevelAtLeast, ACTION_REQUIREMENTS, effectiveCapabilities } from './roles';
 import type { RequiredAccessLevel } from './roles';
 import type { AccessLevel, Action, Actor, Decision, Resource } from './types';
 
 /**
  * The authorization decision.
  *
- * `can()` is the **only** authorization function in xecret. Every protected
- * route calls it, and no route implements its own check — the moment a second
+ * `can()` is the **only** function that decides whether an actor may perform
+ * an action on a resource. Every protected route calls it, and no route
+ * implements its own version of that check — the moment a second
  * implementation exists the two drift, and the gap between them is the breach
  * (threat T2, the most likely real one).
+ *
+ * It is not the only authorization *question*. What an actor may confer on
+ * somebody else — a role, a grant, a service token's reach — is a comparison
+ * between two parties that `can()` does not make, and it is answered by
+ * `roleWithinAuthority` (`roles.ts`) and the functions in `authority.ts`. Those
+ * never re-derive a level or a capability: they measure the actor through
+ * `resolveAccessLevel` and `effectiveCapabilities`, the same functions this
+ * one calls, so the two answers cannot drift apart.
  *
  * It is total and throw-free. Every input, including a nonsensical one,
  * produces a `Decision`; a denial is an ordinary value that the caller has to
@@ -22,7 +31,7 @@ import type { AccessLevel, Action, Actor, Decision, Resource } from './types';
  */
 
 /**
- * The two messages a denial can carry.
+ * The two messages a denial from `can()` carries.
  *
  * Constants, never interpolated. A message that names the project, the action,
  * or an id hands back a fact the caller was just denied the right to learn, and
@@ -187,7 +196,11 @@ function memberDecision(
   // covers org-level actions too, which no grant is consulted for.
   if (membership.memberStatus !== 'active') return forbidden();
 
-  if (!ROLE_CAPABILITIES[membership.role][action]) return forbidden();
+  // The built-in table when there is no custom role, and `base AND custom` when
+  // there is — where `base` is the lower of `role` and the custom role's
+  // `baseRole`, and `custom` always includes `CUSTOM_ROLE_FLOOR`. Never the
+  // custom role alone — see `CustomRole` in roles.ts.
+  if (!effectiveCapabilities(membership.role, membership.customRole)[action]) return forbidden();
 
   const requirement = ACTION_REQUIREMENTS[action];
   if (requirement.scope === 'org') return { allowed: true };
@@ -215,6 +228,11 @@ function memberDecision(
   // request arrived through a production environment: production is a property
   // of an environment, and letting it apply to a project-level question would
   // deny a developer the project itself because of where the link came from.
+  //
+  // An action whose reach includes the project's environments — deleting the
+  // project deletes every one of them — is not settled here alone: the route
+  // also asks the environment-scoped action of each environment it would take
+  // with it (see `project.delete` in `ACTION_REQUIREMENTS`).
   return levelDecision(
     resolveAccessLevel({ ...membership, isProduction: false }, resource.projectId, null),
     requirement.minimum,
@@ -227,6 +245,11 @@ function memberDecision(
  * Carries the whole `Decision` so the error handler can map `reason` to 404 or
  * 403 without re-deciding anything, and so the audit record of the denial says
  * the same thing the client was told.
+ *
+ * Raised by `assertCan`, and also for a refusal by one of the authority checks
+ * (`authority.ts`, `roleWithinAuthority`) — always `forbidden`, with a fixed
+ * message of its own — so that every refusal reaches the same error mapping
+ * and the same `denied` audit record, whichever question refused it.
  */
 export class AuthorizationError extends Error {
   constructor(readonly decision: Denial) {
@@ -250,4 +273,40 @@ export function assertCan(
 ): void {
   const decision = can(actor, action, resource, context);
   if (!decision.allowed) throw new AuthorizationError(decision);
+}
+
+/**
+ * Runs authorization checks, handing each refusal to `file` before it
+ * propagates.
+ *
+ * A refusal from `assertCan` and one from an authority check both arrive as an
+ * `AuthorizationError`; whichever it is, `file` is called once with its
+ * decision and the error is rethrown to become the response. Anything else
+ * passes through untouched — a lookup that fails is not a denial.
+ *
+ * The point is the trail. Routes pass a `file` that writes a `denied` audit
+ * record naming the action that was attempted, because a burst of those is how
+ * probing shows up in the audit log, and a check that refused without filing
+ * one — "grant production `write`", "reinstate the member who holds it", tried
+ * in turn by somebody capped below it — would let the probing happen in
+ * silence. Every check that can refuse *above the caller's authority* goes
+ * inside one of these.
+ *
+ * It lives here, beside the exception it catches, because it decides nothing
+ * and knows nothing of requests. Where routes import it from also shows in the
+ * Worker bundle. Turbopack emits the ~0.5 MB server chunk every API route
+ * loads (drizzle, postgres, the route wrapper) byte-identical under several
+ * names, one per distinct set of those modules a route imports directly, as
+ * far as the build output shows. Each name ships as a full copy. Two routes
+ * that imported this from the web app's `tenancy.ts`, and so no longer
+ * imported `@xecret/core/authz` themselves, got a copy of their own: 0.17 MB
+ * gzipped.
+ */
+export function auditingDenials(file: (decision: Denial) => void, checks: () => void): void {
+  try {
+    checks();
+  } catch (cause) {
+    if (cause instanceof AuthorizationError) file(cause.decision);
+    throw cause;
+  }
 }
