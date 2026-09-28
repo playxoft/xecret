@@ -58,6 +58,7 @@ export function EnvironmentSettingsScreen({
             projectSlug={projectSlug}
             environment={environment.data.environment}
             canManage={canManage}
+            canDelete={canAdminister(organization, 'environment.delete')}
             onChanged={environment.reload}
           />
 

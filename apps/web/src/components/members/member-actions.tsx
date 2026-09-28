@@ -37,6 +37,7 @@ export function MemberRowActions({
   orgSlug,
   member,
   assignableRoles,
+  canRemove,
   customRoles,
   onChanged,
 }: {
@@ -44,6 +45,11 @@ export function MemberRowActions({
   member: Member;
   /** The roles the viewer may manage and hand out, from their session authority. */
   assignableRoles: readonly OrgRole[];
+  /**
+   * Whether the viewer holds `member.remove`, which removal asks and changing
+   * a member (`member.update`, which draws this row at all) does not.
+   */
+  canRemove: boolean;
   /**
    * The organisation's custom roles and whether its plan lets a member be put
    * on one, or `null` when they are unknown — not loaded, or not the viewer's
@@ -140,15 +146,17 @@ export function MemberRowActions({
         {member.status === 'suspended' ? 'Reinstate' : 'Suspend'}
       </Button>
 
-      <Button
-        size="sm"
-        variant="ghost"
-        className="text-danger-text hover:text-danger-text"
-        aria-label={`Remove ${member.displayName ?? member.email} from the organisation`}
-        onClick={() => setRemoving(true)}
-      >
-        Remove
-      </Button>
+      {canRemove ? (
+        <Button
+          size="sm"
+          variant="ghost"
+          className="text-danger-text hover:text-danger-text"
+          aria-label={`Remove ${member.displayName ?? member.email} from the organisation`}
+          onClick={() => setRemoving(true)}
+        >
+          Remove
+        </Button>
+      ) : null}
 
       <ConfirmDialog
         open={suspending}

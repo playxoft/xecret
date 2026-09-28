@@ -3,6 +3,9 @@
 import { useState } from 'react';
 
 import { actionsForBase } from '@xecret/core/authz';
+import { PLANS } from '@xecret/core/entitlements';
+import type { PlanId } from '@xecret/core/entitlements';
+import { CUSTOM_ROLES_PER_ORGANIZATION } from '@xecret/core/validation';
 import { api } from '@/lib/api';
 import { pluralize } from '@/lib/format';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
@@ -26,12 +29,10 @@ import { ACCESS_LEVEL_LABELS, ROLE_LABELS } from '@/components/members/types';
 import type { CustomRole, CustomRoleListResponse } from '@/components/members/types';
 import { RoleDialog } from './role-dialog';
 
-/** The plan name as the upgrade line says it. */
-const PLAN_NAMES: Readonly<Record<string, string>> = {
-  pro: 'Pro',
-  team: 'Team',
-  enterprise: 'Enterprise',
-};
+/** A plan's name as the pricing page says it, from the plan table the server enforces. */
+function planName(id: string): string {
+  return id in PLANS ? PLANS[id as PlanId].name : id;
+}
 
 /**
  * The organisation's custom roles, on its settings page.
@@ -45,7 +46,11 @@ const PLAN_NAMES: Readonly<Record<string, string>> = {
  *    themselves (`definableBaseRoles` from the session), *and* a plan that
  *    includes custom roles (Enterprise);
  *  - **deleting** needs the same person, on any plan: an organisation that has
- *    left Enterprise can always tidy up, and the API does not gate it.
+ *    left Enterprise can always tidy up, and the API does not gate it. A role
+ *    somebody holds cannot be deleted, and its Delete is drawn unavailable
+ *    with the reason rather than offered to fail;
+ *  - **"New role"** gives way to a sentence at the per-organisation ceiling
+ *    the server refuses past.
  *
  * Each absent control is explained in a sentence rather than silently missing,
  * because "why can't I?" has two different answers here — the plan, or who you
@@ -73,6 +78,7 @@ export function RolesCard({
   const feature = roles.data?.feature;
   const entitled = feature?.enabled ?? false;
   const upgradeTo = feature?.upgradeTo ?? null;
+  const atCeiling = (roles.data?.data.length ?? 0) >= CUSTOM_ROLES_PER_ORGANIZATION;
 
   return (
     <Card>
@@ -85,7 +91,7 @@ export function RolesCard({
             Assign them on the Members page.
           </CardDescription>
         </div>
-        {mayList && mayDefine && entitled ? (
+        {mayList && mayDefine && entitled && !atCeiling ? (
           <Button variant="secondary" onClick={() => setEditing('new')}>
             <PlusIcon className="size-4" />
             New role
@@ -114,7 +120,7 @@ export function RolesCard({
             {!entitled ? (
               <Alert tone="info" title="Custom roles are an Enterprise feature">
                 {upgradeTo !== null
-                  ? `Defining and assigning roles needs the ${PLAN_NAMES[upgradeTo] ?? upgradeTo} plan.`
+                  ? `Defining and assigning roles needs the ${planName(upgradeTo)} plan.`
                   : 'Defining and assigning roles is not part of this organisation’s plan.'}{' '}
                 {roles.data.data.length > 0
                   ? 'The roles below still apply to the people holding them; you can take members off them and delete roles nobody holds.'
@@ -123,6 +129,11 @@ export function RolesCard({
             ) : !mayDefine ? (
               <p className="text-fg-subtle text-sm">
                 Only an owner or admin who holds no custom role can define or change roles.
+              </p>
+            ) : atCeiling ? (
+              <p className="text-fg-subtle text-sm">
+                This organisation has defined the most roles it can ({CUSTOM_ROLES_PER_ORGANIZATION}
+                ). Delete one nobody holds to define another.
               </p>
             ) : null}
 
@@ -148,6 +159,11 @@ export function RolesCard({
                     </span>
                     {mayDefine ? (
                       <div className="flex items-center gap-1.5">
+                        {/* The in-use rule, said where the button is: a role
+                            somebody holds cannot be deleted, and a Delete that
+                            only ever answers 409 is an error message in
+                            disguise. The count can be stale, so the server's
+                            409 still reaches the dialog if it is. */}
                         {entitled ? (
                           <Button
                             variant="ghost"
@@ -162,7 +178,17 @@ export function RolesCard({
                           variant="ghost"
                           size="sm"
                           className="text-danger-text hover:text-danger-text"
-                          aria-label={`Delete role ${role.name}`}
+                          disabled={(role.holderCount ?? 0) > 0}
+                          title={
+                            (role.holderCount ?? 0) > 0
+                              ? 'In use — move its members to another role, or to none, first'
+                              : undefined
+                          }
+                          aria-label={
+                            (role.holderCount ?? 0) > 0
+                              ? `Delete role ${role.name} — unavailable while ${pluralize(role.holderCount ?? 0, 'member')} ${role.holderCount === 1 ? 'holds' : 'hold'} it`
+                              : `Delete role ${role.name}`
+                          }
                           onClick={() => setDeleting(role)}
                         >
                           Delete
@@ -213,7 +239,10 @@ export function RolesCard({
   );
 }
 
-/** "Based on Developer · 5 of 9 actions · production: No access". */
+/**
+ * One line describing a role, e.g. "Based on Developer · 5 of 13 actions · at
+ * most read & write outside production, no access in production".
+ */
 function describeRole(role: CustomRole): string {
   const offered = actionsForBase(role.baseRole);
   const kept = offered.filter((action) => role.allowedActions.includes(action)).length;

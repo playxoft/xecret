@@ -7,7 +7,7 @@ import { generateInviteFragment, zeroize } from '@xecret/core/crypto/client';
 import type { Bytes, InviteFragment } from '@xecret/core/crypto/client';
 import { api, isApiError } from '@/lib/api';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
-import { useGrantable } from '@/app/(dashboard)/_lib/use-authority';
+import type { GrantableLevel } from '@/app/(dashboard)/_lib/use-authority';
 import {
   fetchEnvironmentKeys,
   invitePublicKey,
@@ -62,6 +62,12 @@ export interface InviteDialogProps {
    * the dialog offers at all.
    */
   assignableRoles: readonly OrgRole[];
+  /**
+   * The most the caller could grant on each environment, from the page that
+   * opens the dialog (`useGrantable`) — read once there rather than again
+   * on every open.
+   */
+  grantable: GrantableLevel;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Reloads whatever lists the new invitation should appear in. */
@@ -102,6 +108,7 @@ export interface InviteDialogProps {
 export function InviteDialog({
   orgSlug,
   assignableRoles,
+  grantable,
   open,
   onOpenChange,
   onInvited,
@@ -114,6 +121,7 @@ export function InviteDialog({
         <InviteFlow
           orgSlug={orgSlug}
           assignableRoles={assignableRoles}
+          grantable={grantable}
           onOpenChange={onOpenChange}
           onSubmittingChange={setSubmitting}
           onInvited={onInvited}
@@ -126,19 +134,20 @@ export function InviteDialog({
 function InviteFlow({
   orgSlug,
   assignableRoles,
+  grantable,
   onOpenChange,
   onSubmittingChange,
   onInvited,
 }: {
   orgSlug: string;
   assignableRoles: readonly OrgRole[];
+  grantable: GrantableLevel;
   onOpenChange: (open: boolean) => void;
   onSubmittingChange: (submitting: boolean) => void;
   onInvited: () => void;
 }) {
   const { toast } = useToast();
   const vault = useVaultKeys();
-  const grantable = useGrantable(orgSlug);
 
   const [email, setEmail] = useState('');
   // Developer where the caller may invite at it, as ever; otherwise the

@@ -34,7 +34,10 @@ export interface Member {
   projects?: readonly string[];
 }
 
-/** A custom role as a member row names it. */
+/**
+ * A custom role as a member row, and the session, name it: which one, and
+ * what it narrows. Defined once, here, for both.
+ */
 export interface CustomRoleRef {
   id: string;
   name: string;

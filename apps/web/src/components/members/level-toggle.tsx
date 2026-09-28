@@ -86,11 +86,14 @@ export interface LevelToggleProps {
   /**
    * The most the viewer could grant here, when it is known.
    *
-   * Segments above it are drawn and disabled rather than hidden, so the
-   * capsule keeps its shape and says why: the viewer's own access here is
-   * lower, and the server would refuse the write. The lit segment always stays
-   * clickable — clearing to `none` takes access away, which is never beyond
-   * anybody's authority.
+   * Segments above it are drawn and marked unavailable rather than hidden, so
+   * the capsule keeps its shape and says why: the viewer's own access here is
+   * lower, and the server would refuse the write. They stay in the tab order,
+   * `aria-disabled` rather than `disabled`, so a keyboard or screen-reader
+   * user reaches them and hears the reason — a disabled button is skipped,
+   * and its explanation with it. Clicking one does nothing. The lit segment
+   * always stays clickable — clearing to `none` takes access away, which is
+   * never beyond anybody's authority.
    */
   maxLevel?: AccessLevel | undefined;
   className?: string;
@@ -125,7 +128,8 @@ export function LevelToggle({
         // lit one, whose click takes access away.
         const beyond =
           maxLevel !== undefined && LEVEL_RANK[segment] > LEVEL_RANK[maxLevel] && segment !== level;
-        const inert = disabled || (segment === level && !clearable) || beyond;
+        const off = disabled || (segment === level && !clearable);
+        const inert = off || beyond;
 
         return (
           <button
@@ -138,12 +142,18 @@ export function LevelToggle({
                 : `${ACCESS_LEVEL_LABELS[segment]} access to ${scopeLabel}`
             }
             title={beyond ? 'More than you can grant here' : undefined}
-            disabled={inert}
+            disabled={off}
+            aria-disabled={beyond || undefined}
             // The one rule of the control: clicking the current level clears
-            // everything; clicking anything else *is* the new level.
-            onClick={() => onSelect(segment === level && clearable ? 'none' : segment)}
+            // everything; clicking anything else *is* the new level — unless it
+            // is more than the viewer can grant, when clicking does nothing.
+            onClick={() => {
+              if (beyond) return;
+              onSelect(segment === level && clearable ? 'none' : segment);
+            }}
             className={cn(
               segmentClass(lit, size),
+              beyond && 'cursor-not-allowed opacity-50',
               !inert && 'cursor-pointer',
               !inert && (lit ? 'hover:bg-accent-tint/70' : 'hover:bg-surface-hover hover:text-fg'),
             )}

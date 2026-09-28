@@ -84,6 +84,7 @@ const ALL_PROJECTS = 'all';
 export function MembersScreen({ orgSlug }: { orgSlug: string }) {
   const organization = useOrganization(orgSlug);
   const canManage = canAdminister(organization, 'member.update');
+  const canRemove = canAdminister(organization, 'member.remove');
   const assignableRoles = organization?.authority.assignableRoles ?? [];
   // Inviting needs a role to invite *at*: a narrowed inviter whose role leaves
   // them none to hand out gets no button rather than a dialog with an empty
@@ -391,11 +392,11 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
                               </Badge>
                               {member.customRole !== null ? (
                                 <Badge
-                                  className="max-w-full truncate"
-                                  title={`Custom role, narrowing ${ROLE_LABELS[member.role]}`}
+                                  className="max-w-40 min-w-0"
+                                  title={`${member.customRole.name} — a custom role narrowing ${ROLE_LABELS[member.role]}`}
                                 >
                                   <span className="sr-only">Custom role: </span>
-                                  {member.customRole.name}
+                                  <span className="truncate">{member.customRole.name}</span>
                                 </Badge>
                               ) : null}
                             </span>
@@ -430,6 +431,7 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
                                 orgSlug={orgSlug}
                                 member={member}
                                 assignableRoles={assignableRoles}
+                                canRemove={canRemove}
                                 customRoles={customRoleChoices}
                                 onChanged={reloadAll}
                               />
@@ -441,6 +443,10 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
                           <TableRow className="hover:bg-transparent">
                             <TableCell colSpan={6} className="bg-canvas-inset/40 p-0">
                               <MemberAccessPanel
+                                // A role, status or custom-role change moves
+                                // every level in the panel, so a changed member
+                                // is a new panel — re-read, not a stale matrix.
+                                key={`${member.id}:${member.role}:${member.status}:${member.customRole?.id ?? ''}`}
                                 orgSlug={orgSlug}
                                 member={member}
                                 mayEdit={
@@ -481,6 +487,7 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
         <InviteDialog
           orgSlug={orgSlug}
           assignableRoles={assignableRoles}
+          grantable={grantable}
           open={inviting}
           onOpenChange={setInviting}
           onInvited={reloadAll}

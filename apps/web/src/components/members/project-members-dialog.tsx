@@ -507,9 +507,9 @@ function ProjectMembersPanel({
                         {ROLE_LABELS[member.role]}
                       </Badge>
                       {member.customRole !== null ? (
-                        <Badge className="max-w-32 truncate">
+                        <Badge className="max-w-32 min-w-0" title={member.customRole.name}>
                           <span className="sr-only">Custom role: </span>
-                          {member.customRole.name}
+                          <span className="truncate">{member.customRole.name}</span>
                         </Badge>
                       ) : null}
                     </button>

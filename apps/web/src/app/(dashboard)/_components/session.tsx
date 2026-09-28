@@ -4,6 +4,7 @@ import { createContext, use } from 'react';
 import type { ReactNode } from 'react';
 
 import type { Action, OrgRole } from '@xecret/core/authz';
+import type { CustomRoleRef } from '@/components/members/types';
 import type { VaultStatus } from '@/components/vault';
 
 /**
@@ -30,13 +31,6 @@ export interface SessionUser {
   avatarUrl: string | null;
 }
 
-/** A custom role as the session names it: which one, and what it narrows. */
-export interface SessionCustomRole {
-  id: string;
-  name: string;
-  baseRole: OrgRole;
-}
-
 /**
  * What the viewer may do in one organisation, as the server computed it
  * (`authoritySummary` in `@xecret/core/authz`).
@@ -47,11 +41,15 @@ export interface SessionCustomRole {
  */
 export interface SessionAuthority {
   role: OrgRole;
-  customRole: SessionCustomRole | null;
+  customRole: CustomRoleRef | null;
   /** The lower of `role` and the custom role's base. */
   effectiveRole: OrgRole;
   capabilities: readonly Action[];
-  /** Roles the viewer may assign, invite at, or manage somebody holding. */
+  /**
+   * Roles within the viewer's authority — empty unless they hold
+   * `member.update` or `member.invite`. Not a permission on its own: ask
+   * `mayManageRole` to change a member, and gate inviting on `member.invite`.
+   */
   assignableRoles: readonly OrgRole[];
   /** Bases the viewer may define a custom role on. Empty for a narrowed viewer. */
   definableBaseRoles: readonly OrgRole[];
@@ -184,13 +182,20 @@ export function canAdminister(organization: SessionOrganization | null, action: 
 }
 
 /**
- * Whether the viewer may touch a member holding `role` — change their role,
- * their grants, their custom role, their status — or hand `role` out.
+ * Whether the viewer may change a member holding `role` — their role, their
+ * grants, their custom role, their status — or hand `role` to somebody.
  *
- * `roleWithinAuthority` as the server computed it, so a narrowed admin sees no
- * control on a member their own role could not manage, even though they rank
- * as an admin.
+ * Both halves the server asks: `member.update` (through `canAdminister`, so
+ * the effective role is an admin's too) and `roleWithinAuthority` as the
+ * server computed it, so a narrowed admin sees no control on a member their
+ * own role could not manage, even though they rank as an admin. For a member
+ * without a custom role this is `isOrgAdmin` and `canAssignRole` exactly —
+ * `session.test.ts` pins it.
  */
 export function mayManageRole(organization: SessionOrganization | null, role: OrgRole): boolean {
-  return organization !== null && organization.authority.assignableRoles.includes(role);
+  return (
+    canAdminister(organization, 'member.update') &&
+    organization !== null &&
+    organization.authority.assignableRoles.includes(role)
+  );
 }

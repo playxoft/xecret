@@ -4,7 +4,11 @@ import { useId, useState } from 'react';
 
 import { actionsForBase, CUSTOM_ROLE_FLOOR, ROLE_ACCESS_DEFAULTS } from '@xecret/core/authz';
 import type { AccessLevel, Action, OrgRole } from '@xecret/core/authz';
-import { CUSTOM_ROLE_NAME_MAX_LENGTH } from '@xecret/core/validation';
+import {
+  CUSTOM_ROLE_NAME_MAX_LENGTH,
+  customRoleNameProblem,
+  normalizeCustomRoleName,
+} from '@xecret/core/validation';
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import {
@@ -79,16 +83,24 @@ export function RoleDialog(props: RoleDialogProps) {
   );
 }
 
-function RoleForm({ orgSlug, role, definableBaseRoles, onOpenChange, onSaved }: RoleDialogProps) {
+/**
+ * The form inside `RoleDialog`. Exported so a render test can draw it inside a
+ * bare `Dialog` — the dialog's content is portalled, and a server render has no
+ * portal to draw into.
+ *
+ * The base menu is `definableBaseRoles` exactly. Whoever sees Edit may define
+ * on every base below owner — an owner or an admin who holds no custom role —
+ * so an existing role's base is always among them.
+ */
+export function RoleForm({
+  orgSlug,
+  role,
+  definableBaseRoles: bases,
+  onOpenChange,
+  onSaved,
+}: Omit<RoleDialogProps, 'open'>) {
   const { toast } = useToast();
   const formId = useId();
-
-  // An edit keeps its base in the menu even when the viewer could not define
-  // on it today, so the select reads truthfully; the server refuses the save.
-  const bases =
-    role !== null && !definableBaseRoles.includes(role.baseRole)
-      ? [role.baseRole, ...definableBaseRoles]
-      : definableBaseRoles;
 
   const [name, setName] = useState(role?.name ?? '');
   const [baseRole, setBaseRole] = useState<OrgRole>(
@@ -106,15 +118,24 @@ function RoleForm({ orgSlug, role, definableBaseRoles, onOpenChange, onSaved }: 
   const [error, setError] = useState<unknown>(null);
 
   const available = new Set(actionsForBase(baseRole));
-  const trimmed = name.trim();
 
   function changeBase(next: OrgRole) {
+    const previous = new Set(actionsForBase(baseRole));
+    const possible = actionsForBase(next);
     setBaseRole(next);
-    // Keep what is still possible on the new base and drop the rest: an
-    // action the base cannot perform would grant nothing, and the server
-    // refuses a list that names one.
-    const possible = new Set(actionsForBase(next));
-    setActions((current) => new Set([...current].filter((action) => possible.has(action))));
+    setActions((current) => {
+      // Keep what is still possible on the new base and drop the rest: an
+      // action the base cannot perform would grant nothing, and the server
+      // refuses a list that names one.
+      const kept = new Set([...current].filter((action) => possible.includes(action)));
+      // A new role starts as the whole of its base, so raising the base on
+      // one ticks what the higher base adds. An existing role's list is a
+      // decision somebody made, and is not widened behind their back.
+      if (role === null) {
+        for (const action of possible) if (!previous.has(action)) kept.add(action);
+      }
+      return kept;
+    });
     if (!capped) setCeiling(ROLE_ACCESS_DEFAULTS[next]);
   }
 
@@ -130,13 +151,16 @@ function RoleForm({ orgSlug, role, definableBaseRoles, onOpenChange, onSaved }: 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (submitting) return;
-    if (trimmed.length === 0) {
-      setNameError('Give the role a name.');
+    // The rules the server holds a name to, said before the request is made.
+    const normalised = normalizeCustomRoleName(name);
+    const problem = customRoleNameProblem(normalised);
+    if (problem !== null) {
+      setNameError(problem);
       return;
     }
 
     const body = {
-      name: trimmed,
+      name: normalised,
       baseRole,
       // The floor is kept by the engine whatever the list says; sending it
       // makes the stored list say so too.
@@ -154,18 +178,19 @@ function RoleForm({ orgSlug, role, definableBaseRoles, onOpenChange, onSaved }: 
       else await api.patch(apiPath.role(orgSlug, role.id), body);
       toast({
         variant: 'success',
-        title: role === null ? `Created ${trimmed}` : `Saved ${trimmed}`,
+        title: role === null ? `Created ${normalised}` : `Saved ${normalised}`,
       });
       onOpenChange(false);
       onSaved();
     } catch (cause) {
-      // A taken name belongs to the name field; everything else — a refusal,
-      // the plan — is about the form as a whole.
-      if (isApiError(cause) && cause.code === 'conflict' && /name/i.test(cause.message)) {
-        setNameError(cause.message);
-      } else {
-        setError(cause);
-      }
+      // A problem with the name — taken, or refused by the rules — belongs to
+      // the name field, which the server says by naming it; everything else —
+      // a refusal, the plan — is about the form as a whole.
+      const onName = isApiError(cause)
+        ? cause.fields.find((problem) => problem.field === 'name')
+        : undefined;
+      if (onName !== undefined) setNameError(onName.message);
+      else setError(cause);
     } finally {
       setSubmitting(false);
     }
@@ -196,12 +221,17 @@ function RoleForm({ orgSlug, role, definableBaseRoles, onOpenChange, onSaved }: 
             maxLength={CUSTOM_ROLE_NAME_MAX_LENGTH}
             placeholder="Deployer"
             autoComplete="off"
+            disabled={submitting}
             autoFocus
           />
         </Field>
 
         <Field label="Based on" hint={ROLE_DESCRIPTIONS[baseRole]}>
-          <Select value={baseRole} onValueChange={(next) => changeBase(next as OrgRole)}>
+          <Select
+            value={baseRole}
+            onValueChange={(next) => changeBase(next as OrgRole)}
+            disabled={submitting}
+          >
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>

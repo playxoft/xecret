@@ -104,7 +104,11 @@ export function CustomRoleSelect({
 
   return (
     <Select value={current} onValueChange={(next) => void change(next)} disabled={pending}>
-      <SelectTrigger className="h-8 w-36" aria-label={`Custom role of ${label}`}>
+      <SelectTrigger
+        className="h-8 w-36 [&>span]:min-w-0 [&>span]:truncate"
+        aria-label={`Custom role of ${label}`}
+        title={held?.name ?? 'No custom role'}
+      >
         <SelectValue />
       </SelectTrigger>
       <SelectContent>

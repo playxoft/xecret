@@ -59,6 +59,9 @@ import { canAdminister, useOrganization } from './session';
 export function TokensScreen({ orgSlug }: { orgSlug: string }) {
   const organization = useOrganization(orgSlug);
   const canManage = canAdminister(organization, 'token.create');
+  // Revoking is its own capability; a role can mint without it, or the other
+  // way round, and each button asks for its own.
+  const canRevoke = canAdminister(organization, 'token.revoke');
 
   const serviceTokens = useApiResource<ServiceTokenListResponse>(
     canManage ? apiPath.serviceTokens(orgSlug) : null,
@@ -169,7 +172,7 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
                         <TokenStatus expiresAt={token.expiresAt} revokedAt={token.revokedAt} />
                       </TableCell>
                       <TableCell>
-                        {token.revokedAt === null ? (
+                        {token.revokedAt === null && canRevoke ? (
                           <Button
                             size="sm"
                             variant="danger-outline"
