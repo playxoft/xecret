@@ -375,13 +375,23 @@ export interface AuthoritySummary {
   /** Every action `effectiveCapabilities` grants, in table order. */
   readonly capabilities: readonly Action[];
   /**
-   * The roles this member may assign, invite at, or manage somebody holding
-   * (`roleWithinAuthority`), highest first.
+   * The roles within this member's authority (`roleWithinAuthority`), highest
+   * first — the roles they may hand out, and the members they may act on —
+   * **and only when they hold an act that hands a role out**: `member.update`
+   * or `member.invite`. Without either it is empty, so a developer's list does
+   * not read as permission to manage anybody.
+   *
+   * Still not a permission on its own. Which act a control performs decides
+   * which capability it needs too — changing a member needs `member.update`,
+   * inviting needs `member.invite` — and a client asks both halves (the
+   * dashboard's `mayManageRole` does).
    */
   readonly assignableRoles: readonly OrgRole[];
   /**
-   * The bases this member may define a custom role on (`canDefineCustomRole`),
-   * highest first. Empty for anyone holding a custom role.
+   * The bases this member may define a custom role on, highest first:
+   * `canDefineCustomRole`, and only with `member.update`, which the role
+   * routes require before they ask it. Empty for anyone holding a custom role,
+   * and for anyone who cannot change members.
    */
   readonly definableBaseRoles: readonly OrgRole[];
 }
@@ -395,11 +405,16 @@ export interface AuthoritySummary {
  */
 export function authoritySummary(holder: RoleHolder): AuthoritySummary {
   const table = effectiveCapabilities(holder.role, holder.customRole);
+  const handsOutRoles = table['member.update'] || table['member.invite'];
   return {
     effectiveRole: effectiveRole(holder.role, holder.customRole),
     capabilities: (Object.keys(table) as Action[]).filter((action) => table[action]),
-    assignableRoles: ROLES_DESCENDING.filter((role) => roleWithinAuthority(holder, role)),
-    definableBaseRoles: CUSTOM_ROLE_BASE_ROLES.filter((base) => canDefineCustomRole(holder, base)),
+    assignableRoles: handsOutRoles
+      ? ROLES_DESCENDING.filter((role) => roleWithinAuthority(holder, role))
+      : [],
+    definableBaseRoles: table['member.update']
+      ? CUSTOM_ROLE_BASE_ROLES.filter((base) => canDefineCustomRole(holder, base))
+      : [],
   };
 }
 

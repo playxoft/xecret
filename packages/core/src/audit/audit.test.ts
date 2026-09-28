@@ -705,7 +705,8 @@ describe('every declared metadata field survives sanitisation', () => {
 
   it('sanitises a custom role name like every other organisation-chosen string', () => {
     const record = builderWith().success('role.created', null, {
-      customRoleName: 'Deploy‮er\nnew line',
+      // A right-to-left override, from its code point so this file holds none.
+      customRoleName: `Deploy${String.fromCodePoint(0x202e)}er\nnew line`,
     });
 
     expect(record.metadata.customRoleName).toBe('Deploy er new line');
