@@ -61,9 +61,12 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  *
  * The holders' environment keys are reconciled afterwards, when the edit
  * changed what they may do, since the role decides what they may read. The
- * edit has committed by then: a holder whose reconciliation fails is logged
- * and left for `GET …/keys` to report — as `missingGrants` or
- * `needsRotation` — and the answer is still the 200 the saved role is owed.
+ * edit has committed by then, so a holder whose reconciliation fails does not
+ * turn it into a 500: the failure is logged with the holder's member and user
+ * ids, filed as an `error` record of `role.updated` naming the holder — the
+ * same rule `recordKeyReconciliation` follows, that a partial act leaves a
+ * record — and left for `GET …/keys` to report as `missingGrants` or
+ * `needsRotation`. The answer is still the 200 the saved role is owed.
  *
  * ── Deleting (DELETE) ──
  * Only a role nobody holds: the foreign key refuses the rest, and that becomes
@@ -207,14 +210,30 @@ export const PATCH = authenticatedRoute<Params>(
           // reconciliation. What this one is owed stays visible where it can
           // be acted on — `GET …/keys` derives `missingGrants` and
           // `needsRotation` from the rows — and the next change to them runs
-          // the same total, idempotent reconciliation again.
+          // the same total, idempotent reconciliation again. Until then the
+          // role's edit is only partly carried out for them, and a partial act
+          // with no record is how an administrator comes to believe it
+          // finished: so it is logged with who, and recorded against them.
           services.log
             .at('PATCH')
             .error(
               'A custom role was saved, but reconciling one holder’s environment keys failed; ' +
                 'the environment reports what they are owed, and the next change to them retries.',
-              { error: describeError(cause) },
+              {
+                error: describeError(cause),
+                customRoleId: updated.role.id,
+                memberId: holder.memberId,
+                userId: holder.userId,
+              },
             );
+          record(
+            audit(orgId).error('role.updated', resource, 'internal', {
+              customRoleId: updated.role.id,
+              customRoleName: updated.role.name,
+              targetEmail: holder.email,
+              principalKind: 'member',
+            }),
+          );
         }
       }
     }

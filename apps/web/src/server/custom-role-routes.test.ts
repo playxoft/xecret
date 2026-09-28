@@ -1034,6 +1034,48 @@ describe('PATCH /roles/{id} — editing a role is measured against everyone hold
     expect(repositories.listEnvironmentsForOrganization).toHaveBeenCalledTimes(2);
     expect(await outcomes('success')).toMatchObject([{ action: 'role.updated' }]);
   });
+
+  it('names the holder whose reconciliation failed, in the log and in the audit trail', async () => {
+    const lines: Record<string, unknown>[] = [];
+    logging.createRequestLog.mockImplementation((_env: unknown, base: Record<string, unknown>) =>
+      createLogger({
+        sink: { write: (line) => void lines.push(line), flush: () => Promise.resolve() },
+        minimum: 'error',
+        base,
+      }),
+    );
+    const failing = holder();
+    const fine = holder({ memberId: uuidv7(), userId: uuidv7(), email: 'b@x.test' });
+    editSnapshot = { current: roleRecord(), holders: [failing, fine] };
+    memberKeys.reconcileMemberKeyAccess
+      .mockRejectedValueOnce(new Error('connection reset'))
+      .mockResolvedValueOnce({ revoked: [], queued: [] });
+
+    await edit({ accessCeiling: { nonProduction: 'read', production: 'none' } });
+
+    // One `error` record, for the holder it failed for and nobody else — the
+    // partial act's record, beside the edit's own success.
+    expect(await outcomes('error')).toMatchObject([
+      {
+        action: 'role.updated',
+        resourceId: ROLE_ID,
+        metadata: {
+          reason: 'internal',
+          customRoleId: ROLE_ID,
+          customRoleName: 'Deployer',
+          targetEmail: failing.email,
+          principalKind: 'member',
+        },
+      },
+    ]);
+    const logged = lines.filter((line) => line['level'] === 'error');
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({
+      memberId: failing.memberId,
+      userId: failing.userId,
+      customRoleId: ROLE_ID,
+    });
+  });
 });
 
 /* ── Deleting ─────────────────────────────────────────────────────────────── */
