@@ -518,7 +518,7 @@ existing custom role until somebody opts in.
 skips the check (MATCH SIMPLE) and means exactly what it meant before 0017.
 
 **No silent widening.** `ON DELETE NO ACTION`: a role in use cannot be deleted until its members
-are moved off it, one audited role change at a time. `SET NULL` would hand every holder their
+are moved off it, one audited `member.custom_role_changed` at a time. `SET NULL` would hand every holder their
 unnarrowed role with nothing in the audit log that reads as a permission change; `CASCADE` would
 delete the members. NO ACTION rather than RESTRICT because RESTRICT's SQLSTATE changed in
 PostgreSQL 18 (23503 → 23001) and "role still in use" is an error the application maps.

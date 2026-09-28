@@ -158,16 +158,30 @@ cannot disagree with the outcome.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/orgs/{orgSlug}/members` | Names, emails, roles, status, join dates, seat count. Never access grants — those are per-project and belong on a member's own page. |
+| `GET` | `/orgs/{orgSlug}/members` | Names, emails, roles (with any custom role, by name), status, join dates, seat count. Never access grants — those are per-project and belong on a member's own page. |
 | `POST` | `/orgs/{orgSlug}/members` | Invite by email. Session + CSRF only. Enforces the role hierarchy and the seat limit. Returns the acceptance link **once**. |
-| `PATCH` | `/orgs/{orgSlug}/members/{memberId}` | Exactly one of `{ role }` or `{ status }` per request — they are different acts with different audit records. Refuses self-changes; last-owner guarded. |
+| `PATCH` | `/orgs/{orgSlug}/members/{memberId}` | Exactly one of `{ role }`, `{ status }` or `{ customRoleId }` per request — they are different acts with different audit records. `customRoleId: null` takes a custom role off. Refuses self-changes; last-owner guarded. Putting somebody on a custom role needs the Enterprise plan; taking one off never does. An owner cannot hold one (**409**). |
 | `DELETE` | `/orgs/{orgSlug}/members/{memberId}` | Refuses self-removal; last-owner guarded. Grants cascade. |
 | `PUT` `DELETE` | `…/members/{memberId}/grants` | One grant, addressed by `{ projectSlug, environmentSlug?, accessLevel }`. Absent or null `environmentSlug` means the whole project. |
 | `GET` | `…/members/{memberId}/access` | The effective-permission preview: every project and environment with the resolved level and the rule that produced it. Computed by the same function enforcement calls. |
+| `GET` | `/orgs/{orgSlug}/authority` | What *you* could grant: per environment, the highest level a grant you write there may carry. The dashboard caps its level controls with it. |
 | `GET` | `/orgs/{orgSlug}/invitations` | Open invitations, expired ones included. |
 | `DELETE` | `/orgs/{orgSlug}/invitations/{invitationId}` | Withdraws one; the emailed link stops working at commit. |
 | `POST` | `/invitations/lookup` | Public — the holder may have no account. Body `{ token }`. Returns the organisation name, invited address, role, state and expiry, and nothing else. |
 | `POST` | `/invitations/accept` | Session + CSRF. Body `{ token }`. The session's address must match the invited one. |
+
+## Custom roles
+
+Enterprise only. A custom role narrows a built-in role — it can never give
+anybody more than the role it is based on. See
+[Teams and access](../guides/teams.md#custom-roles).
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/orgs/{orgSlug}/roles` | Every role with how many members hold it, and whether the plan lets you define and assign them. Needs the manage-members permission. Never plan-gated. |
+| `POST` | `/orgs/{orgSlug}/roles` | Body `{ name, baseRole: admin\|developer\|viewer, allowedActions, accessCeiling?: { nonProduction, production } \| null }`. Names are unique per organisation in any case and may not be a built-in role's. A list naming an action the base cannot perform is **422**. |
+| `PATCH` | `/orgs/{orgSlug}/roles/{roleId}` | Any of the fields above. Refused if anybody holding the role is beyond your authority, or holds access grants beyond yours that the change would switch on. A change that changes nothing writes nothing. |
+| `DELETE` | `/orgs/{orgSlug}/roles/{roleId}` | Only a role nobody holds — otherwise **409**: move its members to another role, or to none, first. Never plan-gated. |
 
 ## Tokens
 
