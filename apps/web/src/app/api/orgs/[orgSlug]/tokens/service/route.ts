@@ -15,17 +15,26 @@ import {
   serviceTokenCreateSchema,
   toServiceToken,
 } from '@/server/schemas/tokens';
-import { authorize, resolveEnvironment, resolveOrg, resolveProject } from '@/server/tenancy';
+import {
+  authorize,
+  authorizeAny,
+  resolveEnvironment,
+  resolveOrg,
+  resolveProject,
+} from '@/server/tenancy';
 
 /**
  * Service tokens — the CI credential (threat T5).
  *
- * Both verbs are gated on `token.create`, which only owners and admins hold. A
+ * Minting is gated on `token.create`, which only owners and admins hold. A
  * service token is standing access that outlives its creator's interest, sits
  * in a CI provider's settings screen, and acts as nobody; issuing one is a
- * decision for someone who can also revoke it. The *listing* shares the gate
- * because the list is a map of every standing credential the organisation has
- * — reconnaissance, for anyone who should not already know.
+ * decision for someone who can also revoke it. The *listing* is gated on
+ * `token.create` **or** `token.revoke` — the two acts the list exists for, which
+ * a custom role can hold apart, and somebody who may only revoke must be able
+ * to see what there is to revoke. It is not opened any wider: the list is a
+ * map of every standing credential the organisation has — reconnaissance, for
+ * anyone who should not already know.
  *
  * Minting requires the browser session — the same "a bearer credential may not
  * mint further credentials" rule as `/api/cli/authorize` and invitations.
@@ -58,7 +67,7 @@ type Params = { orgSlug: string };
 
 export const GET = authenticatedRoute<Params>(async ({ params, principal, services }) => {
   const scope = await resolveOrg(principal, params.orgSlug, services);
-  authorize(scope, 'token.create');
+  authorizeAny(scope, ['token.create', 'token.revoke']);
 
   const tokens = await listServiceTokens(services.db, scope.organization.id);
 

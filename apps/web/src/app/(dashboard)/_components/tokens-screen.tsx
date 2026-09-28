@@ -58,13 +58,16 @@ import { canAdminister, useOrganization } from './session';
 
 export function TokensScreen({ orgSlug }: { orgSlug: string }) {
   const organization = useOrganization(orgSlug);
-  const canManage = canAdminister(organization, 'token.create');
-  // Revoking is its own capability; a role can mint without it, or the other
-  // way round, and each button asks for its own.
+  // Minting and revoking are separate capabilities; a role can hold either
+  // without the other. The service tokens are listed for whoever holds one of
+  // them — the listing route answers either — and each control asks for its
+  // own.
+  const canCreate = canAdminister(organization, 'token.create');
   const canRevoke = canAdminister(organization, 'token.revoke');
+  const seesServiceTokens = canCreate || canRevoke;
 
   const serviceTokens = useApiResource<ServiceTokenListResponse>(
-    canManage ? apiPath.serviceTokens(orgSlug) : null,
+    seesServiceTokens ? apiPath.serviceTokens(orgSlug) : null,
   );
   const cliTokens = useApiResource<CliTokenListResponse>(apiPath.cliTokens(orgSlug));
 
@@ -80,7 +83,7 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
         title="Tokens"
         description="Credentials that act without a person present — CI service tokens and your signed-in devices."
         actions={
-          canManage ? (
+          canCreate ? (
             <Button variant="primary" onClick={() => setCreating(true)}>
               <PlusIcon className="size-4" /> New service token
             </Button>
@@ -94,7 +97,7 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
         </Alert>
       ) : null}
 
-      {canManage ? (
+      {seesServiceTokens ? (
         <section aria-label="Service tokens" className="flex flex-col gap-3">
           <h2 className="text-fg text-sm font-semibold">Service tokens</h2>
           {serviceTokens.error !== null ? (
@@ -109,11 +112,17 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
             <EmptyState
               icon={<KeyIcon />}
               title="No service tokens"
-              description="Mint one to give CI read access to a single environment — the value is shown exactly once."
+              description={
+                canCreate
+                  ? 'Mint one to give CI read access to a single environment — the value is shown exactly once.'
+                  : 'None has been minted in this organisation.'
+              }
               action={
-                <Button variant="primary" onClick={() => setCreating(true)}>
-                  New service token
-                </Button>
+                canCreate ? (
+                  <Button variant="primary" onClick={() => setCreating(true)}>
+                    New service token
+                  </Button>
+                ) : undefined
               }
             />
           ) : (

@@ -73,6 +73,7 @@ const repositories = vi.hoisted(() => ({
   createInvitation: vi.fn(),
   setInvitationPublicKey: vi.fn(),
   createServiceToken: vi.fn(),
+  listServiceTokens: vi.fn(),
   removeAccessGrant: vi.fn(),
 }));
 
@@ -105,7 +106,7 @@ const { PATCH: patchMemberRoute, DELETE: removeMemberRoute } =
   await import('@/app/api/orgs/[orgSlug]/members/[memberId]/route');
 const { PUT: putGrantRoute, DELETE: deleteGrantRoute } =
   await import('@/app/api/orgs/[orgSlug]/members/[memberId]/grants/route');
-const { POST: mintServiceTokenRoute } =
+const { POST: mintServiceTokenRoute, GET: listServiceTokensRoute } =
   await import('@/app/api/orgs/[orgSlug]/tokens/service/route');
 const { PATCH: patchEnvironmentRoute } =
   await import('@/app/api/orgs/[orgSlug]/projects/[projectSlug]/environments/[envSlug]/route');
@@ -1040,6 +1041,46 @@ describe('/members/{id}/grants on yourself — owners only', () => {
 });
 
 /* ── Service tokens ───────────────────────────────────────────────────────── */
+
+describe('GET /tokens/service — listed for whoever may mint or revoke', () => {
+  const actions = (...extra: Action[]): Caller => ({
+    role: 'admin',
+    customRole: customRole({ name: 'Tokens', allowedActions: ['member.read', ...extra] }),
+  });
+
+  function list(): Promise<Response> {
+    return listServiceTokensRoute(
+      new Request('https://xecret.playxoft.com/api/orgs/acme/tokens/service'),
+      { params: Promise.resolve({ orgSlug: 'acme' }) },
+    );
+  }
+
+  beforeEach(() => {
+    repositories.listServiceTokens.mockResolvedValue([]);
+  });
+
+  it.each([
+    ['may only revoke', actions('token.revoke')],
+    ['may only mint', actions('token.create')],
+    ['may do both', { role: 'admin' } as Caller],
+  ])('lists them for a role that %s', async (_name, caller) => {
+    callerIs(caller);
+
+    const response = await list();
+
+    expect(response.status).toBe(200);
+    expect(repositories.listServiceTokens).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a role that may do neither, and reads nothing', async () => {
+    callerIs(actions('project.read'));
+
+    const response = await list();
+
+    expect(response.status).toBe(403);
+    expect(repositories.listServiceTokens).not.toHaveBeenCalled();
+  });
+});
 
 describe('POST /tokens/service — a token can do no more than its minter', () => {
   function mint(body: Record<string, unknown>): Promise<Response> {

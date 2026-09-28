@@ -114,7 +114,7 @@ export function useDashboardNav({
   // decides what is permitted. (The tokens page has a "your devices" half
   // everyone could use, but it lives with account-adjacent things for
   // non-admins in a later pass.)
-  const showTokens = canAdminister(viewer, 'token.create');
+  const showTokens = canAdminister(viewer, 'token.create') || canAdminister(viewer, 'token.revoke');
   const showAudit = canAdminister(viewer, 'audit.read');
 
   return useMemo(() => {
