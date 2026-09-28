@@ -159,6 +159,10 @@ put members on them from the member list.
   on access grants you could not have written yourself.
 - **A role in use cannot be deleted.** Move its members to another role, or to
   none, first — so nobody's access widens as a side effect of tidying up.
+- **Names are read, not just stored.** Two roles cannot have names a colleague
+  would read as one — "Deployer" and "deployer", or the same word in another
+  letter width or with a lookalike letter — and no role may be named, or look
+  like, a built-in one.
 - Owners never hold a custom role; promoting somebody to owner takes theirs off.
 
 If the organisation leaves Enterprise, existing custom roles keep applying. You

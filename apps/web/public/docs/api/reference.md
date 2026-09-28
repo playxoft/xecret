@@ -179,7 +179,7 @@ anybody more than the role it is based on. See
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/orgs/{orgSlug}/roles` | Every role with how many members hold it, and whether the plan lets you define and assign them. Needs the manage-members permission. Never plan-gated. |
-| `POST` | `/orgs/{orgSlug}/roles` | Body `{ name, baseRole: admin\|developer\|viewer, allowedActions, accessCeiling?: { nonProduction, production } \| null }`. Names are unique per organisation in any case and may not be a built-in role's. A list naming an action the base cannot perform is **422**. |
+| `POST` | `/orgs/{orgSlug}/roles` | Body `{ name, baseRole: admin\|developer\|viewer, allowedActions, accessCeiling?: { nonProduction, production } \| null }`. Names are unique per organisation as a reader sees them — two names that differ only in case, letter width, spacing or lookalike letters are one name (**409**) — and may not be, or imitate, a built-in role's. Invisible characters, and Latin letters mixed with Cyrillic or Greek ones, are refused (**422**), as is a list naming an action the base cannot perform. |
 | `PATCH` | `/orgs/{orgSlug}/roles/{roleId}` | Any of the fields above. Refused if anybody holding the role is beyond your authority, or holds access grants beyond yours that the change would switch on. A change that changes nothing writes nothing. |
 | `DELETE` | `/orgs/{orgSlug}/roles/{roleId}` | Only a role nobody holds — otherwise **409**: move its members to another role, or to none, first. Never plan-gated. |
 
