@@ -17,6 +17,13 @@ import {
 import type { SessionRecord } from './session';
 import { INVITATION_TTL_MS, invitationExpiryFrom, invitationState } from './invitation';
 import {
+  IdentityVerificationError,
+  isWorkosIdentity,
+  WORKOS_USER_ID_PATTERN,
+  workosIdentity,
+} from './types';
+import type { VerifiedIdentity } from './types';
+import {
   generateToken,
   hashToken,
   isWellFormedToken,
@@ -459,6 +466,167 @@ describe('invitation lifecycle', () => {
 
     expect(invitationState({ expiresAt: past, acceptedAt: past, revokedAt: past }, NOW)).toBe(
       'accepted',
+    );
+  });
+});
+
+describe('the WorkOS identity brand', () => {
+  const base: VerifiedIdentity = {
+    subject: 'user_01HZX4QK3V9M7N2P5R8T6W1Y0A',
+    email: 'alice@example.com',
+    emailVerified: true,
+    authTime: 1_790_000_000,
+  };
+
+  it('marks a WorkOS-shaped identity, keeping every field', () => {
+    const identity = workosIdentity(base);
+
+    expect(identity).toEqual({ ...base, provider: 'workos' });
+  });
+
+  it('refuses a Firebase uid, which is the mix-up the brand exists to prevent', () => {
+    // A Firebase uid is 28 bare alphanumerics. Stored as a WorkOS id it would
+    // collide with the person's real WorkOS id at their first WorkOS login.
+    expect(() => workosIdentity({ ...base, subject: 'Xk3pQ9mZ2vB7nR4tY6wL8sD1fG0h' })).toThrow(
+      IdentityVerificationError,
+    );
+  });
+
+  it.each(['', 'user_', 'user_01-HZX', 'User_01HZX', 'org_01HZX', ' user_01HZX'])(
+    'refuses the malformed subject %j',
+    (subject) => {
+      expect(() => workosIdentity({ ...base, subject })).toThrow(IdentityVerificationError);
+    },
+  );
+
+  it('mints a frozen object, and recognises only that object', () => {
+    // The runtime half of the brand. `any` satisfies the type, so what the
+    // linking pass checks is membership of the set this function records into:
+    // a copy — spread, JSON round-trip, structured clone — is not a member.
+    const identity = workosIdentity(base);
+
+    expect(Object.isFrozen(identity)).toBe(true);
+    expect(isWorkosIdentity(identity)).toBe(true);
+    expect(isWorkosIdentity({ ...identity })).toBe(false);
+    expect(isWorkosIdentity(JSON.parse(JSON.stringify(identity)))).toBe(false);
+    expect(isWorkosIdentity(structuredClone(identity))).toBe(false);
+    expect(isWorkosIdentity({ ...base, provider: 'workos' })).toBe(false);
+    expect(isWorkosIdentity(null)).toBe(false);
+    expect(isWorkosIdentity('user_01HZX4QK3V9M7N2P5R8T6W1Y0A')).toBe(false);
+  });
+
+  it('does not let a minted identity be edited after the fact', () => {
+    const identity = workosIdentity(base);
+
+    expect(() => {
+      (identity as { email: string }).email = 'someone-else@example.com';
+    }).toThrow(TypeError);
+    expect(identity.email).toBe('alice@example.com');
+  });
+
+  it('states the id pattern the linker and the database constraint share', () => {
+    expect(WORKOS_USER_ID_PATTERN.test('user_01HZX4QK3V9M7N2P5R8T6W1Y0A')).toBe(true);
+    expect(WORKOS_USER_ID_PATTERN.test('Xk3pQ9mZ2vB7nR4tY6wL8sD1fG0h')).toBe(false);
+  });
+
+  it('refuses an input without its own emailVerified, even when Object.prototype supplies one', () => {
+    // A spread copies own properties only, so a minted object used to lack the
+    // field, and the linker's later read of `identity.emailVerified` walked up
+    // to a polluted prototype and found `true` — adopting an account on a
+    // verification nobody made. Reading own properties only, into a copy that
+    // always has every field, means there is nothing to fall through to.
+    const { emailVerified: _omitted, ...withoutVerified } = base;
+    const pollutedPrototype = Object.prototype as { emailVerified?: unknown };
+    pollutedPrototype.emailVerified = true;
+    try {
+      expect(() => workosIdentity(withoutVerified as VerifiedIdentity)).toThrow(
+        IdentityVerificationError,
+      );
+    } finally {
+      delete pollutedPrototype.emailVerified;
+    }
+  });
+
+  it('ignores inherited fields entirely', () => {
+    const inherited = Object.assign(Object.create({ emailVerified: true, authTime: 1 }) as object, {
+      subject: base.subject,
+      email: base.email,
+    });
+
+    expect(() => workosIdentity(inherited as VerifiedIdentity)).toThrow(IdentityVerificationError);
+  });
+
+  it('reads each field once, so a getter cannot pass the check with one value and be copied with another', () => {
+    const answers = ['user_01VALIDONFIRSTREAD', 'Xk3pQ9mZ2vB7nR4tY6wL8sD1fG0h'];
+    let reads = 0;
+    const shifty = {
+      ...base,
+      get subject() {
+        return answers[Math.min(reads++, 1)]!;
+      },
+    };
+
+    const identity = workosIdentity(shifty);
+
+    expect(reads).toBe(1);
+    expect(identity.subject).toBe('user_01VALIDONFIRSTREAD');
+    expect(Object.getOwnPropertyDescriptor(identity, 'subject')).toMatchObject({
+      value: 'user_01VALIDONFIRSTREAD',
+      writable: false,
+    });
+  });
+
+  it('refuses a getter whose single answer is not a WorkOS id', () => {
+    const shifty = {
+      ...base,
+      get subject() {
+        return 'Xk3pQ9mZ2vB7nR4tY6wL8sD1fG0h';
+      },
+    };
+
+    expect(() => workosIdentity(shifty)).toThrow(IdentityVerificationError);
+  });
+
+  it('copies exactly the identity fields, and drops anything else it was handed', () => {
+    const noisy = {
+      ...base,
+      displayName: 'Alice',
+      organizationId: 'org_01HZX',
+      isAdmin: true,
+      provider: 'firebase',
+    };
+
+    const identity = workosIdentity(noisy);
+
+    expect(Object.keys(identity).sort()).toEqual(
+      [
+        'authTime',
+        'avatarUrl',
+        'displayName',
+        'email',
+        'emailVerified',
+        'provider',
+        'subject',
+      ].sort(),
+    );
+    expect(identity.provider).toBe('workos');
+    expect(identity.displayName).toBe('Alice');
+    expect(identity.avatarUrl).toBeUndefined();
+  });
+
+  it.each([
+    ['emailVerified as the string "true"', { emailVerified: 'true' }],
+    ['emailVerified as 1', { emailVerified: 1 }],
+    ['emailVerified as a Boolean object', { emailVerified: new Boolean(true) }],
+    ['an empty email', { email: '' }],
+    ['a missing email', { email: undefined }],
+    ['authTime as a string', { authTime: '1790000000' }],
+    ['authTime as NaN', { authTime: Number.NaN }],
+    ['a displayName that is not a string', { displayName: 42 }],
+    ['an avatarUrl that is not a string', { avatarUrl: { href: 'x' } }],
+  ])('refuses %s', (_label, over) => {
+    expect(() => workosIdentity({ ...base, ...over } as unknown as VerifiedIdentity)).toThrow(
+      IdentityVerificationError,
     );
   });
 });

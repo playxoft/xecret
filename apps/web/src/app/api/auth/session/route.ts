@@ -24,7 +24,7 @@ import {
   provisionOrganization,
   RepositoryError,
   revokeSession,
-  upsertUserFromIdentity,
+  upsertUserFromFirebaseIdentity,
 } from '@xecret/db/repositories';
 import type { OrganizationMembership } from '@xecret/db/repositories';
 import { DatabaseAuditSink } from '@/server/audit-sink';
@@ -56,6 +56,10 @@ const sessionRequest = z.object({
   idToken: z.string().check(z.minLength(1), z.maxLength(8192)),
 });
 
+/** The 409 for an address another row already holds. See the upsert below. */
+const EMAIL_HELD_BY_ANOTHER_ACCOUNT =
+  'This email address already belongs to another xecret account. Contact support if you need help.';
+
 export const POST = publicRoute(async ({ request, services }) => {
   // Before the body is read: an unauthenticated caller must not be able to make
   // the Worker buffer and parse a megabyte, nor to spend a Firebase
@@ -81,17 +85,46 @@ export const POST = publicRoute(async ({ request, services }) => {
     throw errors.forbidden('Verify your email address before signing in.');
   }
 
+  // The *Firebase* upsert, keyed on and writing `firebase_uid` only — never the
+  // WorkOS linking pass. `identity.subject` here is a Firebase uid: the linker
+  // would store it as a WorkOS id, and would sign a *different* Firebase
+  // account into an existing one because the two share a verified address. Its
+  // parameter type refuses this identity, and that is the point. This route and
+  // this function are deleted together in WS-2, when the WorkOS callback
+  // replaces them.
+  //
   // A soft-deleted account is terminal: the repository refuses to revive the
-  // row (`setWhere` in `upsertUserFromIdentity`), and that refusal surfaces
-  // here as a plain statement rather than a 500. 403, not 404: this caller has
-  // just proven control of the identity, so "this account was deleted" reveals
-  // nothing they are not entitled to know.
-  const user = await upsertUserFromIdentity(services.db, identity).catch((cause: unknown) => {
-    if (cause instanceof RepositoryError && cause.code === 'notFound') {
-      throw errors.forbidden('This account was deleted and cannot be signed in to again.');
-    }
-    throw cause;
-  });
+  // row (`setWhere` in `upsertUserFromFirebaseIdentity`), and that refusal
+  // surfaces here as a plain statement rather than a 500. 403, not 404: this
+  // caller has just proven control of the identity, so "this account was
+  // deleted" reveals nothing they are not entitled to know.
+  //
+  // A conflict is `users_email_unique`: the address this Firebase identity
+  // presents is already held by a *different* row, active or soft-deleted.
+  // This path never matches by email, so that happens in two ways:
+  //
+  //  - a Firebase account xecret has never seen signs up with an address an
+  //    existing account already has; or
+  //  - an existing Firebase user's address was changed *at Firebase* to one
+  //    another row already holds, and the upsert's attempt to mirror it
+  //    collides.
+  //
+  // Both were a 500 until now. The message has to be true in both cases — the
+  // second caller *is* signing in "the way they did before" — so it says only
+  // that the address belongs to another account, and where to go. It names
+  // neither that account nor how it signs in: the caller has proven control of
+  // the mailbox, not of the other account.
+  const user = await upsertUserFromFirebaseIdentity(services.db, identity).catch(
+    (cause: unknown) => {
+      if (cause instanceof RepositoryError && cause.code === 'notFound') {
+        throw errors.forbidden('This account was deleted and cannot be signed in to again.');
+      }
+      if (cause instanceof RepositoryError && cause.code === 'conflict') {
+        throw errors.conflict(EMAIL_HELD_BY_ANOTHER_ACCOUNT);
+      }
+      throw cause;
+    },
+  );
 
   // First login has no organisation yet. Bootstrapping one here — rather than
   // asking the user to create it — is what makes the product usable within a

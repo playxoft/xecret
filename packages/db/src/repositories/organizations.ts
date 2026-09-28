@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, or } from 'drizzle-orm';
 import type { CustomRole, OrgRole } from '@xecret/core/authz';
 import { DEFAULT_PLAN, FAIR_USE, PLANS } from '@xecret/core/entitlements';
 import { randomBytes } from '@xecret/core/crypto';
@@ -52,6 +52,8 @@ export interface OrganizationMembership {
 }
 
 const SLUG_UNIQUE_CONSTRAINT = 'organizations_slug_unique';
+
+const WORKOS_ORG_ID_UNIQUE_CONSTRAINT = 'organizations_workos_org_id_unique';
 
 /**
  * How many `-2`, `-3`, … suffixes to try before falling back to randomness.
@@ -120,6 +122,95 @@ export async function findOrganizationById(
     .limit(1);
 
   return row ?? null;
+}
+
+/**
+ * The organisation a WorkOS Organization maps to, or null.
+ *
+ * What the sign-in callback's JIT join and the SSO deep link resolve through
+ * (`.local/workos-auth.md` §2.3): WorkOS names an organisation by its own id,
+ * and this is the only way back from that id to a tenant. A soft-deleted
+ * organisation does not resolve — an SSO login must not JIT a member into an
+ * organisation that has ended, any more than a slug lookup may route to one.
+ *
+ * Served by the index behind `organizations_workos_org_id_unique`.
+ */
+export async function findOrgByWorkosOrgId(
+  exec: Executor,
+  workosOrgId: string,
+): Promise<Organization | null> {
+  const [row] = await exec
+    .select()
+    .from(organizations)
+    .where(and(eq(organizations.workosOrgId, workosOrgId), isNull(organizations.deletedAt)))
+    .limit(1);
+
+  return row ?? null;
+}
+
+/**
+ * Records the WorkOS Organization created for this organisation — the lazy link
+ * (D7): only an organisation that turns SSO on ever gets one.
+ *
+ * Set once. The write accepts an unlinked organisation, or one already linked
+ * to this same id so that a retried request is idempotent; anything else is
+ * refused rather than overwritten:
+ *
+ *  - `notFound` — no such organisation, or it was soft-deleted.
+ *  - `conflict` — it is already linked to a *different* WorkOS Organization
+ *    (typically two admins enabling SSO at once: the second request created an
+ *    orphan at WorkOS, and should delete it rather than re-point this tenant),
+ *    or that WorkOS Organization already belongs to another organisation here
+ *    (`organizations_workos_org_id_unique`).
+ *
+ * There is deliberately no way to clear or change the link. Re-pointing an
+ * organisation's SSO at another WorkOS Organization re-points it at another
+ * identity provider, and that is not something one ordinary write should be
+ * able to do quietly.
+ *
+ * ── And deliberately no setter for `sso_required` ──
+ * The column exists (migration 0018) but nothing may set it until the sign-in
+ * callback enforces it (WS-2). A flag an administrator can switch on before the
+ * check exists tells them a bypass is closed while it is open, so the setter
+ * ships in the same change as the enforcement, not before it.
+ */
+export async function setOrgWorkosOrgId(
+  exec: Executor,
+  orgId: string,
+  workosOrgId: string,
+): Promise<Organization> {
+  const [row] = await exec
+    .update(organizations)
+    .set({ workosOrgId, updatedAt: new Date() })
+    .where(
+      and(
+        eq(organizations.id, orgId),
+        isNull(organizations.deletedAt),
+        or(isNull(organizations.workosOrgId), eq(organizations.workosOrgId, workosOrgId)),
+      ),
+    )
+    .returning()
+    .catch((error: unknown) => {
+      if (isUniqueViolation(error, WORKOS_ORG_ID_UNIQUE_CONSTRAINT)) {
+        throw new RepositoryError(
+          'conflict',
+          'That WorkOS organization is already linked to another organisation.',
+        );
+      }
+      throw error;
+    });
+
+  if (row) return row;
+
+  // The predicate matched nothing. Say which half of it failed: a missing
+  // organisation and an already-linked one need different answers from the
+  // caller, and only one of them should make it clean up at WorkOS.
+  const current = await findOrganizationById(exec, orgId);
+  if (!current) throw new RepositoryError('notFound', 'Organisation not found.');
+  throw new RepositoryError(
+    'conflict',
+    'This organisation is already linked to a different WorkOS organization.',
+  );
 }
 
 /**
@@ -749,9 +840,10 @@ function randomSlugSuffix(): string {
  * creation from the same account waits the first one out. That is the intent —
  * one account may not mint Org Master Keys in parallel — and the contention is
  * confined to that account, since nobody else has any reason to touch this row.
- * The one other writer of it is `upsertUserFromIdentity`, so a sign-in landing
- * mid-creation for the same person waits too, on a request that has just spent
- * far longer verifying a Firebase token.
+ * The other writers of it are the sign-in upserts (`upsertUserFromFirebaseIdentity`
+ * and the WorkOS linking pass), so a sign-in landing mid-creation for the same
+ * person waits too, on a request that has just spent far longer verifying its
+ * identity with the provider.
  *
  * A soft-deleted account is filtered out rather than locked. It cannot
  * authenticate, so this is unreachable from the two callers; if it ever became
