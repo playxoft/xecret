@@ -97,7 +97,8 @@ vi.mock('@xecret/db/repositories', async (importOriginal) => ({
   ...repositories,
 }));
 
-const { RepositoryError, toEngineCustomRole } = await import('@xecret/db/repositories');
+const { FieldConflictError, RepositoryError, toEngineCustomRole } =
+  await import('@xecret/db/repositories');
 const { GET: listRolesRoute, POST: createRoleRoute } =
   await import('@/app/api/orgs/[orgSlug]/roles/route');
 const { PATCH: editRoleRoute, DELETE: deleteRoleRoute } =
@@ -122,6 +123,9 @@ const EPOCH = new Date('2026-01-01T00:00:00.000Z');
 const ALL_ACTIONS = Object.keys(ROLE_CAPABILITIES.owner) as Action[];
 
 const deferred: Promise<unknown>[] = [];
+
+/** Called with a write's name once its guard or `decide` let it through. */
+const written = vi.fn();
 const runtimeDeferred: Promise<unknown>[] = [];
 
 /* ── Callers ──────────────────────────────────────────────────────────────── */
@@ -411,9 +415,18 @@ beforeEach(() => {
     async (
       _db: unknown,
       _params: unknown,
-      decide: (edit: CustomRoleEdit) => CustomRoleDefinition,
+      decide: (edit: CustomRoleEdit) => CustomRoleDefinition | null,
     ) => {
       const definition = decide(editSnapshot);
+      if (definition === null) {
+        return {
+          role: editSnapshot.current,
+          previous: editSnapshot.current,
+          holders: editSnapshot.holders,
+          changed: false,
+        };
+      }
+      written('updateCustomRole');
       return {
         role: {
           ...editSnapshot.current,
@@ -422,6 +435,7 @@ beforeEach(() => {
         },
         previous: editSnapshot.current,
         holders: editSnapshot.holders,
+        changed: true,
       };
     },
   );
@@ -455,6 +469,23 @@ beforeEach(() => {
       if (params.customRoleId !== null && next === null) {
         throw new RepositoryError('notFound', 'Custom role not found in this organisation.');
       }
+      const held = assignment.member.customRole;
+      const writtenMember = {
+        id: assignment.member.id,
+        orgId: ORG_ID,
+        userId: assignment.member.userId,
+        role: assignment.member.role,
+        status: assignment.member.status,
+      };
+      if ((held?.id ?? null) === (next?.id ?? null)) {
+        // As the repository does: nothing to change, no guard, no write.
+        return {
+          member: writtenMember,
+          previous: held === undefined ? null : { id: held.id, name: held.name },
+          next,
+          changed: false,
+        };
+      }
       guard({ ...assignment, next });
       if (next !== null && assignment.member.role === 'owner') {
         throw new RepositoryError(
@@ -462,17 +493,12 @@ beforeEach(() => {
           'An owner cannot hold a custom role. Change their built-in role first.',
         );
       }
-      const previous = assignment.member.customRole;
+      written('setMemberCustomRole');
       return {
-        member: {
-          id: assignment.member.id,
-          orgId: ORG_ID,
-          userId: assignment.member.userId,
-          role: assignment.member.role,
-          status: assignment.member.status,
-        },
-        previous: previous === undefined ? null : { id: previous.id, name: previous.name },
+        member: writtenMember,
+        previous: held === undefined ? null : { id: held.id, name: held.name },
         next,
+        changed: true,
       };
     },
   );
@@ -638,6 +664,66 @@ describe('POST /roles — defining a role', () => {
       { field: 'allowedActions', message: 'A viewer-based role cannot perform secret.update.' },
     ]);
     expect(repositories.createCustomRole).not.toHaveBeenCalled();
+  });
+
+  it('refuses names that are invisible, reversed, NUL-bearing or a built-in role, and audits none of them', async () => {
+    const names = [
+      String.fromCodePoint(0x200b),
+      `${String.fromCodePoint(0x202e)}nwo${String.fromCodePoint(0x202c)}`,
+      `a${String.fromCodePoint(0x0000)}b`,
+      'Owner',
+      ' admin ',
+    ];
+    for (const name of names) {
+      const response = await create({ ...body, name });
+      expect(response.status, JSON.stringify(name)).toBe(422);
+    }
+    expect(repositories.createCustomRole).not.toHaveBeenCalled();
+    // A request nobody could have meant is not a record anybody needs.
+    expect(await recorded()).toEqual([]);
+  });
+
+  it('stores the NFC spelling of a name', async () => {
+    const decomposed = `Caf${String.fromCodePoint(0x0065, 0x0301)}`;
+
+    await create({ ...body, name: decomposed });
+
+    expect(repositories.createCustomRole.mock.calls[0]?.[1].definition.name).toBe(
+      `Caf${String.fromCodePoint(0x00e9)}`,
+    );
+  });
+
+  it('answers a name another role holds with a 409 on the name field', async () => {
+    repositories.createCustomRole.mockRejectedValue(
+      new FieldConflictError('name', 'A role with this name already exists in this organisation.'),
+    );
+
+    const response = await create();
+
+    expect(response.status).toBe(409);
+    const error = (await response.json()) as {
+      error: { code: string; fields: { field: string; message: string }[] };
+    };
+    expect(error.error.code).toBe('conflict');
+    expect(error.error.fields).toEqual([
+      { field: 'name', message: 'A role with this name already exists in this organisation.' },
+    ]);
+  });
+
+  it('audits a list naming actions beyond the base, which is a refusal the route understood', async () => {
+    await create({ ...body, baseRole: 'viewer', allowedActions: ['secret.read', 'secret.update'] });
+
+    expect(await outcomes('error')).toMatchObject([
+      {
+        action: 'role.created',
+        metadata: {
+          reason: 'invalidInput',
+          customRoleName: 'Deployer',
+          baseRole: 'viewer',
+          allowedActions: ['secret.read', 'secret.update'],
+        },
+      },
+    ]);
   });
 
   it('refuses half a ceiling', async () => {
@@ -818,7 +904,7 @@ describe('PATCH /roles/{id} — editing a role is measured against everyone hold
 
     expect(response.status).toBe(403);
     expect((await errorOf(response)).code).toBe('plan_limit');
-    expect(repositories.updateCustomRole).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalled();
     expect(await outcomes('error')).toMatchObject([
       { action: 'role.updated', metadata: { reason: 'quotaExceeded' } },
     ]);
@@ -846,6 +932,77 @@ describe('PATCH /roles/{id} — editing a role is measured against everyone hold
 
   it('refuses an empty patch', async () => {
     expect((await edit({})).status).toBe(422);
+  });
+
+  it('writes, records and gates nothing for an edit that changes nothing — on any plan', async () => {
+    planIs('free');
+    const current = roleRecord();
+
+    const response = await edit({
+      name: current.name,
+      baseRole: current.baseRole,
+      allowedActions: current.allowedActions,
+      accessCeiling: current.accessCeiling,
+    });
+
+    expect(response.status).toBe(200);
+    expect(written).not.toHaveBeenCalled();
+    expect(await recorded()).toEqual([]);
+    expect(memberKeys.reconcileMemberKeyAccess).not.toHaveBeenCalled();
+  });
+
+  it('treats the member.read floor as listed whether or not it is', async () => {
+    // The dialog always sends `member.read`; a role stored without it is the
+    // same role, so saving it unchanged is still a no-op.
+    editSnapshot = {
+      current: roleRecord({ allowedActions: ['project.read', 'environment.read', 'secret.read'] }),
+      holders: [holder()],
+    };
+
+    const response = await edit({
+      allowedActions: ['member.read', 'project.read', 'environment.read', 'secret.read'],
+    });
+
+    expect(response.status).toBe(200);
+    expect(written).not.toHaveBeenCalled();
+    expect(await recorded()).toEqual([]);
+  });
+
+  it('audits a merge naming actions beyond the new base', async () => {
+    editSnapshot = {
+      current: roleRecord({ baseRole: 'developer', allowedActions: ['secret.update'] }),
+      holders: [],
+    };
+
+    await edit({ baseRole: 'viewer' });
+
+    expect(await outcomes('error')).toMatchObject([
+      {
+        action: 'role.updated',
+        metadata: { reason: 'invalidInput', baseRole: 'viewer', previousBaseRole: 'developer' },
+      },
+    ]);
+    expect(written).not.toHaveBeenCalled();
+  });
+
+  it('still answers 200 for a saved role when one holder’s key reconciliation fails', async () => {
+    const second = holder({ memberId: uuidv7(), userId: uuidv7(), email: 'b@x.test' });
+    editSnapshot = { current: roleRecord(), holders: [holder(), second] };
+    memberKeys.reconcileMemberKeyAccess
+      .mockRejectedValueOnce(new Error('connection reset'))
+      .mockResolvedValueOnce({ revoked: [], queued: [] });
+
+    const response = await edit({ accessCeiling: { nonProduction: 'read', production: 'none' } });
+
+    expect(response.status).toBe(200);
+    // The second holder is still reconciled, against the grid read once.
+    expect(memberKeys.reconcileMemberKeyAccess).toHaveBeenCalledTimes(2);
+    expect(memberKeys.reconcileMemberKeyAccess.mock.calls[1]?.[1]).toMatchObject({
+      userId: second.userId,
+      environments: grid,
+    });
+    expect(repositories.listEnvironmentsForOrganization).toHaveBeenCalledTimes(2);
+    expect(await outcomes('success')).toMatchObject([{ action: 'role.updated' }]);
   });
 });
 
@@ -1057,7 +1214,13 @@ describe('PATCH /members/{id} { customRoleId } — assigning, swapping, unassign
     const onto = await assign(ROLE_ID);
     expect(onto.status).toBe(403);
     expect((await errorOf(onto)).code).toBe('plan_limit');
-    expect(repositories.setMemberCustomRole).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalled();
+    expect(await outcomes('error')).toMatchObject([
+      {
+        action: 'member.custom_role_changed',
+        metadata: { reason: 'quotaExceeded', customRoleName: 'Deployer' },
+      },
+    ]);
 
     const held = toEngineCustomRole(roleRecord());
     assignment = { member: { ...target('developer'), customRole: held }, next: null, grants: [] };
@@ -1065,14 +1228,16 @@ describe('PATCH /members/{id} { customRoleId } — assigning, swapping, unassign
     expect(off.status).toBe(200);
   });
 
-  it('records nothing for asking for the role already held', async () => {
+  it('writes, records and gates nothing for asking for the role already held — on any plan', async () => {
+    planIs('free');
     const held = toEngineCustomRole(roleRecord());
     assignment = { ...assignment, member: { ...target('developer'), customRole: held } };
 
     const response = await assign(ROLE_ID);
 
     expect(response.status).toBe(200);
-    expect(await outcomes('success')).toEqual([]);
+    expect(written).not.toHaveBeenCalled();
+    expect(await recorded()).toEqual([]);
     expect(memberKeys.reconcileMemberKeyAccess).not.toHaveBeenCalled();
   });
 
@@ -1133,17 +1298,14 @@ describe('GET /authority', () => {
 
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
-      authority: { role: string; customRole: { name: string } | null; assignableRoles: string[] };
       grantable: { projectSlug: string; environmentSlug: string; accessLevel: string }[];
     };
     expect(body.grantable).toEqual([
       { projectSlug: 'api', environmentSlug: 'staging', accessLevel: 'admin' },
       { projectSlug: 'api', environmentSlug: 'production', accessLevel: 'none' },
     ]);
-    expect(body.authority.role).toBe('admin');
-    expect(body.authority.customRole?.name).toBe('Admin, no production');
-    // An admin defaults to admin on production; this caller reaches none there.
-    expect(body.authority.assignableRoles).toEqual(['developer', 'viewer']);
+    // The rest of the caller's authority comes with the session, once.
+    expect(Object.keys(body)).toEqual(['grantable']);
   });
 
   it('measures a plain admin’s explicit restriction too', async () => {

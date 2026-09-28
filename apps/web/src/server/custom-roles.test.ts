@@ -3,7 +3,7 @@ import { AuthorizationError, ROLE_CAPABILITIES } from '@xecret/core/authz';
 import type { AccessLevel, Action, CustomRole, OrgRole } from '@xecret/core/authz';
 import { resolveEntitlements } from '@xecret/core/entitlements';
 import { uuidv7 } from '@xecret/core/ids';
-import { RepositoryError } from '@xecret/db/repositories';
+import { FieldConflictError, RepositoryError } from '@xecret/db/repositories';
 import type {
   AuthorizationContext as StoredAuthorizationContext,
   MemberGrant,
@@ -15,12 +15,14 @@ import {
   assertCustomRoleEditWithinAuthority,
   assertMayDefineCustomRole,
   mapAuditedMembershipError,
-  requireCustomRolesPlan,
 } from './members-service';
+import { featureStatus, requireFeature } from './entitlements';
 import { memberPatchSchema, toMember } from './schemas/members';
 import {
   customRoleCreateSchema,
   customRolePatchSchema,
+  sameAccess,
+  sameDefinition,
   toAuthorityPayload,
   toCustomRolePayload,
 } from './schemas/roles';
@@ -206,34 +208,54 @@ describe('assertCustomRoleChangeWithinAuthority', () => {
   });
 });
 
-describe('requireCustomRolesPlan', () => {
+describe('requireFeature and featureStatus for custom roles', () => {
   it('files the refusal before throwing plan_limit, and stays silent when the plan allows', () => {
     const refused = vi.fn();
 
     expect(() =>
-      requireCustomRolesPlan(
+      requireFeature(
         resolveEntitlements({
           plan: 'team',
           status: 'active',
           addonSaml: false,
           addonDirectorySync: false,
         }),
+        'customRoles',
         refused,
       ),
     ).toThrow(ApiError);
     expect(refused).toHaveBeenCalledTimes(1);
 
     refused.mockClear();
-    requireCustomRolesPlan(
+    requireFeature(
       resolveEntitlements({
         plan: 'enterprise',
         status: 'active',
         addonSaml: false,
         addonDirectorySync: false,
       }),
+      'customRoles',
       refused,
     );
     expect(refused).not.toHaveBeenCalled();
+  });
+
+  it('says whether the plan allows it, and which plan would, from the same two facts', () => {
+    const team = resolveEntitlements({
+      plan: 'team',
+      status: 'active',
+      addonSaml: false,
+      addonDirectorySync: false,
+    });
+    const enterprise = resolveEntitlements({
+      plan: 'enterprise',
+      status: 'active',
+      addonSaml: false,
+      addonDirectorySync: false,
+    });
+
+    expect(featureStatus(team, 'customRoles')).toEqual({ enabled: false, upgradeTo: 'enterprise' });
+    expect(featureStatus(enterprise, 'customRoles')).toEqual({ enabled: true, upgradeTo: null });
   });
 });
 
@@ -253,6 +275,19 @@ describe('mapAuditedMembershipError', () => {
       }
       expect(file).toHaveBeenCalledWith(reason);
     }
+  });
+
+  it('answers a conflict about one field on that field, still a 409', () => {
+    const file = vi.fn();
+    try {
+      mapAuditedMembershipError(file)(new FieldConflictError('name', 'That name is taken.'));
+    } catch (cause) {
+      expect((cause as ApiError).status).toBe(409);
+      expect((cause as ApiError).toBody('r').error.fields).toEqual([
+        { field: 'name', message: 'That name is taken.' },
+      ]);
+    }
+    expect(file).toHaveBeenCalledWith('conflict');
   });
 
   it('files nothing for a refusal that is not the repository’s — a denial is filed by its own check', () => {
@@ -380,5 +415,40 @@ describe('payloads', () => {
     expect(payload.effectiveRole).toBe('viewer');
     expect(payload.customRole).toMatchObject({ name: 'Auditor', baseRole: 'viewer' });
     expect(payload.capabilities).toEqual(['member.read']);
+  });
+});
+
+describe('comparing definitions', () => {
+  const base = {
+    name: 'Deployer',
+    baseRole: 'developer' as const,
+    allowedActions: ['secret.read'] as Action[],
+    accessCeiling: { nonProduction: 'write' as const, production: 'none' as const },
+  };
+
+  it('counts the member.read floor as listed whether or not it is', () => {
+    const withFloor = { ...base, allowedActions: ['member.read', 'secret.read'] as Action[] };
+    expect(sameAccess(base, withFloor)).toBe(true);
+    expect(sameDefinition(base, withFloor)).toBe(true);
+  });
+
+  it('ignores order and repetition in the action list', () => {
+    expect(
+      sameAccess(
+        { ...base, allowedActions: ['secret.update', 'secret.read'] },
+        { ...base, allowedActions: ['secret.read', 'secret.update', 'secret.read'] },
+      ),
+    ).toBe(true);
+  });
+
+  it('tells a rename, which is no access change, from a change of base, list or ceiling', () => {
+    expect(sameAccess(base, { ...base, name: 'Release' })).toBe(true);
+    expect(sameDefinition(base, { ...base, name: 'Release' })).toBe(false);
+    expect(sameAccess(base, { ...base, baseRole: 'viewer' })).toBe(false);
+    expect(sameAccess(base, { ...base, allowedActions: ['secret.update'] })).toBe(false);
+    expect(sameAccess(base, { ...base, accessCeiling: null })).toBe(false);
+    expect(
+      sameAccess(base, { ...base, accessCeiling: { nonProduction: 'write', production: 'read' } }),
+    ).toBe(false);
   });
 });

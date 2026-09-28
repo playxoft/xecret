@@ -19,7 +19,12 @@ import {
   widensHolder,
 } from '@xecret/core/authz';
 import type { Database, InvitationGrantSeed } from '@xecret/db';
-import { findEnvironmentBySlug, findProjectBySlug, RepositoryError } from '@xecret/db/repositories';
+import {
+  FieldConflictError,
+  findEnvironmentBySlug,
+  findProjectBySlug,
+  RepositoryError,
+} from '@xecret/db/repositories';
 import type {
   AuthorizationContext as StoredAuthorizationContext,
   MemberGrant,
@@ -27,10 +32,7 @@ import type {
   RepositoryErrorCode,
 } from '@xecret/db/repositories';
 import type { AuditErrorReason } from '@xecret/core/audit';
-import { cheapestPlanWithFeature } from '@xecret/core/entitlements';
-import type { Entitlements } from '@xecret/core/entitlements';
 import type { Principal } from './actor';
-import { requireFeature } from './entitlements';
 import { errors } from './errors';
 import { toGrantContext, toMembership } from './tenancy';
 import type { OrgScope, StoredRoleAndStatus } from './tenancy';
@@ -251,46 +253,6 @@ export function assertMayChangeOwnGrants(actor: RoleAuthority): void {
 
 /* ── Custom roles ──────────────────────────────────────────────────────── */
 
-/**
- * Whether the plan lets this organisation define and assign custom roles, and
- * the cheapest plan that would — what `GET …/roles` tells the dashboard so it
- * can say why the controls are absent rather than let a request discover it.
- * Beside `requireCustomRolesPlan`, so the answer the listing gives and the
- * refusal a write gets are read from the same place.
- */
-export function customRolesFeature(entitlements: Entitlements): {
-  enabled: boolean;
-  upgradeTo: string | null;
-} {
-  const enabled = entitlements.features.customRoles;
-  return { enabled, upgradeTo: enabled ? null : cheapestPlanWithFeature('customRoles') };
-}
-
-/**
- * Refuses a custom-role write the organisation's plan does not include, with
- * the `plan_limit` response the dashboard renders an upgrade path from.
- *
- * `refused` files the audit record first — the attempted action as an `error`
- * with reason `quotaExceeded`, which is how `POST /api/orgs` records the one
- * other plan refusal in the product — because a customer trying to use a
- * feature their plan lacks is both a support signal and the most honest input
- * to a pricing decision, and a refusal that left no trace would be neither.
- *
- * Only what *adds* custom-role authority is gated: defining a role, editing
- * one, and putting a member on one. Taking a member off a role and deleting a
- * role nobody holds are not, so an organisation that leaves Enterprise can
- * always undo the feature's footprint — a narrowing it can no longer remove
- * would be a restriction held hostage by the plan. Reads are never gated.
- */
-export function requireCustomRolesPlan(entitlements: Entitlements, refused: () => void): void {
-  try {
-    requireFeature(entitlements, 'customRoles');
-  } catch (cause) {
-    refused();
-    throw cause;
-  }
-}
-
 const NARROWED_DEFINER = 'Only an owner or admin who holds no custom role can define roles.';
 const BASE_ABOVE_AUTHORITY = 'You cannot define a role on a base above your own.';
 const HOLDER_ABOVE_AUTHORITY = 'This role is held by somebody whose role is above your own.';
@@ -422,6 +384,9 @@ export function assertInvitationGrantsWithinAuthority(
  * the request — so passing them through leaks nothing.
  */
 export function mapMembershipError(cause: unknown): never {
+  // A conflict about one field — a role name another role holds — is answered
+  // on that field, so the form can say so beside the input.
+  if (cause instanceof FieldConflictError) throw errors.conflictOn(cause.field, cause.message);
   if (cause instanceof RepositoryError) {
     switch (cause.code) {
       case 'notFound':

@@ -5,9 +5,7 @@ import * as schema from '../schema';
 import type { Database } from '../client';
 import {
   createCustomRole,
-  CUSTOM_ROLES_PER_ORGANIZATION,
   deleteCustomRole,
-  findCustomRole,
   listCustomRoles,
   setMemberCustomRole,
   toEngineCustomRole,
@@ -15,7 +13,8 @@ import {
 } from './custom-roles';
 import type { CustomRoleDefinition } from './custom-roles';
 import { listOrganizationsForUser, organizationsForUserQuery } from './organizations';
-import { RepositoryError } from './shared';
+import { FieldConflictError, RepositoryError } from './shared';
+import { CUSTOM_ROLES_PER_ORGANIZATION } from '@xecret/core/validation';
 
 /**
  * The custom-role repository: the SQL each function sends, in what order, and
@@ -47,11 +46,18 @@ interface RecordedStatement {
   params: readonly unknown[];
 }
 
-/** A driver error as postgres.js raises one. */
-function pgError(code: string, constraint: string): Error {
+/**
+ * A driver error as postgres.js raises one — or, with `field: 'constraint'`,
+ * as PGlite and node-postgres do.
+ */
+function pgError(
+  code: string,
+  constraint: string,
+  field: 'constraint_name' | 'constraint' = 'constraint_name',
+): Error {
   return Object.assign(new Error(`violates constraint "${constraint}"`), {
     code,
-    constraint_name: constraint,
+    [field]: constraint,
   });
 }
 
@@ -112,9 +118,12 @@ const DEFINITION: CustomRoleDefinition = {
   accessCeiling: { nonProduction: 'write', production: 'none' },
 };
 
+const db0 = (recorded: { db: Database }) => recorded.db;
 const isOrgLock = (sql: string) =>
   sql.includes('from "organizations"') && sql.includes('for update');
-const isRoleRead = (sql: string) => sql.startsWith('select') && sql.includes('from "custom_roles"');
+const isNameCheck = (sql: string) => sql.startsWith('select') && sql.includes('lower(');
+const isRoleRead = (sql: string) =>
+  sql.startsWith('select') && sql.includes('from "custom_roles"') && !isNameCheck(sql);
 
 /* ── Reads ────────────────────────────────────────────────────────────────── */
 
@@ -161,31 +170,20 @@ describe('listCustomRoles', () => {
   });
 });
 
-describe('findCustomRole', () => {
-  it('filters on the organisation as well as the id', async () => {
-    const { db, statements } = recorder(() => []);
-
-    expect(await findCustomRole(db, ORG_ID, ROLE_ID)).toBeNull();
-    expect(statements[0]!.sql).toContain(
-      'where ("custom_roles"."org_id" = $1 and "custom_roles"."id" = $2)',
-    );
-    expect(statements[0]!.params.slice(0, 2)).toEqual([ORG_ID, ROLE_ID]);
-  });
-});
-
 /* ── Defining ─────────────────────────────────────────────────────────────── */
 
 describe('createCustomRole', () => {
-  function creating(count: number, insert: unknown[] | Error = [DEPLOYER]) {
+  function creating(count: number, insert: unknown[] | Error = [DEPLOYER], nameTaken = false) {
     return recorder((sql) => {
       if (isOrgLock(sql)) return [[ORG_ID]];
       if (sql.startsWith('select count')) return [[count]];
+      if (isNameCheck(sql)) return nameTaken ? [[OTHER_MEMBER_ID]] : [];
       if (sql.startsWith('insert into "custom_roles"')) return insert;
       return [];
     });
   }
 
-  it('locks the organisation, counts, then inserts — one transaction', async () => {
+  it('locks the organisation, counts, checks the name, then inserts — one transaction', async () => {
     const { db, statements } = creating(0);
 
     const role = await createCustomRole(db, {
@@ -198,9 +196,15 @@ describe('createCustomRole', () => {
       'begin',
       'select "id" from',
       'select count(*) from',
+      'select "id" from',
       'insert into "custom_roles"',
       'commit',
     ]);
+    // The name is compared case-insensitively, in the organisation.
+    const check = statements.find((statement) => isNameCheck(statement.sql))!;
+    expect(check.sql).toContain('lower("custom_roles"."name") = lower($');
+    expect(check.sql).toContain('"custom_roles"."org_id" = $1');
+    expect(check.params).toContain('Deployer');
     // Each action once: the row says what the role may do, not how the
     // request happened to phrase it.
     const insert = statements.find((statement) => statement.sql.startsWith('insert'))!;
@@ -231,30 +235,50 @@ describe('createCustomRole', () => {
     expect(statements.some((statement) => statement.sql.startsWith('insert'))).toBe(false);
   });
 
-  it('answers a duplicate name as a conflict, not a driver error', async () => {
-    const { db } = creating(0, pgError('23505', 'custom_roles_org_name_unique'));
+  it('refuses a name another role holds in any case, on the name field, before inserting', async () => {
+    const { db, statements } = creating(0, [DEPLOYER], true);
 
     const refusal = await createCustomRole(db, {
       orgId: ORG_ID,
-      definition: DEFINITION,
+      definition: { ...DEFINITION, name: 'deployer' },
       createdBy: CREATOR_ID,
     }).catch((cause: unknown) => cause);
 
-    expect(refusal).toBeInstanceOf(RepositoryError);
-    expect(refusal).toMatchObject({
-      code: 'conflict',
-      message: 'A role with this name already exists in this organisation.',
-    });
+    expect(refusal).toBeInstanceOf(FieldConflictError);
+    expect(refusal).toMatchObject({ code: 'conflict', field: 'name' });
+    expect(statements.some((statement) => statement.sql.startsWith('insert'))).toBe(false);
   });
+
+  it.each(['constraint_name', 'constraint'] as const)(
+    'answers the unique constraint, named in %s, as the same conflict — never a driver error',
+    async (field) => {
+      const { db } = creating(0, pgError('23505', 'custom_roles_org_name_unique', field));
+
+      const refusal = await createCustomRole(db, {
+        orgId: ORG_ID,
+        definition: DEFINITION,
+        createdBy: CREATOR_ID,
+      }).catch((cause: unknown) => cause);
+
+      expect(refusal).toBeInstanceOf(FieldConflictError);
+      expect(refusal).toBeInstanceOf(RepositoryError);
+      expect(refusal).toMatchObject({
+        code: 'conflict',
+        field: 'name',
+        message: 'A role with this name already exists in this organisation.',
+      });
+    },
+  );
 });
 
 /* ── Editing ──────────────────────────────────────────────────────────────── */
 
 describe('updateCustomRole', () => {
   /** Two holders — one suspended — and one grant row on the first. */
-  function editing(update: unknown[] | Error = [DEPLOYER]) {
+  function editing(update: unknown[] | Error = [DEPLOYER], nameTaken = false) {
     return recorder((sql) => {
       if (isOrgLock(sql)) return [[ORG_ID]];
+      if (isNameCheck(sql)) return nameTaken ? [[OTHER_MEMBER_ID]] : [];
       if (isRoleRead(sql)) return [DEPLOYER];
       if (sql.includes('"users"."email"')) {
         return [
@@ -363,6 +387,42 @@ describe('updateCustomRole', () => {
     await expect(
       updateCustomRole(db, { orgId: ORG_ID, roleId: ROLE_ID }, () => DEFINITION),
     ).rejects.toMatchObject({ code: 'conflict' });
+  });
+
+  it('writes nothing when decide finds nothing to change', async () => {
+    const { db, statements } = editing();
+
+    const result = await updateCustomRole(db, { orgId: ORG_ID, roleId: ROLE_ID }, () => null);
+
+    expect(result.changed).toBe(false);
+    expect(result.role).toBe(result.previous);
+    expect(statements.some((statement) => statement.sql.startsWith('update'))).toBe(false);
+    expect(statements.some((statement) => isNameCheck(statement.sql))).toBe(false);
+  });
+
+  it('checks a new name against the other roles, case-insensitively, and not a kept one', async () => {
+    const renamed = editing(undefined, true);
+    await expect(
+      updateCustomRole(db0(renamed), { orgId: ORG_ID, roleId: ROLE_ID }, () => ({
+        ...DEFINITION,
+        name: 'CONTRACTOR',
+      })),
+    ).rejects.toMatchObject({ code: 'conflict', field: 'name' });
+    const check = renamed.statements.find((statement) => isNameCheck(statement.sql))!;
+    // Every role but this one: renaming "Deployer" to "deployer" is not a clash.
+    expect(check.sql).toContain('"custom_roles"."id" <> $');
+    expect(check.params).toContain(ROLE_ID);
+    expect(renamed.statements.some((statement) => statement.sql.startsWith('update'))).toBe(false);
+
+    // Keeping the name asks nothing.
+    const kept = editing();
+    const result = await updateCustomRole(
+      db0(kept),
+      { orgId: ORG_ID, roleId: ROLE_ID },
+      () => DEFINITION,
+    );
+    expect(result.changed).toBe(true);
+    expect(kept.statements.some((statement) => isNameCheck(statement.sql))).toBe(false);
   });
 
   it('refuses an owner base returned by decide, before writing', async () => {
@@ -485,6 +545,38 @@ describe('setMemberCustomRole', () => {
     const update = statements.find((statement) => statement.sql.startsWith('update'))!;
     expect(update.sql).toContain('"org_members"."org_id" = $');
     expect(update.params).toContain(ROLE_ID);
+  });
+
+  it('writes and asks nothing when the member already holds the role asked for', async () => {
+    const { db, statements } = assigning({
+      held: [ROLE_ID, 'Deployer', 'developer', ['secret.read'], 'write', 'none'],
+    });
+    const guard = vi.fn();
+
+    const change = await setMemberCustomRole(
+      db,
+      { orgId: ORG_ID, memberId: MEMBER_ID, customRoleId: ROLE_ID },
+      guard,
+    );
+
+    expect(change.changed).toBe(false);
+    expect(guard).not.toHaveBeenCalled();
+    expect(statements.some((statement) => statement.sql.startsWith('update'))).toBe(false);
+  });
+
+  it('writes and asks nothing to take off a role the member does not hold', async () => {
+    const { db, statements } = assigning();
+    const guard = vi.fn();
+
+    const change = await setMemberCustomRole(
+      db,
+      { orgId: ORG_ID, memberId: MEMBER_ID, customRoleId: null },
+      guard,
+    );
+
+    expect(change).toMatchObject({ changed: false, previous: null, next: null });
+    expect(guard).not.toHaveBeenCalled();
+    expect(statements.some((statement) => statement.sql.startsWith('update'))).toBe(false);
   });
 
   it('takes a role off with null, reading no role', async () => {

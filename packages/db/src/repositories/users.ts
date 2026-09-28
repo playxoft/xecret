@@ -41,8 +41,12 @@ export function isUniqueViolation(error: unknown, constraint: string): boolean {
     if (
       'code' in current &&
       current.code === UNIQUE_VIOLATION &&
-      'constraint_name' in current &&
-      current.constraint_name === constraint
+      // postgres.js names the field `constraint_name`; PGlite, which the
+      // repository tests run against, follows node-postgres and calls it
+      // `constraint`. Accepting both is what lets those tests exercise this
+      // mapping for real instead of around it.
+      (('constraint_name' in current && current.constraint_name === constraint) ||
+        ('constraint' in current && current.constraint === constraint))
     ) {
       return true;
     }

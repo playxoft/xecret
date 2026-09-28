@@ -87,6 +87,25 @@ export class QuotaExceededError extends RepositoryError {
   }
 }
 
+/**
+ * A `conflict` about one field of the request — a name somebody else already
+ * holds.
+ *
+ * Carries the field for the reason `QuotaExceededError` carries its ceiling:
+ * so a route can answer on that field, and a form can put the message beside
+ * the input it is about, without either matching the sentence.
+ */
+export class FieldConflictError extends RepositoryError {
+  constructor(
+    /** The request field the conflict is about, as the API names it. */
+    readonly field: string,
+    message: string,
+  ) {
+    super('conflict', message);
+    this.name = 'FieldConflictError';
+  }
+}
+
 export type RepositoryErrorCode =
   | 'conflict'
   | 'notFound'

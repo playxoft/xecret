@@ -5,7 +5,7 @@ import {
   loadAuthorizationContext,
   loadMemberKeyPresence,
 } from '@xecret/db/repositories';
-import type { Executor } from '@xecret/db/repositories';
+import type { Executor, OrganizationEnvironment } from '@xecret/db/repositories';
 import type { AuditBuilder, AuditRecord } from '@xecret/core/audit';
 import type { ServiceContext } from './context';
 import { queueKeyShare, revokeMemberAccess } from './env-keys-service';
@@ -94,16 +94,29 @@ export interface KeyAccessReconciliation {
  */
 export async function reconcileMemberKeyAccess(
   services: ServiceContext,
-  params: { orgId: string; userId: string; actorUserId: string },
+  params: ReconcileParams,
 ): Promise<KeyAccessReconciliation> {
   return services.db.transaction((tx) => reconcile(tx, params));
 }
 
+interface ReconcileParams {
+  orgId: string;
+  userId: string;
+  actorUserId: string;
+  /**
+   * The organisation's environments, when the caller reconciles several
+   * members after one change — a custom role edited under all its holders —
+   * and has read them once for all of them. Omitted, they are read here.
+   */
+  environments?: readonly OrganizationEnvironment[] | undefined;
+}
+
 async function reconcile(
   exec: Executor,
-  params: { orgId: string; userId: string; actorUserId: string },
+  params: ReconcileParams,
 ): Promise<KeyAccessReconciliation> {
-  const environments = await listEnvironmentsForOrganization(exec, params.orgId);
+  const environments =
+    params.environments ?? (await listEnvironmentsForOrganization(exec, params.orgId));
   const e2ee = environments.filter((environment) => environment.encryptionMode === 'e2ee');
 
   if (e2ee.length === 0) return { queued: [], revoked: [] };

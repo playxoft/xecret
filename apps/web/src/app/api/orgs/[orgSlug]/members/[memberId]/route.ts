@@ -12,6 +12,7 @@ import {
   updateMemberRole,
 } from '@xecret/db/repositories';
 import type { MemberChangeGuard, MemberListEntry, MemberRecord } from '@xecret/db/repositories';
+import { requireFeature } from '@/server/entitlements';
 import { errors } from '@/server/errors';
 import { json, noContent, parseJsonBody } from '@/server/http';
 import {
@@ -20,7 +21,6 @@ import {
   assertRoleAuthority,
   mapAuditedMembershipError,
   mapMembershipError,
-  requireCustomRolesPlan,
   requireMembership,
   requireSessionPrincipal,
 } from '@/server/members-service';
@@ -356,7 +356,9 @@ export const DELETE = authenticatedRoute<Params>(
  * The checks run inside `setMemberCustomRole`'s transaction, on the member,
  * the role and the member's grant rows as read under the organisation lock —
  * so the "before" the widening test compares with is the role the write
- * replaces, not whatever an earlier read saw.
+ * replaces, not whatever an earlier read saw. The plan is asked there too, so
+ * asking for the role the member already holds — which the repository answers
+ * without asking the guard — is a 200 that writes, records and gates nothing.
  */
 async function changeCustomRole(params: {
   scope: OrgScope;
@@ -376,26 +378,28 @@ async function changeCustomRole(params: {
     ...(customRoleId === null ? {} : { customRoleId }),
   };
 
-  // Taking a role off is never gated: an organisation that has left the plan
-  // must still be able to undo what it did while it had it.
-  if (customRoleId !== null) {
-    requireCustomRolesPlan(scope.entitlements, () =>
-      record(
-        audit(orgId).error('member.custom_role_changed', resource, 'quotaExceeded', {
-          ...attempted,
-          limitName: 'customRoles',
-          plan: scope.entitlements.plan,
-        }),
-      ),
-    );
-  }
-
   const grid = await listEnvironmentsForOrganization(services.db, orgId);
 
   const change = await setMemberCustomRole(
     services.db,
     { orgId, memberId: target.id, customRoleId },
-    ({ member, next, grants }) =>
+    ({ member, next, grants }) => {
+      // Putting somebody on a role is the plan's to allow. Taking one off is
+      // never gated: an organisation that has left the plan must still be able
+      // to undo what it did while it had it.
+      if (next !== null) {
+        requireFeature(scope.entitlements, 'customRoles', () =>
+          record(
+            audit(orgId).error('member.custom_role_changed', resource, 'quotaExceeded', {
+              ...attempted,
+              customRoleName: next.name,
+              limitName: 'customRoles',
+              plan: scope.entitlements.plan,
+            }),
+          ),
+        );
+      }
+
       auditingDenials(
         (decision: Denial) =>
           record(
@@ -418,7 +422,8 @@ async function changeCustomRole(params: {
             grants,
             grid,
           ),
-      ),
+      );
+    },
   ).catch(
     mapAuditedMembershipError((reason) =>
       record(audit(orgId).error('member.custom_role_changed', resource, reason, attempted)),
@@ -433,7 +438,7 @@ async function changeCustomRole(params: {
 
   // Asking for the role the member already holds changes nothing, and is
   // recorded as nothing.
-  if ((change.previous?.id ?? null) === (change.next?.id ?? null)) return json({ member });
+  if (!change.changed) return json({ member });
 
   record(
     audit(orgId).success('member.custom_role_changed', resource, {

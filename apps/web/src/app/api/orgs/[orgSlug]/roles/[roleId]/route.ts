@@ -7,15 +7,16 @@ import {
   toEngineCustomRole,
   updateCustomRole,
 } from '@xecret/db/repositories';
-import type { CustomRoleDefinition, CustomRoleRecord } from '@xecret/db/repositories';
+import type { CustomRoleDefinition } from '@xecret/db/repositories';
+import { requireFeature } from '@/server/entitlements';
 import { errors } from '@/server/errors';
+import { describeError } from '@/server/logging';
 import { json, noContent, parseJsonBody } from '@/server/http';
 import { recordKeyReconciliation, reconcileMemberKeyAccess } from '@/server/member-keys';
 import {
   assertCustomRoleEditWithinAuthority,
   assertMayDefineCustomRole,
   mapAuditedMembershipError,
-  requireCustomRolesPlan,
   requireMembership,
   requireSessionPrincipal,
 } from '@/server/members-service';
@@ -26,6 +27,8 @@ import {
   customRolePatchSchema,
   previousRoleDefinitionMetadata,
   roleDefinitionMetadata,
+  sameAccess,
+  sameDefinition,
   toCustomRolePayload,
   toStoredCeiling,
 } from '@/server/schemas/roles';
@@ -48,8 +51,16 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  *    hold, which the wider role switches on.
  *
  * Plan-gated like defining one. A partial body is merged onto the role as
- * locked, and every check runs on the merged result. The holders' environment
- * keys are reconciled afterwards, since the role decides what they may read.
+ * locked, and every check runs on the merged result. A merge that changes
+ * nothing — `member.read` counts as listed whether or not it is, since the
+ * engine keeps it either way — is answered 200 with nothing written, audited
+ * or plan-checked.
+ *
+ * The holders' environment keys are reconciled afterwards, when the edit
+ * changed what they may do, since the role decides what they may read. The
+ * edit has committed by then: a holder whose reconciliation fails is logged
+ * and left for `GET …/keys` to report — as `missingGrants` or
+ * `needsRotation` — and the answer is still the 200 the saved role is owed.
  *
  * ── Deleting (DELETE) ──
  * Only a role nobody holds: the foreign key refuses the rest, and that becomes
@@ -58,8 +69,10 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  * role takes nothing from anybody, and an organisation that left Enterprise
  * must be able to tidy up.
  *
- * Every refusal is filed: a denial as `denied`, a conflict or a missing role
- * as `error`, each naming the role attempted.
+ * Every refusal the route understood is filed: a denial as `denied`; a plan
+ * refusal, a list naming actions beyond the base, a conflict or a missing role
+ * as `error`, each naming the role attempted. A body the schema refuses is
+ * answered 422 and not audited — see `../route.ts`.
  */
 
 type Params = { orgSlug: string; roleId: string };
@@ -83,16 +96,6 @@ export const PATCH = authenticatedRoute<Params>(
     const actor = requireSessionPrincipal(principal);
     const membership = requireMembership(scope);
 
-    requireCustomRolesPlan(scope.entitlements, () =>
-      record(
-        audit(orgId).error('role.updated', resource, 'quotaExceeded', {
-          customRoleId: params.roleId,
-          limitName: 'customRoles',
-          plan: scope.entitlements.plan,
-        }),
-      ),
-    );
-
     const patch = await parseJsonBody(request, customRolePatchSchema);
     const grid = await listEnvironmentsForOrganization(services.db, orgId);
 
@@ -110,10 +113,32 @@ export const PATCH = authenticatedRoute<Params>(
               : toStoredCeiling(patch.accessCeiling),
         };
 
+        // Nothing to change: no write, no record, and no plan to ask about.
+        if (sameDefinition(current, next)) return null;
+
+        requireFeature(scope.entitlements, 'customRoles', () =>
+          record(
+            audit(orgId).error('role.updated', resource, 'quotaExceeded', {
+              customRoleId: params.roleId,
+              customRoleName: current.name,
+              limitName: 'customRoles',
+              plan: scope.entitlements.plan,
+            }),
+          ),
+        );
+
+        const merged = { ...current, ...next, allowedActions: [...next.allowedActions] };
+        const attempted = {
+          ...roleDefinitionMetadata(merged),
+          ...previousRoleDefinitionMetadata(current),
+          holderCount: holders.length,
+        };
+
         // Checked on the merge: a base narrowed without the list following it
         // would otherwise keep actions the new base cannot perform.
         const beyond = actionsBeyondBase(next.baseRole, next.allowedActions);
         if (beyond.length > 0) {
+          record(audit(orgId).error('role.updated', resource, 'invalidInput', attempted));
           throw errors.validation([
             {
               field: 'allowedActions',
@@ -122,16 +147,9 @@ export const PATCH = authenticatedRoute<Params>(
           ]);
         }
 
-        const merged = { ...current, ...next, allowedActions: [...next.allowedActions] };
         auditingDenials(
           (decision: Denial) =>
-            record(
-              audit(orgId).denied('role.updated', resource, decision, {
-                ...roleDefinitionMetadata(merged),
-                ...previousRoleDefinitionMetadata(current),
-                holderCount: holders.length,
-              }),
-            ),
+            record(audit(orgId).denied('role.updated', resource, decision, attempted)),
           () =>
             assertCustomRoleEditWithinAuthority(
               membership,
@@ -152,6 +170,9 @@ export const PATCH = authenticatedRoute<Params>(
       ),
     );
 
+    const payload = { role: toCustomRolePayload(updated.role, updated.holders.length) };
+    if (!updated.changed) return json(payload);
+
     record(
       audit(orgId).success('role.updated', resource, {
         ...roleDefinitionMetadata(updated.role),
@@ -162,20 +183,37 @@ export const PATCH = authenticatedRoute<Params>(
 
     // What each holder may read follows the role, so their environment keys
     // are reconciled — unless only the name changed, which moves nothing.
-    if (changesAccess(updated.previous, updated.role)) {
+    if (!sameAccess(updated.previous, updated.role) && updated.holders.length > 0) {
+      const environments = await listEnvironmentsForOrganization(services.db, orgId);
       for (const holder of updated.holders) {
-        recordKeyReconciliation(
-          await reconcileMemberKeyAccess(services, {
-            orgId,
-            userId: holder.userId,
-            actorUserId: actor.user.id,
-          }),
-          { orgId, audit, record, targetEmail: holder.email },
-        );
+        try {
+          recordKeyReconciliation(
+            await reconcileMemberKeyAccess(services, {
+              orgId,
+              userId: holder.userId,
+              actorUserId: actor.user.id,
+              environments,
+            }),
+            { orgId, audit, record, targetEmail: holder.email },
+          );
+        } catch (cause) {
+          // The role is saved and every other holder still deserves their
+          // reconciliation. What this one is owed stays visible where it can
+          // be acted on — `GET …/keys` derives `missingGrants` and
+          // `needsRotation` from the rows — and the next change to them runs
+          // the same total, idempotent reconciliation again.
+          services.log
+            .at('PATCH')
+            .error(
+              'A custom role was saved, but reconciling one holder’s environment keys failed; ' +
+                'the environment reports what they are owed, and the next change to them retries.',
+              { error: describeError(cause) },
+            );
+        }
       }
     }
 
-    return json({ role: toCustomRolePayload(updated.role, updated.holders.length) });
+    return json(payload);
   },
 );
 
@@ -228,14 +266,3 @@ export const DELETE = authenticatedRoute<Params>(
     return noContent();
   },
 );
-
-/** Whether an edit changed anything that decides access — anything but the name. */
-function changesAccess(before: CustomRoleRecord, after: CustomRoleRecord): boolean {
-  const actions = (role: CustomRoleRecord) => [...role.allowedActions].sort().join(',');
-  return (
-    before.baseRole !== after.baseRole ||
-    actions(before) !== actions(after) ||
-    before.accessCeiling?.nonProduction !== after.accessCeiling?.nonProduction ||
-    before.accessCeiling?.production !== after.accessCeiling?.production
-  );
-}

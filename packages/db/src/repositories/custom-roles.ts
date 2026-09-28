@@ -1,6 +1,7 @@
-import { and, asc, count, eq, sql } from 'drizzle-orm';
+import { and, asc, count, eq, ne, sql } from 'drizzle-orm';
 import type { AccessLevel, Action, CustomRole, OrgRole } from '@xecret/core/authz';
 import { uuidv7 } from '@xecret/core/ids';
+import { CUSTOM_ROLES_PER_ORGANIZATION } from '@xecret/core/validation';
 import { users } from '../schema/identity';
 import { customRoles } from '../schema/roles';
 import { orgMembers } from '../schema/tenancy';
@@ -11,7 +12,7 @@ import {
   memberGrantsQuery,
 } from './membership';
 import type { MemberGrant, MemberRecord, MemberStatus, WrittenMemberRecord } from './membership';
-import { RepositoryError } from './shared';
+import { FieldConflictError, RepositoryError } from './shared';
 import type { Executor } from './shared';
 import { isUniqueViolation } from './users';
 
@@ -42,13 +43,27 @@ import { isUniqueViolation } from './users';
  * `lockOrganization`): both kinds of write move who may read an environment,
  * and a rotation must not seal a key to a grant set that changed underneath it.
  *
+ * ── Names ──
+ * Unique per organisation *case-insensitively*: "Deployer" and "deployer" are
+ * one job title, and two of them on one roster would read as one role while
+ * narrowing people differently. The database's `custom_roles_org_name_unique`
+ * is case-sensitive, and a case-insensitive index would be a migration, so the
+ * rule is checked here, under the organisation lock every role write takes —
+ * which is what makes a check-then-write race-free. The constraint remains
+ * behind it for exact duplicates.
+ *
+ * ── No-ops ──
+ * An edit that changes nothing, and an assignment of the role a member already
+ * holds, write nothing — no row, no `updated_at` — and report
+ * `changed: false`, so the route records and gates nothing either.
+ *
  * ── Errors ──
- * The three constraints a caller can run into become `RepositoryError`s with
- * fixed messages, never a driver error: a duplicate name is `conflict`, a role
- * still held by somebody is `conflict` (the foreign key's `NO ACTION`), and an
- * owner being handed a role is `conflict` (the owner CHECK). None of them is
- * reachable through the routes, which validate first — these are what holds
- * when they are raced or bypassed.
+ * The constraints a caller can run into become `RepositoryError`s with fixed
+ * messages, never a driver error: a taken name is a `FieldConflictError` on
+ * `name`, a role still held by somebody is `conflict` (the foreign key's
+ * `NO ACTION`), and an owner being handed a role is `conflict` (the owner
+ * CHECK). The routes validate first; these are what holds when they are raced
+ * or bypassed.
  */
 
 /** A ceiling as stored: both halves or neither (`custom_roles_ceiling_check`). */
@@ -82,18 +97,6 @@ export interface CustomRoleDefinition {
   allowedActions: readonly Action[];
   accessCeiling: CustomRoleCeiling | null;
 }
-
-/**
- * How many roles one organisation may define.
- *
- * Not a plan limit — custom roles are an Enterprise feature and Enterprise has
- * no ceilings — but a bound on a table a single caller can grow, so that the
- * listing can be read whole (it has no pagination, because the settings page
- * and the assignment menu both need every role) without being a way to make
- * one request stream an unbounded set. A hundred job titles is far past what
- * an organisation's four built-in roles are ever narrowed into.
- */
-export const CUSTOM_ROLES_PER_ORGANIZATION = 100;
 
 const NAME_TAKEN = 'A role with this name already exists in this organisation.';
 const ROLE_IN_USE =
@@ -217,19 +220,33 @@ export async function listCustomRoles(
   return rows.map((row) => ({ ...toRecord(row), holderCount: Number(row.holderCount) }));
 }
 
-/** One role of this organisation, or `null` — including for another tenant's id. */
-export async function findCustomRole(
-  exec: Executor,
+/**
+ * Refuses `name` when another of the organisation's roles already has it, in
+ * any case. Must run under the organisation lock, in the transaction that
+ * writes the name — see "Names" at the top of this file.
+ *
+ * `lower()` on both sides, in the database, so the comparison is the one the
+ * stored names are read under rather than a second implementation of case in
+ * JavaScript that could disagree with it.
+ */
+async function assertNameFree(
+  tx: Executor,
   orgId: string,
-  roleId: string,
-): Promise<CustomRoleRecord | null> {
-  const [row] = await exec
-    .select(ROLE_COLUMNS)
+  name: string,
+  exceptRoleId: string | null,
+): Promise<void> {
+  const [taken] = await tx
+    .select({ id: customRoles.id })
     .from(customRoles)
-    .where(and(eq(customRoles.orgId, orgId), eq(customRoles.id, roleId)))
+    .where(
+      and(
+        eq(customRoles.orgId, orgId),
+        sql`lower(${customRoles.name}) = lower(${name})`,
+        exceptRoleId === null ? undefined : ne(customRoles.id, exceptRoleId),
+      ),
+    )
     .limit(1);
-
-  return row ? toRecord(row) : null;
+  if (taken) throw new FieldConflictError('name', NAME_TAKEN);
 }
 
 export interface CreateCustomRoleParams {
@@ -267,6 +284,7 @@ export async function createCustomRole(
           `An organisation can define at most ${CUSTOM_ROLES_PER_ORGANIZATION} roles. Delete one nobody holds first.`,
         );
       }
+      await assertNameFree(tx, params.orgId, params.definition.name, null);
 
       const now = new Date();
       const [row] = await tx
@@ -312,6 +330,8 @@ export interface UpdatedCustomRole {
   role: CustomRoleRecord;
   previous: CustomRoleRecord;
   holders: readonly CustomRoleHolder[];
+  /** `false` when `decide` found nothing to change, and nothing was written. */
+  changed: boolean;
 }
 
 /**
@@ -323,7 +343,8 @@ export interface UpdatedCustomRole {
  * partial, so what is written is the patch merged onto the role *as locked*,
  * and the checks on it have to run against that same merge — building it from
  * an earlier read would measure one definition and write another. Throwing
- * from it rolls the transaction back with nothing written.
+ * from it rolls the transaction back with nothing written. Returning `null`
+ * says the merge changes nothing, and nothing is written either.
  *
  * Holders are read whatever their status and whether or not their account
  * still resolves: a suspended holder is reinstated into the role as it is by
@@ -333,7 +354,7 @@ export interface UpdatedCustomRole {
 export async function updateCustomRole(
   exec: Executor,
   params: UpdateCustomRoleParams,
-  decide: (edit: CustomRoleEdit) => CustomRoleDefinition,
+  decide: (edit: CustomRoleEdit) => CustomRoleDefinition | null,
 ): Promise<UpdatedCustomRole> {
   return exec
     .transaction(async (tx) => {
@@ -350,7 +371,11 @@ export async function updateCustomRole(
 
       const holders = await holdersOf(tx, params.orgId, params.roleId);
       const definition = decide({ current, holders });
+      if (definition === null) return { role: current, previous: current, holders, changed: false };
       assertDefinable(definition);
+      if (definition.name !== current.name) {
+        await assertNameFree(tx, params.orgId, definition.name, params.roleId);
+      }
 
       const [row] = await tx
         .update(customRoles)
@@ -359,7 +384,7 @@ export async function updateCustomRole(
         .returning(ROLE_COLUMNS);
 
       if (!row) throw new RepositoryError('notFound', ROLE_NOT_FOUND);
-      return { role: toRecord(row), previous: current, holders };
+      return { role: toRecord(row), previous: current, holders, changed: true };
     })
     .catch(roleWriteError('missing'));
 }
@@ -430,6 +455,11 @@ export interface MemberCustomRoleChange {
   /** The role held before, or `null`. Read under the lock the write took. */
   previous: { id: string; name: string } | null;
   next: CustomRoleRecord | null;
+  /**
+   * `false` when the member already held `next` — nothing was written, and
+   * the guard was not asked.
+   */
+  changed: boolean;
 }
 
 /**
@@ -446,6 +476,10 @@ export interface MemberCustomRoleChange {
  * An owner is refused before the write, and the CHECK is mapped should it be
  * reached anyway: a promotion to owner clears a custom role
  * (`updateMemberRole`), and nothing may hand one back.
+ *
+ * Asking for the role the member already holds — or for none when they hold
+ * none — changes nothing: the guard is not asked, nothing is written, and the
+ * result says `changed: false`.
  */
 export async function setMemberCustomRole(
   exec: Executor,
@@ -466,6 +500,25 @@ export async function setMemberCustomRole(
           .limit(1);
         if (!row) throw new RepositoryError('notFound', ROLE_NOT_FOUND);
         next = toRecord(row);
+      }
+
+      const previous =
+        member.customRole === undefined
+          ? null
+          : { id: member.customRole.id, name: member.customRole.name };
+      if ((previous?.id ?? null) === (next?.id ?? null)) {
+        return {
+          member: {
+            id: member.id,
+            orgId: member.orgId,
+            userId: member.userId,
+            role: member.role,
+            status: member.status,
+          },
+          previous,
+          next,
+          changed: false,
+        };
       }
 
       const grants = await memberGrantsQuery(tx, {
@@ -492,14 +545,7 @@ export async function setMemberCustomRole(
         });
 
       if (!row) throw new RepositoryError('notFound', 'Member not found in this organisation.');
-      return {
-        member: row,
-        previous:
-          member.customRole === undefined
-            ? null
-            : { id: member.customRole.id, name: member.customRole.name },
-        next,
-      };
+      return { member: row, previous, next, changed: true };
     })
     .catch(roleWriteError('missing'));
 }
@@ -544,14 +590,20 @@ async function holdersOf(tx: Executor, orgId: string, roleId: string): Promise<C
 const FOREIGN_KEY_VIOLATION = '23503';
 const CHECK_VIOLATION = '23514';
 
-/** Whether `error`, or anything in its cause chain, is `code` on `constraint`. */
+/**
+ * Whether `error`, or anything in its cause chain, is `code` on `constraint`.
+ *
+ * postgres.js names the field `constraint_name`; PGlite and node-postgres call
+ * it `constraint`. Both are read, as `isUniqueViolation` reads them, so the
+ * mapping holds under either driver.
+ */
 function isViolation(error: unknown, code: string, constraint: string): boolean {
   for (let current: unknown = error; current instanceof Error; current = current.cause) {
     if (
       'code' in current &&
       current.code === code &&
-      'constraint_name' in current &&
-      current.constraint_name === constraint
+      (('constraint_name' in current && current.constraint_name === constraint) ||
+        ('constraint' in current && current.constraint === constraint))
     ) {
       return true;
     }
@@ -573,7 +625,7 @@ function isViolation(error: unknown, code: string, constraint: string): boolean 
 function roleWriteError(foreignKey: 'inUse' | 'missing'): (cause: unknown) => never {
   return (cause) => {
     if (isUniqueViolation(cause, NAME_UNIQUE_CONSTRAINT)) {
-      throw new RepositoryError('conflict', NAME_TAKEN);
+      throw new FieldConflictError('name', NAME_TAKEN);
     }
     if (isViolation(cause, FOREIGN_KEY_VIOLATION, MEMBER_ROLE_FK)) {
       throw foreignKey === 'inUse'

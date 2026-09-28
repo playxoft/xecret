@@ -3,12 +3,11 @@ import { listEnvironmentsForOrganization } from '@xecret/db/repositories';
 import { json } from '@/server/http';
 import { requireMembership } from '@/server/members-service';
 import { authenticatedRoute } from '@/server/route';
-import { toAuthorityPayload } from '@/server/schemas/roles';
 import { authorize, resolveOrg, toGrantContext } from '@/server/tenancy';
 
 /**
- * What the caller may hand out in this organisation: the roles, and — per
- * environment — the highest level they could grant there.
+ * What the caller may grant in this organisation: per environment, the highest
+ * level they could grant there.
  *
  * The grant and invite dialogs draw their level controls from this, so a
  * segment the server would refuse (`grantWithinAuthority`) is never offered:
@@ -20,6 +19,10 @@ import { authorize, resolveOrg, toGrantContext } from '@/server/tenancy';
  * per-environment; a project-wide grant, which also lands on the project's
  * future production environments, is measured more strictly by the server and
  * is not what this answers.
+ *
+ * The rest of the caller's authority — effective role, capabilities, the roles
+ * they may hand out — is per organisation, not per environment, and already
+ * arrives with the session (`GET /api/auth/me`), so it is not repeated here.
  *
  * `member.read`: the answer is the caller's own authority, which is theirs to
  * know. Like everything a client renders from, it decides which controls are
@@ -37,7 +40,6 @@ export const GET = authenticatedRoute<Params>(async ({ params, principal, servic
   const measured = toGrantContext(membership);
 
   return json({
-    authority: toAuthorityPayload(membership.role, membership.customRole),
     grantable: environments.map((environment) => ({
       projectSlug: environment.project.slug,
       environmentSlug: environment.slug,

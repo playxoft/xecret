@@ -1,9 +1,22 @@
 import * as z from 'zod/mini';
-import { ACTION_REQUIREMENTS, authoritySummary, CUSTOM_ROLE_BASE_ROLES } from '@xecret/core/authz';
+import {
+  ACTION_REQUIREMENTS,
+  authoritySummary,
+  CUSTOM_ROLE_BASE_ROLES,
+  CUSTOM_ROLE_FLOOR,
+} from '@xecret/core/authz';
 import type { AccessLevel, Action, CustomRole, OrgRole } from '@xecret/core/authz';
-import { CUSTOM_ROLE_NAME_MAX_LENGTH } from '@xecret/core/validation';
+import {
+  CUSTOM_ROLE_NAME_MAX_LENGTH,
+  customRoleNameProblem,
+  normalizeCustomRoleName,
+} from '@xecret/core/validation';
 import type { AuditMetadata } from '@xecret/core/audit';
-import type { CustomRoleCeiling, CustomRoleRecord } from '@xecret/db/repositories';
+import type {
+  CustomRoleCeiling,
+  CustomRoleDefinition,
+  CustomRoleRecord,
+} from '@xecret/db/repositories';
 import { accessLevelSchema, toCustomRoleRef } from './members';
 import type { CustomRoleRef } from './members';
 
@@ -38,16 +51,28 @@ const baseRoleSchema = z.enum(
   'A custom role is based on admin, developer or viewer — never owner.',
 );
 
-const nameSchema = z
-  .string()
-  .check(
-    z.trim(),
-    z.minLength(1, 'A role needs a name.'),
-    z.maxLength(
-      CUSTOM_ROLE_NAME_MAX_LENGTH,
-      `A role name must be at most ${CUSTOM_ROLE_NAME_MAX_LENGTH} characters.`,
-    ),
-  );
+/**
+ * A role's name, normalised (trimmed, NFC) and held to the rules
+ * `customRoleNameProblem` states: no control or invisible formatting
+ * characters, something visible, not a built-in role's name, and a bounded
+ * length. The dashboard reads the same function, so the form and the API
+ * refuse the same names with the same sentence. Uniqueness — case-insensitive
+ * — is the repository's, under the organisation lock.
+ */
+const nameSchema = z.string().check(
+  // A bound before the work, so a hostile body cannot make normalisation long.
+  // NFC composes at most a few code units into one, so eight times the limit
+  // is over it whatever the name normalises to.
+  z.maxLength(
+    CUSTOM_ROLE_NAME_MAX_LENGTH * 8,
+    `A role name must be at most ${CUSTOM_ROLE_NAME_MAX_LENGTH} characters.`,
+  ),
+  z.overwrite(normalizeCustomRoleName),
+  z.superRefine((name, context) => {
+    const problem = customRoleNameProblem(name);
+    if (problem !== null) context.addIssue({ code: 'custom', message: problem });
+  }),
+);
 
 /**
  * Both halves of a ceiling, or `null` for none.
@@ -178,6 +203,42 @@ export function toStoredCeiling(
   return ceiling === null || ceiling === undefined
     ? null
     : { nonProduction: ceiling.nonProduction, production: ceiling.production };
+}
+
+/* ── Comparing definitions ──────────────────────────────────────────────────── */
+
+/**
+ * A role's action list as the engine applies it: a set, with the
+ * `CUSTOM_ROLE_FLOOR` in it whether or not it was listed — the engine keeps
+ * `member.read` either way, so a list that gains or loses only the floor has
+ * not changed what anybody may do.
+ */
+function appliedActions(actions: readonly Action[]): string {
+  return [...new Set([...actions, ...CUSTOM_ROLE_FLOOR])].sort().join(',');
+}
+
+/**
+ * Whether two definitions give a holder the same authority: the same base, the
+ * same actions as applied, the same ceiling. The name is not access.
+ *
+ * What decides whether an edit needs the holders' environment keys reconciled —
+ * a rename moves nobody.
+ */
+export function sameAccess(a: CustomRoleDefinition, b: CustomRoleDefinition): boolean {
+  return (
+    a.baseRole === b.baseRole &&
+    appliedActions(a.allowedActions) === appliedActions(b.allowedActions) &&
+    a.accessCeiling?.nonProduction === b.accessCeiling?.nonProduction &&
+    a.accessCeiling?.production === b.accessCeiling?.production
+  );
+}
+
+/**
+ * Whether an edit changes anything at all. One that does not is answered
+ * without a write, an audit record, a plan check or a new `updated_at`.
+ */
+export function sameDefinition(a: CustomRoleDefinition, b: CustomRoleDefinition): boolean {
+  return a.name === b.name && sameAccess(a, b);
 }
 
 /* ── Audit ────────────────────────────────────────────────────────────────── */

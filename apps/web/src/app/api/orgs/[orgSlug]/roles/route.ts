@@ -2,13 +2,12 @@ import type { AuditResource } from '@xecret/core/audit';
 import { actionsBeyondBase, auditingDenials } from '@xecret/core/authz';
 import type { Denial } from '@xecret/core/authz';
 import { createCustomRole, listCustomRoles } from '@xecret/db/repositories';
+import { featureStatus, requireFeature } from '@/server/entitlements';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import {
   assertMayDefineCustomRole,
-  customRolesFeature,
   mapAuditedMembershipError,
-  requireCustomRolesPlan,
   requireMembership,
   requireSessionPrincipal,
 } from '@/server/members-service';
@@ -46,6 +45,15 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  * refused rather than stored: it would confer nothing, and a permission list
  * that reads as granting what it cannot is the wrong thing to hand the next
  * person who reviews it.
+ *
+ * ── What is audited ──
+ * Every attempt the route understood: a denial as `denied`; a plan refusal, a
+ * list naming actions beyond the base, a taken name or the role ceiling as an
+ * `error` naming what was attempted. A body the schema refuses — malformed
+ * JSON, a missing field, a name with control characters — is answered 422 and
+ * not audited: it is a request nobody could have meant, and recording its
+ * contents would put an attacker's string in the one table this product keeps
+ * truthful.
  */
 
 type Params = { orgSlug: string };
@@ -63,7 +71,7 @@ export const GET = authenticatedRoute<Params>(async ({ params, principal, servic
      * plan that would. Reading is never gated; this is what lets the dashboard
      * say why the controls are absent rather than let a request discover it.
      */
-    feature: customRolesFeature(scope.entitlements),
+    feature: featureStatus(scope.entitlements, 'customRoles'),
   });
 });
 
@@ -83,7 +91,7 @@ export const POST = authenticatedRoute<Params>(
     const creator = requireSessionPrincipal(principal);
     const membership = requireMembership(scope);
 
-    requireCustomRolesPlan(scope.entitlements, () =>
+    requireFeature(scope.entitlements, 'customRoles', () =>
       record(
         audit(orgId).error('role.created', resource, 'quotaExceeded', {
           limitName: 'customRoles',
@@ -93,16 +101,6 @@ export const POST = authenticatedRoute<Params>(
     );
 
     const body = await parseJsonBody(request, customRoleCreateSchema);
-
-    const beyond = actionsBeyondBase(body.baseRole, body.allowedActions);
-    if (beyond.length > 0) {
-      throw errors.validation([
-        {
-          field: 'allowedActions',
-          message: `A ${body.baseRole}-based role cannot perform ${beyond.join(', ')}.`,
-        },
-      ]);
-    }
 
     const definition = {
       name: body.name,
@@ -116,6 +114,17 @@ export const POST = authenticatedRoute<Params>(
       allowedActions: definition.allowedActions,
       accessCeiling: definition.accessCeiling,
     };
+
+    const beyond = actionsBeyondBase(body.baseRole, body.allowedActions);
+    if (beyond.length > 0) {
+      record(audit(orgId).error('role.created', resource, 'invalidInput', attempted));
+      throw errors.validation([
+        {
+          field: 'allowedActions',
+          message: `A ${body.baseRole}-based role cannot perform ${beyond.join(', ')}.`,
+        },
+      ]);
+    }
 
     auditingDenials(
       (decision: Denial) =>

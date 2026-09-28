@@ -23,6 +23,7 @@ export {
   clampPageSize,
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
+  FieldConflictError,
   QuotaExceededError,
   RepositoryError,
 } from './shared';
@@ -179,9 +180,7 @@ export type {
 
 export {
   createCustomRole,
-  CUSTOM_ROLES_PER_ORGANIZATION,
   deleteCustomRole,
-  findCustomRole,
   listCustomRoles,
   setMemberCustomRole,
   toEngineCustomRole,

@@ -24,10 +24,9 @@ import { errors } from './errors';
  * hold no grant on.
  *
  * ── ⚠ ONE CALL SITE, AND ONLY ONE. THAT IS DELIBERATE. ──
- * `requireFeature` gates exactly one feature today: `customRoles`, through
- * `requireCustomRolesPlan` in `members-service.ts`, on defining, editing and
- * assigning a custom role. Everything else below is written, tested and
- * unused. Do not read the presence of `requireCapacity` as evidence that
+ * `requireFeature` gates exactly one feature today: `customRoles`, on defining,
+ * editing and assigning a custom role (the role routes and the member route).
+ * Everything else below is written, tested and unused. Do not read the presence of `requireCapacity` as evidence that
  * project, seat, service-token, environment, secret or webhook ceilings are
  * enforced anywhere: they are not. The only *limit* enforced in the product
  * today is the organisations-per-account ceiling, which lives in
@@ -83,13 +82,40 @@ function toApiError(detail: PlanLimitError): never {
 }
 
 /**
+ * Whether the organisation's plan includes `feature`, and the cheapest plan
+ * that would when it does not.
+ *
+ * The non-refusing half of `requireFeature`, for a response that tells the
+ * dashboard why a control is absent rather than letting a request discover
+ * it. Both read the same two facts, so the listing's answer and a write's
+ * refusal cannot disagree.
+ */
+export function featureStatus(
+  entitlements: Entitlements,
+  feature: keyof PlanFeatures,
+): { enabled: boolean; upgradeTo: string | null } {
+  const enabled = entitlements.features[feature];
+  return { enabled, upgradeTo: enabled ? null : cheapestPlanWithFeature(feature) };
+}
+
+/**
  * Refuse unless the organisation's plan includes `feature`.
  *
  * The refusal names the cheapest plan that would have allowed it, so the
  * dashboard can render one button rather than the whole pricing table.
+ *
+ * `refused`, when given, runs first — for the audit record of the attempt. A
+ * customer trying to use a feature their plan lacks is a support signal and
+ * the most honest input to a pricing decision, and a refusal that left no
+ * trace would be neither.
  */
-export function requireFeature(entitlements: Entitlements, feature: keyof PlanFeatures): void {
+export function requireFeature(
+  entitlements: Entitlements,
+  feature: keyof PlanFeatures,
+  refused?: () => void,
+): void {
   if (entitlements.features[feature]) return;
+  refused?.();
   toApiError(featureError(entitlements, feature, cheapestPlanWithFeature(feature)));
 }
 
