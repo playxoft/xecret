@@ -117,7 +117,9 @@ export type RepositoryErrorCode =
    * Its one use today is an identity whose email the provider has not verified.
    * That is not a conflict — no other row is in the way — and it is not
    * `invalid`, because the request is perfectly well formed. It is a refusal,
-   * and it maps to 403.
+   * and it is meant to become a 403 — once the WS-2 sign-in callback, its only
+   * future caller, maps it. Nothing maps it today, because nothing reachable
+   * calls the linking pass yet.
    *
    * It lives here rather than only at the route because it guards the linking
    * pass, which is the account-takeover surface of the whole provider

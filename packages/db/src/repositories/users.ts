@@ -312,6 +312,8 @@ export async function upsertUserFromWorkosIdentity(
   // `someone@company.com` at the identity provider would otherwise hand over
   // that person's existing account, with its organisations, its grants and its
   // secrets. `=== true`, not truthiness: the string "false" is truthy.
+  // `workosIdentity()` already refuses anything but a boolean; this stays
+  // strict anyway, so that it does not depend on that.
   //
   // The callback checks this too. The duplication is intentional — the
   // callback's check produces the good error message, and this one is the check

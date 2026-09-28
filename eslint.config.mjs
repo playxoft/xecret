@@ -86,6 +86,33 @@ const TEST_DATABASE_BAN = {
   ],
 };
 
+/**
+ * The same ban for `import(...)`, which `no-restricted-imports` does not see.
+ *
+ * A dynamic import is the obvious way round a static-import ban — and the
+ * natural shape for "only load the test database when we need it" — so it is
+ * closed the same way, with the same specifiers: `no-restricted-syntax` on an
+ * `ImportExpression` whose source is one of them, as a plain string or as a
+ * template literal with no substitutions. (A computed specifier cannot be
+ * checked statically; nothing in the codebase builds one.)
+ *
+ * Spread, never assigned: `no-restricted-syntax` is replaced wholesale per
+ * block exactly like `no-restricted-imports`, so a block that declares it for
+ * its own reasons must spread this in beside its own selectors.
+ */
+const TEST_DATABASE_SPECIFIERS = [
+  String.raw`^@xecret\/db\/testing(\/.*)?$`,
+  String.raw`^@electric-sql\/pglite(\/.*|-.*)?$`,
+  String.raw`(^|\/)testing\/pglite(\.[A-Za-z]+)?$`,
+];
+const TEST_DATABASE_DYNAMIC_IMPORT_BAN = TEST_DATABASE_SPECIFIERS.flatMap((specifier) => [
+  { selector: `ImportExpression[source.value=/${specifier}/]`, message: TEST_DATABASE_MESSAGE },
+  {
+    selector: `ImportExpression[source.quasis.0.value.cooked=/${specifier}/]`,
+    message: TEST_DATABASE_MESSAGE,
+  },
+]);
+
 export default defineConfig([
   globalIgnores([
     '**/node_modules/**',
@@ -141,6 +168,7 @@ export default defineConfig([
           patterns: [...FIREBASE_ADMIN_BAN.patterns, ...TEST_DATABASE_BAN.patterns],
         },
       ],
+      'no-restricted-syntax': ['error', ...TEST_DATABASE_DYNAMIC_IMPORT_BAN],
 
       // Underscore-prefixed parameters are a documented "deliberately unused"
       // signal — `redactValue(_value)` exists so no path can carry its input to
@@ -166,6 +194,10 @@ export default defineConfig([
     files: ['packages/*/src/**/*.test.ts', 'packages/db/src/testing/**/*.ts'],
     rules: {
       'no-restricted-imports': ['error', FIREBASE_ADMIN_BAN],
+      // Every other block's `no-restricted-syntax` is the test-database ban
+      // and nothing else, so lifting it leaves no selectors. If a block ever
+      // gains selectors of its own, restate them here without the ban.
+      'no-restricted-syntax': 'off',
     },
   },
 
@@ -206,6 +238,7 @@ export default defineConfig([
           ],
         },
       ],
+      'no-restricted-syntax': ['error', ...TEST_DATABASE_DYNAMIC_IMPORT_BAN],
     },
   },
 
@@ -256,6 +289,7 @@ export default defineConfig([
           patterns: [...FIREBASE_ADMIN_BAN.patterns, ...TEST_DATABASE_BAN.patterns],
         },
       ],
+      'no-restricted-syntax': ['error', ...TEST_DATABASE_DYNAMIC_IMPORT_BAN],
     },
   },
 

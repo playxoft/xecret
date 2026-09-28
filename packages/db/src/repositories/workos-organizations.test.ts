@@ -150,6 +150,8 @@ describe('sso_required', () => {
     // administrator a bypass is closed while it is open, so a setter must ship
     // in the same change as the enforcement (WS-2). If this fails, that change
     // is here — make sure the enforcement is too, then update this test.
+    // The match is deliberately broad: it may fail loudly on an innocent name,
+    // and that is the trade — it can never pass silently on a guilty one.
     expect(Object.keys(repositories).filter((name) => /sso/i.test(name))).toEqual([]);
   });
 

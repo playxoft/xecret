@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { isWorkosIdentity, workosIdentity } from '@xecret/core/auth';
+import { IdentityVerificationError, isWorkosIdentity, workosIdentity } from '@xecret/core/auth';
 import type { VerifiedIdentity, WorkosIdentity } from '@xecret/core/auth';
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '../testing/pglite';
 import type { ArmedHook, TestDatabase } from '../testing/pglite';
@@ -857,15 +857,40 @@ describe('the brand holds at runtime, not only in the type', () => {
     expect(await raw(victim.id)).toEqual(victim);
   });
 
-  it('counts an address as verified only when emailVerified is exactly true', async () => {
-    // The string "false" is truthy. So is "no", and so is 1.
+  it('cannot even mint an identity whose emailVerified is not a boolean', async () => {
+    // The string "false" is truthy. So is "no", and so is 1. They are refused
+    // where the identity is built, so no such object can carry the brand; the
+    // linker's own `=== true` check stays as the second layer, and is what the
+    // unverified-refusal test above exercises with a real `false`.
     const victim = await seedFirebaseUser();
 
-    for (const emailVerified of ['false', 'true', 1] as unknown as boolean[]) {
-      const error = await refusal(
-        upsertUserFromWorkosIdentity(t.db, identity({ email: victim.email, emailVerified })),
+    for (const emailVerified of ['false', 'true', 1, undefined] as unknown as boolean[]) {
+      expect(() => identity({ email: victim.email, emailVerified })).toThrow(
+        IdentityVerificationError,
       );
-      expect(error.code).toBe('forbidden');
+    }
+
+    expect(t.statements).toHaveLength(0);
+    expect(await raw(victim.id)).toEqual(victim);
+  });
+
+  it('a polluted Object.prototype cannot supply a verification the input lacked', async () => {
+    // The round-3 probe: an input with no own `emailVerified`, and
+    // `Object.prototype.emailVerified = true`. Minting refuses it, so nothing
+    // reaches the linker and the account whose address it presents is untouched.
+    const victim = await seedFirebaseUser();
+    const pollutedPrototype = Object.prototype as { emailVerified?: unknown };
+    pollutedPrototype.emailVerified = true;
+    try {
+      expect(() =>
+        workosIdentity({
+          subject: workosId(),
+          email: victim.email,
+          authTime: AUTH_TIME,
+        } as VerifiedIdentity),
+      ).toThrow(IdentityVerificationError);
+    } finally {
+      delete pollutedPrototype.emailVerified;
     }
 
     expect(t.statements).toHaveLength(0);

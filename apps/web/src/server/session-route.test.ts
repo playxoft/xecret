@@ -79,6 +79,10 @@ vi.mock('@xecret/db/repositories', async (importOriginal) => ({
 const { POST: signIn } = await import('@/app/api/auth/session/route');
 
 const ORIGIN = 'https://xecret.playxoft.com';
+
+/** The route's 409 copy, stated here so a change to it is a visible test change. */
+const EMAIL_HELD_BY_ANOTHER_ACCOUNT =
+  'This email address already belongs to another xecret account. Contact support if you need help.';
 const AUTH_TIME = Math.floor(Date.parse('2026-09-23T10:00:00.000Z') / 1000);
 
 let t: TestDatabase;
@@ -253,16 +257,38 @@ describe('a Firebase sign-in writes firebase_uid and never workos_user_id', () =
     const { status, body } = await post(intruder);
 
     expect(status).toBe(409);
-    expect(body.error?.message).toBe(
-      'An xecret account already uses this email with a different sign-in. ' +
-        'Sign in the way you did before, or contact support.',
-    );
+    expect(body.error?.message).toBe(EMAIL_HELD_BY_ANOTHER_ACCOUNT);
     expect(JSON.stringify(body)).not.toContain(seeded.firebase_uid!);
     expect(JSON.stringify(body)).not.toContain(intruder.subject);
     expect(repositories.createSession).not.toHaveBeenCalled();
     expect((await rowsFor('id', seeded.id))[0]).toEqual(seeded);
     expect(await rowsFor('firebase_uid', intruder.subject)).toHaveLength(0);
   });
+
+  it.each([
+    ['an active account', false],
+    ['a soft-deleted account', true],
+  ])(
+    'answers an existing user whose Firebase address changed onto %s with the same 409',
+    async (_label, deleted) => {
+      // The second way into the conflict, and the reason the message cannot
+      // say "sign in the way you did before": this caller *is* doing that.
+      // Their own row is untouched — neither its address nor anything else.
+      const returning = await seedFirebaseUser();
+      const holder = await seedFirebaseUser({ deleted });
+
+      const { status, body } = await post(
+        firebaseIdentity({ subject: returning.firebase_uid!, email: holder.email }),
+      );
+
+      expect(status).toBe(409);
+      expect(body.error?.message).toBe(EMAIL_HELD_BY_ANOTHER_ACCOUNT);
+      expect(JSON.stringify(body)).not.toContain(holder.firebase_uid!);
+      expect(repositories.createSession).not.toHaveBeenCalled();
+      expect((await rowsFor('id', returning.id))[0]).toEqual(returning);
+      expect((await rowsFor('id', holder.id))[0]).toEqual(holder);
+    },
+  );
 });
 
 describe('a deleted account', () => {

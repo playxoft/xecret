@@ -98,16 +98,61 @@ const attested = new WeakSet<object>();
  * authenticated API call such as `authenticateWithCode` — never on anything a
  * client sent or another provider verified.
  *
- * The subject is checked against {@link WORKOS_USER_ID_PATTERN} as a last line
- * of defence against exactly the mix-up this type exists to prevent. A failure
- * is a verification failure, so the caller's existing mapping answers it with a
- * 401 rather than writing anything.
+ * ── Built, then validated, then frozen — in that order ──
+ * The result is an object built here, field by field, from exactly the fields
+ * a `VerifiedIdentity` has. Each is read **once**, and only as an **own**
+ * property of the input. Then that copy — the object that will be recorded —
+ * is validated, never the input. That order closes two holes a spread-then-
+ * check left open:
+ *
+ *  - An input *missing* a field no longer falls through to `Object.prototype`
+ *    later. The copy always has every field as its own property, and a missing
+ *    `emailVerified` is `undefined` here, which fails validation. (With a
+ *    spread, the minted object lacked it, and the linker's read of
+ *    `identity.emailVerified` found whatever a polluted `Object.prototype`
+ *    said.)
+ *  - A getter cannot answer the check with one value and the copy with
+ *    another, because there is only one read, and what is checked is what was
+ *    copied.
+ *
+ * Anything else on the input — an `organizationId`, an `isAdmin`, a
+ * `provider` of its own — is not copied at all.
+ *
+ * The subject must match {@link WORKOS_USER_ID_PATTERN}: a last line of defence
+ * against exactly the mix-up this type exists to prevent. A failure of any
+ * check is a verification failure, so the caller's existing mapping answers it
+ * with a 401 rather than writing anything.
  */
 export function workosIdentity(identity: VerifiedIdentity): WorkosIdentity {
-  if (typeof identity.subject !== 'string' || !WORKOS_USER_ID_PATTERN.test(identity.subject)) {
+  const own = (key: keyof VerifiedIdentity): unknown =>
+    Object.hasOwn(identity, key) ? identity[key] : undefined;
+
+  const minted = {
+    subject: own('subject'),
+    email: own('email'),
+    emailVerified: own('emailVerified'),
+    authTime: own('authTime'),
+    displayName: own('displayName'),
+    avatarUrl: own('avatarUrl'),
+    provider: 'workos' as const,
+  };
+
+  if (typeof minted.subject !== 'string' || !WORKOS_USER_ID_PATTERN.test(minted.subject)) {
     throw new IdentityVerificationError('malformed-subject');
   }
-  const minted = Object.freeze({ ...identity, provider: 'workos' as const });
+  if (
+    typeof minted.email !== 'string' ||
+    minted.email === '' ||
+    typeof minted.emailVerified !== 'boolean' ||
+    typeof minted.authTime !== 'number' ||
+    !Number.isFinite(minted.authTime) ||
+    !(minted.displayName === undefined || typeof minted.displayName === 'string') ||
+    !(minted.avatarUrl === undefined || typeof minted.avatarUrl === 'string')
+  ) {
+    throw new IdentityVerificationError('malformed-identity');
+  }
+
+  Object.freeze(minted);
   attested.add(minted);
   return minted as WorkosIdentity;
 }

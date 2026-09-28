@@ -56,6 +56,10 @@ const sessionRequest = z.object({
   idToken: z.string().check(z.minLength(1), z.maxLength(8192)),
 });
 
+/** The 409 for an address another row already holds. See the upsert below. */
+const EMAIL_HELD_BY_ANOTHER_ACCOUNT =
+  'This email address already belongs to another xecret account. Contact support if you need help.';
+
 export const POST = publicRoute(async ({ request, services }) => {
   // Before the body is read: an unauthenticated caller must not be able to make
   // the Worker buffer and parse a megabyte, nor to spend a Firebase
@@ -95,23 +99,28 @@ export const POST = publicRoute(async ({ request, services }) => {
   // caller has just proven control of the identity, so "this account was
   // deleted" reveals nothing they are not entitled to know.
   //
-  // A conflict is a *different* Firebase account presenting an address an
-  // existing xecret account already holds — `users_email_unique`, since this
-  // path never matches by email. It was a 500 until now. 409, and a message
-  // that says what to do without saying which account or which provider holds
-  // the address: the caller has proven control of the mailbox, not of the
-  // account, so neither the other account's uid nor how it signs in is theirs
-  // to learn.
+  // A conflict is `users_email_unique`: the address this Firebase identity
+  // presents is already held by a *different* row, active or soft-deleted.
+  // This path never matches by email, so that happens in two ways:
+  //
+  //  - a Firebase account xecret has never seen signs up with an address an
+  //    existing account already has; or
+  //  - an existing Firebase user's address was changed *at Firebase* to one
+  //    another row already holds, and the upsert's attempt to mirror it
+  //    collides.
+  //
+  // Both were a 500 until now. The message has to be true in both cases — the
+  // second caller *is* signing in "the way they did before" — so it says only
+  // that the address belongs to another account, and where to go. It names
+  // neither that account nor how it signs in: the caller has proven control of
+  // the mailbox, not of the other account.
   const user = await upsertUserFromFirebaseIdentity(services.db, identity).catch(
     (cause: unknown) => {
       if (cause instanceof RepositoryError && cause.code === 'notFound') {
         throw errors.forbidden('This account was deleted and cannot be signed in to again.');
       }
       if (cause instanceof RepositoryError && cause.code === 'conflict') {
-        throw errors.conflict(
-          'An xecret account already uses this email with a different sign-in. ' +
-            'Sign in the way you did before, or contact support.',
-        );
+        throw errors.conflict(EMAIL_HELD_BY_ANOTHER_ACCOUNT);
       }
       throw cause;
     },

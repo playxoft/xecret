@@ -528,4 +528,105 @@ describe('the WorkOS identity brand', () => {
     expect(WORKOS_USER_ID_PATTERN.test('user_01HZX4QK3V9M7N2P5R8T6W1Y0A')).toBe(true);
     expect(WORKOS_USER_ID_PATTERN.test('Xk3pQ9mZ2vB7nR4tY6wL8sD1fG0h')).toBe(false);
   });
+
+  it('refuses an input without its own emailVerified, even when Object.prototype supplies one', () => {
+    // A spread copies own properties only, so a minted object used to lack the
+    // field, and the linker's later read of `identity.emailVerified` walked up
+    // to a polluted prototype and found `true` — adopting an account on a
+    // verification nobody made. Reading own properties only, into a copy that
+    // always has every field, means there is nothing to fall through to.
+    const { emailVerified: _omitted, ...withoutVerified } = base;
+    const pollutedPrototype = Object.prototype as { emailVerified?: unknown };
+    pollutedPrototype.emailVerified = true;
+    try {
+      expect(() => workosIdentity(withoutVerified as VerifiedIdentity)).toThrow(
+        IdentityVerificationError,
+      );
+    } finally {
+      delete pollutedPrototype.emailVerified;
+    }
+  });
+
+  it('ignores inherited fields entirely', () => {
+    const inherited = Object.assign(Object.create({ emailVerified: true, authTime: 1 }) as object, {
+      subject: base.subject,
+      email: base.email,
+    });
+
+    expect(() => workosIdentity(inherited as VerifiedIdentity)).toThrow(IdentityVerificationError);
+  });
+
+  it('reads each field once, so a getter cannot pass the check with one value and be copied with another', () => {
+    const answers = ['user_01VALIDONFIRSTREAD', 'Xk3pQ9mZ2vB7nR4tY6wL8sD1fG0h'];
+    let reads = 0;
+    const shifty = {
+      ...base,
+      get subject() {
+        return answers[Math.min(reads++, 1)]!;
+      },
+    };
+
+    const identity = workosIdentity(shifty);
+
+    expect(reads).toBe(1);
+    expect(identity.subject).toBe('user_01VALIDONFIRSTREAD');
+    expect(Object.getOwnPropertyDescriptor(identity, 'subject')).toMatchObject({
+      value: 'user_01VALIDONFIRSTREAD',
+      writable: false,
+    });
+  });
+
+  it('refuses a getter whose single answer is not a WorkOS id', () => {
+    const shifty = {
+      ...base,
+      get subject() {
+        return 'Xk3pQ9mZ2vB7nR4tY6wL8sD1fG0h';
+      },
+    };
+
+    expect(() => workosIdentity(shifty)).toThrow(IdentityVerificationError);
+  });
+
+  it('copies exactly the identity fields, and drops anything else it was handed', () => {
+    const noisy = {
+      ...base,
+      displayName: 'Alice',
+      organizationId: 'org_01HZX',
+      isAdmin: true,
+      provider: 'firebase',
+    };
+
+    const identity = workosIdentity(noisy);
+
+    expect(Object.keys(identity).sort()).toEqual(
+      [
+        'authTime',
+        'avatarUrl',
+        'displayName',
+        'email',
+        'emailVerified',
+        'provider',
+        'subject',
+      ].sort(),
+    );
+    expect(identity.provider).toBe('workos');
+    expect(identity.displayName).toBe('Alice');
+    expect(identity.avatarUrl).toBeUndefined();
+  });
+
+  it.each([
+    ['emailVerified as the string "true"', { emailVerified: 'true' }],
+    ['emailVerified as 1', { emailVerified: 1 }],
+    ['emailVerified as a Boolean object', { emailVerified: new Boolean(true) }],
+    ['an empty email', { email: '' }],
+    ['a missing email', { email: undefined }],
+    ['authTime as a string', { authTime: '1790000000' }],
+    ['authTime as NaN', { authTime: Number.NaN }],
+    ['a displayName that is not a string', { displayName: 42 }],
+    ['an avatarUrl that is not a string', { avatarUrl: { href: 'x' } }],
+  ])('refuses %s', (_label, over) => {
+    expect(() => workosIdentity({ ...base, ...over } as unknown as VerifiedIdentity)).toThrow(
+      IdentityVerificationError,
+    );
+  });
 });

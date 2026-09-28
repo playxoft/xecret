@@ -58,6 +58,27 @@ const TEST_DATABASE_BAN = {
   ],
 };
 
+/**
+ * The same ban for `import(...)`, which `no-restricted-imports` does not see —
+ * the obvious way round a static-import ban. `no-restricted-syntax` on an
+ * `ImportExpression` whose source is one of the same specifiers, as a string
+ * or as a template literal without substitutions. Identical to the root
+ * config's. Spread, never assigned: `no-restricted-syntax` is replaced
+ * wholesale per block, like `no-restricted-imports`.
+ */
+const TEST_DATABASE_SPECIFIERS = [
+  String.raw`^@xecret\/db\/testing(\/.*)?$`,
+  String.raw`^@electric-sql\/pglite(\/.*|-.*)?$`,
+  String.raw`(^|\/)testing\/pglite(\.[A-Za-z]+)?$`,
+];
+const TEST_DATABASE_DYNAMIC_IMPORT_BAN = TEST_DATABASE_SPECIFIERS.flatMap((specifier) => [
+  { selector: `ImportExpression[source.value=/${specifier}/]`, message: TEST_DATABASE_MESSAGE },
+  {
+    selector: `ImportExpression[source.quasis.0.value.cooked=/${specifier}/]`,
+    message: TEST_DATABASE_MESSAGE,
+  },
+]);
+
 /** The filesystem ban `xecret/security` applies to everything that runs on a request. */
 const FILESYSTEM_BAN_PATTERN = {
   group: ['node:fs', 'node:fs/*', 'fs', 'fs/*'],
@@ -100,6 +121,7 @@ const eslintConfig = defineConfig([
           ],
         },
       ],
+      'no-restricted-syntax': ['error', ...TEST_DATABASE_DYNAMIC_IMPORT_BAN],
 
       // Secrets must never reach a log. console.log is the most common accident;
       // warn/error are permitted because they are reviewed and go to structured logging.
@@ -148,6 +170,11 @@ const eslintConfig = defineConfig([
           patterns: [...FIREBASE_ADMIN_BAN.patterns, FILESYSTEM_BAN_PATTERN],
         },
       ],
+      // `xecret/security`'s `no-restricted-syntax` is the test-database ban and
+      // nothing else (the Next.js presets declare none), so lifting it leaves no
+      // selectors. If that block ever gains selectors of its own, restate them
+      // here without the ban.
+      'no-restricted-syntax': 'off',
     },
   },
 
