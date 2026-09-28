@@ -69,6 +69,11 @@ export const users = pgTable(
       'users_identity_present_check',
       sql`${t.firebaseUid} is not null or ${t.workosUserId} is not null`,
     ),
+    // Only a WorkOS user id may be stored as one. The last of three checks of
+    // the same pattern (`WORKOS_USER_ID_PATTERN` in core, then the linking
+    // pass), and the one that holds for a backfill script or a psql session.
+    // A WorkOS id-format change needs a migration here. See 0018.
+    check('users_workos_user_id_format_check', sql`${t.workosUserId} ~ '^user_[0-9A-Za-z]+$'`),
   ],
 );
 

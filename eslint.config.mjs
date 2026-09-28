@@ -51,6 +51,41 @@ const FIREBASE_ADMIN_BAN = {
   ],
 };
 
+/**
+ * ── Test databases never reach runtime code. ──
+ *
+ * `@xecret/db/testing` is a real PostgreSQL (PGlite, WASM) for tests, exported
+ * from the package so `apps/web` route tests can use it too. Exported means
+ * importable — from a repository, a route, a script — and PGlite is a
+ * devDependency that must never be bundled into a Worker or quietly stand in
+ * for the real database. So both it and PGlite itself are banned everywhere,
+ * and the ban is lifted only for `*.test.ts` files and the helper's own module.
+ * The same ban, with the same message, is in `apps/web/eslint.config.mjs`.
+ *
+ * Spread into every block below that declares `no-restricted-imports`, for the
+ * reason `FIREBASE_ADMIN_BAN` explains: a later declaration replaces the rule
+ * wholesale, so a block that forgot this would silently drop it.
+ */
+const TEST_DATABASE_MESSAGE =
+  'Test-only: a PGlite database for *.test.ts files. It must never reach runtime code or a script.';
+const TEST_DATABASE_BAN = {
+  paths: [
+    { name: '@xecret/db/testing', message: TEST_DATABASE_MESSAGE },
+    { name: '@electric-sql/pglite', message: TEST_DATABASE_MESSAGE },
+  ],
+  patterns: [
+    {
+      group: [
+        '@electric-sql/pglite/*',
+        '@electric-sql/pglite-*',
+        '**/testing/pglite',
+        '**/testing/pglite.*',
+      ],
+      message: TEST_DATABASE_MESSAGE,
+    },
+  ],
+};
+
 export default defineConfig([
   globalIgnores([
     '**/node_modules/**',
@@ -99,7 +134,13 @@ export default defineConfig([
       // accidentally dropped promise is not.
       '@typescript-eslint/no-floating-promises': 'error',
 
-      'no-restricted-imports': ['error', FIREBASE_ADMIN_BAN],
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [...FIREBASE_ADMIN_BAN.paths, ...TEST_DATABASE_BAN.paths],
+          patterns: [...FIREBASE_ADMIN_BAN.patterns, ...TEST_DATABASE_BAN.patterns],
+        },
+      ],
 
       // Underscore-prefixed parameters are a documented "deliberately unused"
       // signal — `redactValue(_value)` exists so no path can carry its input to
@@ -108,6 +149,23 @@ export default defineConfig([
         'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
+    },
+  },
+
+  {
+    /**
+     * Tests may use the test database; nothing else may.
+     *
+     * Named after — and reasoned like — `xecret/tests-never-reach-the-edge` in
+     * `apps/web/eslint.config.mjs`: the exemption goes to test files and to the
+     * helper's own module, not to a directory a runtime file could later sit
+     * in. `packages/core` tests are not exempted — core has no database, and
+     * the core block below re-applies its own, stricter, list to them anyway.
+     */
+    name: 'xecret/test-database-is-test-only',
+    files: ['packages/*/src/**/*.test.ts', 'packages/db/src/testing/**/*.ts'],
+    rules: {
+      'no-restricted-imports': ['error', FIREBASE_ADMIN_BAN],
     },
   },
 
@@ -128,6 +186,7 @@ export default defineConfig([
           // it was written to protect.
           paths: [
             ...FIREBASE_ADMIN_BAN.paths,
+            ...TEST_DATABASE_BAN.paths,
             ...['fs', 'path', 'crypto', 'buffer', 'os', 'child_process', 'stream', 'util'].map(
               (name) => ({
                 name,
@@ -138,6 +197,7 @@ export default defineConfig([
           ],
           patterns: [
             ...FIREBASE_ADMIN_BAN.patterns,
+            ...TEST_DATABASE_BAN.patterns,
             {
               group: ['node:*'],
               message:
@@ -186,7 +246,16 @@ export default defineConfig([
       // `packages/core`, so "just for a script" is one refactor from shipping.
       // ADR 0003 and CONTRIBUTING both state the ban without qualification;
       // this is the last place the config disagreed with them.
-      'no-restricted-imports': ['error', FIREBASE_ADMIN_BAN],
+      //
+      // The test database is banned here too: an operator script that ran
+      // against PGlite would report success about a database nobody uses.
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [...FIREBASE_ADMIN_BAN.paths, ...TEST_DATABASE_BAN.paths],
+          patterns: [...FIREBASE_ADMIN_BAN.patterns, ...TEST_DATABASE_BAN.patterns],
+        },
+      ],
     },
   },
 

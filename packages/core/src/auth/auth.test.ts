@@ -16,7 +16,12 @@ import {
 } from './session';
 import type { SessionRecord } from './session';
 import { INVITATION_TTL_MS, invitationExpiryFrom, invitationState } from './invitation';
-import { IdentityVerificationError, workosIdentity } from './types';
+import {
+  IdentityVerificationError,
+  isWorkosIdentity,
+  WORKOS_USER_ID_PATTERN,
+  workosIdentity,
+} from './types';
 import type { VerifiedIdentity } from './types';
 import {
   generateToken,
@@ -493,4 +498,34 @@ describe('the WorkOS identity brand', () => {
       expect(() => workosIdentity({ ...base, subject })).toThrow(IdentityVerificationError);
     },
   );
+
+  it('mints a frozen object, and recognises only that object', () => {
+    // The runtime half of the brand. `any` satisfies the type, so what the
+    // linking pass checks is membership of the set this function records into:
+    // a copy — spread, JSON round-trip, structured clone — is not a member.
+    const identity = workosIdentity(base);
+
+    expect(Object.isFrozen(identity)).toBe(true);
+    expect(isWorkosIdentity(identity)).toBe(true);
+    expect(isWorkosIdentity({ ...identity })).toBe(false);
+    expect(isWorkosIdentity(JSON.parse(JSON.stringify(identity)))).toBe(false);
+    expect(isWorkosIdentity(structuredClone(identity))).toBe(false);
+    expect(isWorkosIdentity({ ...base, provider: 'workos' })).toBe(false);
+    expect(isWorkosIdentity(null)).toBe(false);
+    expect(isWorkosIdentity('user_01HZX4QK3V9M7N2P5R8T6W1Y0A')).toBe(false);
+  });
+
+  it('does not let a minted identity be edited after the fact', () => {
+    const identity = workosIdentity(base);
+
+    expect(() => {
+      (identity as { email: string }).email = 'someone-else@example.com';
+    }).toThrow(TypeError);
+    expect(identity.email).toBe('alice@example.com');
+  });
+
+  it('states the id pattern the linker and the database constraint share', () => {
+    expect(WORKOS_USER_ID_PATTERN.test('user_01HZX4QK3V9M7N2P5R8T6W1Y0A')).toBe(true);
+    expect(WORKOS_USER_ID_PATTERN.test('Xk3pQ9mZ2vB7nR4tY6wL8sD1fG0h')).toBe(false);
+  });
 });

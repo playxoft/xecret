@@ -40,7 +40,9 @@ CREATE TABLE users (
   last_login_at   timestamptz,
   deleted_at      timestamptz,
   CONSTRAINT users_identity_present_check
-    CHECK (firebase_uid IS NOT NULL OR workos_user_id IS NOT NULL)
+    CHECK (firebase_uid IS NOT NULL OR workos_user_id IS NOT NULL),
+  CONSTRAINT users_workos_user_id_format_check
+    CHECK (workos_user_id ~ '^user_[0-9A-Za-z]+$')
 );
 CREATE INDEX users_firebase_uid_idx ON users (firebase_uid) WHERE deleted_at IS NULL;
 ```
@@ -48,18 +50,25 @@ CREATE INDEX users_firebase_uid_idx ON users (firebase_uid) WHERE deleted_at IS 
 The provider id columns are the join keys to the identity provider — see
 [ADR 0003](../adr/0003-firebase-as-identity-provider.md). Swapping providers was meant to
 mean adding a column, not restructuring, and migration `0018` is exactly that: during the
-move from Firebase to WorkOS both columns exist, each written by exactly one sign-in path.
+move from Firebase to WorkOS both columns exist, each written by exactly one sign-in path in
+the application.
 
 - `firebase_uid` is written only by the Firebase sign-in (`upsertUserFromFirebaseIdentity`).
   It became **nullable** in `0018` — a user who joins through WorkOS never had a Firebase
   account — but keeps its unique constraint, because it is the key the WorkOS import's
   backfill matches on and the rollback if the cutover goes wrong. It is dropped by a later,
   deliberate decommission migration.
-- `workos_user_id` is written only by the WorkOS linking pass (`upsertUserFromWorkosIdentity`):
-  match on `workos_user_id`, else adopt the account holding the same **verified** address,
-  else create. It is NULL on every Firebase-era row until that row is linked. Its unique
-  constraint's index is its only index: the linking pass reads it *including* soft-deleted
-  rows, so that a deleted account is refused as deleted rather than taken for nobody.
+- `workos_user_id` has one application writer, the WorkOS linking pass
+  (`upsertUserFromWorkosIdentity`): match on `workos_user_id`, else adopt the account
+  holding the same **verified** address, else create. Its one other writer is operational:
+  the one-off backfill after the WorkOS user import, which writes the imported id onto rows
+  found by `firebase_uid` and must only fill a NULL (`WHERE workos_user_id IS NULL`), so it
+  can never overwrite a link a sign-in made. It is NULL on every Firebase-era row until that
+  row is linked either way. `users_workos_user_id_format_check` admits only a WorkOS id
+  (`^user_[0-9A-Za-z]+$`) — a Firebase uid written here is the one mistake this migration
+  has already seen made once. Its unique constraint's index is its only index: the linking
+  pass reads it *including* soft-deleted rows, so that a deleted account is refused as
+  deleted rather than taken for nobody.
 - `users_identity_present_check` keeps every row reachable by some provider. **Dropping
   `firebase_uid` drops this constraint silently** (PostgreSQL removes a constraint that
   references a dropped column), so the decommission migration must replace it — in practice

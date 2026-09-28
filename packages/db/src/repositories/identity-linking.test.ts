@@ -1,13 +1,15 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { workosIdentity } from '@xecret/core/auth';
+import { isWorkosIdentity, workosIdentity } from '@xecret/core/auth';
 import type { VerifiedIdentity, WorkosIdentity } from '@xecret/core/auth';
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '../testing/pglite';
-import type { TestDatabase } from '../testing/pglite';
+import type { ArmedHook, TestDatabase } from '../testing/pglite';
 import { RepositoryError } from './shared';
 import {
   findUserByFirebaseUid,
+  findUserByWorkosId,
   isSameAddress,
+  isUniqueViolation,
   upsertUserFromFirebaseIdentity,
   upsertUserFromWorkosIdentity,
 } from './users';
@@ -31,7 +33,9 @@ import {
  *
  * Races are placed deterministically: `beforeNextWrite` runs a second request
  * to completion in the exact window between the first request's reads and its
- * write, which is the only window a race in this code can live in.
+ * write, and `beforeNextStatement` in the window between two of its reads.
+ * Every race test asserts its hook fired — a race that never happened passes
+ * vacuously.
  */
 
 let t: TestDatabase;
@@ -44,8 +48,10 @@ afterAll(async () => {
   await t.close();
 });
 
+// Disarms any hook a previous test armed but never reached, and clears the
+// statement log.
 beforeEach(() => {
-  t.statements.length = 0;
+  t.reset();
 });
 
 /* ── fixtures ───────────────────────────────────────────────────────────── */
@@ -96,6 +102,7 @@ interface RawUser {
   email: string;
   display_name: string | null;
   avatar_url: string | null;
+  last_login_at: Date | null;
   deleted_at: Date | null;
 }
 
@@ -120,7 +127,8 @@ async function seedFirebaseUser(
 
 async function raw(id: string): Promise<RawUser | undefined> {
   const result = await t.pg.query<RawUser>(
-    `select id, firebase_uid, workos_user_id, email::text as email, display_name, avatar_url, deleted_at
+    `select id, firebase_uid, workos_user_id, email::text as email, display_name, avatar_url,
+            last_login_at, deleted_at
        from users where id = $1`,
     [id],
   );
@@ -275,7 +283,7 @@ describe('step 1 — a known provider id', () => {
 
   it('refuses when the account is deleted between the read and the write', async () => {
     const first = await upsertUserFromWorkosIdentity(t.db, identity());
-    t.beforeNextWrite(() => softDelete(first.user.id));
+    const race = t.beforeNextWrite(() => softDelete(first.user.id));
 
     const error = await refusal(
       upsertUserFromWorkosIdentity(
@@ -284,7 +292,48 @@ describe('step 1 — a known provider id', () => {
       ),
     );
 
+    expect(race.fired()).toBe(true);
     expect(error.code).toBe('notFound');
+  });
+
+  it('refuses when the row stops carrying this identity between the read and the write', async () => {
+    // Nothing in the application unlinks a row, but the sign-in write still
+    // re-asserts the identity it was decided on rather than trusting the read.
+    const first = await upsertUserFromWorkosIdentity(t.db, identity());
+    const race = t.beforeNextWrite(() =>
+      t.pg.query(`update users set workos_user_id = $2 where id = $1`, [first.user.id, workosId()]),
+    );
+
+    const error = await refusal(
+      upsertUserFromWorkosIdentity(
+        t.db,
+        identity({ subject: first.user.workosUserId!, email: first.user.email }),
+      ),
+    );
+
+    expect(race.fired()).toBe(true);
+    expect(error.code).toBe('conflict');
+    expect(error.message).toMatch(/no longer linked/);
+    expect((await raw(first.user.id))?.last_login_at).toEqual(first.user.lastLoginAt);
+  });
+});
+
+describe('findUserByWorkosId', () => {
+  it('resolves an active account by its WorkOS id', async () => {
+    const created = await upsertUserFromWorkosIdentity(t.db, identity());
+
+    expect((await findUserByWorkosId(t.db, created.user.workosUserId!))?.id).toBe(created.user.id);
+  });
+
+  it('does not resolve a soft-deleted account', async () => {
+    const created = await upsertUserFromWorkosIdentity(t.db, identity());
+    await softDelete(created.user.id);
+
+    expect(await findUserByWorkosId(t.db, created.user.workosUserId!)).toBeNull();
+  });
+
+  it('resolves nothing for an id nobody holds', async () => {
+    expect(await findUserByWorkosId(t.db, workosId())).toBeNull();
   });
 });
 
@@ -362,15 +411,19 @@ describe('step 2 — a known address, adopted', () => {
 
   it('does not adopt an account deleted between the read and the write, and says why', async () => {
     const seeded = await seedFirebaseUser();
-    t.beforeNextWrite(() => softDelete(seeded.id));
+    const race = t.beforeNextWrite(() => softDelete(seeded.id));
 
     const error = await refusal(
       upsertUserFromWorkosIdentity(t.db, identity({ email: seeded.email })),
     );
 
+    expect(race.fired()).toBe(true);
     expect(error.code).toBe('notFound');
     expect(error.message).not.toMatch(/different identity/);
     expect((await raw(seeded.id))?.workos_user_id).toBeNull();
+    // Terminal on the spot: a deletion is not the "address moved" case, so the
+    // pass does not start over — the address was looked up exactly once.
+    expect(t.statements.filter((s) => /where "users"\."email" = /.test(s.sql))).toHaveLength(1);
   });
 
   it('two identities racing for one account: exactly one wins, the loser is refused', async () => {
@@ -382,13 +435,17 @@ describe('step 2 — a known address, adopted', () => {
     const loser = identity({ email: seeded.email });
     let winnerResult: Awaited<ReturnType<typeof upsertUserFromWorkosIdentity>> | undefined;
 
-    t.beforeNextWrite(async () => {
+    const race = t.beforeNextWrite(async () => {
       winnerResult = await upsertUserFromWorkosIdentity(t.db, winner);
     });
     const error = await refusal(upsertUserFromWorkosIdentity(t.db, loser));
 
+    expect(race.fired()).toBe(true);
     expect(winnerResult?.outcome).toBe('linked');
     expect(error.code).toBe('conflict');
+    // And told the real reason, decided from the re-read row — not refused by
+    // some later check for a reason that happens to share the code.
+    expect(error.message).toMatch(/already linked to a different identity/);
     expect((await raw(seeded.id))?.workos_user_id).toBe(winner.subject);
     expect(await usersWith('workos_user_id', loser.subject)).toHaveLength(0);
   });
@@ -398,11 +455,12 @@ describe('step 2 — a known address, adopted', () => {
     const who = identity({ email: seeded.email });
     let first: Awaited<ReturnType<typeof upsertUserFromWorkosIdentity>> | undefined;
 
-    t.beforeNextWrite(async () => {
+    const race = t.beforeNextWrite(async () => {
       first = await upsertUserFromWorkosIdentity(t.db, who);
     });
     const second = await upsertUserFromWorkosIdentity(t.db, who);
 
+    expect(race.fired()).toBe(true);
     expect(first?.outcome).toBe('linked');
     // Not `linked` again: that would audit one adoption twice.
     expect(second.outcome).toBe('matched');
@@ -416,16 +474,95 @@ describe('step 2 — a known address, adopted', () => {
     const seeded = await seedFirebaseUser();
     const subject = workosId();
 
-    t.beforeNextWrite(() =>
+    const race = t.beforeNextWrite(() =>
       upsertUserFromWorkosIdentity(t.db, identity({ subject, email: address('parallel') })),
     );
     const error = await refusal(
       upsertUserFromWorkosIdentity(t.db, identity({ subject, email: seeded.email })),
     );
 
+    expect(race.fired()).toBe(true);
     expect(error.code).toBe('conflict');
     expect(error.message).toMatch(/identity is already linked to another account/);
     expect((await raw(seeded.id))?.workos_user_id).toBeNull();
+  });
+
+  it('a concurrent sign-in of this identity linking the row between the two reads is a login', async () => {
+    // The window between step 1's lookup by identity (nothing yet) and step
+    // 2's lookup by address, where the other request lands its link. The row
+    // step 2 then finds already carries this identity: an ordinary login, not
+    // "linked to a different identity".
+    const seeded = await seedFirebaseUser();
+    const who = identity({ email: seeded.email });
+    let first: Awaited<ReturnType<typeof upsertUserFromWorkosIdentity>> | undefined;
+
+    const race = t.beforeNextStatement(/^select .* where "users"\."email" = /s, async () => {
+      first = await upsertUserFromWorkosIdentity(t.db, who);
+    });
+    const second = await upsertUserFromWorkosIdentity(t.db, who);
+
+    expect(race.fired()).toBe(true);
+    expect(first?.outcome).toBe('linked');
+    expect(second.outcome).toBe('matched');
+    expect(second.user.id).toBe(seeded.id);
+  });
+
+  it('does not adopt an account whose address moved away mid-write: starts over with the address as it now is', async () => {
+    // Between the read and the write, the account's owner changes their
+    // address at Firebase. The row is no longer the account for the address
+    // being presented; adopting it would hand the account to whoever holds the
+    // old address, and write the old address back over the new one.
+    const seeded = await seedFirebaseUser();
+    const moved = address('moved-to');
+    const who = identity({ email: seeded.email });
+
+    const race = t.beforeNextWrite(() =>
+      upsertUserFromFirebaseIdentity(
+        t.db,
+        firebaseIdentity({ subject: seeded.firebase_uid!, email: moved }),
+      ),
+    );
+    const result = await upsertUserFromWorkosIdentity(t.db, who);
+
+    expect(race.fired()).toBe(true);
+    // The retry found the address unheld, so it is a new account's.
+    expect(result.outcome).toBe('created');
+    expect(result.user.id).not.toBe(seeded.id);
+    const after = await raw(seeded.id);
+    expect(after?.email).toBe(moved);
+    expect(after?.workos_user_id).toBeNull();
+  });
+
+  it('starts over once, then refuses with a conflict that names the real cause', async () => {
+    // Two accounts in a row lose the address being presented, each inside the
+    // window of the attempt that was about to adopt it. Not worth chasing: the
+    // second loss is refused — accurately, not as "a different identity".
+    const firstHolder = await seedFirebaseUser();
+    const secondHolder = await seedFirebaseUser();
+    const presented = firstHolder.email;
+    let retryRace: ArmedHook | undefined;
+
+    const race = t.beforeNextWrite(async () => {
+      await t.pg.query(`update users set email = $2 where id = $1`, [
+        firstHolder.id,
+        address('away-1'),
+      ]);
+      await t.pg.query(`update users set email = $2 where id = $1`, [secondHolder.id, presented]);
+      retryRace = t.beforeNextWrite(() =>
+        t.pg.query(`update users set email = $2 where id = $1`, [
+          secondHolder.id,
+          address('away-2'),
+        ]),
+      );
+    });
+    const error = await refusal(upsertUserFromWorkosIdentity(t.db, identity({ email: presented })));
+
+    expect(race.fired()).toBe(true);
+    expect(retryRace?.fired()).toBe(true);
+    expect(error.code).toBe('conflict');
+    expect(error.message).toMatch(/changed while this sign-in was in progress/);
+    expect((await raw(firstHolder.id))?.workos_user_id).toBeNull();
+    expect((await raw(secondHolder.id))?.workos_user_id).toBeNull();
   });
 });
 
@@ -506,15 +643,32 @@ describe('step 3 — nobody at all', () => {
     const who = identity();
     let first: Awaited<ReturnType<typeof upsertUserFromWorkosIdentity>> | undefined;
 
-    t.beforeNextWrite(async () => {
+    const race = t.beforeNextWrite(async () => {
       first = await upsertUserFromWorkosIdentity(t.db, who);
     });
     const second = await upsertUserFromWorkosIdentity(t.db, who);
 
+    expect(race.fired()).toBe(true);
     expect(first?.outcome).toBe('created');
     expect(second.outcome).toBe('matched');
     expect(second.user.id).toBe(first?.user.id);
     expect(await usersWith('workos_user_id', who.subject)).toHaveLength(1);
+  });
+
+  it('refuses when the row a concurrent sign-in created is deleted before this one reads it back', async () => {
+    // The loser of the step-3 race re-reads the winner's row and signs into
+    // it. If that account was deleted in between, it is deleted — the re-read
+    // row is not a login to hand back as it stands.
+    const who = identity();
+    const race = t.beforeNextWrite(async () => {
+      const winner = await upsertUserFromWorkosIdentity(t.db, who);
+      await softDelete(winner.user.id);
+    });
+
+    const error = await refusal(upsertUserFromWorkosIdentity(t.db, who));
+
+    expect(race.fired()).toBe(true);
+    expect(error.code).toBe('notFound');
   });
 
   it('two identities claiming one new address: one account, the other refused', async () => {
@@ -522,9 +676,10 @@ describe('step 3 — nobody at all', () => {
     const winner = identity({ email });
     const loser = identity({ email });
 
-    t.beforeNextWrite(() => upsertUserFromWorkosIdentity(t.db, winner));
+    const race = t.beforeNextWrite(() => upsertUserFromWorkosIdentity(t.db, winner));
     const error = await refusal(upsertUserFromWorkosIdentity(t.db, loser));
 
+    expect(race.fired()).toBe(true);
     expect(error.code).toBe('conflict');
     const rows = await usersWith('email', email);
     expect(rows).toHaveLength(1);
@@ -634,13 +789,96 @@ describe('the two upserts cannot be handed each other’s identity', () => {
     expect(fromWorkos.provider).toBe('workos');
   });
 
-  it('refuses an unbranded identity at runtime too, before any query', async () => {
-    // The `as` cast and the untyped caller get past the compiler; they do not
-    // get past this.
+  it('refuses an `as`-cast Firebase identity at runtime too, before any query', async () => {
     await expect(
       upsertUserFromWorkosIdentity(t.db, firebaseIdentity() as unknown as WorkosIdentity),
     ).rejects.toBeInstanceOf(TypeError);
     expect(t.statements).toHaveLength(0);
+  });
+
+  it('the Firebase upsert refuses a WorkOS identity at runtime, before any query', async () => {
+    await expect(
+      upsertUserFromFirebaseIdentity(t.db, identity() as unknown as VerifiedIdentity),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(t.statements).toHaveLength(0);
+  });
+});
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * The brand is checked at runtime, because `any` is not checked at all.
+ * ─────────────────────────────────────────────────────────────────────────── */
+describe('the brand holds at runtime, not only in the type', () => {
+  it('refuses a JSON round-trip of a genuine identity — what a parsed request body is', async () => {
+    // `JSON.parse` returns `any`, which satisfies `WorkosIdentity` with no cast
+    // at all. The copy carries `provider: 'workos'` and a valid subject; what it
+    // lacks is having been minted by `workosIdentity()`.
+    const victim = await seedFirebaseUser();
+    const body = JSON.stringify(identity({ email: victim.email }));
+
+    // Passed straight through, exactly as a handler would pass `request.json()`.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument -- `any` is the case under test.
+    await expect(upsertUserFromWorkosIdentity(t.db, JSON.parse(body))).rejects.toThrow(
+      /did not mint/,
+    );
+
+    expect(t.statements).toHaveLength(0);
+    expect(await raw(victim.id)).toEqual(victim);
+  });
+
+  it('refuses a forged body with a Firebase-shaped subject, naming the subject', async () => {
+    const victim = await seedFirebaseUser();
+    const body = JSON.stringify({
+      subject: 'Xk3pQ9mZ2vB7nR4tY6wL8sD1fG0h',
+      email: victim.email,
+      emailVerified: true,
+      authTime: AUTH_TIME,
+      provider: 'workos',
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument -- `any` is the case under test.
+    await expect(upsertUserFromWorkosIdentity(t.db, JSON.parse(body))).rejects.toThrow(
+      /not a WorkOS user id/,
+    );
+
+    expect(t.statements).toHaveLength(0);
+    expect(await raw(victim.id)).toEqual(victim);
+  });
+
+  it('refuses a spread of a genuine identity with somebody else’s address', async () => {
+    // The spread keeps the brand's *type* — TypeScript copies the symbol key —
+    // but it is a new object with a new address, and nobody attested to that.
+    const victim = await seedFirebaseUser();
+    const genuine = identity();
+    const respelled = { ...genuine, email: victim.email };
+
+    await expect(upsertUserFromWorkosIdentity(t.db, respelled)).rejects.toThrow(/did not mint/);
+
+    expect(t.statements).toHaveLength(0);
+    expect(await raw(victim.id)).toEqual(victim);
+  });
+
+  it('counts an address as verified only when emailVerified is exactly true', async () => {
+    // The string "false" is truthy. So is "no", and so is 1.
+    const victim = await seedFirebaseUser();
+
+    for (const emailVerified of ['false', 'true', 1] as unknown as boolean[]) {
+      const error = await refusal(
+        upsertUserFromWorkosIdentity(t.db, identity({ email: victim.email, emailVerified })),
+      );
+      expect(error.code).toBe('forbidden');
+    }
+
+    expect(t.statements).toHaveLength(0);
+    expect(await raw(victim.id)).toEqual(victim);
+  });
+
+  it('mints frozen identities, and only the minted object passes', () => {
+    const genuine = identity();
+
+    expect(Object.isFrozen(genuine)).toBe(true);
+    expect(isWorkosIdentity(genuine)).toBe(true);
+    expect(isWorkosIdentity({ ...genuine })).toBe(false);
+    expect(isWorkosIdentity(structuredClone(genuine))).toBe(false);
   });
 });
 
@@ -649,5 +887,79 @@ describe('the database refuses an account no provider can reach', () => {
     await expect(
       t.pg.query(`insert into users (id, email) values ($1, $2)`, [randomUUID(), address()]),
     ).rejects.toMatchObject({ code: '23514' });
+  });
+
+  it('rejects anything but a WorkOS id in workos_user_id (users_workos_user_id_format_check)', async () => {
+    // The last of three checks of one pattern, and the one a backfill script or
+    // a psql session cannot skip.
+    for (const bad of ['Xk3pQ9mZ2vB7nR4tY6wL8sD1fG0h', 'user_', 'user_01-ABC', 'org_01ABC']) {
+      await expect(
+        t.pg.query(`insert into users (id, workos_user_id, email) values ($1, $2, $3)`, [
+          randomUUID(),
+          bad,
+          address(),
+        ]),
+      ).rejects.toMatchObject({ code: '23514', constraint: 'users_workos_user_id_format_check' });
+    }
+    const seeded = await seedFirebaseUser();
+    await expect(
+      t.pg.query(`update users set workos_user_id = $2 where id = $1`, [
+        seeded.id,
+        seeded.firebase_uid,
+      ]),
+    ).rejects.toMatchObject({ code: '23514' });
+  });
+});
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * The constraint-violation mapping, for both drivers.
+ * ─────────────────────────────────────────────────────────────────────────── */
+describe('isUniqueViolation', () => {
+  function postgresJsError(constraint: string, code = '23505') {
+    // postgres.js — the production driver — names the field `constraint_name`.
+    return Object.assign(new Error('duplicate key value'), { code, constraint_name: constraint });
+  }
+  function pgliteError(constraint: string, code = '23505') {
+    return Object.assign(new Error('duplicate key value'), { code, constraint });
+  }
+  /** How Drizzle surfaces a driver failure: its own error, the driver's as `cause`. */
+  function drizzleWrapped(cause: Error) {
+    return new Error('Failed query: insert into "users" …', { cause });
+  }
+
+  it('recognises the production driver’s error wrapped by Drizzle', () => {
+    expect(
+      isUniqueViolation(
+        drizzleWrapped(postgresJsError('users_email_unique')),
+        'users_email_unique',
+      ),
+    ).toBe(true);
+  });
+
+  it('recognises PGlite’s spelling of the same error', () => {
+    expect(
+      isUniqueViolation(drizzleWrapped(pgliteError('users_email_unique')), 'users_email_unique'),
+    ).toBe(true);
+  });
+
+  it('does not match a different constraint, a different SQLSTATE, or a non-error', () => {
+    for (const error of [
+      postgresJsError('users_email_unique'),
+      pgliteError('users_email_unique'),
+    ]) {
+      expect(isUniqueViolation(drizzleWrapped(error), 'users_workos_user_id_unique')).toBe(false);
+    }
+    expect(
+      isUniqueViolation(
+        drizzleWrapped(postgresJsError('users_email_unique', '23514')),
+        'users_email_unique',
+      ),
+    ).toBe(false);
+    expect(
+      isUniqueViolation(
+        { code: '23505', constraint_name: 'users_email_unique' },
+        'users_email_unique',
+      ),
+    ).toBe(false);
   });
 });

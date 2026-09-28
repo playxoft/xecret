@@ -76,7 +76,12 @@ export type {
   VaultUnlockState,
 } from './vault';
 
-export { IdentityVerificationError, workosIdentity } from './types';
+export {
+  IdentityVerificationError,
+  isWorkosIdentity,
+  WORKOS_USER_ID_PATTERN,
+  workosIdentity,
+} from './types';
 export type {
   IdentityProvider,
   Session,

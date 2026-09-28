@@ -4,15 +4,20 @@
  *
  *   phase run -- npx tsx scripts/smoke-test.ts
  *
- * Every test in this repository runs without a database. They verify that the
- * SQL is *shaped* correctly and that the pure rules are right, which is worth a
- * great deal and proves nothing about whether the thing works. This is the
- * first code that finds out.
+ * Almost every test in this repository runs without a database: they verify
+ * that the SQL is *shaped* correctly and that the pure rules are right, which
+ * is worth a great deal and proves nothing about whether the thing works. The
+ * exceptions — the identity-linking tests — run against PGlite, an in-process
+ * Postgres. This runs against *the* database, over the production driver, and
+ * is the code that finds out.
  *
- * It covers the path a first sign-in actually takes — create the user through
- * the WorkOS linking pass, bootstrap their organisation and its master key,
- * make a project and an environment, store an encrypted secret, read it back —
- * plus the properties the design rests on and that no unit test can reach:
+ * It covers the path a first sign-in actually takes, and the provider migration
+ * after it: the live Firebase sign-in creates the user, the same person's first
+ * WorkOS sign-in adopts that account by its verified address, and a WorkOS-only
+ * sign-up is created beside it. Then it bootstraps an organisation and its
+ * master key, makes a project and an environment, stores an encrypted secret
+ * and reads it back — plus the properties the design rests on and that no unit
+ * test can reach:
  *
  *  - a ciphertext moved to another row fails to decrypt (the AAD binding);
  *  - the `value_type` CHECK refuses a write that bypassed the application;
@@ -44,6 +49,7 @@ import {
   markSessionUnlocked,
   provisionOrganization,
   updateSecretMetadata,
+  upsertUserFromFirebaseIdentity,
   upsertUserFromWorkosIdentity,
 } from '../packages/db/src/repositories/index.ts';
 import { EnvelopeService, keyProviderFromEnv } from '../packages/core/src/crypto/index.ts';
@@ -104,32 +110,63 @@ async function main(): Promise<void> {
 
   try {
     await db.transaction(async (tx) => {
-      // ── 1. First sign-in ────────────────────────────────────────────────
-      // Through the WorkOS linking pass, which is the sign-in path from the
-      // provider swap on: the Firebase upsert is deleted with its route, and
-      // the linker is the code whose three steps, soft-delete refusals and
-      // `users_identity_present_check` only a real database can exercise. The
-      // subject is a well-formed WorkOS id (`user_…`) that nobody holds, and
-      // the address is one nobody holds, so this is step 3 — a new account.
-      const { user, outcome } = await upsertUserFromWorkosIdentity(
+      // ── 1. First sign-in, then the provider migration ───────────────────
+      // Seconds since the epoch, as a verified identity carries it. The
+      // freshness rules that read this belong to the routes, not to the
+      // repository, but the field is required and a smoke test that invented a
+      // value outside the unit it is stored in would be the first thing to
+      // mislead somebody.
+      const authTime = Math.floor(Date.now() / 1000);
+      const email = `smoke-${uuidv7()}@example.invalid`;
+
+      // The live path: `POST /api/auth/session`'s upsert, keyed on and writing
+      // `firebase_uid`, exactly as production creates an account today.
+      const firebaseUid = `smoke${uuidv7().replaceAll('-', '')}`;
+      const user = await upsertUserFromFirebaseIdentity(tx, {
+        subject: firebaseUid,
+        email,
+        emailVerified: true,
+        displayName: 'Smoke Test',
+        authTime,
+      });
+      step(
+        'user created by the Firebase sign-in',
+        user.firebaseUid === firebaseUid && user.workosUserId === null,
+        `id ${user.id.slice(0, 8)}…, firebase_uid only`,
+      );
+
+      // The migration: the same person's first WorkOS sign-in, adopting that
+      // account by its verified address — linking-pass step 2, against real
+      // rows and every constraint 0018 added. This is the step that carries
+      // every existing account across the provider swap.
+      const workosSubject = `user_smoke${uuidv7().replaceAll('-', '')}`;
+      const adopted = await upsertUserFromWorkosIdentity(
+        tx,
+        workosIdentity({ subject: workosSubject, email, emailVerified: true, authTime }),
+      );
+      step(
+        'account adopted by its first WorkOS sign-in',
+        adopted.outcome === 'linked' &&
+          adopted.user.id === user.id &&
+          adopted.user.firebaseUid === firebaseUid &&
+          adopted.user.workosUserId === workosSubject,
+        `outcome "${adopted.outcome}", same id, firebase_uid kept, workos_user_id set`,
+      );
+
+      // And a sign-up that never had a Firebase account — step 3.
+      const signup = await upsertUserFromWorkosIdentity(
         tx,
         workosIdentity({
           subject: `user_smoke${uuidv7().replaceAll('-', '')}`,
           email: `smoke-${uuidv7()}@example.invalid`,
           emailVerified: true,
-          displayName: 'Smoke Test',
-          // Seconds since the epoch, as a verified identity carries it. The
-          // freshness rules that read this belong to the routes, not to the
-          // repository, but the field is required and a smoke test that
-          // invented a value outside the unit it is stored in would be the first
-          // thing to mislead somebody.
-          authTime: Math.floor(Date.now() / 1000),
+          authTime,
         }),
       );
       step(
-        'user created',
-        outcome === 'created' && user.workosUserId !== null && user.firebaseUid === null,
-        `id ${user.id.slice(0, 8)}…, outcome "${outcome}", WorkOS id only`,
+        'new WorkOS sign-up created',
+        signup.outcome === 'created' && signup.user.firebaseUid === null,
+        `outcome "${signup.outcome}", WorkOS id only`,
       );
 
       // ── 2. Organisation bootstrap: the org, the membership, the master key ─

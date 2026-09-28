@@ -1,4 +1,5 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
+import { isWorkosIdentity, WORKOS_USER_ID_PATTERN } from '@xecret/core/auth';
 import type { VerifiedIdentity, WorkosIdentity } from '@xecret/core/auth';
 import { uuidv7 } from '@xecret/core/ids';
 import { users } from '../schema/identity';
@@ -10,14 +11,20 @@ import type { Executor } from './shared';
  * `.local/workos-auth.md` for the provider migration in progress.
  *
  * A provider attests to an identity; this table is xecret's own record of it.
- * For the length of the migration there are two couplings, one per provider,
- * and each has exactly one writer that touches only its own column:
+ * For the length of the migration there are two couplings, one per provider.
+ * Each has exactly one *application* writer, which touches only its own column:
  *
  *  - `firebase_uid`, keyed on by the live Firebase sign-in
  *    ({@link upsertUserFromFirebaseIdentity}). It goes when that path does.
  *  - `workos_user_id`, keyed on by the WorkOS callback's linking pass
  *    ({@link upsertUserFromWorkosIdentity}), which is also the only code that
  *    ever adopts an existing account by email.
+ *
+ * The one other writer of `workos_user_id` is operational, not application
+ * code: the one-off backfill after the WorkOS user import, which writes the
+ * imported id onto rows found by `firebase_uid` (migration 0018's header;
+ * `.local/workos-auth.md` §6). It must only ever fill a NULL — `WHERE
+ * workos_user_id IS NULL` — so that it cannot overwrite a link made here.
  *
  * Every lookup exported here excludes soft-deleted rows. That is not tidiness: a
  * deleted account must stop resolving everywhere at the same instant, and
@@ -133,8 +140,9 @@ export async function findUserByEmail(exec: Executor, email: string): Promise<Us
  * the mirrored profile on every login after that.
  *
  * Its one caller is `POST /api/auth/session`, and it is deleted together with
- * that route in WS-2 of the WorkOS migration. Until then it is byte-for-byte
- * the behaviour that shipped before the WorkOS columns existed.
+ * that route in WS-2 of the WorkOS migration. Until then it behaves exactly as
+ * it did before the WorkOS columns existed, plus one guard: it refuses, at
+ * runtime as well as in its type, to be handed a WorkOS identity.
  *
  * ── It is not the WorkOS linking pass, and must never become it ──
  * It keys on `firebase_uid`, writes `firebase_uid`, and neither reads nor
@@ -173,6 +181,14 @@ export async function upsertUserFromFirebaseIdentity(
   exec: Executor,
   identity: VerifiedIdentity & { readonly provider?: never },
 ): Promise<User> {
+  // The parameter type's runtime counterpart: a WorkOS identity would be stored
+  // as a Firebase uid. A programming error, so a TypeError, before any query.
+  if (isWorkosIdentity(identity)) {
+    throw new TypeError(
+      'upsertUserFromFirebaseIdentity was handed a WorkOS identity; that belongs to the linker.',
+    );
+  }
+
   const now = new Date();
   const mirrored = {
     email: identity.email,
@@ -262,34 +278,68 @@ export async function upsertUserFromWorkosIdentity(
   exec: Executor,
   identity: WorkosIdentity,
 ): Promise<UpsertedUser> {
-  // The brand's runtime half. The type already refuses anything not minted by
-  // `workosIdentity()`; this catches the `as` cast and the untyped caller. It is
-  // a programming error rather than a refusal, so it is not a RepositoryError:
-  // a route should answer it with a 500 and a log line, not a polite 4xx.
-  if ((identity as { provider?: unknown }).provider !== 'workos') {
+  // ── The identity itself, before any query ──────────────────────────────────
+  // The parameter type is the first defence and not the last: `any` satisfies
+  // it, and `JSON.parse` and `request.json()` both return `any`. So the three
+  // properties the linking pass rests on are re-checked here, at runtime, in an
+  // order that gives each its own answer. The first two are programming errors
+  // rather than refusals — no user did anything wrong — so they are TypeErrors,
+  // which a route answers with a 500 and a log line, not a polite 4xx.
+  //
+  // The subject's shape: a WorkOS user id and nothing else. The column carries a
+  // CHECK for the same pattern (0018); this is the same rule, one layer earlier.
+  const subject: unknown = (identity as { subject?: unknown } | null)?.subject;
+  if (typeof subject !== 'string' || !WORKOS_USER_ID_PATTERN.test(subject)) {
     throw new TypeError(
-      'upsertUserFromWorkosIdentity was handed an identity WorkOS did not attest to; ' +
-        'construct it with workosIdentity() from the WorkOS API response.',
+      'upsertUserFromWorkosIdentity was handed a subject that is not a WorkOS user id (`user_…`).',
     );
   }
 
-  // Rule 4 of the linking order, and deliberately before any query: an
-  // address the provider has not verified may never reach the linking pass
-  // below. Registering an unverified `someone@company.com` at the identity
-  // provider would otherwise hand over that person's existing account, with its
-  // organisations, its grants and its secrets.
+  // The brand: this exact object was minted by `workosIdentity()` and has not
+  // been copied since. A parsed request body, a JSON round-trip, a spread with
+  // a different address, or an `as` cast all fail here, whatever `provider`
+  // they claim — the check asks the set `workosIdentity()` records into, not
+  // the object.
+  if (!isWorkosIdentity(identity)) {
+    throw new TypeError(
+      'upsertUserFromWorkosIdentity was handed an identity workosIdentity() did not mint; ' +
+        'construct it from the WorkOS API response, and pass that object itself.',
+    );
+  }
+
+  // Rule 4 of the linking order: an address the provider has not verified may
+  // never reach the linking pass below. Registering an unverified
+  // `someone@company.com` at the identity provider would otherwise hand over
+  // that person's existing account, with its organisations, its grants and its
+  // secrets. `=== true`, not truthiness: the string "false" is truthy.
   //
   // The callback checks this too. The duplication is intentional — the
   // callback's check produces the good error message, and this one is the check
-  // that is still true after somebody adds a second caller. Nothing above it
-  // touches the database.
-  if (!identity.emailVerified) {
+  // that is still true after somebody adds a second caller.
+  if (identity.emailVerified !== true) {
     throw new RepositoryError(
       'forbidden',
       'The identity provider has not verified this email address.',
     );
   }
 
+  return linkWorkosIdentity(exec, identity, ADDRESS_MOVED_RETRIES);
+}
+
+/**
+ * How many times the pass starts over when the account it was adopting moved
+ * to a different address mid-write. Once: the second pass sees the address as
+ * it now is, and a row that moves *again* in that window is not a race worth
+ * chasing — it is refused, accurately.
+ */
+const ADDRESS_MOVED_RETRIES = 1;
+
+/** The three steps, for an identity already checked by the caller. */
+async function linkWorkosIdentity(
+  exec: Executor,
+  identity: WorkosIdentity,
+  retriesLeft: number,
+): Promise<UpsertedUser> {
   const now = new Date();
   const mirrored = {
     email: identity.email,
@@ -307,7 +357,10 @@ export async function upsertUserFromWorkosIdentity(
     // Rule 5: the address may have changed upstream since the last login. The
     // provider is authoritative for it, and a collision is reported exactly as
     // it would be on a fresh signup.
-    return { user: await signInLinkedUser(exec, known, mirrored, now), outcome: 'matched' };
+    return {
+      user: await signInLinkedUser(exec, known, identity.subject, mirrored, now),
+      outcome: 'matched',
+    };
   }
 
   // ── 2. Known address, new identity ─────────────────────────────────────────
@@ -334,7 +387,10 @@ export async function upsertUserFromWorkosIdentity(
     if (holder.workosUserId === identity.subject) {
       // A concurrent sign-in of this same identity linked the row between step
       // 1's read and this one. From here it is an ordinary login.
-      return { user: await signInLinkedUser(exec, holder, mirrored, now), outcome: 'matched' };
+      return {
+        user: await signInLinkedUser(exec, holder, identity.subject, mirrored, now),
+        outcome: 'matched',
+      };
     }
 
     // An address already bound to a *different* provider identity is a
@@ -346,10 +402,20 @@ export async function upsertUserFromWorkosIdentity(
     const [linked] = await exec
       .update(users)
       .set({ workosUserId: identity.subject, ...mirrored, updatedAt: now, lastLoginAt: now })
-      // Re-asserting "still active, still unlinked" inside the predicate is
-      // what makes concurrent first logins safe: the read above is advice, and
-      // this is the check. Whoever loses updates nothing and reads no row back.
-      .where(and(eq(users.id, holder.id), isNull(users.deletedAt), isNull(users.workosUserId)))
+      // The read above is advice; this predicate is the check. Every fact the
+      // adoption was decided on is re-asserted where it is acted on: the row is
+      // still active, still unlinked, and still holds *exactly* the address that
+      // was judged the same mailbox. Without the last term, an owner changing
+      // their address in that window would have their account adopted by the
+      // old address's holder, and the old address written back over the new.
+      .where(
+        and(
+          eq(users.id, holder.id),
+          isNull(users.deletedAt),
+          isNull(users.workosUserId),
+          sql`${users.email}::text = ${holder.email}`,
+        ),
+      )
       .returning()
       .catch(rethrowLinkCollision);
 
@@ -362,9 +428,23 @@ export async function upsertUserFromWorkosIdentity(
     const current = await findUserIncludingDeleted(exec, holder.id);
     if (!current || current.deletedAt !== null) throw accountDeleted();
     if (current.workosUserId === identity.subject) {
-      return { user: await signInLinkedUser(exec, current, mirrored, now), outcome: 'matched' };
+      return {
+        user: await signInLinkedUser(exec, current, identity.subject, mirrored, now),
+        outcome: 'matched',
+      };
     }
-    throw linkedElsewhere();
+    if (current.workosUserId !== null) throw linkedElsewhere();
+
+    // Still active and still unlinked, so the address is what moved: this row
+    // is no longer the account for the address being presented. Nobody is
+    // "linked to a different identity" — start over, and let the address be
+    // judged as it now stands.
+    if (retriesLeft > 0) return linkWorkosIdentity(exec, identity, retriesLeft - 1);
+    throw new RepositoryError(
+      'conflict',
+      'The account holding that email address changed while this sign-in was in progress. ' +
+        'Sign in again.',
+    );
   }
 
   // ── 3. New account ─────────────────────────────────────────────────────────
@@ -394,7 +474,10 @@ export async function upsertUserFromWorkosIdentity(
   // would audit two sign-ups for one account.
   const winner = await findIdentityHolder(exec, identity.subject);
   if (!winner) throw accountDeleted();
-  return { user: await signInLinkedUser(exec, winner, mirrored, now), outcome: 'matched' };
+  return {
+    user: await signInLinkedUser(exec, winner, identity.subject, mirrored, now),
+    outcome: 'matched',
+  };
 }
 
 /**
@@ -449,13 +532,16 @@ async function findUserIncludingDeleted(exec: Executor, userId: string): Promise
  * The ordinary login into a row that already carries the identity: mirror the
  * provider's profile onto it and record the sign-in.
  *
- * A deleted row is refused both before the write and inside it — the second
- * because the account can be deleted between this request's read and its
- * write, and a sign-in must not land on a row that deletion has already ended.
+ * Every fact the caller decided on is re-asserted in the write: the row is
+ * still active, and it still carries *this* identity. A deleted row is refused
+ * both before the write and inside it — the second because the account can be
+ * deleted between this request's read and its write, and a sign-in must not
+ * land on a row that deletion has already ended.
  */
 async function signInLinkedUser(
   exec: Executor,
   row: User,
+  subject: string,
   mirrored: { email: string; emailVerified: boolean; avatarUrl: string | null },
   now: Date,
 ): Promise<User> {
@@ -464,12 +550,19 @@ async function signInLinkedUser(
   const [updated] = await exec
     .update(users)
     .set({ ...mirrored, updatedAt: now, lastLoginAt: now })
-    .where(and(eq(users.id, row.id), isNull(users.deletedAt)))
+    .where(and(eq(users.id, row.id), isNull(users.deletedAt), eq(users.workosUserId, subject)))
     .returning()
     .catch(rethrowLinkCollision);
 
-  if (!updated) throw accountDeleted();
-  return updated;
+  if (updated) return updated;
+
+  // The write matched nothing. Say which half of the predicate failed.
+  const current = await findUserIncludingDeleted(exec, row.id);
+  if (!current || current.deletedAt !== null) throw accountDeleted();
+  throw new RepositoryError(
+    'conflict',
+    'This sign-in identity is no longer linked to that account.',
+  );
 }
 
 function accountDeleted(): RepositoryError {

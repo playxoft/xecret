@@ -94,10 +94,24 @@ export const POST = publicRoute(async ({ request, services }) => {
   // surfaces here as a plain statement rather than a 500. 403, not 404: this
   // caller has just proven control of the identity, so "this account was
   // deleted" reveals nothing they are not entitled to know.
+  //
+  // A conflict is a *different* Firebase account presenting an address an
+  // existing xecret account already holds — `users_email_unique`, since this
+  // path never matches by email. It was a 500 until now. 409, and a message
+  // that says what to do without saying which account or which provider holds
+  // the address: the caller has proven control of the mailbox, not of the
+  // account, so neither the other account's uid nor how it signs in is theirs
+  // to learn.
   const user = await upsertUserFromFirebaseIdentity(services.db, identity).catch(
     (cause: unknown) => {
       if (cause instanceof RepositoryError && cause.code === 'notFound') {
         throw errors.forbidden('This account was deleted and cannot be signed in to again.');
+      }
+      if (cause instanceof RepositoryError && cause.code === 'conflict') {
+        throw errors.conflict(
+          'An xecret account already uses this email with a different sign-in. ' +
+            'Sign in the way you did before, or contact support.',
+        );
       }
       throw cause;
     },

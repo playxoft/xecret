@@ -244,14 +244,24 @@ describe('a Firebase sign-in writes firebase_uid and never workos_user_id', () =
     expect(await rowsFor('firebase_uid', seeded.firebase_uid!)).toHaveLength(1);
   });
 
-  it('never signs a different Firebase account into an existing one by email', async () => {
+  it('never signs a different Firebase account into an existing one by email: 409, nothing written', async () => {
+    // Was a 500 on main. Now a conflict the caller can act on — and one that
+    // names neither the other account's uid nor how it signs in.
     const seeded = await seedFirebaseUser();
+    const intruder = firebaseIdentity({ email: seeded.email });
 
-    const { status } = await post(firebaseIdentity({ email: seeded.email }));
+    const { status, body } = await post(intruder);
 
-    expect(status).not.toBe(200);
+    expect(status).toBe(409);
+    expect(body.error?.message).toBe(
+      'An xecret account already uses this email with a different sign-in. ' +
+        'Sign in the way you did before, or contact support.',
+    );
+    expect(JSON.stringify(body)).not.toContain(seeded.firebase_uid!);
+    expect(JSON.stringify(body)).not.toContain(intruder.subject);
     expect(repositories.createSession).not.toHaveBeenCalled();
     expect((await rowsFor('id', seeded.id))[0]).toEqual(seeded);
+    expect(await rowsFor('firebase_uid', intruder.subject)).toHaveLength(0);
   });
 });
 

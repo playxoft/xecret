@@ -37,6 +37,17 @@ export interface VerifiedIdentity {
 declare const workosAttested: unique symbol;
 
 /**
+ * The shape of a WorkOS user id: `user_` and an alphanumeric (ULID) tail.
+ *
+ * Stated once so the three places that check it — {@link workosIdentity}, the
+ * linking pass, and the `users_workos_user_id_format_check` constraint in
+ * migration 0018 — agree. A Firebase uid (28 bare alphanumerics) fails it,
+ * which is the point. If WorkOS ever changes its id format, all three change
+ * together, and the constraint needs a migration.
+ */
+export const WORKOS_USER_ID_PATTERN = /^user_[0-9A-Za-z]+$/;
+
+/**
  * An identity WorkOS attested to: `subject` is a WorkOS user id (`user_…`).
  *
  * ── Why a distinct type, when the fields are the same ──
@@ -46,13 +57,21 @@ declare const workosAttested: unique symbol;
  * handing it a Firebase identity writes a Firebase uid where a WorkOS id
  * belongs, and the first real WorkOS login for that person then collides with
  * it. That happened once, in review, because both functions took a plain
- * `VerifiedIdentity` and the compiler had no way to object. With the brand, a
- * `VerifiedIdentity` from the Firebase verifier does not type-check as an
- * argument to the linker at all.
+ * `VerifiedIdentity` and the compiler had no way to object.
  *
- * `provider` is the runtime half, for logs and for the `provider?: never` guard
- * on the Firebase path; the unique-symbol brand is the compile-time half, and it
- * is what makes {@link workosIdentity} the only way to produce one.
+ * ── Two halves, because the compiler alone is not enough ──
+ * The unique-symbol brand is the compile-time half: a `VerifiedIdentity` does
+ * not type-check as a `WorkosIdentity`. But `any` type-checks as anything —
+ * `JSON.parse(...)` and `request.json()` return it — and a spread
+ * (`{ ...identity, email }`) keeps the brand's *type* while being a new object
+ * with new contents. So there is a runtime half too: {@link workosIdentity}
+ * records every object it mints, frozen, in a module-private set, and
+ * {@link isWorkosIdentity} asks that set. Nothing else can add to it, so a
+ * parsed body, a JSON round-trip, a spread or an `as` cast is refused at
+ * runtime even where the compiler let it through.
+ *
+ * `provider` is kept for logs and for the `provider?: never` guard on the
+ * Firebase path's parameter; it proves nothing on its own.
  */
 export type WorkosIdentity = VerifiedIdentity & {
   readonly provider: 'workos';
@@ -60,23 +79,48 @@ export type WorkosIdentity = VerifiedIdentity & {
 };
 
 /**
- * Marks an identity as attested by WorkOS.
+ * Every identity {@link workosIdentity} has minted. Module-private: the only
+ * way in is through that function, which is what makes membership mean
+ * "WorkOS attested to this, and nobody has changed it since" (the objects are
+ * frozen). A WeakSet, so a minted identity is collected with its request.
+ *
+ * One caveat worth knowing: membership is per *module instance*. Were
+ * `@xecret/core` ever bundled twice, identities minted by one copy would be
+ * refused by the other — every WorkOS sign-in would fail, loudly. That is the
+ * safe direction to be wrong in.
+ */
+const attested = new WeakSet<object>();
+
+/**
+ * Marks an identity as attested by WorkOS, and returns it frozen.
  *
  * Call it only on a user object WorkOS itself returned — the result of an
  * authenticated API call such as `authenticateWithCode` — never on anything a
  * client sent or another provider verified.
  *
- * The subject is checked against WorkOS's documented `user_` prefix as a last
- * line of defence against exactly the mix-up this type exists to prevent: a
- * Firebase uid is 28 bare alphanumerics and fails it. A failure is a
- * verification failure, so the caller's existing mapping answers it with a 401
- * rather than writing anything.
+ * The subject is checked against {@link WORKOS_USER_ID_PATTERN} as a last line
+ * of defence against exactly the mix-up this type exists to prevent. A failure
+ * is a verification failure, so the caller's existing mapping answers it with a
+ * 401 rather than writing anything.
  */
 export function workosIdentity(identity: VerifiedIdentity): WorkosIdentity {
-  if (!/^user_[0-9A-Za-z]+$/.test(identity.subject)) {
+  if (typeof identity.subject !== 'string' || !WORKOS_USER_ID_PATTERN.test(identity.subject)) {
     throw new IdentityVerificationError('malformed-subject');
   }
-  return { ...identity, provider: 'workos' } as WorkosIdentity;
+  const minted = Object.freeze({ ...identity, provider: 'workos' as const });
+  attested.add(minted);
+  return minted as WorkosIdentity;
+}
+
+/**
+ * Whether `value` is an identity {@link workosIdentity} minted — the object
+ * itself, not a copy of it.
+ *
+ * The runtime check behind the brand, for code that must not trust the
+ * compiler's word for it: the linking pass calls it before anything else.
+ */
+export function isWorkosIdentity(value: unknown): value is WorkosIdentity {
+  return typeof value === 'object' && value !== null && attested.has(value);
 }
 
 /**

@@ -22,6 +22,23 @@
 -- means: this person has not signed in through WorkOS yet. Deploying this
 -- without deploying the code that uses it changes nothing for anybody.
 --
+-- ── Operational rule: this migration first, then the code ──
+-- Apply this migration BEFORE deploying any build whose schema includes these
+-- columns. Drizzle's `select()` names every column the schema declares, so from
+-- that build on, every `select()` on `users` or `organizations` — the session
+-- lookup on every request among them — names `workos_user_id`,
+-- `workos_org_id` and `sso_required`, and fails with "column does not exist"
+-- against a database without them. The reverse order is safe: the columns are
+-- invisible to code built before them.
+--
+-- ── Who writes `workos_user_id` ──
+-- Two writers, and only two. The application's WorkOS linking pass
+-- (`upsertUserFromWorkosIdentity`), and the one-off operational backfill after
+-- the user import (reason 1 above), which must write only where the column is
+-- still NULL — `WHERE workos_user_id IS NULL`, so it cannot overwrite a link a
+-- sign-in already made — and must report a unique violation (that WorkOS id is
+-- already on a *different* row) for a human to resolve, never force it through.
+--
 -- ── Order ──
 -- The nullable relaxation first, because the check constraint added afterwards
 -- has to be satisfiable while every row still carries only a Firebase id.
@@ -48,6 +65,22 @@ ALTER TABLE "users" ADD COLUMN "workos_user_id" text;--> statement-breakpoint
 -- that a deleted account is refused as deleted instead of mistaken for nobody.
 ALTER TABLE "users"
 	ADD CONSTRAINT "users_workos_user_id_unique" UNIQUE("workos_user_id");--> statement-breakpoint
+
+-- Only a WorkOS user id may live here: `user_` and an alphanumeric (ULID) tail.
+--
+-- The column's whole meaning is "this person's WorkOS identity", and the one
+-- failure that was actually observed on the way here was a *Firebase* uid being
+-- written into it — at which point the person's real WorkOS login collides
+-- with a row that claims to be them already. The application checks the same
+-- pattern twice (`workosIdentity()` in core, and the linking pass itself); this
+-- is the check that still holds for a backfill script, a psql session, or a
+-- future caller that forgot. NULL passes, as it must until a row is linked.
+--
+-- If WorkOS ever changes its id format, this constraint needs a migration, in
+-- step with `WORKOS_USER_ID_PATTERN` in `packages/core/src/auth/types.ts`.
+ALTER TABLE "users"
+	ADD CONSTRAINT "users_workos_user_id_format_check"
+	CHECK ("workos_user_id" ~ '^user_[0-9A-Za-z]+$');--> statement-breakpoint
 
 -- A row must remain reachable by *some* provider.
 --

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '../testing/pglite';
 import type { TestDatabase } from '../testing/pglite';
 import * as repositories from './index';
-import { findOrgByWorkosOrgId, setOrgWorkosOrgId } from './organizations';
+import { findOrgByWorkosOrgId, setOrgWorkosOrgId, updateOrganization } from './organizations';
 import { RepositoryError } from './shared';
 
 /**
@@ -151,5 +151,26 @@ describe('sso_required', () => {
     // in the same change as the enforcement (WS-2). If this fails, that change
     // is here — make sure the enforcement is too, then update this test.
     expect(Object.keys(repositories).filter((name) => /sso/i.test(name))).toEqual([]);
+  });
+
+  it('cannot be set through the organisation patch either', async () => {
+    // The other way a setter could arrive: as a field on the patch
+    // `updateOrganization` already accepts. Checked at the type level — `tsc`
+    // covers this file, and `NoSsoField` stops compiling the moment the patch
+    // grows a key containing "sso" in any case — and at runtime, where an
+    // `ssoRequired` smuggled past the type must not reach the column.
+    type PatchKey = Extract<keyof Parameters<typeof updateOrganization>[2], string>;
+    type SsoKey = Extract<Lowercase<PatchKey>, `${string}sso${string}`>;
+    const NoSsoField: [SsoKey] extends [never] ? true : false = true;
+    expect(NoSsoField).toBe(true);
+
+    const orgId = await seedOrg();
+    await updateOrganization(t.db, orgId, { name: 'Renamed', ssoRequired: true } as never);
+
+    const result = await t.pg.query<{ name: string; sso_required: boolean }>(
+      `select name, sso_required from organizations where id = $1`,
+      [orgId],
+    );
+    expect(result.rows[0]).toEqual({ name: 'Renamed', sso_required: false });
   });
 });
