@@ -140,7 +140,9 @@ export async function deleteAccount(
       // `removeMember` re-checks the last-owner rule under its own lock. The
       // plan already guarantees it survives; the repository not trusting a
       // caller's snapshot is the point of the check, not a redundancy to shave.
-      await removeMember(tx, { orgId: membership.orgId, memberId: membership.memberId });
+      // No guard: the account is removing itself, and nobody's authority over
+      // anybody else is being measured.
+      await removeMember(tx, { orgId: membership.orgId, memberId: membership.memberId }, null);
     }
 
     const revokedSessions = await revokeAllUserSessions(tx, userId);

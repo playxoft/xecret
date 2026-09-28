@@ -18,7 +18,13 @@ import {
   toAuthorizationContext,
   updateMemberRole,
 } from './membership';
-import type { AuthorizationContext, MemberRecord, WrittenMemberRecord } from './membership';
+import type {
+  AuthorizationContext,
+  MemberChange,
+  MemberChangeGuard,
+  MemberRecord,
+  WrittenMemberRecord,
+} from './membership';
 
 /**
  * Where a member's custom role is read, and where it must not be.
@@ -50,6 +56,7 @@ const OTHER_USER_ID = '01930000-0000-7000-8000-000000000005';
 const OTHER_MEMBER_ID = '01930000-0000-7000-8000-000000000006';
 const PROJECT_ID = '01930000-0000-7000-8000-000000000007';
 const ENVIRONMENT_ID = '01930000-0000-7000-8000-000000000008';
+const GRANT_ID = '01930000-0000-7000-8000-000000000009';
 
 interface RecordedStatement {
   sql: string;
@@ -280,13 +287,13 @@ async function everyMemberStatement(): Promise<RecordedStatement[]> {
   await findMemberWithUser(db, ORG_ID, MEMBER_ID);
   await listMembers(db, ORG_ID);
   await addMember(db, { orgId: ORG_ID, userId: USER_ID, role: 'developer', invitedBy: null });
-  await updateMemberRole(db, { ...ref, role: 'developer' });
-  // A promotion to owner too: it is the one role change that reads the
-  // custom role, to report the one it clears.
-  await updateMemberRole(db, { ...ref, role: 'owner' });
-  await suspendMember(db, ref);
-  await reinstateMember(db, ref);
-  await removeMember(db, ref);
+  await updateMemberRole(db, { ...ref, role: 'developer' }, null);
+  // A promotion to owner too: it is the one role change that clears the
+  // custom role, and reports the one it cleared.
+  await updateMemberRole(db, { ...ref, role: 'owner' }, null);
+  await suspendMember(db, ref, null);
+  await reinstateMember(db, ref, null);
+  await removeMember(db, ref, null);
 
   return statements;
 }
@@ -299,11 +306,15 @@ async function everyMemberStatement(): Promise<RecordedStatement[]> {
 async function roleChange(
   role: 'owner' | 'admin' | 'developer' | 'viewer',
   held: readonly unknown[],
+  guard: MemberChangeGuard = null,
 ) {
   const { db, statements } = recorder((sql) => {
     if (sql.includes('from "organizations"')) return [[ORG_ID]];
     if (sql.startsWith('update "org_members"')) {
       return [[MEMBER_ID, ORG_ID, USER_ID, role, 'active']];
+    }
+    if (sql.includes('from "access_grants"')) {
+      return [[GRANT_ID, PROJECT_ID, ENVIRONMENT_ID, 'write']];
     }
     if (sql.includes('from "org_members"')) {
       return sql.includes('"custom_roles"') ? [[...MEMBER_ROW, ...held]] : [MEMBER_ROW];
@@ -311,7 +322,7 @@ async function roleChange(
     return [];
   });
 
-  const result = await updateMemberRole(db, { orgId: ORG_ID, memberId: MEMBER_ID, role });
+  const result = await updateMemberRole(db, { orgId: ORG_ID, memberId: MEMBER_ID, role }, guard);
 
   const update = statements.find(({ sql }) => sql.startsWith('update "org_members"'));
   expect(update).toBeDefined();
@@ -374,10 +385,11 @@ describe('member writes', () => {
     // this file is in the package's program.
     const { db } = recorder((sql) => {
       if (sql.includes('from "organizations"')) return [[ORG_ID]];
+      if (sql.includes('"custom_roles"')) return [[...MEMBER_ROW, ...NO_CUSTOM_ROLE]];
       return sql.includes('"org_members"') ? [MEMBER_ROW] : [];
     });
 
-    const written = await suspendMember(db, { orgId: ORG_ID, memberId: MEMBER_ID });
+    const written = await suspendMember(db, { orgId: ORG_ID, memberId: MEMBER_ID }, null);
 
     // The key is required — present, whatever its value — on both the record
     // and the context built from it. `toEqualTypeOf` tells `customRole?:` from
@@ -459,15 +471,116 @@ describe('a role change', () => {
   });
 
   it.each(['admin', 'developer', 'viewer'] as const)(
-    'reports nothing cleared on a change to %s, and reads no custom role to say so',
+    'reports nothing cleared on a change to %s',
     async (role) => {
-      // The member holds one throughout; only a promotion to owner drops it,
-      // so only a promotion to owner pays for the read.
-      const { result, statements } = await roleChange(role, STAGING_OPERATOR);
+      // The member holds one throughout; only a promotion to owner drops it.
+      const { result } = await roleChange(role, STAGING_OPERATOR);
       expect(result.clearedCustomRole).toBeNull();
-      expect(statements.filter(({ sql }) => sql.includes('custom_roles'))).toEqual([]);
     },
   );
+});
+
+describe('the guard on a member write', () => {
+  /** Runs `write` against a member holding the staging-operator role, with one grant row. */
+  function locked() {
+    return recorder((sql) => {
+      if (sql.includes('from "organizations"')) return [[ORG_ID]];
+      if (sql.startsWith('update "org_members"')) return [MEMBER_ROW];
+      if (sql.includes('from "access_grants"')) {
+        return [[GRANT_ID, PROJECT_ID, ENVIRONMENT_ID, 'write']];
+      }
+      if (sql.includes('from "org_members"')) {
+        return sql.includes('"custom_roles"')
+          ? [[...MEMBER_ROW, ...STAGING_OPERATOR]]
+          : [MEMBER_ROW];
+      }
+      return [];
+    });
+  }
+
+  const ref = { orgId: ORG_ID, memberId: MEMBER_ID };
+  const writes = {
+    'a role change': (db: Database, guard: MemberChangeGuard) =>
+      updateMemberRole(db, { ...ref, role: 'developer' }, guard),
+    'a suspension': (db: Database, guard: MemberChangeGuard) => suspendMember(db, ref, guard),
+    'a reinstatement': (db: Database, guard: MemberChangeGuard) => reinstateMember(db, ref, guard),
+    'a removal': (db: Database, guard: MemberChangeGuard) => removeMember(db, ref, guard),
+  };
+
+  it.each(Object.entries(writes))(
+    'shows %s the member as locked — custom role included — and their grants, before anything is written',
+    async (_name, write) => {
+      const { db, statements } = locked();
+      const seen: MemberChange[] = [];
+
+      await write(db, (change) => {
+        // Nothing has been written, or counted, when the guard runs.
+        expect(
+          statements.some(
+            ({ sql }) =>
+              sql.startsWith('update ') || sql.startsWith('delete ') || sql.includes('count('),
+          ),
+        ).toBe(false);
+        seen.push(change);
+      });
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.member.customRole?.accessCeiling).toEqual({
+        nonProduction: 'admin',
+        production: 'none',
+      });
+      expect(seen[0]!.grants).toEqual([
+        {
+          id: GRANT_ID,
+          projectId: PROJECT_ID,
+          environmentId: ENVIRONMENT_ID,
+          accessLevel: 'write',
+        },
+      ]);
+
+      // The organisation lock, then the member row locked with the join, then
+      // their grants read through the tenancy join — all inside the write's
+      // transaction.
+      const kinds = statements.map(({ sql }) =>
+        sql === 'begin'
+          ? 'begin'
+          : sql.includes('from "organizations"')
+            ? 'lock'
+            : sql.includes('"custom_roles"')
+              ? 'member'
+              : sql.includes('from "access_grants"')
+                ? 'grants'
+                : 'other',
+      );
+      expect(kinds.slice(0, 4)).toEqual(['begin', 'lock', 'member', 'grants']);
+      const member = statements.find(({ sql }) => sql.includes('"custom_roles"'))!;
+      expect(member.sql).toMatch(/ for no key update of "org_members"$/);
+      const grants = statements.find(({ sql }) => sql.includes('from "access_grants"'))!;
+      expect(grants.sql).toContain('"projects"."org_id" = $');
+    },
+  );
+
+  it.each(Object.entries(writes))('writes nothing when it refuses %s', async (_name, write) => {
+    const { db, statements } = locked();
+    const refusal = new Error('refused');
+
+    await expect(
+      write(db, () => {
+        throw refusal;
+      }),
+    ).rejects.toBe(refusal);
+    expect(
+      statements.some(({ sql }) => sql.startsWith('update ') || sql.startsWith('delete ')),
+    ).toBe(false);
+  });
+
+  it('reads no grants when there is no guard to show them to', async () => {
+    const { db, statements } = locked();
+
+    await removeMember(db, ref, null);
+
+    expect(statements.some(({ sql }) => sql.includes('from "access_grants"'))).toBe(false);
+  });
 });
 
 describe('the join onto custom_roles', () => {
@@ -480,9 +593,10 @@ describe('the join onto custom_roles', () => {
     const touching = statements.filter(({ sql }) => sql.includes('custom_roles'));
 
     // findMembership, loadAuthorizationContext, the org-wide loader,
-    // findMemberWithUser, listMembers, and the read a promotion to owner makes
-    // of the role it clears: six reads, and nothing else.
-    expect(touching).toHaveLength(6);
+    // findMemberWithUser, listMembers, and the locked read each of the five
+    // member writes makes of the member it changes: ten reads, and nothing
+    // else.
+    expect(touching).toHaveLength(10);
     for (const { sql } of touching) {
       expect(sql.startsWith('select')).toBe(true);
 

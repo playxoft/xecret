@@ -162,6 +162,8 @@ export type {
   AddMemberParams,
   AuthorizationContext,
   AuthorizationContextParams,
+  MemberChange,
+  MemberChangeGuard,
   MemberGrant,
   MemberListEntry,
   MemberPage,

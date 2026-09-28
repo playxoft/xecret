@@ -1,11 +1,9 @@
 import type { AuditAction, AuditBuilder, AuditRecord, AuditResource } from '@xecret/core/audit';
 import { afterRoleChange, auditingDenials, capabilitiesGained } from '@xecret/core/authz';
 import type { Denial } from '@xecret/core/authz';
-import type { Database } from '@xecret/db';
 import {
   findMemberWithUser,
   listEnvironmentsForOrganization,
-  listGrantsForMember,
   reinstateMember,
   removeMember,
   setMemberCustomRole,
@@ -13,7 +11,7 @@ import {
   toEngineCustomRole,
   updateMemberRole,
 } from '@xecret/db/repositories';
-import type { MemberListEntry } from '@xecret/db/repositories';
+import type { MemberChangeGuard, MemberListEntry, MemberRecord } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
 import { json, noContent, parseJsonBody } from '@/server/http';
 import {
@@ -66,6 +64,18 @@ import type { ServiceContext } from '@/server/context';
  *
  * A refusal by the first two is filed as a `denied` audit record of the change
  * attempted, as a capability denial is.
+ *
+ * ── Decided on the member as the write finds them ──
+ * The first two are measured inside the repository's transaction, on the
+ * member and their grant rows as read under the organisation lock
+ * (`MemberChange`), not on the read this route makes first. That read can be
+ * stale by the time the write lands: a concurrent unassignment of the
+ * member's custom role, or an edit widening it, changes what a role change
+ * gains — and a role change measured against the custom role the member held
+ * a moment ago switches on grant rows nobody measured. Every other write that
+ * changes a member takes the same lock, so what the guard sees is what the
+ * write changes. The route's own read decides only what cannot move under it:
+ * that the member exists, and that it is not the caller.
  *
  * ── A custom role (`{ customRoleId }`) ──
  * `null` takes the member's custom role off; an id puts them on one, or moves
@@ -125,38 +135,53 @@ export const PATCH = authenticatedRoute<Params>(
           ? 'member.suspended'
           : 'member.reinstated';
 
-    // What the change switches on. A reinstatement always — the member's rows
-    // are dormant until it lands, whether or not they read as suspended a
-    // moment ago. A role change only when the new role, through the member's
-    // own custom role, can do something the old one could not; one that gains
-    // nothing lets no row do more than it did.
-    const switchesOnGrants =
-      body.role !== undefined
-        ? capabilitiesGained(target, afterRoleChange(target, body.role)).length > 0
-        : body.status === 'active';
-    const held = switchesOnGrants ? await heldAccess(services.db, orgId, target.id) : null;
+    // The grid a role change or a reinstatement measures the member's grant
+    // rows against. Read before the transaction; an environment created since
+    // is missing from it, and `grantReach` measures a missing one as
+    // production — the stricter kind.
+    const grid =
+      body.role !== undefined || body.status === 'active'
+        ? await listEnvironmentsForOrganization(services.db, orgId)
+        : [];
 
-    auditingDenials(
-      (decision) =>
-        record(
-          audit(orgId).denied(attempted, resource, decision, {
-            targetEmail: target.user.email,
-            ...(body.role === undefined ? {} : { previousRole: target.role, newRole: body.role }),
-          }),
-        ),
-      () => {
-        assertRoleAuthority(membership, target.role);
-        if (body.role !== undefined) assertRoleAuthority(membership, body.role);
-        if (held !== null) assertHeldGrantsWithinAuthority(membership, held.grants, held.grid);
-      },
-    );
+    // The member as the write found them, for the audit record and the answer.
+    const lockedAs: { member: MemberRecord | null } = { member: null };
+
+    const guard: MemberChangeGuard = ({ member, grants }) => {
+      lockedAs.member = member;
+      auditingDenials(
+        (decision) =>
+          record(
+            audit(orgId).denied(attempted, resource, decision, {
+              targetEmail: target.user.email,
+              ...(body.role === undefined ? {} : { previousRole: member.role, newRole: body.role }),
+            }),
+          ),
+        () => {
+          assertRoleAuthority(membership, member.role);
+          if (body.role !== undefined) assertRoleAuthority(membership, body.role);
+
+          // What the change switches on. A reinstatement always — the member's
+          // rows are dormant until it lands. A role change only when the new
+          // role, through the custom role the member holds *now*, can do
+          // something the old one could not; one that gains nothing lets no
+          // row do more than it did.
+          const switchesOnGrants =
+            body.role !== undefined
+              ? capabilitiesGained(member, afterRoleChange(member, body.role)).length > 0
+              : body.status === 'active';
+          if (switchesOnGrants) assertHeldGrantsWithinAuthority(membership, grants, grid);
+        },
+      );
+    };
 
     if (body.role !== undefined) {
-      const updated = await updateMemberRole(services.db, {
-        orgId,
-        memberId: target.id,
-        role: body.role,
-      }).catch(mapMembershipError);
+      const updated = await updateMemberRole(
+        services.db,
+        { orgId, memberId: target.id, role: body.role },
+        guard,
+      ).catch(mapMembershipError);
+      const before = lockedAs.member ?? target;
 
       record(
         audit(orgId).success(
@@ -164,7 +189,7 @@ export const PATCH = authenticatedRoute<Params>(
           { type: 'member', id: target.id },
           {
             targetEmail: target.user.email,
-            previousRole: target.role,
+            previousRole: before.role,
             newRole: updated.role,
             // An owner cannot hold a custom role, so the repository clears it
             // in the same write that makes somebody one, and reports what it
@@ -201,9 +226,9 @@ export const PATCH = authenticatedRoute<Params>(
             ...target,
             role: updated.role,
             status: updated.status,
-            // A promotion to owner clears the custom role in the same write;
-            // the record read before it still carries the one that went.
-            customRole: updated.clearedCustomRole === null ? target.customRole : undefined,
+            // The custom role as the write found it — or none, after a
+            // promotion to owner cleared it in the same write.
+            customRole: updated.clearedCustomRole === null ? before.customRole : undefined,
           },
           actor.user.id,
         ),
@@ -212,10 +237,13 @@ export const PATCH = authenticatedRoute<Params>(
 
     const suspending = body.status === 'suspended';
     const updated = suspending
-      ? await suspendMember(services.db, { orgId, memberId: target.id }).catch(mapMembershipError)
-      : await reinstateMember(services.db, { orgId, memberId: target.id }).catch(
+      ? await suspendMember(services.db, { orgId, memberId: target.id }, guard).catch(
+          mapMembershipError,
+        )
+      : await reinstateMember(services.db, { orgId, memberId: target.id }, guard).catch(
           mapMembershipError,
         );
+    const before = lockedAs.member ?? target;
 
     record(
       audit(orgId).success(
@@ -239,7 +267,10 @@ export const PATCH = authenticatedRoute<Params>(
     );
 
     return json({
-      member: toMember({ ...target, role: updated.role, status: updated.status }, actor.user.id),
+      member: toMember(
+        { ...target, role: updated.role, status: updated.status, customRole: before.customRole },
+        actor.user.id,
+      ),
     });
   },
 );
@@ -266,17 +297,24 @@ export const DELETE = authenticatedRoute<Params>(
     if (target.userId === actor.user.id) {
       throw errors.forbidden('You cannot remove yourself from an organisation.');
     }
-    auditingDenials(
-      (decision) =>
-        record(
-          audit(orgId).denied('member.removed', resource, decision, {
-            targetEmail: target.user.email,
-          }),
-        ),
-      () => assertRoleAuthority(membership, target.role),
-    );
 
-    await removeMember(services.db, { orgId, memberId: target.id }).catch(mapMembershipError);
+    // Measured on the member as the removal finds them, as PATCH explains: a
+    // member promoted to owner between this route's read and the write is an
+    // owner the caller may not remove.
+    const lockedAs: { member: MemberRecord | null } = { member: null };
+    await removeMember(services.db, { orgId, memberId: target.id }, ({ member }) => {
+      lockedAs.member = member;
+      auditingDenials(
+        (decision) =>
+          record(
+            audit(orgId).denied('member.removed', resource, decision, {
+              targetEmail: target.user.email,
+            }),
+          ),
+        () => assertRoleAuthority(membership, member.role),
+      );
+    }).catch(mapMembershipError);
+    const removed = lockedAs.member ?? target;
 
     // After the removal, not before: the reconciliation reads the membership to
     // decide, and a member who is gone resolves to no context — a denial
@@ -296,7 +334,7 @@ export const DELETE = authenticatedRoute<Params>(
       audit(orgId).success(
         'member.removed',
         { type: 'member', id: target.id },
-        { targetEmail: target.user.email, previousRole: target.role },
+        { targetEmail: target.user.email, previousRole: removed.role },
       ),
     );
 
@@ -424,13 +462,4 @@ async function changeCustomRole(params: {
   );
 
   return json({ member });
-}
-
-/** The member's grant rows and the environment grid they are measured against. */
-async function heldAccess(db: Database, orgId: string, memberId: string) {
-  const [grants, grid] = await Promise.all([
-    listGrantsForMember(db, orgId, memberId),
-    listEnvironmentsForOrganization(db, orgId),
-  ]);
-  return { grants, grid };
 }

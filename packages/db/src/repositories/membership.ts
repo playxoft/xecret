@@ -611,6 +611,36 @@ export async function addMember(
   return row;
 }
 
+/**
+ * What a member write's guard is shown: the member as the write will find
+ * them, and every grant row they hold.
+ *
+ * Read inside the write's transaction, after the organisation lock and with
+ * the member's row locked (`lockMemberRecord`), so a decision made from it is
+ * a decision about the member the write changes. Read before the transaction —
+ * as the routes used to — it is a decision about whoever the member was a
+ * moment ago: a role change measured against a custom role that a concurrent
+ * unassignment has since removed, or against one a concurrent edit has since
+ * widened, switches on grant rows nobody measured.
+ */
+export interface MemberChange {
+  /** The member, custom role included. */
+  member: MemberRecord;
+  /** Every grant row they hold — what a widening change switches on. */
+  grants: readonly MemberGrant[];
+}
+
+/**
+ * Decides whether a member write may go ahead, from what `MemberChange` says
+ * the member is when it lands. Throwing refuses the write and rolls the
+ * transaction back with nothing written.
+ *
+ * Required on every member write, and `null` only where nobody's authority is
+ * being measured — an account removing itself. A caller has to say which, so
+ * a route cannot forget to check by leaving an argument out.
+ */
+export type MemberChangeGuard = ((change: MemberChange) => void) | null;
+
 export interface UpdateMemberRoleParams {
   orgId: string;
   memberId: string;
@@ -650,10 +680,17 @@ export interface RoleChangeResult extends WrittenMemberRecord {
  *
  * That record should name what was dropped as well as the new role, so the
  * result says: `clearedCustomRole`. The rule for when a promotion clears one
- * is stated once, here, and the answer is read under the same lock as the
- * write — one extra read, and only on a promotion to owner.
+ * is stated once, here, and the answer is the member read under the same lock
+ * as the write.
  *
  * Any other role leaves `custom_role_id` exactly as it was.
+ *
+ * ── `guard` ──
+ * Runs after the organisation lock, on the member and their grants as locked
+ * (`MemberChange`), before the last-owner count and before anything is
+ * written. The member route measures the change there — the member's role
+ * and the new one against the caller, and, when the change gains the member
+ * capabilities through the custom role they hold *now*, their grant rows.
  *
  * ── What the returned record leaves out ──
  * This and the other status writes below return the row as `RETURNING` sees it,
@@ -665,15 +702,14 @@ export interface RoleChangeResult extends WrittenMemberRecord {
 export async function updateMemberRole(
   exec: Executor,
   params: UpdateMemberRoleParams,
+  guard: MemberChangeGuard,
 ): Promise<RoleChangeResult> {
   return exec.transaction(async (tx) => {
-    const member = await lockOrgAndLoadMember(tx, params.orgId, params.memberId);
+    const member = await lockForChange(tx, params, guard);
     await assertOwnershipSurvives(tx, member, { role: params.role, status: member.status });
 
     const clearsCustomRole = params.role === 'owner';
-    const cleared = clearsCustomRole
-      ? await lockMemberCustomRole(tx, params.orgId, params.memberId)
-      : undefined;
+    const cleared = clearsCustomRole ? member.customRole : undefined;
 
     const [row] = await tx
       .update(orgMembers)
@@ -703,10 +739,17 @@ export interface MemberRef {
  *
  * Their access grants go with them: `access_grants.org_member_id` is
  * `ON DELETE CASCADE`, so no grant can outlive the membership it qualified.
+ *
+ * `guard` as `updateMemberRole` describes; `null` when an account is
+ * removing itself.
  */
-export async function removeMember(exec: Executor, params: MemberRef): Promise<void> {
+export async function removeMember(
+  exec: Executor,
+  params: MemberRef,
+  guard: MemberChangeGuard,
+): Promise<void> {
   await exec.transaction(async (tx) => {
-    const member = await lockOrgAndLoadMember(tx, params.orgId, params.memberId);
+    const member = await lockForChange(tx, params, guard);
     await assertOwnershipSurvives(tx, member, null);
 
     await tx
@@ -722,14 +765,16 @@ export async function removeMember(exec: Executor, params: MemberRef): Promise<v
  * owner, so suspending the only one strands the organisation just as thoroughly
  * as deleting them.
  *
- * Returns a `WrittenMemberRecord`, as `updateMemberRole` explains.
+ * Returns a `WrittenMemberRecord`, and takes a `guard`, as `updateMemberRole`
+ * explains.
  */
 export async function suspendMember(
   exec: Executor,
   params: MemberRef,
+  guard: MemberChangeGuard,
 ): Promise<WrittenMemberRecord> {
   return exec.transaction(async (tx) => {
-    const member = await lockOrgAndLoadMember(tx, params.orgId, params.memberId);
+    const member = await lockForChange(tx, params, guard);
     await assertOwnershipSurvives(tx, member, { role: member.role, status: 'suspended' });
 
     const [row] = await tx
@@ -751,14 +796,17 @@ export async function suspendMember(
  * taken so the write serialises with the guards that do count owners — a
  * reinstatement racing a demotion must not slip between its count and commit.
  *
- * Returns a `WrittenMemberRecord`, as `updateMemberRole` explains.
+ * Returns a `WrittenMemberRecord`, and takes a `guard`, as `updateMemberRole`
+ * explains. A reinstatement switches every grant row the member holds back
+ * on, so the rows its guard is shown are the ones it is about to wake.
  */
 export async function reinstateMember(
   exec: Executor,
   params: MemberRef,
+  guard: MemberChangeGuard,
 ): Promise<WrittenMemberRecord> {
   return exec.transaction(async (tx) => {
-    const member = await lockOrgAndLoadMember(tx, params.orgId, params.memberId);
+    const member = await lockForChange(tx, params, guard);
 
     const [row] = await tx
       .update(orgMembers)
@@ -1060,8 +1108,8 @@ export function membersPageQuery(exec: Executor, orgId: string, page: number, pa
 }
 
 /**
- * Serialises membership changes for one organisation, and returns the member the
- * change targets.
+ * Serialises membership changes for one organisation, reads the member the
+ * change targets, and runs the caller's guard on them.
  *
  * The lock is taken on the *organisation* row, not on the member being changed,
  * and that is the entire point. "At least one active owner" is a property of the
@@ -1077,64 +1125,45 @@ export function membersPageQuery(exec: Executor, orgId: string, page: number, pa
  * this: one row, on writes that are rare by nature, with no advisory-lock
  * bookkeeping and no `SERIALIZABLE` retry loop for callers to get wrong.
  *
- * The member is read with `MEMBER_COLUMNS` and no custom-role join. The
- * last-owner guard is the only reader that decides anything from it, and role
- * and status answer "is this an active owner?" completely *because*
- * `org_members_owner_custom_role_check` keeps a custom role off every owner —
- * a stored owner is an effective one. Hence a `WrittenMemberRecord`: the row
- * says nothing about a narrowing, and must not be mistaken for a read that does.
- * The one write that needs the narrowing — a promotion to owner, which clears
- * it — reads it separately, through `lockMemberCustomRole`.
+ * The same lock orders these writes against everything else that changes whose
+ * authority a member holds — a custom role being assigned, unassigned or
+ * edited (`custom-roles.ts`) — so the member read here, custom role included,
+ * is the member the write will change. That is what the guard decides from.
+ *
+ * The grant rows are read only when there is a guard to show them to.
  */
-async function lockOrgAndLoadMember(
+async function lockForChange(
   tx: Executor,
-  orgId: string,
-  memberId: string,
-): Promise<WrittenMemberRecord> {
-  await lockOrganization(tx, orgId);
+  ref: MemberRef,
+  guard: MemberChangeGuard,
+): Promise<MemberRecord> {
+  await lockOrganization(tx, ref.orgId);
+  const member = await lockMemberRecord(tx, ref.orgId, ref.memberId);
 
-  const [member] = await tx
-    .select(MEMBER_COLUMNS)
-    .from(orgMembers)
-    .where(and(eq(orgMembers.id, memberId), eq(orgMembers.orgId, orgId)))
-    .limit(1);
-  if (!member) throw new RepositoryError('notFound', 'Member not found in this organisation.');
+  if (guard !== null) {
+    const grants = await memberGrantsQuery(tx, { orgId: ref.orgId, memberId: ref.memberId });
+    guard({ member, grants });
+  }
 
   return member;
-}
-
-/**
- * The custom role a member holds, read inside a write that is about to change
- * it, or `undefined` when they hold none.
- *
- * Through the same join and the same mapper as every other joined read, so an
- * unresolved reference comes back as `toCustomRole` reports it. Must run after
- * `lockOrgAndLoadMember`, in the same transaction.
- *
- * `FOR NO KEY UPDATE OF org_members` is the lock the following UPDATE takes on
- * the row anyway, taken one statement earlier — so it adds no contention the
- * write did not already cause. The organisation lock serialises every write in
- * this module; the row lock keeps "the role the UPDATE cleared" true against a
- * writer of `custom_role_id` that does not take it. `OF org_members`, because
- * the nullable side of a LEFT JOIN cannot be locked, and nothing in
- * `custom_roles` needs to be.
- */
-async function lockMemberCustomRole(
-  tx: Executor,
-  orgId: string,
-  memberId: string,
-): Promise<CustomRole | undefined> {
-  return (await lockMemberRecord(tx, orgId, memberId)).customRole;
 }
 
 /**
  * One member with their custom role, read inside a write that is about to
  * change them, row-locked for it.
  *
- * The lock and the join `lockMemberCustomRole` describes, returning the whole
- * record — which is what a write that decides from the member's current role
- * *and* custom role needs (`setMemberCustomRole` in `custom-roles.ts`). Must
- * run after `lockOrganization`, in the same transaction.
+ * Through the same join and the same mapper as every other joined read, so an
+ * unresolved reference comes back as `toCustomRole` reports it. Must run after
+ * `lockOrganization`, in the same transaction — every member write does
+ * (`lockForChange` here, `setMemberCustomRole` in `custom-roles.ts`).
+ *
+ * `FOR NO KEY UPDATE OF org_members` is the lock the following UPDATE takes on
+ * the row anyway, taken one statement earlier, so it adds no contention the
+ * write did not already cause. The organisation lock serialises every write
+ * that changes a member; the row lock keeps what this read says true against
+ * a writer of the row that does not take it. `OF org_members`, because the
+ * nullable side of a LEFT JOIN cannot be locked, and nothing in `custom_roles`
+ * needs to be.
  *
  * @internal Exported for `custom-roles.ts`.
  */
@@ -1160,7 +1189,7 @@ export async function lockMemberRecord(
  *
  * `next` is the member's role and status after the change, or `null` when the
  * member is being removed. Must be called inside the transaction that performs
- * the write, after `lockOrgAndLoadMember` — the count is only meaningful while
+ * the write, after `lockForChange` — the count is only meaningful while
  * the organisation row is locked.
  *
  * Stored roles throughout, and that is sound only because an owner cannot hold

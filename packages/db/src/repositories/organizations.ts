@@ -735,7 +735,7 @@ function randomSlugSuffix(): string {
  * Serialises one account's organisation creations against each other.
  *
  * The lock is taken on the *account* row rather than on anything the
- * transaction is about to write, for the same reason `lockOrgAndLoadMember`
+ * transaction is about to write, for the same reason `lockForChange`
  * locks the organisation rather than the member being changed: "at most ten" is
  * a property of a set, and locking the rows a transaction writes serialises
  * nothing when each writes a different row. Two concurrent creations insert two

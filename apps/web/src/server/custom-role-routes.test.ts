@@ -1092,14 +1092,24 @@ describe('PATCH /members/{id} { customRoleId } — assigning, swapping, unassign
     const held = toEngineCustomRole(roleRecord());
     repositories.findMemberWithUser.mockResolvedValue(target('admin', held));
     repositories.listGrantsForMember.mockResolvedValue([]);
-    repositories.updateMemberRole.mockResolvedValue({
-      id: TARGET_MEMBER_ID,
-      orgId: ORG_ID,
-      userId: TARGET_USER_ID,
-      role: 'owner',
-      status: 'active',
-      clearedCustomRole: { id: ROLE_ID, name: 'Deployer' },
-    });
+    repositories.updateMemberRole.mockImplementation(
+      async (
+        _db: unknown,
+        _params: unknown,
+        guard: (change: { member: unknown; grants: readonly unknown[] }) => void,
+      ) => {
+        // The guard sees the member as the lock finds them, custom role included.
+        guard({ member: target('admin', held), grants: [] });
+        return {
+          id: TARGET_MEMBER_ID,
+          orgId: ORG_ID,
+          userId: TARGET_USER_ID,
+          role: 'owner',
+          status: 'active',
+          clearedCustomRole: { id: ROLE_ID, name: 'Deployer' },
+        };
+      },
+    );
 
     const response = await patchMemberRoute(
       request('PATCH', `/api/orgs/acme/members/${TARGET_MEMBER_ID}`, { role: 'owner' }),
@@ -1189,8 +1199,9 @@ describe('GET /api/auth/me — effective authority per organisation', () => {
     expect(plain!.authority).toMatchObject({
       effectiveRole: 'developer',
       customRole: null,
-      assignableRoles: ['developer', 'viewer'],
-      definableBaseRoles: ['developer', 'viewer'],
+      // A developer hands no role out through any route, so none is listed.
+      assignableRoles: [],
+      definableBaseRoles: [],
     });
   });
 });
