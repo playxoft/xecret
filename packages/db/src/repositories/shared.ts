@@ -106,6 +106,34 @@ export class FieldConflictError extends RepositoryError {
   }
 }
 
+/**
+ * True when `error`, or anything it wraps, is SQLSTATE `code` on `constraint`.
+ *
+ * Drizzle wraps driver failures in `DrizzleQueryError`, so the SQLSTATE lives on
+ * `cause` rather than on the error itself — hence the walk. Matching the
+ * constraint name as well as the code keeps a mapping precise: a table with two
+ * constraints of one kind has two failures that mean different things to the
+ * caller.
+ *
+ * postgres.js names the field `constraint_name`; PGlite, which the repository
+ * tests run against, follows node-postgres and calls it `constraint`. Both are
+ * read, so a mapping holds under either driver and those tests exercise it for
+ * real instead of around it. `isUniqueViolation` is this for 23505.
+ */
+export function isConstraintViolation(error: unknown, code: string, constraint: string): boolean {
+  for (let current: unknown = error; current instanceof Error; current = current.cause) {
+    if (
+      'code' in current &&
+      current.code === code &&
+      (('constraint_name' in current && current.constraint_name === constraint) ||
+        ('constraint' in current && current.constraint === constraint))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export type RepositoryErrorCode =
   | 'conflict'
   | 'notFound'

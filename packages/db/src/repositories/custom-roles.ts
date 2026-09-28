@@ -12,7 +12,7 @@ import {
   memberGrantsQuery,
 } from './membership';
 import type { MemberGrant, MemberRecord, MemberStatus, WrittenMemberRecord } from './membership';
-import { FieldConflictError, RepositoryError } from './shared';
+import { FieldConflictError, isConstraintViolation, RepositoryError } from './shared';
 import type { Executor } from './shared';
 import { isUniqueViolation } from './users';
 
@@ -591,27 +591,6 @@ const FOREIGN_KEY_VIOLATION = '23503';
 const CHECK_VIOLATION = '23514';
 
 /**
- * Whether `error`, or anything in its cause chain, is `code` on `constraint`.
- *
- * postgres.js names the field `constraint_name`; PGlite and node-postgres call
- * it `constraint`. Both are read, as `isUniqueViolation` reads them, so the
- * mapping holds under either driver.
- */
-function isViolation(error: unknown, code: string, constraint: string): boolean {
-  for (let current: unknown = error; current instanceof Error; current = current.cause) {
-    if (
-      'code' in current &&
-      current.code === code &&
-      (('constraint_name' in current && current.constraint_name === constraint) ||
-        ('constraint' in current && current.constraint === constraint))
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
  * Maps the constraints a custom-role write can meet onto `RepositoryError`s,
  * passing everything else — a `RepositoryError` already, a guard's refusal, a
  * lost connection — through untouched.
@@ -627,12 +606,12 @@ function roleWriteError(foreignKey: 'inUse' | 'missing'): (cause: unknown) => ne
     if (isUniqueViolation(cause, NAME_UNIQUE_CONSTRAINT)) {
       throw new FieldConflictError('name', NAME_TAKEN);
     }
-    if (isViolation(cause, FOREIGN_KEY_VIOLATION, MEMBER_ROLE_FK)) {
+    if (isConstraintViolation(cause, FOREIGN_KEY_VIOLATION, MEMBER_ROLE_FK)) {
       throw foreignKey === 'inUse'
         ? new RepositoryError('conflict', ROLE_IN_USE)
         : new RepositoryError('notFound', ROLE_NOT_FOUND);
     }
-    if (isViolation(cause, CHECK_VIOLATION, OWNER_CHECK)) {
+    if (isConstraintViolation(cause, CHECK_VIOLATION, OWNER_CHECK)) {
       throw new RepositoryError('conflict', OWNER_HOLDS_NONE);
     }
     throw cause;
