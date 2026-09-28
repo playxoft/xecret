@@ -78,6 +78,9 @@ export function OrganizationsScreen() {
                 </span>
                 <span className="text-fg-subtle block truncate text-sm">
                   <span className="font-mono">{organization.slug}</span> · {organization.role}
+                  {organization.authority.customRole !== null
+                    ? ` · ${organization.authority.customRole.name}`
+                    : null}
                 </span>
               </span>
               <ArrowRightIcon className="text-fg-subtle size-4 shrink-0" />

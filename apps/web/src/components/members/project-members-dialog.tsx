@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 
-import { canAssignRole } from '@xecret/core/authz';
 import type { AccessLevel, OrgRole } from '@xecret/core/authz';
 import { api, errorMessage } from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -30,6 +29,7 @@ import {
 } from '@/components/ui';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import { useApiResource } from '@/app/(dashboard)/_lib/use-api-resource';
+import { useGrantable } from '@/app/(dashboard)/_lib/use-authority';
 import { LevelToggle } from './level-toggle';
 import { ROLE_LABELS, ROLE_TONE } from './types';
 import type { ProjectMember, ProjectMemberListResponse } from './types';
@@ -69,8 +69,11 @@ export interface ProjectMembersDialogProps {
   orgSlug: string;
   projectSlug: string;
   projectName: string;
-  /** The viewer's organisation role, which bounds whose grants they may touch. */
-  viewerRole: OrgRole;
+  /**
+   * The roles the viewer may manage, from their session authority — which
+   * bounds whose grants they may touch.
+   */
+  assignableRoles: readonly OrgRole[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
@@ -79,7 +82,7 @@ export function ProjectMembersDialog({
   orgSlug,
   projectSlug,
   projectName,
-  viewerRole,
+  assignableRoles,
   open,
   onOpenChange,
 }: ProjectMembersDialogProps) {
@@ -132,7 +135,7 @@ export function ProjectMembersDialog({
             orgSlug={orgSlug}
             projectSlug={projectSlug}
             projectName={projectName}
-            viewerRole={viewerRole}
+            assignableRoles={assignableRoles}
             onOpenChange={requestClose}
             onSavingChange={setSaving}
             onDirtyChange={setDirty}
@@ -166,7 +169,7 @@ function ProjectMembersPanel({
   orgSlug,
   projectSlug,
   projectName,
-  viewerRole,
+  assignableRoles,
   onOpenChange,
   onSavingChange,
   onDirtyChange,
@@ -174,7 +177,7 @@ function ProjectMembersPanel({
   orgSlug: string;
   projectSlug: string;
   projectName: string;
-  viewerRole: OrgRole;
+  assignableRoles: readonly OrgRole[];
   onOpenChange: (open: boolean) => void;
   onSavingChange: (saving: boolean) => void;
   onDirtyChange: (dirty: boolean) => void;
@@ -182,6 +185,9 @@ function ProjectMembersPanel({
   const access = useApiResource<ProjectMemberListResponse>(
     apiPath.projectMembers(orgSlug, projectSlug),
   );
+  // What the viewer could grant on each of this project's environments — the
+  // same for every member row, since it measures the viewer, not them.
+  const grantable = useGrantable(orgSlug);
   const { toast } = useToast();
   const [failure, setFailure] = useState<SaveFailure | null>(null);
   const [saving, setSaving] = useState(false);
@@ -199,8 +205,7 @@ function ProjectMembersPanel({
   const environments = access.data?.environments ?? [];
 
   /** Whether the viewer may edit this member's grants; the server re-checks. */
-  const mayEdit = (member: ProjectMember) =>
-    !member.isYou && canAssignRole(viewerRole, member.role);
+  const mayEdit = (member: ProjectMember) => !member.isYou && assignableRoles.includes(member.role);
 
   const visible = members.filter(
     (member) =>
@@ -501,6 +506,12 @@ function ProjectMembersPanel({
                       <Badge tone={ROLE_TONE[member.role] ?? 'neutral'}>
                         {ROLE_LABELS[member.role]}
                       </Badge>
+                      {member.customRole !== null ? (
+                        <Badge className="max-w-32 min-w-0" title={member.customRole.name}>
+                          <span className="sr-only">Custom role: </span>
+                          <span className="truncate">{member.customRole.name}</span>
+                        </Badge>
+                      ) : null}
                     </button>
                     {editable ? (
                       <Button
@@ -530,6 +541,7 @@ function ProjectMembersPanel({
                           <LevelToggle
                             level={shownLevel(member.id, environment.slug, environment.level)}
                             disabled={!editable || saving}
+                            maxLevel={grantable(projectSlug, environment.slug)}
                             scopeLabel={`${member.displayName ?? member.email} in ${environment.name}`}
                             size="sm"
                             onSelect={(next) =>

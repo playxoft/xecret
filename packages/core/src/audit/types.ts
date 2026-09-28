@@ -9,6 +9,8 @@
  * See docs/architecture/database-schema.md §8.
  */
 
+import type { AccessLevel, Action } from '../authz/types';
+
 export type ActorType = 'user' | 'cli_token' | 'service_token' | 'system';
 
 export type AuditOutcome = 'success' | 'denied' | 'error';
@@ -189,6 +191,46 @@ export type AuditAction =
   | 'member.suspended'
   | 'member.reinstated'
   /**
+   * A member was given a custom role, moved from one to another, or had theirs
+   * taken off.
+   *
+   * Its own event rather than a `member.role_changed`, because the built-in
+   * role did not change and a reviewer filtering on that event is asking "who
+   * became an admin?", not "who became a Deployer?". `customRoleId` and
+   * `customRoleName` name the role the member holds afterwards — absent when
+   * the change removed it — and `previousCustomRoleId` and
+   * `previousCustomRoleName` the one they held before, absent when they held
+   * none. Removing one is the change worth finding later: it returns the
+   * member to the whole of their built-in role.
+   */
+  | 'member.custom_role_changed'
+  /**
+   * An organisation defined a custom role.
+   *
+   * The definition is recorded whole — base, action list, ceiling — because it
+   * is what the event *is*: every later `member.custom_role_changed` naming
+   * this role means "narrowed to exactly this", and the role row itself can be
+   * edited afterwards.
+   */
+  | 'role.created'
+  /**
+   * A custom role's definition changed: its name, its base, its action list or
+   * its ceiling.
+   *
+   * Carries the definition before and after, not a description of the
+   * difference — a reviewer asking "when did Deployers gain production?" reads
+   * `previousAccessCeiling` against `accessCeiling`, and a summary somebody
+   * computed at write time could only ever answer the questions its author
+   * thought of. `holderCount` says how many members the edit reached.
+   */
+  | 'role.updated'
+  /**
+   * A custom role was deleted. Only ever one nobody held — the foreign key
+   * refuses the rest — so this changed nobody's access, and says so by
+   * carrying no `holderCount`.
+   */
+  | 'role.deleted'
+  /**
    * A pending invitation was withdrawn before anyone accepted it.
    *
    * `member.invited` records the offer and `member.joined` records the
@@ -333,6 +375,38 @@ export interface AuditMetadata {
   previousCustomRoleId?: string;
   previousCustomRoleName?: string;
   /**
+   * The custom role an event is about, by id and by name: the role defined,
+   * edited or deleted, or the one a member was moved onto.
+   *
+   * The name is the organisation's own words, so it is as attacker-influenced
+   * as a secret name and cleaned the same way.
+   */
+  customRoleId?: string;
+  customRoleName?: string;
+  /**
+   * The built-in role a custom role narrows, after and before an edit. Role
+   * names, from a closed set.
+   */
+  baseRole?: string;
+  previousBaseRole?: string;
+  /**
+   * A custom role's action list, after and before an edit.
+   *
+   * Action names and nothing else: the builder keeps only entries that are an
+   * `Action`, so the field cannot carry a free string however it is called.
+   */
+  allowedActions?: readonly Action[];
+  previousAllowedActions?: readonly Action[];
+  /**
+   * A custom role's access ceiling, after and before an edit. `null` records
+   * "no ceiling" — which is a statement, not an omission: lifting a ceiling is
+   * the edit most worth finding.
+   */
+  accessCeiling?: AuditAccessCeiling | null;
+  previousAccessCeiling?: AuditAccessCeiling | null;
+  /** How many members held a custom role when its definition changed. A count, never a list. */
+  holderCount?: number;
+  /**
    * The access level a grant held before and after a change, e.g. `read`.
    *
    * Level names, never values. `access.granted` without them says a grant
@@ -446,6 +520,12 @@ export interface AuditMetadata {
    */
   operator?: string;
   source?: 'dashboard' | 'cli' | 'ci' | 'api';
+}
+
+/** A custom role's ceiling as an audit record carries it: two level names. */
+export interface AuditAccessCeiling {
+  nonProduction: AccessLevel;
+  production: AccessLevel;
 }
 
 export interface AuditEvent {

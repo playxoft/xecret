@@ -69,6 +69,10 @@ const ACTIONS = [
   'member.role_changed',
   'member.suspended',
   'member.reinstated',
+  'member.custom_role_changed',
+  'role.created',
+  'role.updated',
+  'role.deleted',
   'invitation.revoked',
   'access.granted',
   'access.revoked',
@@ -665,13 +669,31 @@ function FilterSelect({
  * One line of context from the metadata the builder recorded. Values here were
  * sanitised and redacted at write time; this only chooses which to surface.
  */
-function describeEvent(event: AuditEvent): string {
+export function describeEvent(event: AuditEvent): string {
   const m = event.metadata;
   const parts: string[] = [];
 
   if (typeof m['secretName'] === 'string') parts.push(m['secretName']);
   if (typeof m['secretCount'] === 'number') parts.push(`${m['secretCount']} secrets`);
   if (typeof m['targetEmail'] === 'string') parts.push(m['targetEmail']);
+  // A custom role: the one a member moved between, or the one defined, edited
+  // or deleted — renamed ones read "old → new".
+  const customRole = typeof m['customRoleName'] === 'string' ? m['customRoleName'] : null;
+  const previousCustomRole =
+    typeof m['previousCustomRoleName'] === 'string' ? m['previousCustomRoleName'] : null;
+  if (event.action === 'member.custom_role_changed') {
+    parts.push(`${previousCustomRole ?? 'no custom role'} → ${customRole ?? 'no custom role'}`);
+  } else if (customRole !== null) {
+    parts.push(
+      previousCustomRole !== null && previousCustomRole !== customRole
+        ? `${previousCustomRole} → ${customRole}`
+        : customRole,
+    );
+  } else if (previousCustomRole !== null) {
+    // A promotion to owner drops the custom role in the same write
+    // (`member.role_changed` carries only the one it cleared).
+    parts.push(`${previousCustomRole} → no custom role`);
+  }
   if (typeof m['previousRole'] === 'string' && typeof m['newRole'] === 'string') {
     parts.push(`${m['previousRole']} → ${m['newRole']}`);
   } else if (typeof m['newRole'] === 'string') {

@@ -1,6 +1,6 @@
 import * as z from 'zod/mini';
 import { invitationState } from '@xecret/core/auth';
-import type { AccessLevel, OrgRole } from '@xecret/core/authz';
+import type { AccessLevel, CustomRole, OrgRole } from '@xecret/core/authz';
 import { environmentSlugSchema, slugReferenceSchema } from '@xecret/core/validation';
 import type {
   InvitationListEntry,
@@ -9,6 +9,7 @@ import type {
   SeatUsage,
 } from '@xecret/db/repositories';
 import { publicKeySchema } from './env-keys';
+import { uuidField } from './ids';
 
 /**
  * The request schemas and response shapes of the member and invitation routes.
@@ -88,22 +89,29 @@ export const memberInviteSchema = z.strictObject(
 );
 
 /**
- * Exactly one change per request: a role change and a suspension are different
- * acts with different audit records, and a body carrying both would force this
- * endpoint to invent an ordering the caller never stated.
+ * Exactly one change per request: a role change, a suspension and a custom-role
+ * change are different acts with different audit records, and a body carrying
+ * two would force this endpoint to invent an ordering the caller never stated.
+ *
+ * `customRoleId: null` takes the member's custom role off, returning them to
+ * the whole of their built-in role — present-and-null, which is why the count
+ * below is of fields that are not `undefined` rather than of truthy ones.
  */
 export const memberPatchSchema = z
   .strictObject(
     {
       role: z.optional(orgRoleSchema),
       status: z.optional(z.enum(['active', 'suspended'])),
+      customRoleId: z.optional(z.nullable(uuidField('A custom role is named by a UUID.'))),
     },
     UNEXPECTED_FIELD,
   )
   .check(
     z.refine(
-      (patch) => [patch.role, patch.status].filter((field) => field !== undefined).length === 1,
-      { message: 'Provide either a role or a status, not both.' },
+      (patch) =>
+        [patch.role, patch.status, patch.customRoleId].filter((field) => field !== undefined)
+          .length === 1,
+      { message: 'Provide exactly one of a role, a status or a custom role.' },
     ),
   );
 
@@ -146,13 +154,36 @@ export type MemberPatchRequest = z.infer<typeof memberPatchSchema>;
 export type GrantWriteRequest = z.infer<typeof grantWriteSchema>;
 export type GrantRemoveRequest = z.infer<typeof grantRemoveSchema>;
 
+/**
+ * A custom role as a member row or a session names it: which one, and what it
+ * narrows. Its action list and ceiling stay on the role's own endpoint, behind
+ * `member.update`.
+ */
+export interface CustomRoleRef {
+  id: string;
+  name: string;
+  baseRole: OrgRole;
+}
+
+export function toCustomRoleRef(role: CustomRole | undefined): CustomRoleRef | null {
+  return role === undefined ? null : { id: role.id, name: role.name, baseRole: role.baseRole };
+}
+
 export interface MemberPayload {
   id: string;
   userId: string;
   email: string;
   displayName: string | null;
   avatarUrl: string | null;
+  /** The stored built-in role — what the member *is*, and what the list shows. */
   role: OrgRole;
+  /**
+   * The custom role narrowing `role`, or `null`. Named on the roster to
+   * everybody who can read it — the same people who can read `role` — because
+   * a label that said "Admin" of somebody an organisation narrowed to member
+   * management would misdescribe them to every colleague deciding whom to ask.
+   */
+  customRole: CustomRoleRef | null;
   status: 'active' | 'suspended';
   joinedAt: string;
   isYou: boolean;
@@ -190,6 +221,7 @@ export function toMember(member: MemberListEntry, viewerUserId: string | null): 
     displayName: member.user.displayName,
     avatarUrl: member.user.avatarUrl,
     role: member.role,
+    customRole: toCustomRoleRef(member.customRole),
     status: member.status,
     joinedAt: member.createdAt.toISOString(),
     isYou: viewerUserId !== null && member.userId === viewerUserId,

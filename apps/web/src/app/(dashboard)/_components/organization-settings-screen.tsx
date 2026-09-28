@@ -7,6 +7,7 @@ import { api, errorMessage, isApiError } from '@/lib/api';
 import { formatAbsoluteTime } from '@/lib/format';
 import { PageHeader } from '@/components/layout';
 import { DeleteOrganizationCard } from '@/components/organizations';
+import { RolesCard } from '@/components/roles/roles-card';
 import {
   Alert,
   Button,
@@ -24,7 +25,7 @@ import type { Organization, OrganizationResponse } from '@/components/projects/t
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState, FormSkeleton } from './resource-states';
-import { isOrgAdmin, useOrganization, useSession } from './session';
+import { canAdminister, useOrganization, useSession } from './session';
 
 /**
  * Organisation settings: one editable field, one that never will be, and the
@@ -44,10 +45,11 @@ export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
   const organization = useApiResource<OrganizationResponse>(apiPath.org(orgSlug));
 
   const loaded = organization.data?.organization;
-  const canManage = membership !== null && isOrgAdmin(membership.role);
-  // Not `isOrgAdmin`: deleting an organisation is the single action an admin is
-  // denied (`roles.ts`), so the card is drawn for an owner and nobody else.
-  const canDelete = membership?.role === 'owner';
+  const canManage = canAdminister(membership, 'org.update');
+  // `org.delete` is the single action an admin is denied (`roles.ts`), so the
+  // card is drawn for an owner and nobody else — and an owner never holds a
+  // custom role, so asking the capability and asking "owner?" agree.
+  const canDelete = canAdminister(membership, 'org.delete');
 
   return (
     // A centred column rather than a full-width page with a narrow form pinned
@@ -99,7 +101,12 @@ export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
               <dl className="text-sm">
                 <div className="border-line-subtle flex justify-between gap-4 border-b py-2">
                   <dt className="text-fg-muted">Your role</dt>
-                  <dd className="text-fg capitalize">{loaded.role ?? 'unknown'}</dd>
+                  <dd className="text-fg">
+                    <span className="capitalize">{loaded.role ?? 'unknown'}</span>
+                    {membership?.authority.customRole ? (
+                      <> · {membership.authority.customRole.name}</>
+                    ) : null}
+                  </dd>
                 </div>
                 <div className="flex justify-between gap-4 py-2">
                   <dt className="text-fg-muted">Created</dt>
@@ -108,6 +115,8 @@ export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
               </dl>
             </CardContent>
           </Card>
+
+          <RolesCard orgSlug={orgSlug} organization={membership} />
 
           {canDelete ? <DeleteOrganizationCard organization={loaded} onDeleted={refresh} /> : null}
         </div>

@@ -2,12 +2,12 @@
 
 import { useEffect, useState } from 'react';
 
-import { canAssignRole } from '@xecret/core/authz';
 import type { AccessLevel, OrgRole } from '@xecret/core/authz';
 import { generateInviteFragment, zeroize } from '@xecret/core/crypto/client';
 import type { Bytes, InviteFragment } from '@xecret/core/crypto/client';
 import { api, isApiError } from '@/lib/api';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
+import type { GrantableLevel } from '@/app/(dashboard)/_lib/use-authority';
 import {
   fetchEnvironmentKeys,
   invitePublicKey,
@@ -56,8 +56,18 @@ interface ProjectAccessOption {
 
 export interface InviteDialogProps {
   orgSlug: string;
-  /** The caller's role — bounds which roles the dialog offers at all. */
-  viewerRole: OrgRole;
+  /**
+   * The roles the caller may invite at, from their session authority
+   * (`roleWithinAuthority`, custom role included) — which bounds which roles
+   * the dialog offers at all.
+   */
+  assignableRoles: readonly OrgRole[];
+  /**
+   * The most the caller could grant on each environment, from the page that
+   * opens the dialog (`useGrantable`) — read once there rather than again
+   * on every open.
+   */
+  grantable: GrantableLevel;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Reloads whatever lists the new invitation should appear in. */
@@ -74,9 +84,12 @@ export interface InviteDialogProps {
  * says which of the two situations the inviter is in rather than letting them
  * guess.
  *
- * The role menu offers nothing above the caller's own role — the same
- * hierarchy the server enforces. Rendering `Owner` to an admin and letting the
- * request fail would be showing a control that is really an error message.
+ * The role menu offers only the roles the caller may hand out — the same
+ * `roleWithinAuthority` the server enforces, custom role included — and each
+ * environment's level capsule only the levels the caller could grant there
+ * (`useGrantable`). Rendering `Owner` to an admin, or production `Admin` to
+ * an admin capped below it, and letting the request fail would be showing a
+ * control that is really an error message.
  *
  * ── Two artefacts, and why they must travel apart ──
  * Every environment ticked below is end-to-end encrypted, so the invitee needs
@@ -94,7 +107,8 @@ export interface InviteDialogProps {
  */
 export function InviteDialog({
   orgSlug,
-  viewerRole,
+  assignableRoles,
+  grantable,
   open,
   onOpenChange,
   onInvited,
@@ -106,7 +120,8 @@ export function InviteDialog({
       <DialogContent>
         <InviteFlow
           orgSlug={orgSlug}
-          viewerRole={viewerRole}
+          assignableRoles={assignableRoles}
+          grantable={grantable}
           onOpenChange={onOpenChange}
           onSubmittingChange={setSubmitting}
           onInvited={onInvited}
@@ -118,13 +133,15 @@ export function InviteDialog({
 
 function InviteFlow({
   orgSlug,
-  viewerRole,
+  assignableRoles,
+  grantable,
   onOpenChange,
   onSubmittingChange,
   onInvited,
 }: {
   orgSlug: string;
-  viewerRole: OrgRole;
+  assignableRoles: readonly OrgRole[];
+  grantable: GrantableLevel;
   onOpenChange: (open: boolean) => void;
   onSubmittingChange: (submitting: boolean) => void;
   onInvited: () => void;
@@ -133,7 +150,12 @@ function InviteFlow({
   const vault = useVaultKeys();
 
   const [email, setEmail] = useState('');
-  const [role, setRole] = useState<OrgRole>('developer');
+  // Developer where the caller may invite at it, as ever; otherwise the
+  // highest role they may — a narrowed inviter must not open on a role the
+  // server would refuse.
+  const [role, setRole] = useState<OrgRole>(
+    assignableRoles.includes('developer') ? 'developer' : (assignableRoles[0] ?? 'viewer'),
+  );
   const [submitting, setSubmitting] = useState(false);
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -243,7 +265,7 @@ function InviteFlow({
   const assignable = (projects ?? []).filter((project) => !added.includes(project.slug));
   const selectionCount = levels.size;
 
-  const offeredRoles = ROLES_DESCENDING.filter((candidate) => canAssignRole(viewerRole, candidate));
+  const offeredRoles = ROLES_DESCENDING.filter((candidate) => assignableRoles.includes(candidate));
 
   function setBusy(busy: boolean) {
     setSubmitting(busy);
@@ -510,6 +532,7 @@ function InviteFlow({
                       <LevelToggle
                         level={levels.get(envKey(project.slug, environment.slug)) ?? 'none'}
                         disabled={submitting}
+                        maxLevel={grantable(project.slug, environment.slug)}
                         scopeLabel={`${project.name} ${environment.name}`}
                         size="sm"
                         onSelect={(next) => setLevel(project.slug, environment.slug, next)}

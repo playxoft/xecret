@@ -518,7 +518,7 @@ existing custom role until somebody opts in.
 skips the check (MATCH SIMPLE) and means exactly what it meant before 0017.
 
 **No silent widening.** `ON DELETE NO ACTION`: a role in use cannot be deleted until its members
-are moved off it, one audited role change at a time. `SET NULL` would hand every holder their
+are moved off it, one audited `member.custom_role_changed` at a time. `SET NULL` would hand every holder their
 unnarrowed role with nothing in the audit log that reads as a permission change; `CASCADE` would
 delete the members. NO ACTION rather than RESTRICT because RESTRICT's SQLSTATE changed in
 PostgreSQL 18 (23503 → 23001) and "role still in use" is an error the application maps.
@@ -533,6 +533,23 @@ can make it, and it is already an audited `member.role_changed`.
 A `custom_role_id` that does not resolve inside the organisation — which the foreign key makes
 impossible — is read as a role based on `viewer` with no actions and a `none` ceiling, never as
 "no custom role".
+
+**Who may write one.** The management API (api.md, "Custom roles") defines, edits and deletes
+roles and moves members onto and off them. Defining needs an actor who holds no custom role and a
+base no higher than their own; editing also measures every current holder, and — where the edit
+widens them — every grant row they hold, because a lifted ceiling switches on grants it was
+holding down. Each of those writes takes the organisation lock first and makes its checks on
+rows read under it (`custom-roles.ts`), so a concurrent assignment cannot slip a holder in
+between a check and a write. An organisation may define at most 100 roles.
+
+**Names are unique as a reader sees them, not as `custom_roles_org_name_unique` does.** The
+constraint compares bytes; the application refuses a second name with the same *skeleton*
+(`customRoleNameSkeleton` in `@xecret/core/validation`: case, letter width, lookalike Cyrillic
+and Greek letters and Latin accents folded), which no index can express. So the repository reads
+every name in the organisation under the organisation lock and compares them in JavaScript —
+race-free because every role write takes that lock — and the constraint stays behind it for
+exact duplicates. Stored names are normalised first: variation selectors dropped, spaces
+collapsed, NFC.
 
 ---
 
@@ -753,9 +770,7 @@ anywhere. Migrations run as a separate, more privileged role.
 
 ## 11. Deferred to later phases
 
-The custom-role management API — defining, editing, deleting and assigning roles, and the plan
-gate on doing so (custom roles part 2; the storage exists since 0017 and every read path already
-applies it, but nothing defines or assigns a role yet) · `webhooks` · `secret_references` for
+`webhooks` · `secret_references` for
 cross-environment inheritance · `billing_*` (the `seat_limit` column is the only hook needed
 now) · `oidc_trust_policies` for GitHub Actions federation (Phase 8 designs the token table
 for it; the feature is v2).

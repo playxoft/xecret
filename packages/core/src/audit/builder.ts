@@ -1,7 +1,15 @@
 import { uuidv7 } from '../ids';
-import type { Decision } from '../authz/types';
+import { ACTION_REQUIREMENTS } from '../authz/roles';
+import type { AccessLevel, Action, Decision } from '../authz/types';
 import { sanitizeMetadataString } from './redaction';
-import type { ActorType, AuditAction, AuditEvent, AuditMetadata, AuditOutcome } from './types';
+import type {
+  ActorType,
+  AuditAccessCeiling,
+  AuditAction,
+  AuditEvent,
+  AuditMetadata,
+  AuditOutcome,
+} from './types';
 
 /**
  * The audit event builder.
@@ -61,6 +69,8 @@ export type AuditResourceType =
   | 'environment'
   | 'secret'
   | 'member'
+  /** A custom role's definition — created, edited or deleted. */
+  | 'custom_role'
   | 'invitation'
   | 'access_grant'
   | 'token'
@@ -348,6 +358,35 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
       LIMITS.customRoleName,
     );
   }
+  if (metadata.customRoleId !== undefined) {
+    clean.customRoleId = sanitizeMetadataString(metadata.customRoleId, LIMITS.customRoleId);
+  }
+  if (metadata.customRoleName !== undefined) {
+    clean.customRoleName = sanitizeMetadataString(metadata.customRoleName, LIMITS.customRoleName);
+  }
+  if (metadata.baseRole !== undefined) {
+    clean.baseRole = sanitizeMetadataString(metadata.baseRole, LIMITS.role);
+  }
+  if (metadata.previousBaseRole !== undefined) {
+    clean.previousBaseRole = sanitizeMetadataString(metadata.previousBaseRole, LIMITS.role);
+  }
+  // Closed vocabularies checked against the vocabulary rather than cleaned as
+  // strings: a list that could carry anything but an action name, or a ceiling
+  // anything but a level, would be a free-text field in disguise.
+  if (metadata.allowedActions !== undefined) {
+    clean.allowedActions = actionList(metadata.allowedActions);
+  }
+  if (metadata.previousAllowedActions !== undefined) {
+    clean.previousAllowedActions = actionList(metadata.previousAllowedActions);
+  }
+  if (metadata.accessCeiling !== undefined) {
+    const ceiling = accessCeiling(metadata.accessCeiling);
+    if (ceiling !== undefined) clean.accessCeiling = ceiling;
+  }
+  if (metadata.previousAccessCeiling !== undefined) {
+    const ceiling = accessCeiling(metadata.previousAccessCeiling);
+    if (ceiling !== undefined) clean.previousAccessCeiling = ceiling;
+  }
   if (metadata.previousAccessLevel !== undefined) {
     clean.previousAccessLevel = sanitizeMetadataString(
       metadata.previousAccessLevel,
@@ -405,6 +444,9 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   if (metadata.seatCount !== undefined && Number.isFinite(metadata.seatCount)) {
     clean.seatCount = metadata.seatCount;
   }
+  if (metadata.holderCount !== undefined && Number.isFinite(metadata.holderCount)) {
+    clean.holderCount = metadata.holderCount;
+  }
 
   // Closed unions of literals; there is nothing to sanitise.
   if (metadata.source !== undefined) clean.source = metadata.source;
@@ -428,6 +470,35 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   }
 
   return clean;
+}
+
+/** Every action name there is — the only strings an action list may hold. */
+const KNOWN_ACTIONS: ReadonlySet<string> = new Set(Object.keys(ACTION_REQUIREMENTS));
+
+const ACCESS_LEVELS: ReadonlySet<string> = new Set<AccessLevel>(['none', 'read', 'write', 'admin']);
+
+/**
+ * An action list, kept to action names, de-duplicated, in the order given.
+ *
+ * Filtered rather than sanitised: the type already says `Action[]`, and what
+ * this defends is a caller that reached past it with a cast. An entry that is
+ * not an action is dropped, never cleaned into one.
+ */
+function actionList(actions: readonly Action[]): Action[] {
+  return [...new Set(actions.filter((action) => KNOWN_ACTIONS.has(action)))];
+}
+
+/**
+ * A ceiling, copied only when both halves are levels. `null` — "no ceiling" —
+ * is kept as the statement it is; anything malformed is dropped whole rather
+ * than recorded as half a ceiling.
+ */
+function accessCeiling(ceiling: AuditAccessCeiling | null): AuditAccessCeiling | null | undefined {
+  if (ceiling === null) return null;
+  if (!ACCESS_LEVELS.has(ceiling.nonProduction) || !ACCESS_LEVELS.has(ceiling.production)) {
+    return undefined;
+  }
+  return { nonProduction: ceiling.nonProduction, production: ceiling.production };
 }
 
 function sanitizeOrNull(value: string | null, maxLength: number): string | null {

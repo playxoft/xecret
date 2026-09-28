@@ -1,4 +1,4 @@
-import { assertCan } from '@xecret/core/authz';
+import { assertCan, AuthorizationError } from '@xecret/core/authz';
 import type {
   AccessLevel,
   Action,
@@ -273,6 +273,32 @@ export function authorize(
     // the honest answer: there is no environment in scope.
     isProduction: environment?.isProduction ?? false,
   });
+}
+
+/**
+ * `authorize` for a request that any one of several actions permits — a
+ * listing shared by people who act on it in different ways, such as the
+ * service tokens, which both minting and revoking need to see.
+ *
+ * Refused only when every action is, and then with the *first* action's
+ * refusal, so the answer — a 404 or a 403 — is the one the primary action
+ * would have given on its own.
+ */
+export function authorizeAny(
+  scope: OrgScope | ProjectScope | EnvironmentScope,
+  actions: readonly [Action, ...Action[]],
+): void {
+  let refusal: AuthorizationError | null = null;
+  for (const action of actions) {
+    try {
+      authorize(scope, action);
+      return;
+    } catch (cause) {
+      if (!(cause instanceof AuthorizationError)) throw cause;
+      refusal ??= cause;
+    }
+  }
+  throw refusal;
 }
 
 /**

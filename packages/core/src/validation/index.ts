@@ -21,6 +21,14 @@ export type { SecretValueType, SecretValueTypeDescriptor, ValueTypeCheck } from 
 
 export { ORGANIZATION_NAME_MAX_LENGTH, truncateName } from './names';
 
+export {
+  CUSTOM_ROLE_NAME_MAX_LENGTH,
+  CUSTOM_ROLES_PER_ORGANIZATION,
+  customRoleNameProblem,
+  customRoleNameSkeleton,
+  normalizeCustomRoleName,
+} from './role-name';
+
 export { checkXmlWellFormed } from './xml';
 export type { XmlProblem } from './xml';
 

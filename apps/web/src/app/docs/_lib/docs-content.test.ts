@@ -50,19 +50,30 @@ async function markdownFiles(dir = CONTENT_ROOT, prefix = ''): Promise<string[]>
  *
  * Used by the structured-data test at the foot of this file, which has to be
  * able to find a page nobody remembered to add to a list.
+ *
+ * Read in parallel: that sweep covers the whole of `src` — hundreds of files
+ * — and read one at a time it took long enough, on a machine running the other
+ * suites beside it, to trip the runner's default five-second timeout.
  */
 async function tsxFilesUnder(dir: string): Promise<{ path: string; text: string }[]> {
   const entries = await readdir(dir, { withFileTypes: true });
-  const found: { path: string; text: string }[] = [];
-
-  for (const entry of entries) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) found.push(...(await tsxFilesUnder(path)));
-    else if (/\.tsx?$/.test(entry.name)) found.push({ path, text: await readFile(path, 'utf8') });
-  }
-
-  return found;
+  const found = await Promise.all(
+    entries.map(async (entry): Promise<{ path: string; text: string }[]> => {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) return tsxFilesUnder(path);
+      if (/\.tsx?$/.test(entry.name)) return [{ path, text: await readFile(path, 'utf8') }];
+      return [];
+    }),
+  );
+  return found.flat();
 }
+
+/**
+ * How long a sweep of the whole source tree may take: its own number rather
+ * than the runner's five-second default, which is sized for a unit of work,
+ * not for reading a tree that grows with the product.
+ */
+const SOURCE_SWEEP = { timeout: 30_000 };
 
 interface LoadedDoc {
   slug: string;
@@ -653,7 +664,7 @@ describe('structured data cannot end its own script block', () => {
     expect(jsonLd({ headline: 'Tokens </script><script>alert(1)</script>' })).not.toContain('<');
   });
 
-  it('is what every page that emits structured data serialises with', async () => {
+  it('is what every page that emits structured data serialises with', SOURCE_SWEEP, async () => {
     // Asserted against the source because the alternative is rendering a dozen
     // Server Components in a test runner that has no DOM. The failure it guards
     // is a one-word edit — `JSON.stringify` reads as obviously correct in a

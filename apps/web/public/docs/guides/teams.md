@@ -137,6 +137,38 @@ by the form.
 Suspension is the right tool for "somebody is on leave" or "we are
 investigating". Removal is permanent, and their grants do not come back.
 
+## Custom roles
+
+On the Enterprise plan, an organisation can define its own roles — job titles
+such as "Deployer" or "Contractor" — under *Organisation settings → Roles*, and
+put members on them from the member list.
+
+- **A custom role only takes away.** It names a built-in role to narrow, and a
+  member holding it keeps only the actions you tick, of those that role already
+  has. It can never give anybody more than the role it is based on, or more
+  than their own built-in role.
+- **An optional ceiling** caps how far its holders reach, separately outside
+  and inside production — "never above read in production", say. It caps
+  explicit grants too, so a production grant written by mistake cannot get
+  past it.
+- **Everybody still sees the member list.** Seeing who is in the organisation
+  is always included.
+- **You cannot hand out more than you hold.** Defining a role needs an owner or
+  admin who holds no custom role. Editing one, or moving somebody onto or off
+  one, is refused if it would reach somebody beyond your authority, or switch
+  on access grants you could not have written yourself.
+- **A role in use cannot be deleted.** Move its members to another role, or to
+  none, first — so nobody's access widens as a side effect of tidying up.
+- **Names are read, not just stored.** Two roles cannot have names a colleague
+  would read as one — "Deployer" and "deployer", or the same word in another
+  letter width or with a lookalike letter — and no role may be named, or look
+  like, a built-in one.
+- Owners never hold a custom role; promoting somebody to owner takes theirs off.
+
+If the organisation leaves Enterprise, existing custom roles keep applying. You
+can still take members off them and delete the ones nobody holds, but not
+define, edit or assign them.
+
 ## Tokens belong to people too
 
 A **CLI token** from `xecret login` acts as the person who created it: their

@@ -200,6 +200,16 @@ export const errors = {
   conflict: (message: string): ApiError => new ApiError('conflict', message),
 
   /**
+   * A conflict about one field of the request — a name somebody else holds.
+   *
+   * Still a 409, with the field named as a validation error names one, so a
+   * form can put the message beside the input it is about without matching
+   * the sentence. The message is a fixed one from the repository.
+   */
+  conflictOn: (field: string, message: string): ApiError =>
+    new ApiError('conflict', message, { fields: [{ field, message }] }),
+
+  /**
    * The organisation's plan does not include this.
    *
    * The message is composed by `@xecret/core/entitlements`, which builds it from

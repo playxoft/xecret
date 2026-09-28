@@ -23,6 +23,7 @@ export {
   clampPageSize,
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
+  FieldConflictError,
   QuotaExceededError,
   RepositoryError,
 } from './shared';
@@ -142,6 +143,7 @@ export {
   findMembership,
   findMemberWithUser,
   listGrantsForMember,
+  listGrantsForMembers,
   listGrantsForOrganization,
   listMembers,
   loadAuthorizationContext,
@@ -165,6 +167,8 @@ export type {
   AddMemberParams,
   AuthorizationContext,
   AuthorizationContextParams,
+  MemberChange,
+  MemberChangeGuard,
   MemberGrant,
   MemberListEntry,
   MemberPage,
@@ -177,6 +181,30 @@ export type {
   UpdateMemberRoleParams,
   WrittenMemberRecord,
 } from './membership';
+
+export {
+  createCustomRole,
+  deleteCustomRole,
+  listCustomRoles,
+  setMemberCustomRole,
+  toEngineCustomRole,
+  updateCustomRole,
+} from './custom-roles';
+export type {
+  CreateCustomRoleParams,
+  CustomRoleAssignment,
+  CustomRoleCeiling,
+  CustomRoleDefinition,
+  CustomRoleEdit,
+  CustomRoleHolder,
+  CustomRoleListEntry,
+  CustomRoleRecord,
+  DeleteCustomRoleParams,
+  MemberCustomRoleChange,
+  SetMemberCustomRoleParams,
+  UpdateCustomRoleParams,
+  UpdatedCustomRole,
+} from './custom-roles';
 
 export {
   createProject,

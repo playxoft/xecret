@@ -23,7 +23,7 @@ import {
 } from '@/components/ui';
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
-import { isOrgAdmin, useSession } from './session';
+import { canAdminister, useSession } from './session';
 
 /**
  * The Danger zone: the two deletions, together and clearly fenced.
@@ -57,7 +57,7 @@ function DeleteProjectCard() {
   // Deleting requires `project.delete`, which developers and viewers never
   // hold — offering their organisations here would only manufacture 404s.
   const adminOrgs = useMemo(
-    () => organizations.filter((organization) => isOrgAdmin(organization.role)),
+    () => organizations.filter((organization) => canAdminister(organization, 'project.delete')),
     [organizations],
   );
 

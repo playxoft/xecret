@@ -90,6 +90,8 @@ specific value, which is what curiosity and exfiltration both look like.
 | `member.role_changed` | Somebody's role changed |
 | `member.suspended` `member.reinstated` | A membership was switched off, or back on |
 | `member.removed` | Somebody was removed |
+| `member.custom_role_changed` | Somebody was put on a custom role, moved between two, or had theirs taken off — naming the role before and after |
+| `role.created` `role.updated` `role.deleted` | A custom role was defined, edited or deleted, with its whole definition — and, for an edit, the one it replaced and how many members held it. A `role.updated` **error** naming a member is an edit that was saved but whose follow-up for that holder — bringing their environment keys in line — did not finish; the environment's key page shows what they are still owed |
 | `access.granted` `access.revoked` | A grant was created or removed, with the previous and new levels |
 
 Suspension and removal are separate events because the histories imply
@@ -165,6 +167,8 @@ Worth a look once a month, or after anyone leaves:
 - `secret.revealed` — is anybody reading production values by hand who should
   be using `xecret run`?
 - `member.role_changed` — did every promotion have a reason?
+- `role.updated` and `member.custom_role_changed` — did a custom role widen, or
+  come off somebody, and was that meant?
 
 ## Next
 

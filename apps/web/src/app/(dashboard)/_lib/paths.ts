@@ -127,6 +127,11 @@ export const apiPath = {
     `${apiPath.invitations(org)}/${segment(invitationId)}`,
   invitationLookup: (): string => '/api/invitations/lookup',
   invitationAccept: (): string => '/api/invitations/accept',
+  /** The viewer's own authority, and the level they could grant on each environment. */
+  authority: (org: string): string => `${apiPath.org(org)}/authority`,
+  /** The organisation's custom roles. */
+  roles: (org: string): string => `${apiPath.org(org)}/roles`,
+  role: (org: string, roleId: string): string => `${apiPath.roles(org)}/${segment(roleId)}`,
   serviceTokens: (org: string): string => `${apiPath.org(org)}/tokens/service`,
   cliTokens: (org: string): string => `${apiPath.org(org)}/tokens/cli`,
   token: (org: string, kind: 'cli' | 'service', tokenId: string): string =>

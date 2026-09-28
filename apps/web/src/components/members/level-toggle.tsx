@@ -83,6 +83,19 @@ export interface LevelToggleProps {
    * result the caller silently drops is a control that looks broken.
    */
   clearable?: boolean;
+  /**
+   * The most the viewer could grant here, when it is known.
+   *
+   * Segments above it are drawn and marked unavailable rather than hidden, so
+   * the capsule keeps its shape and says why: the viewer's own access here is
+   * lower, and the server would refuse the write. They stay in the tab order,
+   * `aria-disabled` rather than `disabled`, so a keyboard or screen-reader
+   * user reaches them and hears the reason — a disabled button is skipped,
+   * and its explanation with it. Clicking one does nothing. The lit segment
+   * always stays clickable — clearing to `none` takes access away, which is
+   * never beyond anybody's authority.
+   */
+  maxLevel?: AccessLevel | undefined;
   className?: string;
 }
 
@@ -94,6 +107,7 @@ export function LevelToggle({
   size = 'md',
   levels = GRANTABLE_LEVELS,
   clearable = true,
+  maxLevel,
   className,
 }: LevelToggleProps) {
   return (
@@ -109,21 +123,37 @@ export function LevelToggle({
       {levels.map((segment) => {
         const lit = LEVEL_RANK[level] >= LEVEL_RANK[segment];
         // The lit segment is the clearing gesture, so where clearing is not
-        // offered it is the one segment with nothing left to do.
-        const inert = disabled || (segment === level && !clearable);
+        // offered it is the one segment with nothing left to do. A segment
+        // above what the viewer could grant is inert too — unless it is the
+        // lit one, whose click takes access away.
+        const beyond =
+          maxLevel !== undefined && LEVEL_RANK[segment] > LEVEL_RANK[maxLevel] && segment !== level;
+        const off = disabled || (segment === level && !clearable);
+        const inert = off || beyond;
 
         return (
           <button
             key={segment}
             type="button"
             aria-pressed={lit}
-            aria-label={`${ACCESS_LEVEL_LABELS[segment]} access to ${scopeLabel}`}
-            disabled={inert}
+            aria-label={
+              beyond
+                ? `${ACCESS_LEVEL_LABELS[segment]} access to ${scopeLabel} — more than you can grant here`
+                : `${ACCESS_LEVEL_LABELS[segment]} access to ${scopeLabel}`
+            }
+            title={beyond ? 'More than you can grant here' : undefined}
+            disabled={off}
+            aria-disabled={beyond || undefined}
             // The one rule of the control: clicking the current level clears
-            // everything; clicking anything else *is* the new level.
-            onClick={() => onSelect(segment === level && clearable ? 'none' : segment)}
+            // everything; clicking anything else *is* the new level — unless it
+            // is more than the viewer can grant, when clicking does nothing.
+            onClick={() => {
+              if (beyond) return;
+              onSelect(segment === level && clearable ? 'none' : segment);
+            }}
             className={cn(
               segmentClass(lit, size),
+              beyond && 'cursor-not-allowed opacity-50',
               !inert && 'cursor-pointer',
               !inert && (lit ? 'hover:bg-accent-tint/70' : 'hover:bg-surface-hover hover:text-fg'),
             )}

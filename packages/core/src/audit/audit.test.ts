@@ -598,6 +598,15 @@ describe('every declared metadata field survives sanitisation', () => {
       newRole: 'developer',
       previousCustomRoleId: '0192f0c4-5b1e-7a3c-8d2e-3f4a5b6c7d8e',
       previousCustomRoleName: 'Deployer',
+      customRoleId: '0192f0c4-5b1e-7a3c-8d2e-3f4a5b6c7d8f',
+      customRoleName: 'Release manager',
+      baseRole: 'admin',
+      previousBaseRole: 'developer',
+      allowedActions: ['secret.read', 'member.read'],
+      previousAllowedActions: ['secret.read'],
+      accessCeiling: { nonProduction: 'admin', production: 'read' },
+      previousAccessCeiling: null,
+      holderCount: 5,
       previousAccessLevel: 'read',
       newAccessLevel: 'write',
       tokenPrefix: 'xst_live_abc',
@@ -628,6 +637,15 @@ describe('every declared metadata field survives sanitisation', () => {
       newRole: 'developer',
       previousCustomRoleId: '0192f0c4-5b1e-7a3c-8d2e-3f4a5b6c7d8e',
       previousCustomRoleName: 'Deployer',
+      customRoleId: '0192f0c4-5b1e-7a3c-8d2e-3f4a5b6c7d8f',
+      customRoleName: 'Release manager',
+      baseRole: 'admin',
+      previousBaseRole: 'developer',
+      allowedActions: ['secret.read', 'member.read'],
+      previousAllowedActions: ['secret.read'],
+      accessCeiling: { nonProduction: 'admin', production: 'read' },
+      previousAccessCeiling: null,
+      holderCount: 5,
       previousAccessLevel: 'read',
       newAccessLevel: 'write',
       // A display prefix still matches the credential detector — it is the
@@ -663,6 +681,35 @@ describe('every declared metadata field survives sanitisation', () => {
     expect(record.metadata.deviceName).toBe('lap top');
     expect(record.metadata.previousCustomRoleName).toBe('Dep loyer');
     expect(record.metadata.previousAccessLevel).toBe('read only');
+  });
+
+  it('keeps an action list to action names, and a ceiling to levels', () => {
+    const record = builderWith().success('role.updated', null, {
+      // Reached past the type with a cast: a free string, a credential and a
+      // duplicate. Only the real action survives, once.
+      allowedActions: [
+        'secret.read',
+        'ghp_abcdefghijklmnopqrstuvwxyz0123456789',
+        'secret.read',
+        'Deploy\nto prod',
+      ] as never,
+      accessCeiling: { nonProduction: 'admin', production: 'root' } as never,
+      previousAccessCeiling: null,
+    });
+
+    expect(record.metadata.allowedActions).toEqual(['secret.read']);
+    // Half a ceiling is not recorded as a ceiling; "none at all" is.
+    expect('accessCeiling' in record.metadata).toBe(false);
+    expect(record.metadata.previousAccessCeiling).toBeNull();
+  });
+
+  it('sanitises a custom role name like every other organisation-chosen string', () => {
+    const record = builderWith().success('role.created', null, {
+      // A right-to-left override, from its code point so this file holds none.
+      customRoleName: `Deploy${String.fromCodePoint(0x202e)}er\nnew line`,
+    });
+
+    expect(record.metadata.customRoleName).toBe('Deploy er new line');
   });
 
   it('drops a non-finite session count rather than storing null', () => {

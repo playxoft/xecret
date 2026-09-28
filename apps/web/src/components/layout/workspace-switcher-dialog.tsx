@@ -184,8 +184,9 @@ function WorkspaceList({
                     <span className="text-fg block truncate text-sm font-medium">
                       {organization.name}
                     </span>
-                    <span className="text-fg-subtle block truncate text-sm capitalize">
-                      {organization.role}
+                    <span className="text-fg-subtle block truncate text-sm">
+                      <span className="capitalize">{organization.role}</span>
+                      {organization.customRole ? <> · {organization.customRole}</> : null}
                     </span>
                   </span>
                   {organization.slug === currentSlug ? (

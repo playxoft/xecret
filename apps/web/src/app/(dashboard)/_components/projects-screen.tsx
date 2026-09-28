@@ -10,7 +10,7 @@ import type { ProjectListResponse } from '@/components/projects/types';
 import { apiPath, withQuery } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { CardGridSkeleton, ErrorState } from './resource-states';
-import { isOrgAdmin, useOrganization } from './session';
+import { canAdminister, useOrganization } from './session';
 
 /** The listing is clamped to 200 by the API, which is far more than a person scrolls. */
 const PAGE_SIZE = 200;
@@ -23,10 +23,11 @@ export function ProjectsScreen({ orgSlug }: { orgSlug: string }) {
     withQuery(apiPath.projects(orgSlug), { pageSize: PAGE_SIZE }),
   );
 
-  // `project.create` needs admin or owner. Hiding the button for anyone else is
-  // a courtesy that keeps the screen honest; the server refuses the request
-  // regardless of what this browser decided to render.
-  const canCreate = organization !== null && isOrgAdmin(organization.role);
+  // Drawn for an owner or admin whose authority includes `project.create`.
+  // Hiding the button for anyone else is a courtesy that keeps the screen
+  // honest; the server refuses the request regardless of what this browser
+  // decided to render.
+  const canCreate = canAdminister(organization, 'project.create');
 
   return (
     <div className="flex flex-col gap-6">

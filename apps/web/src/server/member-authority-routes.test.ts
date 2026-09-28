@@ -73,6 +73,7 @@ const repositories = vi.hoisted(() => ({
   createInvitation: vi.fn(),
   setInvitationPublicKey: vi.fn(),
   createServiceToken: vi.fn(),
+  listServiceTokens: vi.fn(),
   removeAccessGrant: vi.fn(),
 }));
 
@@ -105,7 +106,7 @@ const { PATCH: patchMemberRoute, DELETE: removeMemberRoute } =
   await import('@/app/api/orgs/[orgSlug]/members/[memberId]/route');
 const { PUT: putGrantRoute, DELETE: deleteGrantRoute } =
   await import('@/app/api/orgs/[orgSlug]/members/[memberId]/grants/route');
-const { POST: mintServiceTokenRoute } =
+const { POST: mintServiceTokenRoute, GET: listServiceTokensRoute } =
   await import('@/app/api/orgs/[orgSlug]/tokens/service/route');
 const { PATCH: patchEnvironmentRoute } =
   await import('@/app/api/orgs/[orgSlug]/projects/[projectSlug]/environments/[envSlug]/route');
@@ -185,6 +186,32 @@ function callerIs(caller: Caller): void {
     customRole: caller.customRole,
     grants: (caller.grants ?? []).map((grant) => ({ id: uuidv7(), ...grant })),
   });
+}
+
+/* ── The member writes, as the repository runs them ───────────────────────── */
+
+type MemberWriteParams = { orgId: string; memberId: string };
+type Guard = ((change: { member: unknown; grants: readonly unknown[] }) => void) | null;
+
+/**
+ * What a member write's guard is shown, when a test says so: the member and
+ * their grants as the repository reads them under the organisation lock.
+ * Unset, it is whoever `findMemberWithUser` answers with and whatever
+ * `listGrantsForMember` holds — the route's own read, as it would be when
+ * nothing raced it.
+ */
+let lockedAs: { member?: unknown; grants?: readonly unknown[] } = {};
+
+/** Called with a write's name once its guard has let it through — "something was written". */
+const written = vi.fn();
+
+async function runGuard(params: MemberWriteParams, guard: Guard): Promise<void> {
+  if (guard === null) return;
+  const member =
+    lockedAs.member ?? (await repositories.findMemberWithUser({}, params.orgId, params.memberId));
+  const grants =
+    lockedAs.grants ?? (await repositories.listGrantsForMember({}, params.orgId, params.memberId));
+  guard({ member, grants });
 }
 
 /* ── Fixtures ─────────────────────────────────────────────────────────────── */
@@ -385,36 +412,57 @@ beforeEach(() => {
     { ...production, project: { id: PROJECT_ID, name: 'API', slug: 'api' } },
   ]);
   repositories.listGrantsForMember.mockResolvedValue([]);
-  repositories.removeAccessGrant.mockResolvedValue(true);
+  lockedAs = {};
+  repositories.removeAccessGrant.mockImplementation(
+    async (_db: unknown, params: MemberWriteParams, guard: Guard) => {
+      await runGuard(params, guard);
+      written('removeAccessGrant');
+      return true;
+    },
+  );
   repositories.upsertAccessGrant.mockImplementation(
-    async (_db: unknown, params: { accessLevel: Level }) => ({
-      id: uuidv7(),
-      accessLevel: params.accessLevel,
-    }),
+    async (_db: unknown, params: MemberWriteParams & { accessLevel: Level }, guard: Guard) => {
+      await runGuard(params, guard);
+      written('upsertAccessGrant');
+      return { id: uuidv7(), accessLevel: params.accessLevel };
+    },
   );
   repositories.updateMemberRole.mockImplementation(
-    async (_db: unknown, params: { role: Role }) => ({
-      id: TARGET_MEMBER_ID,
-      orgId: ORG_ID,
-      userId: TARGET_USER_ID,
-      role: params.role,
-      status: 'active',
-      clearedCustomRole: null,
-    }),
+    async (_db: unknown, params: MemberWriteParams & { role: Role }, guard: Guard) => {
+      await runGuard(params, guard);
+      written('updateMemberRole');
+      return {
+        id: TARGET_MEMBER_ID,
+        orgId: ORG_ID,
+        userId: TARGET_USER_ID,
+        role: params.role,
+        status: 'active',
+        clearedCustomRole: null,
+      };
+    },
   );
-  for (const [write, status] of [
-    [repositories.reinstateMember, 'active'],
-    [repositories.suspendMember, 'suspended'],
+  for (const [write, name, status] of [
+    [repositories.reinstateMember, 'reinstateMember', 'active'],
+    [repositories.suspendMember, 'suspendMember', 'suspended'],
   ] as const) {
-    write.mockResolvedValue({
-      id: TARGET_MEMBER_ID,
-      orgId: ORG_ID,
-      userId: TARGET_USER_ID,
-      role: 'developer',
-      status,
+    write.mockImplementation(async (_db: unknown, params: MemberWriteParams, guard: Guard) => {
+      await runGuard(params, guard);
+      written(name);
+      return {
+        id: TARGET_MEMBER_ID,
+        orgId: ORG_ID,
+        userId: TARGET_USER_ID,
+        role: 'developer',
+        status,
+      };
     });
   }
-  repositories.removeMember.mockResolvedValue(undefined);
+  repositories.removeMember.mockImplementation(
+    async (_db: unknown, params: MemberWriteParams, guard: Guard) => {
+      await runGuard(params, guard);
+      written('removeMember');
+    },
+  );
   repositories.updateEnvironment.mockImplementation(
     async (
       _db: unknown,
@@ -601,7 +649,7 @@ describe('PATCH /members/{id} — a role change confers no more than the caller 
     const response = await patch({ role: 'admin' });
 
     expect(response.status).toBe(403);
-    expect(repositories.updateMemberRole).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalled();
   });
 
   it('refuses a member manager touching a developer at all', async () => {
@@ -613,7 +661,7 @@ describe('PATCH /members/{id} — a role change confers no more than the caller 
     const response = await patch({ role: 'viewer' });
 
     expect(response.status).toBe(403);
-    expect(repositories.updateMemberRole).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalled();
   });
 
   it('lets the production-capped admin make the change they do hold', async () => {
@@ -622,7 +670,7 @@ describe('PATCH /members/{id} — a role change confers no more than the caller 
     const response = await patch({ role: 'viewer' });
 
     expect(response.status).toBe(200);
-    expect(repositories.updateMemberRole).toHaveBeenCalledOnce();
+    expect(written).toHaveBeenCalledExactlyOnceWith('updateMemberRole');
   });
 
   it('changes nothing for a plain admin, explicit restrictions and all', async () => {
@@ -656,14 +704,17 @@ describe('PATCH /members/{id} — the custom role a promotion to owner drops', (
   /** The repository's answer for a promotion that cleared `cleared`. */
   function clearing(cleared: CustomRole): void {
     repositories.updateMemberRole.mockImplementation(
-      async (_db: unknown, params: { role: Role }) => ({
-        id: TARGET_MEMBER_ID,
-        orgId: ORG_ID,
-        userId: TARGET_USER_ID,
-        role: params.role,
-        status: 'active',
-        clearedCustomRole: { id: cleared.id, name: cleared.name },
-      }),
+      async (_db: unknown, params: MemberWriteParams & { role: Role }, guard: Guard) => {
+        await runGuard(params, guard);
+        return {
+          id: TARGET_MEMBER_ID,
+          orgId: ORG_ID,
+          userId: TARGET_USER_ID,
+          role: params.role,
+          status: 'active',
+          clearedCustomRole: { id: cleared.id, name: cleared.name },
+        };
+      },
     );
   }
 
@@ -739,7 +790,7 @@ describe('PUT /members/{id}/grants — a grant confers no more than the caller h
       code: 'forbidden',
       message: 'You cannot grant more access than you hold.',
     });
-    expect(repositories.upsertAccessGrant).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalledWith('upsertAccessGrant');
   });
 
   it('refuses a project-wide grant, which lands on production too', async () => {
@@ -748,7 +799,7 @@ describe('PUT /members/{id}/grants — a grant confers no more than the caller h
     const response = await put({ projectSlug: 'api', environmentSlug: null, accessLevel: 'read' });
 
     expect(response.status).toBe(403);
-    expect(repositories.upsertAccessGrant).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalledWith('upsertAccessGrant');
   });
 
   it('permits the same caller a grant where they hold the level', async () => {
@@ -761,7 +812,7 @@ describe('PUT /members/{id}/grants — a grant confers no more than the caller h
     });
 
     expect(response.status).toBe(200);
-    expect(repositories.upsertAccessGrant).toHaveBeenCalledOnce();
+    expect(written).toHaveBeenCalledExactlyOnceWith('upsertAccessGrant');
   });
 
   it('always permits none — taking access away confers nothing', async () => {
@@ -845,7 +896,7 @@ describe('DELETE /members/{id}/grants — a removal confers no more than the cal
       code: 'forbidden',
       message: 'You cannot grant more access than you hold.',
     });
-    expect(repositories.removeAccessGrant).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalledWith('removeAccessGrant');
   });
 
   it('refuses the same removal to a plain admin an explicit grant holds to read', async () => {
@@ -858,7 +909,7 @@ describe('DELETE /members/{id}/grants — a removal confers no more than the cal
     const response = await remove({ projectSlug: 'api', environmentSlug: 'production' });
 
     expect(response.status).toBe(403);
-    expect(repositories.removeAccessGrant).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalledWith('removeAccessGrant');
   });
 
   it('permits a removal that lowers the member everywhere', async () => {
@@ -871,7 +922,7 @@ describe('DELETE /members/{id}/grants — a removal confers no more than the cal
     const response = await remove({ projectSlug: 'api', environmentSlug: null });
 
     expect(response.status).toBe(204);
-    expect(repositories.removeAccessGrant).toHaveBeenCalledOnce();
+    expect(written).toHaveBeenCalledExactlyOnceWith('removeAccessGrant');
   });
 
   it('permits a removal that keeps the member where they were', async () => {
@@ -905,7 +956,7 @@ describe('DELETE /members/{id}/grants — a removal confers no more than the cal
     const response = await remove({ projectSlug: 'api', environmentSlug: 'staging' });
 
     expect(response.status).toBe(204);
-    expect(repositories.removeAccessGrant).toHaveBeenCalledOnce();
+    expect(written).toHaveBeenCalledExactlyOnceWith('removeAccessGrant');
   });
 });
 
@@ -938,7 +989,7 @@ describe('/members/{id}/grants on yourself — owners only', () => {
       code: 'forbidden',
       message: 'You cannot change your own access grants.',
     });
-    expect(repositories.removeAccessGrant).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalledWith('removeAccessGrant');
   });
 
   it('refuses a restricted admin writing a wider grant over their own restriction', async () => {
@@ -953,7 +1004,7 @@ describe('/members/{id}/grants on yourself — owners only', () => {
     });
 
     expect(response.status).toBe(403);
-    expect(repositories.upsertAccessGrant).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalledWith('upsertAccessGrant');
   });
 
   it('lets an owner delete a restriction they placed on themselves', async () => {
@@ -969,7 +1020,7 @@ describe('/members/{id}/grants on yourself — owners only', () => {
     const response = await removeOwn({ projectSlug: 'api', environmentSlug: 'production' });
 
     expect(response.status).toBe(204);
-    expect(repositories.removeAccessGrant).toHaveBeenCalledOnce();
+    expect(written).toHaveBeenCalledExactlyOnceWith('removeAccessGrant');
   });
 
   it('lets an owner widen their own grant past the restriction it replaces', async () => {
@@ -990,6 +1041,46 @@ describe('/members/{id}/grants on yourself — owners only', () => {
 });
 
 /* ── Service tokens ───────────────────────────────────────────────────────── */
+
+describe('GET /tokens/service — listed for whoever may mint or revoke', () => {
+  const actions = (...extra: Action[]): Caller => ({
+    role: 'admin',
+    customRole: customRole({ name: 'Tokens', allowedActions: ['member.read', ...extra] }),
+  });
+
+  function list(): Promise<Response> {
+    return listServiceTokensRoute(
+      new Request('https://xecret.playxoft.com/api/orgs/acme/tokens/service'),
+      { params: Promise.resolve({ orgSlug: 'acme' }) },
+    );
+  }
+
+  beforeEach(() => {
+    repositories.listServiceTokens.mockResolvedValue([]);
+  });
+
+  it.each([
+    ['may only revoke', actions('token.revoke')],
+    ['may only mint', actions('token.create')],
+    ['may do both', { role: 'admin' } as Caller],
+  ])('lists them for a role that %s', async (_name, caller) => {
+    callerIs(caller);
+
+    const response = await list();
+
+    expect(response.status).toBe(200);
+    expect(repositories.listServiceTokens).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a role that may do neither, and reads nothing', async () => {
+    callerIs(actions('project.read'));
+
+    const response = await list();
+
+    expect(response.status).toBe(403);
+    expect(repositories.listServiceTokens).not.toHaveBeenCalled();
+  });
+});
 
 describe('POST /tokens/service — a token can do no more than its minter', () => {
   function mint(body: Record<string, unknown>): Promise<Response> {
@@ -1171,7 +1262,7 @@ describe('DELETE /members/{id}/grants — a suspended member is measured as the 
       code: 'forbidden',
       message: 'You cannot grant more access than you hold.',
     });
-    expect(repositories.removeAccessGrant).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalledWith('removeAccessGrant');
   });
 
   it('closes suspend, remove the restriction, reinstate — at the removal', async () => {
@@ -1185,7 +1276,7 @@ describe('DELETE /members/{id}/grants — a suspended member is measured as the 
 
     expect(suspended.status).toBe(200);
     expect(removed.status).toBe(403);
-    expect(repositories.removeAccessGrant).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalledWith('removeAccessGrant');
   });
 
   it('changes nothing for an owner or an unrestricted admin', async () => {
@@ -1222,7 +1313,7 @@ describe('PATCH /members/{id} — a reinstatement turns on only what the caller 
       code: 'forbidden',
       message: HELD_GRANTS_ABOVE_AUTHORITY,
     });
-    expect(repositories.reinstateMember).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalled();
   });
 
   it('refuses a project-wide grant, which lands on production too', async () => {
@@ -1241,7 +1332,7 @@ describe('PATCH /members/{id} — a reinstatement turns on only what the caller 
     const response = await patchMember({ status: 'active' });
 
     expect(response.status).toBe(200);
-    expect(repositories.reinstateMember).toHaveBeenCalledOnce();
+    expect(written).toHaveBeenCalledExactlyOnceWith('reinstateMember');
   });
 
   it('holds a plain admin to the level an explicit grant left them', async () => {
@@ -1294,7 +1385,7 @@ describe('PATCH /members/{id} — a role change turns on only what the caller ho
       code: 'forbidden',
       message: HELD_GRANTS_ABOVE_AUTHORITY,
     });
-    expect(repositories.updateMemberRole).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalled();
   });
 
   it('permits the promotion when the caller holds every grant it turns on', async () => {
@@ -1599,5 +1690,212 @@ describe('every refusal above the caller’s authority files exactly one denied 
       outcome: 'denied',
       metadata: { reason: 'forbidden' },
     });
+  });
+});
+
+/* ── Decided on the member as locked, not as first read ─────────────────── */
+
+describe('PATCH and DELETE /members/{id} — decided on the member the write finds', () => {
+  /**
+   * A read-only role with no ceiling, based on viewer. For a viewer it is a
+   * no-op; what it does is keep a viewer's promotion from gaining anything,
+   * so nothing measures the viewer's production `write` row.
+   */
+  const readOnly = customRole({
+    name: 'Contractor (read-only)',
+    baseRole: 'viewer',
+    allowedActions: ALL_ACTIONS.filter((action) => ROLE_CAPABILITIES.viewer[action]),
+  });
+
+  it('refuses a promotion when a concurrent unassignment has made it one that gains', async () => {
+    // Race: the route read the viewer holding `readOnly`, so the promotion
+    // gains nothing; a concurrent request took the role off before this
+    // write's lock. Under the lock the viewer holds none — the promotion
+    // gains `secret.update`, and the owner-written production row starts
+    // writing. The production-capped caller could not have written it.
+    callerIs(PRODUCTION_CAPPED);
+    repositories.findMemberWithUser.mockResolvedValue(target('viewer', readOnly));
+    lockedAs = { member: target('viewer'), grants: [grantRow(PRODUCTION_ID, 'write')] };
+
+    const response = await patchMember({ role: 'developer' });
+
+    expect(response.status).toBe(403);
+    expect(await errorOf(response)).toMatchObject({ message: HELD_GRANTS_ABOVE_AUTHORITY });
+    expect(written).not.toHaveBeenCalled();
+    expect(repositories.listGrantsForMember).not.toHaveBeenCalled();
+    const denied = (await denials()).filter((record) => record.action === 'member.role_changed');
+    expect(denied).toHaveLength(1);
+    expect(denied[0]?.metadata).toMatchObject({ previousRole: 'viewer', newRole: 'developer' });
+  });
+
+  it('refuses a promotion when a concurrent edit has widened the role the member holds', async () => {
+    // Race the other way round: the route read the narrow role, and an edit
+    // widened it — adding `secret.update` — before this write's lock.
+    callerIs(RESTRICTED_ADMIN);
+    const narrow = customRole({
+      id: uuidv7(),
+      name: 'Narrow',
+      baseRole: 'developer',
+      allowedActions: ['member.read', 'project.read', 'environment.read', 'secret.read'],
+    });
+    const widened = { ...narrow, allowedActions: [...narrow.allowedActions, 'secret.update'] };
+    repositories.findMemberWithUser.mockResolvedValue(target('viewer', narrow));
+    lockedAs = {
+      member: target('viewer', widened as CustomRole),
+      grants: [grantRow(PRODUCTION_ID, 'write')],
+    };
+
+    const response = await patchMember({ role: 'developer' });
+
+    expect(response.status).toBe(403);
+    expect(written).not.toHaveBeenCalled();
+  });
+
+  it('allows the promotion the locked member really does permit', async () => {
+    // The control: under the lock the viewer still holds `readOnly`, so the
+    // promotion gains nothing and there is nothing to measure.
+    callerIs(PRODUCTION_CAPPED);
+    repositories.findMemberWithUser.mockResolvedValue(target('viewer', readOnly));
+    lockedAs = { member: target('viewer', readOnly), grants: [grantRow(PRODUCTION_ID, 'write')] };
+
+    const response = await patchMember({ role: 'developer' });
+
+    expect(response.status).toBe(200);
+    expect(written).toHaveBeenCalledExactlyOnceWith('updateMemberRole');
+  });
+
+  it('records the role the write replaced, and answers with the custom role it found', async () => {
+    const released = customRole({ name: 'Release manager', baseRole: 'developer' });
+    repositories.findMemberWithUser.mockResolvedValue(target('viewer'));
+    lockedAs = { member: target('developer', released), grants: [] };
+
+    const response = await patchMember({ role: 'admin' });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { member: { customRole: { name: string } | null } };
+    expect(body.member.customRole?.name).toBe('Release manager');
+    const change = (await recorded()).find((record) => record.action === 'member.role_changed');
+    expect(change?.metadata).toMatchObject({ previousRole: 'developer', newRole: 'admin' });
+  });
+
+  it.each([
+    ['a suspension', () => patchMember({ status: 'suspended' }), 'member.suspended'],
+    ['a reinstatement', () => patchMember({ status: 'active' }), 'member.reinstated'],
+    ['a removal', () => removeMember(), 'member.removed'],
+  ] as const)(
+    'refuses %s of a member promoted to owner since the route read them',
+    async (_name, act, action) => {
+      callerIs({ role: 'admin' });
+      repositories.findMemberWithUser.mockResolvedValue(target('developer'));
+      lockedAs = { member: target('owner'), grants: [] };
+
+      const response = await act();
+
+      expect(response.status).toBe(403);
+      expect(written).not.toHaveBeenCalled();
+      expect((await denials()).map((record) => record.action)).toEqual([action]);
+    },
+  );
+});
+
+describe('PUT and DELETE /members/{id}/grants — decided on the member the write finds', () => {
+  it.each([
+    [
+      'a grant written',
+      () => writeGrant({ projectSlug: 'api', environmentSlug: 'staging', accessLevel: 'read' }),
+      'access.granted',
+    ],
+    [
+      'a grant removed',
+      () => removeGrant({ projectSlug: 'api', environmentSlug: 'staging' }),
+      'access.revoked',
+    ],
+  ] as const)(
+    'refuses %s for a member promoted to owner since the route read them',
+    async (_name, act, action) => {
+      callerIs({ role: 'admin' });
+      repositories.findMemberWithUser.mockResolvedValue(target('developer'));
+      lockedAs = { member: target('owner'), grants: [grantRow(STAGING_ID, 'read')] };
+
+      const response = await act();
+
+      expect(response.status).toBe(403);
+      expect(await errorOf(response)).toMatchObject({
+        message: 'You cannot manage a role above your own.',
+      });
+      expect(written).not.toHaveBeenCalled();
+      expect((await denials()).map((record) => record.action)).toEqual([action]);
+    },
+  );
+
+  it('measures a removal on the rows the member holds when it lands, not when the route looked', async () => {
+    // The route saw a lone production `none`; by the lock a project-wide
+    // `write` has been written beside it, so removing the `none` now lets
+    // `write` through on production — which this caller cannot hold.
+    callerIs(PRODUCTION_CAPPED);
+    repositories.listGrantsForMember.mockResolvedValue([grantRow(PRODUCTION_ID, 'none')]);
+    lockedAs = {
+      member: target('developer'),
+      grants: [grantRow(null, 'write'), grantRow(PRODUCTION_ID, 'none')],
+    };
+
+    const response = await removeGrant({ projectSlug: 'api', environmentSlug: 'production' });
+
+    expect(response.status).toBe(403);
+    expect(written).not.toHaveBeenCalled();
+  });
+
+  it('measures a removal through the custom role the member holds when it lands', async () => {
+    // The route read a developer holding a role capped at `none` on
+    // production, whose project-wide `write` therefore stops short of it.
+    // By the lock the role has come off: removing the production `none` row
+    // would put `write` there.
+    callerIs(PRODUCTION_CAPPED);
+    const capped = customRole({
+      name: 'No production',
+      baseRole: 'developer',
+      allowedActions: ALL_ACTIONS.filter((action) => ROLE_CAPABILITIES.developer[action]),
+      accessCeiling: { nonProduction: 'write', production: 'none' },
+    });
+    repositories.findMemberWithUser.mockResolvedValue(target('developer', capped));
+    lockedAs = {
+      member: target('developer'),
+      grants: [grantRow(null, 'write'), grantRow(PRODUCTION_ID, 'none')],
+    };
+
+    const response = await removeGrant({ projectSlug: 'api', environmentSlug: 'production' });
+
+    expect(response.status).toBe(403);
+    expect(written).not.toHaveBeenCalled();
+  });
+
+  it('records the level the write replaced, as the lock found it', async () => {
+    repositories.listGrantsForMember.mockResolvedValue([]);
+    lockedAs = { member: target('developer'), grants: [grantRow(STAGING_ID, 'read')] };
+
+    const response = await writeGrant({
+      projectSlug: 'api',
+      environmentSlug: 'staging',
+      accessLevel: 'write',
+    });
+
+    expect(response.status).toBe(200);
+    const granted = (await recorded()).find((record) => record.action === 'access.granted');
+    expect(granted?.metadata).toMatchObject({
+      previousAccessLevel: 'read',
+      newAccessLevel: 'write',
+    });
+  });
+
+  it('reads the member’s grants only inside the write', async () => {
+    await removeGrant({ projectSlug: 'api', environmentSlug: 'staging' });
+    await writeGrant({ projectSlug: 'api', environmentSlug: 'staging', accessLevel: 'read' });
+
+    // Only the stubbed repository's own locked read asks for them.
+    expect(repositories.listGrantsForMember).toHaveBeenCalledTimes(2);
+    expect(written.mock.calls.map(([name]) => name)).toEqual([
+      'removeAccessGrant',
+      'upsertAccessGrant',
+    ]);
   });
 });

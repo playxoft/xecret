@@ -75,3 +75,14 @@ paths = [
   '''^cli/internal/e2ee/token_test\.go$''',
   '''^cli/internal/envkeys/envkeys_test\.go$''',
 ]
+
+# A display fixture, not a credential. The tokens screen lists a service
+# token by the short prefix the API returns for it — never the token — and its
+# test needs one to render. `xst_live_ab12` is that prefix and nothing more: a
+# real token is the prefix plus a long random tail, which this cannot match.
+# Matched on the exact value for the same reason as the specimens above:
+# `gitleaks git` reads the commit that introduced it forever.
+[[allowlists]]
+description = "the service-token prefix fixture in the tokens screen test"
+regexTarget = "secret"
+regexes = ['''^xst_live_ab12$''']

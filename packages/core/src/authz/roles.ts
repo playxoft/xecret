@@ -611,3 +611,47 @@ export function canDefineCustomRole(actor: RoleHolder, baseRole: OrgRole): boole
   if (baseRole === 'owner') return false;
   return canAssignRole(actor.role, baseRole);
 }
+
+/**
+ * The built-in roles a custom role may be based on — every role but `owner`,
+ * highest first.
+ *
+ * `owner` is left out for the reason `canDefineCustomRole` gives, and the
+ * database refuses it too (`custom_roles_base_role_check`). Listed here so the
+ * API's schema and the dashboard's base-role menu offer the same three, from
+ * one definition, rather than each filtering `owner` out on its own.
+ */
+export const CUSTOM_ROLE_BASE_ROLES: readonly Exclude<OrgRole, 'owner'>[] = [
+  'admin',
+  'developer',
+  'viewer',
+];
+
+/**
+ * The actions a custom role based on `baseRole` could usefully list: those the
+ * base role's own table grants, in table order.
+ *
+ * Anything else on the list would be dead weight — `effectiveCapabilities`
+ * intersects it with the base, so an action the base lacks confers nothing —
+ * and dead weight in a permission list is worse than noise: it reads as a
+ * grant to whoever reviews the role later. So the API refuses a definition
+ * naming one (`actionsBeyondBase`), and the dashboard offers only these.
+ */
+export function actionsForBase(baseRole: OrgRole): Action[] {
+  const table = ROLE_CAPABILITIES[baseRole];
+  return (Object.keys(table) as Action[]).filter((action) => table[action]);
+}
+
+/**
+ * The actions in `actions` that a role based on `baseRole` could never
+ * perform — empty for a list the base covers.
+ *
+ * Returned rather than answered as a boolean so a refusal can say which, and
+ * de-duplicated in table order so the answer does not depend on how the
+ * request happened to order them.
+ */
+export function actionsBeyondBase(baseRole: OrgRole, actions: readonly Action[]): Action[] {
+  const table = ROLE_CAPABILITIES[baseRole];
+  const listed = new Set(actions);
+  return (Object.keys(table) as Action[]).filter((action) => listed.has(action) && !table[action]);
+}

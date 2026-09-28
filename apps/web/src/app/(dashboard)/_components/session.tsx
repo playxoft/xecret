@@ -3,7 +3,8 @@
 import { createContext, use } from 'react';
 import type { ReactNode } from 'react';
 
-import type { OrgRole } from '@xecret/core/authz';
+import type { Action, OrgRole } from '@xecret/core/authz';
+import type { CustomRoleRef } from '@/components/members/types';
 import type { VaultStatus } from '@/components/vault';
 
 /**
@@ -14,7 +15,7 @@ import type { VaultStatus } from '@/components/vault';
  * about the answer without each asking again.
  *
  * ── This is a convenience, never an authority ──
- * `role` decides which controls are *rendered*. It never decides what is
+ * `authority` decides which controls are *rendered*. It never decides what is
  * *permitted*: every action is authorised server-side by `can()` against the
  * database, and a browser that lies to itself about this object gains exactly
  * nothing — the request still comes back 403. Hiding a button someone cannot use
@@ -30,11 +31,38 @@ export interface SessionUser {
   avatarUrl: string | null;
 }
 
+/**
+ * What the viewer may do in one organisation, as the server computed it
+ * (`authoritySummary` in `@xecret/core/authz`).
+ *
+ * Gate controls on this, never on `role`. A stored `admin` whose custom role
+ * narrows them to member management is an admin by label and not by
+ * authority, and a control drawn from the label is one that answers 403.
+ */
+export interface SessionAuthority {
+  role: OrgRole;
+  customRole: CustomRoleRef | null;
+  /** The lower of `role` and the custom role's base. */
+  effectiveRole: OrgRole;
+  capabilities: readonly Action[];
+  /**
+   * Roles within the viewer's authority — empty unless they hold
+   * `member.update` or `member.invite`. Not a permission on its own: ask
+   * `mayManageRole` to change a member, and gate inviting on `member.invite`.
+   */
+  assignableRoles: readonly OrgRole[];
+  /** Bases the viewer may define a custom role on. Empty for a narrowed viewer. */
+  definableBaseRoles: readonly OrgRole[];
+}
+
 export interface SessionOrganization {
   id: string;
   name: string;
   slug: string;
+  /** The stored role — what the viewer *is*, and what labels show. */
   role: OrgRole;
+  /** What the viewer may *do* here — what controls ask. */
+  authority: SessionAuthority;
 }
 
 /**
@@ -125,12 +153,49 @@ export function useOrganization(slug: string | null): SessionOrganization | null
 /**
  * Whether a role is at least `admin`.
  *
- * Used to hide the controls that only an admin or owner can complete — creating
- * an environment, reclassifying production, deleting a project. Per-project and
- * per-environment access grants can narrow this further, and only the server
- * knows them, so this is deliberately the coarse half of the answer: it hides
- * what is certainly unavailable and shows what may be.
+ * Asked of the *effective* role, through `canAdminister`, never of the stored
+ * one on its own.
  */
 export function isOrgAdmin(role: OrgRole): boolean {
   return role === 'owner' || role === 'admin';
+}
+
+/**
+ * Whether to draw an administrative control whose request needs `action` —
+ * creating an environment, reclassifying production, deleting a project,
+ * minting a token, managing members.
+ *
+ * Two halves, both from the server's own answer: the viewer's *effective* role
+ * is at least `admin`, and their capabilities include `action`. The first keeps
+ * these controls where they have always been — with owners and admins, never
+ * drawn for a developer — and the second takes each one away from an admin
+ * whose custom role withholds it, which asking the stored role could not.
+ *
+ * Still the coarse half of the answer. Per-project and per-environment access
+ * grants can narrow it further and only the server knows them, so this hides
+ * what is certainly unavailable and shows what may be.
+ */
+export function canAdminister(organization: SessionOrganization | null, action: Action): boolean {
+  if (organization === null) return false;
+  const { authority } = organization;
+  return isOrgAdmin(authority.effectiveRole) && authority.capabilities.includes(action);
+}
+
+/**
+ * Whether the viewer may change a member holding `role` — their role, their
+ * grants, their custom role, their status — or hand `role` to somebody.
+ *
+ * Both halves the server asks: `member.update` (through `canAdminister`, so
+ * the effective role is an admin's too) and `roleWithinAuthority` as the
+ * server computed it, so a narrowed admin sees no control on a member their
+ * own role could not manage, even though they rank as an admin. For a member
+ * without a custom role this is `isOrgAdmin` and `canAssignRole` exactly —
+ * `session.test.ts` pins it.
+ */
+export function mayManageRole(organization: SessionOrganization | null, role: OrgRole): boolean {
+  return (
+    canAdminister(organization, 'member.update') &&
+    organization !== null &&
+    organization.authority.assignableRoles.includes(role)
+  );
 }

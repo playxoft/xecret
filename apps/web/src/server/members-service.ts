@@ -1,6 +1,13 @@
-import type { AccessLevel, GrantReach, GridEnvironment, OrgRole } from '@xecret/core/authz';
+import type {
+  AccessLevel,
+  CustomRole,
+  GrantReach,
+  GridEnvironment,
+  OrgRole,
+} from '@xecret/core/authz';
 import {
   AuthorizationError,
+  canDefineCustomRole,
   effectiveRole,
   grantReach,
   grantWithinAuthority,
@@ -9,14 +16,22 @@ import {
   resolveAccessLevel,
   roleDefaultAccessLevel,
   roleWithinAuthority,
+  widensHolder,
 } from '@xecret/core/authz';
 import type { Database, InvitationGrantSeed } from '@xecret/db';
-import { findEnvironmentBySlug, findProjectBySlug, RepositoryError } from '@xecret/db/repositories';
+import {
+  FieldConflictError,
+  findEnvironmentBySlug,
+  findProjectBySlug,
+  RepositoryError,
+} from '@xecret/db/repositories';
 import type {
   AuthorizationContext as StoredAuthorizationContext,
   MemberGrant,
   OrganizationEnvironment,
+  RepositoryErrorCode,
 } from '@xecret/db/repositories';
+import type { AuditErrorReason } from '@xecret/core/audit';
 import type { Principal } from './actor';
 import { errors } from './errors';
 import { toGrantContext, toMembership } from './tenancy';
@@ -236,6 +251,107 @@ export function assertMayChangeOwnGrants(actor: RoleAuthority): void {
   if (effectiveRole(actor.role, actor.customRole) !== 'owner') refuse(OWN_GRANTS);
 }
 
+/* ── Custom roles ──────────────────────────────────────────────────────── */
+
+const NARROWED_DEFINER = 'Only an owner or admin who holds no custom role can define roles.';
+const BASE_ABOVE_AUTHORITY = 'You cannot define a role on a base above your own.';
+const HOLDER_ABOVE_AUTHORITY = 'This role is held by somebody whose role is above your own.';
+const HOLDER_GRANTS_ABOVE_AUTHORITY =
+  'This change would widen a member who holds access grants beyond your own.';
+
+/**
+ * Refuses defining, editing or deleting a custom role on `baseRole` unless the
+ * caller may (`canDefineCustomRole`): they hold no custom role themselves, and
+ * the base is not `owner` and not above their own role.
+ *
+ * Two messages, because the two refusals are fixed by different people: one by
+ * whoever narrowed the caller, the other by picking a lower base.
+ */
+export function assertMayDefineCustomRole(actor: RoleAuthority, baseRole: OrgRole): void {
+  if (canDefineCustomRole(actor, baseRole)) return;
+  refuse(actor.customRole !== undefined ? NARROWED_DEFINER : BASE_ABOVE_AUTHORITY);
+}
+
+/**
+ * Refuses an edit of a custom role's definition beyond the caller's authority,
+ * measured against the role as it stands and every member who holds it.
+ *
+ *  1. **Both bases** pass `canDefineCustomRole`: the one being replaced as
+ *     well as the new one, so an admin cannot take over an admin-based role
+ *     somebody else defined and then only have their *new* base measured.
+ *  2. **Every holder** passes `roleWithinAuthority` on their stored role.
+ *     Editing a role changes each holder's authority, and the caller may not
+ *     change the authority of somebody they could not otherwise manage — the
+ *     same rule as `assertRoleAuthority` on a member's current role.
+ *  3. **Every holder the edit widens** (`widensHolder`: a capability gained, or
+ *     a ceiling or default raised) passes `heldGrantsWithinAuthority` over the
+ *     grant rows they hold. Widening a role switches on rows its ceiling held
+ *     down or its list made read-only, exactly as a built-in role change that
+ *     gains capabilities does, and is refused unless the caller could have
+ *     written every one of them.
+ *
+ * Measured per holder, because the same edit widens members differently: an
+ * admin holding a developer-based role and a viewer holding it resolve through
+ * different effective roles.
+ */
+export function assertCustomRoleEditWithinAuthority(
+  actor: StoredAuthorizationContext,
+  before: CustomRole,
+  after: CustomRole,
+  holders: readonly { role: OrgRole; grants: readonly MemberGrant[] }[],
+  grid: readonly GridEnvironment[],
+): void {
+  assertMayDefineCustomRole(actor, before.baseRole);
+  assertMayDefineCustomRole(actor, after.baseRole);
+
+  for (const holder of holders) {
+    if (!roleWithinAuthority(actor, holder.role)) refuse(HOLDER_ABOVE_AUTHORITY);
+  }
+
+  const measured = toGrantContext(actor);
+  for (const holder of holders) {
+    const widened = widensHolder(
+      { role: holder.role, customRole: before },
+      { role: holder.role, customRole: after },
+    );
+    if (widened && !heldGrantsWithinAuthority(measured, holder.grants, grid)) {
+      refuse(HOLDER_GRANTS_ABOVE_AUTHORITY);
+    }
+  }
+}
+
+/**
+ * Refuses moving a member onto a custom role, off theirs, or from one to
+ * another, beyond the caller's authority.
+ *
+ *  - The member's stored role must be within the caller's authority
+ *    (`assertRoleAuthority`): assigning only narrows, but unassigning returns
+ *    the member to the whole of that role, and the rule is the same either way
+ *    — you do not change somebody you could not otherwise manage.
+ *  - A change that widens the member (`widensHolder` — unassigning, or a swap
+ *    to a role with more actions or a higher ceiling) must pass
+ *    `heldGrantsWithinAuthority` over their grant rows, since it switches on
+ *    rows the old role held down.
+ *
+ * `member` is the member as read under the organisation lock, custom role
+ * included; `next` is the role they are moving onto, or `undefined` for none.
+ */
+export function assertCustomRoleChangeWithinAuthority(
+  actor: StoredAuthorizationContext,
+  member: StoredRoleAndStatus,
+  next: CustomRole | undefined,
+  grants: readonly MemberGrant[],
+  grid: readonly GridEnvironment[],
+): void {
+  assertRoleAuthority(actor, member.role);
+
+  const widened = widensHolder(
+    { role: member.role, customRole: member.customRole },
+    { role: member.role, customRole: next },
+  );
+  if (widened) assertHeldGrantsWithinAuthority(actor, grants, grid);
+}
+
 /**
  * Refuses an invitation whose initial grants exceed what the inviter holds.
  *
@@ -268,6 +384,9 @@ export function assertInvitationGrantsWithinAuthority(
  * the request — so passing them through leaks nothing.
  */
 export function mapMembershipError(cause: unknown): never {
+  // A conflict about one field — a role name another role holds — is answered
+  // on that field, so the form can say so beside the input.
+  if (cause instanceof FieldConflictError) throw errors.conflictOn(cause.field, cause.message);
   if (cause instanceof RepositoryError) {
     switch (cause.code) {
       case 'notFound':
@@ -286,6 +405,40 @@ export function mapMembershipError(cause: unknown): never {
     }
   }
   throw cause;
+}
+
+/** The audit reason each repository refusal is filed under. */
+const REFUSAL_REASON: Readonly<Record<RepositoryErrorCode, AuditErrorReason>> = {
+  conflict: 'conflict',
+  lastOwner: 'conflict',
+  seatLimit: 'conflict',
+  quotaExceeded: 'quotaExceeded',
+  notFound: 'notFound',
+  invalid: 'invalidInput',
+  immutable: 'invalidInput',
+  // Raised today only by the identity-linking pass, for an address its
+  // provider has not verified — a credential that proves too little. No
+  // membership or custom-role write raises it; it is here because the map is
+  // exhaustive, so a new code has to be decided rather than filed as nothing.
+  forbidden: 'invalidCredentials',
+};
+
+/**
+ * `mapMembershipError`, filing a record of the refusal first.
+ *
+ * For the custom-role writes, where the refusals a repository raises — a name
+ * already taken, a role still held, an owner being handed one — are exactly
+ * the attempts an audit trail should show, not only the ones that were
+ * forbidden. `file` receives the category, never the message: the category is
+ * what alerting groups by (see `AuditBuilder.error`).
+ */
+export function mapAuditedMembershipError(
+  file: (reason: AuditErrorReason) => void,
+): (cause: unknown) => never {
+  return (cause) => {
+    if (cause instanceof RepositoryError) file(REFUSAL_REASON[cause.code]);
+    return mapMembershipError(cause);
+  };
 }
 
 /** Where a resolved level came from, for the preview UI to explain itself. */

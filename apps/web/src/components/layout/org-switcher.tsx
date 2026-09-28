@@ -24,6 +24,12 @@ export interface ShellOrganization {
   /** The viewer's role here. Shown so it is obvious before, not after, an action is denied. */
   role: string;
   /**
+   * The custom role narrowing `role`, by name, or `null`. Shown beside it for
+   * the same reason, and rendered in the organisation's own casing — `role`
+   * is capitalised by CSS, a name somebody typed is not.
+   */
+  customRole?: string | null;
+  /**
    * Where selecting this organisation goes.
    *
    * A resolved href rather than a callback: the shell is rendered from Server
@@ -82,7 +88,10 @@ export function OrgSwitcher({ organizations, currentSlug, onCreate, className }:
         </span>
         <span className="x-sidebar-wide min-w-0 flex-1">
           <span className="text-fg block truncate text-sm font-medium">{current.name}</span>
-          <span className="text-fg-subtle block truncate text-sm capitalize">{current.role}</span>
+          <span className="text-fg-subtle block truncate text-sm">
+            <span className="capitalize">{current.role}</span>
+            {current.customRole ? <> · {current.customRole}</> : null}
+          </span>
         </span>
         <Shortcut keys={['G']} className="x-sidebar-wide" />
         <ChevronUpDownIcon className="x-sidebar-wide text-fg-subtle size-3.5 shrink-0" />
@@ -97,7 +106,10 @@ export function OrgSwitcher({ organizations, currentSlug, onCreate, className }:
               {org.slug === current.slug ? (
                 <CheckIcon className="text-accent-text size-4 shrink-0" />
               ) : (
-                <span className="text-fg-subtle shrink-0 text-sm capitalize">{org.role}</span>
+                <span className="text-fg-subtle max-w-[45%] shrink-0 truncate text-sm">
+                  <span className="capitalize">{org.role}</span>
+                  {org.customRole ? <> · {org.customRole}</> : null}
+                </span>
               )}
             </Link>
           </DropdownMenuItem>

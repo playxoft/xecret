@@ -2,7 +2,6 @@
 
 import { Fragment, useMemo, useState } from 'react';
 
-import { canAssignRole } from '@xecret/core/authz';
 import { cn } from '@/lib/cn';
 import { initials } from '@/lib/format';
 import { formatAbsoluteTime, formatRelativeTime, toIsoString } from '@/lib/format';
@@ -37,13 +36,19 @@ import { InviteDialog } from '@/components/members/invite-dialog';
 import { MemberAccessPanel } from '@/components/members/member-access-panel';
 import { MemberKeyBadge } from '@/components/envkeys';
 import { MemberRowActions } from '@/components/members/member-actions';
+import { CustomRolesLoadError } from '@/components/members/custom-role-select';
 import { ROLE_LABELS, ROLE_TONE, ROLES_DESCENDING } from '@/components/members/types';
-import type { InvitationListResponse, MemberListResponse } from '@/components/members/types';
+import type {
+  CustomRoleListResponse,
+  InvitationListResponse,
+  MemberListResponse,
+} from '@/components/members/types';
 import type { ProjectListResponse } from '@/components/projects/types';
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
+import { useGrantable } from '../_lib/use-authority';
 import { ErrorState } from './resource-states';
-import { isOrgAdmin, useOrganization } from './session';
+import { canAdminister, mayManageRole, useOrganization } from './session';
 
 /**
  * Who is in this organisation — and, for admins, the controls that change it.
@@ -60,10 +65,16 @@ import { isOrgAdmin, useOrganization } from './session';
  * effective-permission preview beside the controls that change it.
  *
  * ── Controls follow authority ──
- * The role select and the actions menu render only where the viewer's role
- * could complete the action — at least `admin`, not their own row, and never a
- * member whose role is above theirs. The server re-checks everything,
- * including the last-owner invariant that only the database can answer.
+ * The role select, the custom-role select and the row's buttons render only
+ * where the viewer's authority could complete the action — `member.update`,
+ * not their own row, and never a member whose role is beyond what the viewer
+ * may manage (`assignableRoles`, from the session, which a custom role
+ * narrows). The level capsules offer only what the viewer could grant on each
+ * environment (`useGrantable`). The server re-checks everything, including
+ * the last-owner invariant that only the database can answer.
+ *
+ * The role column names a member's custom role beside their built-in one, so
+ * a narrowed admin reads as what they are.
  */
 
 type SortKey = 'name' | 'role' | 'joined';
@@ -73,20 +84,36 @@ const ALL_PROJECTS = 'all';
 
 export function MembersScreen({ orgSlug }: { orgSlug: string }) {
   const organization = useOrganization(orgSlug);
-  const viewerRole = organization?.role ?? null;
-  const canManage = viewerRole !== null && isOrgAdmin(viewerRole);
+  const canManage = canAdminister(organization, 'member.update');
+  const canRemove = canAdminister(organization, 'member.remove');
+  const assignableRoles = organization?.authority.assignableRoles ?? [];
+  // Inviting needs a role to invite *at*: a narrowed inviter whose role leaves
+  // them none to hand out gets no button rather than a dialog with an empty
+  // role menu.
+  const seesInvitations = canAdminister(organization, 'member.invite');
+  const canInvite = seesInvitations && assignableRoles.length > 0;
 
   const members = useApiResource<MemberListResponse>(apiPath.members(orgSlug));
   // Invitations are fetched only for people who could see them; asking and
   // rendering the 403 would turn a permission into an error state. The project
   // list feeds the project filter, which exists only for the same people —
-  // the listing carries per-member project reach only for admins.
+  // the listing carries per-member project reach only for admins. The custom
+  // roles and the grantable levels likewise, for the row controls that use
+  // them.
   const invitations = useApiResource<InvitationListResponse>(
-    canManage ? apiPath.invitations(orgSlug) : null,
+    seesInvitations ? apiPath.invitations(orgSlug) : null,
   );
   const projects = useApiResource<ProjectListResponse>(
     canManage ? apiPath.projects(orgSlug) : null,
   );
+  const customRoles = useApiResource<CustomRoleListResponse>(
+    canManage ? apiPath.roles(orgSlug) : null,
+  );
+  const grantable = useGrantable(canManage || canInvite ? orgSlug : null);
+  const customRoleChoices =
+    customRoles.data === null
+      ? null
+      : { roles: customRoles.data.data, assignable: customRoles.data.feature.enabled };
 
   const [query, setQuery] = useState('');
   const [projectFilter, setProjectFilter] = useState(ALL_PROJECTS);
@@ -157,6 +184,8 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
   function reloadAll() {
     members.reload();
     invitations.reload();
+    // Holder counts move with every assignment.
+    customRoles.reload();
   }
 
   return (
@@ -165,7 +194,7 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
         title="Members"
         description="Everyone who can act in this organisation. Access to individual projects and environments is granted per member."
         actions={
-          canManage ? (
+          canInvite ? (
             <Button variant="primary" onClick={() => setInviting(true)}>
               <PlusIcon className="size-4" /> Invite
             </Button>
@@ -225,6 +254,13 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
             ) : null}
           </p>
 
+          {canManage && customRoles.error !== null ? (
+            <CustomRolesLoadError
+              error={customRoles.error}
+              onRetry={() => void customRoles.reload()}
+            />
+          ) : null}
+
           {visible.length === 0 && members.data.data.length > 0 ? (
             <EmptyState
               icon={<SearchIcon />}
@@ -251,7 +287,7 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
               title="You are the only member"
               description="Invite someone and they will appear here with the role you give them."
               action={
-                canManage ? (
+                canInvite ? (
                   <Button variant="primary" onClick={() => setInviting(true)}>
                     Invite a member
                   </Button>
@@ -289,7 +325,13 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
                       direction={sortDirection}
                       onSort={() => toggleSort('joined')}
                     />
-                    <TableHead className="w-96">
+                    {/* Wide enough for the custom-role select from the
+                        first render — while the roles load too — so the
+                        columns do not jump when they arrive. Only a failed
+                        load, which says so above, gives the room back. */}
+                    <TableHead
+                      className={canManage && customRoles.error === null ? 'w-[34rem]' : 'w-96'}
+                    >
                       <span className="sr-only">Actions</span>
                     </TableHead>
                   </TableRow>
@@ -358,9 +400,20 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
                           </TableCell>
 
                           <TableCell>
-                            <Badge tone={ROLE_TONE[member.role] ?? 'neutral'}>
-                              {ROLE_LABELS[member.role]}
-                            </Badge>
+                            <span className="flex flex-wrap items-center gap-1">
+                              <Badge tone={ROLE_TONE[member.role] ?? 'neutral'}>
+                                {ROLE_LABELS[member.role]}
+                              </Badge>
+                              {member.customRole !== null ? (
+                                <Badge
+                                  className="max-w-40 min-w-0"
+                                  title={`${member.customRole.name} — a custom role narrowing ${ROLE_LABELS[member.role]}`}
+                                >
+                                  <span className="sr-only">Custom role: </span>
+                                  <span className="truncate">{member.customRole.name}</span>
+                                </Badge>
+                              ) : null}
+                            </span>
                           </TableCell>
 
                           <TableCell>
@@ -387,11 +440,13 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
                           {/* Clicks on the row's controls are theirs alone —
                               changing a role must not also fold the accordion. */}
                           <TableCell onClick={(event) => event.stopPropagation()}>
-                            {viewerRole !== null && canManage ? (
+                            {canManage ? (
                               <MemberRowActions
                                 orgSlug={orgSlug}
                                 member={member}
-                                viewerRole={viewerRole}
+                                assignableRoles={assignableRoles}
+                                canRemove={canRemove}
+                                customRoles={customRoleChoices}
                                 onChanged={reloadAll}
                               />
                             ) : null}
@@ -402,14 +457,18 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
                           <TableRow className="hover:bg-transparent">
                             <TableCell colSpan={6} className="bg-canvas-inset/40 p-0">
                               <MemberAccessPanel
+                                // A role, status or custom-role change moves
+                                // every level in the panel, so a changed member
+                                // is a new panel — re-read, not a stale matrix.
+                                key={`${member.id}:${member.role}:${member.status}:${member.customRole?.id ?? ''}`}
                                 orgSlug={orgSlug}
                                 member={member}
                                 mayEdit={
-                                  viewerRole !== null &&
                                   canManage &&
                                   !member.isYou &&
-                                  canAssignRole(viewerRole, member.role)
+                                  mayManageRole(organization, member.role)
                                 }
+                                grantable={grantable}
                                 onCollapse={() => toggleMember(member.id)}
                                 onChanged={members.reload}
                               />
@@ -427,7 +486,7 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
           {/* Below the members, not above them: the people who are actually in
               the organisation are the answer to this page, and the ones who
               have merely been asked are the footnote. */}
-          {canManage && invitations.data !== null ? (
+          {seesInvitations && invitations.data !== null ? (
             <InvitationsSection
               orgSlug={orgSlug}
               invitations={invitations.data.data}
@@ -438,10 +497,11 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
         </>
       )}
 
-      {viewerRole !== null ? (
+      {canInvite ? (
         <InviteDialog
           orgSlug={orgSlug}
-          viewerRole={viewerRole}
+          assignableRoles={assignableRoles}
+          grantable={grantable}
           open={inviting}
           onOpenChange={setInviting}
           onInvited={reloadAll}

@@ -4,9 +4,10 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
-import type { OrgRole } from '@xecret/core/authz';
 import { api } from '@/lib/api';
 import { apiPath, appPath } from '@/app/(dashboard)/_lib/paths';
+import { canAdminister } from '@/app/(dashboard)/_components/session';
+import type { SessionOrganization } from '@/app/(dashboard)/_components/session';
 import {
   Alert,
   Button,
@@ -38,14 +39,12 @@ export interface ProjectActionsProps {
   orgSlug: string;
   project: Project;
   environments: readonly Environment[];
-  /** Hidden for roles that certainly cannot use it. The server still decides. */
-  canManage: boolean;
   /**
-   * The viewer's organisation role, which bounds whose grants the members
-   * dialog lets them touch — nobody manages a role above their own, and the
-   * server refuses it either way.
+   * The viewer's membership. Its authority decides which items are drawn —
+   * each hidden where it certainly cannot succeed, the server still deciding —
+   * and bounds whose grants the members dialog lets them touch.
    */
-  viewerRole: OrgRole;
+  organization: SessionOrganization;
   onChanged: () => void;
 }
 
@@ -81,8 +80,7 @@ export function ProjectActions({
   orgSlug,
   project,
   environments,
-  canManage,
-  viewerRole,
+  organization,
   onChanged,
 }: ProjectActionsProps) {
   const router = useRouter();
@@ -91,7 +89,17 @@ export function ProjectActions({
   const [renaming, setRenaming] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  if (!canManage) return null;
+  // One item per capability, so an admin whose custom role withholds one of
+  // them loses that item rather than the whole menu — and the menu is drawn
+  // whenever any one of them is left, an inviter with nothing else included.
+  // Inviting needs a role to invite *at*, as on the Members page it links to.
+  const canManageMembers = canAdminister(organization, 'member.update');
+  const canInvite =
+    canAdminister(organization, 'member.invite') &&
+    organization.authority.assignableRoles.length > 0;
+  const canRename = canAdminister(organization, 'project.update');
+  const canDelete = canAdminister(organization, 'project.delete');
+  if (!canManageMembers && !canInvite && !canRename && !canDelete) return null;
 
   const holdsProduction = environments.some((environment) => environment.isProduction);
 
@@ -119,27 +127,41 @@ export function ProjectActions({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent className="w-56">
-          <DropdownMenuItem onSelect={() => setManagingMembers(true)}>
-            <UsersIcon className="size-4" />
-            Members…
-          </DropdownMenuItem>
+          {canManageMembers ? (
+            <DropdownMenuItem onSelect={() => setManagingMembers(true)}>
+              <UsersIcon className="size-4" />
+              Members…
+            </DropdownMenuItem>
+          ) : null}
           {/* Marked out from the items around it: everything else in this menu
               changes the project in place, and this one leaves the page. The
               accent is the same one the sidebar uses for "you are here", which
               is the only colour in the design system that means "this is the
               live thing" rather than "this is dangerous". */}
-          <DropdownMenuItem asChild>
-            <Link href={appPath.members(orgSlug)} className="text-accent-text">
-              <PlusIcon className="size-4" />
-              Invite a member
-            </Link>
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onSelect={() => setRenaming(true)}>Rename project…</DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem destructive onSelect={() => setDeleting(true)}>
-            Delete project…
-          </DropdownMenuItem>
+          {canInvite ? (
+            <DropdownMenuItem asChild>
+              <Link href={appPath.members(orgSlug)} className="text-accent-text">
+                <PlusIcon className="size-4" />
+                Invite a member
+              </Link>
+            </DropdownMenuItem>
+          ) : null}
+          {canRename ? (
+            <>
+              {canManageMembers || canInvite ? <DropdownMenuSeparator /> : null}
+              <DropdownMenuItem onSelect={() => setRenaming(true)}>
+                Rename project…
+              </DropdownMenuItem>
+            </>
+          ) : null}
+          {canDelete ? (
+            <>
+              {canManageMembers || canInvite || canRename ? <DropdownMenuSeparator /> : null}
+              <DropdownMenuItem destructive onSelect={() => setDeleting(true)}>
+                Delete project…
+              </DropdownMenuItem>
+            </>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -147,7 +169,7 @@ export function ProjectActions({
         orgSlug={orgSlug}
         projectSlug={project.slug}
         projectName={project.name}
-        viewerRole={viewerRole}
+        assignableRoles={organization.authority.assignableRoles}
         open={managingMembers}
         onOpenChange={setManagingMembers}
       />

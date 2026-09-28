@@ -26,8 +26,14 @@ export interface EnvironmentSettingsFormProps {
   orgSlug: string;
   projectSlug: string;
   environment: EnvironmentDetail;
-  /** Hidden for roles that certainly cannot use it. The server still decides. */
+  /**
+   * Whether the viewer holds `environment.update` — renaming, reordering and
+   * reclassifying. Hidden where it certainly cannot succeed; the server still
+   * decides.
+   */
   canManage: boolean;
+  /** Whether the viewer holds `environment.delete`, which deleting asks instead. */
+  canDelete: boolean;
   onChanged: () => void;
 }
 
@@ -48,6 +54,7 @@ export function EnvironmentSettingsForm({
   projectSlug,
   environment,
   canManage,
+  canDelete,
   onChanged,
 }: EnvironmentSettingsFormProps) {
   const router = useRouter();
@@ -207,7 +214,7 @@ export function EnvironmentSettingsForm({
         </Card>
       ) : null}
 
-      {canManage ? (
+      {canDelete ? (
         <Card className="border-danger-line">
           <CardHeader>
             <CardTitle>Delete this environment</CardTitle>

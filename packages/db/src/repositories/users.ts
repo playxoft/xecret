@@ -3,7 +3,7 @@ import { isWorkosIdentity, WORKOS_USER_ID_PATTERN } from '@xecret/core/auth';
 import type { VerifiedIdentity, WorkosIdentity } from '@xecret/core/auth';
 import { uuidv7 } from '@xecret/core/ids';
 import { users } from '../schema/identity';
-import { RepositoryError } from './shared';
+import { isConstraintViolation, RepositoryError } from './shared';
 import type { Executor } from './shared';
 
 /**
@@ -56,21 +56,9 @@ const WORKOS_USER_ID_UNIQUE_CONSTRAINT = 'users_workos_user_id_unique';
  * `RepositoryError` the same way.
  */
 export function isUniqueViolation(error: unknown, constraint: string): boolean {
-  for (let current: unknown = error; current instanceof Error; current = current.cause) {
-    if (
-      'code' in current &&
-      current.code === UNIQUE_VIOLATION &&
-      // postgres.js names the field `constraint_name`; PGlite, which the
-      // repository tests run against, follows node-postgres and calls it
-      // `constraint`. Accepting both is what lets those tests exercise this
-      // mapping for real instead of around it.
-      (('constraint_name' in current && current.constraint_name === constraint) ||
-        ('constraint' in current && current.constraint === constraint))
-    ) {
-      return true;
-    }
-  }
-  return false;
+  // Both drivers' spelling of the constraint field is read there — see
+  // `isConstraintViolation`.
+  return isConstraintViolation(error, UNIQUE_VIOLATION, constraint);
 }
 
 export async function findUserByWorkosId(

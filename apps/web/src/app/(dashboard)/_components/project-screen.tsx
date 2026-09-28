@@ -13,7 +13,7 @@ import type { EnvironmentResponse, ProjectResponse } from '@/components/projects
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { CardGridSkeleton, ErrorState } from './resource-states';
-import { isOrgAdmin, useOrganization } from './session';
+import { canAdminister, useOrganization } from './session';
 
 export function ProjectScreen({ orgSlug, projectSlug }: { orgSlug: string; projectSlug: string }) {
   const organization = useOrganization(orgSlug);
@@ -23,7 +23,7 @@ export function ProjectScreen({ orgSlug, projectSlug }: { orgSlug: string; proje
   const environments = project.data?.environments;
   const counts = useSecretCounts(orgSlug, projectSlug, environments);
 
-  const canManage = organization !== null && isOrgAdmin(organization.role);
+  const canCreateEnvironment = canAdminister(organization, 'environment.create');
 
   return (
     <div className="flex flex-col gap-6">
@@ -34,7 +34,7 @@ export function ProjectScreen({ orgSlug, projectSlug }: { orgSlug: string; proje
         actions={
           project.data === null ? undefined : (
             <>
-              {canManage ? (
+              {canCreateEnvironment ? (
                 <Button variant="secondary" onClick={() => setCreating(true)}>
                   New environment
                 </Button>
@@ -44,8 +44,7 @@ export function ProjectScreen({ orgSlug, projectSlug }: { orgSlug: string; proje
                   orgSlug={orgSlug}
                   project={project.data.project}
                   environments={project.data.environments}
-                  canManage={canManage}
-                  viewerRole={organization.role}
+                  organization={organization}
                   onChanged={project.reload}
                 />
               ) : null}
@@ -64,7 +63,7 @@ export function ProjectScreen({ orgSlug, projectSlug }: { orgSlug: string; proje
           title="This project has no environments"
           description="An environment is where secrets live — one per deployment target. Each gets its own encryption key, so a compromise of one does not reach the others."
           action={
-            canManage ? (
+            canCreateEnvironment ? (
               <Button variant="primary" onClick={() => setCreating(true)}>
                 Create an environment
               </Button>
