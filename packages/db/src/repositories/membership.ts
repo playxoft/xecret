@@ -842,23 +842,34 @@ export interface AccessGrantParams {
  * The sequence is still safe under concurrency: `DO NOTHING` absorbs the insert
  * that loses a race, and the retry then updates the row the winner created. The
  * index remains the arbiter — nothing here assumes it won.
+ *
+ * ── `guard` ──
+ * Required, and run as every member write runs its guard (`lockForChange`):
+ * after the organisation lock, on the member row-locked with their custom
+ * role and on every grant row they hold, before anything is written. Whether
+ * the caller may write this grant depends on who the member is *when it
+ * lands* — an admin may not touch an owner's grants, and a member promoted to
+ * owner a moment after the route read them is an owner by then — so that is
+ * what the route decides from. The rows it is shown are also the ones the
+ * write replaces, which is what an audit record's "previous level" should
+ * name.
+ *
+ * The organisation lock is also what a key rotation takes: a grant change
+ * moves who may read an environment, and a rotation decides its grant set from
+ * exactly that answer — so the two must not interleave, or a rotation seals
+ * the brand-new key to somebody whose access was revoked a millisecond after
+ * it looked. See `lockOrganization`.
  */
 export async function upsertAccessGrant(
   exec: Executor,
   params: AccessGrantParams,
+  guard: (change: MemberChange) => void,
 ): Promise<MemberGrant> {
   const environmentId = params.environmentId ?? null;
 
   return exec.transaction(async (tx) => {
-    await requireMember(tx, params.orgId, params.memberId);
     await requireProjectScope(tx, params.orgId, params.projectId, environmentId);
-
-    // The organisation's write lock, before anything is written. A grant change
-    // moves who may read an environment, and an environment key rotation decides
-    // its grant set from exactly that answer — so the two must not interleave, or
-    // a rotation seals the brand-new key to somebody whose access was revoked a
-    // millisecond after it looked. See `lockOrganization`.
-    await lockOrganization(tx, params.orgId);
+    await lockForChange(tx, params, guard);
 
     const now = new Date();
     const scope = grantScope(params.projectId, environmentId);
@@ -909,19 +920,23 @@ export interface RemoveAccessGrantParams {
  *
  * Returns whether a row was actually removed, so the caller can tell "revoked"
  * from "there was nothing to revoke" in the audit record.
+ *
+ * Takes a `guard` exactly as `upsertAccessGrant` does, and needs it more: a
+ * removal can *raise* the member — they fall back to whatever the row was
+ * overriding — so whether it may go ahead is a question about the member's
+ * role, custom role and other grant rows, as the lock finds them. The same
+ * lock, too, and for the same reason: narrowing access is the half of the
+ * pair a rotation must not be able to miss.
  */
 export async function removeAccessGrant(
   exec: Executor,
   params: RemoveAccessGrantParams,
+  guard: (change: MemberChange) => void,
 ): Promise<boolean> {
   const environmentId = params.environmentId ?? null;
 
   return exec.transaction(async (tx) => {
-    await requireMember(tx, params.orgId, params.memberId);
-
-    // Same lock and same reason as `upsertAccessGrant`: narrowing access is the
-    // half of the pair a rotation must not be able to miss.
-    await lockOrganization(tx, params.orgId);
+    await lockForChange(tx, params, guard);
 
     const result = await tx
       .delete(accessGrants)
@@ -1127,8 +1142,9 @@ export function membersPageQuery(exec: Executor, orgId: string, page: number, pa
  *
  * The same lock orders these writes against everything else that changes whose
  * authority a member holds — a custom role being assigned, unassigned or
- * edited (`custom-roles.ts`) — so the member read here, custom role included,
- * is the member the write will change. That is what the guard decides from.
+ * edited (`custom-roles.ts`), a grant written or removed — so the member read
+ * here, custom role included, is the member the write will change. That is
+ * what the guard decides from. The grant writes take it through here too.
  *
  * The grant rows are read only when there is a guard to show them to.
  */
@@ -1240,17 +1256,6 @@ function grantScope(projectId: string, environmentId: string | null) {
       ? isNull(accessGrants.environmentId)
       : eq(accessGrants.environmentId, environmentId),
   );
-}
-
-/** Confirms the member is this organisation's, before anything is written for them. */
-async function requireMember(exec: Executor, orgId: string, memberId: string): Promise<void> {
-  const [row] = await exec
-    .select({ id: orgMembers.id })
-    .from(orgMembers)
-    .where(and(eq(orgMembers.id, memberId), eq(orgMembers.orgId, orgId)))
-    .limit(1);
-
-  if (!row) throw new RepositoryError('notFound', 'Member not found in this organisation.');
 }
 
 /**

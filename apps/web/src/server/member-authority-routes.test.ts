@@ -411,14 +411,21 @@ beforeEach(() => {
     { ...production, project: { id: PROJECT_ID, name: 'API', slug: 'api' } },
   ]);
   repositories.listGrantsForMember.mockResolvedValue([]);
-  repositories.removeAccessGrant.mockResolvedValue(true);
-  repositories.upsertAccessGrant.mockImplementation(
-    async (_db: unknown, params: { accessLevel: Level }) => ({
-      id: uuidv7(),
-      accessLevel: params.accessLevel,
-    }),
-  );
   lockedAs = {};
+  repositories.removeAccessGrant.mockImplementation(
+    async (_db: unknown, params: MemberWriteParams, guard: Guard) => {
+      await runGuard(params, guard);
+      written('removeAccessGrant');
+      return true;
+    },
+  );
+  repositories.upsertAccessGrant.mockImplementation(
+    async (_db: unknown, params: MemberWriteParams & { accessLevel: Level }, guard: Guard) => {
+      await runGuard(params, guard);
+      written('upsertAccessGrant');
+      return { id: uuidv7(), accessLevel: params.accessLevel };
+    },
+  );
   repositories.updateMemberRole.mockImplementation(
     async (_db: unknown, params: MemberWriteParams & { role: Role }, guard: Guard) => {
       await runGuard(params, guard);
@@ -782,7 +789,7 @@ describe('PUT /members/{id}/grants — a grant confers no more than the caller h
       code: 'forbidden',
       message: 'You cannot grant more access than you hold.',
     });
-    expect(repositories.upsertAccessGrant).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalledWith('upsertAccessGrant');
   });
 
   it('refuses a project-wide grant, which lands on production too', async () => {
@@ -791,7 +798,7 @@ describe('PUT /members/{id}/grants — a grant confers no more than the caller h
     const response = await put({ projectSlug: 'api', environmentSlug: null, accessLevel: 'read' });
 
     expect(response.status).toBe(403);
-    expect(repositories.upsertAccessGrant).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalledWith('upsertAccessGrant');
   });
 
   it('permits the same caller a grant where they hold the level', async () => {
@@ -804,7 +811,7 @@ describe('PUT /members/{id}/grants — a grant confers no more than the caller h
     });
 
     expect(response.status).toBe(200);
-    expect(repositories.upsertAccessGrant).toHaveBeenCalledOnce();
+    expect(written).toHaveBeenCalledExactlyOnceWith('upsertAccessGrant');
   });
 
   it('always permits none — taking access away confers nothing', async () => {
@@ -888,7 +895,7 @@ describe('DELETE /members/{id}/grants — a removal confers no more than the cal
       code: 'forbidden',
       message: 'You cannot grant more access than you hold.',
     });
-    expect(repositories.removeAccessGrant).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalledWith('removeAccessGrant');
   });
 
   it('refuses the same removal to a plain admin an explicit grant holds to read', async () => {
@@ -901,7 +908,7 @@ describe('DELETE /members/{id}/grants — a removal confers no more than the cal
     const response = await remove({ projectSlug: 'api', environmentSlug: 'production' });
 
     expect(response.status).toBe(403);
-    expect(repositories.removeAccessGrant).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalledWith('removeAccessGrant');
   });
 
   it('permits a removal that lowers the member everywhere', async () => {
@@ -914,7 +921,7 @@ describe('DELETE /members/{id}/grants — a removal confers no more than the cal
     const response = await remove({ projectSlug: 'api', environmentSlug: null });
 
     expect(response.status).toBe(204);
-    expect(repositories.removeAccessGrant).toHaveBeenCalledOnce();
+    expect(written).toHaveBeenCalledExactlyOnceWith('removeAccessGrant');
   });
 
   it('permits a removal that keeps the member where they were', async () => {
@@ -948,7 +955,7 @@ describe('DELETE /members/{id}/grants — a removal confers no more than the cal
     const response = await remove({ projectSlug: 'api', environmentSlug: 'staging' });
 
     expect(response.status).toBe(204);
-    expect(repositories.removeAccessGrant).toHaveBeenCalledOnce();
+    expect(written).toHaveBeenCalledExactlyOnceWith('removeAccessGrant');
   });
 });
 
@@ -981,7 +988,7 @@ describe('/members/{id}/grants on yourself — owners only', () => {
       code: 'forbidden',
       message: 'You cannot change your own access grants.',
     });
-    expect(repositories.removeAccessGrant).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalledWith('removeAccessGrant');
   });
 
   it('refuses a restricted admin writing a wider grant over their own restriction', async () => {
@@ -996,7 +1003,7 @@ describe('/members/{id}/grants on yourself — owners only', () => {
     });
 
     expect(response.status).toBe(403);
-    expect(repositories.upsertAccessGrant).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalledWith('upsertAccessGrant');
   });
 
   it('lets an owner delete a restriction they placed on themselves', async () => {
@@ -1012,7 +1019,7 @@ describe('/members/{id}/grants on yourself — owners only', () => {
     const response = await removeOwn({ projectSlug: 'api', environmentSlug: 'production' });
 
     expect(response.status).toBe(204);
-    expect(repositories.removeAccessGrant).toHaveBeenCalledOnce();
+    expect(written).toHaveBeenCalledExactlyOnceWith('removeAccessGrant');
   });
 
   it('lets an owner widen their own grant past the restriction it replaces', async () => {
@@ -1214,7 +1221,7 @@ describe('DELETE /members/{id}/grants — a suspended member is measured as the 
       code: 'forbidden',
       message: 'You cannot grant more access than you hold.',
     });
-    expect(repositories.removeAccessGrant).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalledWith('removeAccessGrant');
   });
 
   it('closes suspend, remove the restriction, reinstate — at the removal', async () => {
@@ -1228,7 +1235,7 @@ describe('DELETE /members/{id}/grants — a suspended member is measured as the 
 
     expect(suspended.status).toBe(200);
     expect(removed.status).toBe(403);
-    expect(repositories.removeAccessGrant).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalledWith('removeAccessGrant');
   });
 
   it('changes nothing for an owner or an unrestricted admin', async () => {
@@ -1748,4 +1755,106 @@ describe('PATCH and DELETE /members/{id} — decided on the member the write fin
       expect((await denials()).map((record) => record.action)).toEqual([action]);
     },
   );
+});
+
+describe('PUT and DELETE /members/{id}/grants — decided on the member the write finds', () => {
+  it.each([
+    [
+      'a grant written',
+      () => writeGrant({ projectSlug: 'api', environmentSlug: 'staging', accessLevel: 'read' }),
+      'access.granted',
+    ],
+    [
+      'a grant removed',
+      () => removeGrant({ projectSlug: 'api', environmentSlug: 'staging' }),
+      'access.revoked',
+    ],
+  ] as const)(
+    'refuses %s for a member promoted to owner since the route read them',
+    async (_name, act, action) => {
+      callerIs({ role: 'admin' });
+      repositories.findMemberWithUser.mockResolvedValue(target('developer'));
+      lockedAs = { member: target('owner'), grants: [grantRow(STAGING_ID, 'read')] };
+
+      const response = await act();
+
+      expect(response.status).toBe(403);
+      expect(await errorOf(response)).toMatchObject({
+        message: 'You cannot manage a role above your own.',
+      });
+      expect(written).not.toHaveBeenCalled();
+      expect((await denials()).map((record) => record.action)).toEqual([action]);
+    },
+  );
+
+  it('measures a removal on the rows the member holds when it lands, not when the route looked', async () => {
+    // The route saw a lone production `none`; by the lock a project-wide
+    // `write` has been written beside it, so removing the `none` now lets
+    // `write` through on production — which this caller cannot hold.
+    callerIs(PRODUCTION_CAPPED);
+    repositories.listGrantsForMember.mockResolvedValue([grantRow(PRODUCTION_ID, 'none')]);
+    lockedAs = {
+      member: target('developer'),
+      grants: [grantRow(null, 'write'), grantRow(PRODUCTION_ID, 'none')],
+    };
+
+    const response = await removeGrant({ projectSlug: 'api', environmentSlug: 'production' });
+
+    expect(response.status).toBe(403);
+    expect(written).not.toHaveBeenCalled();
+  });
+
+  it('measures a removal through the custom role the member holds when it lands', async () => {
+    // The route read a developer holding a role capped at `none` on
+    // production, whose project-wide `write` therefore stops short of it.
+    // By the lock the role has come off: removing the production `none` row
+    // would put `write` there.
+    callerIs(PRODUCTION_CAPPED);
+    const capped = customRole({
+      name: 'No production',
+      baseRole: 'developer',
+      allowedActions: ALL_ACTIONS.filter((action) => ROLE_CAPABILITIES.developer[action]),
+      accessCeiling: { nonProduction: 'write', production: 'none' },
+    });
+    repositories.findMemberWithUser.mockResolvedValue(target('developer', capped));
+    lockedAs = {
+      member: target('developer'),
+      grants: [grantRow(null, 'write'), grantRow(PRODUCTION_ID, 'none')],
+    };
+
+    const response = await removeGrant({ projectSlug: 'api', environmentSlug: 'production' });
+
+    expect(response.status).toBe(403);
+    expect(written).not.toHaveBeenCalled();
+  });
+
+  it('records the level the write replaced, as the lock found it', async () => {
+    repositories.listGrantsForMember.mockResolvedValue([]);
+    lockedAs = { member: target('developer'), grants: [grantRow(STAGING_ID, 'read')] };
+
+    const response = await writeGrant({
+      projectSlug: 'api',
+      environmentSlug: 'staging',
+      accessLevel: 'write',
+    });
+
+    expect(response.status).toBe(200);
+    const granted = (await recorded()).find((record) => record.action === 'access.granted');
+    expect(granted?.metadata).toMatchObject({
+      previousAccessLevel: 'read',
+      newAccessLevel: 'write',
+    });
+  });
+
+  it('reads the member’s grants only inside the write', async () => {
+    await removeGrant({ projectSlug: 'api', environmentSlug: 'staging' });
+    await writeGrant({ projectSlug: 'api', environmentSlug: 'staging', accessLevel: 'read' });
+
+    // Only the stubbed repository's own locked read asks for them.
+    expect(repositories.listGrantsForMember).toHaveBeenCalledTimes(2);
+    expect(written.mock.calls.map(([name]) => name)).toEqual([
+      'removeAccessGrant',
+      'upsertAccessGrant',
+    ]);
+  });
 });

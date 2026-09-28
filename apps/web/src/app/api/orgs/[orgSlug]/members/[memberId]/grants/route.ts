@@ -7,11 +7,10 @@ import {
   findMemberWithUser,
   findProjectBySlug,
   listEnvironments,
-  listGrantsForMember,
   removeAccessGrant,
   upsertAccessGrant,
 } from '@xecret/db/repositories';
-import type { EnvironmentRecord, ProjectRecord } from '@xecret/db/repositories';
+import type { EnvironmentRecord, MemberGrant, ProjectRecord } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
 import { json, noContent, parseJsonBody } from '@/server/http';
 import {
@@ -60,6 +59,17 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  * grant or revocation attempted (`auditingDenials`), exactly as a capability
  * denial is.
  *
+ * ── Decided on the member as the write finds them ──
+ * The member and level checks run inside the repository's write
+ * (`upsertAccessGrant` / `removeAccessGrant` take a guard), after the
+ * organisation lock, on the member row-locked with their custom role and on
+ * every grant row they hold — the same pattern as every other member write.
+ * The route's own read decides only what cannot move under it: that the
+ * member exists, and whether they are the caller. Decided on that read
+ * instead, a grant written for a developer lands on somebody promoted to
+ * owner a moment later, and a removal measured against the rows the member
+ * held then raises them past rows written since.
+ *
  * What stops a viewer being over-granted is still the capability gate: grants
  * raise what a member may *reach*, never what their role may *do*.
  *
@@ -91,58 +101,69 @@ export const PUT = authenticatedRoute<Params>(
     const target = await findMemberWithUser(services.db, orgId, params.memberId);
     if (!target) throw errors.notFound('no such member in organisation');
 
+    // Who the caller is cannot change under the write, so a caller editing
+    // their own grants is refused here, before the body is read.
     const self = target.userId === actor.user.id;
-    auditingDenials(
-      (decision) =>
-        record(
-          audit(orgId).denied('access.granted', UNNAMED_GRANT, decision, {
-            targetEmail: target.user.email,
-          }),
-        ),
-      () => {
-        if (self) assertMayChangeOwnGrants(membership);
-        assertRoleAuthority(membership, target.role);
-      },
-    );
-
-    const body = await parseJsonBody(request, grantWriteSchema);
-    const { project, environment, reach } = await resolveGrant(services.db, orgId, body);
-
-    // You can't hand out what you don't hold. A project-wide row reaches every
-    // environment in the project, so it is measured against all of them. An
-    // owner setting their own grants is measured by the owner role instead,
-    // which every level is within — see `assertMayChangeOwnGrants`.
-    if (!self) {
+    if (self) {
       auditingDenials(
         (decision) =>
           record(
-            audit(orgId).denied('access.granted', grantResource(project, environment), decision, {
+            audit(orgId).denied('access.granted', UNNAMED_GRANT, decision, {
               targetEmail: target.user.email,
-              projectSlug: project.slug,
-              ...(environment === null ? {} : { environmentSlug: environment.slug }),
-              newAccessLevel: body.accessLevel,
             }),
           ),
-        () => assertGrantWithinAuthority(membership, body.accessLevel, reach),
+        () => assertMayChangeOwnGrants(membership),
       );
     }
 
-    // Read before write so the audit record can say what the level *was* —
-    // "raised from read to write" and "granted write" are different findings
-    // in a review of how someone came to hold production access.
-    const previous = (await listGrantsForMember(services.db, orgId, target.id)).find(
-      (grant) =>
-        grant.projectId === project.id && grant.environmentId === (environment?.id ?? null),
-    );
+    const body = await parseJsonBody(request, grantWriteSchema);
+    const { project, environment, reach } = await resolveGrant(services.db, orgId, body);
+    const environmentId = environment?.id ?? null;
 
-    const grant = await upsertAccessGrant(services.db, {
-      orgId,
-      memberId: target.id,
-      projectId: project.id,
-      environmentId: environment?.id ?? null,
-      accessLevel: body.accessLevel,
-      grantedBy: actor.user.id,
-    }).catch(mapMembershipError);
+    // The grant row this write replaces, as the lock finds it — so the audit
+    // record can say what the level *was*: "raised from read to write" and
+    // "granted write" are different findings in a review of how someone came
+    // to hold production access.
+    const replaced: { grant: MemberGrant | undefined } = { grant: undefined };
+
+    const grant = await upsertAccessGrant(
+      services.db,
+      {
+        orgId,
+        memberId: target.id,
+        projectId: project.id,
+        environmentId,
+        accessLevel: body.accessLevel,
+        grantedBy: actor.user.id,
+      },
+      ({ member, grants }) => {
+        auditingDenials(
+          (decision) =>
+            record(
+              audit(orgId).denied('access.granted', grantResource(project, environment), decision, {
+                targetEmail: target.user.email,
+                projectSlug: project.slug,
+                ...(environment === null ? {} : { environmentSlug: environment.slug }),
+                newAccessLevel: body.accessLevel,
+              }),
+            ),
+          () => {
+            // The member within the caller's authority, as they are now.
+            assertRoleAuthority(membership, member.role);
+            // You can't hand out what you don't hold. A project-wide row
+            // reaches every environment in the project, so it is measured
+            // against all of them. An owner setting their own grants is
+            // measured by the owner role instead, which every level is
+            // within — see `assertMayChangeOwnGrants`.
+            if (!self) assertGrantWithinAuthority(membership, body.accessLevel, reach);
+          },
+        );
+        replaced.grant = grants.find(
+          (held) => held.projectId === project.id && held.environmentId === environmentId,
+        );
+      },
+    ).catch(mapMembershipError);
+    const previous = replaced.grant;
 
     record(
       audit(orgId).success(
@@ -205,47 +226,51 @@ export const DELETE = authenticatedRoute<Params>(
     if (!target) throw errors.notFound('no such member in organisation');
 
     const self = target.userId === actor.user.id;
-    auditingDenials(
-      (decision) =>
-        record(
-          audit(orgId).denied('access.revoked', UNNAMED_GRANT, decision, {
-            targetEmail: target.user.email,
-          }),
-        ),
-      () => {
-        if (self) assertMayChangeOwnGrants(membership);
-        assertRoleAuthority(membership, target.role);
-      },
-    );
+    if (self) {
+      auditingDenials(
+        (decision) =>
+          record(
+            audit(orgId).denied('access.revoked', UNNAMED_GRANT, decision, {
+              targetEmail: target.user.email,
+            }),
+          ),
+        () => assertMayChangeOwnGrants(membership),
+      );
+    }
 
     const body = await parseJsonBody(request, grantRemoveSchema);
     const { project, environment, reach } = await resolveGrant(services.db, orgId, body);
 
-    // A removal can raise the member — they fall back to whatever the row was
-    // overriding — so it is held to the same limit as a grant written. Not for
-    // an owner lifting their own restriction: what they fall back to is the
-    // owner role's own default.
-    if (!self) {
-      const memberGrants = await listGrantsForMember(services.db, orgId, target.id);
-      auditingDenials(
-        (decision) =>
-          record(
-            audit(orgId).denied('access.revoked', grantResource(project, environment), decision, {
-              targetEmail: target.user.email,
-              projectSlug: project.slug,
-              ...(environment === null ? {} : { environmentSlug: environment.slug }),
-            }),
-          ),
-        () => assertRemovalWithinAuthority(membership, target, memberGrants, reach),
-      );
-    }
-
-    const removed = await removeAccessGrant(services.db, {
-      orgId,
-      memberId: target.id,
-      projectId: project.id,
-      environmentId: environment?.id ?? null,
-    }).catch(mapMembershipError);
+    const removed = await removeAccessGrant(
+      services.db,
+      {
+        orgId,
+        memberId: target.id,
+        projectId: project.id,
+        environmentId: environment?.id ?? null,
+      },
+      ({ member, grants }) =>
+        auditingDenials(
+          (decision) =>
+            record(
+              audit(orgId).denied('access.revoked', grantResource(project, environment), decision, {
+                targetEmail: target.user.email,
+                projectSlug: project.slug,
+                ...(environment === null ? {} : { environmentSlug: environment.slug }),
+              }),
+            ),
+          () => {
+            assertRoleAuthority(membership, member.role);
+            // A removal can raise the member — they fall back to whatever the
+            // row was overriding — so it is held to the same limit as a grant
+            // written, measured on the role, custom role and rows they hold as
+            // the lock finds them. Not for an owner lifting their own
+            // restriction: what they fall back to is the owner role's own
+            // default.
+            if (!self) assertRemovalWithinAuthority(membership, member, grants, reach);
+          },
+        ),
+    ).catch(mapMembershipError);
 
     // "Revoked" and "there was nothing to revoke" are different facts; only
     // the first earns an audit record, and the second is still a success to

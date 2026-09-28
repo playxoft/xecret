@@ -11,22 +11,33 @@ import {
   updateCustomRole,
 } from './custom-roles';
 import type { CustomRoleDefinition } from './custom-roles';
-import { reinstateMember, removeMember, suspendMember, updateMemberRole } from './membership';
+import {
+  removeAccessGrant,
+  reinstateMember,
+  removeMember,
+  suspendMember,
+  updateMemberRole,
+  upsertAccessGrant,
+} from './membership';
 import type { MemberChange } from './membership';
 import { FieldConflictError, RepositoryError } from './shared';
 
 /**
  * The custom-role writes against a real PostgreSQL (PGlite, every migration
- * applied), for what only rows can prove: that names clash case-insensitively,
- * that the member foreign key refuses deleting a role in use and the refusal
- * is mapped under this driver — which names the constraint field `constraint`,
- * not postgres.js's `constraint_name` — that a no-op writes nothing, and that
- * a member write's guard is shown the member's custom role as the lock finds
- * it.
+ * applied), for what only rows can prove: that names clash as a reader sees
+ * them — case, width, selectors and spacing folded — that the member foreign
+ * key refuses deleting a role in use and the refusal is mapped under this
+ * driver — which names the constraint field `constraint`, not postgres.js's
+ * `constraint_name` — that a no-op writes nothing but is still decided, and
+ * that a member write's guard, a grant write's included, is shown the member
+ * as the lock finds them: after a change committed since anybody last looked.
  *
  * The SQL shape and statement order are pinned by the recorder in
- * `custom-roles.test.ts` and `membership.test.ts`; interleavings of two
- * connections by the scratch race harness the PR describes.
+ * `custom-roles.test.ts` and `membership.test.ts`. These run on one
+ * connection, so they prove what each write reads, not two writes racing:
+ * that interleaving was checked against two real connections outside the
+ * suite, as the PR describes, since the harness it needs is not part of this
+ * repository.
  */
 
 let t: TestDatabase;
@@ -340,6 +351,80 @@ describe('a member write shows its guard the member as it finds them', () => {
 
     expect(result.clearedCustomRole).toEqual({ id: role.id, name: 'Deployer' });
     expect(await storedCustomRole(memberId)).toBeNull();
+  });
+});
+
+describe('a grant write shows its guard the member as it finds them', () => {
+  it('sees a promotion to owner that committed after the route last read the member', async () => {
+    const orgId = await seedOrg();
+    const memberId = await seedMember(orgId, 'developer');
+    const projectId = randomUUID();
+    await t.pg.query(
+      `insert into projects (id, org_id, name, slug, created_by) values ($1, $2, 'Web', $3, $4)`,
+      [projectId, orgId, `web-${projectId.slice(0, 8)}`, founderId],
+    );
+    // What a route read before this point would have said: a developer.
+    await updateMemberRole(t.db, { orgId, memberId, role: 'owner' }, () => {});
+    const seen: MemberChange[] = [];
+
+    await expect(
+      upsertAccessGrant(
+        t.db,
+        { orgId, memberId, projectId, accessLevel: 'read', grantedBy: founderId },
+        (change) => {
+          seen.push(change);
+          throw new Error('an admin may not touch an owner');
+        },
+      ),
+    ).rejects.toThrow('an admin may not touch an owner');
+
+    expect(seen[0]?.member.role).toBe('owner');
+    const rows = await t.pg.query(`select 1 from access_grants where org_member_id = $1`, [
+      memberId,
+    ]);
+    expect(rows.rows).toHaveLength(0);
+  });
+
+  it('shows a removal the custom role and every row the member holds', async () => {
+    const orgId = await seedOrg();
+    const role = await define(orgId);
+    const memberId = await seedMember(orgId, 'developer', role.id);
+    await seedGrant(orgId, memberId, 'write');
+    const [{ project_id: projectId } = { project_id: '' }] = (
+      await t.pg.query<{ project_id: string }>(
+        `select project_id from access_grants where org_member_id = $1`,
+        [memberId],
+      )
+    ).rows;
+    const seen: MemberChange[] = [];
+
+    await removeAccessGrant(
+      t.db,
+      { orgId, memberId, projectId },
+      (change) => void seen.push(change),
+    );
+
+    // Read back rather than trusting the returned flag, which comes from
+    // postgres.js's `count` — a field this driver's result does not carry.
+    const rows = await t.pg.query(`select 1 from access_grants where org_member_id = $1`, [
+      memberId,
+    ]);
+    expect(rows.rows).toHaveLength(0);
+    expect(seen[0]?.member.customRole?.name).toBe('Deployer');
+    expect(seen[0]?.grants.map((grant) => grant.accessLevel)).toEqual(['write']);
+  });
+
+  it('is notFound for a member of another organisation, before any guard', async () => {
+    const [orgId, otherOrgId] = [await seedOrg(), await seedOrg()];
+    const theirs = await seedMember(otherOrgId, 'developer');
+    let asked = false;
+
+    await expect(
+      removeAccessGrant(t.db, { orgId, memberId: theirs, projectId: randomUUID() }, () => {
+        asked = true;
+      }),
+    ).rejects.toMatchObject({ code: 'notFound' });
+    expect(asked).toBe(false);
   });
 });
 
