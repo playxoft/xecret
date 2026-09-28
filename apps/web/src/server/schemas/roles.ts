@@ -52,12 +52,14 @@ const baseRoleSchema = z.enum(
 );
 
 /**
- * A role's name, normalised (trimmed, NFC) and held to the rules
- * `customRoleNameProblem` states: no control or invisible formatting
- * characters, something visible, not a built-in role's name, and a bounded
- * length. The dashboard reads the same function, so the form and the API
- * refuse the same names with the same sentence. Uniqueness — case-insensitive
- * — is the repository's, under the organisation lock.
+ * A role's name, normalised (`normalizeCustomRoleName`: variation selectors
+ * dropped, spaces collapsed, NFC, trimmed) and held to the rules
+ * `customRoleNameProblem` states: nothing invisible, something visible, not
+ * a built-in role's name or a lookalike of one, no Latin mixed with Cyrillic
+ * or Greek, and a bounded length. The dashboard reads the same functions, so
+ * the form and the API refuse the same names with the same sentence.
+ * Uniqueness — on the name's skeleton, so case, width and lookalike letters
+ * do not make two names — is the repository's, under the organisation lock.
  */
 const nameSchema = z.string().check(
   // A bound before the work, so a hostile body cannot make normalisation long.

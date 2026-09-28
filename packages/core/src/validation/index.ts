@@ -25,6 +25,7 @@ export {
   CUSTOM_ROLE_NAME_MAX_LENGTH,
   CUSTOM_ROLES_PER_ORGANIZATION,
   customRoleNameProblem,
+  customRoleNameSkeleton,
   normalizeCustomRoleName,
 } from './role-name';
 

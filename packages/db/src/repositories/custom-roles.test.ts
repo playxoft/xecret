@@ -39,6 +39,7 @@ const OTHER_MEMBER_ID = '01930000-0000-7000-8000-000000000005';
 const OTHER_USER_ID = '01930000-0000-7000-8000-000000000006';
 const PROJECT_ID = '01930000-0000-7000-8000-000000000007';
 const CREATOR_ID = '01930000-0000-7000-8000-000000000008';
+const OTHER_ROLE_ID = '01930000-0000-7000-8000-000000000009';
 const WHEN = '2026-09-01T12:00:00.000Z';
 
 interface RecordedStatement {
@@ -121,7 +122,8 @@ const DEFINITION: CustomRoleDefinition = {
 const db0 = (recorded: { db: Database }) => recorded.db;
 const isOrgLock = (sql: string) =>
   sql.includes('from "organizations"') && sql.includes('for update');
-const isNameCheck = (sql: string) => sql.startsWith('select') && sql.includes('lower(');
+/** Every name the organisation holds, read to compare skeletons against. */
+const isNameCheck = (sql: string) => sql.startsWith('select "id", "name" from "custom_roles"');
 const isRoleRead = (sql: string) =>
   sql.startsWith('select') && sql.includes('from "custom_roles"') && !isNameCheck(sql);
 
@@ -173,11 +175,16 @@ describe('listCustomRoles', () => {
 /* ── Defining ─────────────────────────────────────────────────────────────── */
 
 describe('createCustomRole', () => {
-  function creating(count: number, insert: unknown[] | Error = [DEPLOYER], nameTaken = false) {
+  /** `names`: the `[id, name]` rows the organisation already holds. */
+  function creating(
+    count: number,
+    insert: unknown[] | Error = [DEPLOYER],
+    names: unknown[][] = [[OTHER_ROLE_ID, 'Release manager']],
+  ) {
     return recorder((sql) => {
       if (isOrgLock(sql)) return [[ORG_ID]];
       if (sql.startsWith('select count')) return [[count]];
-      if (isNameCheck(sql)) return nameTaken ? [[OTHER_MEMBER_ID]] : [];
+      if (isNameCheck(sql)) return names;
       if (sql.startsWith('insert into "custom_roles"')) return insert;
       return [];
     });
@@ -196,15 +203,16 @@ describe('createCustomRole', () => {
       'begin',
       'select "id" from',
       'select count(*) from',
-      'select "id" from',
+      'select "id", "name"',
       'insert into "custom_roles"',
       'commit',
     ]);
-    // The name is compared case-insensitively, in the organisation.
+    // Every name in the organisation — all of them, so the comparison on
+    // skeletons sees each — and nothing from another.
     const check = statements.find((statement) => isNameCheck(statement.sql))!;
-    expect(check.sql).toContain('lower("custom_roles"."name") = lower($');
-    expect(check.sql).toContain('"custom_roles"."org_id" = $1');
-    expect(check.params).toContain('Deployer');
+    expect(check.sql).toContain('where "custom_roles"."org_id" = $1');
+    expect(check.sql).not.toContain('limit');
+    expect(check.params).toEqual([ORG_ID]);
     // Each action once: the row says what the role may do, not how the
     // request happened to phrase it.
     const insert = statements.find((statement) => statement.sql.startsWith('insert'))!;
@@ -235,18 +243,47 @@ describe('createCustomRole', () => {
     expect(statements.some((statement) => statement.sql.startsWith('insert'))).toBe(false);
   });
 
-  it('refuses a name another role holds in any case, on the name field, before inserting', async () => {
-    const { db, statements } = creating(0, [DEPLOYER], true);
+  it.each([
+    ['in another case', 'deployer'],
+    ['behind a variation selector', `Deployer${String.fromCodePoint(0xfe0f)}`],
+    [
+      'in full-width letters',
+      String.fromCodePoint(0xff24, 0xff45, 0xff50, 0xff4c, 0xff4f, 0xff59, 0xff45, 0xff52),
+    ],
+  ])(
+    'refuses a name another role holds %s, on the name field, before inserting',
+    async (_how, name) => {
+      const { db, statements } = creating(
+        0,
+        [DEPLOYER],
+        [
+          [OTHER_ROLE_ID, 'Release manager'],
+          [ROLE_ID, 'Deployer'],
+        ],
+      );
 
-    const refusal = await createCustomRole(db, {
-      orgId: ORG_ID,
-      definition: { ...DEFINITION, name: 'deployer' },
-      createdBy: CREATOR_ID,
-    }).catch((cause: unknown) => cause);
+      const refusal = await createCustomRole(db, {
+        orgId: ORG_ID,
+        definition: { ...DEFINITION, name },
+        createdBy: CREATOR_ID,
+      }).catch((cause: unknown) => cause);
 
-    expect(refusal).toBeInstanceOf(FieldConflictError);
-    expect(refusal).toMatchObject({ code: 'conflict', field: 'name' });
-    expect(statements.some((statement) => statement.sql.startsWith('insert'))).toBe(false);
+      expect(refusal).toBeInstanceOf(FieldConflictError);
+      expect(refusal).toMatchObject({ code: 'conflict', field: 'name' });
+      expect(statements.some((statement) => statement.sql.startsWith('insert'))).toBe(false);
+    },
+  );
+
+  it('refuses a name spaced differently from one another role holds', async () => {
+    const { db } = creating(0, [DEPLOYER], [[OTHER_ROLE_ID, 'Release manager']]);
+
+    await expect(
+      createCustomRole(db, {
+        orgId: ORG_ID,
+        definition: { ...DEFINITION, name: `Release${String.fromCodePoint(0x3000)}manager` },
+        createdBy: CREATOR_ID,
+      }),
+    ).rejects.toMatchObject({ code: 'conflict', field: 'name' });
   });
 
   it.each(['constraint_name', 'constraint'] as const)(
@@ -265,7 +302,8 @@ describe('createCustomRole', () => {
       expect(refusal).toMatchObject({
         code: 'conflict',
         field: 'name',
-        message: 'A role with this name already exists in this organisation.',
+        message:
+          'A role with this name, or one that reads the same, already exists in this organisation.',
       });
     },
   );
@@ -275,10 +313,16 @@ describe('createCustomRole', () => {
 
 describe('updateCustomRole', () => {
   /** Two holders — one suspended — and one grant row on the first. */
-  function editing(update: unknown[] | Error = [DEPLOYER], nameTaken = false) {
+  function editing(
+    update: unknown[] | Error = [DEPLOYER],
+    names: unknown[][] = [
+      [ROLE_ID, 'Deployer'],
+      [OTHER_ROLE_ID, 'Contractor'],
+    ],
+  ) {
     return recorder((sql) => {
       if (isOrgLock(sql)) return [[ORG_ID]];
-      if (isNameCheck(sql)) return nameTaken ? [[OTHER_MEMBER_ID]] : [];
+      if (isNameCheck(sql)) return names;
       if (isRoleRead(sql)) return [DEPLOYER];
       if (sql.includes('"users"."email"')) {
         return [
@@ -400,19 +444,25 @@ describe('updateCustomRole', () => {
     expect(statements.some((statement) => isNameCheck(statement.sql))).toBe(false);
   });
 
-  it('checks a new name against the other roles, case-insensitively, and not a kept one', async () => {
-    const renamed = editing(undefined, true);
+  it('checks a new name against the other roles, as a reader sees them, and not a kept one', async () => {
+    const renamed = editing();
     await expect(
       updateCustomRole(db0(renamed), { orgId: ORG_ID, roleId: ROLE_ID }, () => ({
         ...DEFINITION,
         name: 'CONTRACTOR',
       })),
     ).rejects.toMatchObject({ code: 'conflict', field: 'name' });
-    const check = renamed.statements.find((statement) => isNameCheck(statement.sql))!;
-    // Every role but this one: renaming "Deployer" to "deployer" is not a clash.
-    expect(check.sql).toContain('"custom_roles"."id" <> $');
-    expect(check.params).toContain(ROLE_ID);
     expect(renamed.statements.some((statement) => statement.sql.startsWith('update'))).toBe(false);
+
+    // Every role but this one: renaming "Deployer" to "DEPLOYER" is not a clash.
+    const recased = editing();
+    const result0 = await updateCustomRole(
+      db0(recased),
+      { orgId: ORG_ID, roleId: ROLE_ID },
+      () => ({ ...DEFINITION, name: 'DEPLOYER' }),
+    );
+    expect(result0.changed).toBe(true);
+    expect(recased.statements.some((statement) => isNameCheck(statement.sql))).toBe(true);
 
     // Keeping the name asks nothing.
     const kept = editing();

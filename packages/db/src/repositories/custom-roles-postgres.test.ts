@@ -147,6 +147,30 @@ describe('role names', () => {
     expect(recased.role.name).toBe('DEPLOYER');
   });
 
+  it('clash as a reader sees them: width, selectors and spaces fold away', async () => {
+    const orgId = await seedOrg();
+    await define(orgId);
+    await define(orgId, { name: 'Release manager', baseRole: 'viewer', allowedActions: [] });
+    const cp = (...points: number[]) => String.fromCodePoint(...points);
+
+    for (const name of [
+      `Deployer${cp(0xfe0f)}`,
+      cp(0xff24, 0xff45, 0xff50, 0xff4c, 0xff4f, 0xff59, 0xff45, 0xff52),
+      `Release${cp(0x00a0)}manager`,
+      `Release${cp(0x3000)}manager`,
+      'Release  manager',
+    ]) {
+      await expect(define(orgId, { name }), JSON.stringify(name)).rejects.toMatchObject({
+        code: 'conflict',
+        field: 'name',
+      });
+    }
+    expect((await listCustomRoles(t.db, orgId)).map((role) => role.name)).toEqual([
+      'Deployer',
+      'Release manager',
+    ]);
+  });
+
   it('are per organisation', async () => {
     const [first, second] = [await seedOrg(), await seedOrg()];
     await define(first);

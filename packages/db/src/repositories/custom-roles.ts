@@ -1,7 +1,7 @@
-import { and, asc, count, eq, ne, sql } from 'drizzle-orm';
+import { and, asc, count, eq, sql } from 'drizzle-orm';
 import type { AccessLevel, Action, CustomRole, OrgRole } from '@xecret/core/authz';
 import { uuidv7 } from '@xecret/core/ids';
-import { CUSTOM_ROLES_PER_ORGANIZATION } from '@xecret/core/validation';
+import { CUSTOM_ROLES_PER_ORGANIZATION, customRoleNameSkeleton } from '@xecret/core/validation';
 import { users } from '../schema/identity';
 import { customRoles } from '../schema/roles';
 import { orgMembers } from '../schema/tenancy';
@@ -44,13 +44,17 @@ import { isUniqueViolation } from './users';
  * and a rotation must not seal a key to a grant set that changed underneath it.
  *
  * ── Names ──
- * Unique per organisation *case-insensitively*: "Deployer" and "deployer" are
- * one job title, and two of them on one roster would read as one role while
- * narrowing people differently. The database's `custom_roles_org_name_unique`
- * is case-sensitive, and a case-insensitive index would be a migration, so the
- * rule is checked here, under the organisation lock every role write takes —
- * which is what makes a check-then-write race-free. The constraint remains
- * behind it for exact duplicates.
+ * Unique per organisation *as a reader sees them*: "Deployer", "deployer" and
+ * a full-width "Deployer" are one job title, and two of them on one roster
+ * would read as one role while narrowing people differently. Names are
+ * compared on `customRoleNameSkeleton` from `@xecret/core/validation` — case,
+ * width, lookalike letters and accents folded — which no index in the
+ * database could express, so the rule is checked here: every name the
+ * organisation holds is read under the organisation lock every role write
+ * takes, which is what makes a check-then-write race-free, and compared in
+ * JavaScript. There are at most `CUSTOM_ROLES_PER_ORGANIZATION` of them. The
+ * database's case-sensitive `custom_roles_org_name_unique` remains behind it
+ * for exact duplicates.
  *
  * ── No-ops ──
  * An edit that changes nothing, and an assignment of the role a member already
@@ -98,7 +102,8 @@ export interface CustomRoleDefinition {
   accessCeiling: CustomRoleCeiling | null;
 }
 
-const NAME_TAKEN = 'A role with this name already exists in this organisation.';
+const NAME_TAKEN =
+  'A role with this name, or one that reads the same, already exists in this organisation.';
 const ROLE_IN_USE =
   'This role is still held by members. Move them to another role, or to none, and delete it then.';
 const OWNER_HOLDS_NONE = 'An owner cannot hold a custom role. Change their built-in role first.';
@@ -221,13 +226,15 @@ export async function listCustomRoles(
 }
 
 /**
- * Refuses `name` when another of the organisation's roles already has it, in
- * any case. Must run under the organisation lock, in the transaction that
- * writes the name — see "Names" at the top of this file.
+ * Refuses `name` when another of the organisation's roles already has it, as
+ * a reader would see it (`customRoleNameSkeleton`). Must run under the
+ * organisation lock, in the transaction that writes the name — see "Names" at
+ * the top of this file.
  *
- * `lower()` on both sides, in the database, so the comparison is the one the
- * stored names are read under rather than a second implementation of case in
- * JavaScript that could disagree with it.
+ * Every name is read, not a filtered few: the comparison is on skeletons,
+ * which the database cannot compute, and there are at most a hundred. Not
+ * `LIMIT`ed to that, though — rows written around the ceiling are still names
+ * a new one must not imitate.
  */
 async function assertNameFree(
   tx: Executor,
@@ -235,17 +242,14 @@ async function assertNameFree(
   name: string,
   exceptRoleId: string | null,
 ): Promise<void> {
-  const [taken] = await tx
-    .select({ id: customRoles.id })
+  const wanted = customRoleNameSkeleton(name);
+  const names = await tx
+    .select({ id: customRoles.id, name: customRoles.name })
     .from(customRoles)
-    .where(
-      and(
-        eq(customRoles.orgId, orgId),
-        sql`lower(${customRoles.name}) = lower(${name})`,
-        exceptRoleId === null ? undefined : ne(customRoles.id, exceptRoleId),
-      ),
-    )
-    .limit(1);
+    .where(eq(customRoles.orgId, orgId));
+  const taken = names.some(
+    (role) => role.id !== exceptRoleId && customRoleNameSkeleton(role.name) === wanted,
+  );
   if (taken) throw new FieldConflictError('name', NAME_TAKEN);
 }
 
