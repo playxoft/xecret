@@ -135,6 +135,14 @@ jobs:
       - name: Check bundle size against budget
         run: npm run check:bundle
 
+      # The build collapses the byte-identical copies Turbopack makes of the
+      # server chunk every API route loads (scripts/dedupe-server-chunks.mjs).
+      # This fails if any came back — the step stopped running, or an OpenNext
+      # upgrade moved the files it rewrites — before 3 MB of repeats can creep
+      # back in under a budget that still looks comfortable.
+      - name: Check no server chunk is bundled twice
+        run: npm run check:chunks
+
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest

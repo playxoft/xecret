@@ -180,4 +180,14 @@ export XECRET_BUILD_COMMIT XECRET_BUILD_TIME
 echo "  (build $XECRET_BUILD_COMMIT at $XECRET_BUILD_TIME)"
 
 npx opennextjs-cloudflare build
+
+# ── Before anything is uploaded ──
+#
+# The build collapses the byte-identical copies Turbopack makes of the server
+# chunk every API route loads, and CI checks that it still does. A deploy from
+# a laptop never passes through CI, so it checks for itself: if the copies are
+# back, this stops here rather than publishing a Worker 3 MB heavier than the
+# one CI measured.
+node ../../scripts/check-duplicate-chunks.mjs
+
 npx opennextjs-cloudflare deploy --env "$env_name"

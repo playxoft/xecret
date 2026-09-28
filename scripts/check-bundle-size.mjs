@@ -15,8 +15,9 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, resolve } from 'node:path';
 
 const HARD_LIMIT_KIB = 10 * 1024; // Cloudflare Workers Paid
 const BUDGET_KIB = 6 * 1024; // ours, deliberately lower
@@ -30,11 +31,25 @@ if (!existsSync(resolve(WEB_DIR, '.open-next/worker.js'))) {
   process.exit(1);
 }
 
+/**
+ * wrangler's own entry script, run with this Node rather than through `npx`.
+ *
+ * `npx` is `npx.cmd` on Windows, which Node will only start through a shell —
+ * so `execFileSync('npx', …)` failed there with ENOENT before measuring
+ * anything, and a shell would drop the empty `--env` argument besides. Running
+ * the entry point directly involves no shell on any platform, and resolving it
+ * from apps/web finds the wrangler that app pins.
+ */
+const WRANGLER = (() => {
+  const manifest = createRequire(resolve(WEB_DIR, 'package.json')).resolve('wrangler/package.json');
+  return resolve(dirname(manifest), JSON.parse(readFileSync(manifest, 'utf8')).bin.wrangler);
+})();
+
 let output;
 try {
   output = execFileSync(
-    'npx',
-    ['wrangler', 'deploy', '--dry-run', '--outdir', '.wrangler/size-check', '--env', ''],
+    process.execPath,
+    [WRANGLER, 'deploy', '--dry-run', '--outdir', '.wrangler/size-check', '--env', ''],
     { cwd: WEB_DIR, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
   );
 } catch (error) {
