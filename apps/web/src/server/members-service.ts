@@ -416,6 +416,11 @@ const REFUSAL_REASON: Readonly<Record<RepositoryErrorCode, AuditErrorReason>> = 
   notFound: 'notFound',
   invalid: 'invalidInput',
   immutable: 'invalidInput',
+  // Raised today only by the identity-linking pass, for an address its
+  // provider has not verified — a credential that proves too little. No
+  // membership or custom-role write raises it; it is here because the map is
+  // exhaustive, so a new code has to be decided rather than filed as nothing.
+  forbidden: 'invalidCredentials',
 };
 
 /**
