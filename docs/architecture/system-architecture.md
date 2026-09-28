@@ -82,13 +82,20 @@ POST /api/auth/session  { idToken }  ──────────────�
    │
    ├─ verify RS256 against Google JWKS (firebase-auth-cloudflare-workers, JWKS in KV)
    ├─ assert aud == FIREBASE_PROJECT_ID, iss, exp, email_verified
-   ├─ upsert user by firebase_uid
+   ├─ upsert user by firebase_uid (upsertUserFromFirebaseIdentity — never by email)
    ├─ insert sessions row  (store SHA-256 of a 256-bit opaque token — never the token)
    └─ Set-Cookie: __Host-xecret_session; HttpOnly; Secure; SameSite=Lax; Path=/
 ```
 
 The Firebase ID token is used exactly once and then discarded. See
 [ADR 0003](../adr/0003-firebase-as-identity-provider.md).
+
+This path is being replaced by WorkOS AuthKit: a server-initiated redirect, an authorization
+code exchanged at `/api/auth/callback`, and the WorkOS linking pass
+(`upsertUserFromWorkosIdentity` — match `workos_user_id`, else adopt the account holding the
+same *verified* address, else create). The two upserts are separate functions on purpose: the
+Firebase one above keys only on `firebase_uid`, and neither may be handed the other's identity.
+Everything after the upsert — the session row, the cookie — is unchanged by the move.
 
 ### 3.2 CLI — loopback + PKCE against *our* server
 

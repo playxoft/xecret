@@ -29,7 +29,8 @@ document is wrong and must be updated.
 ```sql
 CREATE TABLE users (
   id              uuid PRIMARY KEY,
-  firebase_uid    text        NOT NULL UNIQUE,
+  firebase_uid    text        UNIQUE,              -- nullable since 0018; retired with Firebase
+  workos_user_id  text        UNIQUE,              -- 0018; `user_…`, NULL until linked
   email           citext      NOT NULL UNIQUE,
   email_verified  boolean     NOT NULL DEFAULT false,
   display_name    text,
@@ -37,13 +38,41 @@ CREATE TABLE users (
   created_at      timestamptz NOT NULL DEFAULT now(),
   updated_at      timestamptz NOT NULL DEFAULT now(),
   last_login_at   timestamptz,
-  deleted_at      timestamptz
+  deleted_at      timestamptz,
+  CONSTRAINT users_identity_present_check
+    CHECK (firebase_uid IS NOT NULL OR workos_user_id IS NOT NULL),
+  CONSTRAINT users_workos_user_id_format_check
+    CHECK (workos_user_id ~ '^user_[0-9A-Za-z]+$')
 );
 CREATE INDEX users_firebase_uid_idx ON users (firebase_uid) WHERE deleted_at IS NULL;
 ```
 
-`firebase_uid` is the join key to the identity provider. Swapping providers later means
-adding a provider column, not restructuring — see [ADR 0003](../adr/0003-firebase-as-identity-provider.md).
+The provider id columns are the join keys to the identity provider — see
+[ADR 0003](../adr/0003-firebase-as-identity-provider.md). Swapping providers was meant to
+mean adding a column, not restructuring, and migration `0018` is exactly that: during the
+move from Firebase to WorkOS both columns exist, each written by exactly one sign-in path in
+the application.
+
+- `firebase_uid` is written only by the Firebase sign-in (`upsertUserFromFirebaseIdentity`).
+  It became **nullable** in `0018` — a user who joins through WorkOS never had a Firebase
+  account — but keeps its unique constraint, because it is the key the WorkOS import's
+  backfill matches on and the rollback if the cutover goes wrong. It is dropped by a later,
+  deliberate decommission migration.
+- `workos_user_id` has one application writer, the WorkOS linking pass
+  (`upsertUserFromWorkosIdentity`): match on `workos_user_id`, else adopt the account
+  holding the same **verified** address, else create. Its one other writer is operational:
+  the one-off backfill after the WorkOS user import, which writes the imported id onto rows
+  found by `firebase_uid` and must only fill a NULL (`WHERE workos_user_id IS NULL`), so it
+  can never overwrite a link a sign-in made. It is NULL on every Firebase-era row until that
+  row is linked either way. `users_workos_user_id_format_check` admits only a WorkOS id
+  (`^user_[0-9A-Za-z]+$`) — a Firebase uid written here is the one mistake this migration
+  has already seen made once. Its unique constraint's index is its only index: the linking
+  pass reads it *including* soft-deleted rows, so that a deleted account is refused as
+  deleted rather than taken for nobody.
+- `users_identity_present_check` keeps every row reachable by some provider. **Dropping
+  `firebase_uid` drops this constraint silently** (PostgreSQL removes a constraint that
+  references a dropped column), so the decommission migration must replace it — in practice
+  with `workos_user_id SET NOT NULL`, once the rows without one have been dealt with.
 
 ```sql
 CREATE TABLE sessions (
@@ -74,14 +103,16 @@ CREATE TYPE org_role     AS ENUM ('owner', 'admin', 'developer', 'viewer');
 CREATE TYPE member_status AS ENUM ('active', 'suspended');
 
 CREATE TABLE organizations (
-  id          uuid PRIMARY KEY,
-  name        text        NOT NULL,
-  slug        citext      NOT NULL UNIQUE,
-  seat_limit  integer     NOT NULL DEFAULT 5 CHECK (seat_limit >= 0),
-  created_by  uuid        NOT NULL REFERENCES users(id),
-  created_at  timestamptz NOT NULL DEFAULT now(),
-  updated_at  timestamptz NOT NULL DEFAULT now(),
-  deleted_at  timestamptz
+  id            uuid PRIMARY KEY,
+  name          text        NOT NULL,
+  slug          citext      NOT NULL UNIQUE,
+  seat_limit    integer     NOT NULL DEFAULT 5 CHECK (seat_limit >= 0),
+  workos_org_id text        UNIQUE,                  -- 0018; set lazily, on enabling SSO
+  sso_required  boolean     NOT NULL DEFAULT false,  -- 0018; inert until enforced
+  created_by    uuid        NOT NULL REFERENCES users(id),
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  deleted_at    timestamptz
 );
 
 CREATE TABLE org_members (
@@ -102,6 +133,17 @@ CREATE INDEX org_members_org_idx  ON org_members (org_id)  WHERE status = 'activ
 
 `org_members` is the table every authorization query passes through. `org_members_user_idx`
 is the single most performance-critical index in the schema.
+
+`workos_org_id` maps an organisation to its WorkOS Organization. It is created **lazily**,
+only when an organisation enables SSO — almost every organisation is a personal one
+provisioned at first login and never needs one — and is set once (`setOrgWorkosOrgId`
+refuses to re-point it). The sign-in callback resolves WorkOS organisations back to tenants
+with `findOrgByWorkosOrgId`, which ignores soft-deleted organisations.
+
+`sso_required` ("members may only sign in through this organisation's SSO connection")
+ships ahead of its enforcement and is **inert**: false everywhere, with no code path that can
+set it. Its setter lands in the same change as the check in the sign-in callback, never
+before — a flag that claims a bypass is closed while it is open is worse than no flag.
 
 **Invariant enforced in application code, tested explicitly:** an organisation always has at
 least one `owner` with `status = 'active'`. Removing or demoting the last owner is rejected.

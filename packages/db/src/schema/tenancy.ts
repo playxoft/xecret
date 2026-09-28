@@ -45,6 +45,34 @@ export const organizations = pgTable(
      * transaction so nothing can move one without the other.
      */
     seatLimit: integer('seat_limit').notNull().default(5),
+    /**
+     * The WorkOS Organization this maps to, or null.
+     *
+     * Created **lazily** — only when an organisation actually enables SSO. The
+     * overwhelming majority of organisations here are personal ones
+     * auto-provisioned at first login, and minting a WorkOS Organization for
+     * every one of those would fill the provider's tenant list with rows that
+     * exist for nobody.
+     */
+    workosOrgId: text('workos_org_id').unique(),
+    /**
+     * When true, a member of this organisation may only sign in through its own
+     * SSO connection.
+     *
+     * The column ships ahead of its enforcement, and is inert until then: it is
+     * false on every row and nothing in the codebase can set it. The setter
+     * lands in the same change as the check in the sign-in callback (WS-2), and
+     * must not land before it, because the flag without the check is worse than
+     * neither — it tells an administrator that a bypass is closed when it is
+     * open. (`setOrgWorkosOrgId` says the same beside the setter that *does*
+     * exist.)
+     *
+     * Enforcement always exempts at least one owner. An identity provider that
+     * is misconfigured after this is switched on would otherwise lock an
+     * organisation out of its own account with no self-service way back, and
+     * "contact support" is not a recovery story for a secrets manager.
+     */
+    ssoRequired: boolean('sso_required').notNull().default(false),
     createdBy: uuid('created_by')
       .notNull()
       .references(() => users.id),

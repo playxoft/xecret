@@ -9,7 +9,8 @@
     ".": "./src/index.ts",
     "./schema": "./src/schema/index.ts",
     "./client": "./src/client.ts",
-    "./repositories": "./src/repositories/index.ts"
+    "./repositories": "./src/repositories/index.ts",
+    "./testing": "./src/testing/pglite.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -19,6 +20,7 @@
     "db:studio": "drizzle-kit studio"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@types/node": "^26.5.1",
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.23.13",

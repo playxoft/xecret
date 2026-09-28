@@ -25,5 +25,10 @@
     "noEmit": true
   },
 
-  "include": ["scripts/plan-set.ts", "scripts/contact-smoke.ts", "apps/web/src/cloudflare-env.d.ts"]
+  "include": [
+    "scripts/plan-set.ts",
+    "scripts/contact-smoke.ts",
+    "scripts/smoke-test.ts",
+    "apps/web/src/cloudflare-env.d.ts"
+  ]
 }

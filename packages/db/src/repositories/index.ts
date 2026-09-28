@@ -32,13 +32,15 @@ export {
   findUserByEmail,
   findUserByFirebaseUid,
   findUserById,
+  findUserByWorkosId,
   isUniqueViolation,
   softDeleteUser,
   touchLastLogin,
   updateUserProfile,
-  upsertUserFromIdentity,
+  upsertUserFromFirebaseIdentity,
+  upsertUserFromWorkosIdentity,
 } from './users';
-export type { User, UserProfilePatch } from './users';
+export type { IdentityLinkOutcome, UpsertedUser, User, UserProfilePatch } from './users';
 
 export {
   createSession,
@@ -108,6 +110,7 @@ export {
   countOrganizationsHeldBy,
   findOrganizationById,
   findOrganizationBySlugWithEntitlements,
+  findOrgByWorkosOrgId,
   generateUniqueOrgSlug,
   organizationBySlugWithEntitlementsQuery,
   isOrgSlugAvailable,
@@ -117,6 +120,7 @@ export {
   organizationsHeldByQuery,
   personalOrgSlugSeed,
   provisionOrganization,
+  setOrgWorkosOrgId,
   softDeleteOrganization,
   updateOrganization,
 } from './organizations';

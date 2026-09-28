@@ -29,6 +29,63 @@ const FIREBASE_ADMIN_BAN = {
   ],
 };
 
+/**
+ * ── Test databases never reach the edge. ──
+ *
+ * `@xecret/db/testing` is a real PostgreSQL (PGlite, WASM) for tests. It is a
+ * package export, so it is importable from a route — and a route that imported
+ * it would bundle a devDependency into the Worker, or quietly answer from a
+ * database nobody uses. Banned everywhere, lifted only for `*.test.ts` below.
+ * The same ban, with the same message, is in the root `eslint.config.mjs`.
+ */
+const TEST_DATABASE_MESSAGE =
+  'Test-only: a PGlite database for *.test.ts files. It must never reach runtime code or a script.';
+const TEST_DATABASE_BAN = {
+  paths: [
+    { name: '@xecret/db/testing', message: TEST_DATABASE_MESSAGE },
+    { name: '@electric-sql/pglite', message: TEST_DATABASE_MESSAGE },
+  ],
+  patterns: [
+    {
+      group: [
+        '@electric-sql/pglite/*',
+        '@electric-sql/pglite-*',
+        '**/testing/pglite',
+        '**/testing/pglite.*',
+      ],
+      message: TEST_DATABASE_MESSAGE,
+    },
+  ],
+};
+
+/**
+ * The same ban for `import(...)`, which `no-restricted-imports` does not see —
+ * the obvious way round a static-import ban. `no-restricted-syntax` on an
+ * `ImportExpression` whose source is one of the same specifiers, as a string
+ * or as a template literal without substitutions. Identical to the root
+ * config's. Spread, never assigned: `no-restricted-syntax` is replaced
+ * wholesale per block, like `no-restricted-imports`.
+ */
+const TEST_DATABASE_SPECIFIERS = [
+  String.raw`^@xecret\/db\/testing(\/.*)?$`,
+  String.raw`^@electric-sql\/pglite(\/.*|-.*)?$`,
+  String.raw`(^|\/)testing\/pglite(\.[A-Za-z]+)?$`,
+];
+const TEST_DATABASE_DYNAMIC_IMPORT_BAN = TEST_DATABASE_SPECIFIERS.flatMap((specifier) => [
+  { selector: `ImportExpression[source.value=/${specifier}/]`, message: TEST_DATABASE_MESSAGE },
+  {
+    selector: `ImportExpression[source.quasis.0.value.cooked=/${specifier}/]`,
+    message: TEST_DATABASE_MESSAGE,
+  },
+]);
+
+/** The filesystem ban `xecret/security` applies to everything that runs on a request. */
+const FILESYSTEM_BAN_PATTERN = {
+  group: ['node:fs', 'node:fs/*', 'fs', 'fs/*'],
+  message:
+    'Cloudflare Workers have no filesystem. If you need persistent state, use the database or a binding.',
+};
+
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
@@ -56,17 +113,15 @@ const eslintConfig = defineConfig([
       'no-restricted-imports': [
         'error',
         {
-          paths: FIREBASE_ADMIN_BAN.paths,
+          paths: [...FIREBASE_ADMIN_BAN.paths, ...TEST_DATABASE_BAN.paths],
           patterns: [
             ...FIREBASE_ADMIN_BAN.patterns,
-            {
-              group: ['node:fs', 'node:fs/*', 'fs', 'fs/*'],
-              message:
-                'Cloudflare Workers have no filesystem. If you need persistent state, use the database or a binding.',
-            },
+            ...TEST_DATABASE_BAN.patterns,
+            FILESYSTEM_BAN_PATTERN,
           ],
         },
       ],
+      'no-restricted-syntax': ['error', ...TEST_DATABASE_DYNAMIC_IMPORT_BAN],
 
       // Secrets must never reach a log. console.log is the most common accident;
       // warn/error are permitted because they are reviewed and go to structured logging.
@@ -94,6 +149,36 @@ const eslintConfig = defineConfig([
   },
 
   {
+    name: 'xecret/test-database-is-test-only',
+    // Every test may use the test database — that is what it is for — and
+    // nothing else may. Reasoned like `xecret/tests-never-reach-the-edge`
+    // below: the exemption is keyed to the `*.test.ts` suffix, not to a
+    // directory a runtime helper could later sit in. Only the test-database
+    // ban is lifted; the filesystem and `firebase-admin` bans still apply,
+    // exactly as in `xecret/security`.
+    //
+    // Deliberately *before* the two blocks that narrow the rule further: ESLint
+    // applies the last matching block, so placed after them this one re-imposed
+    // the filesystem ban on `docs/_lib/docs-content.test.ts` and on the three
+    // named source-reading tests, all of which read files by design.
+    files: ['**/*.test.ts', '**/*.test.tsx'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: FIREBASE_ADMIN_BAN.paths,
+          patterns: [...FIREBASE_ADMIN_BAN.patterns, FILESYSTEM_BAN_PATTERN],
+        },
+      ],
+      // `xecret/security`'s `no-restricted-syntax` is the test-database ban and
+      // nothing else (the Next.js presets declare none), so lifting it leaves no
+      // selectors. If that block ever gains selectors of its own, restate them
+      // here without the ban.
+      'no-restricted-syntax': 'off',
+    },
+  },
+
+  {
     name: 'xecret/published-content-is-read-at-build-time',
     files: ['src/app/docs/_lib/**/*.ts', 'src/app/blog/_lib/**/*.ts'],
     rules: {
@@ -112,8 +197,15 @@ const eslintConfig = defineConfig([
       // `node:fs` also switched off ADR 0003's `firebase-admin` ban, in the one
       // directory where an exemption from this rule already looked deliberate
       // and nobody would think to check. The ban that has nothing to do with
-      // the filesystem survives here; only the filesystem group is dropped.
-      'no-restricted-imports': ['error', FIREBASE_ADMIN_BAN],
+      // the filesystem survives here; only the filesystem group is dropped. The
+      // test-database ban survives too: build-time code is still not test code.
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [...FIREBASE_ADMIN_BAN.paths, ...TEST_DATABASE_BAN.paths],
+          patterns: [...FIREBASE_ADMIN_BAN.patterns, ...TEST_DATABASE_BAN.patterns],
+        },
+      ],
     },
   },
 
