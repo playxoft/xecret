@@ -7,6 +7,7 @@ import { PLANS } from '@xecret/core/entitlements';
 import type { PlanId } from '@xecret/core/entitlements';
 import { CUSTOM_ROLES_PER_ORGANIZATION } from '@xecret/core/validation';
 import { api } from '@/lib/api';
+import { cn } from '@/lib/cn';
 import { pluralize } from '@/lib/format';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import { useApiResource } from '@/app/(dashboard)/_lib/use-api-resource';
@@ -145,58 +146,73 @@ export function RolesCard({
               ) : null
             ) : (
               <ul className="border-line divide-line-subtle divide-y rounded-lg border">
-                {roles.data.data.map((role) => (
-                  <li
-                    key={role.id}
-                    className="flex flex-wrap items-center gap-x-4 gap-y-2 px-3 py-2.5"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="text-fg truncate text-sm font-medium">{role.name}</p>
-                      <p className="text-fg-subtle text-sm">{describeRole(role)}</p>
-                    </div>
-                    <span className="text-fg-muted text-sm whitespace-nowrap">
-                      {pluralize(role.holderCount ?? 0, 'member')}
-                    </span>
-                    {mayDefine ? (
-                      <div className="flex items-center gap-1.5">
-                        {/* The in-use rule, said where the button is: a role
+                {roles.data.data.map((role) => {
+                  const inUse = (role.holderCount ?? 0) > 0;
+                  return (
+                    <li
+                      key={role.id}
+                      className="flex flex-wrap items-center gap-x-4 gap-y-2 px-3 py-2.5"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="text-fg truncate text-sm font-medium">{role.name}</p>
+                        <p className="text-fg-subtle text-sm">{describeRole(role)}</p>
+                      </div>
+                      <span className="text-fg-muted text-sm whitespace-nowrap">
+                        {pluralize(role.holderCount ?? 0, 'member')}
+                      </span>
+                      {mayDefine ? (
+                        <div className="flex items-center gap-1.5">
+                          {/* The in-use rule, said where the button is: a role
                             somebody holds cannot be deleted, and a Delete that
                             only ever answers 409 is an error message in
-                            disguise. The count can be stale, so the server's
-                            409 still reaches the dialog if it is. */}
-                        {entitled ? (
+                            disguise. `aria-disabled` rather than `disabled`,
+                            as in LevelToggle: a disabled button takes no
+                            pointer events and no focus, so its title never
+                            shows and a keyboard skips it and its reason with
+                            it. This one is reached, hovered and read out, and
+                            clicking it does nothing. The count can be stale,
+                            so the server's 409 still reaches the dialog if it
+                            is. */}
+                          {entitled ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              aria-label={`Edit role ${role.name}`}
+                              onClick={() => setEditing(role)}
+                            >
+                              Edit
+                            </Button>
+                          ) : null}
                           <Button
                             variant="ghost"
                             size="sm"
-                            aria-label={`Edit role ${role.name}`}
-                            onClick={() => setEditing(role)}
+                            className={cn(
+                              'text-danger-text hover:text-danger-text',
+                              inUse && 'cursor-not-allowed opacity-55',
+                            )}
+                            aria-disabled={inUse || undefined}
+                            title={
+                              inUse
+                                ? 'In use — move its members to another role, or to none, first'
+                                : undefined
+                            }
+                            aria-label={
+                              inUse
+                                ? `Delete role ${role.name} — unavailable while ${pluralize(role.holderCount ?? 0, 'member')} ${role.holderCount === 1 ? 'holds' : 'hold'} it`
+                                : `Delete role ${role.name}`
+                            }
+                            onClick={() => {
+                              if (inUse) return;
+                              setDeleting(role);
+                            }}
                           >
-                            Edit
+                            Delete
                           </Button>
-                        ) : null}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-danger-text hover:text-danger-text"
-                          disabled={(role.holderCount ?? 0) > 0}
-                          title={
-                            (role.holderCount ?? 0) > 0
-                              ? 'In use — move its members to another role, or to none, first'
-                              : undefined
-                          }
-                          aria-label={
-                            (role.holderCount ?? 0) > 0
-                              ? `Delete role ${role.name} — unavailable while ${pluralize(role.holderCount ?? 0, 'member')} ${role.holderCount === 1 ? 'holds' : 'hold'} it`
-                              : `Delete role ${role.name}`
-                          }
-                          onClick={() => setDeleting(role)}
-                        >
-                          Delete
-                        </Button>
-                      </div>
-                    ) : null}
-                  </li>
-                ))}
+                        </div>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </>

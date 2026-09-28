@@ -669,7 +669,7 @@ function FilterSelect({
  * One line of context from the metadata the builder recorded. Values here were
  * sanitised and redacted at write time; this only chooses which to surface.
  */
-function describeEvent(event: AuditEvent): string {
+export function describeEvent(event: AuditEvent): string {
   const m = event.metadata;
   const parts: string[] = [];
 
@@ -689,6 +689,10 @@ function describeEvent(event: AuditEvent): string {
         ? `${previousCustomRole} → ${customRole}`
         : customRole,
     );
+  } else if (previousCustomRole !== null) {
+    // A promotion to owner drops the custom role in the same write
+    // (`member.role_changed` carries only the one it cleared).
+    parts.push(`${previousCustomRole} → no custom role`);
   }
   if (typeof m['previousRole'] === 'string' && typeof m['newRole'] === 'string') {
     parts.push(`${m['previousRole']} → ${m['newRole']}`);

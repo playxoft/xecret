@@ -36,6 +36,7 @@ import { InviteDialog } from '@/components/members/invite-dialog';
 import { MemberAccessPanel } from '@/components/members/member-access-panel';
 import { MemberKeyBadge } from '@/components/envkeys';
 import { MemberRowActions } from '@/components/members/member-actions';
+import { CustomRolesLoadError } from '@/components/members/custom-role-select';
 import { ROLE_LABELS, ROLE_TONE, ROLES_DESCENDING } from '@/components/members/types';
 import type {
   CustomRoleListResponse,
@@ -253,6 +254,13 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
             ) : null}
           </p>
 
+          {canManage && customRoles.error !== null ? (
+            <CustomRolesLoadError
+              error={customRoles.error}
+              onRetry={() => void customRoles.reload()}
+            />
+          ) : null}
+
           {visible.length === 0 && members.data.data.length > 0 ? (
             <EmptyState
               icon={<SearchIcon />}
@@ -317,7 +325,13 @@ export function MembersScreen({ orgSlug }: { orgSlug: string }) {
                       direction={sortDirection}
                       onSort={() => toggleSort('joined')}
                     />
-                    <TableHead className={customRoleChoices === null ? 'w-96' : 'w-[34rem]'}>
+                    {/* Wide enough for the custom-role select from the
+                        first render — while the roles load too — so the
+                        columns do not jump when they arrive. Only a failed
+                        load, which says so above, gives the room back. */}
+                    <TableHead
+                      className={canManage && customRoles.error === null ? 'w-[34rem]' : 'w-96'}
+                    >
                       <span className="sr-only">Actions</span>
                     </TableHead>
                   </TableRow>

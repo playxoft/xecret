@@ -2,9 +2,12 @@
 
 import { useState } from 'react';
 
-import { api, errorMessage } from '@/lib/api';
+import { api, errorMessage, isApiError } from '@/lib/api';
 import { apiPath } from '@/app/(dashboard)/_lib/paths';
 import {
+  AlertTriangleIcon,
+  Button,
+  RefreshIcon,
   Select,
   SelectContent,
   SelectItem,
@@ -24,6 +27,36 @@ export interface CustomRoleChoices {
    * never gates that — and nothing else.
    */
   assignable: boolean;
+}
+
+/**
+ * What the member list says when the organisation's custom roles could not be
+ * read. Without it the select on every row simply is not drawn, which reads as
+ * "this organisation has no custom roles" — a wrong answer, given silently.
+ * One line above the list rather than one per row, with the way to try again.
+ */
+export function CustomRolesLoadError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  // The request id, as every error state shows it: the one thing that finds
+  // the server's log line for this failure.
+  const requestId = isApiError(error) ? error.requestId : null;
+  return (
+    <div role="alert" className="text-fg-muted flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+      <AlertTriangleIcon aria-hidden="true" className="text-danger-text size-4 shrink-0" />
+      <span>
+        Custom roles could not be loaded, so they cannot be changed from this list.
+        {requestId !== null ? (
+          <>
+            {' '}
+            Request <code className="font-mono select-all">{requestId}</code>.
+          </>
+        ) : null}
+      </span>
+      <Button variant="ghost" size="sm" onClick={onRetry}>
+        <RefreshIcon className="size-4" />
+        Try again
+      </Button>
+    </div>
+  );
 }
 
 /** The select's value for "no custom role" — Radix reserves the empty string. */

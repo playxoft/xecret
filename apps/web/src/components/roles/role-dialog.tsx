@@ -302,6 +302,7 @@ export function RoleForm({
                   onValueChange={(next) =>
                     setCeiling((current) => ({ ...current, nonProduction: next as AccessLevel }))
                   }
+                  disabled={submitting}
                 >
                   <SelectTrigger>
                     <SelectValue />
@@ -321,6 +322,7 @@ export function RoleForm({
                   onValueChange={(next) =>
                     setCeiling((current) => ({ ...current, production: next as AccessLevel }))
                   }
+                  disabled={submitting}
                 >
                   <SelectTrigger>
                     <SelectValue />

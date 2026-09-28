@@ -4,7 +4,8 @@ import type { ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { OrgRole } from '@xecret/core/authz';
 import { Toaster } from '@/components/ui';
-import { CustomRoleSelect } from './custom-role-select';
+import { ApiError } from '@/lib/api';
+import { CustomRoleSelect, CustomRolesLoadError } from './custom-role-select';
 import type { CustomRole, Member } from './types';
 
 /**
@@ -68,6 +69,24 @@ describe('CustomRoleSelect', () => {
     );
 
     expect(html).toContain('aria-label="Custom role of Dev"');
+  });
+
+  it('says so, with a way to try again, when the roles could not be loaded', () => {
+    const error = new ApiError({
+      code: 'internal_error',
+      status: 500,
+      message: 'Something went wrong.',
+      requestId: 'req-123',
+    });
+
+    const html = renderToStaticMarkup(
+      createElement(CustomRolesLoadError, { error, onRetry: () => {} }),
+    );
+
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('Custom roles could not be loaded');
+    expect(html).toContain('req-123');
+    expect(html).toContain('Try again');
   });
 
   it('keeps a long name inside the trigger, and names it in full on hover', () => {

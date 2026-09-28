@@ -90,12 +90,16 @@ export function ProjectActions({
   const [deleting, setDeleting] = useState(false);
 
   // One item per capability, so an admin whose custom role withholds one of
-  // them loses that item rather than the whole menu.
+  // them loses that item rather than the whole menu — and the menu is drawn
+  // whenever any one of them is left, an inviter with nothing else included.
+  // Inviting needs a role to invite *at*, as on the Members page it links to.
   const canManageMembers = canAdminister(organization, 'member.update');
-  const canInvite = canAdminister(organization, 'member.invite');
+  const canInvite =
+    canAdminister(organization, 'member.invite') &&
+    organization.authority.assignableRoles.length > 0;
   const canRename = canAdminister(organization, 'project.update');
   const canDelete = canAdminister(organization, 'project.delete');
-  if (!canManageMembers && !canRename && !canDelete) return null;
+  if (!canManageMembers && !canInvite && !canRename && !canDelete) return null;
 
   const holdsProduction = environments.some((environment) => environment.isProduction);
 

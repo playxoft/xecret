@@ -90,6 +90,8 @@ describe('RolesCard', () => {
     expect(html).toContain('New role');
     expect(html).toContain('aria-label="Edit role Deployer"');
     expect(html).toContain('aria-label="Delete role Deployer"');
+    // Nobody holds it: an ordinary, live Delete.
+    expect(html).not.toContain('aria-disabled');
   });
 
   it('draws Delete unavailable, with the reason, for a role somebody holds', () => {
@@ -98,7 +100,10 @@ describe('RolesCard', () => {
     const html = render(organization('admin'));
 
     const button = /<button[^>]*aria-label="Delete role Deployer[^"]*"[^>]*>/.exec(html)?.[0] ?? '';
-    expect(button).toMatch(/\sdisabled=""/);
+    // Reachable — focusable, hoverable, read out — rather than `disabled`,
+    // which would take its reason away with it.
+    expect(button).toContain('aria-disabled="true"');
+    expect(button).not.toMatch(/\sdisabled=""/);
     expect(button).toContain('unavailable while 2 members hold it');
     expect(button).toContain('move its members to another role, or to none, first');
   });
