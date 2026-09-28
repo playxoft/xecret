@@ -234,7 +234,7 @@ describe('a change that changes nothing', () => {
     expect(stored?.updatedAt).toEqual(role.updatedAt);
   });
 
-  it('writes nothing, and asks no guard, for the role a member already holds', async () => {
+  it('writes nothing for the role a member already holds, once its guard has decided', async () => {
     const orgId = await seedOrg();
     const role = await define(orgId);
     const memberId = await seedMember(orgId, 'developer', role.id);
@@ -242,18 +242,18 @@ describe('a change that changes nothing', () => {
       `select updated_at from org_members where id = $1`,
       [memberId],
     );
-    let asked = false;
+    const asked: boolean[] = [];
 
     const change = await setMemberCustomRole(
       t.db,
       { orgId, memberId, customRoleId: role.id },
-      () => {
-        asked = true;
-      },
+      (assignment) => void asked.push(assignment.changed),
     );
 
     expect(change.changed).toBe(false);
-    expect(asked).toBe(false);
+    // Asked, and told nothing will change: a caller who may not touch this
+    // member is refused a no-op as they would be the change.
+    expect(asked).toEqual([false]);
     const after = await t.pg.query<{ updated_at: Date }>(
       `select updated_at from org_members where id = $1`,
       [memberId],

@@ -53,8 +53,11 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  * Plan-gated like defining one. A partial body is merged onto the role as
  * locked, and every check runs on the merged result. A merge that changes
  * nothing — `member.read` counts as listed whether or not it is, since the
- * engine keeps it either way — is answered 200 with nothing written, audited
- * or plan-checked.
+ * engine keeps it either way — is still measured against the caller's
+ * authority, and refused and recorded exactly as the change would be: "it is
+ * already so" is not an answer a caller who may not touch the role is owed.
+ * Let through, it is answered 200 with nothing written, recorded as a
+ * success, or plan-checked.
  *
  * The holders' environment keys are reconciled afterwards, when the edit
  * changed what they may do, since the role decides what they may read. The
@@ -113,19 +116,22 @@ export const PATCH = authenticatedRoute<Params>(
               : toStoredCeiling(patch.accessCeiling),
         };
 
-        // Nothing to change: no write, no record, and no plan to ask about.
-        if (sameDefinition(current, next)) return null;
+        // Nothing to change means no write, no success record and no plan to
+        // ask about — but the caller is measured all the same, below.
+        const unchanged = sameDefinition(current, next);
 
-        requireFeature(scope.entitlements, 'customRoles', () =>
-          record(
-            audit(orgId).error('role.updated', resource, 'quotaExceeded', {
-              customRoleId: params.roleId,
-              customRoleName: current.name,
-              limitName: 'customRoles',
-              plan: scope.entitlements.plan,
-            }),
-          ),
-        );
+        if (!unchanged) {
+          requireFeature(scope.entitlements, 'customRoles', () =>
+            record(
+              audit(orgId).error('role.updated', resource, 'quotaExceeded', {
+                customRoleId: params.roleId,
+                customRoleName: current.name,
+                limitName: 'customRoles',
+                plan: scope.entitlements.plan,
+              }),
+            ),
+          );
+        }
 
         const merged = { ...current, ...next, allowedActions: [...next.allowedActions] };
         const attempted = {
@@ -160,7 +166,7 @@ export const PATCH = authenticatedRoute<Params>(
             ),
         );
 
-        return next;
+        return unchanged ? null : next;
       },
     ).catch(
       mapAuditedMembershipError((reason) =>

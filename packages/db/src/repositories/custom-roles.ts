@@ -59,7 +59,12 @@ import { isUniqueViolation } from './users';
  * ── No-ops ──
  * An edit that changes nothing, and an assignment of the role a member already
  * holds, write nothing — no row, no `updated_at` — and report
- * `changed: false`, so the route records and gates nothing either.
+ * `changed: false`, so the route records no success and asks the plan
+ * nothing. They are still *decided*: `decide` sees the role and its holders,
+ * and an assignment's guard the member, exactly as for a real change, so a
+ * caller who could not make the change is refused it whether or not it would
+ * have changed anything. Otherwise "already so" would answer a question about
+ * a member the caller may not manage, with a 200 instead of a 403.
  *
  * ── Errors ──
  * The constraints a caller can run into become `RepositoryError`s with fixed
@@ -445,6 +450,14 @@ export interface CustomRoleAssignment {
   next: CustomRoleRecord | null;
   /** Every grant row the member holds — what a widening change switches on. */
   grants: readonly MemberGrant[];
+  /**
+   * `false` when the member already holds `next` (or holds none and `next`
+   * is `null`), and nothing will be written. The guard is asked all the
+   * same: whether the caller may touch this member does not depend on
+   * whether the request happens to change them. What gates only a change —
+   * the plan — is the guard's to skip.
+   */
+  changed: boolean;
 }
 
 export interface SetMemberCustomRoleParams {
@@ -460,8 +473,8 @@ export interface MemberCustomRoleChange {
   previous: { id: string; name: string } | null;
   next: CustomRoleRecord | null;
   /**
-   * `false` when the member already held `next` — nothing was written, and
-   * the guard was not asked.
+   * `false` when the member already held `next`: the guard let it through,
+   * and nothing was written.
    */
   changed: boolean;
 }
@@ -482,8 +495,9 @@ export interface MemberCustomRoleChange {
  * (`updateMemberRole`), and nothing may hand one back.
  *
  * Asking for the role the member already holds — or for none when they hold
- * none — changes nothing: the guard is not asked, nothing is written, and the
- * result says `changed: false`.
+ * none — changes nothing: the guard is still asked, told `changed: false`,
+ * and if it lets the request through nothing is written and the result says
+ * `changed: false`. See "No-ops" at the top of this file.
  */
 export async function setMemberCustomRole(
   exec: Executor,
@@ -510,7 +524,16 @@ export async function setMemberCustomRole(
         member.customRole === undefined
           ? null
           : { id: member.customRole.id, name: member.customRole.name };
-      if ((previous?.id ?? null) === (next?.id ?? null)) {
+      const changed = (previous?.id ?? null) !== (next?.id ?? null);
+
+      const grants = await memberGrantsQuery(tx, {
+        orgId: params.orgId,
+        memberId: params.memberId,
+      });
+
+      guard({ member, next, grants, changed });
+
+      if (!changed) {
         return {
           member: {
             id: member.id,
@@ -524,13 +547,6 @@ export async function setMemberCustomRole(
           changed: false,
         };
       }
-
-      const grants = await memberGrantsQuery(tx, {
-        orgId: params.orgId,
-        memberId: params.memberId,
-      });
-
-      guard({ member, next, grants });
 
       if (next !== null && member.role === 'owner') {
         throw new RepositoryError('conflict', OWNER_HOLDS_NONE);

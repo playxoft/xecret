@@ -242,7 +242,7 @@ function holder(over: Partial<CustomRoleHolder> = {}): CustomRoleHolder {
 /** What the repository hands an edit's `decide`: the role and its holders, as locked. */
 let editSnapshot: CustomRoleEdit;
 /** What the repository hands an assignment's guard. */
-let assignment: CustomRoleAssignment;
+let assignment: Omit<CustomRoleAssignment, 'changed'>;
 /** The role `deleteCustomRole` finds, and whether anybody still holds it. */
 let deletable: { role: CustomRoleRecord; held: boolean };
 
@@ -477,8 +477,11 @@ beforeEach(() => {
         role: assignment.member.role,
         status: assignment.member.status,
       };
-      if ((held?.id ?? null) === (next?.id ?? null)) {
-        // As the repository does: nothing to change, no guard, no write.
+      const changed = (held?.id ?? null) !== (next?.id ?? null);
+      // As the repository does: the guard is asked either way, told whether
+      // anything will change; a no-op it lets through writes nothing.
+      guard({ ...assignment, next, changed });
+      if (!changed) {
         return {
           member: writtenMember,
           previous: held === undefined ? null : { id: held.id, name: held.name },
@@ -486,7 +489,6 @@ beforeEach(() => {
           changed: false,
         };
       }
-      guard({ ...assignment, next });
       if (next !== null && assignment.member.role === 'owner') {
         throw new RepositoryError(
           'conflict',
@@ -951,6 +953,34 @@ describe('PATCH /roles/{id} — editing a role is measured against everyone hold
     expect(memberKeys.reconcileMemberKeyAccess).not.toHaveBeenCalled();
   });
 
+  it('refuses an edit that changes nothing to a caller who could not make it, and records it', async () => {
+    // A narrowed admin may not define or edit roles at all. "It is already
+    // so" must not be the answer they get instead of the 403 a change gets.
+    callerIs(MEMBER_MANAGER);
+    const current = roleRecord();
+
+    const response = await edit({ name: current.name });
+
+    expect(response.status).toBe(403);
+    expect(written).not.toHaveBeenCalled();
+    expect(await outcomes('denied')).toMatchObject([
+      { action: 'role.updated', metadata: { reason: 'forbidden', customRoleName: 'Deployer' } },
+    ]);
+  });
+
+  it('refuses an edit that changes nothing when a holder is beyond the caller', async () => {
+    callerIs({ role: 'admin' });
+    editSnapshot = {
+      current: roleRecord({ baseRole: 'admin' }),
+      holders: [holder({ role: 'owner' })],
+    };
+
+    const response = await edit({ name: 'Deployer' });
+
+    expect(response.status).toBe(403);
+    expect((await outcomes('denied')).map((record) => record.action)).toEqual(['role.updated']);
+  });
+
   it('treats the member.read floor as listed whether or not it is', async () => {
     // The dialog always sends `member.read`; a role stored without it is the
     // same role, so saving it unchanged is still a no-op.
@@ -1226,6 +1256,38 @@ describe('PATCH /members/{id} { customRoleId } — assigning, swapping, unassign
     assignment = { member: { ...target('developer'), customRole: held }, next: null, grants: [] };
     const off = await assign(null);
     expect(off.status).toBe(200);
+  });
+
+  it('refuses asking for what a member already has to a caller who may not manage them', async () => {
+    // The owner holds no custom role, so "none" changes nothing — but an admin
+    // may not manage an owner, and the answer must be the 403 the change
+    // gets, not a 200 that says "already so".
+    callerIs({ role: 'admin' });
+    repositories.findMemberWithUser.mockResolvedValue(target('owner'));
+    assignment = { ...assignment, member: { ...target('owner'), customRole: undefined } };
+
+    const response = await assign(null);
+
+    expect(response.status).toBe(403);
+    expect(written).not.toHaveBeenCalled();
+    expect(await outcomes('denied')).toMatchObject([
+      { action: 'member.custom_role_changed', metadata: { reason: 'forbidden' } },
+    ]);
+  });
+
+  it('refuses re-assigning a held role to a narrowed caller exactly as assigning it', async () => {
+    // A member manager holds none of a developer's capabilities, so may not
+    // manage one — and asking for the role the developer already holds is
+    // refused exactly as moving them onto it would be.
+    callerIs(MEMBER_MANAGER);
+    const held = toEngineCustomRole(roleRecord());
+    repositories.findMemberWithUser.mockResolvedValue(target('developer', held));
+    assignment = { ...assignment, member: { ...target('developer'), customRole: held } };
+
+    const noop = await assign(ROLE_ID);
+
+    expect(noop.status).toBe(403);
+    expect(written).not.toHaveBeenCalled();
   });
 
   it('writes, records and gates nothing for asking for the role already held — on any plan', async () => {

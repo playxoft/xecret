@@ -583,6 +583,7 @@ describe('setMemberCustomRole', () => {
     expect(assignment.grants).toEqual([
       { id: 'grant-1', projectId: PROJECT_ID, environmentId: null, accessLevel: 'write' },
     ]);
+    expect(assignment.changed).toBe(true);
     expect(change.previous).toEqual({ id: OTHER_MEMBER_ID, name: 'Contractor' });
 
     const sql = statements.map((statement) => statement.sql);
@@ -597,7 +598,7 @@ describe('setMemberCustomRole', () => {
     expect(update.params).toContain(ROLE_ID);
   });
 
-  it('writes and asks nothing when the member already holds the role asked for', async () => {
+  it('writes nothing when the member already holds the role asked for — once the guard agrees', async () => {
     const { db, statements } = assigning({
       held: [ROLE_ID, 'Deployer', 'developer', ['secret.read'], 'write', 'none'],
     });
@@ -610,11 +611,18 @@ describe('setMemberCustomRole', () => {
     );
 
     expect(change.changed).toBe(false);
-    expect(guard).not.toHaveBeenCalled();
+    // Asked, and told nothing will change: whether the caller may touch this
+    // member does not depend on whether the request changes them.
+    expect(guard).toHaveBeenCalledOnce();
+    const [assignment] = guard.mock.calls[0] as unknown as [
+      Parameters<Parameters<typeof setMemberCustomRole>[2]>[0],
+    ];
+    expect(assignment.changed).toBe(false);
+    expect(assignment.next?.id).toBe(ROLE_ID);
     expect(statements.some((statement) => statement.sql.startsWith('update'))).toBe(false);
   });
 
-  it('writes and asks nothing to take off a role the member does not hold', async () => {
+  it('writes nothing to take off a role the member does not hold — once the guard agrees', async () => {
     const { db, statements } = assigning();
     const guard = vi.fn();
 
@@ -625,8 +633,20 @@ describe('setMemberCustomRole', () => {
     );
 
     expect(change).toMatchObject({ changed: false, previous: null, next: null });
-    expect(guard).not.toHaveBeenCalled();
+    expect(guard).toHaveBeenCalledWith(expect.objectContaining({ changed: false, next: null }));
     expect(statements.some((statement) => statement.sql.startsWith('update'))).toBe(false);
+  });
+
+  it('refuses a no-op the guard refuses, as it would the change', async () => {
+    const { db, statements } = assigning();
+    const refusal = new Error('refused');
+
+    await expect(
+      setMemberCustomRole(db, { orgId: ORG_ID, memberId: MEMBER_ID, customRoleId: null }, () => {
+        throw refusal;
+      }),
+    ).rejects.toBe(refusal);
+    expect(statements.at(-1)!.sql).toBe('rollback');
   });
 
   it('takes a role off with null, reading no role', async () => {

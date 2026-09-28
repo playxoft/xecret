@@ -383,11 +383,13 @@ async function changeCustomRole(params: {
   const change = await setMemberCustomRole(
     services.db,
     { orgId, memberId: target.id, customRoleId },
-    ({ member, next, grants }) => {
+    ({ member, next, grants, changed }) => {
       // Putting somebody on a role is the plan's to allow. Taking one off is
       // never gated: an organisation that has left the plan must still be able
-      // to undo what it did while it had it.
-      if (next !== null) {
+      // to undo what it did while it had it. Nor is asking for the role they
+      // already hold, which puts nobody on anything — but that is still
+      // measured below, like the change it would be.
+      if (next !== null && changed) {
         requireFeature(scope.entitlements, 'customRoles', () =>
           record(
             audit(orgId).error('member.custom_role_changed', resource, 'quotaExceeded', {
@@ -436,8 +438,8 @@ async function changeCustomRole(params: {
     params.actorUserId,
   );
 
-  // Asking for the role the member already holds changes nothing, and is
-  // recorded as nothing.
+  // Asking for the role the member already holds changes nothing: the
+  // caller was measured as for the change, and nothing is recorded as done.
   if (!change.changed) return json({ member });
 
   record(
