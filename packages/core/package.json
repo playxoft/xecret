@@ -29,7 +29,7 @@
     "@vitest/coverage-v8": "^5.0.0",
     "ajv": "^8.20.0",
     "typescript": "^6",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.2"
   },
   "dependencies": {
     "@noble/curves": "^2.4.0",
