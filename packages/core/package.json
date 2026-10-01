@@ -26,7 +26,7 @@
     "import-fixtures:generate": "tsx scripts/generate-import-fixtures.ts"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "^5.0.0",
+    "@vitest/coverage-v8": "^5.0.2",
     "ajv": "^8.20.0",
     "typescript": "^6",
     "vitest": "^5.0.0"
