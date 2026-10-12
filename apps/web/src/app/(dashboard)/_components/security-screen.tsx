@@ -94,12 +94,14 @@ export function SecurityScreen() {
  * AuthKit keeps a session of its own beside xecret's. An ordinary sign-in link
  * would find it, skip the hosted page entirely and bounce straight back here,
  * which for somebody who came to change a password is a button that appears to
- * do nothing. A forced re-authentication (`max_age=0`) makes AuthKit ask for a
- * credential, and the page that asks is the one with "Forgot password" on it.
- * Coming back makes a fresh xecret session — the callback retires this one —
- * and, being a genuine credential presented just now, it is recorded as the
- * fresh sign-in the vault reset's first lock looks for. That proves exactly
- * what it says, and the reset still wants its emailed code.
+ * do nothing. `reauth=1` sends AuthKit `max_age=0`, which makes it ask for a
+ * password or passkey again, on the page that has "Forgot password" on it. (It
+ * does not reach Google or a company's identity provider, which may let a
+ * live session straight through — ADR 0010.) Coming back makes a fresh xecret
+ * session — the callback retires this one — and, when the method is one of
+ * the sign-in's `REAUTHENTICATING_METHODS`, it is recorded as the vault reset's
+ * first lock, exactly as a sign-in from the reset screen would be. The reset
+ * still wants its emailed code.
  *
  * ── Why a plain link ──
  * The login route answers with a 307 to AuthKit's origin, and a form following

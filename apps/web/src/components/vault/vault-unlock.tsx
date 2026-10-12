@@ -51,6 +51,7 @@ import {
   VAULT_RESET_CONFIRMATION,
   VAULT_RESET_RESUME_PARAM,
   verifyReauthCode,
+  verifyReauthTotp,
 } from './vault-client';
 import type { ReauthStatus, VaultMaterial } from './vault-client';
 import { useVault } from './vault-keys';
@@ -148,10 +149,11 @@ export interface VaultUnlockProps {
 
 export function VaultUnlock({ user, onUnlocked, onStageChange }: VaultUnlockProps) {
   const vault = useVault();
-  // Back from the reset's fresh sign-in: reopen the reset where it was. The
-  // marker only chooses the screen; what it shows is the server's answer.
-  const [resumed] = useState(() => resumingVaultReset());
-  const [stage, setStage] = useState<Stage>(resumed ? 'lost' : 'unlock');
+  // Back from the reset's fresh sign-in: reopen the reset. The marker carries
+  // the id of the account that started it, and only chooses the screen; what
+  // the screen shows is the server's answer.
+  const [resumedBy] = useState(() => resumingVaultReset());
+  const [stage, setStage] = useState<Stage>(resumedBy !== null ? 'lost' : 'unlock');
 
   useEffect(() => {
     onStageChange?.(stage);
@@ -186,7 +188,14 @@ export function VaultUnlock({ user, onUnlocked, onStageChange }: VaultUnlockProp
   // anything, and it has to stay rendered through the reset that empties
   // `material` underneath it.
   if (stage === 'lost') {
-    return <AllCodesLost resumed={resumed} onBack={() => setStage('code')} onReset={onUnlocked} />;
+    return (
+      <AllCodesLost
+        userId={user.id}
+        resumedBy={resumedBy}
+        onBack={() => setStage('code')}
+        onReset={onUnlocked}
+      />
+    );
   }
 
   /**
@@ -269,13 +278,17 @@ export function VaultUnlock({ user, onUnlocked, onStageChange }: VaultUnlockProp
   return <RecoveryFlow user={user} stage={stage} onStage={setStage} onDone={onUnlocked} />;
 }
 
-/** Whether this page load is the return from the reset's fresh sign-in. */
-function resumingVaultReset(): boolean {
-  if (typeof window === 'undefined') return false;
+/**
+ * The account that started a reset, when this page load is the return from its
+ * fresh sign-in; `null` otherwise.
+ */
+function resumingVaultReset(): string | null {
+  if (typeof window === 'undefined') return null;
   try {
-    return new URLSearchParams(window.location.search).get(VAULT_RESET_RESUME_PARAM) === '1';
+    const value = new URLSearchParams(window.location.search).get(VAULT_RESET_RESUME_PARAM);
+    return value !== null && value !== '' ? value : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -1048,59 +1061,67 @@ function RecoveryFlow({
  * must stay reachable from a locked session, so the vault lock cannot stand in
  * front of it the way it stands in front of every other destructive act.
  *
- *  1. **Sign in again.** A full trip through AuthKit, told to ask for the
- *     credential even if it holds a session. It comes back to this screen with
- *     a new session, and the server records that this session's sign-in just
- *     happened.
- *  2. **Enter the code we email.** Requested only after step 1, checked by the
- *     server against the account the session belongs to, and turned into a
- *     five-minute proof the reset spends.
+ *  1. **Sign in again.** A full trip through the sign-in page, which comes back
+ *     to this screen with a new session; the server records that this session's
+ *     sign-in just happened.
+ *  2. **Enter the code we email** — and, when WorkOS asks for it, the code from
+ *     the person's authenticator app. Checked by the server against the account
+ *     the session belongs to, and turned into a five-minute proof the reset
+ *     spends.
  *
- * Which step to show is never decided from the URL: the marker that brings the
- * browser back here only reopens this screen, and `GET /api/auth/reauth` says
- * what the server actually recorded.
+ * ── Coming back from the sign-in page ──
+ * The facts are shown again: a reset should be confirmed by somebody who has
+ * just read what it does, not resumed by a URL. And the account that came back
+ * must be the one that left — the marker carries the starting account's id —
+ * or nothing continues: signing in as somebody else on the way is how a person
+ * ends up resetting the wrong vault.
+ *
+ * Which step to show is never decided from the URL: the marker only reopens
+ * this screen, and `GET /api/auth/reauth` says what the server recorded.
  *
  * The proof is a local `const` in one call frame — obtained, passed into
  * {@link resetVault}, and unreachable the moment the handler returns. It is never
- * put into React state.
+ * put into React state. WorkOS's pending token for the authenticator step is,
+ * between the two submits; it proves nothing without the authenticator code.
  *
  * The keys are released before the request, inside {@link resetVault}. Nothing
  * is held in this state, and doing it anyway costs nothing and closes the case
  * where something was.
  */
 function AllCodesLost({
-  resumed,
+  userId,
+  resumedBy,
   onBack,
   onReset,
 }: {
-  /** Came back from the fresh sign-in: skip the facts, ask where things stand. */
-  resumed: boolean;
+  /** The account this screen is showing for. */
+  userId: string;
+  /** The account that started the reset before the sign-in page, when resuming. */
+  resumedBy: string | null;
   onBack: () => void;
   onReset: () => void;
 }) {
   const vault = useVault();
   const [typed, setTyped] = useState('');
   const [code, setCode] = useState('');
+  const [totp, setTotp] = useState('');
+  const [mfaToken, setMfaToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [showProblem, setShowProblem] = useState(false);
   const [done, setDone] = useState(false);
 
-  // Three screens: the facts, the fresh sign-in, then the code and the act.
-  // Each asks the reader for exactly one thing.
-  const [step, setStep] = useState<'facts' | 'checking' | 'sign-in' | 'confirm'>(
-    resumed ? 'checking' : 'facts',
-  );
+  const accountChanged = resumedBy !== null && resumedBy !== userId;
+
+  // Screens: the facts, the fresh sign-in, then the code(s) and the act. Each
+  // asks the reader for exactly one thing. A resumed reset starts at the facts.
+  const [step, setStep] = useState<'facts' | 'checking' | 'sign-in' | 'confirm'>('facts');
   const [status, setStatus] = useState<ReauthStatus | null>(null);
   const [sent, setSent] = useState(false);
 
   const problem = resetConfirmationProblem(typed);
 
-  /**
-   * Asks the server where this session's re-authentication stands, and moves
-   * to the screen that matches. Run when the screen comes back from the fresh
-   * sign-in, and whenever the person chooses to continue past the facts.
-   */
+  /** Asks the server where this session's re-authentication stands. */
   function check() {
     setStep('checking');
     setFailure(null);
@@ -1113,6 +1134,7 @@ function AllCodesLost({
       const current = await fetchReauthStatus();
       setStatus(current);
       setSent(current.codeSent);
+      setMfaToken(null);
       setStep(current.signedIn ? 'confirm' : 'sign-in');
     } catch (cause) {
       setFailure(errorMessage(cause));
@@ -1123,9 +1145,7 @@ function AllCodesLost({
   // The marker in the URL did its one job — bringing this screen back — and is
   // dropped so that a reload or a shared link does not reopen it.
   useEffect(() => {
-    if (!resumed) return;
-    // Already on `checking` — the initial state for a resumed screen.
-    void refreshStatus();
+    if (resumedBy === null) return;
     try {
       const url = new URL(window.location.href);
       url.searchParams.delete(VAULT_RESET_RESUME_PARAM);
@@ -1144,6 +1164,9 @@ function AllCodesLost({
     try {
       await sendReauthCode();
       setSent(true);
+      setMfaToken(null);
+      setCode('');
+      setTotp('');
     } catch (cause) {
       setFailure(errorMessage(cause));
     } finally {
@@ -1151,7 +1174,7 @@ function AllCodesLost({
     }
   }
 
-  async function reset(event: React.FormEvent) {
+  async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (busy) return;
 
@@ -1165,8 +1188,15 @@ function AllCodesLost({
     try {
       // Verified and spent in one call frame: the proof never outlives this
       // handler, and a second click cannot replay it.
-      const proof = await verifyReauthCode(code);
-      const result = await resetVault(typed, proof);
+      const checked =
+        mfaToken === null ? await verifyReauthCode(code) : await verifyReauthTotp(totp, mfaToken);
+      if (checked.kind === 'mfa') {
+        // The emailed code was right; WorkOS wants the authenticator too.
+        setMfaToken(checked.mfaToken);
+        setTotp('');
+        return;
+      }
+      const result = await resetVault(typed, checked.proof);
       // Adopted before anything navigates, so this provider stops describing a
       // vault that no longer exists. `reload` follows to drop the material with
       // it — safe here and nowhere else in this file, because the dead end is
@@ -1179,10 +1209,26 @@ function AllCodesLost({
       onReset();
     } catch (cause) {
       setFailure(errorMessage(cause));
-      setCode('');
+      if (mfaToken === null) setCode('');
+      else setTotp('');
     } finally {
       setBusy(false);
     }
+  }
+
+  if (accountChanged) {
+    return (
+      <div className="flex flex-col gap-4">
+        <Alert tone="danger" title="A different account came back">
+          You started resetting a vault, then signed in as a different account. Nothing has been
+          reset. Sign out and sign in as the account whose vault you meant to reset, then start
+          again.
+        </Alert>
+        <Button variant="secondary" onClick={onBack}>
+          Back
+        </Button>
+      </div>
+    );
   }
 
   if (done) {
@@ -1197,12 +1243,20 @@ function AllCodesLost({
     );
   }
 
+  const signInAgainHref = reauthSignInUrl(window.location, userId);
+
   // Screen one: the facts, and every way out that is not a reset. The copy
   // keeps its two sentences apart — the data is gone, and here is how to
   // start again — see the header comment for why that order is load-bearing.
   if (step === 'facts') {
     return (
       <div className="flex flex-col gap-4">
+        {resumedBy !== null ? (
+          <Alert tone="info" title="You’re signed in again">
+            Read this once more before you continue.
+          </Alert>
+        ) : null}
+
         <Alert tone="danger" title="We can’t bring your secrets back">
           They were sealed with keys only your passphrase and recovery codes could open. With both
           gone, nothing can unseal them — not even xecret.
@@ -1232,7 +1286,12 @@ function AllCodesLost({
 
   if (step === 'checking') {
     return (
-      <div aria-busy="true" aria-label="Checking your sign-in" className="flex flex-col gap-3">
+      <div
+        role="status"
+        aria-busy="true"
+        aria-label="Checking your sign-in"
+        className="flex flex-col gap-3"
+      >
         <Skeleton className="h-10 w-full" />
         <Skeleton className="h-11 w-full" />
       </div>
@@ -1240,8 +1299,8 @@ function AllCodesLost({
   }
 
   // Screen two: the first lock. A link rather than a form: it is a plain
-  // navigation to AuthKit and back, and a `<form>` here would be refused by
-  // `form-action 'self'` when the server redirects it off-site.
+  // navigation to the sign-in page and back, and a `<form>` here would be
+  // refused by `form-action 'self'` when the server redirects it off-site.
   if (step === 'sign-in') {
     return (
       <div className="flex flex-col gap-4">
@@ -1265,7 +1324,7 @@ function AllCodesLost({
         </p>
 
         <Button variant="danger" asChild>
-          <a href={reauthSignInUrl(window.location)}>Sign in again</a>
+          <a href={signInAgainHref}>Sign in again</a>
         </Button>
         <Button variant="ghost" onClick={() => setStep('facts')}>
           Back
@@ -1273,6 +1332,19 @@ function AllCodesLost({
       </div>
     );
   }
+
+  // The window runs from the sign-in, not from the email: say when it closes.
+  const deadline =
+    status?.signedInUntil == null
+      ? null
+      : new Date(status.signedInUntil).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+  const ready =
+    mfaToken === null
+      ? code.replace(/\s+/g, '').length === 6
+      : totp.replace(/\s+/g, '').length === 6;
 
   // Screen three: the second lock and the act, and nothing else to read.
   return (
@@ -1284,17 +1356,19 @@ function AllCodesLost({
       ) : null}
 
       <p className="text-fg-muted text-sm leading-6">
-        {sent ? (
+        {mfaToken !== null ? (
+          <>That code worked. Now enter the code from your authenticator app.</>
+        ) : sent ? (
           <>
-            We emailed a six-digit code to <span className="text-fg">{status?.email}</span>. It
-            works for ten minutes.
+            We emailed a six-digit code to <span className="text-fg">{status?.email}</span>.
           </>
         ) : (
           <>
             You’re signed in. Now we’ll email a six-digit code to{' '}
             <span className="text-fg">{status?.email}</span>.
           </>
-        )}
+        )}{' '}
+        {deadline !== null ? <>Finish before {deadline}, ten minutes after you signed in.</> : null}
       </p>
 
       {sent ? null : (
@@ -1304,19 +1378,37 @@ function AllCodesLost({
       )}
 
       {sent ? (
-        <form onSubmit={reset} noValidate className="flex flex-col gap-4">
-          <Field label="Code from the email">
-            <Input
-              value={code}
-              onChange={(event) => setCode(event.target.value)}
-              autoComplete="one-time-code"
-              inputMode="numeric"
-              spellCheck={false}
-              autoFocus
-              className="font-mono tracking-widest"
-              placeholder="123456"
-            />
-          </Field>
+        <form onSubmit={submit} noValidate className="flex flex-col gap-4">
+          {mfaToken === null ? (
+            <Field label="Code from the email" hint="Six digits. Spaces don’t matter.">
+              <Input
+                value={code}
+                onChange={(event) => setCode(event.target.value)}
+                autoComplete="one-time-code"
+                inputMode="numeric"
+                spellCheck={false}
+                autoFocus
+                className="font-mono tracking-widest"
+                placeholder="123456"
+              />
+            </Field>
+          ) : (
+            <Field
+              label="Code from your authenticator app"
+              hint="Six digits, from the app you set up for xecret’s sign-in."
+            >
+              <Input
+                value={totp}
+                onChange={(event) => setTotp(event.target.value)}
+                autoComplete="one-time-code"
+                inputMode="numeric"
+                spellCheck={false}
+                autoFocus
+                className="font-mono tracking-widest"
+                placeholder="123456"
+              />
+            </Field>
+          )}
 
           <Separator />
 
@@ -1333,20 +1425,28 @@ function AllCodesLost({
             />
           </Field>
 
-          <Button
-            type="submit"
-            variant="danger"
-            loading={busy}
-            disabled={code.replace(/\s+/g, '').length !== 6}
-          >
-            Reset my vault
+          <Button type="submit" variant="danger" loading={busy} disabled={!ready}>
+            {mfaToken === null ? 'Reset my vault' : 'Confirm and reset my vault'}
           </Button>
+          {!ready ? (
+            <p className="text-fg-subtle -mt-2 text-xs">
+              Enter the six-digit code to enable this button.
+            </p>
+          ) : null}
           <Button variant="ghost" disabled={busy} onClick={() => void sendCode()}>
             Send a new code
           </Button>
         </form>
       ) : null}
 
+      {/*
+        The way back when this attempt is over — its sign-in has aged out, its
+        guesses are used, or its proof was spent by a reset that then failed —
+        all of which the server answers with "sign in again".
+      */}
+      <Button variant="ghost" asChild>
+        <a href={signInAgainHref}>Start over: sign in again</a>
+      </Button>
       <Button variant="ghost" onClick={() => setStep('facts')}>
         Back
       </Button>

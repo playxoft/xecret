@@ -637,36 +637,67 @@ export function sendReauthCode(): Promise<void> {
 }
 
 /**
- * Turns the emailed code into the reset's proof.
+ * What checking a code gives back: the reset's proof, or — when WorkOS wants
+ * the user's authenticator after a right emailed code — the pending token to
+ * send back with that code.
+ */
+export type ReauthCheck = { kind: 'proof'; proof: string } | { kind: 'mfa'; mfaToken: string };
+
+/**
+ * Checks the emailed code.
  *
  * Whitespace is stripped here, because a code pasted out of an email arrives
  * with a space or a newline as often as not; the server accepts six digits and
  * nothing else.
  */
-export async function verifyReauthCode(code: string): Promise<string> {
-  const response = await api.post<{ reauthProof: string }>(apiPath.reauthVerify(), {
-    code: code.replace(/\s+/g, ''),
-  });
-  return response.reauthProof;
+export async function verifyReauthCode(code: string): Promise<ReauthCheck> {
+  return toReauthCheck(
+    await api.post<ReauthVerifyResponse>(apiPath.reauthVerify(), {
+      code: code.replace(/\s+/g, ''),
+    }),
+  );
+}
+
+/** Checks the authenticator code WorkOS asked for, with the token it handed out. */
+export async function verifyReauthTotp(totp: string, mfaToken: string): Promise<ReauthCheck> {
+  return toReauthCheck(
+    await api.post<ReauthVerifyResponse>(apiPath.reauthVerify(), {
+      totp: totp.replace(/\s+/g, ''),
+      mfaToken,
+    }),
+  );
+}
+
+type ReauthVerifyResponse = { reauthProof: string } | { mfaRequired: true; mfaToken: string };
+
+function toReauthCheck(response: ReauthVerifyResponse): ReauthCheck {
+  return 'mfaRequired' in response
+    ? { kind: 'mfa', mfaToken: response.mfaToken }
+    : { kind: 'proof', proof: response.reauthProof };
 }
 
 /**
- * Where the forced fresh sign-in starts, and where it comes back to.
+ * Where the fresh sign-in starts, and where it comes back to.
  *
- * `reauth=1` makes AuthKit ask for the credential again even if it holds a
- * session; `next` brings the browser back to the page it left, with a marker
- * that reopens the reset where it was. The marker is a hint and nothing more:
- * what the reset screen does next is decided by `GET /api/auth/reauth`, which
- * reports what the server recorded, not what the URL claims.
+ * `reauth=1` asks for a sign-in again; `next` brings the browser back to the
+ * page it left, with a marker that reopens the reset. The marker carries the id
+ * of the account that *started* the reset, so the screen can refuse to carry on
+ * if a different account came back from the sign-in page. It is a hint and
+ * nothing more: what the reset screen does next is decided by
+ * `GET /api/auth/reauth`, which reports what the server recorded, not what the
+ * URL claims.
  */
-export function reauthSignInUrl(returnTo: { pathname: string; search: string }): string {
+export function reauthSignInUrl(
+  returnTo: { pathname: string; search: string },
+  startedBy: string,
+): string {
   const params = new URLSearchParams(returnTo.search);
-  params.set(VAULT_RESET_RESUME_PARAM, '1');
+  params.set(VAULT_RESET_RESUME_PARAM, startedBy);
   const next = `${returnTo.pathname}?${params.toString()}`;
   return `/api/auth/login?${new URLSearchParams({ reauth: '1', next }).toString()}`;
 }
 
-/** The query marker that reopens the reset after the fresh sign-in. */
+/** The query marker that reopens the reset after the fresh sign-in; its value is the starting account's id. */
 export const VAULT_RESET_RESUME_PARAM = 'vault-reset';
 
 /* ────────────────────────── passphrase change ────────────────────────── */

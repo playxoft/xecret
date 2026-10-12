@@ -906,7 +906,7 @@ describe('the failure paths that used to leave keys resident', () => {
 
 describe('the forced fresh sign-in the reset starts with', () => {
   it('asks the login route for a re-authentication that comes back to this page, reopened', () => {
-    const href = reauthSignInUrl({ pathname: '/app/acme', search: '?tab=x&y=a%20b' });
+    const href = reauthSignInUrl({ pathname: '/app/acme', search: '?tab=x&y=a%20b' }, USER_ID);
 
     const url = new URL(href, 'https://xecret.example');
     expect(url.pathname).toBe('/api/auth/login');
@@ -916,12 +916,14 @@ describe('the forced fresh sign-in the reset starts with', () => {
     expect(next.pathname).toBe('/app/acme');
     expect(next.searchParams.get('tab')).toBe('x');
     expect(next.searchParams.get('y')).toBe('a b');
-    expect(next.searchParams.get(VAULT_RESET_RESUME_PARAM)).toBe('1');
+    // The marker carries the account that started the reset, so the screen can
+    // refuse to continue if a different account comes back.
+    expect(next.searchParams.get(VAULT_RESET_RESUME_PARAM)).toBe(USER_ID);
   });
 
   it('works from the CLI consent screen too, keeping its whole query string', () => {
     const search = '?challenge=abc&port=50123&device=My%20Laptop&state=s1';
-    const href = reauthSignInUrl({ pathname: '/cli/authorize', search });
+    const href = reauthSignInUrl({ pathname: '/cli/authorize', search }, USER_ID);
 
     const next = new URLSearchParams(new URL(href, 'https://x.example').search).get('next') ?? '';
     const back = new URL(next, 'https://x.example');

@@ -1047,6 +1047,21 @@ describe('just-in-time membership', () => {
     expect(await membershipsOf(row!.id)).toEqual([]);
   });
 
+  it('audits an adoption refused for want of a seat, even with no organisation of its own', async () => {
+    // A Firebase-era account with no membership anywhere, adopted by an SSO
+    // sign-in that JIT then cannot seat: no personal organisation is created
+    // on this path, so the link is filed under the organisation it was for.
+    const { workosOrgId, orgId } = await ssoOrg({ seatLimit: 1 });
+    const existing = await seedUser({ email: `${unique('fbsso')}@bigcorp.example` });
+    const who = workosUser({ email: existing.email });
+
+    const result = await signIn(who, { authenticationMethod: 'SSO', organizationId: workosOrgId });
+
+    expect(result.error).toBe('no-seat');
+    expect((await userRows('id', existing.id))[0]?.workos_user_id).toBe(who.id);
+    expect(audit.find((e) => e.action === 'auth.identity_linked')?.orgId).toBe(orgId);
+  });
+
   it('never reinstates a suspended member', async () => {
     const { workosOrgId, orgId } = await ssoOrg();
     const who = workosUser({ email: `${unique('sus')}@bigcorp.example` });

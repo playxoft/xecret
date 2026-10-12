@@ -262,6 +262,10 @@ export async function completeSignIn(
       const audit = auditFor(organization.id, user, services);
 
       if (joined.outcome === 'no-seat') {
+        // An adoption with no organisation to file it under yet (step 7 never
+        // runs on this path): filed under the organisation whose sign-in it
+        // was, rather than not at all.
+        if (outcome === 'linked' && !linkAudited) auditLink(organization.id);
         services.waitUntil(
           writeEvents(services, [
             audit.error('member.jit_denied', { type: 'member', id: null }, 'quotaExceeded', {

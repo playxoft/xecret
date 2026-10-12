@@ -44,11 +44,12 @@ export interface LoginHrefOptions {
   /** Open AuthKit on its sign-up screen rather than its sign-in screen. */
   signUp?: boolean;
   /**
-   * Make AuthKit ask for a credential even if it already holds a session of
-   * its own (`max_age=0`). Without this, a person who is signed in to AuthKit
-   * is bounced straight back without ever seeing the hosted page — which is
-   * the right behaviour for signing in, and the wrong one for somebody who
-   * went there to change their password.
+   * Sign in again even though AuthKit may hold a session of its own
+   * (`max_age=0`). Without this, a person signed in to AuthKit is bounced
+   * straight back without ever seeing the hosted page — right for signing in,
+   * wrong for somebody who went there to change their password. AuthKit then
+   * asks for a password or passkey again; it does not make Google or a
+   * company's identity provider re-prompt (ADR 0010).
    */
   reauth?: boolean;
 }
