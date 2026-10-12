@@ -127,13 +127,26 @@ simple = { limit = 120, period = 60 }
 
 # The contact form, which is the only unauthenticated write in the product.
 # Tight, because every accepted request puts a message in a channel a person
-# reads: the unit of abuse here is a message rather than an attempt, and a
-# handful an hour from one address covers anybody with a genuine question
-# twice over.
+# reads: the unit of abuse here is a message rather than an attempt.
+#
+# The intent is a handful an hour from one address, and this binding cannot
+# express it: `period` is 10 or 60 seconds and nothing else. It used to say
+# 3600, which wrangler 4.134 refuses outright, failing every deploy. So it is
+# three a minute. Three rather than one because the form's field errors come
+# only from the server and the limit is spent before the body is read: one
+# would turn a mistyped address into a minute locked out, while three covers a
+# correction and a retry after a failed delivery.
+#
+# The cost is the ceiling: up to 180 an hour from one address in one colo,
+# where the intent was five. There is no cheap second guard to close the gap.
+# The route deliberately touches no database (see its header), so an hourly
+# counter would be the first in the product and would put the form behind the
+# very outage it exists to report. If spam ever arrives at that rate, the fix
+# belongs in front of the route, such as a challenge on the form, not here.
 [[env.production.ratelimits]]
 name = "RL_CONTACT"
 namespace_id = "1008"
-simple = { limit = 5, period = 3600 }
+simple = { limit = 3, period = 60 }
 
 # ── staging ─────────────────────────────────────────────────────────────────
 #
