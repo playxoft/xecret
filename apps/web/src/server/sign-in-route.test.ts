@@ -1165,6 +1165,39 @@ describe('the session a sign-in issues', () => {
     const [row] = await userRows('workos_user_id', who.id as string);
     expect(await reauthRows(row!.id)).toEqual([]);
   });
+
+  it('issues no session when the re-authentication cannot be recorded — one transaction', async () => {
+    // The database itself refuses the row (the test database's statement hooks
+    // do not reach inside a transaction), so the session issued just before it
+    // must go with it.
+    await t.pg.exec(`
+      create function refuse_reauthentication() returns trigger language plpgsql as $$
+        begin raise exception 'refused for the test'; end $$;
+      create trigger refuse_reauthentication before insert on reauthentications
+        for each row execute function refuse_reauthentication();
+    `);
+    try {
+      const who = workosUser();
+
+      const result = await signIn(
+        who,
+        { authenticationMethod: 'Password' },
+        { query: '?reauth=1' },
+      );
+
+      expect(result.error).not.toBeNull();
+      expect(sessionCookieIssued(result)).toBe(false);
+      const [row] = await userRows('workos_user_id', who.id as string);
+      expect(row).toBeDefined();
+      expect(await sessionsFor(row!.id)).toEqual([]);
+      expect(await reauthRows(row!.id)).toEqual([]);
+    } finally {
+      await t.pg.exec(`
+        drop trigger refuse_reauthentication on reauthentications;
+        drop function refuse_reauthentication();
+      `);
+    }
+  });
 });
 
 describe('rate limiting', () => {

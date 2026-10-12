@@ -132,8 +132,9 @@ export async function createTestDatabase(): Promise<TestDatabase> {
 
   // The narrow surface drizzle's PGlite session calls: `query` for every
   // statement, `transaction` for `db.transaction`. Statements inside a
-  // transaction go to PGlite's own transaction handle and are not recorded —
-  // nothing under test here opens one.
+  // transaction go to PGlite's own transaction handle: they are neither
+  // recorded nor hooked. A test that needs a write inside one to fail makes
+  // the database refuse it (a trigger) instead.
   const client = {
     async query<T>(query: string, params?: unknown[], options?: QueryOptions): Promise<Results<T>> {
       const armed = pending;
