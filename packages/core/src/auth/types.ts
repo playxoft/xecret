@@ -1,26 +1,28 @@
 /**
  * Authentication types.
  *
- * Firebase authenticates; xecret owns the session. See
- * docs/adr/0003-firebase-as-identity-provider.md for why the Firebase ID token
- * is used exactly once, at login, and never again.
+ * WorkOS authenticates; xecret owns the session. See
+ * docs/adr/0010-workos-as-identity-provider.md for why the provider's answer is
+ * used exactly once, at the sign-in callback, and never again: the authorization
+ * code is exchanged, the identity it names is resolved to a user row, and the
+ * WorkOS tokens that came with it are discarded in favour of an xecret session.
  */
 
 /** What an identity provider tells us about a user, after verification. */
 export interface VerifiedIdentity {
-  /** Stable, provider-scoped user identifier. Firebase calls this `uid`. */
+  /** Stable, provider-scoped user identifier. For WorkOS, the user id (`user_…`). */
   subject: string;
   email: string;
   emailVerified: boolean;
   /**
    * When the user last actually proved who they are, in **seconds since the
-   * epoch** — Firebase's `auth_time`, not `iat`.
+   * epoch**.
    *
-   * The distinction is the whole value of the field. A refresh token mints a
-   * fresh ID token every hour without anybody touching a keyboard, so `iat` says
-   * only "this browser still holds a session". `auth_time` says "a password was
-   * typed, or a passkey was tapped, at this moment", and that is the one question
-   * a re-authentication gate is asking.
+   * For an authorization-code exchange this is the moment of the exchange: a
+   * code is minted by an authentication that has just happened, it lives ten
+   * minutes, and it can be exchanged once. That is an honest answer to "when did
+   * this person authenticate" for the sign-in it completes, and it is the only
+   * consumer — nothing reads this field after the session is issued.
    *
    * Required, not optional. A provider that cannot attest when authentication
    * happened cannot back an irreversible action, and an absent field would
@@ -70,8 +72,7 @@ export const WORKOS_USER_ID_PATTERN = /^user_[0-9A-Za-z]+$/;
  * parsed body, a JSON round-trip, a spread or an `as` cast is refused at
  * runtime even where the compiler let it through.
  *
- * `provider` is kept for logs and for the `provider?: never` guard on the
- * Firebase path's parameter; it proves nothing on its own.
+ * `provider` is kept for logs; it proves nothing on its own.
  */
 export type WorkosIdentity = VerifiedIdentity & {
   readonly provider: 'workos';
@@ -169,28 +170,66 @@ export function isWorkosIdentity(value: unknown): value is WorkosIdentity {
 }
 
 /**
- * Verifies a credential issued by an external identity provider.
+ * What one authorization-code exchange establishes.
  *
- * The interface exists so Firebase is replaceable. A self-hoster who does not
- * want a Firebase project needs to implement exactly this, and nothing in
- * authorization, crypto, or the API changes.
+ * The identity, and the three facts about *this* sign-in that the callback
+ * decides on and that the identity alone cannot carry: which organisation's
+ * connection it came through (if any), how the person authenticated, and
+ * whether somebody else is acting as them.
  */
-export interface IdentityProvider {
+export interface AuthorizationCodeExchange<Identity extends VerifiedIdentity = VerifiedIdentity> {
+  identity: Identity;
   /**
-   * Verifies a provider token and returns the identity it attests to.
+   * The provider's organisation for this sign-in, or `null`.
    *
-   * Throws {@link IdentityVerificationError} on any failure. Implementations
-   * must verify the signature, issuer, audience, and expiry — never merely
-   * decode the token.
+   * **Not proof the sign-in came through that organisation's identity
+   * provider.** AuthKit returns one after organisation *selection* in password
+   * and OAuth sign-ins too. Anything that grants or enforces on the strength of
+   * an organisation must also require `authenticationMethod === 'SSO'`.
    */
-  verify(token: string): Promise<VerifiedIdentity>;
+  organizationId: string | null;
+  /** e.g. `SSO`, `Password`, `GoogleOAuth`. `null` when the provider did not say. */
+  authenticationMethod: string | null;
+  /**
+   * Set when a provider administrator is signing in *as* this user. Refused by
+   * the callback; carried so that the refusal can name who tried.
+   */
+  impersonator: { email: string } | null;
+}
+
+/** Request facts a provider may forward for its own risk checks. */
+export interface CodeExchangeContext {
+  /** The PKCE verifier the authorization request committed to. */
+  codeVerifier: string;
+  ipAddress: string | null;
+  userAgent: string | null;
+}
+
+/**
+ * Exchanges an authorization code for the identity it attests to.
+ *
+ * The interface exists so the provider is replaceable. A self-hoster who does
+ * not want a WorkOS account needs to implement exactly this — an authorization
+ * endpoint that redirects back with a code, and this exchange — and nothing in
+ * sessions, authorization, crypto or the API changes.
+ */
+export interface IdentityProvider<Identity extends VerifiedIdentity = VerifiedIdentity> {
+  /**
+   * Throws {@link IdentityVerificationError} for a code the provider refused.
+   * Implementations exchange the code with the provider over an authenticated
+   * call — never decode a token the browser handed over.
+   */
+  exchangeCode(
+    code: string,
+    context: CodeExchangeContext,
+  ): Promise<AuthorizationCodeExchange<Identity>>;
 }
 
 /**
  * Raised when a provider credential cannot be verified.
  *
  * `reason` is for logs and metrics; it must never be returned to the client,
- * where it would tell an attacker which part of a forged token to fix.
+ * where it would tell an attacker which part of a forged credential to fix.
  */
 export class IdentityVerificationError extends Error {
   constructor(readonly reason: string) {

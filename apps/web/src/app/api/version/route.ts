@@ -25,7 +25,7 @@ import { versionPayload } from '@/lib/version';
  *
  * What it deliberately does not carry: anything about *this deployment* rather
  * than this build. No environment name, no binding inventory, no dependency
- * versions, no database or Firebase detail. Those describe how one install is
+ * versions, no database or identity-provider detail. Those describe how one install is
  * configured, which is not public, and a version endpoint is exactly where such
  * things accumulate if nobody says otherwise. A test pins the key set.
  *

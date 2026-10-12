@@ -8,7 +8,7 @@ import { lockVault, primaryOrgId, requireUserPrincipal } from '@/server/vault-se
  *
  * Distinct from signing out, and worth having as its own action precisely
  * because it is cheap: locking costs one passphrase to undo, while signing out
- * costs a full trip through Firebase. Making the safe action the cheap one is
+ * costs a full trip through the identity provider. Making the safe action the cheap one is
  * what gets it used.
  *
  * `everywhere` locks every session the account has, for a laptop left at an

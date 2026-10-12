@@ -102,6 +102,8 @@ export {
   workosIdentity,
 } from './types';
 export type {
+  AuthorizationCodeExchange,
+  CodeExchangeContext,
   IdentityProvider,
   Session,
   SessionRejection,

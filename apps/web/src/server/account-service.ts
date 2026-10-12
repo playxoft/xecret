@@ -34,13 +34,11 @@ import type { ServiceContext } from './context';
  *    inside an organisation nobody can administer; erasing it would destroy
  *    other people's secrets. Ownership must move first, and the error says so.
  *  - Every session and CLI token dies in the same transaction, and the user
- *    row is soft-deleted — which both sign-in paths treat as terminal. The
- *    Firebase upsert (`upsertUserFromFirebaseIdentity`) refuses the same
- *    Firebase identity; the WorkOS linking pass (`upsertUserFromWorkosIdentity`)
- *    refuses the row whether it reaches it by WorkOS identity or by email
- *    address, so the account is neither revived nor re-created around its
- *    address. Either refusal is `notFound` — a terminal "deleted", never a new
- *    account.
+ *    row is soft-deleted — which the sign-in treats as terminal. The WorkOS
+ *    linking pass (`upsertUserFromWorkosIdentity`) refuses the row whether it
+ *    reaches it by WorkOS identity or by email address, so the account is
+ *    neither revived nor re-created around its address. The refusal is
+ *    `notFound` — a terminal "deleted", never a new account.
  *
  * Deletion is all-or-nothing: one blocked organisation rolls the whole thing
  * back, because "your account is half-deleted" is not a state anyone can be
@@ -90,9 +88,9 @@ export function planAccountDeletion(
  * 404 to the caller and not a 500, and a route that reached for the repository
  * directly would be the second place in the codebase that has to remember that.
  *
- * The provider no longer overwrites this field once the row exists
- * (`upsertUserFromFirebaseIdentity`, and the WorkOS linking pass after it),
- * which is what makes the change outlive the next sign-in. Everything else on
+ * The provider no longer overwrites this field once the row exists (the WorkOS
+ * linking pass, `upsertUserFromWorkosIdentity`), which is what makes the change
+ * outlive the next sign-in. Everything else on
  * the profile — the email address, the verified flag, the avatar — is still
  * mirrored and still not editable here.
  */

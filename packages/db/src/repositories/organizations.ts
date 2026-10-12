@@ -169,10 +169,12 @@ export async function findOrgByWorkosOrgId(
  * able to do quietly.
  *
  * ── And deliberately no setter for `sso_required` ──
- * The column exists (migration 0018) but nothing may set it until the sign-in
- * callback enforces it (WS-2). A flag an administrator can switch on before the
- * check exists tells them a bypass is closed while it is open, so the setter
- * ships in the same change as the enforcement, not before it.
+ * The column exists (migration 0018) and the sign-in callback enforces it
+ * (`server/sign-in.ts` in the web app), but nothing sets it yet. The setter
+ * ships with the organisation's SSO settings surface (WS-5), together with the
+ * guards that surface owes it: owner/admin only, the SAML add-on, and a
+ * standing exemption for when the identity provider is misconfigured — without
+ * which switching the flag on can lock an organisation out of itself.
  */
 export async function setOrgWorkosOrgId(
   exec: Executor,
@@ -840,10 +842,9 @@ function randomSlugSuffix(): string {
  * creation from the same account waits the first one out. That is the intent —
  * one account may not mint Org Master Keys in parallel — and the contention is
  * confined to that account, since nobody else has any reason to touch this row.
- * The other writers of it are the sign-in upserts (`upsertUserFromFirebaseIdentity`
- * and the WorkOS linking pass), so a sign-in landing mid-creation for the same
- * person waits too, on a request that has just spent far longer verifying its
- * identity with the provider.
+ * The other writer of it is the sign-in callback's linking pass, so a sign-in
+ * landing mid-creation for the same person waits too, on a request that has
+ * just spent far longer verifying its identity with the provider.
  *
  * A soft-deleted account is filtered out rather than locked. It cannot
  * authenticate, so this is unreachable from the two callers; if it ever became

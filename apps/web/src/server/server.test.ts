@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-import { IdentityVerificationError } from '@xecret/core/auth';
 import {
   connectionString,
   MissingBindingError,
@@ -22,17 +21,14 @@ import {
   toApiError,
   userAgent,
 } from './http';
-import { FirebaseIdentityProvider, InMemoryKeyStore } from './firebase';
-import type { FirebaseClaims, IdTokenVerifier } from './firebase';
 import { attemptKey, consume, enforce, rateLimitKey } from './rate-limit';
 
 /**
  * Tests for the request-handling spine.
  *
  * Everything here is exercised for real — there is no Cloudflare runtime in this
- * process, but nothing in these modules needs one: bindings are a plain object,
- * and the identity provider takes its verifier as a constructor argument
- * precisely so its rejection paths can be tested without a Firebase project.
+ * process, but nothing in these modules needs one: bindings are a plain object.
+ * The identity provider has its own suite, `workos.test.ts`.
  */
 
 function bindings(overrides: Partial<Bindings> = {}): Bindings {
@@ -56,9 +52,9 @@ describe('binding access', () => {
   it('names the missing binding, so a misconfiguration is self-diagnosing', () => {
     expect(() => requireBinding(bindings(), 'HYPERDRIVE')).toThrowError(MissingBindingError);
     try {
-      requireBinding(bindings(), 'JWKS_CACHE');
+      requireBinding(bindings(), 'WORKOS_API_KEY');
     } catch (cause) {
-      expect((cause as MissingBindingError).binding).toBe('JWKS_CACHE');
+      expect((cause as MissingBindingError).binding).toBe('WORKOS_API_KEY');
     }
   });
 
@@ -90,19 +86,26 @@ describe('binding access', () => {
  * configuration worked in every script.
  *
  * The first fix covered only `DATABASE_URL`, and the very next request failed
- * on `FIREBASE_PROJECT_ID` with the same message for the same reason. Hence a
- * list rather than a call site: a per-value fix guarantees a per-value bug.
+ * on the identity provider's project id with the same message for the same
+ * reason. Hence a list rather than a call site: a per-value fix guarantees a
+ * per-value bug.
  */
 describe('process environment fallbacks', () => {
   it('fills every value a secrets manager supplies', () => {
     const merged = withProcessFallbacks(bindings(), {
       DATABASE_URL: 'postgres://from-process',
-      FIREBASE_PROJECT_ID: 'xecret-dev',
+      WORKOS_CLIENT_ID: 'client_dev',
+      WORKOS_API_KEY: 'sk_test_dev',
+      WORKOS_COOKIE_PASSWORD: 'a-cookie-password-of-at-least-32-chars',
       XECRET_ROOT_KEY_VERSION: '2',
     });
 
     expect(merged.DATABASE_URL).toBe('postgres://from-process');
-    expect(merged.FIREBASE_PROJECT_ID).toBe('xecret-dev');
+    // The three a sign-in needs. Phase Development supplies all of them, and
+    // without them here every sign-in would answer 503 under `phase run`.
+    expect(merged.WORKOS_CLIENT_ID).toBe('client_dev');
+    expect(merged.WORKOS_API_KEY).toBe('sk_test_dev');
+    expect(merged.WORKOS_COOKIE_PASSWORD).toBe('a-cookie-password-of-at-least-32-chars');
     expect(merged.XECRET_ROOT_KEY_VERSION).toBe('2');
   });
 
@@ -110,12 +113,12 @@ describe('process environment fallbacks', () => {
   // its configuration overridden by a stray variable on an operator's machine.
   it('never overrides a binding that is already present', () => {
     const merged = withProcessFallbacks(
-      bindings({ DATABASE_URL: 'postgres://bound', FIREBASE_PROJECT_ID: 'xecret-prod' }),
-      { DATABASE_URL: 'postgres://from-process', FIREBASE_PROJECT_ID: 'xecret-dev' },
+      bindings({ DATABASE_URL: 'postgres://bound', WORKOS_CLIENT_ID: 'client_prod' }),
+      { DATABASE_URL: 'postgres://from-process', WORKOS_CLIENT_ID: 'client_dev' },
     );
 
     expect(merged.DATABASE_URL).toBe('postgres://bound');
-    expect(merged.FIREBASE_PROJECT_ID).toBe('xecret-prod');
+    expect(merged.WORKOS_CLIENT_ID).toBe('client_prod');
   });
 
   it('leaves Hyperdrive winning over a process DATABASE_URL', () => {
@@ -376,148 +379,6 @@ describe('JSON responses', () => {
   it('emits repeatable Set-Cookie headers', () => {
     const response = json({ ok: true }, { cookies: ['a=1; Path=/', 'b=2; Path=/'] });
     expect(response.headers.getSetCookie()).toEqual(['a=1; Path=/', 'b=2; Path=/']);
-  });
-});
-
-describe('Firebase identity verification', () => {
-  const claims: FirebaseClaims = {
-    sub: 'firebase-uid-1',
-    email: 'nitheesh@playxoft.com',
-    email_verified: true,
-    auth_time: 1_760_000_000,
-    name: 'Nitheesh',
-    picture: 'https://example.test/a.png',
-    firebase: { sign_in_provider: 'google.com' },
-  };
-
-  const verifierReturning = (value: FirebaseClaims): IdTokenVerifier => ({
-    verifyIdToken: async () => value,
-  });
-
-  const verifierThrowing = (cause: unknown): IdTokenVerifier => ({
-    verifyIdToken: async () => {
-      throw cause;
-    },
-  });
-
-  it('maps a verified token onto an identity', async () => {
-    const identity = await new FirebaseIdentityProvider(verifierReturning(claims)).verify('token');
-
-    expect(identity).toEqual({
-      subject: 'firebase-uid-1',
-      email: 'nitheesh@playxoft.com',
-      emailVerified: true,
-      authTime: 1_760_000_000,
-      displayName: 'Nitheesh',
-      avatarUrl: 'https://example.test/a.png',
-    });
-  });
-
-  it('reads authTime from auth_time, which a token refresh does not move', async () => {
-    // The claim, not `iat`. A refresh token mints a fresh ID token every hour
-    // with nobody at the keyboard, so `iat` says only "this browser still holds
-    // a session" — and the vault reset's re-authentication gate would be
-    // satisfied by exactly the idle browser an attacker stole.
-    const identity = await new FirebaseIdentityProvider(
-      verifierReturning({ ...claims, auth_time: 1_700_000_042 }),
-    ).verify('token');
-
-    expect(identity.authTime).toBe(1_700_000_042);
-  });
-
-  it('reports an absent auth_time as the distant past, not as "just now"', async () => {
-    // Fails closed. An unknown authentication time compared against a freshness
-    // window has to be treated as stale, or the one destructive action in the
-    // product would be reachable with a token that cannot say when its holder
-    // last proved anything.
-    const identity = await new FirebaseIdentityProvider(
-      verifierReturning({
-        sub: 'u',
-        email: 'a@b.test',
-        firebase: { sign_in_provider: 'password' },
-      }),
-    ).verify('token');
-
-    expect(identity.authTime).toBe(0);
-  });
-
-  // exactOptionalPropertyTypes: an absent claim must be an absent key, not a
-  // present-and-undefined one, or it would blank a stored profile on re-login.
-  it('omits absent profile fields rather than setting them to undefined', async () => {
-    const provider = new FirebaseIdentityProvider(
-      verifierReturning({
-        sub: 'u',
-        email: 'a@b.test',
-        firebase: { sign_in_provider: 'password' },
-      }),
-    );
-    const identity = await provider.verify('token');
-
-    expect(Object.hasOwn(identity, 'displayName')).toBe(false);
-    expect(Object.hasOwn(identity, 'avatarUrl')).toBe(false);
-    expect(identity.emailVerified).toBe(false);
-  });
-
-  it('rejects a token with no email, which has no account to attach to', async () => {
-    const provider = new FirebaseIdentityProvider(
-      verifierReturning({ sub: 'u', firebase: { sign_in_provider: 'anonymous' } }),
-    );
-    await expect(provider.verify('token')).rejects.toBeInstanceOf(IdentityVerificationError);
-  });
-
-  it('rejects an empty or absurdly long token before doing any work', async () => {
-    const verify = vi.fn();
-    const provider = new FirebaseIdentityProvider({ verifyIdToken: verify });
-
-    await expect(provider.verify('')).rejects.toBeInstanceOf(IdentityVerificationError);
-    await expect(provider.verify('x'.repeat(8193))).rejects.toBeInstanceOf(
-      IdentityVerificationError,
-    );
-    expect(verify).not.toHaveBeenCalled();
-  });
-
-  // The category is for dashboards; the client is told only that it failed.
-  it('preserves the failure category for logs but not for the caller', async () => {
-    const provider = new FirebaseIdentityProvider(
-      verifierThrowing({ code: 'token-expired', message: 'The token expired at 12:00' }),
-    );
-
-    await expect(provider.verify('token')).rejects.toMatchObject({
-      reason: 'token-expired',
-      message: 'Identity verification failed',
-    });
-  });
-
-  it('categorises an unrecognised failure without crashing', async () => {
-    const provider = new FirebaseIdentityProvider(verifierThrowing('a bare string'));
-    await expect(provider.verify('token')).rejects.toMatchObject({ reason: 'unknown' });
-  });
-
-  it('never asks Firebase to check revocation, which would cost a round trip', async () => {
-    const verify = vi.fn(async () => claims);
-    await new FirebaseIdentityProvider({ verifyIdToken: verify }).verify('token');
-
-    expect(verify).toHaveBeenCalledWith('token', false, undefined, expect.any(Number));
-  });
-});
-
-describe('in-memory JWKS cache', () => {
-  it('returns nothing before anything is stored', async () => {
-    await expect(new InMemoryKeyStore().get()).resolves.toBeNull();
-  });
-
-  it('round-trips a value and then expires it', async () => {
-    vi.useFakeTimers();
-    try {
-      const store = new InMemoryKeyStore();
-      await store.put(JSON.stringify({ kid: 'cert' }), 60);
-      await expect(store.get()).resolves.toEqual({ kid: 'cert' });
-
-      vi.advanceTimersByTime(61_000);
-      await expect(store.get()).resolves.toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });
 

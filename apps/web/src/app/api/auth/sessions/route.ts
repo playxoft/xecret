@@ -14,8 +14,8 @@ import { authenticatedRoute } from '@/server/route';
  *
  * This is the control a user reaches for after losing a laptop, so it must work
  * immediately and completely. It is also the reason xecret issues its own
- * sessions rather than trusting Firebase ID tokens, which cannot be revoked
- * before they expire (ADR 0003).
+ * sessions rather than trusting the identity provider's tokens, which cannot be
+ * revoked before they expire (ADR 0003, carried forward by ADR 0010).
  */
 
 const revokeQuery = z.object({

@@ -1,24 +1,23 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { isWorkosIdentity, WORKOS_USER_ID_PATTERN } from '@xecret/core/auth';
-import type { VerifiedIdentity, WorkosIdentity } from '@xecret/core/auth';
+import type { WorkosIdentity } from '@xecret/core/auth';
 import { uuidv7 } from '@xecret/core/ids';
 import { users } from '../schema/identity';
 import { isConstraintViolation, RepositoryError } from './shared';
 import type { Executor } from './shared';
 
 /**
- * Users. See docs/adr/0003-firebase-as-identity-provider.md, and
- * `.local/workos-auth.md` for the provider migration in progress.
+ * Users. See docs/adr/0010-workos-as-identity-provider.md.
  *
  * A provider attests to an identity; this table is xecret's own record of it.
- * For the length of the migration there are two couplings, one per provider.
- * Each has exactly one *application* writer, which touches only its own column:
+ * The coupling is `workos_user_id`, and it has exactly one *application*
+ * writer: the sign-in callback's linking pass ({@link upsertUserFromWorkosIdentity}),
+ * which is also the only code that ever adopts an existing account by email.
  *
- *  - `firebase_uid`, keyed on by the live Firebase sign-in
- *    ({@link upsertUserFromFirebaseIdentity}). It goes when that path does.
- *  - `workos_user_id`, keyed on by the WorkOS callback's linking pass
- *    ({@link upsertUserFromWorkosIdentity}), which is also the only code that
- *    ever adopts an existing account by email.
+ * `firebase_uid` is retired and retained. Nothing in the application reads or
+ * writes it any more — the Firebase sign-in that keyed on it is gone — but it
+ * stays, nullable, as the backfill's join key and as the rollback, until a
+ * deliberate decommission migration drops it (migration 0018's header).
  *
  * The one other writer of `workos_user_id` is operational, not application
  * code: the one-off backfill after the WorkOS user import, which writes the
@@ -27,10 +26,8 @@ import type { Executor } from './shared';
  * workos_user_id IS NULL` — so that it cannot overwrite a link made here.
  *
  * Every lookup exported here excludes soft-deleted rows. That is not tidiness: a
- * deleted account must stop resolving everywhere at the same instant, and
- * `users_firebase_uid_idx` is partial on `deleted_at IS NULL`, so the predicate
- * that enforces it is also the one that keeps the lookup indexed. The linking
- * pass is the one deliberate exception — it reads deleted rows so that it can
+ * deleted account must stop resolving everywhere at the same instant. The
+ * linking pass is the one deliberate exception — it reads deleted rows so that it can
  * *refuse* them as deleted, rather than mistake an absent row for a new user.
  */
 
@@ -74,19 +71,6 @@ export async function findUserByWorkosId(
   return row ?? null;
 }
 
-export async function findUserByFirebaseUid(
-  exec: Executor,
-  firebaseUid: string,
-): Promise<User | null> {
-  const [row] = await exec
-    .select()
-    .from(users)
-    .where(and(eq(users.firebaseUid, firebaseUid), isNull(users.deletedAt)))
-    .limit(1);
-
-  return row ?? null;
-}
-
 /**
  * Looks up a user by primary key.
  *
@@ -121,99 +105,6 @@ export async function findUserByEmail(exec: Executor, email: string): Promise<Us
     .limit(1);
 
   return row ?? null;
-}
-
-/**
- * The Firebase sign-in's upsert: creates the user on first login, or refreshes
- * the mirrored profile on every login after that.
- *
- * Its one caller is `POST /api/auth/session`, and it is deleted together with
- * that route in WS-2 of the WorkOS migration. Until then it behaves exactly as
- * it did before the WorkOS columns existed, plus one guard: it refuses, at
- * runtime as well as in its type, to be handed a WorkOS identity.
- *
- * ── It is not the WorkOS linking pass, and must never become it ──
- * It keys on `firebase_uid`, writes `firebase_uid`, and neither reads nor
- * writes `workos_user_id`. It never matches by email: a Firebase uid it has not
- * seen is a new account, and an address another row already holds is a
- * conflict (`users_email_unique`), exactly as it always was. Passing a Firebase
- * identity to {@link upsertUserFromWorkosIdentity} instead writes a Firebase uid
- * into the WorkOS column, splits a changed address into a second account, and
- * signs a *different* Firebase account into an existing one by email — which is
- * why that function's parameter refuses anything not branded by WorkOS, and
- * why this one's refuses anything that is.
- *
- * ── Why an upsert ──
- * The write is an upsert on `firebase_uid` rather than a read-then-insert
- * because two concurrent first logins are a real possibility, not a theoretical
- * one: a cold start plus a double-clicked sign-in button issues two requests
- * that both find no row. The unique index is the only thing that actually
- * prevents a duplicate account; `ON CONFLICT` is how the loser of that race
- * turns into a successful login instead of a 500.
- *
- * Most profile fields are taken from the provider verbatim, including when they
- * are absent — the provider is authoritative for them, so an avatar cleared
- * upstream clears here too.
- *
- * ── Except the display name, which the account owns ──
- * It seeds from the provider on the row's *first* write and is never overwritten
- * afterwards. That is the whole of what makes {@link updateUserProfile} mean
- * anything: a name edited in xecret and then re-mirrored from Google on the next
- * sign-in is not an editable field, it is a field that silently reverts — and
- * the revert would land at a sign-in, hours later, where nobody would connect it
- * to the edit. Nothing is lost in the other direction either: an account that
- * has never renamed itself here still has exactly the provider's name, because
- * that is what was inserted.
- */
-export async function upsertUserFromFirebaseIdentity(
-  exec: Executor,
-  identity: VerifiedIdentity & { readonly provider?: never },
-): Promise<User> {
-  // The parameter type's runtime counterpart: a WorkOS identity would be stored
-  // as a Firebase uid. A programming error, so a TypeError, before any query.
-  if (isWorkosIdentity(identity)) {
-    throw new TypeError(
-      'upsertUserFromFirebaseIdentity was handed a WorkOS identity; that belongs to the linker.',
-    );
-  }
-
-  const now = new Date();
-  const mirrored = {
-    email: identity.email,
-    emailVerified: identity.emailVerified,
-    avatarUrl: identity.avatarUrl ?? null,
-  };
-
-  const rows = await exec
-    .insert(users)
-    .values({
-      id: uuidv7(),
-      firebaseUid: identity.subject,
-      ...mirrored,
-      displayName: identity.displayName ?? null,
-      createdAt: now,
-      updatedAt: now,
-      lastLoginAt: now,
-    })
-    .onConflictDoUpdate({
-      target: users.firebaseUid,
-      set: { ...mirrored, updatedAt: now, lastLoginAt: now },
-      // A soft-deleted account is not revived by signing in again. The Firebase
-      // account may well still exist after the xecret account was deleted, and
-      // silently restoring the row would restore its memberships and grants with
-      // it — which is exactly what deleting the account was meant to end.
-      setWhere: isNull(users.deletedAt),
-    })
-    .returning()
-    .catch(rethrowEmailCollision);
-
-  const row = rows[0];
-  if (!row) {
-    // `setWhere` suppressed the update, so the conflicting row is soft-deleted.
-    throw new RepositoryError('notFound', 'No active account exists for this identity.');
-  }
-
-  return row;
 }
 
 export type IdentityLinkOutcome =
@@ -259,8 +150,16 @@ export interface UpsertedUser {
  * refusal it is — rather than surfacing as a 500 or, worse, returning the row
  * as it was before the race.
  *
- * Profile mirroring and the display-name rule are the same as the Firebase
- * path's; see {@link upsertUserFromFirebaseIdentity}.
+ * ── Profile mirroring ──
+ * Most profile fields are taken from the provider verbatim, including when they
+ * are absent — the provider is authoritative for them, so an avatar cleared
+ * upstream clears here too.
+ *
+ * Except the display name, which the account owns. It seeds from the provider
+ * on the row's *first* write and is never overwritten afterwards — that is what
+ * makes {@link updateUserProfile} mean anything. A name edited in xecret and
+ * then re-mirrored from Google on the next sign-in would be a field that
+ * silently reverts, hours later, at a moment nobody would connect to the edit.
  */
 export async function upsertUserFromWorkosIdentity(
   exec: Executor,
@@ -614,11 +513,10 @@ export async function updateUserProfile(
  *
  * The row survives because the audit log and `secret_versions.created_by`
  * reference it — "who wrote this secret" must keep an answer after the author
- * is gone. What ends is the *account*: both sign-in paths refuse a soft-deleted
- * row — `upsertUserFromFirebaseIdentity` through `setWhere`, and the WorkOS
- * linking pass by reading deleted rows specifically to refuse them, whether it
- * reaches the row by identity or by address — so neither provider's identity
- * can sign in to it again, and its address cannot be re-registered around it.
+ * is gone. What ends is the *account*: the linking pass reads deleted rows
+ * specifically to refuse them, whether it reaches the row by identity or by
+ * address, so the identity cannot sign in to it again and its address cannot be
+ * re-registered around it.
  * The caller is responsible for what surrounds the row — sessions, tokens,
  * memberships — which is `deleteAccount` in the web layer, inside one
  * transaction with this.

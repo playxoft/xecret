@@ -11,10 +11,10 @@
  * Postgres. This runs against *the* database, over the production driver, and
  * is the code that finds out.
  *
- * It covers the path a first sign-in actually takes, and the provider migration
- * after it: the live Firebase sign-in creates the user, the same person's first
- * WorkOS sign-in adopts that account by its verified address, and a WorkOS-only
- * sign-up is created beside it. Then it bootstraps an organisation and its
+ * It covers the provider migration a sign-in actually takes: a Firebase-era
+ * account (as every pre-WorkOS row looks), the same person's first WorkOS
+ * sign-in adopting that account by its verified address, and a WorkOS-only
+ * sign-up created beside it. Then it bootstraps an organisation and its
  * master key, makes a project and an environment, stores an encrypted secret
  * and reads it back — plus the properties the design rests on and that no unit
  * test can reach:
@@ -49,9 +49,9 @@ import {
   markSessionUnlocked,
   provisionOrganization,
   updateSecretMetadata,
-  upsertUserFromFirebaseIdentity,
   upsertUserFromWorkosIdentity,
 } from '../packages/db/src/repositories/index.ts';
+import { users } from '../packages/db/src/schema/index.ts';
 import { EnvelopeService, keyProviderFromEnv } from '../packages/core/src/crypto/index.ts';
 import { DecryptionError } from '../packages/core/src/crypto/types.ts';
 import {
@@ -119,18 +119,27 @@ async function main(): Promise<void> {
       const authTime = Math.floor(Date.now() / 1000);
       const email = `smoke-${uuidv7()}@example.invalid`;
 
-      // The live path: `POST /api/auth/session`'s upsert, keyed on and writing
-      // `firebase_uid`, exactly as production creates an account today.
+      // A Firebase-era account, exactly as every pre-WorkOS row looks: a
+      // `firebase_uid` and no WorkOS id. Written directly, because the
+      // Firebase sign-in that used to create these is gone (ADR 0010) — the
+      // rows it left behind are what the migration below has to carry across.
       const firebaseUid = `smoke${uuidv7().replaceAll('-', '')}`;
-      const user = await upsertUserFromFirebaseIdentity(tx, {
-        subject: firebaseUid,
-        email,
-        emailVerified: true,
-        displayName: 'Smoke Test',
-        authTime,
-      });
+      const now = new Date();
+      const [user] = await tx
+        .insert(users)
+        .values({
+          id: uuidv7(),
+          firebaseUid,
+          email,
+          emailVerified: true,
+          displayName: 'Smoke Test',
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+      if (!user) throw new Error('the Firebase-era account was not written');
       step(
-        'user created by the Firebase sign-in',
+        'Firebase-era account in place',
         user.firebaseUid === firebaseUid && user.workosUserId === null,
         `id ${user.id.slice(0, 8)}…, firebase_uid only`,
       );

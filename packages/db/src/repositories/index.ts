@@ -31,14 +31,12 @@ export type { Executor, RepositoryErrorCode, Transaction } from './shared';
 
 export {
   findUserByEmail,
-  findUserByFirebaseUid,
   findUserById,
   findUserByWorkosId,
   isUniqueViolation,
   softDeleteUser,
   touchLastLogin,
   updateUserProfile,
-  upsertUserFromFirebaseIdentity,
   upsertUserFromWorkosIdentity,
 } from './users';
 export type { IdentityLinkOutcome, UpsertedUser, User, UserProfilePatch } from './users';

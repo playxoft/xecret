@@ -6,17 +6,15 @@ import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '../testing/pglite'
 import type { ArmedHook, TestDatabase } from '../testing/pglite';
 import { RepositoryError } from './shared';
 import {
-  findUserByFirebaseUid,
   findUserByWorkosId,
   isSameAddress,
   isUniqueViolation,
-  upsertUserFromFirebaseIdentity,
   upsertUserFromWorkosIdentity,
 } from './users';
 
 /**
  * The identity-linking pass, which is the account-takeover surface of the whole
- * provider migration — and the Firebase upsert it must never be confused with.
+ * provider migration.
  *
  * `.local/workos-auth.md` §5 gives the normative order: provider id, then
  * **verified** email, then create. The second step is the one that carries
@@ -353,7 +351,6 @@ describe('step 2 — a known address, adopted', () => {
     expect(after?.workos_user_id).toBe(who.subject);
     // The rollback column survives the link untouched.
     expect(after?.firebase_uid).toBe(seeded.firebase_uid);
-    expect((await findUserByFirebaseUid(t.db, seeded.firebase_uid!))?.id).toBe(seeded.id);
   });
 
   it('links once: the next sign-in is an ordinary login', async () => {
@@ -508,19 +505,17 @@ describe('step 2 — a known address, adopted', () => {
   });
 
   it('does not adopt an account whose address moved away mid-write: starts over with the address as it now is', async () => {
-    // Between the read and the write, the account's owner changes their
-    // address at Firebase. The row is no longer the account for the address
-    // being presented; adopting it would hand the account to whoever holds the
-    // old address, and write the old address back over the new one.
+    // Between the read and the write, the account's address changes — its
+    // owner's own sign-in mirroring a new address from the provider, say. The
+    // row is no longer the account for the address being presented; adopting
+    // it would hand the account to whoever holds the old address, and write the
+    // old address back over the new one.
     const seeded = await seedFirebaseUser();
     const moved = address('moved-to');
     const who = identity({ email: seeded.email });
 
     const race = t.beforeNextWrite(() =>
-      upsertUserFromFirebaseIdentity(
-        t.db,
-        firebaseIdentity({ subject: seeded.firebase_uid!, email: moved }),
-      ),
+      t.pg.query(`update users set email = $2 where id = $1`, [seeded.id, moved]),
     );
     const result = await upsertUserFromWorkosIdentity(t.db, who);
 
@@ -687,95 +682,13 @@ describe('step 3 — nobody at all', () => {
   });
 });
 
-/* ───────────────────────────────────────────────────────────────────────────
- * The Firebase upsert — what `POST /api/auth/session` runs until WS-2.
- * ─────────────────────────────────────────────────────────────────────────── */
-describe('the Firebase upsert', () => {
-  it('creates on firebase_uid and never writes workos_user_id', async () => {
-    const who = firebaseIdentity();
-
-    const user = await upsertUserFromFirebaseIdentity(t.db, who);
-
-    const row = await raw(user.id);
-    expect(row?.firebase_uid).toBe(who.subject);
-    expect(row?.workos_user_id).toBeNull();
-    // Keyed on the Firebase column: the upsert's arbiter is `firebase_uid`.
-    expect(t.statements.at(-1)?.sql).toContain('on conflict ("firebase_uid")');
-    expect((await findUserByFirebaseUid(t.db, who.subject))?.id).toBe(user.id);
-  });
-
-  it('resolves an existing Firebase account by uid and leaves its WorkOS column alone', async () => {
-    const seeded = await seedFirebaseUser();
-
-    const user = await upsertUserFromFirebaseIdentity(
-      t.db,
-      firebaseIdentity({ subject: seeded.firebase_uid!, email: seeded.email }),
-    );
-
-    expect(user.id).toBe(seeded.id);
-    expect((await raw(seeded.id))?.workos_user_id).toBeNull();
-  });
-
-  it('follows an address changed at Firebase on the same account', async () => {
-    const seeded = await seedFirebaseUser();
-    const renamed = address('fb-renamed');
-
-    const user = await upsertUserFromFirebaseIdentity(
-      t.db,
-      firebaseIdentity({ subject: seeded.firebase_uid!, email: renamed }),
-    );
-
-    expect(user.id).toBe(seeded.id);
-    expect(await usersWith('email', renamed)).toHaveLength(1);
-  });
-
-  it('never matches by email: a different Firebase uid on a taken address is a conflict', async () => {
-    const seeded = await seedFirebaseUser();
-
-    const error = await refusal(
-      upsertUserFromFirebaseIdentity(t.db, firebaseIdentity({ email: seeded.email })),
-    );
-
-    expect(error.code).toBe('conflict');
-    expect(await raw(seeded.id)).toEqual(seeded);
-  });
-
-  it('refuses a soft-deleted account with notFound', async () => {
-    const seeded = await seedFirebaseUser({ deleted: true });
-
-    const error = await refusal(
-      upsertUserFromFirebaseIdentity(
-        t.db,
-        firebaseIdentity({ subject: seeded.firebase_uid!, email: seeded.email }),
-      ),
-    );
-
-    expect(error.code).toBe('notFound');
-    expect(await raw(seeded.id)).toEqual(seeded);
-  });
-
-  it('keeps a WorkOS link written earlier', async () => {
-    // During the transition a person can be linked by WorkOS and still sign in
-    // through the old route; the old route must not undo the link.
-    const seeded = await seedFirebaseUser();
-    const who = identity({ email: seeded.email });
-    await upsertUserFromWorkosIdentity(t.db, who);
-
-    await upsertUserFromFirebaseIdentity(
-      t.db,
-      firebaseIdentity({ subject: seeded.firebase_uid!, email: seeded.email }),
-    );
-
-    expect((await raw(seeded.id))?.workos_user_id).toBe(who.subject);
-  });
-});
-
-describe('the two upserts cannot be handed each other’s identity', () => {
-  it('is a compile error in both directions (checked by `tsc`, which covers this file)', () => {
-    // The live Firebase route was once wired to the WorkOS linker, and nothing
-    // objected because both took a plain `VerifiedIdentity`. These closures
-    // are never called; the `@ts-expect-error` lines are the assertions, and
-    // `npm run typecheck` fails if any of them stops being an error.
+describe('the linker cannot be handed an identity WorkOS did not attest', () => {
+  it('is a compile error (checked by `tsc`, which covers this file)', () => {
+    // The Firebase route was once wired to the WorkOS linker, and nothing
+    // objected because both took a plain `VerifiedIdentity`. The route is gone;
+    // the rule it taught stays. These closures are never called; the
+    // `@ts-expect-error` lines are the assertions, and `npm run typecheck`
+    // fails if either stops being an error.
     const fromFirebase = firebaseIdentity();
     const fromWorkos = identity();
 
@@ -783,8 +696,6 @@ describe('the two upserts cannot be handed each other’s identity', () => {
     void (() => upsertUserFromWorkosIdentity(t.db, fromFirebase));
     // @ts-expect-error — nor is one with the discriminant pasted on.
     void (() => upsertUserFromWorkosIdentity(t.db, { ...fromFirebase, provider: 'workos' }));
-    // @ts-expect-error — a WorkOS identity must not reach the Firebase upsert.
-    void (() => upsertUserFromFirebaseIdentity(t.db, fromWorkos));
 
     expect(fromWorkos.provider).toBe('workos');
   });
@@ -792,13 +703,6 @@ describe('the two upserts cannot be handed each other’s identity', () => {
   it('refuses an `as`-cast Firebase identity at runtime too, before any query', async () => {
     await expect(
       upsertUserFromWorkosIdentity(t.db, firebaseIdentity() as unknown as WorkosIdentity),
-    ).rejects.toBeInstanceOf(TypeError);
-    expect(t.statements).toHaveLength(0);
-  });
-
-  it('the Firebase upsert refuses a WorkOS identity at runtime, before any query', async () => {
-    await expect(
-      upsertUserFromFirebaseIdentity(t.db, identity() as unknown as VerifiedIdentity),
     ).rejects.toBeInstanceOf(TypeError);
     expect(t.statements).toHaveLength(0);
   });

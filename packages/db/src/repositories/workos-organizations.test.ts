@@ -145,11 +145,15 @@ describe('sso_required', () => {
     expect(result.rows[0]?.sso_required).toBe(false);
   });
 
-  it('has no setter until the sign-in callback enforces it', () => {
-    // A tripwire, not a formality. The flag without its check tells an
-    // administrator a bypass is closed while it is open, so a setter must ship
-    // in the same change as the enforcement (WS-2). If this fails, that change
-    // is here — make sure the enforcement is too, then update this test.
+  it('has no setter until the settings surface that owns it ships', () => {
+    // A tripwire, not a formality. The sign-in callback enforces the flag now
+    // (WS-2: `server/sign-in.ts`, tested against rows written directly). What
+    // is still missing is the surface that *sets* it, and the guards that must
+    // come with that surface — owner/admin only, the SAML add-on, and an answer
+    // to "who is exempt when the identity provider is misconfigured", without
+    // which turning the flag on can lock an organisation out of itself. If this
+    // fails, that surface is here (WS-5): make sure those guards are too, then
+    // update this test.
     // The match is deliberately broad: it may fail loudly on an innocent name,
     // and that is the trade — it can never pass silently on a guilty one.
     expect(Object.keys(repositories).filter((name) => /sso/i.test(name))).toEqual([]);

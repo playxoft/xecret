@@ -8,8 +8,7 @@ import {
   unlockVerifierMatches,
   vaultUnlockExpiryFrom,
 } from '@xecret/core/auth';
-import { IdentityVerificationError } from '@xecret/core/auth';
-import type { UnlockAttemptState, VerifiedIdentity } from '@xecret/core/auth';
+import type { UnlockAttemptState } from '@xecret/core/auth';
 import { fromBase64Url, toBase64Url } from '@xecret/core/crypto';
 import { generatePinPepper } from '@xecret/core/crypto/client';
 import {
@@ -20,7 +19,6 @@ import {
   disablePinPepper,
   enrollPasskey as enrollPasskeyRows,
   findRecoveryWrap,
-  findUserByFirebaseUid,
   findVaultKeys,
   listOrganizationsForUser,
   listPasskeys,
@@ -44,10 +42,8 @@ import { vaultUnlockStateOf } from './actor';
 import type { Principal } from './actor';
 import type { ServiceContext } from './context';
 import { errors } from './errors';
-import { CLOCK_SKEW_SECONDS, firebaseIdentityProvider } from './firebase';
 import { requeueKeySharesAfterVaultReset } from './member-keys';
 import { decodeBlob, encodeBlob, toPasskey, toPinDevice, toVaultMaterial } from './schemas/vault';
-import { VAULT_RESET_MAX_AUTH_AGE_SECONDS } from './schemas/vault';
 import type {
   PasskeyPayload,
   PinDevicePayload,
@@ -297,7 +293,7 @@ export async function unlockVault(
  *
  * Distinct from signing out, and worth having as its own action precisely
  * because it is cheap: locking costs one passphrase to undo, while signing out
- * costs a full trip through Firebase. Making the safe action the cheap one is
+ * costs a full trip through the identity provider. Making the safe action the cheap one is
  * what gets it used.
  */
 export async function lockVault(
@@ -786,79 +782,6 @@ export async function resetVault(
       await requeueKeySharesAfterVaultReset(tx, user.user.id);
     },
   });
-}
-
-/**
- * Refuses anything but a freshly re-authenticated owner of *this* account.
- *
- * ── Why a route that already has a session asks for a second credential ──
- * Because the two prove different things. The session cookie proves that this
- * browser was signed in at some point in the last thirty days; it does not prove
- * that the person holding it knows a password, and a cookie is the thing an
- * attacker steals. Everywhere else in the product that gap is closed by the vault
- * lock — a passphrase re-entry standing in front of anything destructive. The
- * reset route cannot use it: every caller is locked out by definition, which is
- * why they are there.
- *
- * So the second proof comes from the identity provider instead, verified exactly
- * as `POST /api/auth/session` verifies it — signature, issuer, audience and
- * expiry, against Google's public keys, through the same
- * `FirebaseIdentityProvider`. Nothing here decodes a token by hand.
- *
- * ── The two things asked of it ──
- * **Whose token is it.** The subject is resolved to a user row and compared with
- * the session's own account. Comparing the *email* would have been simpler and
- * wrong: an address can be changed at the provider, and two accounts can share
- * one over time, whereas `firebase_uid` is the identity this system is keyed by.
- *
- * **How fresh is it.** `auth_time`, not `iat`. A refresh token mints a new ID
- * token every hour with no human involved, so `iat` would be satisfied by a
- * browser that has been sitting idle — which is precisely the browser an attacker
- * stole. `auth_time` moves only when somebody actually authenticates.
- *
- * Every failure is the same refusal with the same message, for the reason the
- * session route gives: naming which part was wrong tells an attacker which part
- * of a forged token to fix next.
- */
-export async function assertRecentAccountOwner(
-  services: ServiceContext,
-  user: Extract<Principal, { kind: 'user' }>,
-  idToken: string,
-  now: Date = new Date(),
-): Promise<void> {
-  const refuse = (reason: string): never => {
-    services.log
-      .at('assertRecentAccountOwner')
-      .warn(
-        `Refused a vault reset because the re-authentication was ${reason}. The caller was told ` +
-          'only that they must sign in again — naming the reason would tell an attacker which ' +
-          'part of a forged token to fix next.',
-        { reason },
-      );
-
-    throw errors.unauthenticated(
-      'Sign in again to confirm this is your account before resetting your vault.',
-    );
-  };
-
-  let identity: VerifiedIdentity;
-  try {
-    identity = await firebaseIdentityProvider(services.env).verify(idToken);
-  } catch (cause) {
-    if (cause instanceof IdentityVerificationError) return refuse(cause.reason);
-    throw cause;
-  }
-
-  const owner = await findUserByFirebaseUid(services.db, identity.subject);
-  if (owner === null || owner.id !== user.user.id) return refuse('for another account');
-
-  const ageSeconds = Math.floor(now.getTime() / 1000) - identity.authTime;
-  if (ageSeconds > VAULT_RESET_MAX_AUTH_AGE_SECONDS) return refuse('too old');
-
-  // A clock that says the user authenticated in the future is a clock nobody
-  // should be destroying a vault on the word of. The tolerance matches the skew
-  // the token verifier itself allows for `iat`.
-  if (ageSeconds < -CLOCK_SKEW_SECONDS) return refuse('dated in the future');
 }
 
 /**
