@@ -75,10 +75,10 @@ export const GET = publicRoute(async ({ request, services }) => {
 
   const headers = new Headers({
     location,
+    // No referrer header of its own: the site-wide `strict-origin-when-cross-
+    // origin` (next.config.ts) already sends a cross-site hop only the origin,
+    // never the query, and Next applies it over anything a route sets.
     'cache-control': 'no-store',
-    // The authorization URL carries the state and the PKCE challenge; neither
-    // is a secret, but neither is anybody else's business either.
-    'referrer-policy': 'no-referrer',
   });
   headers.append('set-cookie', oauthStateCookie(cookie));
   return new Response(null, { status: 307, headers });

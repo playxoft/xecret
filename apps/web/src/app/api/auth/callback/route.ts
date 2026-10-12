@@ -114,10 +114,11 @@ function single(params: URLSearchParams, name: string): string | null {
 function seeOther(location: string, cookies: readonly string[]): Response {
   const headers = new Headers({
     location,
+    // The URL this response answered carries a one-time code, already spent.
+    // The site-wide `strict-origin-when-cross-origin` (next.config.ts) keeps
+    // the query out of any cross-site referrer, and Next applies it over
+    // anything a route sets, so no header of its own is needed here.
     'cache-control': 'no-store',
-    // The URL this response answered carries a one-time code. It is spent, but
-    // there is no reason to hand it to anybody as a referrer.
-    'referrer-policy': 'no-referrer',
   });
   for (const cookie of cookies) headers.append('set-cookie', cookie);
   return new Response(null, { status: 303, headers });
