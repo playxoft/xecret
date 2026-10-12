@@ -22,7 +22,12 @@
  *  - a ciphertext moved to another row fails to decrypt (the AAD binding);
  *  - the `value_type` CHECK refuses a write that bypassed the application;
  *  - a session is authenticated and **locked** the moment it is created, and
- *    locking it again clears the unlock without revoking the session.
+ *    locking it again clears the unlock without revoking the session;
+ *  - the vault reset's re-authentication works on the real table, as the
+ *    role the application runs as: a fresh sign-in recorded, its guesses
+ *    capped under the users row lock, and a one-time proof spent exactly once.
+ *    (Migration 0019 first shipped that table without the application's
+ *    grant, which no test running as the superuser could see.)
  *
  * ## Nothing is left behind
  *
@@ -35,19 +40,25 @@
 import { sql } from 'drizzle-orm';
 import { createDatabase } from '../packages/db/src/client.ts';
 import {
+  consumeReauthProof,
   createEnvironment,
   createProject,
   createSecret,
   createSession,
   createVault,
+  findFreshSignIn,
   findSecretByName,
   findSessionByTokenHash,
   findVaultKeys,
+  issueReauthProof,
   loadEnvironmentKeyChain,
   loadVault,
   lockSessions,
+  markReauthCodeSent,
   markSessionUnlocked,
   provisionOrganization,
+  recordFreshSignIn,
+  reserveReauthGuess,
   updateSecretMetadata,
   upsertUserFromWorkosIdentity,
 } from '../packages/db/src/repositories/index.ts';
@@ -514,6 +525,62 @@ async function main(): Promise<void> {
         'locking does not sign the user out',
         relocked !== null && relocked.vaultUnlockedAt === null && relocked.revokedAt === null,
         'vault_unlocked_at cleared, session still live',
+      );
+
+      // The vault reset's two locks, as the server drives them. The numbers
+      // are the route's own (REAUTH_MAX_CODE_ATTEMPTS and the per-account
+      // budget); what is under test is the table and the statements.
+      const signedInAt = new Date();
+      const freshSince = new Date(signedInAt.getTime() - 60_000);
+      await recordFreshSignIn(tx, { userId: user.id, sessionId: session.id, at: signedInAt });
+      const lockOne = await findFreshSignIn(tx, {
+        userId: user.id,
+        sessionId: session.id,
+        signedInSince: freshSince,
+        maxAttempts: 5,
+      });
+      step(
+        'a fresh sign-in is recorded against its session',
+        lockOne !== null && lockOne.codeAttempts === 0,
+        'reauthentications written and read back as the application role',
+      );
+
+      if (lockOne !== null) await markReauthCodeSent(tx, lockOne.id, signedInAt);
+      const reservations = [];
+      for (let guess = 0; guess < 6; guess++) {
+        reservations.push(
+          await reserveReauthGuess(tx, {
+            userId: user.id,
+            sessionId: session.id,
+            signedInSince: freshSince,
+            maxAttempts: 5,
+            maxUserAttempts: 10,
+            userWindowSince: freshSince,
+          }),
+        );
+      }
+      step(
+        'the emailed-code guesses are capped',
+        reservations.slice(0, 5).every((reservation) => reservation.ok) &&
+          reservations[5]?.ok === false,
+        'five reserved under the users row lock, the sixth refused before WorkOS would be asked',
+      );
+
+      const { hash: proofHash } = await generateToken('reauthProof');
+      const issued = await issueReauthProof(tx, {
+        userId: user.id,
+        sessionId: session.id,
+        signedInSince: freshSince,
+        proofHash,
+        expiresAt: new Date(signedInAt.getTime() + 5 * 60_000),
+      });
+      const spend = { userId: user.id, sessionId: session.id, proofHash, now: new Date() };
+      const spent = await consumeReauthProof(tx, spend);
+      const spentAgain = await consumeReauthProof(tx, spend);
+      step(
+        'a reset proof is spent exactly once',
+        issued && spent && !spentAgain,
+        'issued for this session, consumed, and refused the second time',
       );
 
       throw new Rollback();
