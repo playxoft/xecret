@@ -40,8 +40,11 @@ export type RateLimitBucket =
    *
    * Its own bucket because it is the only endpoint whose abuse case is *volume
    * of content* rather than volume of attempts: every accepted request puts a
-   * message in a channel a human reads, so the limit that matters is a handful
-   * an hour from one address, not the sixty a minute a mutation gets. Sharing
+   * message in a channel a human reads, so the limit that matters is a few
+   * messages from one address, not the sixty a minute a mutation gets. It is a
+   * few a minute rather than the few an hour it was meant to be, because the
+   * binding's period is 10 or 60 seconds; `wrangler.toml` says what that costs.
+   * Sharing
    * `RL_MUTATION` would have made the spam ceiling the same as the ceiling for
    * somebody legitimately working.
    */

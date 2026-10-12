@@ -29,6 +29,7 @@
     "scripts/plan-set.ts",
     "scripts/contact-smoke.ts",
     "scripts/smoke-test.ts",
+    "scripts/migrate-users-to-workos.ts",
     "apps/web/src/cloudflare-env.d.ts"
   ]
 }

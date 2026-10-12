@@ -37,6 +37,7 @@ Engineering documentation, for people working on xecret rather than with it.
 | [E2EE crypto spec](security/e2ee-crypto-spec.md) | The zero-knowledge blob formats, byte for byte. Normative for both implementations. |
 | [Database setup](operations/database-setup.md) | Neon, migrations, and the restricted application role. |
 | [Logging](operations/logging.md) | The log pipeline and what may never enter it. |
+| [WorkOS user migration](operations/workos-user-migration.md) | Moving Firebase users to WorkOS with their passwords: the cutover runbook. |
 | [Colour system](design/colour-system.md) | The token palette, with measured WCAG ratios in both themes. |
 | [Architecture decisions](adr/README.md) | ADRs 0001–0010 — the choices that are settled, and why. |
 | [Roadmap](ROADMAP.md) | What is built, what is left, and the reasoning behind the order. |
