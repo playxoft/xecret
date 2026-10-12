@@ -33,6 +33,8 @@ const logging = vi.hoisted(() => ({ createRequestLog: vi.fn() }));
 const workos = vi.hoisted(() => ({
   createMagicAuth: vi.fn(),
   authenticateWithMagicAuth: vi.fn(),
+  authenticateWithTotp: vi.fn(),
+  challengeFactor: vi.fn(),
 }));
 
 vi.mock('./context', () => context);
@@ -53,7 +55,9 @@ vi.mock('./workos', async (importOriginal) => {
       authenticateWithCode: vi.fn(),
       createMagicAuth: workos.createMagicAuth,
       authenticateWithMagicAuth: workos.authenticateWithMagicAuth,
+      authenticateWithTotp: workos.authenticateWithTotp,
     },
+    multiFactorAuth: { challengeFactor: workos.challengeFactor },
     organizations: { getOrganization: vi.fn(), createOrganization: vi.fn() },
     adminPortal: { generateLink: vi.fn() },
     sso: { listConnections: vi.fn() },
@@ -72,7 +76,8 @@ const statusRoute = await import('@/app/api/auth/reauth/route');
 const startRoute = await import('@/app/api/auth/reauth/start/route');
 const verifyRoute = await import('@/app/api/auth/reauth/verify/route');
 const resetRoute = await import('@/app/api/auth/vault/reset/route');
-const { REAUTH_MAX_CODE_FAILURES, VAULT_RESET_CONFIRMATION } = await import('./schemas/vault');
+const { REAUTH_MAX_CODE_ATTEMPTS, REAUTH_MAX_USER_ATTEMPTS, VAULT_RESET_CONFIRMATION } =
+  await import('./schemas/vault');
 
 let t: TestDatabase;
 let lines: LogEntry[] = [];
@@ -92,6 +97,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   workos.createMagicAuth.mockReset();
   workos.authenticateWithMagicAuth.mockReset();
+  workos.authenticateWithTotp.mockReset();
+  workos.challengeFactor.mockReset();
+  workos.challengeFactor.mockResolvedValue({
+    object: 'authentication_challenge',
+    id: 'auth_challenge_01',
+    authenticationFactorId: 'auth_factor_01',
+  });
   t.reset();
   lines = [];
   audit = [];
@@ -179,12 +191,25 @@ async function anotherSession(userId: string): Promise<{ sessionId: string; toke
   return { sessionId: session.id, token };
 }
 
-async function signedInFreshly(who: Account, secondsAgo = 30): Promise<void> {
+/**
+ * Lock one, recorded as the callback records it — and, unless told otherwise,
+ * the code already requested, which every guess requires.
+ */
+async function signedInFreshly(
+  who: Account,
+  secondsAgo = 30,
+  { codeRequested = true }: { codeRequested?: boolean } = {},
+): Promise<void> {
   await recordFreshSignIn(t.db, {
     userId: who.userId,
     sessionId: who.sessionId,
     at: new Date(Date.now() - secondsAgo * 1000),
   });
+  if (codeRequested) {
+    await t.pg.query(`update reauthentications set code_sent_at = now() where session_id = $1`, [
+      who.sessionId,
+    ]);
+  }
 }
 
 function call(
@@ -213,6 +238,8 @@ const status = (who: Account) => call(statusRoute, 'GET', '/api/auth/reauth', wh
 const start = (who: Account) => call(startRoute, 'POST', '/api/auth/reauth/start', who);
 const verify = (who: Account, code: string) =>
   call(verifyRoute, 'POST', '/api/auth/reauth/verify', who, { code });
+const verifyTotp = (who: Account, totp: string, mfaToken: string) =>
+  call(verifyRoute, 'POST', '/api/auth/reauth/verify', who, { totp, mfaToken });
 const reset = (
   who: Pick<Account, 'token'>,
   reauthProof: unknown,
@@ -242,6 +269,23 @@ function codeProves(workosUserId: string, extra: Record<string, unknown> = {}) {
   });
 }
 
+/** What WorkOS answers a right emailed code for a user with an authenticator. */
+function mfaChallenge(status = 403) {
+  workos.authenticateWithMagicAuth.mockRejectedValue(
+    Object.assign(new Error('The user must complete an MFA challenge'), {
+      name: 'AuthenticationException',
+      status,
+      code: 'mfa_challenge',
+      pendingAuthenticationToken: 'pending-token-from-workos',
+      rawData: {
+        code: 'mfa_challenge',
+        pending_authentication_token: 'pending-token-from-workos',
+        authentication_factors: [{ id: 'auth_factor_01', type: 'totp' }],
+      },
+    }),
+  );
+}
+
 function wrongCode() {
   workos.authenticateWithMagicAuth.mockRejectedValue(
     Object.assign(new Error('Invalid code'), { status: 400, code: 'invalid_one_time_code' }),
@@ -252,12 +296,12 @@ async function attempt(who: Account) {
   return (
     await t.pg.query<{
       code_sent_at: Date | null;
-      code_failures: number;
+      code_attempts: number;
       proof_hash: Uint8Array | null;
       proof_expires_at: Date | null;
       used_at: Date | null;
     }>(
-      `select code_sent_at, code_failures, proof_hash, proof_expires_at, used_at
+      `select code_sent_at, code_attempts, proof_hash, proof_expires_at, used_at
          from reauthentications where session_id = $1`,
       [who.sessionId],
     )
@@ -349,7 +393,7 @@ describe('asking for the code', () => {
 
   it('refuses when the address reaches a different WorkOS user than this account', async () => {
     const who = await account();
-    await signedInFreshly(who);
+    await signedInFreshly(who, 30, { codeRequested: false });
     magicAuthReaches('user_01SOMEBODYELSE');
 
     expect((await start(who)).status).toBe(403);
@@ -360,7 +404,7 @@ describe('asking for the code', () => {
     // What WorkOS Staging actually answered on 2026-10-12 with Magic Auth
     // disabled. A loop back to the sign-in page would have no exit.
     const who = await account();
-    await signedInFreshly(who);
+    await signedInFreshly(who, 30, { codeRequested: false });
     workos.createMagicAuth.mockRejectedValue(
       Object.assign(new Error('Magic Auth is disabled.'), {
         status: 400,
@@ -425,14 +469,14 @@ describe('checking the code', () => {
     expect(recorded?.orgId).toBe(orgId);
   });
 
-  it('counts a wrong code, and ends the attempt after five of them', async () => {
+  it('counts every guess before asking WorkOS, and ends the attempt after five', async () => {
     const who = await account();
     await signedInFreshly(who);
     wrongCode();
 
-    for (let i = 1; i <= REAUTH_MAX_CODE_FAILURES; i += 1) {
+    for (let i = 1; i <= REAUTH_MAX_CODE_ATTEMPTS; i += 1) {
       expect((await verify(who, '000000')).status).toBe(403);
-      expect((await attempt(who))?.code_failures).toBe(i);
+      expect((await attempt(who))?.code_attempts).toBe(i);
     }
 
     // Even the right code is refused now, and WorkOS is no longer asked: the
@@ -442,6 +486,76 @@ describe('checking the code', () => {
     expect((await verify(who, '123456')).status).toBe(403);
     expect(workos.authenticateWithMagicAuth.mock.calls.length).toBe(calls);
     expect(((await (await status(who)).json()) as { signedIn: boolean }).signedIn).toBe(false);
+  });
+
+  it('refuses a guess before a code was requested on this attempt, without asking WorkOS', async () => {
+    const who = await account();
+    await signedInFreshly(who, 30, { codeRequested: false });
+    codeProves(who.workosUserId);
+
+    expect((await verify(who, '123456')).status).toBe(403);
+    expect(workos.authenticateWithMagicAuth).not.toHaveBeenCalled();
+  });
+
+  it('does not buy fresh guesses with a fresh sign-in: ten a day per account, then a 429', async () => {
+    // The round-1 probe: three sign-ins of six guesses each used to reach
+    // WorkOS eighteen times.
+    const who = await account();
+    wrongCode();
+    for (let round = 0; round < 3; round += 1) {
+      Object.assign(who, await anotherSession(who.userId));
+      await signedInFreshly(who);
+      for (let i = 0; i < REAUTH_MAX_CODE_ATTEMPTS + 1; i += 1) await verify(who, '000000');
+    }
+
+    expect(workos.authenticateWithMagicAuth).toHaveBeenCalledTimes(REAUTH_MAX_USER_ATTEMPTS);
+    Object.assign(who, await anotherSession(who.userId));
+    await signedInFreshly(who);
+    const spent = await verify(who, '000000');
+    expect(spent.status).toBe(429);
+    expect((await errorOf(spent)).message).toMatch(/24 hours/);
+  });
+
+  it('lets at most five of a burst of concurrent guesses reach WorkOS', async () => {
+    const who = await account();
+    await signedInFreshly(who);
+    workos.authenticateWithMagicAuth.mockImplementation(
+      () =>
+        new Promise((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                Object.assign(new Error('Invalid code'), {
+                  status: 400,
+                  code: 'invalid_one_time_code',
+                }),
+              ),
+            20,
+          ),
+        ),
+    );
+
+    const responses = await Promise.all(
+      Array.from({ length: 30 }, (_, i) => verify(who, String(200000 + i))),
+    );
+
+    expect(workos.authenticateWithMagicAuth.mock.calls.length).toBeLessThanOrEqual(
+      REAUTH_MAX_CODE_ATTEMPTS,
+    );
+    expect(responses.every((r) => r.status === 403)).toBe(true);
+    expect((await attempt(who))?.code_attempts).toBe(REAUTH_MAX_CODE_ATTEMPTS);
+  });
+
+  it('charges a guess for an answer it cannot classify, too', async () => {
+    const who = await account();
+    await signedInFreshly(who);
+    workos.authenticateWithMagicAuth.mockRejectedValue(
+      Object.assign(new Error('something odd'), { status: 418 }),
+    );
+
+    await verify(who, '123456');
+
+    expect((await attempt(who))?.code_attempts).toBe(1);
   });
 
   it('refuses a code that proved a different WorkOS user', async () => {
@@ -484,6 +598,127 @@ describe('checking the code', () => {
 });
 
 /* ── the reset spends the proof ───────────────────────────────────────────── */
+
+describe('the authenticator step WorkOS may ask for', () => {
+  it.each([[403], [400]])(
+    'turns a right code answered with mfa_challenge (%i) into an authenticator prompt, then a proof',
+    async (status) => {
+      const who = await account();
+      await signedInFreshly(who);
+      mfaChallenge(status);
+
+      const first = await verify(who, '123456');
+
+      expect(first.status).toBe(200);
+      const body = (await first.json()) as { mfaRequired: boolean; mfaToken: string };
+      expect(body).toEqual({ mfaRequired: true, mfaToken: 'pending-token-from-workos' });
+      const row = await t.pg.query<{ mfa_pending_hash: Uint8Array; mfa_factor_id: string }>(
+        `select mfa_pending_hash, mfa_factor_id from reauthentications where session_id = $1`,
+        [who.sessionId],
+      );
+      expect(row.rows[0]?.mfa_factor_id).toBe('auth_factor_01');
+      expect(Buffer.from(row.rows[0]!.mfa_pending_hash).toString()).not.toContain('pending-token');
+
+      workos.authenticateWithTotp.mockResolvedValue({
+        user: { id: who.workosUserId, email: who.email, emailVerified: true },
+        accessToken: 'at',
+        refreshToken: 'rt',
+        authenticationMethod: 'MagicAuth',
+      });
+      const second = await verifyTotp(who, '654321', body.mfaToken);
+
+      expect(second.status).toBe(200);
+      expect(((await second.json()) as { reauthProof: string }).reauthProof).toMatch(/^xrp_live_/);
+      expect(workos.challengeFactor).toHaveBeenCalledWith({
+        authenticationFactorId: 'auth_factor_01',
+      });
+      expect(workos.authenticateWithTotp).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: '654321',
+          pendingAuthenticationToken: 'pending-token-from-workos',
+          authenticationChallengeId: 'auth_challenge_01',
+        }),
+      );
+      // Both steps were guesses.
+      expect((await attempt(who))?.code_attempts).toBe(2);
+    },
+  );
+
+  it('refuses an authenticator code with a token this attempt was not given, without asking WorkOS', async () => {
+    const who = await account();
+    await signedInFreshly(who);
+    mfaChallenge();
+    await verify(who, '123456');
+
+    const forged = await verifyTotp(who, '654321', 'some-other-pending-token');
+
+    expect(forged.status).toBe(403);
+    expect(workos.authenticateWithTotp).not.toHaveBeenCalled();
+  });
+
+  it('refuses an authenticator code before any emailed code was right', async () => {
+    const who = await account();
+    await signedInFreshly(who);
+
+    expect((await verifyTotp(who, '654321', 'pending-token-from-workos')).status).toBe(403);
+    expect(workos.authenticateWithTotp).not.toHaveBeenCalled();
+  });
+
+  it('refuses an authenticator step that proved a different WorkOS user', async () => {
+    const who = await account();
+    await signedInFreshly(who);
+    mfaChallenge();
+    const { mfaToken } = (await (await verify(who, '123456')).json()) as { mfaToken: string };
+    workos.authenticateWithTotp.mockResolvedValue({
+      user: { id: 'user_01SOMEBODYELSE', email: 'x@example.com', emailVerified: true },
+    });
+
+    expect((await verifyTotp(who, '654321', mfaToken)).status).toBe(403);
+    expect((await attempt(who))?.proof_hash).toBeNull();
+  });
+
+  it.each([
+    [
+      'organization_selection_required',
+      { code: 'organization_selection_required', status: 403 },
+      /more than one organisation/,
+    ],
+    ['sso_required', { error: 'sso_required', status: 400 }, /single sign-on/],
+    [
+      'email_verification_required',
+      { code: 'email_verification_required', status: 403 },
+      /Verify your email/,
+    ],
+    ['mfa_enrollment', { code: 'mfa_enrollment', status: 403 }, /multi-factor/],
+  ])(
+    'answers %s with a specific refusal, not "wrong code" and not an outage',
+    async (_label, fields, message) => {
+      const who = await account();
+      await signedInFreshly(who);
+      workos.authenticateWithMagicAuth.mockRejectedValue(
+        Object.assign(new Error('auth'), { name: 'AuthenticationException', ...fields }),
+      );
+
+      const response = await verify(who, '123456');
+
+      expect(response.status).toBe(403);
+      expect((await errorOf(response)).message).toMatch(message);
+    },
+  );
+
+  it('answers 503 when Magic Auth is off, whether WorkOS names it in `error` or in `code`', async () => {
+    const who = await account();
+    await signedInFreshly(who);
+    workos.authenticateWithMagicAuth.mockRejectedValue(
+      Object.assign(new Error('disabled'), {
+        status: 400,
+        code: 'authentication_method_not_allowed',
+      }),
+    );
+
+    expect((await verify(who, '123456')).status).toBe(503);
+  });
+});
 
 describe('the reset’s gate', () => {
   // No vault is seeded, so a reset that passes the gate answers 404 ("no vault

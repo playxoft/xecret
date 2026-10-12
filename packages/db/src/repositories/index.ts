@@ -341,9 +341,10 @@ export {
   issueReauthProof,
   markReauthCodeSent,
   recordFreshSignIn,
-  recordReauthCodeFailure,
+  recordReauthMfaPending,
+  reserveReauthGuess,
 } from './reauth';
-export type { Reauthentication } from './reauth';
+export type { GuessReservation, Reauthentication } from './reauth';
 
 export {
   consumeCliAuthCode,

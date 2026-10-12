@@ -4,6 +4,7 @@ import { IdentityVerificationError, isWorkosIdentity } from '@xecret/core/auth';
 import type { Bindings } from './bindings';
 import { MissingBindingError } from './bindings';
 import {
+  AuthenticationStepRequired,
   callbackUrl,
   IdentityProviderUnavailableError,
   MAX_CODE_LENGTH,
@@ -78,6 +79,17 @@ function stubApi(over: Partial<Record<string, unknown>> = {}) {
       refreshToken: 'rt',
       authenticationMethod: 'MagicAuth',
     })),
+    authenticateWithTotp: vi.fn(async () => ({
+      user: user(),
+      accessToken: 'at',
+      refreshToken: 'rt',
+      authenticationMethod: 'MagicAuth',
+    })),
+    challengeFactor: vi.fn(async () => ({
+      object: 'authentication_challenge',
+      id: 'auth_challenge_01',
+      authenticationFactorId: 'auth_factor_01',
+    })),
     getOrganization: vi.fn(async () => ({
       id: 'org_01BIGCORP',
       domains: [
@@ -97,7 +109,9 @@ function stubApi(over: Partial<Record<string, unknown>> = {}) {
       authenticateWithCode: calls.authenticateWithCode,
       createMagicAuth: calls.createMagicAuth,
       authenticateWithMagicAuth: calls.authenticateWithMagicAuth,
+      authenticateWithTotp: calls.authenticateWithTotp,
     },
+    multiFactorAuth: { challengeFactor: calls.challengeFactor },
     organizations: { getOrganization: calls.getOrganization, createOrganization: vi.fn() },
     adminPortal: { generateLink: vi.fn() },
     sso: { listConnections: vi.fn() },
@@ -353,6 +367,113 @@ describe('failure categories', () => {
   it('passes a verification failure it already classified straight through', () => {
     const original = new IdentityVerificationError('no-email');
     expect(providerFailure(original)).toBe(original);
+  });
+});
+
+describe('authentication steps WorkOS asks for', () => {
+  // The shape WorkOS documents for `mfa_challenge` (reference: AuthKit →
+  // authentication errors), as the SDK raises it: an `AuthenticationException`
+  // whose `code` names the step, with the pending token on the instance and the
+  // factors in `rawData`. The status is 400 or 403 depending on the grant.
+  function authException(status: number, fields: Record<string, unknown>) {
+    return Object.assign(new Error('step'), { name: 'AuthenticationException', status, ...fields });
+  }
+
+  it.each([[400], [403]])(
+    'classifies mfa_challenge (%i) by its code, with the pending token and the TOTP factor',
+    (status) => {
+      const step = providerFailure(
+        authException(status, {
+          code: 'mfa_challenge',
+          pendingAuthenticationToken: 'pending',
+          rawData: {
+            code: 'mfa_challenge',
+            pending_authentication_token: 'pending',
+            authentication_factors: [
+              { id: 'auth_factor_sms', type: 'sms' },
+              { id: 'auth_factor_01', type: 'totp' },
+            ],
+          },
+        }),
+      );
+
+      expect(step).toBeInstanceOf(AuthenticationStepRequired);
+      expect(step).toMatchObject({
+        code: 'mfa_challenge',
+        pendingAuthenticationToken: 'pending',
+        totpFactorId: 'auth_factor_01',
+      });
+      // Still a verification failure to anything that does not handle steps.
+      expect(step).toBeInstanceOf(IdentityVerificationError);
+    },
+  );
+
+  it.each([
+    ['organization_selection_required', { code: 'organization_selection_required' }, 403],
+    ['email_verification_required', { code: 'email_verification_required' }, 403],
+    ['sso_required (OAuth-style error field)', { error: 'sso_required' }, 400],
+    ['mfa_enrollment', { code: 'mfa_enrollment' }, 403],
+  ])(
+    'classifies %s as a step, not as a wrong code and not as an outage',
+    (_label, fields, status) => {
+      const step = providerFailure(authException(status, fields));
+
+      expect(step).toBeInstanceOf(AuthenticationStepRequired);
+      expect(step).not.toBeInstanceOf(IdentityProviderUnavailableError);
+    },
+  );
+
+  it('reads the pending token from rawData when the instance lacks it', () => {
+    const step = providerFailure(
+      authException(403, {
+        code: 'mfa_challenge',
+        rawData: { pending_authentication_token: 'from-raw', authentication_factors: [] },
+      }),
+    ) as AuthenticationStepRequired;
+
+    expect(step.pendingAuthenticationToken).toBe('from-raw');
+    expect(step.totpFactorId).toBeNull();
+  });
+
+  it('treats Magic Auth switched off as misconfiguration, named in `error` or in `code`', () => {
+    for (const fields of [
+      { error: 'authentication_method_not_allowed' },
+      { code: 'authentication_method_not_allowed' },
+    ]) {
+      expect(providerFailure(failure(400, fields))).toMatchObject({ reason: 'misconfigured' });
+    }
+  });
+
+  it('completes a TOTP step: challenges the factor, then authenticates with the code', async () => {
+    const { provider, calls } = stubApi();
+
+    const result = await provider.completeWithTotp(
+      { code: '654321', pendingAuthenticationToken: 'pending', totpFactorId: 'auth_factor_01' },
+      { ipAddress: null, userAgent: null },
+    );
+
+    expect(result).toEqual({ workosUserId: 'user_01HZXK9P3Q', impersonated: false });
+    expect(calls.challengeFactor).toHaveBeenCalledWith({
+      authenticationFactorId: 'auth_factor_01',
+    });
+    expect(calls.authenticateWithTotp).toHaveBeenCalledWith({
+      clientId: CONFIG.clientId,
+      code: '654321',
+      pendingAuthenticationToken: 'pending',
+      authenticationChallengeId: 'auth_challenge_01',
+    });
+  });
+
+  it('refuses a malformed TOTP code before challenging anything', async () => {
+    const { provider, calls } = stubApi();
+
+    await expect(
+      provider.completeWithTotp(
+        { code: '12345', pendingAuthenticationToken: 'p', totpFactorId: 'f' },
+        { ipAddress: null, userAgent: null },
+      ),
+    ).rejects.toBeInstanceOf(IdentityVerificationError);
+    expect(calls.challengeFactor).not.toHaveBeenCalled();
   });
 });
 

@@ -260,6 +260,19 @@ export const errors = {
       { logDetail: 'vault lockout' },
     ),
 
+  /**
+   * The vault reset's emailed-code guesses for this account are used up for
+   * the day. Its own sentence because the wait is the only thing left to do,
+   * and it discloses nothing the person is not entitled to: the budget is a
+   * published constant.
+   */
+  reauthBudgetSpent: (): ApiError =>
+    new ApiError(
+      'rate_limited',
+      'Too many codes have been tried on this account today. Try again in 24 hours.',
+      { logDetail: 'reauth guess budget' },
+    ),
+
   csrf: (logDetail: string): ApiError =>
     new ApiError('csrf_failed', 'The request could not be verified. Please refresh and retry.', {
       logDetail,

@@ -52,8 +52,13 @@ import { MissingBindingError, publicOrigin } from './bindings';
 export interface WorkosApi {
   userManagement: Pick<
     WorkOS['userManagement'],
-    'getAuthorizationUrl' | 'authenticateWithCode' | 'createMagicAuth' | 'authenticateWithMagicAuth'
+    | 'getAuthorizationUrl'
+    | 'authenticateWithCode'
+    | 'createMagicAuth'
+    | 'authenticateWithMagicAuth'
+    | 'authenticateWithTotp'
   >;
+  multiFactorAuth: Pick<WorkOS['multiFactorAuth'], 'challengeFactor'>;
   organizations: Pick<WorkOS['organizations'], 'getOrganization' | 'createOrganization'>;
   adminPortal: Pick<WorkOS['adminPortal'], 'generateLink'>;
   sso: Pick<WorkOS['sso'], 'listConnections'>;
@@ -103,6 +108,49 @@ export class IdentityProviderUnavailableError extends Error {
   ) {
     super('The identity provider could not be reached');
     this.name = 'IdentityProviderUnavailableError';
+  }
+}
+
+/**
+ * WorkOS's authentication-error codes: answers that are neither "yes" nor "no"
+ * but "one more step first". The SDK raises them as `AuthenticationException`
+ * with this `code` (and, for `sso_required`, an OAuth-style `error`).
+ */
+export const AUTHENTICATION_STEP_CODES = [
+  'mfa_challenge',
+  'mfa_enrollment',
+  'mfa_verification',
+  'organization_selection_required',
+  'email_verification_required',
+  'sso_required',
+  'radar_email_challenge',
+  'radar_sms_challenge',
+  'organization_authentication_methods_required',
+] as const;
+
+export type AuthenticationStepCode = (typeof AUTHENTICATION_STEP_CODES)[number];
+
+/**
+ * WorkOS accepted the credential and wants another step before it will say
+ * whose it is — most often the user's authenticator (`mfa_challenge`).
+ *
+ * A verification failure in the eyes of anything that does not handle it — the
+ * sign-in callback treats it as one — but its own class, because the vault
+ * reset's emailed-code step can complete one of these (the TOTP) and must give
+ * a specific answer for the rest, rather than calling a right code wrong or a
+ * WorkOS policy an outage. Branching on the code comes *before* branching on
+ * the HTTP status, which differs between these answers and says nothing useful.
+ */
+export class AuthenticationStepRequired extends IdentityVerificationError {
+  constructor(
+    readonly code: AuthenticationStepCode,
+    /** Present for `mfa_challenge` and the other resumable steps. */
+    readonly pendingAuthenticationToken: string | null,
+    /** The user's TOTP factor, for `mfa_challenge`. */
+    readonly totpFactorId: string | null,
+  ) {
+    super(code);
+    this.name = 'AuthenticationStepRequired';
   }
 }
 
@@ -244,6 +292,38 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
   }
 
   /**
+   * Finishes an authentication WorkOS paused with `mfa_challenge`: challenges
+   * the user's TOTP factor and presents their authenticator code with the
+   * pending-authentication token. Says which WorkOS user that proved, and
+   * whether anybody was impersonating them — the same answer as
+   * {@link authenticateWithMagicAuth}, one step later.
+   */
+  async completeWithTotp(
+    params: { code: string; pendingAuthenticationToken: string; totpFactorId: string },
+    context: Omit<CodeExchangeContext, 'codeVerifier'>,
+  ): Promise<{ workosUserId: string; impersonated: boolean }> {
+    assertCodeShape(params.code, MAGIC_AUTH_CODE_PATTERN);
+
+    let response: WorkosAuthentication;
+    try {
+      const challenge = await this.#api.multiFactorAuth.challengeFactor({
+        authenticationFactorId: params.totpFactorId,
+      });
+      response = await this.#api.userManagement.authenticateWithTotp({
+        clientId: this.#config.clientId,
+        code: params.code,
+        pendingAuthenticationToken: params.pendingAuthenticationToken,
+        authenticationChallengeId: challenge.id,
+        ...requestFacts(context),
+      });
+    } catch (cause) {
+      throw providerFailure(cause);
+    }
+
+    return { workosUserId: response.user.id, impersonated: response.impersonator !== undefined };
+  }
+
+  /**
    * The domains a WorkOS organisation has *verified*, lower-cased.
    *
    * What an SSO sign-in's address is checked against before the linking pass
@@ -372,20 +452,30 @@ function nonEmpty(value: string | undefined): string | null {
 export function providerFailure(cause: unknown): Error {
   if (cause instanceof IdentityVerificationError) return cause;
 
+  // WorkOS's "one more step" answers first, by their code: their HTTP status
+  // varies (400 or 403) and would otherwise read as "wrong code" or as "our
+  // key is misconfigured", neither of which is true.
+  const step = authenticationStep(cause);
+  if (step !== null) return step;
+
+  // An authentication method switched off in the WorkOS dashboard — Magic Auth,
+  // most likely, which the vault reset needs. That is a deployment fault: every
+  // attempt fails the same way until somebody turns it on, and telling the
+  // person to "sign in again" would send them round a loop with no exit. Read
+  // from `error` (an OAuth-style answer) and from `code` alike.
+  if (
+    readString(cause, 'error') === 'authentication_method_not_allowed' ||
+    readString(cause, 'code') === 'authentication_method_not_allowed'
+  ) {
+    return new IdentityProviderUnavailableError('misconfigured');
+  }
+
   const status = readNumber(cause, 'status');
   if (status === 401 || status === 403)
     return new IdentityProviderUnavailableError('misconfigured');
   if (status === 429) return new IdentityProviderUnavailableError('rate-limited');
   if (status === undefined || status >= 500) {
     return new IdentityProviderUnavailableError('unreachable');
-  }
-
-  // An authentication method switched off in the WorkOS dashboard — Magic Auth,
-  // most likely, which the vault reset needs. That is a deployment fault: every
-  // attempt fails the same way until somebody turns it on, and telling the
-  // person to "sign in again" would send them round a loop with no exit.
-  if (readString(cause, 'error') === 'authentication_method_not_allowed') {
-    return new IdentityProviderUnavailableError('misconfigured');
   }
 
   // A 4xx about the request: an expired or replayed code (`invalid_grant`), a
@@ -395,6 +485,35 @@ export function providerFailure(cause: unknown): Error {
   return new IdentityVerificationError(
     code.replace(/[^a-z0-9_-]/gi, '').slice(0, 64) || 'rejected',
   );
+}
+
+/** The step WorkOS asked for, from an `AuthenticationException`-shaped error, or `null`. */
+function authenticationStep(cause: unknown): AuthenticationStepRequired | null {
+  const raw = readRecord(cause, 'rawData');
+  const named = readString(cause, 'code') ?? readString(cause, 'error');
+  const code = AUTHENTICATION_STEP_CODES.find((known) => known === named);
+  if (code === undefined) return null;
+
+  const pending =
+    readString(cause, 'pendingAuthenticationToken') ??
+    (raw ? readString(raw, 'pending_authentication_token') : undefined) ??
+    null;
+  const factors = raw?.['authentication_factors'];
+  const totp: unknown = Array.isArray(factors)
+    ? factors.find(
+        (factor: unknown) =>
+          readString(factor, 'type') === 'totp' && readString(factor, 'id') !== undefined,
+      )
+    : undefined;
+  return new AuthenticationStepRequired(code, pending, readString(totp, 'id') ?? null);
+}
+
+function readRecord(value: unknown, key: string): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const field = (value as Record<string, unknown>)[key];
+  return typeof field === 'object' && field !== null
+    ? (field as Record<string, unknown>)
+    : undefined;
 }
 
 function readNumber(value: unknown, key: string): number | undefined {

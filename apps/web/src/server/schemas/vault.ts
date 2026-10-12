@@ -273,13 +273,24 @@ export const VAULT_RESET_MAX_REAUTH_AGE_SECONDS = 5 * 60;
 export const REAUTH_SIGN_IN_MAX_AGE_SECONDS = 10 * 60;
 
 /**
- * Wrong emailed codes one re-authentication attempt may present before it is
- * over and the person has to sign in again.
- *
- * The code is six digits. The rate limiter bounds guessing too, but it fails
- * open where its binding is absent; this does not, because it is a column.
+ * Guesses one re-authentication attempt may make — at the emailed code and at
+ * the authenticator code alike — before it is over and the person has to sign
+ * in again. Reserved before WorkOS is asked, so a right guess counts too.
  */
-export const REAUTH_MAX_CODE_FAILURES = 5;
+export const REAUTH_MAX_CODE_ATTEMPTS = 5;
+
+/**
+ * Guesses one account may make across every attempt in
+ * {@link REAUTH_USER_WINDOW_SECONDS} — the cap a fresh sign-in does not reset.
+ *
+ * The code is six digits, so this bounds an attacker to one chance in a
+ * hundred thousand a day. The rate limiter sits in front and fails open where
+ * its binding is absent; this does not, because it is a sum over rows.
+ */
+export const REAUTH_MAX_USER_ATTEMPTS = 10;
+
+/** The window {@link REAUTH_MAX_USER_ATTEMPTS} is counted over: a rolling day. */
+export const REAUTH_USER_WINDOW_SECONDS = 24 * 60 * 60;
 
 /**
  * The reset body: a typed phrase, and proof of account ownership.
@@ -314,18 +325,34 @@ export const vaultResetSchema = z.strictObject(
 );
 
 /**
- * The emailed code, as typed: six digits.
+ * A guess at lock two: the emailed code, or — when WorkOS asked for the user's
+ * authenticator after a right code — the TOTP code with the pending token
+ * WorkOS handed out.
  *
- * Whitespace is the one forgiveness — a code pasted from an email arrives with
- * a space or a newline as often as not — and it is the client's job to strip
- * it, so the server's rule stays exactly the code's own shape.
+ * Six digits either way. Whitespace is the one forgiveness — a code pasted
+ * from an email arrives with a space or a newline as often as not — and it is
+ * the client's job to strip it, so the server's rule stays exactly the code's
+ * own shape.
  */
-export const reauthVerifySchema = z.strictObject(
-  {
-    code: z.string().check(z.regex(/^[0-9]{6}$/, 'Enter the six-digit code from the email.')),
-  },
-  UNEXPECTED_FIELD,
-);
+export const reauthVerifySchema = z.union([
+  z.strictObject(
+    {
+      code: z.string().check(z.regex(/^[0-9]{6}$/, 'Enter the six-digit code from the email.')),
+    },
+    UNEXPECTED_FIELD,
+  ),
+  z.strictObject(
+    {
+      totp: z
+        .string()
+        .check(z.regex(/^[0-9]{6}$/, 'Enter the six-digit code from your authenticator app.')),
+      mfaToken: z.string().check(z.minLength(1), z.maxLength(2048)),
+    },
+    UNEXPECTED_FIELD,
+  ),
+]);
+
+export type ReauthVerifyRequest = z.infer<typeof reauthVerifySchema>;
 
 /**
  * Locking, optionally everywhere.
