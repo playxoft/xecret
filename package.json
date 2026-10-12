@@ -24,6 +24,8 @@
     "phase:check-db": "phase run -- npm run check:db-role",
     "phase:check-deploy": "phase run --env Production -- npm run check:deploy production",
     "phase:check-env": "phase run -- npm run check:env",
+    "// phase:check-env:production": "check:env checks whatever is in the shell, and `phase run` alone means .phase.json's defaultEnv, Development. Before a production deploy, this is the one to run — it also asks WorkOS whether Production's key and client id belong together.",
+    "phase:check-env:production": "phase run --env Production -- npm run check:env",
     "phase:smoke": "phase run -- npm run smoke",
     "// phase:contact": "Sends one deliberately hostile enquiry through the real Discord webhook. What it proves is the half a stub cannot: that the URL is real, points at the channel somebody meant, and renders a message nobody gets pinged by.",
     "phase:contact-smoke": "phase run -- npx tsx scripts/contact-smoke.ts",

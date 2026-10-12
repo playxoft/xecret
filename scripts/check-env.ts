@@ -2,16 +2,26 @@
 /**
  * Validates the deployment's configuration before anything depends on it.
  *
- *   phase run -- npx tsx scripts/check-env.ts
+ *   phase run --env Development -- npm run check:env     # local / staging values
+ *   phase run --env Production -- npm run check:env      # production's
+ *   … -- npm run check:env -- --offline                  # skip the one network call
+ *
+ * Run it under the environment you are about to deploy: it checks whatever
+ * values are in the shell, and `phase run` alone means `.phase.json`'s default,
+ * which is Development.
  *
  * Every check here corresponds to a misconfiguration that is silent until it is
  * expensive. A root key of the wrong length surfaces as a decryption failure on
- * a customer's request; a WorkOS cookie password a few characters short
- * surfaces as every sign-in answering 503, which the user cannot act on and the
- * operator has to trace back to a binding. Both are a line or two to catch here.
+ * a customer's request; a WorkOS cookie password a few characters short sends
+ * every sign-in to the sign-in page's "unavailable" error, which the user
+ * cannot act on and the operator has to trace back to a binding. Both are a
+ * line or two to catch here.
  *
  * It reads values but never prints them. Where a value must be shown to be
  * useful — a client id, a key version — it is one that is already public.
+ *
+ * One check makes a network call: asking WorkOS whether the API key and the
+ * client id belong together (see `checkWorkosPairing`). `--offline` skips it.
  */
 
 import { parseRootKeyMaterial } from '../packages/core/src/crypto/key-provider.ts';
@@ -73,19 +83,18 @@ function checkRootKeys(): void {
  * The identity provider, WorkOS (docs/adr/0010-workos-as-identity-provider.md).
  *
  * All three values are required: without any one of them nobody can sign in,
- * and the sign-in routes answer 503 rather than guess. Shape is checked here
- * because each one fails *later* otherwise — a malformed client id as a
- * redirect AuthKit refuses, a short cookie password as a 503 on the first
- * sign-in, a key that is not a key as an outage that reads like WorkOS's.
+ * and the sign-in routes send the browser to the sign-in page's "unavailable"
+ * error rather than guess. Shape is checked here because each one fails
+ * *later* otherwise — a malformed client id as a redirect AuthKit refuses, a
+ * short cookie password on the first sign-in, a key that is not a key as an
+ * outage that reads like WorkOS's.
  *
- * What this deliberately does not check is which WorkOS environment the key
- * belongs to. The key and the client id must come from the same one, but the
- * key's format does not say which: WorkOS has issued `sk_test_…`, `sk_live_…`
- * and plain `sk_…` keys, and this deployment's Production key is the last kind.
- * A prefix rule would therefore either warn on the correct production key or
- * pass a wrong one, and a check that cries wolf on every production run is one
- * that gets read past. The pairing is checked by a person, in the WorkOS
- * dashboard — the deployment-check skill lists it — and proven by a sign-in.
+ * Which WorkOS environment the key belongs to is not read from the key: WorkOS
+ * has issued `sk_test_…`, `sk_live_…` and plain `sk_…` keys, and this
+ * deployment's Production key is the last kind, so a prefix rule would warn on
+ * the correct production key or pass a wrong one. Whether the key and the
+ * client id *belong together* is asked of WorkOS instead —
+ * {@link checkWorkosPairing}.
  */
 function checkWorkos(): void {
   const clientId = required('WORKOS_CLIENT_ID');
@@ -111,7 +120,7 @@ function checkWorkos(): void {
       'WORKOS_API_KEY',
       ok,
       ok
-        ? 'set — confirm in the WorkOS dashboard it is from the same environment as the client id'
+        ? 'set — whether it belongs with the client id is asked of WorkOS below'
         : 'not a WorkOS secret key — expected `sk_…`',
     );
   }
@@ -315,26 +324,112 @@ function checkLogging(): void {
   );
 }
 
-checkDatabase();
-checkRootKeys();
-checkWorkos();
-checkEmail();
-checkLogging();
+/**
+ * Asks WorkOS whether the API key and the client id in this shell belong to the
+ * same WorkOS environment — the pairing a key's format cannot tell you.
+ *
+ * It presents a deliberately bogus authorization code with both. WorkOS checks
+ * the client credentials before the code: a matching pair gets as far as the
+ * code and answers `invalid_grant`; a key and a client id from different
+ * environments (or a revoked key) are refused as `invalid_client` / 401 before
+ * the code is looked at. Observed in all four Staging/Production pairings
+ * (PR #113). Nothing is created, and the code can never be valid.
+ *
+ * Anything else — no answer, a 5xx, a shape not seen before — fails the check
+ * with what came back, rather than passing a pairing nobody confirmed.
+ */
+async function checkWorkosPairing(): Promise<void> {
+  const clientId = process.env['WORKOS_CLIENT_ID'];
+  const apiKey = process.env['WORKOS_API_KEY'];
+  // The shape checks above already reported anything missing or malformed.
+  if (
+    !clientId ||
+    !apiKey ||
+    !/^client_[0-9A-Za-z]+$/.test(clientId) ||
+    !apiKey.startsWith('sk_')
+  ) {
+    return;
+  }
 
-const width = Math.max(...results.map((r) => r.name.length));
-const failed = results.filter((r) => !r.ok).length;
+  const name = 'WORKOS key ↔ client';
+  let status: number;
+  let error: string | undefined;
+  try {
+    const response = await fetch('https://api.workos.com/user_management/authenticate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        client_id: clientId,
+        client_secret: apiKey,
+        grant_type: 'authorization_code',
+        code: 'xecret-check-env-pairing-probe',
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    status = response.status;
+    const body = (await response.json().catch(() => ({}))) as { error?: unknown; code?: unknown };
+    error =
+      typeof body.error === 'string'
+        ? body.error
+        : typeof body.code === 'string'
+          ? body.code
+          : undefined;
+  } catch (cause) {
+    check(
+      name,
+      false,
+      `could not ask WorkOS (${cause instanceof Error ? cause.message : String(cause)}) — rerun ` +
+        'with network access, or with --offline to skip this one check',
+    );
+    return;
+  }
 
-console.warn('');
-for (const result of results) {
-  console.warn(`${result.ok ? '✅' : '❌'}  ${result.name.padEnd(width)}  ${result.detail}`);
+  if (error === 'invalid_grant') {
+    check(name, true, `the key belongs to ${clientId}'s WorkOS environment`);
+  } else if (error === 'invalid_client' || status === 401) {
+    check(
+      name,
+      false,
+      `WorkOS refused this key for ${clientId} — the API key and the client id are from ` +
+        'different WorkOS environments, or the key was revoked',
+    );
+  } else {
+    check(
+      name,
+      false,
+      `unexpected answer from WorkOS (HTTP ${status}, ${error ?? 'no error code'})`,
+    );
+  }
 }
 
-if (failed > 0) {
-  console.error(
-    `\n${failed} problem(s). See .env.example for what each variable is, and ` +
-      'docs/operations/database-setup.md for the database ones.\n',
-  );
-  process.exit(1);
+async function main(): Promise<void> {
+  checkDatabase();
+  checkRootKeys();
+  checkWorkos();
+  if (!process.argv.includes('--offline')) await checkWorkosPairing();
+  checkEmail();
+  checkLogging();
+
+  const width = Math.max(...results.map((r) => r.name.length));
+  const failed = results.filter((r) => !r.ok).length;
+
+  console.warn('');
+  for (const result of results) {
+    console.warn(`${result.ok ? '✅' : '❌'}  ${result.name.padEnd(width)}  ${result.detail}`);
+  }
+
+  if (failed > 0) {
+    console.error(
+      `\n${failed} problem(s). See .env.example for what each variable is, and ` +
+        'docs/operations/database-setup.md for the database ones.\n',
+    );
+    process.exit(1);
+  }
+
+  console.warn('\nConfiguration is valid.\n');
 }
 
-console.warn('\nConfiguration is valid.\n');
+// Called rather than awaited at the top level: the root package.json has no
+// `"type": "module"`, so tsx transpiles to CJS, where top-level await is a
+// syntax error.
+void main();

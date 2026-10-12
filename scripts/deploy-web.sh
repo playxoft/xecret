@@ -92,9 +92,9 @@ echo "  (from apps/web/wrangler.toml → env.$env_name.vars — stop now if that
 #
 # `WORKOS_CLIENT_ID` is a runtime var: the Worker reads it, the build never
 # does, so nothing about building or uploading would notice it missing. A
-# deployment without one is up, serves every page, and answers 503 to every
-# sign-in — which is a deployment nobody can use, found by a user rather than by
-# this script. `wrangler deploy` replaces the Worker's vars with exactly
+# deployment without one is up, serves every page, and sends every sign-in to
+# the sign-in page's "unavailable" error — a deployment nobody can use, found by
+# a user rather than by this script. `wrangler deploy` replaces the Worker's vars with exactly
 # `env.$env_name.vars`, so if it is not in that table it will not be on the
 # Worker, whatever the dashboard shows today.
 #
@@ -104,13 +104,16 @@ echo "  (from apps/web/wrangler.toml → env.$env_name.vars — stop now if that
 #
 # What this cannot check is that the id and the Worker's WORKOS_API_KEY secret
 # come from the same WorkOS environment — the secret is not readable from here.
-# `npm run check:env` and the deployment-check skill cover that pairing.
+# Run under the matching Phase environment, `npm run check:env` asks WorkOS
+# whether Phase's key and client id belong together, and `npm run check:deploy`
+# compares Phase's client id with this file's; the Worker's own copy of the key
+# is only proven by a sign-in after the deploy.
 if ! WORKOS_CLIENT_ID="$(wrangler_var WORKOS_CLIENT_ID)"; then
   cat >&2 <<EOF
 Refusing to build: apps/web/wrangler.toml declares no WORKOS_CLIENT_ID for
 env.$env_name.
 
-Every sign-in on the deployment would answer 503. Add the client id of the
+Every sign-in on the deployment would fail. Add the client id of the
 WorkOS environment this deployment signs people in against to
 [env.$env_name.vars] — the Production environment's for production, the
 Staging environment's for anything else. It is not a secret; the API key is,
