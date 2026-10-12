@@ -656,8 +656,8 @@ export default function LandingPage() {
           <div>
             <h3 className="text-fg text-base font-semibold">Run it yourself</h3>
             <p className="text-fg-muted mt-2 text-sm leading-6">
-              Cloudflare Workers, a Neon or vanilla PostgreSQL database, and your own Firebase
-              project for identity. The self-hosting guide states the real dependency list plainly —
+              Cloudflare Workers, a Neon or vanilla PostgreSQL database, and your own WorkOS account
+              for identity. The self-hosting guide states the real dependency list plainly —
               including the parts that are friction — because an open-source secrets manager that
               hides its operational cost is not being honest about the one thing it sells.
             </p>

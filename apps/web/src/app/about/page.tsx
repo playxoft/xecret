@@ -252,7 +252,7 @@ const MILESTONES = [
   {
     state: 'shipped',
     title: 'A self-hosting guide that states the real cost',
-    body: 'Cloudflare Workers, a PostgreSQL database and your own Firebase project, written out with the parts that are friction left in. An open-source secrets manager that hides its operational cost is not being honest about the one thing it sells.',
+    body: 'Cloudflare Workers, a PostgreSQL database and your own WorkOS account for sign-in, written out with the parts that are friction left in. An open-source secrets manager that hides its operational cost is not being honest about the one thing it sells.',
   },
   {
     state: 'progress',
@@ -302,8 +302,8 @@ const STACK = [
   },
   {
     role: 'Identity',
-    name: 'Firebase for identity',
-    body: 'Sign-in, password reset and email verification are solved problems with a long tail of abuse cases, and we would rather trust an implementation that has already met them all. The cost is honest: a self-hosted install needs its own Firebase project.',
+    name: 'WorkOS for identity',
+    body: 'Sign-in, password reset and email verification are solved problems with a long tail of abuse cases, and we would rather trust an implementation that has already met them all. WorkOS AuthKit checks who you are and sees your email address, your name and your sign-in events — never a secret — and xecret then issues its own session, which you can list and revoke. The cost is honest: a self-hosted install needs its own WorkOS account.',
   },
   {
     role: 'Client',
@@ -331,7 +331,7 @@ const FAQ: readonly FaqItem[] = [
   {
     question: 'What happens to my secrets if Playxoft disappears?',
     answer:
-      'The software outlives the company. The server is AGPL-3.0 and self-hosting is a documented path — Cloudflare Workers, a PostgreSQL database and your own Firebase project — so an instance can be stood up without us. Your values also come back out as the .env file they went in as, which means the exit path is a file format you already know how to use.',
+      'The software outlives the company. The server is AGPL-3.0 and self-hosting is a documented path — Cloudflare Workers, a PostgreSQL database and your own WorkOS account — so an instance can be stood up without us. Your values also come back out as the .env file they went in as, which means the exit path is a file format you already know how to use.',
   },
   {
     question: 'Can you read my secrets?',

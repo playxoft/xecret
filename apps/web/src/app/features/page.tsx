@@ -178,7 +178,7 @@ const FEATURES: readonly Feature[] = [
   {
     icon: BoxIcon,
     title: 'Self-hosting, with the friction stated',
-    body: 'The server is AGPL-3.0 and the CLI is MIT, so the binary that ships inside your Docker images carries a licence your legal team has already approved. The self-hosting guide lists the real dependencies, including the Firebase project needed for identity, which is genuine friction and is described that way. No feature is held back from the self-hosted build.',
+    body: 'The server is AGPL-3.0 and the CLI is MIT, so the binary that ships inside your Docker images carries a licence your legal team has already approved. The self-hosting guide lists the real dependencies, including the WorkOS account needed for identity, which is genuine friction and is described that way. No feature is held back from the self-hosted build.',
     proofKind: 'Command',
     proof: 'npx wrangler deploy',
   },
@@ -353,7 +353,7 @@ const FAQ: readonly FaqItem[] = [
   {
     question: 'Can I self-host xecret?',
     answer:
-      'Yes, and no feature is held back. The server is AGPL-3.0 and the CLI is MIT. It runs on Cloudflare Workers with PostgreSQL and Cloudflare Secrets Store for the root key, plus a Firebase project for identity — that last dependency is real friction, and the self-hosting guide says so instead of burying it. One warning worth reading before you start: if you lose the root key, every secret is permanently unrecoverable, including by us.',
+      'Yes, and no feature is held back. The server is AGPL-3.0 and the CLI is MIT. It runs on Cloudflare Workers with PostgreSQL and Cloudflare Secrets Store for the root key, plus a WorkOS account for identity — that last dependency is real friction, and the self-hosting guide says so instead of burying it. One warning worth reading before you start: if you lose the root key, every secret is permanently unrecoverable, including by us.',
   },
   {
     question: 'What does xecret cost?',

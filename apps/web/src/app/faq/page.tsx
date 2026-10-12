@@ -405,7 +405,7 @@ const CATEGORIES: readonly FaqCategory[] = [
       {
         question: 'What do I need to run it myself?',
         answer:
-          'Cloudflare Workers on a paid plan, a PostgreSQL database, a Cloudflare Secrets Store binding to hold the root key, and a Firebase project for identity. The Firebase requirement is real friction and the documentation says so rather than burying it; an identity-provider interface exists so that a Postgres-native alternative can be contributed. Mail is optional — without it, invitations become a shareable link instead of an email.',
+          'Cloudflare Workers on a paid plan, a PostgreSQL database, a Cloudflare Secrets Store binding to hold the root key, and a WorkOS account for identity. The WorkOS requirement is real friction — it is a hosted service, so even a self-hosted install relies on an outside company to sign people in — and the documentation says so rather than burying it; an identity-provider interface exists so that a Postgres-native alternative can be contributed. Mail is optional — without it, invitations become a shareable link instead of an email.',
       },
       {
         question: 'Are any features held back from the self-hosted build?',
