@@ -20,10 +20,14 @@
  *    catches wrong project parameters; the import's `--apply` refuses to send
  *    password hashes until it has passed. No WorkOS call.
  *  - **--check-sign-in <uid>**: after the import, signs in to WorkOS as that
- *    imported user with their password, typed at a hidden prompt.
+ *    imported user with their password, typed at a hidden prompt, then revokes
+ *    the WorkOS session the sign-in opened.
  *  - **--soft-delete-disabled**: soft-deletes the rows of Firebase users an
- *    operator disabled (or keeps them, `--keep <uid>`), so that "disabled"
- *    survives the swap. Before the deploy. No WorkOS call.
+ *    operator disabled — removing their memberships in organisations shared
+ *    with others, and refusing a sole active owner of one — or keeps them
+ *    (`--keep <uid>`), so that "disabled" survives the swap. Every decision is
+ *    recorded next to the export and honoured by later runs. Before the
+ *    deploy. No WorkOS call.
  *  - **--self-test**: proves the WorkOS environment accepts and verifies a hash
  *    built exactly the way the import builds one.
  *
@@ -68,7 +72,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { createDatabaseHandle } from '../packages/db/src/client.ts';
 import {
@@ -82,9 +86,19 @@ import type {
   MappingRejection,
 } from '../packages/db/src/firebase-migration/backfill.ts';
 import {
+  describeDecision,
+  DISABLED_DECISIONS_FILE,
+  keptUids,
+  parseDisabledDecisions,
+  serializeDisabledDecisions,
+} from '../packages/db/src/firebase-migration/disabled-decisions.ts';
+import type { DisabledDecision } from '../packages/db/src/firebase-migration/disabled-decisions.ts';
+import {
   planDisabledSoftDelete,
+  planMembershipsFor,
   softDeleteDisabledRow,
 } from '../packages/db/src/firebase-migration/disabled-users.ts';
+import type { PlannedMembership } from '../packages/db/src/firebase-migration/disabled-users.ts';
 import { parseFirebaseExport } from '../packages/db/src/firebase-migration/firebase-export.ts';
 import type { FirebaseExportUser } from '../packages/db/src/firebase-migration/firebase-export.ts';
 import {
@@ -177,7 +191,8 @@ Options
   --confirm-client <id>      Required with an import or backfill --apply: the WorkOS client id of
                              the environment you mean to write to, typed from the runbook.
   --keep <uid>               With --soft-delete-disabled: keep this disabled user's row active
-                             (repeatable). Only after deciding they may get access back.
+                             (repeatable). Only after deciding they may get access back. An
+                             --apply records it; later runs honour it without --keep.
   --dry-run                  The default; accepted for clarity.
   --staging-database         Allow a staging --backfill --apply: only when the database is NOT
                              shared with production. (xecret's is shared. Do not pass this there.)
@@ -408,8 +423,13 @@ async function loadMapping(
 /** Written whole, then renamed over the old one: a crash leaves the previous file, never half of one. */
 async function writeJsonAtomically(path: string, json: unknown): Promise<void> {
   const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(json, null, 2)}\n`, { mode: 0o600 });
-  await rename(temporary, path);
+  try {
+    await writeFile(temporary, `${JSON.stringify(json, null, 2)}\n`, { mode: 0o600 });
+    await rename(temporary, path);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function saveMapping(path: string, mapping: UserMapping): Promise<void> {
@@ -555,76 +575,167 @@ async function runCheckHashParams(args: Args): Promise<Outcome> {
 
 // ── --soft-delete-disabled ──────────────────────────────────────────────────
 
-const SOFT_DELETE_RECORD_FORMAT = 'firebase-disabled-users-soft-deleted/1';
+function decisionsPathFor(exportPath: string): string {
+  return join(dirname(exportPath), DISABLED_DECISIONS_FILE);
+}
+
+async function loadDecisions(exportPath: string): Promise<Map<string, DisabledDecision>> {
+  const path = decisionsPathFor(exportPath);
+  return existsSync(path) ? new Map(parseDisabledDecisions(await readJson(path))) : new Map();
+}
+
+/** Organisation names are customer text: one line, printable, short. */
+function safeName(name: string): string {
+  const clean = name.replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim();
+  return clean.length > 40 ? `${clean.slice(0, 39)}…` : clean;
+}
+
+function describeMembership({ membership: m, action }: PlannedMembership): string {
+  const others = m.totalMembers - 1;
+  const what =
+    action === 'solo'
+      ? 'alone in it: left as it is'
+      : action === 'remove'
+        ? 'membership will be removed'
+        : 'BLOCKS: their only active owner among the others — make another member an owner first, or --keep';
+  return `org ${m.orgId} "${safeName(m.orgName)}" ${m.role}${m.status === 'active' ? '' : ` (${m.status})`}, ${others} other member(s): ${what}`;
+}
 
 async function runSoftDeleteDisabled(args: Args): Promise<Outcome> {
   const exportPath = requireExportPath(args);
   const databaseUrl = requireDatabaseUrl();
   const users = await loadExport(exportPath);
   const disabledUids = new Set(users.filter((u) => u.disabled).map((u) => u.uid));
+  const decisionsPath = decisionsPathFor(exportPath);
+  const decisions = await loadDecisions(exportPath);
+  // A keep recorded by an earlier --apply counts as if --keep were given again.
+  const recordedKeeps = keptUids(decisions);
+  const keep = new Set([...args.keep, ...recordedKeeps]);
 
   const { db, end } = createDatabaseHandle({ connectionString: databaseUrl });
   try {
-    const plan = planDisabledSoftDelete({
-      rows: await loadBackfillRows(db),
-      disabledUids,
-      keep: args.keep,
-    });
-    if (plan.unknownKeep.length > 0) {
-      refuse(`--keep names no disabled Firebase user with a row: ${plan.unknownKeep.join(', ')}.`);
+    const plan = planDisabledSoftDelete({ rows: await loadBackfillRows(db), disabledUids, keep });
+    const unknown = plan.unknownKeep.filter((uid) => args.keep.has(uid));
+    if (unknown.length > 0) {
+      refuse(`--keep names no disabled Firebase user with a row: ${unknown.join(', ')}.`);
     }
-    header(args, 'none', `export: ${users.length} Firebase users, ${disabledUids.size} disabled`);
+    header(
+      args,
+      'none',
+      `export: ${users.length} Firebase users, ${disabledUids.size} disabled · decisions: ${decisionsPath}`,
+    );
 
     const pending = plan.items.filter((i) => i.state === 'active' && !i.kept);
     const kept = plan.items.filter((i) => i.state === 'active' && i.kept);
     const describe = (i: (typeof plan.items)[number]) =>
       `user ${i.userId} (firebase ${i.firebaseUid})${i.linkedWorkosUserId ? ` [linked to ${i.linkedWorkosUserId}]` : ''}`;
     row('disabled, row active: to soft-delete', pending.length);
-    row('disabled, row active: kept (--keep)', kept.length);
+    row('disabled, row active: kept', kept.length);
     row('disabled, row already soft-deleted', plan.items.length - pending.length - kept.length);
     row('disabled, no xecret row (nothing to lock)', plan.withoutRow.length);
 
-    // A kept row is a decision already made: a note, not a problem. A pending
-    // one is a decision still to make (dry run), or a write that did not land.
-    const notes = kept.map(
-      (i) => `${describe(i)}: kept active by --keep — they can sign in through WorkOS`,
-    );
+    // Every row still to decide, with what would happen to each of its memberships.
+    const planned = new Map<string, PlannedMembership[]>();
+    for (const item of pending) planned.set(item.userId, await planMembershipsFor(db, item.userId));
+    if (pending.length > 0) {
+      console.log(`\nTo soft-delete${args.apply ? '' : ' (dry run)'}:`);
+      for (const item of pending) {
+        console.log(`  ${describe(item)}`);
+        const memberships = planned.get(item.userId) ?? [];
+        if (memberships.length === 0) console.log('      no organisation memberships');
+        for (const p of memberships) console.log(`      ${describeMembership(p)}`);
+      }
+    }
+
+    // A kept row is a decision already made: a note, not a problem.
+    const notes = kept.map((i) => {
+      const recorded = decisions.get(i.firebaseUid);
+      const when =
+        recorded?.decision === 'kept' ? describeDecision(recorded) : 'kept by --keep on this run';
+      return `${describe(i)}: ${when} — they can sign in through WorkOS`;
+    });
+
     if (!args.apply) {
-      const problems = pending.map(
-        (i) =>
-          `${describe(i)}: would be soft-deleted by --apply` +
-          (i.linkedWorkosUserId ? ' (already signed in through WorkOS: has access now)' : ''),
-      );
+      const problems = pending.map((i) => {
+        const blocked = (planned.get(i.userId) ?? []).some((p) => p.action === 'blocks');
+        return blocked
+          ? `${describe(i)}: --apply would REFUSE it: sole active owner of an organisation with other members (listed above)`
+          : `${describe(i)}: would be soft-deleted by --apply` +
+              (i.linkedWorkosUserId ? ' (already signed in through WorkOS: has access now)' : '');
+      });
       return finish(problems, notes);
     }
 
     const problems: string[] = [];
-    const recordPath = join(dirname(exportPath), 'disabled-users-soft-deleted.json');
-    const existing = existsSync(recordPath) ? await readJson(recordPath) : null;
-    const entries: Record<string, unknown> =
-      existing && typeof existing === 'object' && 'entries' in existing
-        ? { ...(existing as { entries: Record<string, unknown> }).entries }
-        : {};
+    const now = () => new Date().toISOString();
+    // The decisions file is written after every change. If a write fails, the
+    // database change has still happened: say so loudly, keep going, and print
+    // the entry so it can be added by hand.
+    const record = async (uid: string, decision: DisabledDecision) => {
+      decisions.set(uid, decision);
+      try {
+        await writeJsonAtomically(decisionsPath, serializeDisabledDecisions(decisions));
+      } catch (error) {
+        problems.push(
+          `firebase ${uid}: the decision was made but NOT written to ${decisionsPath} (${errorMessage(error)}). ` +
+            `Add it by hand: "${uid}": ${JSON.stringify(decision)}`,
+        );
+      }
+    };
+
+    for (const item of kept) {
+      if (decisions.get(item.firebaseUid)?.decision !== 'kept') {
+        await record(item.firebaseUid, { decision: 'kept', userId: item.userId, decidedAt: now() });
+      }
+    }
+    for (const item of plan.items.filter((i) => i.state === 'already-deleted')) {
+      if (!decisions.has(item.firebaseUid)) {
+        await record(item.firebaseUid, {
+          decision: 'already-deleted',
+          userId: item.userId,
+          decidedAt: now(),
+        });
+      }
+    }
+    for (const uid of plan.withoutRow) {
+      if (!decisions.has(uid)) await record(uid, { decision: 'no-row', decidedAt: now() });
+    }
+
     let done = 0;
     for (const item of pending) {
+      // Printed before the write, so the screen says which row was being acted on
+      // even if what follows fails.
+      console.log(`\n  soft-deleting ${describe(item)} …`);
       const result = await softDeleteDisabledRow(db, item.userId, item.firebaseUid);
       if (result.result === 'not-active') {
         problems.push(`${describe(item)}: changed since it was read — not touched`);
         continue;
       }
+      if (result.result === 'blocked') {
+        problems.push(
+          `${describe(item)}: REFUSED, nothing written — sole active owner among others in ${result.orgIds.join(', ') || 'an organisation (changed meanwhile)'}. ` +
+            'Make another member an owner first (runbook §5), or --keep them.',
+        );
+        continue;
+      }
       done += 1;
-      entries[item.userId] = {
-        firebaseUid: item.firebaseUid,
-        softDeletedAt: new Date().toISOString(),
+      console.log(
+        `    done: revoked ${result.revokedSessions} session(s), ${result.revokedCliTokens} CLI token(s); ` +
+          `removed from ${result.removedFromOrgs.length} organisation(s)` +
+          (result.soloOrgs.length > 0
+            ? `; ${result.soloOrgs.length} solo organisation(s) left as they are`
+            : ''),
+      );
+      await record(item.firebaseUid, {
+        decision: 'soft-deleted',
+        userId: item.userId,
+        decidedAt: now(),
         revokedSessions: result.revokedSessions,
         revokedCliTokens: result.revokedCliTokens,
-      };
-      await writeJsonAtomically(recordPath, { format: SOFT_DELETE_RECORD_FORMAT, entries });
-      console.log(
-        `  soft-deleted ${describe(item)}; revoked ${result.revokedSessions} session(s), ${result.revokedCliTokens} CLI token(s)`,
-      );
+        removedFromOrgs: result.removedFromOrgs,
+      });
     }
-    console.log(`\nSoft-deleted ${done}.${done > 0 ? ` Record: ${recordPath}` : ''}`);
+    console.log(`\nSoft-deleted ${done}. Decisions: ${decisionsPath}`);
     return finish(problems, notes);
   } finally {
     await end();
@@ -685,12 +796,20 @@ async function runImport(args: Args): Promise<Outcome> {
   const tally = new Tally();
   const problems: string[] = [];
   const notes: string[] = [];
+  // The import never reads the database; what was decided for each disabled
+  // user is in the decisions file --soft-delete-disabled --apply keeps.
+  const decisions = await loadDecisions(exportPath);
 
   for (const { user, classification } of classified) {
     if (classification.action === 'skip') {
       tally.add(`skip:${classification.reason}`);
       if (classification.reason === 'disabled') {
-        problems.push(`${classification.uid}: skipped (disabled) — ${DISABLED_ADVICE}`);
+        const decision = decisions.get(classification.uid);
+        if (decision) notes.push(`${classification.uid}: disabled — ${describeDecision(decision)}`);
+        else
+          problems.push(
+            `${classification.uid}: disabled, and nothing decided yet — ${DISABLED_ADVICE}`,
+          );
       }
       if (classification.reason === 'malformed-password') {
         problems.push(`${classification.uid}: skipped (malformed password) — decide by hand`);
@@ -842,16 +961,35 @@ async function runCheckSignIn(args: Args): Promise<Outcome> {
     email: workosUser.email,
     password,
   });
-  if (result.ok && result.userId === entry.workosUserId) {
+  if (result.ok) {
+    // The check signed in for real; leave nothing signed in behind it.
+    let revoked = false;
+    if (result.sessionId !== null) {
+      try {
+        await api.revokeSession(result.sessionId);
+        revoked = true;
+      } catch (error) {
+        console.log(`WorkOS session ${result.sessionId} was NOT revoked: ${errorMessage(error)}`);
+      }
+    }
+    console.log(
+      revoked
+        ? `WorkOS session ${result.sessionId} revoked.`
+        : 'Revoke the session in the WorkOS dashboard (Users → this user → Sessions).',
+    );
+    if (result.userId !== entry.workosUserId) {
+      console.log(
+        `Sign-in: signed in as ${result.userId}, which is not the mapped user. Stop and investigate.`,
+      );
+      return 'failed';
+    }
     console.log(
       `Sign-in: OK, as ${result.userId}. The imported password works in WorkOS ${args.env}.`,
     );
-    return 'ok';
+    return revoked ? 'ok' : 'problems';
   }
   console.log(
-    result.ok
-      ? `Sign-in: signed in as ${result.userId}, which is not the mapped user. Stop and investigate.`
-      : `Sign-in: REFUSED (HTTP ${result.status} ${result.code ?? ''}). Do not run the backfill until this is understood.`,
+    `Sign-in: REFUSED (HTTP ${result.status} ${result.code ?? ''}). Do not run the backfill; see runbook §4 step 9.`,
   );
   return 'failed';
 }
@@ -909,6 +1047,7 @@ async function runBackfill(args: Args): Promise<Outcome> {
     }
   }
 
+  const decisions = await loadDecisions(exportPath);
   const { db, end } = createDatabaseHandle({ connectionString: databaseUrl });
   try {
     const rows = await loadBackfillRows(db);
@@ -922,9 +1061,11 @@ async function runBackfill(args: Args): Promise<Outcome> {
     });
     const tally = new Tally();
     const problems: string[] = [];
+    const notes: string[] = [];
     for (const item of plan.items) {
       tally.add(item.action);
       const who = `user ${item.userId} (firebase ${item.firebaseUid})`;
+      const decision = decisions.get(item.firebaseUid);
       switch (item.action) {
         case 'update':
           if (item.deleted) tally.add('update-deleted');
@@ -945,6 +1086,12 @@ async function runBackfill(args: Args): Promise<Outcome> {
           problems.push(`${who}: mapping entry rejected (${item.reason})`);
           break;
         case 'linked-but-not-importable':
+          if (item.reason === 'disabled' && decision?.decision === 'kept') {
+            notes.push(
+              `${who}: disabled, ${describeDecision(decision)}; linked to ${item.currentWorkosUserId} by a WorkOS sign-in`,
+            );
+            break;
+          }
           problems.push(
             `${item.reason === 'disabled' && !item.deleted ? '!! ' : ''}${who}${item.deleted ? ' [deleted]' : ''}: LINKED to ${item.currentWorkosUserId} by a WorkOS sign-in, but ${describeSkip(item.reason, item.deleted)}` +
               (item.reason === 'disabled' && !item.deleted ? ` — ${DISABLED_ADVICE}` : ''),
@@ -952,6 +1099,13 @@ async function runBackfill(args: Args): Promise<Outcome> {
           break;
         case 'not-importable':
           tally.add(`not-importable:${item.reason}`);
+          if (item.reason === 'disabled' && (decision !== undefined || item.deleted)) {
+            notes.push(
+              `${who}${item.deleted ? ' [deleted]' : ''}: disabled, not linked — ${decision ? describeDecision(decision) : 'row soft-deleted'}` +
+                (item.mappingIgnored ? '; its mapping entry was ignored' : ''),
+            );
+            break;
+          }
           problems.push(
             `${who}${item.deleted ? ' [deleted]' : ''}: not imported (${item.reason}) — stays unlinked` +
               (item.mappingIgnored ? '; its mapping entry was ignored' : '') +
@@ -1043,7 +1197,7 @@ async function runBackfill(args: Args): Promise<Outcome> {
         results.get('linked-elsewhere') + results.get('row-missing'),
       );
     }
-    return finish(problems);
+    return finish(problems, notes);
   } finally {
     await end();
   }
@@ -1133,8 +1287,16 @@ async function runSelfTest(args: Args): Promise<Outcome> {
     step('self-test request', false, errorMessage(error));
   } finally {
     if (userId !== null) {
-      await api.deleteUser(userId);
-      step('synthetic user deleted', (await api.getUser(userId)) === null, userId);
+      try {
+        await api.deleteUser(userId);
+        step('synthetic user deleted', (await api.getUser(userId)) === null, userId);
+      } catch (error) {
+        step(
+          'synthetic user deleted',
+          false,
+          `${errorMessage(error)} — delete ${userId} (${email}) by hand: runbook §6`,
+        );
+      }
     }
   }
   console.log(failed === 0 ? '\nSelf-test passed.' : `\nSelf-test FAILED (${failed} step(s)).`);
