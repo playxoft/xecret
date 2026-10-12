@@ -229,6 +229,25 @@ describe('decideImport', () => {
       workosUserId: 'user_01ABC',
     });
   });
+
+  // Whatever the lookup returned, only the same mailbox may be reused.
+  it('never reuses a user the address lookup returned under a different address', () => {
+    const other = workos({ externalId: null, email: 'someone-else@example.org' });
+    expect(decideImport(candidate, null, other)).toEqual({
+      action: 'conflict',
+      reason: 'email-lookup-mismatch',
+      workosUserId: 'user_01ABC',
+    });
+    // A Unicode lookalike is a different address, too.
+    const kelvin = { uid: 'fbUid1', email: 'kim@example.com' };
+    expect(
+      decideImport(kelvin, null, workos({ externalId: null, email: 'Kim@example.com' })),
+    ).toMatchObject({ action: 'conflict', reason: 'email-lookup-mismatch' });
+    // ASCII case is the same mailbox.
+    expect(
+      decideImport(candidate, null, workos({ externalId: null, email: 'ADA@Example.com' })),
+    ).toMatchObject({ action: 'reuse-existing' });
+  });
 });
 
 describe('buildCreateUserInput', () => {

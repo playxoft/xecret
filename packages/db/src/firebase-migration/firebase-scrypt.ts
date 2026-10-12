@@ -1,4 +1,4 @@
-import { createCipheriv, scryptSync } from 'node:crypto';
+import { createCipheriv, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 
 /**
  * Firebase's password hashing, and the PHC string WorkOS imports it as.
@@ -15,10 +15,16 @@ import { createCipheriv, scryptSync } from 'node:crypto';
  *
  * The signer key, salt separator, rounds and memory cost are per *project*
  * (Firebase console → Authentication → password hash parameters); the salt and
- * hash are per *user* (`firebase auth:export`). This module computes the hash
- * only so the self-test can prove, against a real WorkOS environment, that the
- * string built below is verified the way Firebase would verify it. The import
- * itself never computes a hash: it forwards Firebase's.
+ * hash are per *user* (`firebase auth:export`). This module computes a hash
+ * for two checks only, and the import itself never does: it forwards
+ * Firebase's.
+ *
+ *  - `--check-hash-params` recomputes one real user's exported hash from their
+ *    password ({@link verifyFirebasePassword}). It is the only check that can
+ *    catch a wrong signer key, separator, rounds or memory cost: every other
+ *    one is self-consistent, and would pass with the wrong project's values.
+ *  - `--self-test` proves a WorkOS environment verifies the PHC string built
+ *    below the way Firebase would.
  *
  * ── The PHC string (WorkOS's documented format) ──
  *
@@ -33,9 +39,11 @@ import { createCipheriv, scryptSync } from 'node:crypto';
  * Firebase's own published example: the project parameters and the exported
  * user in https://github.com/firebase/scrypt's README (WorkOS's migration
  * guide quotes the same signer key, salt and hash). A public specimen — the
- * signer key belongs to no real project — allowlisted by value in
- * `.gitleaks.toml`. The unit tests and the self-test both check this
- * implementation against it before it is trusted with anything else.
+ * signer key belongs to no real project. gitleaks 8.30.1 does not flag these
+ * values (checked when they were added); if a later rule does, allowlist them
+ * by exact value in `.gitleaks.toml`, as the other public specimens are. The
+ * unit tests and the self-test both check this implementation against it
+ * before it is trusted with anything else.
  */
 export const FIREBASE_SCRYPT_PUBLISHED_EXAMPLE = {
   signerKey:
@@ -164,6 +172,43 @@ export function matchesPublishedExample(): boolean {
   });
   const hash = firebaseScryptHash(example.password, decodeBase64(example.salt, 'salt'), params);
   return phcB64(hash) === example.hash.replace(/=+$/, '');
+}
+
+/**
+ * Whether `password` is the one Firebase hashed into `hash` under `salt`,
+ * with these project parameters. Constant-time in the comparison.
+ *
+ * A `false` cannot say which of the two is wrong — the password or the
+ * parameters — and that is fine: the check is run with a password the operator
+ * knows to be right, so a mismatch indicts the parameters.
+ */
+export function verifyFirebasePassword(
+  password: string,
+  stored: { readonly hash: Uint8Array; readonly salt: Uint8Array },
+  params: FirebaseScryptParams,
+): boolean {
+  const computed = firebaseScryptHash(password, stored.salt, params);
+  return computed.length === stored.hash.length && timingSafeEqual(computed, stored.hash);
+}
+
+/**
+ * A fingerprint of the project parameters: SHA-256 over a length-prefixed
+ * encoding of all four. It names *which* parameters a check verified, so that
+ * a verification recorded for one set does not vouch for another. One-way, and
+ * of a 64-byte random key: it reveals nothing usable. Stored in the
+ * verification marker, never printed.
+ */
+export function hashParamsFingerprint(params: FirebaseScryptParams): string {
+  const digest = createHash('sha256');
+  digest.update('xecret.firebase-scrypt-params.v1');
+  for (const part of [params.signerKey, params.saltSeparator]) {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(part.length);
+    digest.update(length);
+    digest.update(part);
+  }
+  digest.update(`|r=${params.rounds}|m=${params.memCost}`);
+  return digest.digest('hex');
 }
 
 /**

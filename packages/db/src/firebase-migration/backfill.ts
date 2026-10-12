@@ -3,6 +3,7 @@ import { users } from '../schema/identity';
 import { isConstraintViolation } from '../repositories/shared';
 import type { Executor } from '../repositories/shared';
 import { sameAddress } from './import-plan';
+import type { SkipReason } from './import-plan';
 import type { MappingEntry } from './mapping';
 import type { WorkosUserSummary } from './workos-api';
 
@@ -22,19 +23,27 @@ import type { WorkosUserSummary } from './workos-api';
  *    `23505` on `users_workos_user_id_unique` (that WorkOS id is already on a
  *    *different* row) and `23514` on `users_workos_user_id_format_check` (not a
  *    WorkOS id at all). A human resolves those.
- *  - **Soft-deleted rows are linked like any other.** The linking pass refuses
- *    a deleted holder by identity *and* by address, so linking one changes no
- *    outcome, and it leaves one fewer row for the decommission migration to
- *    decide about (0018's warning on `users_identity_present_check`).
+ *  - **It never links a Firebase user the current export does not import**
+ *    (disabled, unverified, …), whatever an older mapping says, and it reports
+ *    loudly a row of such a user that a WorkOS sign-in has linked meanwhile —
+ *    for a disabled user that means the person has access again.
+ *  - **Soft-deleted rows are linked like any other.** Linking one does not
+ *    reopen the account: the linking pass refuses a deleted holder whether it
+ *    reaches it by identity or by address. What it does change is that a row
+ *    restored later comes back already linked, and that the decommission
+ *    migration has one fewer unlinked row to decide about (0018's warning on
+ *    `users_identity_present_check`).
  *
  * Each row is its own statement, outside any transaction, so one refusal
- * neither aborts nor rolls back the rest.
+ * neither aborts nor rolls back the rest. Nothing here writes the audit log:
+ * the script's output and the mapping file are the record of a backfill.
  */
 
 export interface BackfillDbRow {
   readonly id: string;
   readonly firebaseUid: string | null;
   readonly workosUserId: string | null;
+  readonly email: string;
   readonly deleted: boolean;
 }
 
@@ -113,12 +122,42 @@ export type BackfillPlanItem =
       readonly firebaseUid: string;
       readonly reason: MappingRejection;
     }
-  /** In the export but not in the mapping: skipped by the import, or not yet imported. */
+  /** The current export does not import this Firebase user. Any mapping entry is ignored. */
+  | {
+      readonly action: 'not-importable';
+      readonly userId: string;
+      readonly firebaseUid: string;
+      readonly reason: SkipReason;
+      readonly deleted: boolean;
+      /** An older mapping had an entry for this uid; it was not used. */
+      readonly mappingIgnored: boolean;
+    }
+  /**
+   * The current export does not import this Firebase user, but a WorkOS
+   * sign-in has linked the row anyway. For a *disabled* user that means the
+   * person has access again — reported loudly.
+   */
+  | {
+      readonly action: 'linked-but-not-importable';
+      readonly userId: string;
+      readonly firebaseUid: string;
+      readonly reason: SkipReason;
+      readonly currentWorkosUserId: string;
+      readonly deleted: boolean;
+    }
+  /** Importable, but not in the mapping: not imported yet, or the import reported it. */
   | {
       readonly action: 'not-imported';
       readonly userId: string;
       readonly firebaseUid: string;
       readonly deleted: boolean;
+    }
+  /** Not in the mapping, but a WorkOS sign-in linked the row already. Nothing to write. */
+  | {
+      readonly action: 'linked-not-imported';
+      readonly userId: string;
+      readonly firebaseUid: string;
+      readonly currentWorkosUserId: string;
     }
   /** The row's Firebase uid is not in the export at all. */
   | {
@@ -128,8 +167,23 @@ export type BackfillPlanItem =
       readonly deleted: boolean;
     };
 
+/**
+ * A row this backfill links (or found linked) to a WorkOS user whose current
+ * address another row holds. The link is right — it is the same Firebase
+ * account — but that person's first WorkOS sign-in will try to bring the row's
+ * address in line with WorkOS's (§5 rule 5), collide with the other row, and
+ * be answered 409 until a human sorts the two rows out.
+ */
+export interface EmailHolderWarning {
+  readonly userId: string;
+  readonly firebaseUid: string;
+  readonly workosUserId: string;
+  readonly holderUserId: string;
+}
+
 export interface BackfillPlan {
   readonly items: readonly BackfillPlanItem[];
+  readonly emailHolders: readonly EmailHolderWarning[];
   /** Firebase users in the export with no row: they never signed in to xecret. */
   readonly firebaseUidsWithoutRow: readonly string[];
   /** Rows with no Firebase uid (WorkOS-era accounts). Nothing to backfill. */
@@ -142,15 +196,31 @@ export function planBackfill(input: {
   /** uid → WorkOS id, for entries that passed {@link checkMappedUser}. */
   readonly mapping: ReadonlyMap<string, string>;
   readonly rejected: ReadonlyMap<string, MappingRejection>;
+  /** Why the current export does not import a uid (see `classifyFirebaseUser`). */
+  readonly skipReasons: ReadonlyMap<string, SkipReason>;
+  /** uid → the mapped WorkOS user's current address, for accepted entries. */
+  readonly mappedEmails: ReadonlyMap<string, string>;
 }): BackfillPlan {
   const holders = new Map<string, string>();
   const rowUids = new Set<string>();
+  // Folded the way citext compares (lower()), Unicode included: over-matching
+  // only adds a warning, under-matching would miss a 409.
+  const emailOwners = new Map<string, string>();
   let rowsWithoutFirebaseUid = 0;
   for (const row of input.rows) {
     if (row.workosUserId !== null) holders.set(row.workosUserId, row.id);
     if (row.firebaseUid !== null) rowUids.add(row.firebaseUid);
     else rowsWithoutFirebaseUid += 1;
+    emailOwners.set(row.email.toLowerCase(), row.id);
   }
+  const emailHolders: EmailHolderWarning[] = [];
+  const checkEmailHolder = (userId: string, firebaseUid: string, workosUserId: string) => {
+    const email = input.mappedEmails.get(firebaseUid);
+    const holderUserId = email === undefined ? undefined : emailOwners.get(email.toLowerCase());
+    if (holderUserId !== undefined && holderUserId !== userId) {
+      emailHolders.push({ userId, firebaseUid, workosUserId, holderUserId });
+    }
+  };
 
   const items: BackfillPlanItem[] = [];
   for (const row of input.rows) {
@@ -160,6 +230,29 @@ export function planBackfill(input: {
       items.push({ action: 'no-firebase-user', userId, firebaseUid, deleted });
       continue;
     }
+    const skipReason = input.skipReasons.get(firebaseUid);
+    if (skipReason !== undefined) {
+      items.push(
+        row.workosUserId !== null
+          ? {
+              action: 'linked-but-not-importable',
+              userId,
+              firebaseUid,
+              reason: skipReason,
+              currentWorkosUserId: row.workosUserId,
+              deleted,
+            }
+          : {
+              action: 'not-importable',
+              userId,
+              firebaseUid,
+              reason: skipReason,
+              deleted,
+              mappingIgnored: input.mapping.has(firebaseUid) || input.rejected.has(firebaseUid),
+            },
+      );
+      continue;
+    }
     const rejection = input.rejected.get(firebaseUid);
     if (rejection !== undefined) {
       items.push({ action: 'mapping-rejected', userId, firebaseUid, reason: rejection });
@@ -167,11 +260,21 @@ export function planBackfill(input: {
     }
     const workosUserId = input.mapping.get(firebaseUid);
     if (workosUserId === undefined) {
-      items.push({ action: 'not-imported', userId, firebaseUid, deleted });
+      items.push(
+        row.workosUserId !== null
+          ? {
+              action: 'linked-not-imported',
+              userId,
+              firebaseUid,
+              currentWorkosUserId: row.workosUserId,
+            }
+          : { action: 'not-imported', userId, firebaseUid, deleted },
+      );
       continue;
     }
     if (row.workosUserId === workosUserId) {
       items.push({ action: 'already-linked', userId, firebaseUid, workosUserId });
+      checkEmailHolder(userId, firebaseUid, workosUserId);
       continue;
     }
     if (row.workosUserId !== null) {
@@ -190,10 +293,12 @@ export function planBackfill(input: {
       continue;
     }
     items.push({ action: 'update', userId, firebaseUid, workosUserId, deleted });
+    checkEmailHolder(userId, firebaseUid, workosUserId);
   }
 
   return {
     items,
+    emailHolders,
     firebaseUidsWithoutRow: [...input.exportUids].filter((uid) => !rowUids.has(uid)).sort(),
     rowsWithoutFirebaseUid,
   };
@@ -205,6 +310,7 @@ export async function loadBackfillRows(exec: Executor): Promise<BackfillDbRow[]>
       id: users.id,
       firebaseUid: users.firebaseUid,
       workosUserId: users.workosUserId,
+      email: users.email,
       deletedAt: users.deletedAt,
     })
     .from(users);

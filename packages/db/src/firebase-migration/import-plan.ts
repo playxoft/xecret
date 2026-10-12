@@ -125,7 +125,13 @@ export type ConflictReason =
   /** The address belongs to a WorkOS user linked to a different external id. */
   | 'email-held-by-other-identity'
   /** The address belongs to an unverified WorkOS user nobody imported. */
-  | 'email-held-by-unverified-user';
+  | 'email-held-by-unverified-user'
+  /**
+   * The lookup by address returned a user whose address is not this one under
+   * ASCII-only folding (a Unicode lookalike, or WorkOS normalising differently).
+   * Never reused: the mapping would otherwise point at somebody else's mailbox.
+   */
+  | 'email-lookup-mismatch';
 
 export type ImportDecision =
   | { readonly action: 'create' }
@@ -175,6 +181,9 @@ export function decideImport(
     return { action: 'already-imported', workosUserId: imported.id };
   }
   if (byEmail === null) return { action: 'create' };
+  if (!sameAddress(byEmail.email, candidate.email)) {
+    return { action: 'conflict', reason: 'email-lookup-mismatch', workosUserId: byEmail.id };
+  }
   if (byEmail.externalId !== null) {
     return { action: 'conflict', reason: 'email-held-by-other-identity', workosUserId: byEmail.id };
   }

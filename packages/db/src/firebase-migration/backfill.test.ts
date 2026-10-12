@@ -87,9 +87,11 @@ describe('planBackfill', () => {
     id: 'row',
     firebaseUid: null,
     workosUserId: null,
+    email: `${over.id ?? 'row'}@example.com`,
     deleted: false,
     ...over,
   });
+  const none = { skipReasons: new Map(), mappedEmails: new Map() } as const;
 
   it('decides every row, and lists what has no row', () => {
     const plan = planBackfill({
@@ -115,6 +117,7 @@ describe('planBackfill', () => {
         ['fbNoRow', 'user_99'],
       ]),
       rejected: new Map([['fb6', 'workos-user-missing' as const]]),
+      ...none,
     });
 
     expect(plan.items).toEqual([
@@ -158,6 +161,119 @@ describe('planBackfill', () => {
     ]);
     expect(plan.firebaseUidsWithoutRow).toEqual(['fbNoRow']);
     expect(plan.rowsWithoutFirebaseUid).toBe(2);
+    expect(plan.emailHolders).toEqual([]);
+  });
+
+  // Review round 1, item 2: a disabled user's row that a WorkOS sign-in has
+  // linked means that person has access again, and it must not read as quiet.
+  it('reports a not-importable user whose row a sign-in linked, ahead of everything else', () => {
+    const plan = planBackfill({
+      rows: [row({ id: 'rD', firebaseUid: 'fbDisabled', workosUserId: 'user_01GAP' })],
+      exportUids: new Set(['fbDisabled']),
+      mapping: new Map(),
+      rejected: new Map(),
+      skipReasons: new Map([['fbDisabled', 'disabled' as const]]),
+      mappedEmails: new Map(),
+    });
+    expect(plan.items).toEqual([
+      {
+        action: 'linked-but-not-importable',
+        userId: 'rD',
+        firebaseUid: 'fbDisabled',
+        reason: 'disabled',
+        currentWorkosUserId: 'user_01GAP',
+        deleted: false,
+      },
+    ]);
+  });
+
+  // Item 5: an older mapping never links a user the current export skips.
+  it('ignores a mapping entry for a user the current export does not import', () => {
+    const plan = planBackfill({
+      rows: [
+        row({ id: 'rD', firebaseUid: 'fbDisabled' }),
+        row({ id: 'rU', firebaseUid: 'fbUnverified', deleted: true }),
+      ],
+      exportUids: new Set(['fbDisabled', 'fbUnverified']),
+      mapping: new Map([['fbDisabled', 'user_01D']]),
+      rejected: new Map(),
+      skipReasons: new Map([
+        ['fbDisabled', 'disabled' as const],
+        ['fbUnverified', 'email-unverified' as const],
+      ]),
+      mappedEmails: new Map([['fbDisabled', 'rD@example.com']]),
+    });
+    expect(plan.items).toEqual([
+      {
+        action: 'not-importable',
+        userId: 'rD',
+        firebaseUid: 'fbDisabled',
+        reason: 'disabled',
+        deleted: false,
+        mappingIgnored: true,
+      },
+      {
+        action: 'not-importable',
+        userId: 'rU',
+        firebaseUid: 'fbUnverified',
+        reason: 'email-unverified',
+        deleted: true,
+        mappingIgnored: false,
+      },
+    ]);
+  });
+
+  it('tells a linked row that was never imported from an unlinked one', () => {
+    const plan = planBackfill({
+      rows: [
+        row({ id: 'rL', firebaseUid: 'fbL', workosUserId: 'user_01L' }),
+        row({ id: 'rN', firebaseUid: 'fbN' }),
+      ],
+      exportUids: new Set(['fbL', 'fbN']),
+      mapping: new Map(),
+      rejected: new Map(),
+      ...none,
+    });
+    expect(plan.items).toEqual([
+      {
+        action: 'linked-not-imported',
+        userId: 'rL',
+        firebaseUid: 'fbL',
+        currentWorkosUserId: 'user_01L',
+      },
+      { action: 'not-imported', userId: 'rN', firebaseUid: 'fbN', deleted: false },
+    ]);
+  });
+
+  // Item 6: the link is right, but the first sign-in would be a 409.
+  it("warns when the mapped WorkOS user's address is held by a different row", () => {
+    const plan = planBackfill({
+      rows: [
+        row({ id: 'rA', firebaseUid: 'fbA', email: 'old-ada@example.com' }),
+        row({ id: 'rB', email: 'Ada@Example.com', workosUserId: 'user_01NATIVE' }),
+        row({ id: 'rC', firebaseUid: 'fbC', email: 'cy@example.com', workosUserId: 'user_01C' }),
+        row({ id: 'rE', firebaseUid: 'fbE', email: 'eve@example.com' }),
+      ],
+      exportUids: new Set(['fbA', 'fbC', 'fbE']),
+      mapping: new Map([
+        ['fbA', 'user_01A'],
+        ['fbC', 'user_01C'],
+        ['fbE', 'user_01E'],
+      ]),
+      rejected: new Map(),
+      skipReasons: new Map(),
+      mappedEmails: new Map([
+        ['fbA', 'ada@example.com'],
+        ['fbC', 'eve@example.com'],
+        // The row's own address: no warning.
+        ['fbE', 'EVE@example.com'],
+      ]),
+    });
+    expect(plan.items.map((i) => i.action)).toEqual(['update', 'already-linked', 'update']);
+    expect(plan.emailHolders).toEqual([
+      { userId: 'rA', firebaseUid: 'fbA', workosUserId: 'user_01A', holderUserId: 'rB' },
+      { userId: 'rC', firebaseUid: 'fbC', workosUserId: 'user_01C', holderUserId: 'rE' },
+    ]);
   });
 });
 
@@ -278,6 +394,7 @@ describe('writeBackfillLink (real PostgreSQL, real migrations)', () => {
       id,
       firebaseUid,
       workosUserId: null,
+      email: `${id}@example.com`,
       deleted: true,
     });
   });

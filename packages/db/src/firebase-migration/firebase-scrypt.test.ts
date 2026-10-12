@@ -5,9 +5,11 @@ import {
   FIREBASE_SCRYPT_PUBLISHED_EXAMPLE as EXAMPLE,
   firebaseScryptHash,
   firebaseScryptPhc,
+  hashParamsFingerprint,
   matchesPublishedExample,
   parseFirebaseScryptParams,
   phcB64,
+  verifyFirebasePassword,
 } from './firebase-scrypt';
 
 const exampleEnv = {
@@ -41,6 +43,55 @@ describe('firebaseScryptHash', () => {
       }),
     ];
     for (const variant of variants) expect(phcB64(variant)).not.toBe(reference);
+  });
+});
+
+// --check-hash-params: the one check that catches the wrong project parameters.
+describe('verifyFirebasePassword', () => {
+  it("accepts the right password against Firebase's published hash", () => {
+    expect(verifyFirebasePassword(EXAMPLE.password, { hash, salt }, params)).toBe(true);
+  });
+
+  it('refuses a wrong password', () => {
+    expect(verifyFirebasePassword('user1passwore', { hash, salt }, params)).toBe(false);
+    expect(verifyFirebasePassword('', { hash, salt }, params)).toBe(false);
+  });
+
+  it.each([
+    ['signer key', { signerKey: params.signerKey.map((b, i) => (i === 63 ? b ^ 0x80 : b)) }],
+    ['salt separator', { saltSeparator: new Uint8Array([6]) }],
+    ['rounds', { rounds: 7 }],
+    ['memory cost', { memCost: 13 }],
+  ])('detects a wrong %s with the right password', (_name, wrong) => {
+    expect(verifyFirebasePassword(EXAMPLE.password, { hash, salt }, { ...params, ...wrong })).toBe(
+      false,
+    );
+  });
+
+  it('refuses, rather than throws on, a stored hash of another length', () => {
+    expect(
+      verifyFirebasePassword(EXAMPLE.password, { hash: hash.slice(0, 32), salt }, params),
+    ).toBe(false);
+  });
+});
+
+describe('hashParamsFingerprint', () => {
+  it('is stable for the same parameters and differs for any change', () => {
+    const reference = hashParamsFingerprint(params);
+    expect(hashParamsFingerprint(parseFirebaseScryptParams(exampleEnv))).toBe(reference);
+    expect(reference).toMatch(/^[0-9a-f]{64}$/);
+    const variants = [
+      { ...params, rounds: 7 },
+      { ...params, memCost: 13 },
+      { ...params, saltSeparator: new Uint8Array([7, 0]) },
+      { ...params, signerKey: params.signerKey.slice(1) },
+    ];
+    for (const variant of variants) expect(hashParamsFingerprint(variant)).not.toBe(reference);
+  });
+
+  it('contains no parameter bytes', () => {
+    const fingerprint = hashParamsFingerprint(params);
+    expect(fingerprint).not.toContain(Buffer.from(params.signerKey).toString('hex').slice(0, 16));
   });
 });
 
