@@ -16,9 +16,9 @@ Six modes. The three that write are dry runs unless given `--apply`.
 | Mode | Talks to | What it does |
 | --- | --- | --- |
 | **`--check-hash-params <uid>`** | nothing | Asks for that Firebase user's password at a hidden prompt, recomputes their exported hash with the `FIREBASE_SCRYPT_*` parameters, and prints MATCH or NO MATCH. **The only check that catches wrong parameters**, and the import refuses to send password hashes until it has passed. |
-| **`--soft-delete-disabled`** | the database | Soft-deletes the rows of Firebase users an operator disabled, unless kept on purpose with `--keep <uid>`. See "Disabled users" below. |
+| **`--soft-delete-disabled`** | the database | Soft-deletes the rows of Firebase users an operator disabled, settles their organisation memberships, or keeps them on purpose with `--keep <uid>`. Every decision is recorded and honoured by later runs. See "Disabled users" below. |
 | **import** (default) | WorkOS | Creates one WorkOS user per importable Firebase user. A password user's Firebase scrypt hash goes with it. Each user carries `external_id = firebase uid`. Writes a `firebase_uid → workos_user_id` mapping next to the export. |
-| **`--check-sign-in <uid>`** | WorkOS | Signs in to WorkOS as that imported user, with their password typed at a hidden prompt. Proves the import end to end before anything is linked. |
+| **`--check-sign-in <uid>`** | WorkOS | Signs in to WorkOS as that imported user, with their password typed at a hidden prompt, then revokes the WorkOS session that sign-in opened. Proves the import end to end before anything is linked. |
 | **`--backfill`** | WorkOS, the database | Runs `UPDATE users SET workos_user_id = $w WHERE firebase_uid = $f AND workos_user_id IS NULL`, row by row. Before that, it re-checks every mapped id against WorkOS. |
 | **`--self-test`** | WorkOS | Creates one synthetic user with a hash built exactly as the import builds one, signs in with the right password and a wrong one, and deletes the user. It proves WorkOS verifies the hash format. It is self-consistent, so it cannot catch the wrong project's parameters; that is `--check-hash-params`. |
 
@@ -48,19 +48,44 @@ linking pass (§5 step 2) adopts that row. Firebase was the only thing keeping t
 So, **before the deploy**, each disabled user's row is either:
 
 - **soft-deleted** with `--soft-delete-disabled --apply`. Both sign-in paths refuse a deleted row,
-  by identity and by address. Their sessions and CLI tokens are revoked in the same transaction:
-  Firebase's switch never touched xecret's own sessions, so a disabled user can hold a live one
-  today. Nothing else is touched, so no vault, organisation or membership is affected. It is the
-  equivalent of Firebase's switch, not an account deletion, and it is undone by clearing
-  `users.deleted_at` (sessions stay revoked; the person signs in afresh).
+  by identity and by address. In the same transaction:
+  - their **sessions and CLI tokens are revoked**. Firebase's switch never touched xecret's own
+    sessions, so a disabled user can hold a live one today.
+  - their **memberships are settled the way account deletion settles them.** A deleted user who
+    stays a member is invisible on the members page but still holds a seat and still counts as an
+    active owner, so a co-owner could leave an organisation owned only by someone who can never
+    sign in. So:
+
+    | Membership | What happens |
+    | --- | --- |
+    | An organisation with other members | The membership is **removed**, and its grants go with it. |
+    | Their **only active owner** among other members | **Refused**: nothing at all is written for that user. Make another member an owner first (§5), or keep them. |
+    | An organisation they are **alone in** | Left exactly as it is, so a later restore gets it back. Account deletion soft-deletes these; this is a suspension, not an erasure. |
+
+  - The vault is not touched.
 - **kept**, knowingly, with `--keep <uid>`. That person can get back in through WorkOS.
 
-Each soft-delete is recorded in `disabled-users-soft-deleted.json` next to the export. It doesn't
-write to the app's audit log: audit records belong to an organisation, and this acts on an account,
-while #114 is reshaping the action list.
+The dry run lists each pending user's memberships and what would happen to each one, with the
+organisations by id and name.
 
-If the backfill later finds a disabled user's row linked by a WorkOS sign-in, it reports it with
-`!!`: that person has access again.
+**Every decision is recorded** in `disabled-users-decisions.json` next to the export: soft-deleted
+(with what was revoked and removed), kept, no row, or already deleted. **A recorded keep is
+honoured by every later run** without repeating `--keep`, so the re-check after the final export
+does not soft-delete someone you decided to keep. To change a recorded decision, delete its entry
+from that file and run `--soft-delete-disabled` again.
+
+The import and the backfill read the same file. A disabled user with a decision is a note
+("kept active on purpose (decided <date>)"), and one without a decision is a problem.
+
+Clearing `users.deleted_at` restores a soft-deleted account and its solo organisations. Removed
+memberships, revoked sessions and revoked CLI tokens stay gone: the person is re-invited and signs
+in afresh.
+
+Nothing is written to the app's audit log. Audit records belong to an organisation, this acts on an
+account, and #114 is reshaping the action list. The decisions file and the output are the record.
+
+If the backfill later finds a disabled user's row linked by a WorkOS sign-in, and they weren't kept
+on purpose, it reports it with `!!`: that person has access again.
 
 ### Idempotency, and WorkOS users that already exist
 
@@ -84,8 +109,18 @@ Create User API. The backfill uses it as its proof of identity.
 
 ### The record
 
-The script's output, the mapping file and `disabled-users-soft-deleted.json` are the record of the
-migration. **Nothing is written to the audit log.** Keep the output of every `--apply` run.
+The script's output, the mapping file and `disabled-users-decisions.json` are the record of the
+migration. **Nothing is written to the audit log.** Keep the output of every `--apply` run by
+piping it to a file as well as the screen. Use the same file name, so each run appends:
+
+- bash: `npm run … --apply … 2>&1 | tee -a "$DIR/apply.log"`
+- PowerShell: `npm run … --apply … 2>&1 | ForEach-Object { "$_" } | Tee-Object -Append -FilePath "$DIR\apply.log"`.
+  The `ForEach-Object` turns error lines into plain text; without it, Windows PowerShell wraps each
+  one in `NativeCommandError` noise.
+
+Use one shell for all the runs: Windows PowerShell writes the file as UTF-16 and bash as UTF-8, so
+mixing the two garbles it. Don't pipe the two password checks: they need nothing kept, and are
+best left attached to the terminal.
 
 ---
 
@@ -110,9 +145,10 @@ migration. **Nothing is written to the audit log.** Keep the output of every `--
 - [ ] **A private directory outside the repository** for the export and everything written beside
       it. The export holds every user's password hash. The script refuses paths inside the
       repository.
-- [ ] **A real console.** The two password checks need one: PowerShell or Windows Terminal. In
-      Git Bash's default window (mintty), prefix the command with `winpty`. The prompt refuses a
-      piped stdin, because a pipe in mintty still shows what you type.
+- [ ] **A real console for the two password checks: PowerShell, or any shell inside Windows
+      Terminal.** Git Bash inside Windows Terminal works. Git Bash's own window (mintty) does not:
+      there, stdin is a pipe that still shows what you type, so the prompt refuses it. `winpty`
+      does not help either, because `winpty npm …` fails with "npm: Not found in PATH".
 
 ### The two environments
 
@@ -202,36 +238,49 @@ gap short.** The checklist below moves every decision before the deploy, so that
 steps remain after it.
 
 The commands run unchanged in PowerShell and in bash, except where `$DIR` is set. Run them from the
-repository root.
+repository root. Keep the output of every `--apply` by appending the capture from §1, "The record"
+(`2>&1 | tee -a "$DIR/apply.log"` in bash, or
+`2>&1 | ForEach-Object { "$_" } | Tee-Object -Append -FilePath "$DIR\apply.log"` in PowerShell).
 
 ### Before the deploy
 
 ```bash
-# 0. A private directory outside the repository.
-#    bash:        umask 077; DIR=/c/Users/<you>/xecret-migration; mkdir -p -m 700 "$DIR"
-#    PowerShell:  $DIR = "$HOME\xecret-migration"; New-Item -ItemType Directory -Force $DIR | Out-Null
-#                 icacls $DIR /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" | Out-Null
+# 0. A private directory under your user profile, readable by you alone.
+#    PowerShell:
+#      $DIR = "$HOME\xecret-migration"; New-Item -ItemType Directory -Force $DIR | Out-Null
+#      icacls $DIR /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F"
+#    Git Bash (umask and chmod do nothing on Windows drives there; icacls does):
+#      DIR="$HOME/xecret-migration"; mkdir -p "$DIR"
+#      MSYS_NO_PATHCONV=1 icacls "$(cygpath -w "$DIR")" /inheritance:r /grant:r "$USERNAME:(OI)(CI)F"
+#    Either way, `icacls <dir>` should then list only you.
 
 # 1. Sign the Firebase CLI in again, then take a rehearsal export.
 firebase login --reauth
 firebase auth:export "$DIR/users.json" --format=json --project xecret-management
 
-# 2. Prove the hash parameters against YOUR OWN account (password typed at a hidden prompt).
-#    Expect "Hash parameters: MATCH" and RESULT: ok. On NO MATCH, stop: either the password is not
-#    the account's current one, or the FIREBASE_SCRYPT_* values are wrong.
+# 2. Prove the hash parameters against YOUR OWN account (password typed at a hidden prompt;
+#    PowerShell or Windows Terminal, see §2). Expect "Hash parameters: MATCH" and RESULT: ok.
+#    On NO MATCH, stop: either the password is not the account's current one, or the
+#    FIREBASE_SCRYPT_* values are wrong.
 npm run phase:migrate-users:production -- --check-hash-params <your firebase uid> --export "$DIR/users.json"
 
-# 3. Prove WorkOS Production verifies the hash format (creates and deletes one synthetic user).
+# 3. Prove WorkOS Production verifies the hash format (creates and deletes one synthetic user;
+#    if it reports that the delete failed, see §6).
 npm run phase:migrate-users:production -- --self-test
 
 # 4. Rehearsal dry run of the import. Read every problem.
 #    Note the MFA users it lists: tell them to enrol again after the cutover.
 npm run phase:migrate-users:production -- --export "$DIR/users.json"
 
-# 5. Disabled users: list them, decide each one, then apply.
-#    Keep someone only if they may have access back: add --keep <uid> per person.
+# 5. Disabled users. The dry run lists each one with their organisation memberships and what
+#    would happen to each. Decide each person, then apply ONE of these:
 npm run phase:migrate-users:production -- --soft-delete-disabled --export "$DIR/users.json"
+#    soft-delete them all:
 npm run phase:migrate-users:production -- --soft-delete-disabled --export "$DIR/users.json" --apply
+#    or keep some on purpose, one --keep per person kept (recorded; later runs honour it):
+npm run phase:migrate-users:production -- --soft-delete-disabled --export "$DIR/users.json" --apply --keep <uid> --keep <uid>
+#    A user the dry run marks "--apply would REFUSE" is the only active owner of an organisation
+#    with other members: make another member an owner first (§5), or --keep them.
 ```
 
 Checklist, all before the deploy:
@@ -240,8 +289,9 @@ Checklist, all before the deploy:
 - [ ] `--check-hash-params` with your own account: **MATCH**
 - [ ] `--self-test`: `RESULT: ok`
 - [ ] rehearsal import dry run read; every problem understood
-- [ ] every disabled user soft-deleted or kept on purpose (`--soft-delete-disabled` dry run shows no
-      pending rows)
+- [ ] every disabled user soft-deleted or kept on purpose: the `--soft-delete-disabled` dry run
+      lists nothing "to soft-delete", and shows each kept user as "kept active on purpose
+      (decided …)"
 
 ### Deploy
 
@@ -253,7 +303,8 @@ Deploy #114 (run the deployment-check skill first). Then, without a break:
 # 6. The final export: Firebase passwords are frozen now.
 firebase auth:export "$DIR/users.json" --format=json --project xecret-management
 
-# 7. Anyone disabled since the rehearsal? Expect no pending rows. If there are, decide and --apply as in step 5.
+# 7. Anyone disabled since the rehearsal? Your recorded decisions are honoured, so expect nothing
+#    "to soft-delete". If someone new appears, decide and --apply as in step 5.
 npm run phase:migrate-users:production -- --soft-delete-disabled --export "$DIR/users.json"
 
 # 8. Import: dry run, read it, then apply.
@@ -261,7 +312,8 @@ npm run phase:migrate-users:production -- --export "$DIR/users.json"
 npm run phase:migrate-users:production -- --export "$DIR/users.json" --apply --confirm-client client_01M36CECX3Z66Q2FYY2FN8WG73
 
 # 9. One real sign-in with your own imported account, before anything is linked.
-#    Expect "Sign-in: OK" and RESULT: ok. If it is refused, stop and do not run the backfill.
+#    Expect "Sign-in: OK", "WorkOS session … revoked" and RESULT: ok.
+#    REFUSED: stop, and do not run the backfill. See "If the sign-in check is refused" below.
 npm run phase:migrate-users:production -- --check-sign-in <your firebase uid> --export "$DIR/users.json"
 
 # 10. Backfill: dry run, read it, then apply.
@@ -272,8 +324,40 @@ npm run phase:migrate-users:production -- --backfill --export "$DIR/users.json" 
 Re-running any step is safe. The mapping goes to `$DIR/workos-mapping.production.json` unless
 `--mapping` points elsewhere.
 
-`--check-sign-in` really signs in to WorkOS. That updates your WorkOS user's last sign-in time and
-nothing in xecret.
+`--check-sign-in` really signs in to WorkOS, then revokes the WorkOS session that sign-in opened, and
+says so. It touches nothing in xecret. If it reports that the revoke failed, end that session in the
+WorkOS dashboard (Users → your user → Sessions).
+
+#### If the sign-in check is refused
+
+Nothing is linked yet, so this is fully recoverable. What to do depends on the code it printed:
+
+- **`invalid_credentials`**: first, try once more, carefully. If it is refused again, the imported
+  hashes are wrong:
+  1. Delete the WorkOS users the import made. They are the mapping's `created` and
+     `already-imported` entries (both carry `external_id` = the Firebase uid). **Never** delete the
+     `reuse-existing` ones: those signed up themselves. In PowerShell (`phase shell` starts a new
+     shell, so `$DIR` is set again inside it):
+
+     ```powershell
+     phase shell --env Production --shell powershell
+     $DIR = "$HOME\xecret-migration"
+     $m = Get-Content "$DIR\workos-mapping.production.json" -Raw | ConvertFrom-Json
+     foreach ($e in $m.entries.PSObject.Properties) {
+       if ($e.Value.outcome -in @('created', 'already-imported')) {
+         Invoke-RestMethod -Method Delete -Uri "https://api.workos.com/user_management/users/$($e.Value.workosUserId)" -Headers @{ Authorization = "Bearer $env:WORKOS_API_KEY" } | Out-Null
+         "deleted $($e.Value.workosUserId)"
+       }
+     }
+     exit
+     ```
+
+  2. Delete `$DIR/workos-mapping.production.json` and `$DIR/hash-params-verified.production.json`.
+  3. Fix the `FIREBASE_SCRYPT_*` values in Phase Production, then run steps 2, 8 and 9 again.
+- **Any other code** (`mfa_enrollment`, `mfa_challenge`, `radar_…`, `sso_required`,
+  `email_verification_required`): something in front of the password check refused, so the hashes
+  may be fine. Check the WorkOS Production authentication settings (MFA required? Radar?), then run
+  step 9 again.
 
 **Then smoke-test** (plan §6.3):
 
@@ -287,8 +371,8 @@ nothing in xecret.
 **Afterwards:**
 
 - Delete the export. It holds every password hash.
-- Keep the mapping, `disabled-users-soft-deleted.json` and the saved output of each run until the
-  decommission migration. None of them holds a secret.
+- Keep the mapping, `disabled-users-decisions.json` and `apply.log` until the decommission
+  migration. None of them holds a secret.
 
 ---
 
@@ -296,8 +380,11 @@ nothing in xecret.
 
 | Problem | What it means | What to do |
 | --- | --- | --- |
-| `skipped (disabled)` / `not imported (disabled)` | A disabled Firebase user whose row is still active. | `--soft-delete-disabled`, or `--keep` it knowingly (§1, "Disabled users"). |
-| `!! … LINKED … the Firebase account is DISABLED, and this person has access again` | A disabled user signed in through WorkOS and was adopted. | `--soft-delete-disabled --apply` locks them out again, unless they may stay. |
+| `disabled, and nothing decided yet` / `not imported (disabled) … soft-delete its row` | A disabled Firebase user with no recorded decision. | `--soft-delete-disabled`: soft-delete them, or `--keep` them knowingly (§1, "Disabled users"). |
+| `disabled — kept active on purpose (decided …)` and the other `decided` notes | The decision recorded in `disabled-users-decisions.json`. | Nothing. To change it, delete the entry from that file and run `--soft-delete-disabled` again. |
+| `--apply would REFUSE it` / `REFUSED, nothing written — sole active owner among others in <org>` | That disabled user is the only active owner of an organisation others belong to. Removing them would leave nobody able to administer it. | Make another member an owner first. Nobody can do that in the app while its only owner cannot sign in, so do it in the database: `npm run phase:studio`, table `org_members`, the row with that `org_id` and the chosen member's `user_id`: set `role` to `owner` and `custom_role_id` to null. Then re-run. Or `--keep` them. |
+| `the decision was made but NOT written to …` | The database change happened, but the decisions file could not be written (permissions, a full disk). | Fix the cause, then paste the printed entry into the file's `entries` by hand. |
+| `!! … LINKED … the Firebase account is DISABLED, and this person has access again` | A disabled user signed in through WorkOS and was adopted, and was not kept on purpose. | `--soft-delete-disabled --apply` locks them out again, unless they may stay (then `--keep`). |
 | `its mapping entry was ignored` | That user was imported by an earlier run but is now skipped (disabled or unverified since). | Nothing is linked. Decide their row as above; delete the WorkOS user if they must not have one. |
 | `conflict (email-held-by-unverified-user)` | Someone started a WorkOS sign-up for that address and never verified it. | Delete that WorkOS user in the dashboard, then re-run the import. |
 | `conflict (email-lookup-mismatch)` | WorkOS returned a user whose address is not this one. | Investigate in the dashboard. Nothing was changed. |
@@ -326,8 +413,9 @@ Production **share**. The staging backfill `--apply` is refused for that reason.
 `--soft-delete-disabled --apply` from a rehearsal unless you mean it: it acts on the real rows.
 
 To remove staging users the import created, delete them in the WorkOS dashboard (Staging → Users),
-or by id from the mapping's `created` entries. Keep the API key out of command lines. In
-PowerShell, inside `phase shell --env Development`:
+by id from the mapping's `created` entries, or with the loop in §4 ("If the sign-in check is
+refused") run in a `phase shell --env Development --shell powershell` against the staging mapping.
+Keep the API key out of command lines. For one user, in PowerShell inside that shell:
 
 ```powershell
 Invoke-RestMethod -Method Delete -Uri "https://api.workos.com/user_management/users/<user_id>" -Headers @{ Authorization = "Bearer $env:WORKOS_API_KEY" }
@@ -339,6 +427,12 @@ reaches `curl`'s arguments:
 ```bash
 curl -sS -X DELETE "https://api.workos.com/user_management/users/<user_id>" -K - <<< "header = \"Authorization: Bearer $WORKOS_API_KEY\""
 ```
+
+**If `--self-test` cannot delete its synthetic user** (it reports `FAIL synthetic user deleted`,
+with the user's id and `migration-selftest+…@example.net` address): delete that user in the
+dashboard (Production → Users, search for `migration-selftest`), or with the command above in a
+`phase shell --env Production --shell powershell`. It is a throwaway user with a random password
+nobody knows, so nothing is exposed meanwhile, but it should not stay.
 
 Only delete *Production* users before the backfill has linked them. Once a row holds an id,
 deleting that WorkOS user strands the row: the person's next sign-up gets a new id, and §5 reports
@@ -363,7 +457,10 @@ The self-test uses `example.net` for that reason.
 - **Undoing a backfill** means setting those rows' `workos_user_id` back to NULL, but only for rows
   no WorkOS sign-in has used since. Do it by hand, with the mapping in front of you.
 - **Undoing a soft-delete of a disabled user** means clearing that row's `deleted_at`, with
-  `disabled-users-soft-deleted.json` in front of you.
+  `disabled-users-decisions.json` in front of you. That restores the account and its solo
+  organisations. It does not restore the memberships that were removed (listed in the decisions
+  file: the person is re-invited), the revoked sessions or the revoked CLI tokens. Then remove the
+  user's entry from the decisions file, or record them as kept.
 - **This tooling is deleted in the decommission migration**, together with `users.firebase_uid`:
   `scripts/migrate-users-to-workos.ts`, `packages/db/src/firebase-migration/`, and the
   `migrate:users` / `phase:migrate-users:*` npm scripts.
@@ -423,3 +520,45 @@ The self-test uses `example.net` for that reason.
   `--check-hash-params`.
 - **Still waiting on the owner:** the real export, so the real-user dry run (`firebase login
   --reauth`).
+
+### 2026-10-12, review round 2
+
+- **End to end on WorkOS Staging with a throwaway database** (PGlite, every real migration, over
+  postgres.js). The synthetic export had five users: one owner and four disabled users.
+  - The `--soft-delete-disabled` dry run listed each pending user's memberships:
+    - a shared organisation: membership to be removed;
+    - a solo organisation: left as it is;
+    - a sole owner of an organisation with other members: `--apply would REFUSE`.
+  - `--apply --keep <one>`:
+    - removed the shared membership and kept the solo organisation intact;
+    - revoked the user's session;
+    - refused the sole owner and wrote nothing for them;
+    - recorded the keep.
+  - A second dry run **without** `--keep` showed the kept user as "kept active on purpose
+    (decided …)", not as pending.
+  - The import and backfill reported the decided users as notes and the undecided one as a problem.
+  - `--check-sign-in` returned OK and revoked its WorkOS session. The WorkOS sessions API then
+    listed 0 sessions for that user.
+  - With the decisions file made read-only, `--apply` still committed the next soft-delete, and
+    reported "the decision was made but NOT written", printing the entry to add by hand. The
+    temporary file is cleaned up.
+  - The synthetic Staging users were deleted.
+- **Runbook commands run for real:**
+  - the §4 recovery loop deleted exactly the `created` and `already-imported` users and left the
+    `reuse-existing` one;
+  - `icacls` from Git Bash (with `MSYS_NO_PATHCONV=1` and `cygpath -w`) leaves only the owner;
+  - the bash `tee -a` capture, and the PowerShell `ForEach-Object { "$_" } | Tee-Object` capture,
+    log the run with the `RESULT:` line and no `NativeCommandError` noise.
+- **Consoles:** node sees a TTY from Git Bash inside a Windows pseudo console (as in Windows
+  Terminal), and `winpty npm …` fails ("npm: Not found in PATH"). So the runbook and the prompt's
+  refusal now say: PowerShell, or any shell inside Windows Terminal.
+- **Self-test re-run on WorkOS Staging:** every step passed.
+- **Mutation check:** 8 mutations of the round-2 rules, all caught:
+  - never blocking a sole owner;
+  - ignoring the block at apply time;
+  - treating a solo organisation as shared;
+  - removing solo memberships;
+  - counting a suspended owner as active;
+  - forgetting recorded keeps;
+  - not scrubbing addresses;
+  - accepting any `sid`.
