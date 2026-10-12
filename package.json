@@ -76,7 +76,7 @@
     "prettier-plugin-tailwindcss": "^0.8.1",
     "sharp": "^0.35.5",
     "tsx": "^4.23.13",
-    "typescript-eslint": "^8.70.0"
+    "typescript-eslint": "^8.71.1"
   },
   "// overrides": "@grpc/grpc-js: @firebase/firestore pins ~1.9.0 in every release up to firebase 13, so no firebase version reaches the fix for GHSA-m9gg-hp2v-232j (patched in 1.13.6) and the production audit gate cannot pass without forcing it. ~1.13.6 is the nearest patched line and keeps @grpc/proto-loader on the ^0.7 firestore already uses. Nothing ships it: the app imports firebase/app and firebase/auth, never firestore, and the gRPC transport is firestore's Node build only. Delete this when firebase leaves the tree (WorkOS migration) or firestore widens its range. npm honours a root override only when it resolves the edge afresh: across the apps/web workspace link it neither re-resolves an existing lockfile entry when this changes nor credits it in `npm ls`, which reports 1.13.7 as invalid against ~1.9.0. The lockfile entry is what installs; check it with `npm audit`, not `npm ls`.",
   "overrides": {
