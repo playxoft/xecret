@@ -345,6 +345,58 @@ export async function acceptInvitation(
   });
 }
 
+export type JustInTimeJoin =
+  /** A new membership, at the role asked for. */
+  | { outcome: 'joined'; member: WrittenMemberRecord }
+  /**
+   * They already hold a membership here — active, or suspended. Nothing is
+   * written: JIT admits a newcomer, it never reinstates somebody an
+   * administrator suspended.
+   */
+  | { outcome: 'already-member' }
+  /** No seat free. Nothing is written. */
+  | { outcome: 'no-seat' };
+
+/**
+ * Admits somebody to an organisation on the strength of its single sign-on —
+ * just-in-time provisioning (`.local/workos-auth.md` §2.3).
+ *
+ * The caller has already established *why* this person may join: the sign-in
+ * came through this organisation's own identity provider, for an address in a
+ * domain the organisation verified. This function decides only *whether there
+ * is room*, and it decides it the way an invitation acceptance does — under the
+ * organisation's row lock, counting seated members and open invitations
+ * together — so two people signing in at once cannot both take the last seat.
+ *
+ * Outcomes rather than exceptions, because every one of them is an ordinary
+ * answer the callback turns into something a person reads.
+ */
+export async function joinOrganizationJustInTime(
+  exec: Executor,
+  params: { orgId: string; userId: string; role: OrgRole },
+): Promise<JustInTimeJoin> {
+  return exec.transaction(async (tx) => {
+    const organization = await lockOrganization(tx, params.orgId);
+
+    const [existing] = await tx
+      .select({ id: orgMembers.id })
+      .from(orgMembers)
+      .where(and(eq(orgMembers.orgId, organization.id), eq(orgMembers.userId, params.userId)))
+      .limit(1);
+    if (existing) return { outcome: 'already-member' };
+
+    if (!(await hasFreeSeat(tx, organization, new Date()))) return { outcome: 'no-seat' };
+
+    const member = await addMember(tx, {
+      orgId: organization.id,
+      userId: params.userId,
+      role: params.role,
+      invitedBy: null,
+    });
+    return { outcome: 'joined', member };
+  });
+}
+
 /**
  * Turns an invitation's access selection into `access_grants` rows — the
  * moment a request-in-transit becomes authority.
@@ -600,15 +652,27 @@ async function lockOrganization(tx: Executor, orgId: string) {
   return organization;
 }
 
+/**
+ * Whether one more person fits: seated members plus open invitations, against
+ * the organisation's limit. Call it under the organisation lock, or the answer
+ * is about an organisation that may already have changed.
+ */
+async function hasFreeSeat(
+  tx: Executor,
+  organization: { id: string; seatLimit: number },
+  now: Date,
+): Promise<boolean> {
+  const seated = await countSeatedMembers(tx, organization.id);
+  const promised = await countOpenInvitations(tx, organization.id, now);
+  return seated + promised < organization.seatLimit;
+}
+
 async function assertSeatAvailable(
   tx: Executor,
   organization: { id: string; seatLimit: number },
   now: Date,
 ): Promise<void> {
-  const seated = await countSeatedMembers(tx, organization.id);
-  const promised = await countOpenInvitations(tx, organization.id, now);
-
-  if (seated + promised >= organization.seatLimit) {
+  if (!(await hasFreeSeat(tx, organization, now))) {
     throw new RepositoryError(
       'seatLimit',
       'This organisation has no seats left. Remove a member or revoke an invitation first.',

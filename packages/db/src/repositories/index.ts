@@ -319,6 +319,7 @@ export {
   findInvitationByToken,
   findInvitationByTokenHash,
   invitationClaimQuery,
+  joinOrganizationJustInTime,
   listInvitations,
   pendingInvitationsQuery,
   revokeInvitation,
@@ -332,8 +333,19 @@ export type {
   InvitationListEntry,
   InvitationRecord,
   IssuedInvitation,
+  JustInTimeJoin,
   SeatUsage,
 } from './invitations';
+
+export {
+  consumeReauthProof,
+  findFreshSignIn,
+  issueReauthProof,
+  markReauthCodeSent,
+  recordFreshSignIn,
+  recordReauthCodeFailure,
+} from './reauth';
+export type { Reauthentication } from './reauth';
 
 export {
   consumeCliAuthCode,

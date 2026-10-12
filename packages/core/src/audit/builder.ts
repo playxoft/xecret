@@ -9,6 +9,7 @@ import type {
   AuditEvent,
   AuditMetadata,
   AuditOutcome,
+  SignInMethod,
 } from './types';
 
 /**
@@ -465,12 +466,27 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   // and regeneration records were written to carry and never did.
   if (metadata.wrapKind !== undefined) clean.wrapKind = metadata.wrapKind;
   if (metadata.method !== undefined) clean.method = metadata.method;
+  // Checked against the vocabulary rather than copied: the value is derived
+  // from a provider's answer, and a free string here would be a provider-chosen
+  // field in the one table this product promises is truthful.
+  if (metadata.signInMethod !== undefined && SIGN_IN_METHODS.has(metadata.signInMethod)) {
+    clean.signInMethod = metadata.signInMethod;
+  }
   if (metadata.recoveryCodeCount !== undefined && Number.isFinite(metadata.recoveryCodeCount)) {
     clean.recoveryCodeCount = metadata.recoveryCodeCount;
   }
 
   return clean;
 }
+
+const SIGN_IN_METHODS: ReadonlySet<string> = new Set<SignInMethod>([
+  'password',
+  'oauth',
+  'sso',
+  'magic_auth',
+  'passkey',
+  'other',
+]);
 
 /** Every action name there is — the only strings an action list may hold. */
 const KNOWN_ACTIONS: ReadonlySet<string> = new Set(Object.keys(ACTION_REQUIREMENTS));

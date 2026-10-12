@@ -134,6 +134,13 @@
       "when": 1787012400000,
       "tag": "0018_workos_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1787600000000,
+      "tag": "0019_reauthentications",
+      "breakpoints": true
     }
   ]
 }
