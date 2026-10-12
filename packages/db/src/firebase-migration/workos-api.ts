@@ -38,7 +38,12 @@ export interface CreateWorkosUserInput {
 }
 
 export type PasswordAuthResult =
-  | { readonly ok: true; readonly userId: string }
+  | {
+      readonly ok: true;
+      readonly userId: string;
+      /** The WorkOS session the sign-in opened (the access token's `sid`), when WorkOS returned one. */
+      readonly sessionId: string | null;
+    }
   | { readonly ok: false; readonly status: number; readonly code: string | null };
 
 export class WorkosApiError extends Error {
@@ -82,6 +87,28 @@ export function parseWorkosUser(value: unknown): WorkosUserSummary {
   }
   return { id, email, emailVerified, externalId: externalId ?? null };
 }
+
+/**
+ * The `sid` claim of a WorkOS access token: the session it belongs to. Read
+ * without verifying the signature, which is fine for what it is used for —
+ * naming a session to revoke, with our own API key, right after WorkOS handed
+ * the token to us over TLS. Null for anything that is not a JWT carrying one.
+ */
+export function sessionIdFromAccessToken(token: unknown): string | null {
+  if (typeof token !== 'string') return null;
+  const payload = token.split('.')[1];
+  if (payload === undefined) return null;
+  try {
+    const claims: unknown = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    const sid = isRecord(claims) ? claims['sid'] : undefined;
+    return typeof sid === 'string' && /^session_[0-9A-Za-z]+$/.test(sid) ? sid : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Anything shaped like an email address, for messages whose address the caller does not know. */
+const EMAIL_LIKE = /[^\s@"'<>()[\],;:]+@[^\s@"'<>()[\],;:]+/g;
 
 /** Replaces each secret in `text`. Longest first, so a secret containing another goes whole. */
 export function redact(text: string, secrets: readonly string[]): string {
@@ -156,7 +183,13 @@ export function createWorkosUsersApi(options: WorkosUsersApiOptions) {
         : typeof record['error_description'] === 'string'
           ? record['error_description']
           : null;
-    const detail = rawMessage === null ? null : redact(rawMessage, secrets).slice(0, 300);
+    // The secrets this call sent, then any address at all: a message about a
+    // user can name one the caller never had (getUser), and the output names
+    // users by id only.
+    const detail =
+      rawMessage === null
+        ? null
+        : redact(rawMessage, secrets).replace(EMAIL_LIKE, '[address]').slice(0, 300);
     return new WorkosApiError(operation, status, code, detail);
   }
 
@@ -290,15 +323,34 @@ export function createWorkosUsersApi(options: WorkosUsersApiOptions) {
         email: args.email,
         password: args.password,
       });
+      const secrets = [args.password, options.apiKey, args.email];
       if (status === 200) {
-        const user = isRecord(json) ? json['user'] : undefined;
-        return { ok: true, userId: parseWorkosUser(user).id };
+        const record = isRecord(json) ? json : {};
+        return {
+          ok: true,
+          userId: parseWorkosUser(record['user']).id,
+          sessionId: sessionIdFromAccessToken(record['access_token']),
+        };
       }
       if (status >= 400 && status < 500) {
-        const error = failure(operation, status, json, [args.password, options.apiKey]);
+        const error = failure(operation, status, json, secrets);
         return { ok: false, status, code: error.code };
       }
-      throw failure(operation, status, json, [args.password, options.apiKey]);
+      throw failure(operation, status, json, secrets);
+    },
+
+    /**
+     * `POST /user_management/sessions/revoke`: ends a WorkOS session, so a
+     * check that signed in leaves nothing signed in behind it.
+     */
+    async revokeSession(sessionId: string): Promise<void> {
+      const operation = 'POST /user_management/sessions/revoke';
+      const { status, json } = await call('POST', '/user_management/sessions/revoke', {
+        session_id: sessionId,
+      });
+      if (status !== 200 && status !== 202 && status !== 204) {
+        throw failure(operation, status, json, []);
+      }
     },
   };
 }

@@ -15,9 +15,11 @@
  * necessarily silent: in Git Bash's default window (mintty) a native program
  * sees a pipe while the terminal still echoes what is typed into it, and a
  * password echoed there is on screen and in the scrollback. Run these checks
- * from PowerShell or Windows Terminal (or `winpty` in mintty), where stdin is a
- * console. Verified 2026-10-12 under `phase run` through a Windows pseudo
- * console (ConPTY), which is what Windows Terminal uses.
+ * in PowerShell, or in any shell inside Windows Terminal — Git Bash included —
+ * where stdin is a console. `winpty` is no way round mintty: `winpty npm …`
+ * fails ("npm: Not found in PATH"), because npm is a `.cmd` shim. Verified
+ * 2026-10-12 through a Windows pseudo console (ConPTY, which is what Windows
+ * Terminal uses), under `phase run`, and from Git Bash inside one.
  */
 
 /** The part of `process.stdin` this needs, so a test can stand in for it. */
@@ -38,9 +40,9 @@ export interface HiddenOutput {
 export class HiddenInputUnavailable extends Error {
   constructor() {
     super(
-      'This needs an interactive terminal, and stdin is not one. Run it from PowerShell or Windows ' +
-        'Terminal (in Git Bash\'s default window, prefix the command with "winpty"). It will not read a ' +
-        'password from a pipe.',
+      'This needs an interactive terminal, and stdin is not one. Run it in PowerShell, or in any shell ' +
+        "inside Windows Terminal (Git Bash's own window, mintty, will not do, with or without winpty). " +
+        'It will not read a password from a pipe.',
     );
     this.name = 'HiddenInputUnavailable';
   }

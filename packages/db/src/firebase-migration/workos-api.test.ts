@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { createWorkosUsersApi, parseWorkosUser, redact, WorkosApiError } from './workos-api';
+import {
+  createWorkosUsersApi,
+  parseWorkosUser,
+  redact,
+  sessionIdFromAccessToken,
+  WorkosApiError,
+} from './workos-api';
+
+/** An unsigned JWT-shaped token with these claims. Only the payload is ever read. */
+const accessToken = (claims: Record<string, unknown>) =>
+  `e30.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.c2ln`;
 
 interface Recorded {
   url: string;
@@ -73,6 +83,24 @@ describe('parseWorkosUser', () => {
     [userJson({ external_id: 5 }), /non-string external_id/],
   ])('refuses %j', (json, message) => {
     expect(() => parseWorkosUser(json)).toThrow(message);
+  });
+});
+
+describe('sessionIdFromAccessToken', () => {
+  it('reads the sid claim of a JWT-shaped token', () => {
+    expect(
+      sessionIdFromAccessToken(accessToken({ sid: 'session_01H93ZY4F80QPBEZ1R5B2SHQG8' })),
+    ).toBe('session_01H93ZY4F80QPBEZ1R5B2SHQG8');
+  });
+
+  it.each([
+    ['not a string', 42],
+    ['no payload', 'abc'],
+    ['payload not JSON', 'e30.!!!.x'],
+    ['no sid', accessToken({ sub: 'user_01' })],
+    ['a sid that is not a session id', accessToken({ sid: 'user_01; drop' })],
+  ])('is null for %s', (_name, token) => {
+    expect(sessionIdFromAccessToken(token)).toBeNull();
   });
 });
 
@@ -187,6 +215,17 @@ describe('createWorkosUsersApi', () => {
     expect(error.message).not.toContain('ada@example.com');
   });
 
+  // Review round 2: getUser never knew the address, so it could not redact it by value.
+  it('scrubs any address from a WorkOS error, even one the call never sent', async () => {
+    const { api } = stubFetch([
+      { status: 503, json: { message: 'user grace.hopper+x@example.org is locked; ask "a@b.co"' } },
+    ]);
+    const error = (await api.getUser('user_01HXYZ').catch((e: unknown) => e)) as Error;
+    expect(error.message).toMatch(/HTTP 503/);
+    expect(error.message).not.toMatch(/@/);
+    expect(error.message).toContain('[address]');
+  });
+
   it('retries a 429 after Retry-After, then succeeds', async () => {
     const { api, sleeps } = stubFetch([
       { status: 429, headers: { 'retry-after': '2' } },
@@ -213,7 +252,14 @@ describe('createWorkosUsersApi', () => {
 
   it('authenticates with a password using the key as client_secret, not as a bearer token', async () => {
     const { api, calls } = stubFetch([
-      { status: 200, json: { user: userJson(), access_token: 'x', refresh_token: 'y' } },
+      {
+        status: 200,
+        json: {
+          user: userJson(),
+          access_token: accessToken({ sid: 'session_01ABC', sub: 'user_01HXYZ' }),
+          refresh_token: 'y',
+        },
+      },
     ]);
     expect(
       await api.authenticateWithPassword({
@@ -221,7 +267,7 @@ describe('createWorkosUsersApi', () => {
         email: 'ada@example.com',
         password: 'pw-1',
       }),
-    ).toEqual({ ok: true, userId: 'user_01HXYZ' });
+    ).toEqual({ ok: true, userId: 'user_01HXYZ', sessionId: 'session_01ABC' });
     expect(calls[0]?.headers).not.toHaveProperty('Authorization');
     expect(calls[0]?.body).toEqual({
       client_id: 'client_01',
@@ -230,6 +276,21 @@ describe('createWorkosUsersApi', () => {
       email: 'ada@example.com',
       password: 'pw-1',
     });
+  });
+
+  it('revokes a session with the key as a bearer token', async () => {
+    const { api, calls } = stubFetch([
+      { status: 200, json: {} },
+      { status: 404, json: {} },
+    ]);
+    await api.revokeSession('session_01ABC');
+    expect(calls[0]).toMatchObject({
+      method: 'POST',
+      url: 'https://api.workos.com/user_management/sessions/revoke',
+      headers: { Authorization: `Bearer ${API_KEY}` },
+      body: { session_id: 'session_01ABC' },
+    });
+    await expect(api.revokeSession('session_01GONE')).rejects.toThrow(/HTTP 404/);
   });
 
   it('reports a refused password as a result, with WorkOS’s code', async () => {

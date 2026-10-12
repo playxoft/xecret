@@ -3,7 +3,13 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '../testing/pglite';
 import type { TestDatabase } from '../testing/pglite';
 import type { BackfillDbRow } from './backfill';
-import { planDisabledSoftDelete, softDeleteDisabledRow } from './disabled-users';
+import type { AccountMembership } from '../repositories/membership';
+import {
+  planDisabledMemberships,
+  planDisabledSoftDelete,
+  planMembershipsFor,
+  softDeleteDisabledRow,
+} from './disabled-users';
 
 const row = (over: Partial<BackfillDbRow> & { id: string }): BackfillDbRow => ({
   firebaseUid: null,
@@ -71,6 +77,38 @@ describe('planDisabledSoftDelete', () => {
   });
 });
 
+describe('planDisabledMemberships', () => {
+  const m = (over: Partial<AccountMembership>): AccountMembership => ({
+    orgId: 'org',
+    orgName: 'Org',
+    memberId: 'm',
+    role: 'developer',
+    status: 'active',
+    totalMembers: 2,
+    activeOwners: 1,
+    ...over,
+  });
+
+  it("follows account deletion's rules, except that a solo organisation stays", () => {
+    expect(
+      planDisabledMemberships([
+        m({ orgId: 'solo', role: 'owner', totalMembers: 1 }),
+        m({ orgId: 'member' }),
+        m({ orgId: 'co-owned', role: 'owner', activeOwners: 2 }),
+        m({ orgId: 'sole-owner', role: 'owner', activeOwners: 1 }),
+        m({ orgId: 'suspended-owner', role: 'owner', status: 'suspended', activeOwners: 1 }),
+      ]).map((p) => [p.membership.orgId, p.action]),
+    ).toEqual([
+      ['solo', 'solo'],
+      ['member', 'remove'],
+      ['co-owned', 'remove'],
+      ['sole-owner', 'blocks'],
+      // A suspended owner is not the owner anyone depends on.
+      ['suspended-owner', 'remove'],
+    ]);
+  });
+});
+
 describe('softDeleteDisabledRow (real PostgreSQL, real migrations)', () => {
   let t: TestDatabase;
 
@@ -89,11 +127,8 @@ describe('softDeleteDisabledRow (real PostgreSQL, real migrations)', () => {
       `insert into users (id, firebase_uid, email, deleted_at) values ($1, $2, $3, $4)`,
       [id, firebaseUid, `${id}@example.com`, over.deleted ? new Date() : null],
     );
-    const orgId = randomUUID();
-    await t.pg.query(
-      `insert into organizations (id, name, slug, created_by) values ($1, 'Org', $2, $3)`,
-      [orgId, `org-${orgId.slice(0, 8)}`, id],
-    );
+    const orgId = await newOrg(id);
+    await addMember(orgId, id, 'owner');
     for (let i = 0; i < 2; i += 1) {
       await t.pg.query(
         `insert into sessions (id, user_id, token_hash, expires_at) values ($1, $2, $3, now() + interval '1 day')`,
@@ -106,6 +141,30 @@ describe('softDeleteDisabledRow (real PostgreSQL, real migrations)', () => {
       [randomUUID(), id, orgId, randomBytes(32)],
     );
     return { id, firebaseUid, orgId };
+  }
+
+  async function newOrg(createdBy: string) {
+    const orgId = randomUUID();
+    await t.pg.query(
+      `insert into organizations (id, name, slug, created_by) values ($1, 'Org', $2, $3)`,
+      [orgId, `org-${orgId.slice(0, 8)}`, createdBy],
+    );
+    return orgId;
+  }
+
+  async function addMember(orgId: string, userId: string, role: string, status = 'active') {
+    await t.pg.query(
+      `insert into org_members (id, org_id, user_id, role, status) values ($1, $2, $3, $4, $5)`,
+      [randomUUID(), orgId, userId, role, status],
+    );
+  }
+
+  async function membersOf(orgId: string) {
+    const result = await t.pg.query<{ user_id: string; role: string }>(
+      `select user_id, role from org_members where org_id = $1 order by user_id`,
+      [orgId],
+    );
+    return result.rows;
   }
 
   async function stateOf(id: string) {
@@ -128,15 +187,70 @@ describe('softDeleteDisabledRow (real PostgreSQL, real migrations)', () => {
       result: 'soft-deleted',
       revokedSessions: 2,
       revokedCliTokens: 1,
+      removedFromOrgs: [],
+      soloOrgs: [a.orgId],
     });
     expect(await stateOf(a.id)).toEqual({ deleted: true, sessions: 0, tokens: 0 });
     expect(await stateOf(b.id)).toEqual({ deleted: false, sessions: 2, tokens: 1 });
-    // Less than account deletion: the organisation it founded is untouched.
+    // A solo organisation is left exactly as it is, membership included, so a
+    // restore gets it back.
     const org = await t.pg.query<{ deleted_at: Date | null }>(
       `select deleted_at from organizations where id = $1`,
       [a.orgId],
     );
     expect(org.rows[0]?.deleted_at).toBeNull();
+    expect(await membersOf(a.orgId)).toEqual([{ user_id: a.id, role: 'owner' }]);
+  });
+
+  // Review round 2, item 2: a deleted member still held a seat and still counted as an owner.
+  it('removes the membership in an organisation with others, freeing the seat', async () => {
+    const owner = await seedUser();
+    const disabled = await seedUser();
+    await addMember(owner.orgId, disabled.id, 'developer');
+    const coOwned = await newOrg(owner.id);
+    await addMember(coOwned, owner.id, 'owner');
+    await addMember(coOwned, disabled.id, 'owner');
+
+    const result = await softDeleteDisabledRow(t.db, disabled.id, disabled.firebaseUid);
+    expect(result).toMatchObject({ result: 'soft-deleted', soloOrgs: [disabled.orgId] });
+    expect(result.result === 'soft-deleted' && [...result.removedFromOrgs].sort()).toEqual(
+      [owner.orgId, coOwned].sort(),
+    );
+    expect(await membersOf(owner.orgId)).toEqual([{ user_id: owner.id, role: 'owner' }]);
+    expect(await membersOf(coOwned)).toEqual([{ user_id: owner.id, role: 'owner' }]);
+  });
+
+  it("refuses, writing nothing, when they are an organisation's only active owner among others", async () => {
+    const disabled = await seedUser();
+    const colleague = await seedUser();
+    await addMember(disabled.orgId, colleague.id, 'admin');
+    // A suspended second owner does not count: nobody active could administer it.
+    const other = await seedUser();
+    await addMember(disabled.orgId, other.id, 'owner', 'suspended');
+    const shared = await newOrg(colleague.id);
+    await addMember(shared, colleague.id, 'owner');
+    await addMember(shared, disabled.id, 'viewer');
+
+    expect(await softDeleteDisabledRow(t.db, disabled.id, disabled.firebaseUid)).toEqual({
+      result: 'blocked',
+      orgIds: [disabled.orgId],
+    });
+    expect(await stateOf(disabled.id)).toEqual({ deleted: false, sessions: 2, tokens: 1 });
+    // Not even the membership that could have been removed.
+    expect((await membersOf(shared)).map((m) => m.user_id).sort()).toEqual(
+      [colleague.id, disabled.id].sort(),
+    );
+  });
+
+  it('plans memberships read-only, for the dry run', async () => {
+    const disabled = await seedUser();
+    const colleague = await seedUser();
+    await addMember(disabled.orgId, colleague.id, 'developer');
+    const planned = await planMembershipsFor(t.db, disabled.id);
+    expect(planned.map((p) => [p.membership.orgId, p.membership.totalMembers, p.action])).toEqual([
+      [disabled.orgId, 2, 'blocks'],
+    ]);
+    expect(await stateOf(disabled.id)).toEqual({ deleted: false, sessions: 2, tokens: 1 });
   });
 
   it('is idempotent, and writes nothing to a row that is not active', async () => {
