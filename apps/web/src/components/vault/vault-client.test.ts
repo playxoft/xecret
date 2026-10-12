@@ -33,6 +33,8 @@ import {
   openRecoveryWrap,
   readRecoveryCode,
   reauthSignInUrl,
+  resetStartedBy,
+  resumedReset,
   resetConfirmationProblem,
   resetVault,
   unlockBody,
@@ -919,6 +921,30 @@ describe('the forced fresh sign-in the reset starts with', () => {
     // The marker carries the account that started the reset, so the screen can
     // refuse to continue if a different account comes back.
     expect(next.searchParams.get(VAULT_RESET_RESUME_PARAM)).toBe(USER_ID);
+  });
+
+  it('comes back as a resumed reset for the account that started it', () => {
+    const href = reauthSignInUrl({ pathname: '/app/acme', search: '' }, USER_ID);
+    const next = new URLSearchParams(new URL(href, 'https://x.example').search).get('next') ?? '';
+    const startedBy = resetStartedBy(new URL(next, 'https://x.example').search);
+
+    expect(startedBy).toBe(USER_ID);
+    expect(resumedReset(startedBy, USER_ID)).toBe('resumed');
+  });
+
+  it('refuses to continue when a different account comes back', () => {
+    expect(resumedReset(USER_ID, 'a-different-account')).toBe('account-changed');
+    // A marker with no value is no marker; one with any other value is a
+    // different account, never a resumed one.
+    expect(resetStartedBy(`?${VAULT_RESET_RESUME_PARAM}=`)).toBeNull();
+    expect(resumedReset(resetStartedBy(`?${VAULT_RESET_RESUME_PARAM}=1`), USER_ID)).toBe(
+      'account-changed',
+    );
+  });
+
+  it('is an ordinary visit without the marker', () => {
+    expect(resetStartedBy('?tab=x')).toBeNull();
+    expect(resumedReset(null, USER_ID)).toBe('none');
   });
 
   it('works from the CLI consent screen too, keeping its whole query string', () => {

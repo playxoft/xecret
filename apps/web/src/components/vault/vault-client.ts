@@ -700,6 +700,28 @@ export function reauthSignInUrl(
 /** The query marker that reopens the reset after the fresh sign-in; its value is the starting account's id. */
 export const VAULT_RESET_RESUME_PARAM = 'vault-reset';
 
+/** The account a page's query says started a reset, or `null` for an ordinary visit. */
+export function resetStartedBy(search: string): string | null {
+  const value = new URLSearchParams(search).get(VAULT_RESET_RESUME_PARAM);
+  return value !== null && value !== '' ? value : null;
+}
+
+/**
+ * Where a page load stands with a reset begun before the fresh sign-in:
+ * `none` (an ordinary visit), `resumed` (the account that started it came
+ * back, so the screen opens on the facts and the warning again), or
+ * `account-changed` (a different account came back, and nothing continues).
+ * The marker is a URL anyone can craft, so it only ever reopens a screen; it
+ * grants nothing.
+ */
+export function resumedReset(
+  startedBy: string | null,
+  userId: string,
+): 'none' | 'resumed' | 'account-changed' {
+  if (startedBy === null) return 'none';
+  return startedBy === userId ? 'resumed' : 'account-changed';
+}
+
 /* ────────────────────────── passphrase change ────────────────────────── */
 
 /**

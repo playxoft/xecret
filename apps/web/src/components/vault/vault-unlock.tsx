@@ -43,6 +43,8 @@ import {
   openRecoveryWrap,
   readRecoveryCode,
   reauthSignInUrl,
+  resetStartedBy,
+  resumedReset,
   resetConfirmationProblem,
   resetVault,
   sendReauthCode,
@@ -285,8 +287,7 @@ export function VaultUnlock({ user, onUnlocked, onStageChange }: VaultUnlockProp
 function resumingVaultReset(): string | null {
   if (typeof window === 'undefined') return null;
   try {
-    const value = new URLSearchParams(window.location.search).get(VAULT_RESET_RESUME_PARAM);
-    return value !== null && value !== '' ? value : null;
+    return resetStartedBy(window.location.search);
   } catch {
     return null;
   }
@@ -1111,7 +1112,7 @@ function AllCodesLost({
   const [showProblem, setShowProblem] = useState(false);
   const [done, setDone] = useState(false);
 
-  const accountChanged = resumedBy !== null && resumedBy !== userId;
+  const accountChanged = resumedReset(resumedBy, userId) === 'account-changed';
 
   // Screens: the facts, the fresh sign-in, then the code(s) and the act. Each
   // asks the reader for exactly one thing. A resumed reset starts at the facts.
