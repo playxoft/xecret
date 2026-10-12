@@ -32,12 +32,14 @@ import {
   openPrivateKeys,
   openRecoveryWrap,
   readRecoveryCode,
+  reauthSignInUrl,
   resetConfirmationProblem,
   resetVault,
   unlockBody,
   unlockWithPasskey,
   unlockWithPassphrase,
   VAULT_RESET_CONFIRMATION,
+  VAULT_RESET_RESUME_PARAM,
 } from './vault-client';
 import type { VaultMaterial, VaultPasskey, VaultStatus } from './vault-client';
 
@@ -724,16 +726,16 @@ describe('the vault reset', () => {
     nextResponse = {
       vault: { ...STATUS, configured: false, unlocked: false, unlockedUntil: null },
     };
-    const status = await resetVault(VAULT_RESET_CONFIRMATION, 'a-fresh-id-token');
+    const status = await resetVault(VAULT_RESET_CONFIRMATION, 'xrp_live_a-reauth-proof');
 
     expect(readVaultKeys()).toBeNull();
     expect(posted[0]?.path).toBe('/api/auth/vault/reset');
-    // The re-authentication token travels with the phrase. Without it the
+    // The re-authentication proof travels with the phrase. Without it the
     // server refuses: the phrase is printed on the screen, so on its own it
     // guards against a mistake and not against whoever stole the session.
     expect(posted[0]?.body).toEqual({
       confirm: VAULT_RESET_CONFIRMATION,
-      idToken: 'a-fresh-id-token',
+      reauthProof: 'xrp_live_a-reauth-proof',
     });
     // `configured: false` is what routes the screen to the setup ceremony.
     expect(status.configured).toBe(false);
@@ -749,7 +751,9 @@ describe('the vault reset', () => {
       ),
     );
 
-    await expect(resetVault('reset my vault', 'a-fresh-id-token')).rejects.toBeInstanceOf(ApiError);
+    await expect(resetVault('reset my vault', 'xrp_live_a-reauth-proof')).rejects.toBeInstanceOf(
+      ApiError,
+    );
     expect(readVaultKeys()).toBeNull();
   });
 });
@@ -897,5 +901,32 @@ describe('the failure paths that used to leave keys resident', () => {
     // The User Key was the caller's until this returned successfully, and a
     // caller holding a rejection has no handle left to wipe it with.
     expect([...userKey]).toEqual([...new Uint8Array(userKey.length)]);
+  });
+});
+
+describe('the forced fresh sign-in the reset starts with', () => {
+  it('asks the login route for a re-authentication that comes back to this page, reopened', () => {
+    const href = reauthSignInUrl({ pathname: '/app/acme', search: '?tab=x&y=a%20b' });
+
+    const url = new URL(href, 'https://xecret.example');
+    expect(url.pathname).toBe('/api/auth/login');
+    expect(url.searchParams.get('reauth')).toBe('1');
+    // The page's own query survives, plus the marker that reopens the reset.
+    const next = new URL(url.searchParams.get('next') ?? '', 'https://xecret.example');
+    expect(next.pathname).toBe('/app/acme');
+    expect(next.searchParams.get('tab')).toBe('x');
+    expect(next.searchParams.get('y')).toBe('a b');
+    expect(next.searchParams.get(VAULT_RESET_RESUME_PARAM)).toBe('1');
+  });
+
+  it('works from the CLI consent screen too, keeping its whole query string', () => {
+    const search = '?challenge=abc&port=50123&device=My%20Laptop&state=s1';
+    const href = reauthSignInUrl({ pathname: '/cli/authorize', search });
+
+    const next = new URLSearchParams(new URL(href, 'https://x.example').search).get('next') ?? '';
+    const back = new URL(next, 'https://x.example');
+    expect(back.pathname).toBe('/cli/authorize');
+    expect(back.searchParams.get('port')).toBe('50123');
+    expect(back.searchParams.get('device')).toBe('My Laptop');
   });
 });

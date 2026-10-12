@@ -6,16 +6,16 @@
  *
  * Every check here corresponds to a misconfiguration that is silent until it is
  * expensive. A root key of the wrong length surfaces as a decryption failure on
- * a customer's request; a `FIREBASE_PROJECT_ID` that disagrees with the client
- * config surfaces as a 401 the user cannot act on and the operator cannot
- * explain. Both are two lines of arithmetic to catch here.
+ * a customer's request; a WorkOS cookie password a few characters short
+ * surfaces as every sign-in answering 503, which the user cannot act on and the
+ * operator has to trace back to a binding. Both are a line or two to catch here.
  *
  * It reads values but never prints them. Where a value must be shown to be
- * useful — a project id, a key version — it is one that is already public.
+ * useful — a client id, a key version — it is one that is already public.
  */
 
 import { parseRootKeyMaterial } from '../packages/core/src/crypto/key-provider.ts';
-import { parseFirebaseConfig } from '../apps/web/src/lib/firebase.ts';
+import { MIN_STATE_SECRET_LENGTH } from '../packages/core/src/auth/oauth-state.ts';
 
 interface Result {
   name: string;
@@ -70,59 +70,74 @@ function checkRootKeys(): void {
 }
 
 /**
- * The client config, checked by the same parser the browser uses.
+ * The identity provider, WorkOS (docs/adr/0010-workos-as-identity-provider.md).
  *
- * `parseFirebaseConfig` is imported rather than reimplemented so this script
- * cannot pass a value the application then refuses — including the `authDomain`
- * hostname check, which is the one failure here that is otherwise completely
- * silent: a wildcard, a stray trailing space or a pasted `https://` prefix
- * leaves sign-in dead and every directive in `lib/csp.ts` looking reasonable.
+ * All three values are required: without any one of them nobody can sign in,
+ * and the sign-in routes answer 503 rather than guess. Shape is checked here
+ * because each one fails *later* otherwise — a malformed client id as a
+ * redirect AuthKit refuses, a short cookie password as a 503 on the first
+ * sign-in, a key that is not a key as an outage that reads like WorkOS's.
  *
- * The domain is printed beside the project id because it is the value that ends
- * up inside `frame-src` and `connect-src`, and seeing it is how an operator
- * catches it pointing at the wrong project.
+ * What this deliberately does not check is which WorkOS environment the key
+ * belongs to. The key and the client id must come from the same one, but the
+ * key's format does not say which: WorkOS has issued `sk_test_…`, `sk_live_…`
+ * and plain `sk_…` keys, and this deployment's Production key is the last kind.
+ * A prefix rule would therefore either warn on the correct production key or
+ * pass a wrong one, and a check that cries wolf on every production run is one
+ * that gets read past. The pairing is checked by a person, in the WorkOS
+ * dashboard — the deployment-check skill lists it — and proven by a sign-in.
  */
-function checkFirebase(): string | null {
-  const raw = required('NEXT_PUBLIC_FIREBASE_CONFIG');
-  if (raw === null) return null;
-
-  const parsed = parseFirebaseConfig(raw);
-  if ('problem' in parsed) {
-    check('NEXT_PUBLIC_FIREBASE_CONFIG', false, parsed.problem);
-    return null;
+function checkWorkos(): void {
+  const clientId = required('WORKOS_CLIENT_ID');
+  if (clientId !== null) {
+    const ok = /^client_[0-9A-Za-z]+$/.test(clientId);
+    // Printed when well-formed: it is in every authorization URL a browser is
+    // sent to, and seeing it is how an operator notices it names the wrong
+    // WorkOS environment. Not printed when malformed, which is when it is most
+    // likely to be something else pasted into the wrong field.
+    check(
+      'WORKOS_CLIENT_ID',
+      ok,
+      ok ? `"${clientId}"` : 'not a WorkOS client id — expected `client_` and letters and digits',
+    );
   }
 
-  check(
-    'NEXT_PUBLIC_FIREBASE_CONFIG',
-    true,
-    `project "${parsed.config.projectId}", auth domain "${parsed.config.authDomain}"`,
-  );
-  return parsed.config.projectId;
-}
+  const apiKey = required('WORKOS_API_KEY');
+  if (apiKey !== null) {
+    // `sk_` and nothing more — see above. Enough to tell a secret key from the
+    // client id or a publishable value pasted into the wrong field.
+    const ok = apiKey.startsWith('sk_');
+    check(
+      'WORKOS_API_KEY',
+      ok,
+      ok
+        ? 'set — confirm in the WorkOS dashboard it is from the same environment as the client id'
+        : 'not a WorkOS secret key — expected `sk_…`',
+    );
+  }
 
-/**
- * The cross-check that motivated this script.
- *
- * `FIREBASE_PROJECT_ID` is what the Worker checks an ID token's `aud` claim
- * against. If it disagrees with the project the browser signs in to, every
- * login produces a valid token that the server correctly rejects — and the
- * user sees "Authentication required" with nothing in the UI to act on. The two
- * are deliberately separate variables (server trust vs client config), which is
- * exactly why they can drift.
- */
-function checkFirebaseAgreement(clientProjectId: string | null): void {
-  const serverProjectId = required('FIREBASE_PROJECT_ID');
-  if (serverProjectId === null || clientProjectId === null) return;
-
-  const agree = serverProjectId === clientProjectId;
-  check(
-    'FIREBASE_PROJECT_ID',
-    agree,
-    agree
-      ? `"${serverProjectId}" — matches the client config`
-      : `"${serverProjectId}" does NOT match the client config's "${clientProjectId}". ` +
-          'Every sign-in would be rejected.',
-  );
+  const cookiePassword = required('WORKOS_COOKIE_PASSWORD');
+  if (cookiePassword !== null) {
+    if (cookiePassword.length < MIN_STATE_SECRET_LENGTH) {
+      check(
+        'WORKOS_COOKIE_PASSWORD',
+        false,
+        `shorter than ${MIN_STATE_SECRET_LENGTH} characters — the sign-in routes refuse it`,
+      );
+    } else if (cookiePassword === apiKey) {
+      // Not a theoretical mistake: deriving this from the API key was once on
+      // the table. Two credentials that are one value are one credential: a
+      // leak of the key would also let its holder mint the state cookie that
+      // binds a sign-in to a browser.
+      check(
+        'WORKOS_COOKIE_PASSWORD',
+        false,
+        'the same value as WORKOS_API_KEY — it must be an independent random value',
+      );
+    } else {
+      check('WORKOS_COOKIE_PASSWORD', true, `set, ${MIN_STATE_SECRET_LENGTH}+ characters`);
+    }
+  }
 }
 
 function checkDatabase(): void {
@@ -302,7 +317,7 @@ function checkLogging(): void {
 
 checkDatabase();
 checkRootKeys();
-checkFirebaseAgreement(checkFirebase());
+checkWorkos();
 checkEmail();
 checkLogging();
 

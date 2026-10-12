@@ -74,7 +74,7 @@ function sameSections(a: readonly Section[], b: readonly Section[]): boolean {
  *
  * ── Why this exists ──
  * The tab bar above answers "which area", and a tab is one scroll-length of
- * cards — Security alone carries the password, the vault, the lock with
+ * cards — Security alone carries sign-in settings, the vault, the lock with
  * passkeys and the device PIN inside it, and every session that can act as the
  * account. Landing on it with a specific question meant scrolling to find the
  * card that answers it, and then scrolling again to check you had not passed

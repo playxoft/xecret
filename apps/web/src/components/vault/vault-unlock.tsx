@@ -6,11 +6,6 @@ import type { Bytes, RecoveryCode } from '@xecret/core/crypto/client';
 
 import { errorMessage, SIGN_IN_PATH } from '@/lib/api';
 import {
-  describeAuthError,
-  reauthenticateWithGoogle,
-  reauthenticateWithPassword,
-} from '@/lib/firebase';
-import {
   Alert,
   Button,
   EyeIcon,
@@ -42,17 +37,22 @@ import {
   completeRecovery,
   describePasskeyUnlockFailure,
   describeUnlockFailure,
+  fetchReauthStatus,
   fetchVault,
   materialSupersedes,
   openRecoveryWrap,
   readRecoveryCode,
+  reauthSignInUrl,
   resetConfirmationProblem,
   resetVault,
+  sendReauthCode,
   unlockWithPasskey,
   unlockWithPassphrase,
   VAULT_RESET_CONFIRMATION,
+  VAULT_RESET_RESUME_PARAM,
+  verifyReauthCode,
 } from './vault-client';
-import type { VaultMaterial } from './vault-client';
+import type { ReauthStatus, VaultMaterial } from './vault-client';
 import { useVault } from './vault-keys';
 
 /**
@@ -148,7 +148,10 @@ export interface VaultUnlockProps {
 
 export function VaultUnlock({ user, onUnlocked, onStageChange }: VaultUnlockProps) {
   const vault = useVault();
-  const [stage, setStage] = useState<Stage>('unlock');
+  // Back from the reset's fresh sign-in: reopen the reset where it was. The
+  // marker only chooses the screen; what it shows is the server's answer.
+  const [resumed] = useState(() => resumingVaultReset());
+  const [stage, setStage] = useState<Stage>(resumed ? 'lost' : 'unlock');
 
   useEffect(() => {
     onStageChange?.(stage);
@@ -183,7 +186,7 @@ export function VaultUnlock({ user, onUnlocked, onStageChange }: VaultUnlockProp
   // anything, and it has to stay rendered through the reset that empties
   // `material` underneath it.
   if (stage === 'lost') {
-    return <AllCodesLost email={user.email} onBack={() => setStage('code')} onReset={onUnlocked} />;
+    return <AllCodesLost resumed={resumed} onBack={() => setStage('code')} onReset={onUnlocked} />;
   }
 
   /**
@@ -264,6 +267,16 @@ export function VaultUnlock({ user, onUnlocked, onStageChange }: VaultUnlockProp
   }
 
   return <RecoveryFlow user={user} stage={stage} onStage={setStage} onDone={onUnlocked} />;
+}
+
+/** Whether this page load is the return from the reset's fresh sign-in. */
+function resumingVaultReset(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return new URLSearchParams(window.location.search).get(VAULT_RESET_RESUME_PARAM) === '1';
+  } catch {
+    return false;
+  }
 }
 
 /* ─────────────────────────────── unlocking ─────────────────────────────── */
@@ -1029,75 +1042,117 @@ function RecoveryFlow({
  * a soft delete, not a thirty-day window. And the phrase states the act rather
  * than naming the account, so it cannot be satisfied by muscle memory.
  *
- * And a **re-authentication**, which the typed phrase is not a substitute for.
- * The phrase is printed on the screen above the field, so it costs an attacker
- * one glance; and this is the one screen in the product that must stay reachable
- * from a locked session, so the vault lock cannot stand in front of it the way it
- * stands in front of every other destructive act. Without a second credential, a
- * stolen session cookie would be enough to destroy somebody's keys for good.
+ * And **two re-authentications, in this order**, which the typed phrase is not a
+ * substitute for. The phrase is printed on the screen above the field, so it
+ * costs an attacker one glance; and this is the one screen in the product that
+ * must stay reachable from a locked session, so the vault lock cannot stand in
+ * front of it the way it stands in front of every other destructive act.
  *
- * So the person signs in again — a password, or the Google prompt — and the fresh
- * ID token travels with the request. The server verifies it against the identity
- * provider and checks both that it names this account and that the
- * authentication behind it happened minutes ago rather than at sign-in.
+ *  1. **Sign in again.** A full trip through AuthKit, told to ask for the
+ *     credential even if it holds a session. It comes back to this screen with
+ *     a new session, and the server records that this session's sign-in just
+ *     happened.
+ *  2. **Enter the code we email.** Requested only after step 1, checked by the
+ *     server against the account the session belongs to, and turned into a
+ *     five-minute proof the reset spends.
  *
- * The token is a local `const` in one call frame: obtained, passed into
+ * Which step to show is never decided from the URL: the marker that brings the
+ * browser back here only reopens this screen, and `GET /api/auth/reauth` says
+ * what the server actually recorded.
+ *
+ * The proof is a local `const` in one call frame — obtained, passed into
  * {@link resetVault}, and unreachable the moment the handler returns. It is never
- * put into React state, which is the same rule `lib/firebase.ts` keeps for the
- * sign-in token.
+ * put into React state.
  *
  * The keys are released before the request, inside {@link resetVault}. Nothing
  * is held in this state, and doing it anyway costs nothing and closes the case
  * where something was.
  */
-/**
- * Whether a thrown value came from Firebase rather than from our API.
- *
- * A `code` of the `auth/…` shape is the only marker the SDK gives, and matching
- * on the prefix rather than on any string `code` keeps an ApiError — which may
- * one day grow a `code` of its own — from being rendered through
- * `describeAuthError`, whose vocabulary is entirely about sign-in.
- */
-function isAuthError(cause: unknown): boolean {
-  if (typeof cause !== 'object' || cause === null || !('code' in cause)) return false;
-  const code = (cause as { code: unknown }).code;
-  return typeof code === 'string' && code.startsWith('auth/');
-}
-
 function AllCodesLost({
-  email,
+  resumed,
   onBack,
   onReset,
 }: {
-  /** The signed-in address, so a password re-auth needs no second field. */
-  email: string;
+  /** Came back from the fresh sign-in: skip the facts, ask where things stand. */
+  resumed: boolean;
   onBack: () => void;
   onReset: () => void;
 }) {
   const vault = useVault();
   const [typed, setTyped] = useState('');
-  const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [showProblem, setShowProblem] = useState(false);
   const [done, setDone] = useState(false);
 
-  // Two screens rather than one: the facts, then the act. A single page
-  // carrying both was a wall of text with a destructive form at the bottom —
-  // splitting them means each screen asks the reader for exactly one thing.
-  const [step, setStep] = useState<'facts' | 'confirm'>('facts');
+  // Three screens: the facts, the fresh sign-in, then the code and the act.
+  // Each asks the reader for exactly one thing.
+  const [step, setStep] = useState<'facts' | 'checking' | 'sign-in' | 'confirm'>(
+    resumed ? 'checking' : 'facts',
+  );
+  const [status, setStatus] = useState<ReauthStatus | null>(null);
+  const [sent, setSent] = useState(false);
 
   const problem = resetConfirmationProblem(typed);
 
   /**
-   * The shared tail of both re-authentication routes.
-   *
-   * `prove` runs the Firebase half and hands back a token this function
-   * immediately spends. Written once so the password path and the Google path
-   * cannot drift on the order of operations — the phrase check, the token, the
-   * reset, and the adopt-then-reload that follows it.
+   * Asks the server where this session's re-authentication stands, and moves
+   * to the screen that matches. Run when the screen comes back from the fresh
+   * sign-in, and whenever the person chooses to continue past the facts.
    */
-  async function resetWith(prove: () => Promise<string>) {
+  function check() {
+    setStep('checking');
+    setFailure(null);
+    void refreshStatus();
+  }
+
+  /** The asking half of {@link check}: state changes only once the answer is in. */
+  async function refreshStatus() {
+    try {
+      const current = await fetchReauthStatus();
+      setStatus(current);
+      setSent(current.codeSent);
+      setStep(current.signedIn ? 'confirm' : 'sign-in');
+    } catch (cause) {
+      setFailure(errorMessage(cause));
+      setStep('sign-in');
+    }
+  }
+
+  // The marker in the URL did its one job — bringing this screen back — and is
+  // dropped so that a reload or a shared link does not reopen it.
+  useEffect(() => {
+    if (!resumed) return;
+    // Already on `checking` — the initial state for a resumed screen.
+    void refreshStatus();
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete(VAULT_RESET_RESUME_PARAM);
+      window.history.replaceState(window.history.state, '', url);
+    } catch {
+      // A URL that cannot be rewritten is cosmetic; the screen works either way.
+    }
+    // Once, on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function sendCode() {
+    if (busy) return;
+    setBusy(true);
+    setFailure(null);
+    try {
+      await sendReauthCode();
+      setSent(true);
+    } catch (cause) {
+      setFailure(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reset(event: React.FormEvent) {
+    event.preventDefault();
     if (busy) return;
 
     if (problem !== null) {
@@ -1108,23 +1163,23 @@ function AllCodesLost({
     setBusy(true);
     setFailure(null);
     try {
-      const status = await resetVault(typed, await prove());
+      // Verified and spent in one call frame: the proof never outlives this
+      // handler, and a second click cannot replay it.
+      const proof = await verifyReauthCode(code);
+      const result = await resetVault(typed, proof);
       // Adopted before anything navigates, so this provider stops describing a
       // vault that no longer exists. `reload` follows to drop the material with
       // it — safe here and nowhere else in this file, because the dead end is
       // the one stage that renders without material.
-      vault.adopt({ vault: status });
+      vault.adopt({ vault: result });
       setDone(true);
       void vault.reload();
       // Re-reads `/api/auth/me`, which now reports `configured: false` — and
       // that is what swaps this screen for the setup ceremony.
       onReset();
     } catch (cause) {
-      // `describeAuthError` first: a Firebase failure carries a `code` and a
-      // developer-facing message that sometimes echoes the input, and it is the
-      // likelier failure here. `errorMessage` handles our own API errors.
-      setFailure(isAuthError(cause) ? describeAuthError(cause) : errorMessage(cause));
-      setPassword('');
+      setFailure(errorMessage(cause));
+      setCode('');
     } finally {
       setBusy(false);
     }
@@ -1162,7 +1217,7 @@ function AllCodesLost({
           <p>Your teammates and your organisation’s data are unaffected.</p>
         </div>
 
-        <Button variant="danger-outline" onClick={() => setStep('confirm')}>
+        <Button variant="danger-outline" onClick={check}>
           I understand — reset my vault
         </Button>
         <Button variant="secondary" onClick={onBack}>
@@ -1175,7 +1230,51 @@ function AllCodesLost({
     );
   }
 
-  // Screen two: the act, and nothing else to read.
+  if (step === 'checking') {
+    return (
+      <div aria-busy="true" aria-label="Checking your sign-in" className="flex flex-col gap-3">
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-11 w-full" />
+      </div>
+    );
+  }
+
+  // Screen two: the first lock. A link rather than a form: it is a plain
+  // navigation to AuthKit and back, and a `<form>` here would be refused by
+  // `form-action 'self'` when the server redirects it off-site.
+  if (step === 'sign-in') {
+    return (
+      <div className="flex flex-col gap-4">
+        {failure !== null ? (
+          <Alert tone="danger" title="Something went wrong">
+            {failure}
+          </Alert>
+        ) : null}
+
+        {/*
+          Somebody at this screen has just failed to prove they know their
+          passphrase, so being asked for a *different* secret needs a reason
+          attached or it reads as the same demand repeated.
+        */}
+        <p className="text-fg-muted text-sm leading-6">
+          First, sign in again with the password, passkey, Google account or company sign-in you use
+          for xecret. It protects you if someone else has this browser. Then we’ll email you a code.
+        </p>
+        <p className="text-fg-subtle text-sm leading-6">
+          A sign-in with an emailed code doesn’t count for this step — the code comes next.
+        </p>
+
+        <Button variant="danger" asChild>
+          <a href={reauthSignInUrl(window.location)}>Sign in again</a>
+        </Button>
+        <Button variant="ghost" onClick={() => setStep('facts')}>
+          Back
+        </Button>
+      </div>
+    );
+  }
+
+  // Screen three: the second lock and the act, and nothing else to read.
   return (
     <div className="flex flex-col gap-4">
       {failure !== null ? (
@@ -1184,62 +1283,69 @@ function AllCodesLost({
         </Alert>
       ) : null}
 
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          void resetWith(() => reauthenticateWithPassword(email, password));
-        }}
-        noValidate
-        className="flex flex-col gap-4"
-      >
-        <Field
-          label={`Type “${VAULT_RESET_CONFIRMATION}” to confirm`}
-          error={showProblem ? problem : null}
-        >
-          <Input
-            value={typed}
-            onChange={(event) => setTyped(event.target.value)}
-            autoComplete="off"
-            spellCheck={false}
-            autoFocus
-            placeholder={VAULT_RESET_CONFIRMATION}
-          />
-        </Field>
+      <p className="text-fg-muted text-sm leading-6">
+        {sent ? (
+          <>
+            We emailed a six-digit code to <span className="text-fg">{status?.email}</span>. It
+            works for ten minutes.
+          </>
+        ) : (
+          <>
+            You’re signed in. Now we’ll email a six-digit code to{' '}
+            <span className="text-fg">{status?.email}</span>.
+          </>
+        )}
+      </p>
 
-        <Separator />
-
-        {/*
-          The second credential, and the copy says what it is for. Somebody at
-          this screen has just failed to prove they know their passphrase, so
-          being asked for a *different* secret needs a reason attached or it
-          reads as the same demand repeated.
-        */}
-        <p className="text-fg-muted text-sm leading-6">
-          One last check that it’s really you — sign in again with the password or Google account
-          you use for xecret. It protects you if someone else has this browser session.
-        </p>
-
-        <Field label={`Password for ${email}`}>
-          <Input
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            autoComplete="current-password"
-          />
-        </Field>
-
-        <Button type="submit" variant="danger" loading={busy}>
-          Reset my vault
+      {sent ? null : (
+        <Button variant="primary" loading={busy} onClick={() => void sendCode()}>
+          Email me a code
         </Button>
-      </form>
+      )}
 
-      <Button
-        variant="secondary"
-        loading={busy}
-        onClick={() => void resetWith(reauthenticateWithGoogle)}
-      >
-        Confirm with Google and reset
-      </Button>
+      {sent ? (
+        <form onSubmit={reset} noValidate className="flex flex-col gap-4">
+          <Field label="Code from the email">
+            <Input
+              value={code}
+              onChange={(event) => setCode(event.target.value)}
+              autoComplete="one-time-code"
+              inputMode="numeric"
+              spellCheck={false}
+              autoFocus
+              className="font-mono tracking-widest"
+              placeholder="123456"
+            />
+          </Field>
+
+          <Separator />
+
+          <Field
+            label={`Type “${VAULT_RESET_CONFIRMATION}” to confirm`}
+            error={showProblem ? problem : null}
+          >
+            <Input
+              value={typed}
+              onChange={(event) => setTyped(event.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={VAULT_RESET_CONFIRMATION}
+            />
+          </Field>
+
+          <Button
+            type="submit"
+            variant="danger"
+            loading={busy}
+            disabled={code.replace(/\s+/g, '').length !== 6}
+          >
+            Reset my vault
+          </Button>
+          <Button variant="ghost" disabled={busy} onClick={() => void sendCode()}>
+            Send a new code
+          </Button>
+        </form>
+      ) : null}
 
       <Button variant="ghost" onClick={() => setStep('facts')}>
         Back

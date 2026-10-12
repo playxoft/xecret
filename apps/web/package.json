@@ -37,8 +37,6 @@
     "@zxcvbn-ts/language-en": "^4.1.1",
     "client-only": "0.0.1",
     "clsx": "^2.1.1",
-    "firebase": "^12.19.0",
-    "firebase-auth-cloudflare-workers": "^2.0.6",
     "marked": "^18.0.12",
     "next": "16.3.5",
     "react": "19.3.0",

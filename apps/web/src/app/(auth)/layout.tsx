@@ -5,8 +5,10 @@ import { PlayxoftMark, Wordmark } from '@/components/layout/logo';
 /**
  * The frame every authentication screen shares.
  *
- * A Server Component: nothing here needs the browser, and keeping the frame on
- * the server means only the form itself ships as client JavaScript.
+ * A Server Component: nothing here needs the browser. The sign-in screens are
+ * links to AuthKit now rather than forms, so most of them ship no client
+ * JavaScript at all; the ones that still do (the invitation and the CLI
+ * consent screen) carry only their own.
  */
 export default function AuthLayout({ children }: LayoutProps<'/'>) {
   return (

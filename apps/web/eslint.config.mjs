@@ -3,31 +3,70 @@ import nextVitals from 'eslint-config-next/core-web-vitals';
 import nextTs from 'eslint-config-next/typescript';
 
 /**
- * ── ADR 0003: the Firebase Admin SDK cannot run on Cloudflare Workers. ──
- * It must never arrive, not even as a convenience import during debugging.
+ * ── The identity provider is WorkOS, reached only through `@workos-inc/node`. ──
+ * docs/adr/0010-workos-as-identity-provider.md. Nothing else that signs people
+ * in may arrive, not even as a convenience import during debugging.
  *
- * Held in a constant rather than written inline because two config blocks below
- * need it and `no-restricted-imports` is all-or-nothing per block: the
+ * Every Firebase package is banned: Firebase was used for nothing but sign-in,
+ * the client SDK would be a second, unreviewed sign-in path in the browser, and
+ * `firebase-admin` never could run on Workers (ADR 0003). So is
+ * `@workos-inc/authkit-nextjs` — WorkOS's own Next.js package and the first
+ * thing its documentation installs — because it is built around
+ * `authkitMiddleware` and its own sealed session cookie, and this deployment
+ * has no middleware and cannot have one (ADR 0008) and keeps its own session.
+ * `src/server/workos.ts` is the one boundary with WorkOS.
+ *
+ * Held in a constant rather than written inline because several config blocks
+ * below need it and `no-restricted-imports` is all-or-nothing per block: the
  * build-time exemption for the documentation loader has to re-state this ban in
  * order to drop the filesystem one, and a security rule that exists in two
- * hand-maintained copies is a security rule that will exist in one.
+ * hand-maintained copies is a security rule that will exist in one. The same
+ * ban, with the same messages, is in the root `eslint.config.mjs`.
  */
-const FIREBASE_ADMIN_BAN = {
+const FIREBASE_MESSAGE =
+  'Firebase is no longer the identity provider: WorkOS replaced it (docs/adr/0010-workos-as-identity-provider.md). Sign-in goes through @workos-inc/node in apps/web/src/server/workos.ts.';
+const AUTHKIT_NEXTJS_MESSAGE =
+  '@workos-inc/authkit-nextjs is built around authkitMiddleware and its own session cookie. This deployment has no middleware and cannot have one (docs/adr/0008-no-middleware.md), and keeps its own session (docs/adr/0010-workos-as-identity-provider.md). Use @workos-inc/node through apps/web/src/server/workos.ts.';
+const IDENTITY_PROVIDER_BAN = {
   paths: [
-    {
-      name: 'firebase-admin',
-      message:
-        'firebase-admin cannot run on Cloudflare Workers (Node-native deps). Use firebase-auth-cloudflare-workers. See docs/adr/0003-firebase-as-identity-provider.md',
-    },
+    { name: 'firebase', message: FIREBASE_MESSAGE },
+    { name: 'firebase-admin', message: FIREBASE_MESSAGE },
+    { name: 'firebase-auth-cloudflare-workers', message: FIREBASE_MESSAGE },
+    { name: '@workos-inc/authkit-nextjs', message: AUTHKIT_NEXTJS_MESSAGE },
   ],
   patterns: [
     {
-      group: ['firebase-admin/*'],
-      message:
-        'firebase-admin cannot run on Cloudflare Workers. Use firebase-auth-cloudflare-workers. See docs/adr/0003-firebase-as-identity-provider.md',
+      group: [
+        'firebase/*',
+        '@firebase/*',
+        'firebase-admin/*',
+        'firebase-auth-cloudflare-workers/*',
+      ],
+      message: FIREBASE_MESSAGE,
     },
+    { group: ['@workos-inc/authkit-nextjs/*'], message: AUTHKIT_NEXTJS_MESSAGE },
   ],
 };
+
+/**
+ * The same ban for `import(...)`, which `no-restricted-imports` does not see —
+ * and "load the SDK only when the button is pressed" is exactly how the
+ * Firebase client SDK used to be reached. Built like the test-database one
+ * below; identical to the root config's. Spread into every block that declares
+ * `no-restricted-syntax`, the test files' included.
+ */
+const IDENTITY_PROVIDER_SPECIFIERS = [
+  { specifier: String.raw`^@?firebase(\/.*)?$`, message: FIREBASE_MESSAGE },
+  { specifier: String.raw`^firebase-admin(\/.*)?$`, message: FIREBASE_MESSAGE },
+  { specifier: String.raw`^firebase-auth-cloudflare-workers(\/.*)?$`, message: FIREBASE_MESSAGE },
+  { specifier: String.raw`^@workos-inc\/authkit-nextjs(\/.*)?$`, message: AUTHKIT_NEXTJS_MESSAGE },
+];
+const IDENTITY_PROVIDER_DYNAMIC_IMPORT_BAN = IDENTITY_PROVIDER_SPECIFIERS.flatMap(
+  ({ specifier, message }) => [
+    { selector: `ImportExpression[source.value=/${specifier}/]`, message },
+    { selector: `ImportExpression[source.quasis.0.value.cooked=/${specifier}/]`, message },
+  ],
+);
 
 /**
  * ── Test databases never reach the edge. ──
@@ -113,15 +152,19 @@ const eslintConfig = defineConfig([
       'no-restricted-imports': [
         'error',
         {
-          paths: [...FIREBASE_ADMIN_BAN.paths, ...TEST_DATABASE_BAN.paths],
+          paths: [...IDENTITY_PROVIDER_BAN.paths, ...TEST_DATABASE_BAN.paths],
           patterns: [
-            ...FIREBASE_ADMIN_BAN.patterns,
+            ...IDENTITY_PROVIDER_BAN.patterns,
             ...TEST_DATABASE_BAN.patterns,
             FILESYSTEM_BAN_PATTERN,
           ],
         },
       ],
-      'no-restricted-syntax': ['error', ...TEST_DATABASE_DYNAMIC_IMPORT_BAN],
+      'no-restricted-syntax': [
+        'error',
+        ...IDENTITY_PROVIDER_DYNAMIC_IMPORT_BAN,
+        ...TEST_DATABASE_DYNAMIC_IMPORT_BAN,
+      ],
 
       // Secrets must never reach a log. console.log is the most common accident;
       // warn/error are permitted because they are reviewed and go to structured logging.
@@ -154,7 +197,7 @@ const eslintConfig = defineConfig([
     // nothing else may. Reasoned like `xecret/tests-never-reach-the-edge`
     // below: the exemption is keyed to the `*.test.ts` suffix, not to a
     // directory a runtime helper could later sit in. Only the test-database
-    // ban is lifted; the filesystem and `firebase-admin` bans still apply,
+    // ban is lifted; the filesystem and identity-provider bans still apply,
     // exactly as in `xecret/security`.
     //
     // Deliberately *before* the two blocks that narrow the rule further: ESLint
@@ -166,15 +209,16 @@ const eslintConfig = defineConfig([
       'no-restricted-imports': [
         'error',
         {
-          paths: FIREBASE_ADMIN_BAN.paths,
-          patterns: [...FIREBASE_ADMIN_BAN.patterns, FILESYSTEM_BAN_PATTERN],
+          paths: IDENTITY_PROVIDER_BAN.paths,
+          patterns: [...IDENTITY_PROVIDER_BAN.patterns, FILESYSTEM_BAN_PATTERN],
         },
       ],
-      // `xecret/security`'s `no-restricted-syntax` is the test-database ban and
-      // nothing else (the Next.js presets declare none), so lifting it leaves no
-      // selectors. If that block ever gains selectors of its own, restate them
-      // here without the ban.
-      'no-restricted-syntax': 'off',
+      // `xecret/security`'s `no-restricted-syntax` is the identity-provider ban
+      // and the test-database ban and nothing else (the Next.js presets declare
+      // none), so lifting the second leaves exactly the first. If that block
+      // ever gains selectors of its own, restate them here without the
+      // test-database ban.
+      'no-restricted-syntax': ['error', ...IDENTITY_PROVIDER_DYNAMIC_IMPORT_BAN],
     },
   },
 
@@ -194,16 +238,17 @@ const eslintConfig = defineConfig([
       //
       // Stated as a narrower rule rather than as `'off'`, because ESLint
       // replaces a rule's configuration wholesale: switching it off to permit
-      // `node:fs` also switched off ADR 0003's `firebase-admin` ban, in the one
+      // `node:fs` once also switched off the `firebase-admin` ban, in the one
       // directory where an exemption from this rule already looked deliberate
-      // and nobody would think to check. The ban that has nothing to do with
-      // the filesystem survives here; only the filesystem group is dropped. The
+      // and nobody would think to check. The bans that have nothing to do with
+      // the filesystem survive here; only the filesystem group is dropped. The
       // test-database ban survives too: build-time code is still not test code.
+      // (`no-restricted-syntax` is not declared, so `xecret/security`'s applies.)
       'no-restricted-imports': [
         'error',
         {
-          paths: [...FIREBASE_ADMIN_BAN.paths, ...TEST_DATABASE_BAN.paths],
-          patterns: [...FIREBASE_ADMIN_BAN.patterns, ...TEST_DATABASE_BAN.patterns],
+          paths: [...IDENTITY_PROVIDER_BAN.paths, ...TEST_DATABASE_BAN.paths],
+          patterns: [...IDENTITY_PROVIDER_BAN.patterns, ...TEST_DATABASE_BAN.patterns],
         },
       ],
     },
@@ -237,8 +282,8 @@ const eslintConfig = defineConfig([
       // Stated as the narrower rule rather than as `'off'`, for the reason
       // spelled out above: ESLint replaces a rule's configuration wholesale,
       // and switching this one off to permit `node:fs` would also switch off
-      // ADR 0003's `firebase-admin` ban across every test in the app.
-      'no-restricted-imports': ['error', FIREBASE_ADMIN_BAN],
+      // the identity-provider ban across every test in the app.
+      'no-restricted-imports': ['error', IDENTITY_PROVIDER_BAN],
     },
   },
 

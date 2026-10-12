@@ -53,7 +53,13 @@ type Home =
   | 'secret'
   /** Held in Cloudflare Secrets Store and reached through a binding. */
   | 'store'
-  /** Consumed by `next build`; never reaches the Worker and must not be a var. */
+  /**
+   * Consumed by `next build`; never reaches the Worker and must not be a var.
+   * Nothing lives here today — the identity provider's client config was the
+   * one tenant, and WorkOS sign-in is server-initiated, so it has no
+   * `NEXT_PUBLIC_*` successor. Kept because the next build-time value needs a
+   * home that is not `var`.
+   */
   | 'build'
   /** The Worker never reads it. Present in Phase for migrations or local work. */
   | 'unused';
@@ -94,11 +100,27 @@ const CONTRACT: Contract[] = [
     matters: 'which root key wraps new secrets',
   },
   {
-    name: 'FIREBASE_PROJECT_ID',
+    name: 'WORKOS_CLIENT_ID',
     home: 'var',
     required: true,
     matters:
-      'the `aud` claim every ID token is checked against; wrong means every sign-in is rejected',
+      'which WorkOS environment sign-in runs against; absent means nobody can sign in, and it ' +
+      'must be from the same WorkOS environment as WORKOS_API_KEY',
+  },
+  {
+    name: 'WORKOS_API_KEY',
+    home: 'secret',
+    required: true,
+    matters:
+      'authenticates every call to WorkOS, the sign-in code exchange included; absent means ' +
+      'nobody can sign in',
+  },
+  {
+    name: 'WORKOS_COOKIE_PASSWORD',
+    home: 'secret',
+    required: true,
+    matters:
+      'keys the sign-in state cookie; absent or under 32 characters means every sign-in answers 503',
   },
   {
     name: 'ZEPTOMAIL_FROM_ADDRESS',
@@ -147,12 +169,6 @@ const CONTRACT: Contract[] = [
     home: 'store',
     required: true,
     matters: 'the Root KEK map — without it no secret in the product can be decrypted',
-  },
-  {
-    name: 'NEXT_PUBLIC_FIREBASE_CONFIG',
-    home: 'build',
-    required: true,
-    matters: 'inlined into the client bundle at build time; on the Worker it would do nothing',
   },
   {
     name: 'DATABASE_URL',

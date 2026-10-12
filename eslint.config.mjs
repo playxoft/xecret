@@ -19,7 +19,22 @@ import tseslint from 'typescript-eslint';
  */
 
 /**
- * ── ADR 0003: the Firebase Admin SDK cannot run on Cloudflare Workers. ──
+ * ── The identity provider is WorkOS, reached only through `@workos-inc/node`. ──
+ *
+ * docs/adr/0010-workos-as-identity-provider.md. Firebase was used for nothing
+ * but sign-in, so with sign-in moved every Firebase package is banned outright
+ * rather than left importable: `firebase` (and the `@firebase/*` packages it is
+ * made of) would be a second, unreviewed sign-in path in the browser;
+ * `firebase-auth-cloudflare-workers` is the server half of the verifier that
+ * was replaced; and `firebase-admin` never could run on Workers at all (ADR
+ * 0003).
+ *
+ * `@workos-inc/authkit-nextjs` is banned beside them, and is the entry most
+ * likely to be needed: it is WorkOS's own Next.js package and the first thing
+ * its documentation installs. It is built around `authkitMiddleware` and its own
+ * sealed session cookie. This deployment has no middleware and cannot have one
+ * (ADR 0008), and it keeps its own session, listed and revoked in one place.
+ * `apps/web/src/server/workos.ts` is the one boundary with WorkOS.
  *
  * A constant, even though the note above argues for hand-written copies. That
  * argument is about the *other* file: `apps/web` holding its own copy is what
@@ -29,27 +44,56 @@ import tseslint from 'typescript-eslint';
  *
  * `no-restricted-imports` is replaced wholesale per block rather than merged,
  * so a later block that re-declares the rule for its own reasons silently drops
- * this ban. That is exactly what happened: `packages/core` re-declared it for
- * ADR 0005's runtime-agnostic list, and `import admin from 'firebase-admin'`
- * lint-clean in the package this config's own header calls the highest-risk
- * code in the product. Every block that declares the rule now spreads this in.
+ * this ban. That is exactly what happened to its predecessor: `packages/core`
+ * re-declared the rule for ADR 0005's runtime-agnostic list, and
+ * `import admin from 'firebase-admin'` was lint-clean in the package this
+ * config's own header calls the highest-risk code in the product. Every block
+ * that declares the rule now spreads this in.
  */
-const FIREBASE_ADMIN_BAN = {
+const FIREBASE_MESSAGE =
+  'Firebase is no longer the identity provider: WorkOS replaced it (docs/adr/0010-workos-as-identity-provider.md). Sign-in goes through @workos-inc/node in apps/web/src/server/workos.ts.';
+const AUTHKIT_NEXTJS_MESSAGE =
+  '@workos-inc/authkit-nextjs is built around authkitMiddleware and its own session cookie. This deployment has no middleware and cannot have one (docs/adr/0008-no-middleware.md), and keeps its own session (docs/adr/0010-workos-as-identity-provider.md). Use @workos-inc/node through apps/web/src/server/workos.ts.';
+const IDENTITY_PROVIDER_BAN = {
   paths: [
-    {
-      name: 'firebase-admin',
-      message:
-        'firebase-admin cannot run on Cloudflare Workers (Node-native deps). Use firebase-auth-cloudflare-workers. See docs/adr/0003-firebase-as-identity-provider.md',
-    },
+    { name: 'firebase', message: FIREBASE_MESSAGE },
+    { name: 'firebase-admin', message: FIREBASE_MESSAGE },
+    { name: 'firebase-auth-cloudflare-workers', message: FIREBASE_MESSAGE },
+    { name: '@workos-inc/authkit-nextjs', message: AUTHKIT_NEXTJS_MESSAGE },
   ],
   patterns: [
     {
-      group: ['firebase-admin/*'],
-      message:
-        'firebase-admin cannot run on Cloudflare Workers. Use firebase-auth-cloudflare-workers. See docs/adr/0003-firebase-as-identity-provider.md',
+      group: [
+        'firebase/*',
+        '@firebase/*',
+        'firebase-admin/*',
+        'firebase-auth-cloudflare-workers/*',
+      ],
+      message: FIREBASE_MESSAGE,
     },
+    { group: ['@workos-inc/authkit-nextjs/*'], message: AUTHKIT_NEXTJS_MESSAGE },
   ],
 };
+
+/**
+ * The same ban for `import(...)`, built exactly like the test-database one
+ * below and for the same reason: a dynamic import is the obvious way round a
+ * static-import ban, and "load the SDK only when the button is pressed" is
+ * precisely how the Firebase client SDK used to be reached. Spread into every
+ * block that declares `no-restricted-syntax`.
+ */
+const IDENTITY_PROVIDER_SPECIFIERS = [
+  { specifier: String.raw`^@?firebase(\/.*)?$`, message: FIREBASE_MESSAGE },
+  { specifier: String.raw`^firebase-admin(\/.*)?$`, message: FIREBASE_MESSAGE },
+  { specifier: String.raw`^firebase-auth-cloudflare-workers(\/.*)?$`, message: FIREBASE_MESSAGE },
+  { specifier: String.raw`^@workos-inc\/authkit-nextjs(\/.*)?$`, message: AUTHKIT_NEXTJS_MESSAGE },
+];
+const IDENTITY_PROVIDER_DYNAMIC_IMPORT_BAN = IDENTITY_PROVIDER_SPECIFIERS.flatMap(
+  ({ specifier, message }) => [
+    { selector: `ImportExpression[source.value=/${specifier}/]`, message },
+    { selector: `ImportExpression[source.quasis.0.value.cooked=/${specifier}/]`, message },
+  ],
+);
 
 /**
  * ── Test databases never reach runtime code. ──
@@ -63,7 +107,7 @@ const FIREBASE_ADMIN_BAN = {
  * The same ban, with the same message, is in `apps/web/eslint.config.mjs`.
  *
  * Spread into every block below that declares `no-restricted-imports`, for the
- * reason `FIREBASE_ADMIN_BAN` explains: a later declaration replaces the rule
+ * reason `IDENTITY_PROVIDER_BAN` explains: a later declaration replaces the rule
  * wholesale, so a block that forgot this would silently drop it.
  */
 const TEST_DATABASE_MESSAGE =
@@ -164,11 +208,15 @@ export default defineConfig([
       'no-restricted-imports': [
         'error',
         {
-          paths: [...FIREBASE_ADMIN_BAN.paths, ...TEST_DATABASE_BAN.paths],
-          patterns: [...FIREBASE_ADMIN_BAN.patterns, ...TEST_DATABASE_BAN.patterns],
+          paths: [...IDENTITY_PROVIDER_BAN.paths, ...TEST_DATABASE_BAN.paths],
+          patterns: [...IDENTITY_PROVIDER_BAN.patterns, ...TEST_DATABASE_BAN.patterns],
         },
       ],
-      'no-restricted-syntax': ['error', ...TEST_DATABASE_DYNAMIC_IMPORT_BAN],
+      'no-restricted-syntax': [
+        'error',
+        ...IDENTITY_PROVIDER_DYNAMIC_IMPORT_BAN,
+        ...TEST_DATABASE_DYNAMIC_IMPORT_BAN,
+      ],
 
       // Underscore-prefixed parameters are a documented "deliberately unused"
       // signal — `redactValue(_value)` exists so no path can carry its input to
@@ -193,11 +241,12 @@ export default defineConfig([
     name: 'xecret/test-database-is-test-only',
     files: ['packages/*/src/**/*.test.ts', 'packages/db/src/testing/**/*.ts'],
     rules: {
-      'no-restricted-imports': ['error', FIREBASE_ADMIN_BAN],
-      // Every other block's `no-restricted-syntax` is the test-database ban
-      // and nothing else, so lifting it leaves no selectors. If a block ever
-      // gains selectors of its own, restate them here without the ban.
-      'no-restricted-syntax': 'off',
+      'no-restricted-imports': ['error', IDENTITY_PROVIDER_BAN],
+      // Every other block's `no-restricted-syntax` is the identity-provider
+      // ban and the test-database ban and nothing else, so lifting the second
+      // leaves exactly the first. If a block ever gains selectors of its own,
+      // restate them here without the test-database ban.
+      'no-restricted-syntax': ['error', ...IDENTITY_PROVIDER_DYNAMIC_IMPORT_BAN],
     },
   },
 
@@ -206,9 +255,10 @@ export default defineConfig([
     // Node. Anything Node-specific here would not fail until deploy.
     files: ['packages/core/**/*.ts'],
     rules: {
-      // ADR 0005's list *plus* ADR 0003's, because this declaration replaces
-      // the one above rather than adding to it. Narrowing a block to the rule
-      // it cares about is what let `firebase-admin` through here.
+      // ADR 0005's list *plus* the identity-provider ban, because this
+      // declaration replaces the one above rather than adding to it. Narrowing
+      // a block to the rule it cares about is what once let `firebase-admin`
+      // through here.
       'no-restricted-imports': [
         'error',
         {
@@ -217,7 +267,7 @@ export default defineConfig([
           // of this package's own modules — the rule then bans exactly the code
           // it was written to protect.
           paths: [
-            ...FIREBASE_ADMIN_BAN.paths,
+            ...IDENTITY_PROVIDER_BAN.paths,
             ...TEST_DATABASE_BAN.paths,
             ...['fs', 'path', 'crypto', 'buffer', 'os', 'child_process', 'stream', 'util'].map(
               (name) => ({
@@ -228,7 +278,7 @@ export default defineConfig([
             ),
           ],
           patterns: [
-            ...FIREBASE_ADMIN_BAN.patterns,
+            ...IDENTITY_PROVIDER_BAN.patterns,
             ...TEST_DATABASE_BAN.patterns,
             {
               group: ['node:*'],
@@ -238,7 +288,11 @@ export default defineConfig([
           ],
         },
       ],
-      'no-restricted-syntax': ['error', ...TEST_DATABASE_DYNAMIC_IMPORT_BAN],
+      'no-restricted-syntax': [
+        'error',
+        ...IDENTITY_PROVIDER_DYNAMIC_IMPORT_BAN,
+        ...TEST_DATABASE_DYNAMIC_IMPORT_BAN,
+      ],
     },
   },
 
@@ -258,8 +312,8 @@ export default defineConfig([
      * to its package. It also matches the `packages/core` block above, which
      * bans Node imports; that ban is right for code that ships to a Worker and
      * wrong for a script that only ever runs under Node, and this block, being
-     * later, replaces it with the plain Firebase ban. Nothing under `src` is
-     * affected, which is the code the ban exists for.
+     * later, replaces it with the plain identity-provider ban. Nothing under
+     * `src` is affected, which is the code the ban exists for.
      */
     files: ['scripts/**/*.ts', 'packages/*/scripts/**/*.ts', 'packages/*/*.config.ts'],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
@@ -270,26 +324,30 @@ export default defineConfig([
       'no-console': 'off',
       '@typescript-eslint/no-explicit-any': 'error',
 
-      // These files run under Node and never reach the Worker, so ADR 0003's
-      // stated reason — Node-native dependencies do not load on Workers — does
-      // not apply to them on its own terms. The ban is here anyway, because the
-      // thing it actually prevents is `firebase-admin` entering `package.json`
-      // at all: once installed for one script it resolves from every workspace,
-      // and `scripts/check-env.ts` already imports from both `apps/web` and
-      // `packages/core`, so "just for a script" is one refactor from shipping.
-      // ADR 0003 and CONTRIBUTING both state the ban without qualification;
-      // this is the last place the config disagreed with them.
+      // These files run under Node and never reach the Worker or a browser, so
+      // most of what the identity-provider ban is about — `firebase-admin`'s
+      // Node-native dependencies, a second sign-in path, a middleware this
+      // deployment cannot have — does not apply to them on its own terms. The
+      // ban is here anyway, because the thing it actually prevents is one of
+      // those packages entering `package.json` at all: once installed for one
+      // script it resolves from every workspace, and the scripts already
+      // import from `apps/web` and `packages/core`, so "just for a script" is
+      // one refactor from shipping.
       //
       // The test database is banned here too: an operator script that ran
       // against PGlite would report success about a database nobody uses.
       'no-restricted-imports': [
         'error',
         {
-          paths: [...FIREBASE_ADMIN_BAN.paths, ...TEST_DATABASE_BAN.paths],
-          patterns: [...FIREBASE_ADMIN_BAN.patterns, ...TEST_DATABASE_BAN.patterns],
+          paths: [...IDENTITY_PROVIDER_BAN.paths, ...TEST_DATABASE_BAN.paths],
+          patterns: [...IDENTITY_PROVIDER_BAN.patterns, ...TEST_DATABASE_BAN.patterns],
         },
       ],
-      'no-restricted-syntax': ['error', ...TEST_DATABASE_DYNAMIC_IMPORT_BAN],
+      'no-restricted-syntax': [
+        'error',
+        ...IDENTITY_PROVIDER_DYNAMIC_IMPORT_BAN,
+        ...TEST_DATABASE_DYNAMIC_IMPORT_BAN,
+      ],
     },
   },
 

@@ -246,11 +246,11 @@ export function InviteScreen({ token }: { token: string }) {
               No account yet?{' '}
               <a
                 className="text-fg decoration-line-strong hover:decoration-fg underline underline-offset-4 transition-colors"
-                href="/sign-up"
+                href={`/sign-up?next=${encodeURIComponent(nextPath)}`}
               >
                 Create one with {invitation.email}
               </a>
-              , then open this link again.
+              ; you will come back to this invitation afterwards.
             </p>
           </>
         ) : emailMatches ? (

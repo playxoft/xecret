@@ -596,27 +596,78 @@ export function resetConfirmationProblem(typed: string): string | null {
  * left a User Key resident because the request failed would be holding the one
  * key that no longer opens anything on the server.
  *
- * ── `idToken` is proof this is still the account's owner ──
+ * ── `reauthProof` is proof this is still the account's owner ──
  * The typed phrase guards against a mistake and nothing else — it is printed on
  * the screen above the field. This route is necessarily reachable from a *locked*
  * session, so without a second credential the one irreversible act in the product
- * would be available to anybody holding a stolen session cookie. The caller
- * obtains the token from `reauthenticateWithPassword` or
- * `reauthenticateWithGoogle` immediately before calling this, and the server
- * verifies its signature, its subject and how recently it was minted.
+ * would be available to anybody holding a stolen session cookie. The proof is
+ * what {@link verifyReauthCode} returns once the person has signed in again *and*
+ * entered the code emailed to them; the server spends it, once.
  *
- * It is a parameter rather than something this function fetches, so the token
+ * It is a parameter rather than something this function fetches, so the proof
  * exists as a local `const` in one call frame and is never held anywhere this
  * module could log or cache it.
  */
-export async function resetVault(confirm: string, idToken: string): Promise<VaultStatus> {
+export async function resetVault(confirm: string, reauthProof: string): Promise<VaultStatus> {
   releaseVaultKeys();
   const response = await api.post<{ vault: VaultStatus }>(apiPath.vaultReset(), {
     confirm,
-    idToken,
+    reauthProof,
   });
   return response.vault;
 }
+
+/** Where this session's re-authentication for the reset stands. */
+export interface ReauthStatus {
+  /** The forced fresh sign-in happened recently enough to ask for a code. */
+  signedIn: boolean;
+  signedInUntil: string | null;
+  codeSent: boolean;
+  /** The address the code goes to. */
+  email: string;
+}
+
+export function fetchReauthStatus(): Promise<ReauthStatus> {
+  return api.get<ReauthStatus>(apiPath.reauth());
+}
+
+/** Has the emailed code sent. Refused unless the fresh sign-in came first. */
+export function sendReauthCode(): Promise<void> {
+  return api.post<void>(apiPath.reauthStart(), undefined);
+}
+
+/**
+ * Turns the emailed code into the reset's proof.
+ *
+ * Whitespace is stripped here, because a code pasted out of an email arrives
+ * with a space or a newline as often as not; the server accepts six digits and
+ * nothing else.
+ */
+export async function verifyReauthCode(code: string): Promise<string> {
+  const response = await api.post<{ reauthProof: string }>(apiPath.reauthVerify(), {
+    code: code.replace(/\s+/g, ''),
+  });
+  return response.reauthProof;
+}
+
+/**
+ * Where the forced fresh sign-in starts, and where it comes back to.
+ *
+ * `reauth=1` makes AuthKit ask for the credential again even if it holds a
+ * session; `next` brings the browser back to the page it left, with a marker
+ * that reopens the reset where it was. The marker is a hint and nothing more:
+ * what the reset screen does next is decided by `GET /api/auth/reauth`, which
+ * reports what the server recorded, not what the URL claims.
+ */
+export function reauthSignInUrl(returnTo: { pathname: string; search: string }): string {
+  const params = new URLSearchParams(returnTo.search);
+  params.set(VAULT_RESET_RESUME_PARAM, '1');
+  const next = `${returnTo.pathname}?${params.toString()}`;
+  return `/api/auth/login?${new URLSearchParams({ reauth: '1', next }).toString()}`;
+}
+
+/** The query marker that reopens the reset after the fresh sign-in. */
+export const VAULT_RESET_RESUME_PARAM = 'vault-reset';
 
 /* ────────────────────────── passphrase change ────────────────────────── */
 
