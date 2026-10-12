@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { getTableConfig } from 'drizzle-orm/pg-core';
-import type { PgTable } from 'drizzle-orm/pg-core';
+import { is } from 'drizzle-orm';
+import { getTableConfig, PgTable } from 'drizzle-orm/pg-core';
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '../testing/pglite';
 import type { TestDatabase } from '../testing/pglite';
 import * as schema from './index';
@@ -41,14 +41,9 @@ afterAll(async () => {
 });
 
 function declaredTables(): string[] {
-  return Object.values(schema)
-    .filter((value): value is PgTable => {
-      try {
-        return typeof getTableConfig(value as PgTable).name === 'string';
-      } catch {
-        return false;
-      }
-    })
+  const values: unknown[] = Object.values(schema);
+  return values
+    .filter((value): value is PgTable => is(value, PgTable))
     .map((table) => getTableConfig(table).name)
     .sort();
 }
@@ -72,7 +67,7 @@ describe('the application role', () => {
     expect(result.rows).toHaveLength(1);
   });
 
-  it('is declared at least one table per migration-era module (sanity)', () => {
+  it('is checked against the tables the schema declares, reauthentications among them', () => {
     expect(declaredTables()).toEqual(expect.arrayContaining(['users', 'reauthentications']));
   });
 
