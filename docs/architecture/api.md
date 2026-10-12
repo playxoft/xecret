@@ -341,7 +341,9 @@ proof — and it is recommended for organisation owners. What a successful attac
 only a destroyed vault: they set up a new one, which unlocks their session and reads every
 server-mode environment the account can read, and the reset prompts teammates to re-share the
 end-to-end-encrypted ones. What the locks do stop is a stolen session cookie replayed from
-another browser. A delayed, cancellable reset is under consideration; it is not built.
+another browser. No waiting period comes before a reset, by the product owner's decision; the
+seven-day recoverable reset and the archive emailed at reset time are follow-up P23, not built
+here.
 
 ### The vault
 

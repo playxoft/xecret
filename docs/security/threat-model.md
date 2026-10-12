@@ -361,9 +361,12 @@ The victim's own vault, and with it their copy of every end-to-end-encrypted key
 **Residual risk:** **Medium** without MFA — an unlocked laptop with a live Google or
 identity-provider session and an open inbox, or full control of the inbox alone, passes both
 locks, and the reset then opens the account's server-mode secrets and asks teammates for the
-rest. Lower with MFA enrolled, once the TOTP branch is confirmed against WorkOS. A delayed,
-cancellable reset — one that waits, notifies the account, and can be called off — is under
-consideration; nothing of the kind is built.
+rest. Lower with MFA enrolled, once the TOTP branch is confirmed against WorkOS. By the product
+owner's decision (2026-10-12) no waiting period comes before a reset. Follow-up P23 keeps the
+old vault for seven days, recoverable in that window, and emails an archive of the account's
+still-encrypted secrets to its address at reset time; neither is built yet. When it lands, T11
+is restated: the victim can undo an attacker's reset within the window, and the emailed archive
+hands whoever reads the inbox an offline attack on the passphrase.
 
 ---
 
@@ -399,3 +402,4 @@ customer's own systems after legitimate secret delivery.
 | 2026-08-10 | — | Initial version, Phase 0 |
 | 2026-10-12 | — | Identity moves from Firebase to WorkOS AuthKit (ADR 0010): T1 gains login CSRF and account takeover at sign-in; the CSP loses every Google and Firebase source |
 | 2026-10-12 | — | T11 added: the vault reset's two locks — lock one is a live session, not a fresh credential, for Google and SSO accounts; a reset opens server-mode secrets and prompts re-shares; the guess budget; MFA as the mitigation, its live check pending |
+| 2026-10-12 | — | T11: the product owner's decisions recorded — no waiting period before a reset; the seven-day recoverable reset and the archive emailed at reset time are follow-up P23, which restates T11 |

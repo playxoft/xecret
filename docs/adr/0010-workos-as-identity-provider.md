@@ -357,9 +357,14 @@ Google or SSO.
 WorkOS MFA is the mitigation available today. With an authenticator app enrolled, lock two
 also needs the TOTP code, which an inbox — or an open Gmail tab — does not supply; it is
 recommended for organisation owners, whose vaults and teammates matter most. That this closes
-the paths above rests on the TOTP branch, whose live check against WorkOS is still pending. A
-delayed, cancellable reset — one that waits, tells the account, and can be called off in that
-window — is under consideration with the product owner; nothing of the kind is built.
+the paths above rests on the TOTP branch, whose live check against WorkOS is still pending.
+
+The product owner has decided against a waiting period before a reset (2026-10-12): a reset
+takes effect at once, here and in what follows. Follow-up P23 adds the rest of that decision —
+the old vault kept for seven days, recoverable in that window and purged automatically after
+it, and an archive of the account's still-encrypted secrets emailed to its address when the
+reset happens. None of it is built in this change, and P23 records its own risks, among them
+that whoever reads the inbox receives that archive and can attack the passphrase offline.
 
 ### Logout, and the AuthKit session it leaves behind
 
@@ -423,7 +428,9 @@ nothing added for WorkOS, because the browser only navigates there.
   existing account across at its owner's first WorkOS sign-in.
 - **A custom AuthKit domain.** AuthKit's default domain works; moving later is DNS and a
   setting, not a migration.
-- **The escape archive** offered before a vault reset.
+- **The escape archive and the seven-day recoverable reset** (follow-up P23). The archive is
+  emailed to the account's address when the reset happens, not offered as a download before
+  it, and no waiting period comes before a reset.
 - **A provider that is not WorkOS**, for self-hosters who want none.
 - **Decommissioning `users.firebase_uid`.** It is nullable, read and written by nothing, and
   kept as the import's join key and the rollback until a deliberate migration drops it.
@@ -488,5 +495,7 @@ nothing added for WorkOS, because the browser only navigates there.
   closing the inbox-only path rather than merely recommending MFA against it.
 - The TOTP branch of lock two has been exercised against a WorkOS environment with MFA
   enabled. Until then it is tested only against WorkOS's documented error shape.
-- The product owner decides on a delayed, cancellable reset (under consideration, not built).
+- P23 lands the seven-day recoverable reset and the emailed archive: the vault-reset residuals
+  above change with it — a reset can then be undone within seven days, and the emailed archive
+  adds an offline attack on the passphrase for whoever reads the inbox.
 - Two weeks after the production cutover: the decommission migration for `firebase_uid`.
