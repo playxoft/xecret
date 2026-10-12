@@ -475,10 +475,13 @@ function integer(value: unknown, path: string, min: number, max: number): number
   return value;
 }
 
-/** A display name or slug: any string of 1 to 256 characters. */
+/** A display name or slug: any string of 1 to 256 Unicode code points. */
 function label(value: unknown, path: string): string {
   const text = string(value, path);
-  if (text.length === 0 || text.length > MAX_NAME_LENGTH) {
+  // Code points, not UTF-16 units: `String.length` counts an emoji as two, Go
+  // counts it as one, and two readers must agree on which names fit.
+  const length = [...text].length;
+  if (length === 0 || length > MAX_NAME_LENGTH) {
     throw new ArchiveFormatError(`${path} must be 1 to ${MAX_NAME_LENGTH} characters.`);
   }
   return text;

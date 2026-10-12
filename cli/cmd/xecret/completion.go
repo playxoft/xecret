@@ -132,6 +132,13 @@ var completionTree = []completionCommand{
 		Subcommands: []completionCommand{
 			{Name: "clear", Description: "Remove every offline copy and its key"},
 		}},
+	{Name: "vault", Description: "Open a vault archive offline",
+		Flags: withHelp(),
+		Subcommands: []completionCommand{
+			{Name: "open-archive", Description: "Open a vault archive with no account or network",
+				Flags: withHelp("--recovery-code", "--passphrase-stdin", "--format", "--environment",
+					"--out-dir", "--force", "--list")},
+		}},
 	{Name: "doctor", Description: "Check this machine setup", Flags: withHelp("--json")},
 	{Name: "upgrade", Description: "Check whether a newer CLI is published", Flags: withHelp("--json")},
 	{Name: "completion", Description: "Print a shell completion script",

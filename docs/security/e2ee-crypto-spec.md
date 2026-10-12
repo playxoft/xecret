@@ -1387,7 +1387,7 @@ canonical lowercase text; timestamps are RFC 3339 in UTC with milliseconds
 | Field | Type | Rule |
 |---|---|---|
 | `orgId`, `projectId`, `environmentId` | UUID | AAD components (§4.2). |
-| `orgName`, `orgSlug`, `projectName`, `projectSlug`, `environmentName`, `environmentSlug` | string | 1 … 256 characters. Display only; never an AAD component. |
+| `orgName`, `orgSlug`, `projectName`, `projectSlug`, `environmentName`, `environmentSlug` | string | 1 … 256 Unicode code points (not UTF-16 units, not bytes). Display only; never an AAD component. |
 | `isProduction` | boolean | Display only. |
 | `keys` | array | ≥ 1 entry of `{ "envDataKeyId": UUID, "edkVersion": integer ≥ 1, "edkSealedBlob": "xk2.x25519.…", "ehkSealedBlob": "xk2.x25519.…" }` (types 6 and 7). `envDataKeyId` values are unique, and so are `edkVersion` values. |
 | `secrets` | array | Entries below. `secretId` values are unique, and so are `name` values. |
