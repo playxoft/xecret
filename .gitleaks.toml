@@ -60,9 +60,11 @@ description = "the 018f3b2c fixture UUID family used by the E2EE test suites"
 regexTarget = "secret"
 regexes = ['''^018f3b2c-9c1a-7c3d-8e4f-[0-9a-f]{12}$''']
 
-# The cross-implementation test vectors and their generator. Every value is
-# derived from seeds fixed in the spec and validated byte-for-byte by both the
-# TypeScript and Go suites — the entire point of the file is to be published.
+# The cross-implementation test vectors and their generators — the E2EE
+# primitives' and the vault archive's (spec §14.8). Every value is derived from
+# seeds fixed in the generator and validated byte-for-byte by both the
+# TypeScript and Go suites — the entire point of the files is to be published.
+# The archive fixture's plaintexts name themselves (example-not-a-real-key).
 # The two Go files hold fixtures cut from that same vector file (a token key
 # half, sealed grants) plus counting-pattern halves that name themselves.
 # Named files, not a glob, for the same reason as the block above: a new
@@ -72,6 +74,8 @@ description = "published E2EE test vectors and the named fixtures cut from them"
 paths = [
   '''^packages/core/src/crypto/client/vectors/e2ee-vectors\.json$''',
   '''^packages/core/src/crypto/client/vectors/build\.ts$''',
+  '''^packages/core/src/vault-archive/vectors/vault-archive-vectors\.json$''',
+  '''^packages/core/src/vault-archive/vectors/build\.ts$''',
   '''^cli/internal/e2ee/token_test\.go$''',
   '''^cli/internal/envkeys/envkeys_test\.go$''',
 ]

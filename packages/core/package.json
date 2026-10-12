@@ -15,7 +15,8 @@
     "./ids": "./src/ids/index.ts",
     "./auth": "./src/auth/index.ts",
     "./importer": "./src/importer/index.ts",
-    "./format": "./src/format/index.ts"
+    "./format": "./src/format/index.ts",
+    "./vault-archive": "./src/vault-archive/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -23,6 +24,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "vectors:generate": "tsx scripts/generate-vectors.ts",
+    "archive-vectors:generate": "tsx scripts/generate-archive-vectors.ts",
     "import-fixtures:generate": "tsx scripts/generate-import-fixtures.ts"
   },
   "devDependencies": {

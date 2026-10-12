@@ -59,7 +59,9 @@ function vault(userId: string, seed: number): CreateVaultParams {
     unlockVerifierHash: filled(32, seed),
     ukUnlockVerifierHash: filled(32, seed),
     passphraseWrap: ascii(`xk2.gcm.passphrase-${seed}`),
-    recoveryWraps: [{ lookupHash: filled(32, seed + 100), wrap: ascii(`xk2.gcm.recovery-${seed}`) }],
+    recoveryWraps: [
+      { lookupHash: filled(32, seed + 100), wrap: ascii(`xk2.gcm.recovery-${seed}`) },
+    ],
   };
 }
 
