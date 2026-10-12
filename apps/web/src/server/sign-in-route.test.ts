@@ -442,12 +442,61 @@ describe('starting a sign-in', () => {
     expect(plain.location.searchParams.get('provider')).toBe('authkit');
   });
 
-  it('answers 503 rather than signing state with a missing or short cookie password', async () => {
-    env['WORKOS_COOKIE_PASSWORD'] = 'too-short';
-    expect((await startSignIn()).status).toBe(503);
+  it('sends the browser to the sign-in page’s "unavailable" error rather than signing state with a weak or missing key', async () => {
+    for (const misconfigure of [
+      () => (env['WORKOS_COOKIE_PASSWORD'] = 'too-short'),
+      () => delete env['WORKOS_COOKIE_PASSWORD'],
+    ]) {
+      env['WORKOS_COOKIE_PASSWORD'] = COOKIE_PASSWORD;
+      env['WORKOS_API_KEY'] = 'sk_test_not_a_real_key';
+      misconfigure();
 
-    delete env['WORKOS_COOKIE_PASSWORD'];
-    expect((await startSignIn()).status).toBe(503);
+      const response = await login(new Request(`${ORIGIN}/api/auth/login?next=%2Fapp%2Facme`));
+
+      expect(response.status).toBe(303);
+      expect(response.headers.get('location')).toBe(
+        '/sign-in?error=unavailable&next=%2Fapp%2Facme',
+      );
+      expect(response.headers.getSetCookie()).toEqual([]);
+    }
+  });
+
+  it('ignores org= on a re-authentication', async () => {
+    const workosOrgId = unique('org_01');
+    const orgId = await seedOrg({ workosOrgId });
+    const slug = (
+      await t.pg.query<{ slug: string }>(`select slug::text from organizations where id = $1`, [
+        orgId,
+      ])
+    ).rows[0]!.slug;
+
+    const flow = await startSignIn(`?reauth=1&org=${slug}`);
+
+    expect(flow.location.searchParams.has('organization_id')).toBe(false);
+    expect(flow.location.searchParams.get('provider')).toBe('authkit');
+  });
+
+  it('stops resolving org= for an address that has looked up too many, silently', async () => {
+    const workosOrgId = unique('org_01');
+    const orgId = await seedOrg({ workosOrgId });
+    const slug = (
+      await t.pg.query<{ slug: string }>(`select slug::text from organizations where id = $1`, [
+        orgId,
+      ])
+    ).rows[0]!.slug;
+    const keys: string[] = [];
+    env['RL_LOGIN'] = {
+      limit: async ({ key }: { key: string }) => {
+        keys.push(key);
+        return { success: !key.startsWith('login_org') };
+      },
+    };
+
+    const flow = await startSignIn(`?org=${slug}`);
+
+    expect(flow.status).toBe(307);
+    expect(flow.location.searchParams.has('organization_id')).toBe(false);
+    expect(keys.some((k) => k.startsWith('login_org'))).toBe(true);
   });
 });
 
@@ -875,6 +924,26 @@ describe('sso_required', () => {
     return { workosOrgId, orgId, who, userId: row.id };
   }
 
+  it('audits an adoption even when the sign-in that made it is then refused', async () => {
+    // Round 1: a Firebase-era member of an SSO-required organisation signs in
+    // with a password. The linker adopts the row (WorkOS id written), then
+    // sso_required refuses the sign-in — and the link used to go unrecorded.
+    const workosOrgId = unique('org_01');
+    const orgId = await seedOrg({ workosOrgId, ssoRequired: true });
+    const existing = await seedUser({ email: `${unique('fb')}@bigcorp.example` });
+    await addMember(orgId, existing.id);
+    const who = workosUser({ email: existing.email });
+
+    const result = await signIn(who, { authenticationMethod: 'Password' });
+
+    expect(result.error).toBe('sso-required');
+    expect((await userRows('id', existing.id))[0]?.workos_user_id).toBe(who.id);
+    const linked = audit.find((e) => e.action === 'auth.identity_linked');
+    expect(linked?.orgId).toBe(orgId);
+    expect(linked?.resourceId).toBe(existing.id);
+    expect(audit.map((e) => e.action)).not.toContain('auth.login');
+  });
+
   it('refuses a password sign-in for a member', async () => {
     const { who, userId } = await memberOfSsoOrg();
 
@@ -1058,8 +1127,8 @@ describe('the session a sign-in issues', () => {
     },
   );
 
-  it.each([['MagicAuth'], [null]])(
-    'does not count a re-authentication by %s — the second lock is already an emailed code',
+  it.each([['MagicAuth'], [null], ['GitHubOAuth'], ['MicrosoftOAuth'], ['CrossAppAuth']])(
+    'does not count a re-authentication by %s — only the named methods are lock one',
     async (method) => {
       const who = workosUser();
 

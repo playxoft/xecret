@@ -24,7 +24,12 @@ import {
   revokeSession,
   upsertUserFromWorkosIdentity,
 } from '@xecret/db/repositories';
-import type { IdentityLinkOutcome, OrganizationMembership, User } from '@xecret/db/repositories';
+import type {
+  Executor,
+  IdentityLinkOutcome,
+  OrganizationMembership,
+  User,
+} from '@xecret/db/repositories';
 import type { SignInErrorCode } from '@/lib/sign-in-errors';
 import { DatabaseAuditSink } from './audit-sink';
 import type { Bindings } from './bindings';
@@ -202,6 +207,26 @@ export async function completeSignIn(
 
   let memberships = await listOrganizationsForUser(services.db, user.id);
 
+  // An adoption is audited the moment it is written, not at the end. The
+  // linker has already put this WorkOS identity on the account; if the steps
+  // below then refuse the sign-in (sso_required, no seat), the link stays, and
+  // "who could sign in as this account, and since when" must still find it.
+  // An account with no organisation yet has nowhere to file it until step 7.
+  let linkAudited = false;
+  const auditLink = (orgId: string) => {
+    services.waitUntil(
+      writeEvents(services, [
+        auditFor(orgId, user, services).success(
+          'auth.identity_linked',
+          { type: 'user', id: user.id },
+          { source: 'dashboard', signInMethod: signInMethodOf(exchange.authenticationMethod) },
+        ),
+      ]),
+    );
+    linkAudited = true;
+  };
+  if (outcome === 'linked' && memberships[0]) auditLink(memberships[0].organization.id);
+
   // ── 5. sso_required ──────────────────────────────────────────────────────
   // Every organisation the account is in that requires SSO must be the one
   // whose SSO this was. An account in two such organisations can satisfy only
@@ -286,34 +311,45 @@ export async function completeSignIn(
         }),
       ]),
     );
+    if (outcome === 'linked' && !linkAudited) auditLink(created.organization.id);
   }
 
   // ── 8. The session ───────────────────────────────────────────────────────
-  // The browser is about to be handed a new session cookie, which overwrites
-  // whatever it held. If that was a live session of this same account, it is
-  // revoked rather than left behind: nothing can present it any more, so all it
-  // could still do is be stolen, and it would sit in the account's device list
-  // looking like a second browser.
-  await retireSupersededSession(services, params.presentedSessionToken, user.id);
-
-  const { token, sessionId } = await issueSession(services, user.id);
-
-  if (params.purpose === 'reauth') {
-    if (countsAsReauthentication(exchange.authenticationMethod)) {
-      // The first of the vault reset's two locks. Recorded against the session
-      // this sign-in just issued, so it is the new cookie — and only the new
-      // cookie — that carries it.
-      await recordFreshSignIn(services.db, { userId: user.id, sessionId, at: new Date() });
-    } else {
-      // Signed in, but not with a credential: the second lock is an emailed
-      // code, and a first lock opened by one too would make the two locks one
-      // inbox twice. The person is signed in all the same; the reset screen
-      // tells them to sign in with a password, a passkey, Google or SSO.
-      log.warn('A forced re-authentication did not present a credential, so it does not count', {
-        signInMethod: signInMethodOf(exchange.authenticationMethod),
-      });
+  // The new session and, for a re-authentication, the record that it is one,
+  // in one transaction: either the browser gets a session that carries lock
+  // one, or it gets nothing — never a session that silently does not, which
+  // the reset screen would show as an unexplained "sign in again".
+  const armsLockOne =
+    params.purpose === 'reauth' && countsAsReauthentication(exchange.authenticationMethod);
+  const { token, sessionId } = await services.db.transaction(async (tx) => {
+    const issued = await issueSession(services, user.id, tx);
+    // The first of the vault reset's two locks, recorded against the session
+    // this sign-in just issued, so it is the new cookie — and only the new
+    // cookie — that carries it.
+    if (armsLockOne) {
+      await recordFreshSignIn(tx, { userId: user.id, sessionId: issued.sessionId, at: new Date() });
     }
+    return issued;
+  });
+
+  if (params.purpose === 'reauth' && !armsLockOne) {
+    // Signed in, but not with a method that counts — an emailed code, most
+    // likely, which would make the two locks one inbox twice. The person is
+    // signed in all the same; the reset screen asks them to sign in again
+    // with one that does.
+    log.warn('A re-authentication sign-in used a method that does not count as lock one', {
+      signInMethod: signInMethodOf(exchange.authenticationMethod),
+    });
   }
+
+  // Last, once the new session exists: the browser is about to be handed a
+  // new session cookie, which overwrites whatever it held. If that was a live
+  // session of this same account, it is revoked rather than left behind —
+  // nothing can present it any more, so all it could still do is be stolen,
+  // and it would sit in the device list looking like a second browser. Done
+  // after the issue, so a failure here costs a stale device-list row rather
+  // than a browser with no session at all.
+  await retireSupersededSession(services, params.presentedSessionToken, user.id);
 
   const primary = memberships[0];
   if (primary) {
@@ -337,10 +373,14 @@ export async function completeSignIn(
   return { user, outcome, memberships, cookies: sessionCookies(token), sessionId };
 }
 
-/** What each linker outcome is audited as (PR #100, note 3). */
+/**
+ * What each linker outcome's successful sign-in is audited as (PR #100, note 3).
+ * An adoption also records `auth.identity_linked`, separately, at the moment
+ * the link is written — see step 4.
+ */
 const SIGN_IN_ACTIONS = {
   matched: 'auth.login',
-  linked: 'auth.identity_linked',
+  linked: 'auth.login',
   created: 'auth.signup',
 } as const satisfies Record<IdentityLinkOutcome, AuditRecord['action']>;
 
@@ -368,15 +408,38 @@ export function emailDomain(email: string): string | null {
 }
 
 /**
- * Whether a sign-in proved knowledge or possession of a credential — what the
- * vault reset's first lock needs. An allowlist, so a method WorkOS adds later
- * does not count until somebody decides it should.
+ * WorkOS's names for the sign-in methods that count as the vault reset's first
+ * lock — exactly these, and nothing matched by pattern, so that a method WorkOS
+ * adds, or one an operator switches on later, does not count until somebody
+ * decides here that it should.
+ *
+ * ── What each one actually proves ──
+ * Not the same thing, and ADR 0010 says so:
+ *
+ *  - `Password`, `Passkey` — typed or tapped on AuthKit's own page. The login
+ *    route's `max_age=0` makes AuthKit ask for them even when it holds a
+ *    session, so these are a credential presented just now.
+ *  - `GoogleOAuth`, `SSO` — AuthKit hands off to Google or the company's
+ *    identity provider, which WorkOS's `max_age` does not reach. A live Google
+ *    or SSO session in the same browser satisfies them without a prompt. They
+ *    count because refusing them would leave Google-only and SSO users no way
+ *    to reset at all; what they prove is "this browser can sign in to that
+ *    account now", not "somebody typed a secret just now".
+ *
+ * Not here: `MagicAuth` (lock two is already an emailed code, and counting it
+ * would make the two locks one inbox twice), other OAuth providers (none is
+ * enabled; add one here deliberately when it is), and anything unnamed.
  */
+export const REAUTHENTICATING_METHODS: ReadonlySet<string> = new Set([
+  'Password',
+  'Passkey',
+  'GoogleOAuth',
+  'SSO',
+]);
+
+/** Whether a sign-in by `method` counts as the vault reset's first lock. */
 export function countsAsReauthentication(method: string | null): boolean {
-  if (method === null) return false;
-  return (
-    method === 'Password' || method === 'Passkey' || method === 'SSO' || method.endsWith('OAuth')
-  );
+  return method !== null && REAUTHENTICATING_METHODS.has(method);
 }
 
 /** WorkOS's method names, folded into the audit log's closed set. */
@@ -398,10 +461,11 @@ export function signInMethodOf(method: string | null): SignInMethod {
 export async function issueSession(
   services: ServiceContext,
   userId: string,
+  exec: Executor = services.db,
 ): Promise<{ token: string; sessionId: string }> {
   const { token } = await generateToken('session');
 
-  const session = await createSession(services.db, {
+  const session = await createSession(exec, {
     userId,
     token,
     ipAddress: services.meta.ipAddress,
