@@ -79,7 +79,7 @@ sign you out.
 |---|---|---|
 | `GET` | `/auth/reauth` | Where this session's attempt stands: `{ signedIn, signedInUntil, codeSent, email }`. Sends nothing. |
 | `POST` | `/auth/reauth/start` | Emails the code. Only within 10 minutes of the fresh sign-in. **204**. |
-| `POST` | `/auth/reauth/verify` | Body `{ code }`, six digits. Returns `{ reauthProof, expiresAt }` — single-use, five minutes, good for this session only. Five wrong codes end the attempt. |
+| `POST` | `/auth/reauth/verify` | Body `{ code }` (six digits, from the email) — or, after a `{ mfaRequired: true, mfaToken }` answer, `{ totp, mfaToken }` with the code from your authenticator app. Returns `{ reauthProof, expiresAt }` — single-use, five minutes, good for this session only. Every guess counts: five per attempt, ten per account per day; past the daily limit, **429**. |
 | `POST` | `/auth/vault/reset` | Body `{ confirm: "reset my vault", reauthProof }`. Spends the proof, then destroys the vault. **This is not recovery** — nothing is decrypted or restored. |
 
 ## CLI authorization

@@ -100,9 +100,12 @@ CREATE TABLE reauthentications (                 -- 0019
   id               uuid        PRIMARY KEY,
   user_id          uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   session_id       uuid        NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
-  signed_in_at     timestamptz NOT NULL,         -- lock one: the forced fresh sign-in
-  code_sent_at     timestamptz,                  -- bookkeeping; the code is never stored
-  code_failures    smallint    NOT NULL DEFAULT 0 CHECK (code_failures >= 0),
+  signed_in_at     timestamptz NOT NULL,         -- lock one: the sign-in for the reset
+  code_sent_at     timestamptz,                  -- a code was requested; the code is never stored
+  code_attempts    smallint    NOT NULL DEFAULT 0 CHECK (code_attempts >= 0),
+  mfa_pending_hash bytea,                        -- SHA-256 (32 bytes) of WorkOS's pending-
+                                                 --   authentication token, never the token
+  mfa_factor_id    text,                         -- the WorkOS TOTP factor to challenge
   proof_hash       bytea       UNIQUE,           -- lock two: SHA-256 of the proof, never the proof
   proof_expires_at timestamptz,
   used_at          timestamptz,                  -- the reset spent the proof
@@ -111,29 +114,55 @@ CREATE TABLE reauthentications (                 -- 0019
     CHECK ((proof_hash IS NULL) = (proof_expires_at IS NULL)),
   CONSTRAINT reauthentications_proof_hash_length_check
     CHECK (proof_hash IS NULL OR octet_length(proof_hash) = 32),
+  CONSTRAINT reauthentications_mfa_pending_hash_length_check
+    CHECK (mfa_pending_hash IS NULL OR octet_length(mfa_pending_hash) = 32),
+  CONSTRAINT reauthentications_mfa_pair_check
+    CHECK ((mfa_pending_hash IS NULL) = (mfa_factor_id IS NULL)),
   CONSTRAINT reauthentications_used_check
     CHECK (used_at IS NULL OR proof_hash IS NOT NULL)
 );
+CREATE INDEX reauthentications_user_idx ON reauthentications (user_id, signed_in_at);
+GRANT SELECT, INSERT, UPDATE, DELETE ON reauthentications TO xecret_app_permissions;
+  -- guarded: only where that role exists, as in 0017
 ```
 
 The vault reset's re-authentication, kept by the server rather than the client. The reset
 destroys a vault for good and must stay reachable from a locked session, so it is guarded by
-two re-authentications in a fixed order (ADR 0010): a forced fresh sign-in, recorded here by
-the sign-in callback against the **new** session it issues; then a code WorkOS emails, whose
-verification mints a five-minute proof stored as `proof_hash`. The reset spends it with one
-UPDATE that requires this proof, this user, this session, `used_at IS NULL` and an unexpired
-`proof_expires_at`, so two concurrent resets with one proof cannot both pass.
+two re-authentications in a fixed order (ADR 0010): a sign-in again, recorded here by the
+sign-in callback against the **new** session it issues, in the same transaction that inserts
+that session; then a code WorkOS emails — and, for an account with an authenticator app, its
+TOTP code — whose verification mints a five-minute proof stored as `proof_hash`. The reset
+spends it with one UPDATE that requires this proof, this user, this session, `used_at IS NULL`
+and an unexpired `proof_expires_at`, so two concurrent resets with one proof cannot both pass.
 
-- `session_id` is **unique**: an attempt belongs to the session the forced sign-in issued, and
-  a proof minted here is refused by every other session, including another of the same
-  account. The session going — expiry, sign-out, "sign out everywhere", account deletion —
-  removes the attempt with it, by cascade.
-- `code_failures` caps wrong codes per attempt (five, in the application). It is a column, not
-  a rate-limiter counter, so the cap holds where the rate-limit binding is absent and fails
-  open.
+- `session_id` is **unique**: an attempt belongs to the session the sign-in issued, and a proof
+  minted here is refused by every other session, including another of the same account.
+- **What happens to a row when its session ends.** Sessions are *revoked* by an UPDATE
+  (`revoked_at`) — on sign-out, "sign out everywhere", account deletion, or a newer sign-in in
+  the same browser — not deleted, so the row survives its session's revocation. It is inert
+  from then on: a revoked or expired session cannot authenticate the reauth or reset requests
+  that would read it. The row goes, by cascade, only when its session row is actually deleted —
+  the expired-session cleanup (`deleteExpiredSessions`, which nothing schedules yet) — or its
+  user row is hard-deleted, which the application never does (account deletion soft-deletes).
+- `code_attempts` counts **guesses**, not failures — the emailed code and the TOTP step alike.
+  Each is reserved here atomically before WorkOS is called: at most five per attempt
+  (`code_attempts < 5` in the reserving UPDATE's own predicate), and at most ten per user,
+  summed across the attempts that user started in the last 24 hours under the user's row lock
+  — `reauthentications_user_idx` is that sum's index, and the user foreign key's cascade reads
+  through it too. A guess is accepted only where `code_sent_at` is set. The budget is a column,
+  not a rate-limiter counter, so it holds where the rate-limit binding is absent and fails open.
+- `mfa_pending_hash` and `mfa_factor_id` are set together when WorkOS answers a correct emailed
+  code with an MFA challenge. The browser holds the pending-authentication token, which WorkOS
+  would accept back with an authenticator code; this row holds only its SHA-256, so the TOTP
+  step is accepted only with the token this attempt was given.
 - The CHECKs make the column shapes honest: a proof exists only with an expiry, is exactly a
   SHA-256 digest — a raw proof here is the one mistake that would make a database read worth
-  the same as the proof — and can only be spent if it exists.
+  the same as the proof — and can only be spent if it exists; the pending-authentication hash
+  is exactly a digest too, and never present without the factor it belongs to.
+- The application role is granted `SELECT, INSERT, UPDATE, DELETE` in the migration itself,
+  guarded the way 0017's grant is, because a new table gets nothing from the role
+  automatically and a self-hoster who never created that role must not be blocked by its
+  absence.
 
 ---
 
@@ -791,7 +820,8 @@ audit_logs — no FKs by design; references are soft
       existing member keeps NULL
 0018  WorkOS identity: users.workos_user_id, users.firebase_uid becomes nullable,
       organizations.workos_org_id and sso_required — additive, nothing dropped
-0019  reauthentications — the vault reset's re-authentication, additive
+0019  reauthentications — the vault reset's re-authentication, its user index and the
+      application role's grant — additive
 ```
 
 Migration 0018 is the storage half of the move from Firebase to WorkOS (ADR 0010) and drops
@@ -801,7 +831,9 @@ Apply 0018 before deploying code that selects the new columns: Drizzle's `select
 column the schema declares, so from that build on every read of `users` or `organizations` —
 the per-request session lookup among them — fails against a database without them. The reverse
 order is safe. The same holds for 0019, where the cost of getting it wrong is confined to the
-vault-reset path.
+vault reset — its sign-in included, since the callback writes that session and its
+`reauthentications` row in one transaction. 0019 was amended in place (the grant, the index,
+`code_failures` renamed `code_attempts`, the two MFA columns) before any database applied it.
 
 Migration 0013 drops nothing and loses nothing. Every existing environment keeps its `env_keys`
 row and keeps working exactly as before; the one column that could not be added as a nullable

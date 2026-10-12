@@ -3,6 +3,8 @@
 **Status:** Accepted
 **Date:** 2026-10-12
 **Supersedes:** [0003](0003-firebase-as-identity-provider.md)
+**Amends:** [0009](0009-zero-knowledge-encryption.md), trade-off 6 — the vault reset's
+re-authentication, which 0009 placed on a fresh Firebase ID token, becomes the two locks below
 
 ## Context
 
@@ -98,9 +100,11 @@ Worker  ──rate limit (IP)
         ──refuse: impersonation · unverified email · SSO outside the org's verified domains
         ──rate limit (IP + identity)
         ──link or create the user, enforce sso_required, JIT-join, provision a personal org
-        ──insert sessions row (SHA-256 of a 256-bit opaque token — never the token)
+        ──one transaction: insert sessions row (SHA-256 of a 256-bit opaque token — never the
+          token) and, for a reauth sign-in that counts, its reauthentications row
+        ──revoke this browser's previous session of the same account, last
         ──Set-Cookie: __Host-xecret_session; __Host-xecret_csrf
-        ──303 → next        (WorkOS's access and refresh tokens are discarded, unread)
+        ──303 → next, re-validated   (WorkOS's access and refresh tokens are discarded, unread)
 Browser ──every later request uses OUR session, never a WorkOS token
 ```
 
@@ -117,6 +121,11 @@ own secret key:
 - `getOrganization` — on an SSO sign-in only, to read the organisation's verified domains. An
   SSO sign-in therefore makes two calls; every other sign-in makes one.
 - `createMagicAuth` and `authenticateWithMagicAuth` — on the vault-reset path only.
+- `challengeFactor` on the account's TOTP factor, then `authenticateWithTotp` — on the
+  vault-reset path only, when WorkOS answers the emailed code with `mfa_challenge` because the
+  account has an authenticator app enrolled.
+
+`GET /api/auth/login` makes no call: the AuthKit URL is built locally.
 
 The session model is exactly 0003's: a 256-bit opaque token in `__Host-xecret_session`, only
 its SHA-256 stored, a `__Host-xecret_csrf` double-submit pair on cookie-authenticated
@@ -127,7 +136,7 @@ Firebase's.
 
 `@workos-inc/authkit-nextjs` is middleware plus a sealed session — both of which this
 deployment has decided against, one of them because it cannot build. What xecret needs from
-WorkOS is four HTTP calls, and `@workos-inc/node` makes them: it is fetch-based, resolves to its
+WorkOS is the handful of HTTP calls listed above, and `@workos-inc/node` makes them: it is fetch-based, resolves to its
 workerd build under OpenNext, and has no dependencies of its own. Both `eslint.config.mjs`
 files ban `@workos-inc/authkit-nextjs`, beside `firebase`, `firebase-admin` and
 `firebase-auth-cloudflare-workers`, so none of them arrives as a convenience later.
@@ -156,9 +165,14 @@ flow. The binding is `__Host-xecret_oauth_state` (`packages/core/src/auth/oauth-
   then `state` against the query string in constant time. Every failure tells the person only
   that the attempt expired. The cookie is cleared on every callback response, so a state is
   used at most once per browser.
-- **`next` is validated at the login route**, before it is written, with the same
-  `safeRedirectPath` the dashboard uses. The callback redirects wherever the signed cookie says,
-  so that is the one place the check has to happen.
+- **`next` is validated three times.** At the login route, before it is written, with the
+  same `safeRedirectPath` the dashboard uses — which re-checks its own normalised output, so a
+  value that only becomes `//host` or carries a `\` after normalising is refused rather than
+  passed. The state cookie itself refuses a `next` that starts with `//`. And the callback runs
+  `safeRedirectPath` again on what the cookie says before it redirects. The signature already
+  means only this server can write `next`; the repetition is there because one bug in one
+  check would otherwise be an open redirect on the sign-in path, which is where a phishing link
+  most wants one.
 
 PKCE is used although this is a confidential client, as OAuth 2.1 recommends. The verifier
 lives only in the HttpOnly cookie, so a code lifted from a history entry, a referrer or a proxy
@@ -184,11 +198,14 @@ the organisation's verified domains** (below). Then `upsertUserFromWorkosIdentit
 3. **Else create** the user (and a personal organisation), audited `auth.signup`. A concurrent
    create of the same identity is a sign-in, not a second signup.
 
-An ordinary sign-in is audited `auth.login`; all three outcomes carry the sign-in method
-(`password`, `oauth`, `sso`, `magic_auth`, `passkey`, `other`). The linker's refusals become a
-403 "verify your email", a 403 "this account was deleted", and a 409 that names neither the
-other account nor how it signs in. It runs at READ COMMITTED with no wrapping transaction, because its
-lost-race handling re-reads to see the winner's committed row. It accepts only an identity
+An ordinary sign-in is audited `auth.login`. `auth.identity_linked` is written at the moment
+the link is, **even if that sign-in is then refused** — by `sso_required`, or for want of a
+seat — because the link outlives the refusal and its record must not depend on what follows;
+an adopted sign-in that does complete records `auth.login` as well. Every one of these events
+carries the sign-in method (`password`, `oauth`, `sso`, `magic_auth`, `passkey`, `other`). The
+linker's refusals become a 403 "verify your email", a 403 "this account was deleted", and a 409
+that names neither the other account nor how it signs in. It runs at READ COMMITTED with no
+wrapping transaction, because its lost-race handling re-reads to see the winner's committed row. It accepts only an identity
 `workosIdentity()` minted from the API response — checked at runtime against a private set,
 so a parsed body, a spread or a cast is refused even where the compiler let it through.
 
@@ -221,71 +238,142 @@ organisation's identity provider vouched for anybody.
   `member.jit_denied` when there is no seat — in which case the sign-in fails. It never
   reinstates a suspended membership.
 
+The login route's `?org=<slug>` deep link starts an organisation's SSO directly. The redirect
+has to carry the WorkOS organisation id, so it reveals which slugs have SSO; the lookup is
+therefore rate limited per address (`RL_LOGIN`), and over the limit the parameter is silently
+ignored and the ordinary screen opens — a refusal would be an oracle of its own. It is ignored
+altogether on a `reauth=1` sign-in, which is about this account, not an organisation.
+
 ### Every refusal is a page, not a JSON body
 
 The callback is a page load, so it answers every refusal with a 303 to
 `/sign-in?error=<code>`, which renders a fixed sentence for that code and nothing for a code it
-does not know. The status the refusal stands for — 403, 409, 429 — is recorded in the log line.
-The sentences keep the anti-enumeration discipline the old forms kept.
+does not know. The callback's request log line reads the same whatever happened — "Completed a
+sign-in callback" — with the outcome and the status it stands for (403, 409, 429, 503) bound as
+fields, so the message never claims a success the fields contradict, or the reverse. The
+sentences keep the anti-enumeration discipline the old forms kept.
+
+`GET /api/auth/login` follows the same rule: a deployment missing its WorkOS configuration
+redirects to `/sign-in?error=unavailable` rather than answering a JSON 503 on a blank tab.
 
 ### Re-authentication for the vault reset: two locks
 
 The vault reset destroys a vault for good and must stay reachable from a locked session, so the
 vault lock cannot stand in front of it. [ADR 0009](0009-zero-knowledge-encryption.md) (trade-off
-6) put a fresh Firebase ID token there. With no browser-held token in the new flow, that
-mechanism goes; the requirement stays, and is strengthened. **Both** of the following, **in
-this order**:
+6) put a fresh Firebase ID token there; **this ADR amends that trade-off.** With no
+browser-held token in the new flow, that mechanism goes; the requirement stays, and a second
+check is added. **Both** of the following, **in this order**:
 
-1. **A forced fresh sign-in.** `GET /api/auth/login?reauth=1` sends AuthKit `max_age=0`, so a
-   session AuthKit still holds does not satisfy it. The callback records a row in
-   `reauthentications` against the **new** session it issues — and only when the sign-in
-   presented a credential: a password, a passkey, an OAuth account or SSO. A sign-in completed
-   with an emailed code does not count, or the two locks would be one inbox twice.
+1. **A sign-in again.** `GET /api/auth/login?reauth=1` sends AuthKit `max_age=0`. The callback
+   records a row in `reauthentications` against the **new** session it issues — in the same
+   transaction that inserts the session — and only for a method on an explicit allowlist of
+   named constants: `Password`, `Passkey`, `GoogleOAuth` and `SSO`. Anything else — another
+   OAuth provider, `MagicAuth`, a method WorkOS adds later or one it does not name — does not
+   count, and adding one is a deliberate edit. A sign-in completed with an emailed code is
+   excluded on purpose, or the two locks would be one inbox twice.
+
+   **What lock one proves depends on the method, and it is less than "a fresh credential".**
+   WorkOS documents `max_age` only for AuthKit's own sign-in (`provider=authkit`): it can make
+   AuthKit ask for a password or a passkey again. It does not make Google or an enterprise
+   identity provider ask for anything — if the browser still holds a session there, the person
+   is signed straight back in without seeing a prompt. For a Google or SSO account, lock one
+   therefore proves a live session at Google or the identity provider *in this browser*, not
+   knowledge of a credential, and it can pass silently.
 2. **An emailed one-time code** (WorkOS Magic Auth). `POST /api/auth/reauth/start` has WorkOS
    email it — only within ten minutes of lock one, and only from the session lock one issued.
    WorkOS delivers the code; xecret drops its copy unread. `POST /api/auth/reauth/verify` checks
    it, and it counts only if it proved control of the WorkOS user this account is linked to and
-   nobody was impersonating them. Five wrong codes end the attempt, whether or not a rate limiter
-   is configured. A good one mints a one-time, five-minute **reauth proof**, stored as its
-   SHA-256 and bound to the session and the user.
+   nobody was impersonating them. A good one mints a one-time, five-minute **reauth proof**,
+   stored as its SHA-256 and bound to the session and the user.
+
+   **The guess budget.** Every guess — the emailed code and the authenticator step below alike
+   — is reserved atomically *before* WorkOS is called, so it is spent whether or not the client
+   waits for the answer: at most **five per attempt**, and at most **ten per account in any
+   rolling 24 hours** across all its attempts, the second counted under the user's row lock so
+   that concurrent guesses cannot overrun it. A guess is accepted only on an attempt whose code
+   was actually requested (`code_sent_at` set), and a WorkOS error xecret cannot classify costs
+   a guess like a wrong code does. The budget lives in `reauthentications`, not in the rate
+   limiter, so it holds where the limiter is absent and fails open.
+
+   **When the account has an authenticator app.** If the WorkOS user has a TOTP factor
+   enrolled, WorkOS answers a correct emailed code with an `mfa_challenge` error instead of a
+   user. `POST /api/auth/reauth/verify` then answers `{ mfaRequired: true, mfaToken }`, keeping
+   only the SHA-256 of WorkOS's pending-authentication token and the factor id on the attempt.
+   The client posts `{ totp, mfaToken }` to the same endpoint; the token must match this
+   attempt's stored hash, the server challenges the TOTP factor and authenticates with the code,
+   and only that success mints the proof. The other authentication errors WorkOS can raise on
+   Magic Auth are refused with a specific 403 each — organisation selection required, email
+   verification required, SSO required, MFA enrolment required, a Radar challenge — and Magic
+   Auth disabled is a 503. **The TOTP branch is unit-tested against WorkOS's documented error
+   shape only**: MFA is not enabled in the Staging WorkOS environment, so it has not been
+   exercised against WorkOS yet, and that live check is pending.
 
 `POST /api/auth/vault/reset` takes `{ confirm, reauthProof }` and spends the proof in one atomic
 UPDATE before anything is destroyed; every failure is the same 403.
 
+The reset screen sends the browser away for lock one and gets it back on a new session. On that
+return it shows its warning — what a reset destroys and what it does not — again, rather than
+resuming at the next step, and it refuses to continue if the account that came back is not the
+one that left.
+
 **Lock two needs Magic Auth enabled in both WorkOS environments.** While it is disabled as a
 sign-in method, WorkOS refuses to create a code at all (`400 authentication_method_not_allowed`),
 and the code email is WorkOS's own, so its default Magic Auth email has to stay on too. Enabling
-it also puts "email me a code" on AuthKit's hosted sign-in page. That is why lock one counts only
-a credential: a sign-in by emailed code is a sign-in, but never the first lock.
+it also puts "email me a code" on AuthKit's hosted sign-in page. That is why lock one excludes
+it: a sign-in by emailed code is a sign-in, but never the first lock.
 
 Why both: the code alone reduces the most destructive button in the product to the strength of
 somebody's inbox, which is routinely the weakest credential they own; the sign-in alone leaves a
-stolen live session — with AuthKit's own session beside it — one click from the same outcome.
-Together they stop a stolen session cookie on its own, and somebody at an unlocked laptop who
-does not know the password: `max_age=0` defeats the session AuthKit remembers.
+stolen live session — with AuthKit's, Google's or the identity provider's session beside it —
+one click from the same outcome. Together they stop a stolen session cookie used from another
+browser, which holds none of the victim's sessions elsewhere and cannot read their mail. For an
+account that signs in with a password or a passkey, they also stop somebody at an unlocked
+laptop who does not know the password — if AuthKit honours `max_age=0`, which the server cannot
+see (below). They do **not** stop somebody at an unlocked laptop whose victim signs in with
+Google or SSO.
 
 **Residual risks, accepted and recorded:**
 
+- **For a Google or SSO account, lock one is a live session, not a fresh credential.**
+  Somebody at an unlocked laptop whose browser holds the victim's Google session and has their
+  Gmail open in another tab passes both locks without knowing anything: lock one signs in
+  silently through Google, and the code arrives in the open inbox. The same holds for an
+  enterprise identity provider whose session is live and whose mail is reachable.
 - **Lock one is only as strong as the account's credential recovery.** Somebody in full control
-  of the victim's inbox can use AuthKit's "forgot password" to set a new password, sign in with
-  it — which counts, because it is a password — and then receive the emailed code. For that
-  attacker both locks are inbox-strength. WorkOS MFA on the account closes the inbox-only path;
-  it is recommended for organisation owners, whose vaults matter most.
+  of the victim's inbox alone can use AuthKit's "Forgot password" to set a new password, sign in
+  with it — which counts, because it is a password — and then receive the emailed code. For that
+  attacker both locks are inbox-strength.
 - **`max_age=0` is a parameter in a URL the browser follows**, and the server cannot see whether
   AuthKit honoured it. Somebody at an unlocked laptop who strips it, **and** whose browser holds
   the victim's AuthKit session, **and** who can read the victim's inbox passes both locks. It is
   recorded so that nobody mistakes `max_age=0` for a control the server enforces.
+- **What a reset hands such an attacker is not only destruction.** After resetting, they set up
+  a new vault on the victim's account, which unlocks the session they hold. Through it they can
+  **read** every server-mode (not end-to-end encrypted) environment the account can read. And
+  the reset re-queues a key share for every end-to-end-encrypted environment the account may
+  still read, so the victim's teammates are prompted to re-share: a teammate who approves seals
+  that environment's keys to the attacker's new vault.
+
+WorkOS MFA is the mitigation available today. With an authenticator app enrolled, lock two
+also needs the TOTP code, which an inbox — or an open Gmail tab — does not supply; it is
+recommended for organisation owners, whose vaults and teammates matter most. That this closes
+the paths above rests on the TOTP branch, whose live check against WorkOS is still pending. A
+delayed, cancellable reset — one that waits, tells the account, and can be called off in that
+window — is under consideration with the product owner; nothing of the kind is built.
 
 ### Logout, and the AuthKit session it leaves behind
 
 `DELETE /api/auth/session` is unchanged: CSRF-checked, revokes the row, clears both cookies.
 It does not end the session AuthKit keeps on WorkOS's own domain, so a returning person may
 pass AuthKit without entering a credential. Accepted for v1 — most OAuth applications behave
-the same way — and the reason the vault reset forces `max_age=0`.
+the same way — and the reason the vault reset sends `max_age=0`, with the limits recorded above:
+it is honoured, if at all, by AuthKit, and it does not reach a Google or identity-provider
+session.
 
 A sign-in in a browser that already holds a live session *of the same account* revokes that
-session before issuing the new one: nothing can present it any more, so all it could still do
-is be stolen, and it would sit in the device list looking like a second browser.
+session once the new one is issued — last, after the new session and any reauthentication
+record have committed: nothing can present the old one any more, so all it could still do is be
+stolen, and it would sit in the device list looking like a second browser.
 
 ### The `IdentityProvider` seam
 
@@ -301,11 +389,19 @@ answer the question rather than omit it.
 | Variable | Kind | Where |
 |---|---|---|
 | `WORKOS_CLIENT_ID` | Plain var, per environment | `wrangler.toml`: local development and `env.staging` name the WorkOS **Staging** environment, `env.production` the **Production** one. `scripts/deploy-web.sh` refuses to build an environment that does not declare a `client_…` value. |
-| `WORKOS_API_KEY` | Secret | Phase.dev → Worker secret. It must come from the same WorkOS environment as the client id. Its prefix is not a reliable guide to which environment that is — WorkOS issues keys in more than one format — so nothing should infer the environment from it. |
+| `WORKOS_API_KEY` | Secret | Phase.dev → Worker secret. It must come from the same WorkOS environment as the client id. Its prefix is not a reliable guide to which environment that is — WorkOS issues keys in more than one format — so nothing infers the environment from it. |
 | `WORKOS_COOKIE_PASSWORD` | Secret | Phase.dev → Worker secret. At least 32 random characters; independent of the API key. |
 
-Without any of the three, nobody can sign in, and the sign-in routes say so (503, or
-`/sign-in?error=unavailable` from the callback) rather than guess.
+Without any of the three, nobody can sign in, and both sign-in routes say so — each redirects
+to `/sign-in?error=unavailable` — rather than guess.
+
+The pairing of key and client id is checked by asking WorkOS, not by reading a prefix.
+`npm run check:env`, when the WorkOS values are set, makes one network call: it presents WorkOS's
+authenticate endpoint with a deliberately bogus authorization code, the client id and the API
+key. `invalid_grant` means WorkOS accepted the client and the key together and refused only the
+code — they belong together; `invalid_client` or a 401 means they do not. `--offline` skips the
+call. `npm run check:deploy` compares the `WORKOS_CLIENT_ID` Phase.dev holds with the one
+`wrangler.toml` declares for the environment being deployed.
 
 **Gone:** the `JWKS_CACHE` KV namespace, `FIREBASE_PROJECT_ID`, `NEXT_PUBLIC_FIREBASE_CONFIG`
 and the deploy script's cross-check between the two. The client bundle carries no
@@ -360,8 +456,13 @@ nothing added for WorkOS, because the browser only navigates there.
 - WorkOS is in the availability path for sign-in and for the vault reset. An existing session,
   every CLI token and every service token keep working through a WorkOS outage.
 - Logging out of xecret does not log anybody out of AuthKit.
-- The two vault-reset residuals above: without MFA, an attacker who owns the victim's inbox can
-  open both locks through password recovery; and `max_age=0` is not something the server sees.
+- The vault-reset residuals above. For a Google or SSO account, lock one is a live session at
+  Google or the identity provider, not a fresh credential, so an unlocked laptop with that
+  session and an open inbox passes both locks. Without MFA, an attacker who owns the victim's
+  inbox can open both locks through password recovery. `max_age=0` is not something the server
+  sees. And a reset is a way *into* the account's secrets, not only a way to destroy its keys:
+  the new vault reads every server-mode environment, and teammates are prompted to re-share the
+  end-to-end-encrypted ones.
 - Email verification, and Magic Auth with WorkOS's own Magic Auth email, are settings in a
   vendor's dashboard that the code relies on. They have to be checked, in both environments, by
   the deployment check — no test in this repository can.
@@ -380,8 +481,12 @@ nothing added for WorkOS, because the browser only navigates there.
   subject column and linker, is the answer.
 - The AuthKit session outliving our logout bothers anyone: WorkOS's logout URL, with the
   session id the code exchange currently discards, is the fix.
-- WorkOS offers a server-verifiable time of last authentication: lock one of the vault reset
-  should check it, closing the `max_age=0` residual.
+- WorkOS offers a server-verifiable time of last authentication — one that covers Google and
+  SSO sign-ins too: lock one of the vault reset should check it, closing the `max_age=0`
+  residual.
 - MFA becomes something xecret can see per sign-in: lock one could then require it of an owner,
-  closing the inbox-only path rather than recommending against it.
+  closing the inbox-only path rather than merely recommending MFA against it.
+- The TOTP branch of lock two has been exercised against a WorkOS environment with MFA
+  enabled. Until then it is tested only against WorkOS's documented error shape.
+- The product owner decides on a delayed, cancellable reset (under consideration, not built).
 - Two weeks after the production cutover: the decommission migration for `firebase_uid`.

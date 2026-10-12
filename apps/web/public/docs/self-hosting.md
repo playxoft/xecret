@@ -18,7 +18,7 @@ about the one thing it sells.
 | **Cloudflare Workers** (paid plan) | Runs the web app and API. The paid plan's CPU limits are assumed. | Yes |
 | **PostgreSQL** (Neon recommended) | All data. Hyperdrive in front of it on Cloudflare. | Yes |
 | **Cloudflare Secrets Store** | Holds the runtime copy of the root key, bound to the Worker. | Yes |
-| **A WorkOS account** | Identity only — AuthKit's hosted pages handle password, Google, MFA and enterprise single sign-on. xecret checks the result once, server to server, and issues its own sessions. | Yes, and **this is real friction**. AuthKit is free up to a million monthly active users; enterprise SSO connections are billed by WorkOS. An identity-provider interface exists so another provider can be contributed. |
+| **A WorkOS account** | Identity only — AuthKit's hosted pages handle password, Google, MFA and enterprise single sign-on (though single sign-on connections cannot be set up from xecret yet). xecret checks the result once, server to server, and issues its own sessions. | Yes, and **this is real friction**. AuthKit is free up to a million monthly active users; enterprise SSO connections are billed by WorkOS. An identity-provider interface exists so another provider can be contributed. |
 | **A mail provider** | PIN-reset links and invitation emails. | No. Without it, invitations return a shareable link instead of sending mail, and PIN reset answers `sent: false` with a reason. |
 | **A deploy-time secret source** | Where *your* copy of the root key lives between deploys. The Worker never calls it at runtime. | Your choice — anything that can populate environment variables at deploy time. |
 
@@ -91,15 +91,18 @@ needed when the app is built. Set it up in the WorkOS dashboard:
 4. **Enable the sign-in methods** — email and password, and Google. Staging can
    use WorkOS's demonstration Google credentials; **Production needs your own**
    Google OAuth client, created in the Google Cloud Console with the redirect URI
-   WorkOS shows you, and its client id and secret entered in WorkOS. MFA and
-   enterprise single sign-on are WorkOS settings too; MFA is recommended for
-   organisation owners.
+   WorkOS shows you, and its client id and secret entered in WorkOS. MFA is a
+   WorkOS setting too, and recommended for organisation owners (see the warning
+   below); with an authenticator app enrolled, resetting a vault also asks for
+   its code. **Enterprise single sign-on cannot be set up from xecret yet**: the
+   organisation settings that create the WorkOS organisation, hand a customer's
+   IT admin the setup link, and make single sign-on required are not built.
 5. **Enable Magic Auth**, and leave WorkOS's default Magic Auth email on.
    Resetting a vault asks for a one-time code that WorkOS creates and emails, and
    WorkOS refuses to create one while Magic Auth is disabled — so with it off,
    nobody can reset a vault. Enabling it also offers "email me a code" as a way
-   to sign in; that never counts as the reset's first check, which needs a
-   password, a passkey, Google or SSO.
+   to sign in; that never counts as the reset's first check, which counts only a
+   password, a passkey, Google or single sign-on — no other OAuth provider.
 6. **Collect three values.** The client id (`client_…`); the environment's
    secret API key; and a cookie password you generate yourself, at least 32
    random characters:
@@ -121,6 +124,20 @@ needed when the app is built. Set it up in the WorkOS dashboard:
 > by hand. If you cannot be sure, test sign-in locally only with a brand-new
 > address.
 
+> **Warning** — Know what the vault reset's two checks do not stop. The first
+> asks AuthKit to demand the credential again, which WorkOS documents only for
+> its own sign-in: it does not make Google or a single sign-on provider ask
+> again, so for those accounts a live session there passes it silently.
+> Somebody at an unlocked laptop with that session and the person's inbox open
+> passes both checks; without MFA, so does somebody who controls the inbox
+> alone, by resetting the password first. A reset is not only destructive:
+> whoever does it sets up a new vault on the account, can read its server-mode
+> environments, and teammates are asked to re-share the end-to-end-encrypted
+> ones. An authenticator app enrolled in WorkOS is the defence — with one, the
+> emailed code alone is not enough. That path is tested against WorkOS's
+> documented behaviour, but has not yet been exercised against a WorkOS
+> environment with MFA turned on.
+
 > **Important** — Email verification is load-bearing. The first time somebody
 > signs in, xecret adopts the existing account that holds the same *verified*
 > address, and refuses an unverified one. AuthKit verifies every address and,
@@ -136,8 +153,13 @@ npx wrangler secret put WORKOS_API_KEY --env production
 npx wrangler secret put WORKOS_COOKIE_PASSWORD --env production
 ```
 
-Without any of the three, nobody can sign in, and the sign-in routes say so
-with a 503 rather than guess.
+Put the client id in your deploy-time secret source as well. The config
+checker in step 5 reads it from there, and `npm run check:deploy` compares that
+copy with the one in `wrangler.toml`.
+
+Without any of the three, nobody can sign in, and the sign-in pages say so —
+the browser lands on the sign-in page's "unavailable" error — rather than
+guess.
 
 ### 3. Cloudflare
 
@@ -210,23 +232,38 @@ place to change and no second copy to forget.
 
 ### 5. Verify before deploying
 
+Both checks read the deployment's variables from their own environment, so run
+them under the environment you are about to deploy. With this repository's
+Phase.dev setup that means naming it, because `.phase.json` defaults to
+`Development`:
+
 ```bash
-npm run check:env      # states exactly what is missing or malformed
-npm run smoke          # proves the whole stack against the real database
+phase run --env Production -- npm run check:env   # states exactly what is missing or malformed
+phase run --env Production -- npm run smoke       # proves the whole stack against the real database
 ```
 
-Run both. The config checker catches the missing binding you will otherwise
-discover from a 503 in production.
+Without Phase, export the same variables into the shell first —
+`set -a; . ./.env; set +a` — and then run `npm run check:env` and
+`npm run smoke`. Run both. The config checker catches the missing binding you
+will otherwise discover from a 503 in production.
+
+When the WorkOS values are set, the config checker also makes one network call
+to prove that the API key and the client id belong to the same WorkOS
+environment: it presents WorkOS with a deliberately bogus sign-in code, and
+WorkOS's answer says whether it accepted the pair and refused only the code
+(they match) or refused the pair (they do not). Nothing is inferred from the
+key's prefix. `npm run check:env -- --offline` skips the call.
 
 ### 6. Deploy
 
 ```bash
-phase run -- sh scripts/deploy-web.sh production
+phase run --env Production -- sh scripts/deploy-web.sh production
 ```
 
-The `phase run --` prefix is how *this* repository populates the deploy-time
-environment; substitute Doppler, a CI secret block, or `set -a; . ./.env`. The
-script does not care which.
+The `phase run --env Production --` prefix is how *this* repository populates
+the deploy-time environment, naming the same environment step 5 checked;
+substitute Doppler, a CI secret block, or `set -a; . ./.env`. The script does
+not care which.
 
 It reads `XECRET_PUBLIC_URL` and `XECRET_ENV` out of `wrangler.toml` for the
 environment you named, exports them into the build, and refuses to go on if
@@ -345,8 +382,10 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
   with `XECRET_PUBLIC_URL`. Rotate the API key in the WorkOS dashboard, then with
   `wrangler secret put`; rotating the cookie password costs only the sign-ins in
   flight at that moment. Signing out of xecret does not end somebody's AuthKit
-  session, so a returning person may not be asked for a credential — which is
-  why resetting a vault forces a fresh sign-in AuthKit cannot skip.
+  session, so a returning person may not be asked for a credential. Resetting a
+  vault asks AuthKit for a fresh sign-in, but nothing on the server can see
+  whether AuthKit honoured that, and it never reaches a Google or single sign-on
+  session — see the warning in step 2.
 - **Key rotation.** Every layer of the hierarchy is versioned so it can be
   rotated independently. Have a runbook before you need one.
 

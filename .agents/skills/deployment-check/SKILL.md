@@ -35,36 +35,41 @@ This has already cost real outages:
 
 ## The check
 
-```sh
-npm run phase:check-deploy          # production, under Phase's Production env
-```
+Every command below names the Phase environment that holds the **target's**
+values. `.phase.json` defaults to `Development`, so a bare `phase run --` checks
+the Development set whatever you meant to deploy.
 
-or, for another environment:
+| Deploying | Phase environment | `check:deploy` | `check:env` |
+|---|---|---|---|
+| production | `Production` | `npm run phase:check-deploy` (= `phase run --env Production -- npm run check:deploy production`) | `phase run --env Production -- npm run check:env` |
+| staging | `Development` — staging's values live there | `phase run --env Development -- npm run check:deploy staging` | `phase run --env Development -- npm run check:env` |
 
-```sh
-phase run --env Production -- npm run check:deploy staging
-```
+`check:deploy` compares all three sources and prints a line per variable.
+**Zero failures is the bar for deploying.** Warnings are read, not skipped: "in
+Phase but NOT on the Worker" is the exact shape of both outages above.
 
-It compares all three sources and prints a line per variable. **Zero failures is
-the bar for deploying.** Warnings are read, not skipped: "in Phase but NOT on the
-Worker" is the exact shape of both outages above.
-
-Run the value-level check too — it validates what the variables *contain*, which
-is a different question:
-
-```sh
-npm run phase:check-env
-```
+`check:env` validates what the variables *contain*, which is a different
+question. `npm run phase:check-env` is **not** a production preflight: it runs
+under the default `Development` environment and validates that set, not
+Production's.
 
 ## Procedure
 
-1. `npm run phase:check-deploy` — resolve every failure, read every warning.
-2. `npm run phase:check-env` — root key parses; the WorkOS client id, API key and
-   cookie password are present and well-formed; the app DB role is not the
-   migration role. It cannot tell which WorkOS environment a key is from.
+1. `check:deploy` for the target (table above) — resolve every failure, read
+   every warning. Among them it compares the `WORKOS_CLIENT_ID` Phase holds for
+   the target with the one `wrangler.toml` declares for that environment.
+2. `check:env` for the target (table above) — root key parses; the WorkOS client
+   id, API key and cookie password are present and well-formed; the app DB role
+   is not the migration role. With the WorkOS values set it makes **one network
+   call**, which proves the key and the client id belong together: it POSTs a
+   deliberately bogus authorization code to WorkOS's authenticate endpoint with
+   the client id and the API key. `invalid_grant` means WorkOS accepted the pair
+   and refused only the code — they match; `invalid_client` or a 401 means they
+   do not. `phase run --env <Env> -- npm run check:env -- --offline` skips the
+   call, and then nothing has checked the pairing. Neither script infers
+   anything from a key prefix.
 3. Work through **Identity provider (WorkOS)** below. Most of it is dashboard
-   state that no script can see — including whether the key and the client id
-   belong together.
+   state that no script can see.
 4. Apply pending migrations to the target database **before** deploying a build
    that needs them (see **Database** below).
 5. `npm run verify` — format, lint, typecheck, tests.
@@ -74,13 +79,14 @@ npm run phase:check-env
 7. Deploy: `npm run phase:deploy` (production). Never a bare
    `opennextjs-cloudflare deploy` — it skips the build stamping and the
    environment checks in `scripts/deploy-web.sh`.
-8. After the deploy, re-run `npm run phase:check-deploy` and confirm
+8. After the deploy, re-run `check:deploy` for the target and confirm
    `GET /api/version` reports the commit you deployed:
    ```sh
    curl -s https://xecret.playxoft.com/api/version
    ```
-   Then sign in for real, through the deployed site. It is the only check that
-   proves the client id, the API key and the redirect URI all belong together.
+   Then sign in for real, through the deployed site. `check:env` proved the pair
+   Phase holds; only a real sign-in proves the key the *Worker* holds as a
+   secret, and the redirect URI, belong with the client id.
 
 ## Identity provider (WorkOS)
 
@@ -100,10 +106,12 @@ Check, for the environment being deployed:
 
 - **`WORKOS_CLIENT_ID`** is in `apps/web/wrangler.toml` `[env.<env>.vars]` and is
   the id in the table above. It is not a secret. `scripts/deploy-web.sh` refuses
-  to build without it, or with a value that is not `client_…`.
+  to build without it, or with a value that is not `client_…`. Phase.dev holds
+  a copy for the target's Phase environment too, and `check:deploy` compares
+  that copy with `wrangler.toml`'s and reports a mismatch.
 - **`WORKOS_API_KEY`** and **`WORKOS_COOKIE_PASSWORD`** are in Phase.dev for that
   environment **and** pushed to the Worker as encrypted secrets, from
-  `apps/web/`:
+  `apps/web/` (`--env staging` for staging):
   ```sh
   npx wrangler secret put WORKOS_API_KEY --env production
   npx wrangler secret put WORKOS_COOKIE_PASSWORD --env production
@@ -114,17 +122,19 @@ Check, for the environment being deployed:
   holding it.
 - **The key and the client id are from the same WorkOS environment** — the
   Production key with `client_01M36CECX3Z66Q2FYY2FN8WG73`, the Staging key with
-  `client_01M36CECEQ1FY9TA1F952FY958`. This is a check a person makes in the
-  WorkOS dashboard: switch to the environment whose client id is in
-  `wrangler.toml` and confirm the key Phase.dev holds for this deployment is one
-  of *that* environment's API keys. **Never infer the environment from the
+  `client_01M36CECEQ1FY9TA1F952FY958`. `check:env` proves this with its one
+  network call (Procedure step 2): `invalid_grant` is a match, `invalid_client`
+  or a 401 a mismatch. If it was run `--offline`, or cannot reach WorkOS, check
+  by hand in the WorkOS dashboard: switch to the environment whose client id is
+  in `wrangler.toml` and confirm the key Phase.dev holds for this deployment is
+  one of *that* environment's API keys. **Never infer the environment from the
   key's prefix** — WorkOS has issued `sk_test_…`, `sk_live_…` and plain `sk_…`
-  keys, and this deployment's Production key is the plain kind. No script
-  checks the pairing; a mismatch fails every sign-in in a way that looks like a
-  code bug, and only a real sign-in after the deploy proves it right.
+  keys, and this deployment's Production key is the plain kind. `check:env`
+  proves the pair Phase holds; that the Worker's secret is that same key is
+  proved by a real sign-in after the deploy.
 - **`WORKOS_COOKIE_PASSWORD`** is at least 32 characters and an independent
   random value (`openssl rand -base64 32`), never the API key or derived from
-  it. Too short, and every sign-in answers 503.
+  it. Too short, and every sign-in ends on `/sign-in?error=unavailable`.
 - **The redirect URI in the WorkOS dashboard** (that environment → Redirects) is
   exactly `<XECRET_PUBLIC_URL>/api/auth/callback` for the deployment:
   - production: `https://xecret.playxoft.com/api/auth/callback`
@@ -134,6 +144,19 @@ Check, for the environment being deployed:
   The app never configures it separately — it is derived from
   `XECRET_PUBLIC_URL` — so a host change in `wrangler.toml` needs the matching
   dashboard change, or AuthKit refuses every redirect back.
+- **The Initiate login URI (sign-in endpoint) in the WorkOS dashboard** (that
+  environment → Redirects) is exactly `<XECRET_PUBLIC_URL>/api/auth/login`:
+  - production: `https://xecret.playxoft.com/api/auth/login`
+  - staging: `https://xecret-staging.playxoft.com/api/auth/login`
+  - local dev, in the Staging environment: `http://localhost:3030/api/auth/login`
+
+  When AuthKit needs xecret to *start* a sign-in, it sends the browser here.
+  Point it anywhere else and the callback refuses the sign-in as expired,
+  because no state cookie was set for it.
+- **A misconfigured deployment does not answer 503 at sign-in.** Both sign-in
+  routes redirect to `/sign-in?error=unavailable`, and the real cause is in the
+  log line. A smoke sign-in that lands on "unavailable" is a configuration
+  problem, not a WorkOS outage, until proved otherwise.
 
 ### Security invariants to verify
 
@@ -156,6 +179,14 @@ Look at them in **both** WorkOS environments.
   it is WorkOS, not xecret, that emails it — xecret never sees the code. With
   that email turned off the code is created and never arrives, and nobody can
   reset a vault.
+- **MFA, if enabled, changes the vault reset.** With MFA on in WorkOS and an
+  authenticator app enrolled on the account, WorkOS answers the emailed code
+  with an MFA challenge, and the reset also needs the user's authenticator
+  (TOTP) code — someone without their authenticator cannot reset. That branch is
+  unit-tested against WorkOS's documented error shape only: MFA is not enabled
+  in the Staging WorkOS environment, so it has not been checked live. Before
+  relying on it in production, enable MFA in Staging and run a reset end to end
+  with an enrolled account.
 
 ## Database
 
@@ -163,11 +194,16 @@ Migrations are applied separately from the deploy, and a build that expects a
 table its database does not have fails at request time, not at deploy time.
 
 - **This build needs migration `0019_reauthentications`** (the
-  `reauthentications` table behind the vault-reset re-authentication). Apply it
-  to the target database before deploying:
+  `reauthentications` table behind the vault-reset re-authentication, its
+  `(user_id, signed_in_at)` index, and the application role's grant on it). Apply
+  it to the target database before deploying — under the target's Phase
+  environment (`--env Development` for staging):
   ```sh
   phase run --env Production -- npm run db:migrate
   ```
+  Without the grant, every vault-reset request on a least-privilege database
+  fails with "permission denied" — and so does a `reauth=1` sign-in, whose
+  session is written in the same transaction as its `reauthentications` row.
   `db:migrate` applies only what is pending and prints what it applied, so it is
   safe to re-run to confirm.
 
@@ -208,7 +244,8 @@ person's preflight knows about it.
 - Never deploy with `check:deploy` failures.
 - Never deploy without naming the Phase environment: `.phase.json` defaults to
   `Development`, and the deploy should run under the same environment
-  `phase:check-deploy` just compared against the Worker.
+  `check:deploy` and `check:env` just validated — `Production` for production,
+  `Development` for staging.
 - Never mix WorkOS environments: a Production client id with a Staging key, or
   the reverse, is a deployment nobody can sign in to.
 - `wrangler secret list --env production` shows names only, never values. Use it

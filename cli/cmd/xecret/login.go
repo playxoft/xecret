@@ -25,8 +25,10 @@ import (
 const loginTimeout = 5 * time.Minute
 
 // cmdLogin: the OAuth-style loopback + PKCE flow against xecret's own server
-// — never Firebase directly. The browser does the identity work; this
-// process only ever holds the verifier and, at the end, the token.
+// — never the identity provider (WorkOS AuthKit, ADR 0010) directly. The
+// browser does the identity work, signing in through AuthKit first if it has
+// no xecret session; this process only ever holds the verifier and, at the
+// end, the token.
 func cmdLogin(args []string) error {
 	flags := flag.NewFlagSet("login", flag.ContinueOnError)
 	apiURL := flags.String("api-url", "", "xecret deployment to log in to (default "+apiBase("")+")")

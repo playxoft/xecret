@@ -584,11 +584,11 @@ export interface EnvironmentPayload {
 }
 
 /**
- * The organisation id is published because `/api/auth/session` and
- * `/api/auth/me` already return it, and the dashboard's organisation switcher
- * keys on it. Project and environment ids are not: their slug is the public
- * identifier, and an id that is never returned cannot be pasted into a
- * hand-built URL that skips a level of the tenancy chain.
+ * The organisation id is published because `/api/auth/me` already returns it,
+ * and the dashboard's organisation switcher keys on it. Project and environment
+ * ids are not: their slug is the public identifier, and an id that is never
+ * returned cannot be pasted into a hand-built URL that skips a level of the
+ * tenancy chain.
  */
 export function toOrganization(
   organization: Organization,

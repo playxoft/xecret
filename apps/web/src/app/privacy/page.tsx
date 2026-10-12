@@ -33,7 +33,7 @@ const TITLE = 'Privacy policy';
 const DESCRIPTION =
   'What xecret stores, what our encryption model does and does not protect, who else processes it, how long we keep it, and how to exercise your rights.';
 
-const UPDATED = '2026-09-26';
+const UPDATED = '2026-10-12';
 const EFFECTIVE = '2026-10-26';
 
 const CANONICAL = absoluteUrl('/privacy');
@@ -158,8 +158,11 @@ const SECTIONS: readonly LegalSection[] = [
         </>,
         <>
           <strong className="text-fg font-medium">Mail we send.</strong> A PIN reset link, and
-          organisation invitations to the address you type. That is the whole of it: no newsletter,
-          no product marketing, no tracking pixel.
+          organisation invitations to the address you type. WorkOS also sends, on our behalf, the
+          mail that belongs to signing in: a message to verify your email address, a password reset
+          link when you ask for one, a one-time sign-in code if you choose to sign in by email, and
+          the one-time code that confirms a vault reset. That is the whole of it: no newsletter, no
+          product marketing, and no tracking pixel in the mail we send ourselves.
         </>,
       ],
       'There is no analytics on this site. No page-view tracker, no session recorder, no advertising pixel, no fingerprinting script. If that ever changes, this paragraph is the first thing that changes with it.',
@@ -240,9 +243,9 @@ const SECTIONS: readonly LegalSection[] = [
           <strong className="text-fg font-medium">WorkOS, Inc.</strong> — identity only. It hosts
           the sign-in page, checks your password if you use one, and verifies who you are, so it
           sees your email address, your name and your sign-in events, including the IP address and
-          browser each one came from. It never receives a secret or anything else you store in
-          xecret. Once it has verified you, xecret issues its own session and keeps none of the
-          tokens WorkOS issues.
+          browser each one came from. It also sends the sign-in mail listed in section 2. It never
+          receives a secret or anything else you store in xecret. Once it has verified you, xecret
+          issues its own session and keeps none of the tokens WorkOS issues.
         </>,
         <>
           <strong className="text-fg font-medium">ZeptoMail (Zoho)</strong> — transactional email:

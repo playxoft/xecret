@@ -3,7 +3,7 @@ title: The audit log
 navTitle: Audit log
 description: Every event xecret records, what each one means, how to filter the log, and how to use it during an incident when a credential has leaked.
 keywords: [secret audit log, who read secret, security audit trail, incident response, compliance logging]
-updated: 2026-08-16
+updated: 2026-10-12
 ---
 
 Every mutation, every decryption, and **every denial** is recorded. A system
@@ -45,6 +45,8 @@ person's name on a write they did not make is worse than useless.
 | Action | Recorded when |
 |---|---|
 | `auth.login` | Somebody signed in |
+| `auth.signup` | A sign-in created a new account — recorded instead of `auth.login` for that one sign-in, so "when did this person join" is a filter |
+| `auth.identity_linked` | A sign-in adopted an existing account by its verified email address and linked the sign-in identity to it — the one sign-in that changes which identity an account answers to. Written at the moment the link is made, even if that sign-in is then refused (single sign-on required, or no seat free); a linked sign-in that completes records `auth.login` as well |
 | `auth.login_failed` | A sign-in was rejected |
 | `auth.logout` | Somebody signed out |
 | `auth.session_revoked` | A session was revoked |
@@ -53,6 +55,15 @@ person's name on a write they did not make is worse than useless.
 | `auth.pin_reset` | The PIN was reset through an emailed link — somebody proved control of the mailbox rather than knowledge of the PIN |
 | `auth.autolock_changed` | The idle auto-lock interval changed |
 | `auth.account_deleted` | An account deleted itself. Terminal. |
+| `auth.reauthenticated` | The account proved itself again for a vault reset — signed in again, then entered the emailed code (and its authenticator code, if one is enrolled) — and was given the five-minute proof the reset spends. A reset that follows it was not a stolen session alone |
+
+The sign-in events — `auth.login`, `auth.signup` and `auth.identity_linked` —
+carry `signInMethod`: how the person authenticated, as one of a closed set:
+`password`, `oauth`, `sso`, `magic_auth` (a code sent by email), `passkey`, or
+`other` for a method the identity provider named that this list does not know.
+It is coarser than the provider's own vocabulary on purpose: a review asks
+whether this was a password, a Google account or the company's single sign-on,
+not which of many OAuth providers.
 
 ### Secrets
 
@@ -86,6 +97,8 @@ specific value, which is what curiosity and exfiltration both look like.
 |---|---|
 | `member.invited` | An invitation was sent |
 | `member.joined` | It was accepted |
+| `member.jit_joined` | Somebody signing in through an organisation's single sign-on was made a member on the spot, as a `viewer`. Nobody invited them: the organisation's identity provider vouched for an address in a domain the organisation verified. Carries `signInMethod: sso` |
+| `member.jit_denied` | The same, refused because the organisation had no seat free. Outcome `error`, reason `quotaExceeded`, `limitName` `seats`. The sign-in fails; this is the record of who was turned away |
 | `invitation.revoked` | It was withdrawn before acceptance |
 | `member.role_changed` | Somebody's role changed |
 | `member.suspended` `member.reinstated` | A membership was switched off, or back on |

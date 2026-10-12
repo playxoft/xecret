@@ -288,6 +288,85 @@ the recovery document is a hard gate on Phase 2.
 
 ---
 
+### T11 — Account takeover through the vault reset (an unlocked laptop, or an inbox)
+
+| | |
+|---|---|
+| **Goal** | Pass the vault reset's re-authentication on somebody else's account, then use the account |
+| **Impact** | High · **Likelihood** | Low–Medium |
+
+The vault reset destroys an account's vault and must stay reachable from a locked session, so
+the vault lock cannot guard it. Two re-authentications do instead, in order and bound to the
+session the first one issues ([ADR 0010](../adr/0010-workos-as-identity-provider.md), amending
+ADR 0009's trade-off 6): **lock one**, a sign-in again through AuthKit (`reauth=1`, which sends
+`max_age=0`), counted only for the methods `Password`, `Passkey`, `GoogleOAuth` and `SSO`; then
+**lock two**, a one-time code WorkOS emails (Magic Auth) — and, for an account with an
+authenticator app enrolled in WorkOS, its TOTP code as well.
+
+**Lock one is not a fresh credential for everyone.** WorkOS documents `max_age` only for
+AuthKit's own sign-in (`provider=authkit`). It does not make Google or an enterprise identity
+provider ask again, so for a Google or SSO account a live session there satisfies lock one
+silently. For a password or passkey account it is a fresh credential only if AuthKit honours
+`max_age=0`, which the server cannot see.
+
+**Threats:**
+- somebody at an unlocked laptop whose browser holds the victim's Google (or identity-provider)
+  session and has their Gmail open in another tab: lock one passes silently, the code arrives
+  in the open inbox, and both locks fall without the attacker knowing anything;
+- somebody in control of the inbox alone: AuthKit's "Forgot password" sets a new password, a
+  Password sign-in with it counts as lock one, and the code arrives in the same inbox — both
+  locks are inbox-strength;
+- somebody at an unlocked laptop holding the victim's AuthKit session who strips `max_age=0`
+  from the URL, and can read the inbox;
+- guessing the six-digit emailed code or the TOTP code;
+- a stolen session cookie, replayed from another browser.
+
+**The impact of a reset is not only destruction.** After resetting, the attacker sets up a new
+vault on the victim's account, which unlocks the session they hold:
+- through it they can **read** every server-mode (not end-to-end encrypted) environment the
+  account can read;
+- the reset re-queues a key share for every end-to-end-encrypted environment the account may
+  still read, so the victim's teammates are prompted to re-share it — and a teammate who
+  approves seals that environment's keys to the attacker's new vault.
+
+The victim's own vault, and with it their copy of every end-to-end-encrypted key, is gone.
+
+**Mitigations:**
+- Both locks, in order, on one session. Lock two is refused unless lock one recorded a row for
+  *this* session within ten minutes, and a sign-in completed by emailed code never counts as
+  lock one. A cookie replayed from another browser has none of the victim's sessions at Google,
+  AuthKit or the mail provider, so it stops at lock one.
+- A one-time, five-minute proof, bound to the session and the user, stored as its SHA-256 and
+  spent in one atomic UPDATE before anything is destroyed.
+- **A guess budget in the database, not the rate limiter.** Every guess — the emailed code and
+  the TOTP step alike — is reserved atomically before WorkOS is called: at most five per attempt,
+  and at most ten per account in any rolling 24 hours across all its attempts, the second
+  counted under the user's row lock. A guess is accepted only on an attempt whose code was
+  actually requested, and a WorkOS error xecret cannot classify costs a guess too. The budget
+  holds where the rate limiter is absent and fails open.
+- **WorkOS MFA.** With an authenticator app enrolled, WorkOS answers a correct emailed code with
+  an MFA challenge; xecret answers `{ mfaRequired: true, mfaToken }`, keeps only the SHA-256 of
+  WorkOS's pending-authentication token, and mints the proof only after the TOTP code
+  authenticates. An inbox, or an open Gmail tab, does not supply that code — this is what
+  closes the paths above, and it is recommended for organisation owners. **It is unit-tested
+  against WorkOS's documented error shape only**: MFA is not enabled in the Staging WorkOS
+  environment, so the live check is pending.
+- The other authentication errors WorkOS can raise on Magic Auth — organisation selection,
+  email verification or SSO required, MFA enrolment required, a Radar challenge — are refused
+  by name, never passed through as a success.
+- Detection: `auth.reauthenticated` and `vault.reset` are audited, and re-sharing an
+  end-to-end-encrypted environment is a teammate's deliberate act, not something the attacker
+  can complete alone.
+
+**Residual risk:** **Medium** without MFA — an unlocked laptop with a live Google or
+identity-provider session and an open inbox, or full control of the inbox alone, passes both
+locks, and the reset then opens the account's server-mode secrets and asks teammates for the
+rest. Lower with MFA enrolled, once the TOTP branch is confirmed against WorkOS. A delayed,
+cancellable reset — one that waits, notifies the account, and can be called off — is under
+consideration; nothing of the kind is built.
+
+---
+
 ## 4. Risk summary
 
 | ID | Threat | Impact | Likelihood | Residual |
@@ -302,6 +381,7 @@ the recovery document is a hard gate on Phase 2.
 | T8 | Supply chain | Critical | Low–Med | Medium |
 | T9 | Insider | Critical | Low | **High (inherent)** |
 | T10 | Root key loss | Existential | Low | Low *if drilled* |
+| T11 | Vault reset by whoever holds the browser or the inbox | High | Low–Med | **Medium** without MFA |
 
 **Where to spend effort, in order:** T2 (test matrix as a CI gate) · T10 (escrow drills) ·
 T7 (dependency discipline, anomaly detection) · T5 (blast-radius limits, OIDC in v2).
@@ -318,3 +398,4 @@ customer's own systems after legitimate secret delivery.
 |---|---|---|
 | 2026-08-10 | — | Initial version, Phase 0 |
 | 2026-10-12 | — | Identity moves from Firebase to WorkOS AuthKit (ADR 0010): T1 gains login CSRF and account takeover at sign-in; the CSP loses every Google and Firebase source |
+| 2026-10-12 | — | T11 added: the vault reset's two locks — lock one is a live session, not a fresh credential, for Google and SSO accounts; a reset opens server-mode secrets and prompts re-shares; the guess budget; MFA as the mitigation, its live check pending |

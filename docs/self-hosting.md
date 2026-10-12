@@ -12,7 +12,7 @@ being honest about the one thing it sells.
 | **Cloudflare Workers (paid plan)** | Runs the web app and API (`@opennextjs/cloudflare`). The paid plan's CPU limits are assumed — see [ADR 0002](adr/0002-root-key-custody.md). | Yes |
 | **PostgreSQL** (Neon recommended) | All data. Hyperdrive in front of it on Cloudflare; the Neon serverless HTTP driver is the fallback without Hyperdrive. | Yes |
 | **Cloudflare Secrets Store** | Holds the runtime copy of the Root KEK, bound to the Worker. | Yes |
-| **A WorkOS account** | Identity only — AuthKit's hosted pages handle password, Google, MFA and enterprise SSO sign-in. xecret exchanges the result once, server to server, and issues its own sessions ([ADR 0010](adr/0010-workos-as-identity-provider.md)). | Yes — and this is real friction. AuthKit is free up to a million monthly active users; enterprise SSO connections are billed by WorkOS. The `IdentityProvider` interface (`packages/core/src/auth/types.ts`) is where an alternative provider plugs in. |
+| **A WorkOS account** | Identity only — AuthKit's hosted pages handle password, Google, MFA and enterprise SSO sign-in (though SSO connections cannot be configured from xecret yet — see below). xecret exchanges the result once, server to server, and issues its own sessions ([ADR 0010](adr/0010-workos-as-identity-provider.md)). | Yes — and this is real friction. AuthKit is free up to a million monthly active users; enterprise SSO connections are billed by WorkOS. The `IdentityProvider` interface (`packages/core/src/auth/types.ts`) is where an alternative provider plugs in. |
 | **A mail provider** (ZeptoMail wired; the `Mailer` interface is ~30 lines to swap) | PIN-reset links and invitation emails. | No — without it, invitations return a shareable link instead of sending mail, and PIN reset answers 200 with `sent: false` and a reason. |
 | **Phase.dev** (or any secret source for deploy time) | Where *your* copy of the Root KEK lives between deploys. The Worker never calls it at runtime. | Your choice — any process that can populate deploy-time env vars works. |
 
@@ -93,12 +93,28 @@ is permanently unrecoverable — there is no support ticket that fixes this.**
 
 5. **Verify before deploying.** The config checker states exactly what is
    missing or malformed, and the smoke test proves the whole stack against the
-   real database:
+   real database. Both read the variables from their own environment, so run
+   them under the environment you are about to deploy — with this repository's
+   Phase.dev setup, that means naming it, because `.phase.json` defaults to
+   `Development`:
 
    ```bash
-   npm run check:env
-   npm run smoke
+   phase run --env Production -- npm run check:env
+   phase run --env Production -- npm run smoke
    ```
+
+   Without Phase, export the deployment's variables into the shell first (for
+   example `set -a; . ./.env; set +a`), then run `npm run check:env` and
+   `npm run smoke`. A bare `npm run check:env` in a shell holding nothing
+   reports every variable as not set.
+
+   When the WorkOS values are set, `check:env` makes one network call: it
+   presents WorkOS's authenticate endpoint with a deliberately bogus
+   authorization code, the client id and the API key. `invalid_grant` means
+   WorkOS accepted the two together and refused only the code, so they belong
+   to the same WorkOS environment; `invalid_client` or a 401 means they do not.
+   Nothing is inferred from the key's prefix. `npm run check:env -- --offline`
+   skips the call.
 
 6. **Deploy.** The script reads `XECRET_PUBLIC_URL` and `XECRET_ENV` out of
    `apps/web/wrangler.toml` for the environment named, exports them into the
@@ -108,16 +124,17 @@ is permanently unrecoverable — there is no support ticket that fixes this.**
    not your domain, step 4 has not been done.
 
    ```bash
-   phase run -- sh scripts/deploy-web.sh production
+   phase run --env Production -- sh scripts/deploy-web.sh production
    ```
 
-   The `phase run --` prefix is how *this* repository populates the deploy-time
-   environment; substitute Doppler, a CI secret block or a sourced `.env`. What
-   the script insists on is that `apps/web/wrangler.toml` declares a
-   `WORKOS_CLIENT_ID` (a `client_…` value) for the environment being deployed,
-   and it stops without one: the Worker reads it at runtime and the build never
-   does, so nothing else would notice it missing until every sign-in answered
-   503.
+   The `phase run --env Production --` prefix is how *this* repository
+   populates the deploy-time environment, naming the same Phase environment the
+   checks in step 5 ran under; substitute Doppler, a CI secret block or a
+   sourced `.env`. What the script insists on is that `apps/web/wrangler.toml`
+   declares a `WORKOS_CLIENT_ID` (a `client_…` value) for the environment being
+   deployed, and it stops without one: the Worker reads it at runtime and the
+   build never does, so nothing else would notice it missing until every
+   sign-in ended on the sign-in page's "unavailable" error.
 
    Building by hand instead means setting both yourself:
 
@@ -179,19 +196,41 @@ because there is no state cookie in the browser to match it.
 WorkOS can use its own demonstration Google credentials; in **Production**,
 Google sign-in needs your own OAuth client — create it in the Google Cloud
 Console, add the redirect URI WorkOS shows you to it, and enter its client id
-and secret in WorkOS. MFA and enterprise SSO are WorkOS settings too; xecret
-needs no change for either. MFA is recommended for organisation owners, for the
-reason under Magic Auth, next.
+and secret in WorkOS.
+
+MFA is a WorkOS setting, and recommended for organisation owners, for the
+reasons under Magic Auth, next. With an authenticator app enrolled, resetting a
+vault also asks for its code.
+
+**Enterprise SSO cannot be configured from xecret yet.** The organisation SSO
+settings — creating the WorkOS organisation for a xecret organisation, the
+Admin Portal link a customer's IT admin uses to set up the connection, and the
+setting that makes SSO required — are not built. The sign-in side is: an SSO
+sign-in is believed only for the domains its WorkOS organisation has verified.
+But a connection made directly in the WorkOS dashboard is not tied to any xecret
+organisation, so nobody is admitted to one through it.
 
 **Magic Auth.** Enable it, and leave WorkOS's default Magic Auth email on. The
 vault reset's second check is a one-time code that WorkOS creates and emails,
 and WorkOS refuses to create one at all while Magic Auth is disabled — so with
 it off, nobody on the deployment can reset a vault. Enabling it also offers
 "email me a code" as a way to sign in. That is a sign-in like any other, but it
-never counts as the vault reset's first check, which needs a credential: a
-password, a passkey, Google or SSO. Without MFA, somebody who controls a
-person's inbox can still pass both checks by resetting the password first; MFA
-on the account closes that.
+never counts as the vault reset's first check, which counts only a password, a
+passkey, Google or SSO sign-in — no other OAuth provider.
+
+Know what the two checks do not stop. The first asks AuthKit to demand the
+credential again (`max_age=0`), which WorkOS documents only for AuthKit's own
+sign-in: it does not make Google or an identity provider ask again, so for a
+Google or SSO account a live session there passes the first check silently, and
+somebody at an unlocked laptop with that session and the person's inbox open
+passes both. Without MFA, somebody who controls a person's inbox alone can also
+pass both, by resetting the password first. And a reset is not only
+destructive: whoever does it sets up a new vault on the account, which can read
+its server-mode environments and prompts teammates to re-share the
+end-to-end-encrypted ones. An authenticator app enrolled in WorkOS is the
+defence — with one, the emailed code alone is not enough. That path is tested
+against WorkOS's documented behaviour; it has not yet been exercised against a
+WorkOS environment with MFA turned on.
 
 **Email verification.** AuthKit verifies every email address before it hands
 a sign-in back, and at the time of writing there is no switch to turn that off.
@@ -204,14 +243,17 @@ environments.
 
 | Variable | What it is | Where it goes |
 |---|---|---|
-| `WORKOS_CLIENT_ID` | The environment's client id, `client_…`. Not a secret — it is in every authorization URL a browser is sent to. | `apps/web/wrangler.toml`: `[env.production.vars]` for Production, `[env.staging.vars]` and the top-level `[vars]` (local development) for Staging. |
+| `WORKOS_CLIENT_ID` | The environment's client id, `client_…`. Not a secret — it is in every authorization URL a browser is sent to. | `apps/web/wrangler.toml`: `[env.production.vars]` for Production, `[env.staging.vars]` and the top-level `[vars]` (local development) for Staging. Also in your deploy-time secret source, because `check:env` reads it from the environment and `check:deploy` compares that copy with `wrangler.toml`'s. |
 | `WORKOS_API_KEY` | The environment's secret API key. It authenticates every call xecret makes to WorkOS, including the exchange that decides who a sign-in is. Do not judge which environment a key belongs to by its prefix — check where you copied it from. | A Worker secret (`wrangler secret put`), from your deploy-time secret source. Never in `wrangler.toml`. |
 | `WORKOS_COOKIE_PASSWORD` | At least 32 random characters — `openssl rand -base64 32` — that key the signed state cookie binding a sign-in to the browser that started it. Independent of the API key; whoever holds it can complete a sign-in in somebody else's browser. | A Worker secret, the same way. |
 
-Without any of the three, nobody can sign in, and the sign-in routes answer 503
-rather than guess. `npm run check:env` reports any of them missing; that the key
-and the client id come from the same environment is something only a sign-in
-proves.
+Without any of the three, nobody can sign in, and both sign-in routes say so by
+sending the browser to the sign-in page's "unavailable" error
+(`/sign-in?error=unavailable`) rather than guess. `check:env` (step 5) reports
+any of them missing or malformed, and asks WorkOS whether the key and the client
+id belong together. `npm run check:deploy <env>` compares the `WORKOS_CLIENT_ID`
+in your secret source with the one `wrangler.toml` declares for that
+environment. A real sign-in on the deployed site is still the final proof.
 
 **What it costs, and the way out.** AuthKit is free up to a million monthly
 active users; enterprise SSO connections are billed by WorkOS. If you would
@@ -257,8 +299,10 @@ today, so a second provider needs its own.
   then with `wrangler secret put`. Rotating `WORKOS_COOKIE_PASSWORD` costs only
   the sign-ins in flight at that moment, whose state cookies stop verifying.
   Logging out of xecret does not end the person's AuthKit session, so a
-  returning person may not be asked for a credential; that is accepted, and is
-  why the vault reset forces a fresh sign-in that AuthKit cannot skip.
+  returning person may not be asked for a credential; that is accepted. The
+  vault reset asks AuthKit for a fresh sign-in (`max_age=0`), but the server
+  cannot see whether AuthKit honoured that, and it does not reach a Google or
+  identity-provider session — see Magic Auth, above.
 - **Mail, monitoring, error reporting** are yours to wire; the log pipeline
   never contains secret values by construction, but where the logs go is your
   decision.
