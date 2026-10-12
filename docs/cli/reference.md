@@ -48,8 +48,8 @@ client.
 xecret login [--api-url URL] [--name DEVICE]
 xecret login --passphrase
 ```
-OAuth-style browser consent with PKCE against the xecret server (never
-Firebase directly): a loopback listener on `127.0.0.1:<random port>` receives
+OAuth-style browser consent with PKCE against the xecret server (never the
+identity provider directly): a loopback listener on `127.0.0.1:<random port>` receives
 a one-time code, exchanged — together with the PKCE verifier — for an `xct_`
 token stored in the keychain. The device name appears on the consent screen
 and in the dashboard's *Tokens → Your devices*, where it can be revoked.

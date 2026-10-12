@@ -1,7 +1,13 @@
 # 0003 — Firebase Auth as identity provider only; xecret issues its own sessions
 
-**Status:** Accepted
+**Status:** Superseded by [0010](0010-workos-as-identity-provider.md)
 **Date:** 2026-08-10
+
+> **This decision has been replaced.** [ADR 0010](0010-workos-as-identity-provider.md) moves
+> identity from Firebase to WorkOS AuthKit, for the second reason this ADR named under
+> *Revisit when*: enterprise SAML/OIDC. The half of this decision that mattered most survives
+> unchanged — the provider is consulted once, at sign-in, and every session is xecret's own.
+> The text below is unchanged.
 
 ## Context
 

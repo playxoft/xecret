@@ -38,7 +38,7 @@ Engineering documentation, for people working on xecret rather than with it.
 | [Database setup](operations/database-setup.md) | Neon, migrations, and the restricted application role. |
 | [Logging](operations/logging.md) | The log pipeline and what may never enter it. |
 | [Colour system](design/colour-system.md) | The token palette, with measured WCAG ratios in both themes. |
-| [Architecture decisions](adr/README.md) | ADRs 0001–0009 — the choices that are settled, and why. |
+| [Architecture decisions](adr/README.md) | ADRs 0001–0010 — the choices that are settled, and why. |
 | [Roadmap](ROADMAP.md) | What is built, what is left, and the reasoning behind the order. |
 
 ## Contributing

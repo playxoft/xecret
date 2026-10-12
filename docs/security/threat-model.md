@@ -57,13 +57,22 @@ Likelihood is judged over a 12-month horizon for a product of this profile.
 
 **Threats:** credential stuffing on login · brute force on invitation and CLI tokens ·
 enumerating IDs on API routes · SQL injection · SSRF via user-supplied URLs · exploiting an
-unauthenticated route added by accident.
+unauthenticated route added by accident · login CSRF on the sign-in callback (completing the
+attacker's sign-in in the victim's browser) · taking over an existing account at sign-in, by
+registering its address unverified at the identity provider or by having another company's
+SSO assert it.
 
 **Mitigations:** authentication is deny-by-default — routes opt *in* to being public, never
 out · Cloudflare rate limiting on login, token exchange, and invitation acceptance ·
 parameterised queries only (Drizzle) · 256-bit random tokens compared in constant time ·
 no user-supplied URL is ever fetched server-side in v1 · security headers and strict CORS ·
-a Content Security Policy on every response (`apps/web/src/lib/csp.ts`).
+a Content Security Policy on every response (`apps/web/src/lib/csp.ts`) · credential entry,
+password reset and MFA happen on WorkOS's hosted AuthKit pages, never on ours · the sign-in
+callback accepts a code only in the browser that started the flow — a signed, ten-minute
+state cookie plus PKCE — and exchanges it server to server, so no provider token ever reaches
+or comes from a browser · an existing account is adopted only on a **verified** address, and
+an SSO sign-in is believed only for the domains its organisation has verified with WorkOS
+([ADR 0010](../adr/0010-workos-as-identity-provider.md)).
 
 **Residual risk:** Low. A zero-day in Cloudflare or Next.js remains possible.
 
@@ -71,23 +80,22 @@ a Content Security Policy on every response (`apps/web/src/lib/csp.ts`).
 stop an injected inline `<script>` from running — the App Router streams its RSC payload as
 a per-page inline script, and the nonce that would replace it requires a Proxy this stack
 cannot have (ADR 0008). What the policy does remove is what such a script could accomplish.
-`img-src` names no remote origin at all; `connect-src` names only this origin, Google's two
-identity endpoints and the deployment's own Firebase domain — so the `fetch` and the `<img>`
-beacon a review actually demonstrated are both refused. `form-action` refuses a redirected
-POST, and `base-uri 'self'` refuses a rewrite of every relative URL on the page.
+`img-src` names no remote origin at all, and `connect-src` names only this origin — so the
+`fetch` and the `<img>` beacon a review actually demonstrated are both refused. `form-action`
+refuses a redirected POST, and `base-uri 'self'` refuses a rewrite of every relative URL on the
+page.
 
-`script-src` is **not** `'self'` alone, and reading it as such overstates the policy. Sign-in
-needs Google's script loader at `apis.google.com`, and the email/password flows load
-reCAPTCHA Enterprise from `www.google.com/recaptcha/` and `www.gstatic.com/recaptcha/` by
-themselves whenever an operator enables enforcement in the Firebase console. So a second
-stage has nowhere to be loaded from *except* those three Google-operated sources. Two are
-scoped to a path, which keeps the rest of `www.google.com` — an origin with a long history
-of script-reflecting endpoints — out of the allowlist; `apis.google.com` cannot be, because
-gapi fetches its own modules from a different prefix on the same host. A host allowlist is
-only ever as tight as the least careful endpoint on an allowed origin, and that residual is
-the price of Google sign-in working at all. `apps/web/src/lib/csp.test.ts` enumerates each
-directive's sources exactly, so widening any of them is a deliberate edit in two places
-rather than a silent one.
+`script-src` is this origin plus `'unsafe-inline'`, and no third-party source. That is recent.
+Under Firebase, sign-in needed Google's script loader at `apis.google.com`, and the
+email/password flows loaded reCAPTCHA Enterprise from two Google paths whenever an operator
+enabled enforcement in the Firebase console, so a second stage could be loaded from three
+Google-operated sources — and a host allowlist is only ever as tight as the least careful
+endpoint on an allowed origin. Since [ADR 0010](../adr/0010-workos-as-identity-provider.md)
+sign-in is a plain navigation to WorkOS's hosted pages: the browser runs no identity-provider
+code, so the policy names no identity-provider host in any directive, and nothing had to be
+added for WorkOS. A second stage now has nowhere to be loaded from but this origin.
+`apps/web/src/lib/csp.test.ts` enumerates each directive's sources exactly, so widening any of
+them is a deliberate edit in two places rather than a silent one.
 
 Treat inline execution as *contained*, not prevented, and keep escaping at the point of
 render — see the documentation renderer, which is where this was learned.
@@ -309,3 +317,4 @@ customer's own systems after legitimate secret delivery.
 | Date | Reviewer | Change |
 |---|---|---|
 | 2026-08-10 | — | Initial version, Phase 0 |
+| 2026-10-12 | — | Identity moves from Firebase to WorkOS AuthKit (ADR 0010): T1 gains login CSRF and account takeover at sign-in; the CSP loses every Google and Firebase source |

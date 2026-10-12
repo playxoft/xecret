@@ -73,7 +73,7 @@ Some things are deliberately *not* here:
 ## How authentication works
 
 `xecret login` is an OAuth-style loopback flow (RFC 8252) with PKCE against the
-xecret server — never Firebase directly. The browser shows a consent screen
+xecret server — never the identity provider directly. The browser shows a consent screen
 naming this device; approval sends a one-time code to a listener on
 `127.0.0.1`; the code plus the in-memory PKCE verifier are exchanged for a
 `xct_` token, which is stored in the **OS keychain** (macOS Keychain, Windows

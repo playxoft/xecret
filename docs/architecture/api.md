@@ -73,14 +73,21 @@ who can fix it — and anything deleted before acceptance is skipped, safely cov
 role-default behaviour. Projects created *after* acceptance fall back to the role default;
 narrowing that is the member page's job.
 
-Firebase ID tokens are accepted at exactly one endpoint — `POST /api/auth/session` — and
-never again. See ADR 0003.
+The identity provider is consulted at exactly one endpoint — `GET /api/auth/callback`, which
+exchanges a WorkOS authorization code for the identity behind it — and never again. No
+endpoint accepts a provider token from a client, and WorkOS's own access and refresh tokens
+are discarded at the callback. See ADR 0010.
 
 ### CSRF
 
 Cookie-authenticated mutations require the double-submit pair: the `__Host-xecret_csrf`
 cookie value echoed in the `X-Xecret-Csrf` header. Bearer-authenticated requests do not,
 and must not — they carry no ambient credential for a browser to attach.
+
+The sign-in callback is the one state-changing request the pair cannot cover: it is a
+top-level navigation back from WorkOS's domain, and no page of ours could have read the
+token. Login CSRF is stopped there by the OAuth `state`, bound to the browser that started
+the flow through the signed `__Host-xecret_oauth_state` cookie (§4 Auth).
 
 ---
 
@@ -202,16 +209,96 @@ is pinned by a test for that reason.
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/api/auth/session` | Body `{ idToken }`. Verifies with Firebase, upserts the user, bootstraps a personal organisation on first login, sets the session and CSRF cookies. Rate limited: `RL_LOGIN`. |
-| `DELETE` | `/api/auth/session` | Revokes the current session, clears both cookies. Idempotent. |
+| `GET` | `/api/auth/login` | Starts a sign-in: writes the signed `__Host-xecret_oauth_state` cookie and answers **307** to AuthKit. Every query parameter is optional and untrusted: `next` (a same-origin path, validated here with `safeRedirectPath` — anything else falls back to `/app`), `hint=sign-up` (open AuthKit on its sign-up screen), `org=<slug>` (an SSO deep link: start that organisation's single sign-on directly — an organisation without SSO, or one that does not exist, falls through to the ordinary screen, so the parameter answers no question about either), `reauth=1` (send AuthKit `max_age=0`, so it asks for a credential even if it holds a session — the vault reset's first lock). No credential, and no rate limit of its own: it does at most one indexed lookup, and the callback it leads to is limited. **503** when the deployment's WorkOS configuration is missing. |
+| `GET` | `/api/auth/callback` | Where AuthKit sends the browser back, with `code` and `state`. Exchanges the code with WorkOS once, links or creates the user, and sets the session and CSRF cookies. Always answers **303** — to the cookie's `next` on success, to `/sign-in?error=<code>` on any refusal — and always clears the state cookie. Rate limited: `RL_LOGIN`, on the address and then on address + identity. Order of operations below. |
+| `DELETE` | `/api/auth/session` | Revokes the current session, clears both cookies. Idempotent. CSRF-checked when a session cookie is present. Unchanged by the move to WorkOS; a `POST` here answers **405** — the Firebase ID-token exchange it used to accept is gone. |
 | `GET` | `/api/auth/me` | The signed-in user, their organisations, their role in each — plus an `authority` summary per organisation (effective role, custom role, capabilities, assignable roles, definable bases) that the dashboard draws its controls from, since a custom role can narrow what the stored role alone suggests — and the vault state (`{ configured, unlocked, unlockedUntil, autoLockMinutes }`, where `autoLockMinutes` is already resolved and clamped — the client schedules a timer against it and does not re-implement what "no preference" means). Never carries key material. Exempt from the lock gate. |
 | `GET` | `/api/auth/sessions` | Active sessions for the "signed-in devices" view. Never returns a token hash. |
 | `DELETE` | `/api/auth/sessions` | Sign out everywhere. Optional `?except=current`. |
-| `DELETE` | `/api/auth/account` | The account deletes itself. Body `{ confirm: <account email> }`. Browser sessions only (never a bearer token), vault-gated, rate limited `RL_MUTATION`. The vault is deleted outright, so every environment key sealed to that account's public key becomes unopenable. One transaction: solo organisations are soft-deleted with the account, other memberships removed, every session and CLI token revoked, the user row soft-deleted — terminal, since the identity upsert refuses to revive a deleted row. **409** while the caller is the only active owner of an organisation other people are in: ownership must move first. Audited as `auth.account_deleted`; the response clears both cookies. |
+| `DELETE` | `/api/auth/account` | The account deletes itself. Body `{ confirm: <account email> }`. Browser sessions only (never a bearer token), vault-gated, rate limited `RL_MUTATION`. The vault is deleted outright, so every environment key sealed to that account's public key becomes unopenable. One transaction: solo organisations are soft-deleted with the account, other memberships removed, every session and CLI token revoked, the user row soft-deleted — terminal, since the sign-in's linking pass refuses a deleted account whether it reaches it by identity or by address. **409** while the caller is the only active owner of an organisation other people are in: ownership must move first. Audited as `auth.account_deleted`; the response clears both cookies. |
 
-`POST /api/auth/session` returns **401 with a fixed message** for every verification
-failure — expired, wrong audience, bad signature, unverified email. The specific reason is
-logged, never returned: telling a caller which part of a forged token to fix is a gift.
+**The state cookie.** `__Host-xecret_oauth_state` carries a fresh 256-bit `state`, a 256-bit
+PKCE verifier, the validated `next`, the purpose (`sign-in` or `reauth`) and the time it was
+issued. It is HMAC-SHA-256-signed under a key HKDF-derived from `WORKOS_COOKIE_PASSWORD`, not
+encrypted — nothing in it is secret from the browser holding it, but nothing in it may change
+— and it is `HttpOnly; Secure; SameSite=Lax` with a ten-minute lifetime, the lifetime of the
+code it travels with. PKCE is used although the server is a confidential client: the verifier
+lives only in this cookie, so a code lifted from a history entry, a referrer or a log cannot be
+exchanged without it. The redirect URI is derived, `XECRET_PUBLIC_URL` + `/api/auth/callback`,
+never configured separately.
+
+**The callback, in order.** Nothing reaches WorkOS or the database until the cheaper checks
+in front of it have passed:
+
+1. `RL_LOGIN` on the caller's address.
+2. The state cookie: its MAC before anything in it is parsed, then its age, then `state`
+   against the query string in constant time. A parameter given twice is refused, not
+   resolved.
+3. Whatever WorkOS said went wrong, if it said so (`error=access_denied` is a cancellation).
+4. The code exchange — one authenticated call to WorkOS with this deployment's secret key and
+   the flow's PKCE verifier. The identity is minted once, from that response, and passed on as
+   that exact object.
+5. An **impersonated** sign-in is refused, then an **unverified address** (403). An **SSO**
+   sign-in must name a WorkOS organisation, and the address's domain must be one that
+   organisation has verified with WorkOS (403) — checked before the linker, so it covers an
+   already-linked identity too. That check is the one other WorkOS call a sign-in can make.
+6. `RL_LOGIN` again, on address + WorkOS user id.
+7. The linking pass (`upsertUserFromWorkosIdentity`, at READ COMMITTED): match
+   `workos_user_id`; else adopt the account holding the same **verified** address; else create
+   it. Audited `auth.login`, `auth.identity_linked` or `auth.signup` respectively, each with the
+   sign-in method. A deleted account is refused (403), and an address held by an account linked
+   to another identity is a **409** that names neither that account nor how it signs in.
+8. `sso_required`: every organisation the account belongs to that requires SSO must be the one
+   whose SSO this sign-in came through (403).
+9. Just-in-time membership: an SSO sign-in through an organisation's connection makes a newcomer
+   a `viewer`, under the seat limit — `member.jit_joined`, or `member.jit_denied` and a 403
+   when no seat is free. A suspended membership is never reinstated. Steps 8 and 9 require
+   `authenticationMethod === 'SSO'` *and* the organisation id: AuthKit reports an organisation
+   after organisation selection in password and Google sign-ins too.
+10. A personal organisation for an account that has none.
+11. If the browser presented a live session of this same account, that session is revoked; the
+    new one is issued. For a `reauth` sign-in that presented a credential, a
+    `reauthentications` row is recorded against the new session (below).
+
+Every refusal is a 303 to `/sign-in?error=<code>` — the page renders a fixed sentence for a
+known code and nothing for an unknown one — and the HTTP status the refusal stands for (403,
+409, 429, 503) is in the log line, never the response: this is a page load, and a JSON body on a
+blank tab is a dead end for the person reading it. A code WorkOS refused (expired, replayed, a
+PKCE mismatch) is reported to the person as an expired attempt; naming which part was wrong
+tells an attacker which part of a forged request to fix next.
+
+### Re-authentication for the vault reset
+
+The vault reset destroys a vault for good and has to stay reachable from a locked session, so
+it is guarded by two re-authentications in a fixed order instead of the vault lock: a forced
+fresh sign-in (`/api/auth/login?reauth=1`), then a code WorkOS emails to the account. The
+server keeps each attempt's progress in `reauthentications`, bound to the session the forced
+sign-in issued. A sign-in completed with an emailed code does not count as the first lock — the
+two locks would be one inbox twice — and every refusal is a **403**, never a 401, because the
+client treats a 401 as "your session has ended" and would throw away the very session the
+attempt is bound to. All three are browser-session only and exempt from the lock gate.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/auth/reauth` | Where this session's attempt stands: `{ signedIn, signedInUntil, codeSent, email }`. Reads only; never sends anything. |
+| `POST` | `/api/auth/reauth/start` | No body. Has WorkOS email a one-time code to the session's own address. Refused unless this session's forced sign-in is under 10 minutes old. xecret never holds the code. **204**. Rate limited: `RL_LOGIN` under a `reauth_start` key on the user alone. |
+| `POST` | `/api/auth/reauth/verify` | Body `{ code }`, six digits. Checks it with WorkOS, still within 10 minutes of the forced sign-in; the code must have proved control of the WorkOS user this account is linked to, unimpersonated. Five wrong codes end the attempt — a column, so the cap holds where the rate limiter is absent. Returns `{ reauthProof, expiresAt }`: a one-time `xrp_` proof, five minutes, stored as its SHA-256 and bound to this session and this user; a second success replaces the first. Rate limited: `RL_LOGIN` under a `reauth_verify` key. Audited `auth.reauthenticated`. |
+
+The emailed code is WorkOS Magic Auth, which WorkOS refuses to create while Magic Auth is
+disabled as a sign-in method in its environment (`400 authentication_method_not_allowed`), so it
+must be enabled — with WorkOS's own Magic Auth email left on — in every WorkOS environment a
+deployment uses. Enabling it also offers "email me a code" on AuthKit's sign-in page, which is
+why the first lock refuses that method.
+
+**Residual risks**, both accepted in ADR 0010. Lock one is only as strong as the account's
+credential recovery: somebody in full control of the victim's inbox can reset the password at
+AuthKit, sign in with the new one (a password, so it counts) and then receive the code — for
+them both locks are inbox-strength, unless the account has WorkOS MFA, which is recommended for
+organisation owners. And `max_age=0` is a parameter in a URL the browser follows, which the
+server cannot see honoured: somebody at an unlocked laptop who strips it, whose browser holds
+the victim's AuthKit session, and who can read the victim's inbox passes both locks. What the
+locks do stop is a stolen session cookie on its own, and an unlocked laptop without the
+password.
 
 ### The vault
 
@@ -251,7 +338,7 @@ Three conventions hold throughout:
 | `PUT` | `/api/auth/vault/recovery` | Body `{ unlockVerifier, recoveryWraps[5] }`. Reissues the kit from an unlocked session with the passphrase re-entered (sudo mode). Every live code is revoked in the transaction that writes the new five; redeemed ones keep their tombstones. Returns `{ vault, recoveryCodesRemaining }`. Audited `vault.recovery_codes_regenerated`. |
 | `GET` `POST` | `/api/auth/vault/prf` | List, or enrol, a passkey for one-touch unlock. `POST` body `{ credentialId, label, transports?, wrap }` → **201** `{ passkey }`. A passkey is never the only wrap — the passphrase wrap always exists and has no removal path — so enrolling adds a door rather than replacing one. Rate limited: `RL_MUTATION`. |
 | `DELETE` | `/api/auth/vault/prf/{passkeyId}` | Unenrols a passkey; its wrap goes with it by cascade. **204**. Scoped by user, so another account's id answers the same **404** as one that does not exist. |
-| `POST` | `/api/auth/vault/reset` | Body `{ confirm: "reset my vault", idToken }`. The phrase is compared with the same trimming, case-insensitive helper `DELETE /api/auth/account` uses; `idToken` is a **fresh Firebase ID token**, verified server-side through the same provider `POST /api/auth/session` uses, whose subject must resolve to this session's own account and whose `auth_time` must be within 5 minutes. Destroys `user_keys` and every wrap and passkey, clears `vault_unlocked_at` on **all** the account's sessions, and re-records a pending key share for every environment the account may still read — one transaction; returns `{ vault }` reporting `configured: false`, so the client routes straight to the setup ceremony. **404** when there is no vault, **401** when the re-authentication fails (one message for every cause). **This is not recovery** — nothing is decrypted or restored, because nothing can be. Rate limited: `RL_LOGIN` under a `vault_reset` key of its own, deliberately *not* sharing recovery's counter. Audited `vault.reset`. Exempt from the lock gate, which is the entire point. |
+| `POST` | `/api/auth/vault/reset` | Body `{ confirm: "reset my vault", reauthProof }`. The phrase is compared with the same trimming, case-insensitive helper `DELETE /api/auth/account` uses, and checked first, so a typo is reported as a typo (**400**). `reauthProof` is the token `POST /api/auth/reauth/verify` minted — both re-authentications done, in order (see *Re-authentication for the vault reset* above) — and is spent by one atomic UPDATE that requires this proof, this user, this session, unspent and unexpired, **before** anything is destroyed: a reset that then fails for another reason needs a fresh proof. Destroys `user_keys` and every wrap and passkey, clears `vault_unlocked_at` on **all** the account's sessions, and re-records a pending key share for every environment the account may still read — one transaction; returns `{ vault }` reporting `configured: false`, so the client routes straight to the setup ceremony. **404** when there is no vault, **403** when the proof is refused (one message for every cause). **This is not recovery** — nothing is decrypted or restored, because nothing can be. Rate limited: `RL_LOGIN` under a `vault_reset` key of its own, deliberately *not* sharing recovery's counter. Audited `vault.reset`. Exempt from the lock gate, which is the entire point. |
 
 **What the server holds.** Public keys, an Argon2id salt and its parameters, the digests of
 both unlock verifiers, and a set of ciphertexts. Each verifier is a *sibling* HKDF branch of
@@ -287,8 +374,8 @@ would bury `vault.unlocked` under page views. ADR 0009 carries the trade under r
 
 ### CLI authorization — how `xecret login` gets its token
 
-RFC 8252-style loopback flow with PKCE (S256 only), against this server — never Firebase
-directly. The CLI opens `/cli/authorize?challenge&port&device&state` in a browser; an
+RFC 8252-style loopback flow with PKCE (S256 only), against this server — never the
+identity provider directly. The CLI opens `/cli/authorize?challenge&port&device&state` in a browser; an
 already-signed-in person approves the named device; the consent screen redirects the
 one-time code to `http://127.0.0.1:{port}/callback`; the CLI exchanges code + verifier.
 
@@ -959,7 +1046,9 @@ that degradation is severe. `limit` is clamped to 200.
 
 | Bucket | Applies to | Key |
 |---|---|---|
-| `RL_LOGIN` | `POST /api/auth/session`, vault create / unlock / passphrase | IP + subject |
+| `RL_LOGIN` | `GET /api/auth/callback` — first on the address alone, then on address + WorkOS user id | IP, then IP + subject |
+| `RL_LOGIN` | Vault create / unlock / passphrase | IP + subject |
+| `RL_LOGIN`, `reauth_start` / `reauth_verify` keys | The vault reset's emailed code: requesting it, checking it | user id alone |
 | `RL_LOGIN`, `vault_recovery` key | Vault recovery, both steps | user id alone |
 | `RL_LOGIN`, `vault_reset` key | Vault reset | user id alone |
 | `RL_CLI_TOKEN` | CLI token creation and exchange | user id |
@@ -991,6 +1080,16 @@ the only path that opens a vault with neither the passphrase nor an enrolled pas
 `vault.reset` is the only record that an account's existing ciphertext became permanently
 unreadable at a particular moment, which is what makes an otherwise inexplicable "I cannot
 see any of my secrets" answerable.
+
+A sign-in is recorded as one of three events, by what the linking pass did: `auth.login` (a
+known identity), `auth.signup` (a new account) or `auth.identity_linked` (an existing account
+adopted by its verified address — the one sign-in that changes which identity an account
+answers to, so "who could sign in as this account, and since when" is answered by finding it).
+Each carries `signInMethod`, a closed set (`password`, `oauth`, `sso`, `magic_auth`, `passkey`,
+`other`) rather than WorkOS's own vocabulary. `member.jit_joined` and `member.jit_denied` record
+single sign-on admitting a newcomer, or turning one away for want of a seat.
+`auth.reauthenticated` records the proof a vault reset spends, and is what shows a reset that
+follows it was not a stolen cookie alone.
 
 The environment-key events are `envkey.created`, `envkey.rotated`, `envkey.granted`,
 `envkey.grant_revoked` and `envkey.grant_pending`. Two of them are worth reading together:
