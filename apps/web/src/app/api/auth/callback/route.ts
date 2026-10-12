@@ -5,6 +5,7 @@ import {
   openOAuthState,
   SESSION_COOKIE_NAME,
 } from '@xecret/core/auth';
+import { safeRedirectPath } from '@/lib/redirect-path';
 import { POST_SIGN_IN_PATH, SIGN_IN_PATH } from '@/lib/session-hint';
 import type { SignInErrorCode } from '@/lib/sign-in-errors';
 import { MissingBindingError } from '@/server/bindings';
@@ -72,7 +73,12 @@ export const GET = publicRoute(async ({ request, services }) => {
     );
     if (!opened.ok) throw new SignInRefusal('expired', 400, `state ${opened.reason}`);
     const { value: flow } = opened;
-    next = flow.next;
+    // Checked again, here, where it is used. The login route validated it
+    // before sealing it and the cookie's MAC says nobody changed it since — but
+    // the redirect is the moment an unsafe value would do its damage, so it is
+    // held to the same rule at that moment rather than trusted on the strength
+    // of an earlier check in a different request.
+    next = safeRedirectPath(flow.next, POST_SIGN_IN_PATH);
 
     const providerError = url.searchParams.get('error');
     if (providerError !== null) {
@@ -99,7 +105,8 @@ export const GET = publicRoute(async ({ request, services }) => {
       presentedSessionToken: cookies.get(SESSION_COOKIE_NAME) ?? null,
     });
 
-    return seeOther(flow.next, [...result.cookies, clearedOAuthStateCookie()]);
+    services.bindLog({ signInOutcome: result.outcome, signInPurpose: flow.purpose });
+    return seeOther(next, [...result.cookies, clearedOAuthStateCookie()]);
   } catch (cause) {
     return refused(services, cause, next);
   }
@@ -178,6 +185,11 @@ function refused(services: ServiceContext, cause: unknown, next: string | null):
       error: describeError(cause),
     });
   }
+
+  // The completion line for this request reads as a neutral "completed a
+  // sign-in callback" whatever happened; these fields are what say it was
+  // refused, and why, so that a refused sign-in is never counted as a success.
+  services.bindLog({ signInOutcome: 'refused', signInRefusal: code });
 
   const target = new URLSearchParams({ error: code });
   if (next !== null && next !== POST_SIGN_IN_PATH) target.set('next', next);

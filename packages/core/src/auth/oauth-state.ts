@@ -287,7 +287,19 @@ function parsePayload(payload: string): OAuthState | null {
 
   if (typeof s !== 'string' || !STATE_PATTERN.test(s)) return null;
   if (typeof v !== 'string' || !PKCE_VERIFIER_PATTERN.test(v)) return null;
-  if (typeof n !== 'string' || n.length === 0 || n.length > MAX_NEXT_LENGTH || !n.startsWith('/')) {
+  // The shape the login route validated before sealing it: one leading slash
+  // and never two (`//host` is protocol-relative), no backslash, no control
+  // character. A key holder could mint anything, so the cookie is not taken at
+  // its word even here; the callback checks `next` once more before using it.
+  if (
+    typeof n !== 'string' ||
+    n.length === 0 ||
+    n.length > MAX_NEXT_LENGTH ||
+    !n.startsWith('/') ||
+    n.startsWith('//') ||
+    // eslint-disable-next-line no-control-regex -- control characters are the subject of the check.
+    /[\u0000-\u001f\u007f\\]/.test(n)
+  ) {
     return null;
   }
   if (p !== 'sign-in' && p !== 'reauth') return null;

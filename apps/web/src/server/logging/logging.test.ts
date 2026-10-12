@@ -94,7 +94,7 @@ describe('request descriptions', () => {
       'Sent the browser to the identity provider to sign in',
     );
     expect(sentence('GET', '/api/auth/callback', 303)).toBe(
-      'Signed the user in from the identity provider and issued a new session',
+      'Completed a sign-in callback from the identity provider',
     );
     expect(sentence('POST', '/api/auth/reauth/start', 204)).toBe(
       'Emailed a re-authentication code for the vault reset',
@@ -124,7 +124,7 @@ describe('request descriptions', () => {
     expect(
       describeRequest('GET', '/api/orgs/acme/projects/api/environments/production/pull').event,
     ).toBe('secret.pull');
-    expect(describeRequest('GET', '/api/auth/callback').event).toBe('auth.login');
+    expect(describeRequest('GET', '/api/auth/callback').event).toBe('auth.callback');
   });
 
   // A route with no entry is a gap in the mapping, not a reason to say nothing.

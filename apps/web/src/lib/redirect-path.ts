@@ -36,16 +36,20 @@ const PROBE_ORIGIN = 'https://redirect-check.invalid';
  *    refused outright, and so is a backslash anywhere — browsers treat it as a
  *    slash in the path.
  *  - Then the value is resolved against a fixed origin with the real URL parser,
- *    and must still be on that origin. Whatever the checks above missed, the
- *    parser has the final word, and the value returned is the parser's reading
- *    of it rather than the string that went in.
+ *    and must still be on that origin. The value returned is the parser's
+ *    reading of it rather than the string that went in.
+ *  - **And that reading is checked again**, because it is a different string.
+ *    Dot-segment removal is exactly where a safe-looking input turns unsafe:
+ *    `/.//evil.example`, `/..//evil.example`, `/%2e//evil.example` and
+ *    `/a/..//evil.example` all pass every check above, resolve on the probe
+ *    origin, and *normalise to* `//evil.example` — a protocol-relative URL
+ *    that a browser follows off-site. Every rule that applies to the input
+ *    therefore applies to the output too; `isSafeSamePath` is that one rule,
+ *    run twice. The result is a fixed point: passing it back in returns it
+ *    unchanged.
  */
 export function safeRedirectPath(value: string | null | undefined, fallback = '/'): string {
-  if (typeof value !== 'string' || value.length === 0) return fallback;
-  if (value.length > MAX_REDIRECT_PATH_LENGTH) return fallback;
-  if (!value.startsWith('/')) return fallback;
-  if (value.startsWith('//')) return fallback;
-  if (/[\u0000-\u001f\u007f\\]/.test(value)) return fallback;
+  if (typeof value !== 'string' || !isSafeSamePath(value)) return fallback;
 
   let url: URL;
   try {
@@ -56,5 +60,23 @@ export function safeRedirectPath(value: string | null | undefined, fallback = '/
   if (url.origin !== PROBE_ORIGIN) return fallback;
 
   const normalised = `${url.pathname}${url.search}${url.hash}`;
-  return normalised.length > MAX_REDIRECT_PATH_LENGTH ? fallback : normalised;
+  return isSafeSamePath(normalised) ? normalised : fallback;
+}
+
+/**
+ * The shape rules, on their own: a non-empty, bounded path rooted at a single
+ * slash, with no control character and no backslash anywhere.
+ *
+ * Exported so that a value which has travelled — through the signed state
+ * cookie, say — can be held to the same rules again where it is used, without
+ * a second spelling of them.
+ */
+export function isSafeSamePath(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= MAX_REDIRECT_PATH_LENGTH &&
+    value.startsWith('/') &&
+    !value.startsWith('//') &&
+    !/[\u0000-\u001f\u007f\\]/.test(value)
+  );
 }

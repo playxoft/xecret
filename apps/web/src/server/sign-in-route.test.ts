@@ -466,8 +466,36 @@ describe('next', () => {
     ['a protocol-relative URL', '//evil.example'],
     ['a backslash trick', '/\\evil.example'],
     ['a tab trick', '/\t/evil.example'],
-  ])('lands on /app instead of %s', async (_label, next) => {
+    // Round 1: these normalise to `//evil.example` under dot-segment removal.
+    ['a dot segment before a double slash', '/.//evil.example/phish'],
+    ['a parent segment before a double slash', '/..//evil.example'],
+    ['an encoded dot segment', '/%2e//evil.example'],
+    ['a climb out of a real segment', '/app/..//evil.example'],
+  ])('lands on /app, after a real sign-in, instead of %s', async (_label, next) => {
     const result = await signIn(workosUser(), {}, { query: `?next=${encodeURIComponent(next)}` });
+
+    expect(result.status).toBe(303);
+    expect(sessionCookieIssued(result)).toBe(true);
+    expect(result.location).toBe('/app');
+    expect(new URL(result.location, `${ORIGIN}/api/auth/callback`).origin).toBe(ORIGIN);
+  });
+
+  it('re-checks next from the cookie before redirecting, even one a key holder sealed', async () => {
+    // The state cookie refuses `//…` when it is parsed, so a forged `//` never
+    // gets this far. This pins the second check: a value the parser accepts
+    // but the redirect rule does not is still not followed.
+    const key = await deriveOAuthStateKey(COOKIE_PASSWORD);
+    const state = 'S'.repeat(43);
+    const cookie = await sealOAuthState(key, {
+      state,
+      verifier: 'V'.repeat(43),
+      next: '/a/..//evil.example',
+      purpose: 'sign-in',
+      issuedAt: Math.floor(Date.now() / 1000),
+    });
+    workosAnswers({ user: workosUser() });
+
+    const result = await finishSignIn({ cookie, state });
 
     expect(result.location).toBe('/app');
   });
@@ -491,6 +519,23 @@ describe('next', () => {
 });
 
 /* ── the state cookie ─────────────────────────────────────────────────────── */
+
+describe('the request log', () => {
+  it('describes the callback neutrally and binds the real outcome — a refusal is never a sign-in', async () => {
+    const refused = await finishSignIn({ cookie: null, state: 'x' });
+    expect(refused.error).toBe('expired');
+    const refusedLine = lines.findLast((l) => l.fn === 'request');
+    expect(refusedLine?.message).toBe('Completed a sign-in callback from the identity provider');
+    expect(refusedLine?.signInOutcome).toBe('refused');
+    expect(refusedLine?.signInRefusal).toBe('expired');
+
+    lines = [];
+    await signIn(workosUser());
+    const okLine = lines.findLast((l) => l.fn === 'request');
+    expect(okLine?.signInOutcome).toBe('created');
+    expect(okLine?.signInRefusal).toBeUndefined();
+  });
+});
 
 describe('the state check', () => {
   it('refuses a callback with no state cookie — a flow this browser never started', async () => {

@@ -31,11 +31,14 @@ export const LOGIN_ROUTE = '/api/auth/login';
 
 export interface LoginHrefOptions {
   /**
-   * Where to land afterwards. Validated again here (and once more by the login
-   * route, which is the check that counts): `safeRedirectPath` is idempotent,
-   * so an already-validated value passes through unchanged, and normalising it
-   * first is what makes the "omit the default" comparison below reliable —
-   * `/app?` and `/app` are the same destination and get the same link.
+   * Where to land afterwards. Validated again here (and by the login route,
+   * and once more by the callback before it redirects — the checks that
+   * count). Re-validating a value `safeRedirectPath` already returned is safe:
+   * it re-checks its own normalised output, so what it returns is a fixed
+   * point and passes through unchanged (pinned, with a fuzz, in
+   * `lib/redirect-path.test.ts`). Normalising first is what makes the "omit
+   * the default" comparison below reliable — `/app?` and `/app` are the same
+   * destination and get the same link.
    */
   next?: string | null | undefined;
   /** Open AuthKit on its sign-up screen rather than its sign-in screen. */

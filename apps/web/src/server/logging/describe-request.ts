@@ -137,11 +137,15 @@ function describeAuth(verb: string, rest: readonly string[]): RequestAction {
   }
 
   if (first === 'callback') {
+    // Neutral on purpose. The callback answers 303 whether it signed somebody
+    // in or refused them, so a sentence derived from the status would call
+    // every refusal a sign-in. The route binds `signInOutcome` (and, for a
+    // refusal, `signInRefusal`) onto the same line — that field is the answer.
     return action(
-      'auth.login',
-      'Signed',
-      'sign',
-      'the user in from the identity provider and issued a new session',
+      'auth.callback',
+      'Completed',
+      'complete',
+      'a sign-in callback from the identity provider',
     );
   }
 

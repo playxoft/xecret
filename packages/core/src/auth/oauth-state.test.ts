@@ -172,6 +172,9 @@ describe('a validly signed payload the callback could not act on', () => {
 
   it.each([
     ['an absolute next', { n: 'https://evil.example/' }],
+    ['a protocol-relative next', { n: '//evil.example' }],
+    ['a backslash in next', { n: '/\\evil.example' }],
+    ['a control character in next', { n: '/\t/evil.example' }],
     ['a relative next', { n: 'app' }],
     ['an empty next', { n: '' }],
     ['an over-long next', { n: `/${'a'.repeat(MAX_NEXT_LENGTH)}` }],
