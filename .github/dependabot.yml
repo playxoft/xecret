@@ -68,10 +68,17 @@ updates:
         update-types: [minor, patch]
 
       # Minors ride with patches. Held to patch only, a routine production
-      # minor was the one thing here that could not land in a group — firebase
-      # 12.17 -> 12.18 arrived as its own PR alongside the four batches, which
-      # is the stream the header warns about, in the ecosystem where it matters
-      # most. Majors stay out: a production major is worth its own diff.
+      # minor was the one thing here that could not land in a group — the
+      # identity provider's SDK went up a minor as its own PR alongside the
+      # four batches, which is the stream the header warns about, in the
+      # ecosystem where it matters most. Majors stay out: a production major is
+      # worth its own diff.
+      #
+      # @workos-inc/node, the identity provider's SDK today, rides here like
+      # any other production dependency. It needs no group of its own: it has
+      # no companion package that must move with it — the obvious candidate,
+      # `@workos-inc/authkit-nextjs`, is banned by lint rather than merely
+      # unused — so there is no coupled upgrade to keep in one diff.
       production:
         dependency-type: production
         update-types: [minor, patch]

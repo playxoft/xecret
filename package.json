@@ -17,7 +17,7 @@
     "phase:plan:show": "phase run -- npm run plan:show --",
     "phase:dev": "phase run -- npm run dev",
     "phase:build": "phase run -- npm run build",
-    "// phase:deploy": "Names the Phase environment rather than taking .phase.json's defaultEnv, which is Development. NEXT_PUBLIC_FIREBASE_CONFIG is inlined into the client bundle at build time, so the default would ship development's Firebase project inside a production deployment — a build that succeeds and a site nobody can sign in to. deploy-web.sh cross-checks the two and refuses, but the flag is what makes it right rather than merely caught.",
+    "// phase:deploy": "Names the Phase environment rather than taking .phase.json's defaultEnv, which is Development. Nothing identity-related is inlined at build time any more: WorkOS sign-in is server-initiated, the client id comes from wrangler.toml per environment, and WORKOS_API_KEY / WORKOS_COOKIE_PASSWORD reach the Worker as secrets that a deploy carries forward rather than sets. The flag still matters, because whatever the build and the upload do read from the environment — Cloudflare's credentials included — should be Production's, and because it is the environment `phase:check-deploy` compared against the live Worker. A deploy run under Development's values is one nobody preflighted.",
     "phase:deploy": "phase run --env Production -- npm run deploy",
     "phase:migrate": "phase run -- npm run db:migrate",
     "phase:studio": "phase run -- npm run db:studio",

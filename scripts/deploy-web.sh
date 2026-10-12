@@ -11,47 +11,20 @@
 # them works — Doppler, a CI secret block, a sourced `.env` — and a self-hoster
 # using one of those is in a supported configuration; ADR 0002 is what makes it
 # so, because the deployed Worker reads nothing from any secret manager at
-# runtime. What the script does insist on is that the variables are actually
-# there when it runs, since the ones that matter are consumed during `next
-# build` and every one of them fails *quietly* when absent. Hence the checks
-# below rather than a sentence in a comment nobody reads.
+# runtime. Since sign-in became server-initiated
+# (docs/adr/0010-workos-as-identity-provider.md) the build needs little from it
+# either: the client bundle carries no identity-provider configuration, so
+# `next build` inlines no secret, and what the wrapper mostly supplies is
+# Cloudflare's credentials for the upload. What the script does insist on is the
+# configuration that fails *quietly* — a build for a different deployment than
+# the one being uploaded, and a deployment that does not name its identity
+# provider. Hence the checks below rather than a sentence in a comment nobody
+# reads.
 
 set -eu
 
 env_name="${1:-production}"
 cd "$(dirname "$0")/../apps/web"
-
-# ── The client bundle is built here, so the client's configuration has to be ──
-#
-# `next build` inlines NEXT_PUBLIC_FIREBASE_CONFIG into the bundle, and
-# `next.config.ts` additionally derives the Content-Security-Policy from it:
-# `frame-src` and `connect-src` have to name this deployment's own Firebase
-# `authDomain`, because `signInWithPopup` embeds a hidden iframe on that host to
-# hear the answer back (see lib/csp.ts).
-#
-# A build that cannot see the variable does not fail. `firebaseAuthOrigin()`
-# returns null, the policy is assembled without those entries, and the
-# deployment ships — with a header that blocks its own sign-in frame. The
-# symptom is every Google sign-in failing with `auth/network-request-failed`, a
-# message that sends whoever is debugging it looking for a network outage. That
-# is a whole deployment nobody can log in to, found by a user rather than by
-# this script, so it is checked before anything is built.
-if [ -z "${NEXT_PUBLIC_FIREBASE_CONFIG:-}" ]; then
-  cat >&2 <<EOF
-NEXT_PUBLIC_FIREBASE_CONFIG is not set in this environment.
-
-It is inlined into the client bundle at build time, and the Content-Security-
-Policy's frame-src and connect-src are derived from its authDomain. Building
-without it produces a deployment whose own sign-in popup is blocked by its own
-CSP, and nothing about the build or the deploy reports that.
-
-Run this under whatever populates your deploy-time environment. In this
-repository that is Phase.dev:
-
-    phase run -- sh $0 $env_name
-EOF
-  exit 1
-fi
 
 # The deploy step inspects the config through wrangler's *local* platform
 # proxy, which refuses a Hyperdrive binding without a local stand-in. This is
@@ -115,51 +88,53 @@ export XECRET_PUBLIC_URL XECRET_ENV
 echo "Building for $XECRET_ENV at $XECRET_PUBLIC_URL"
 echo "  (from apps/web/wrangler.toml → env.$env_name.vars — stop now if that is not your deployment)"
 
-# ── The build-time secrets have to belong to the environment being deployed ──
+# ── The deployment has to name its identity provider ──
 #
-# `NEXT_PUBLIC_FIREBASE_CONFIG` arrives from whatever populates the environment,
-# and nothing about that wrapper is tied to `$env_name`. `phase run` resolves
-# `.phase.json`'s `defaultEnv`, which is `Development`; a self-hoster's wrapper
-# has its own default. So the ordinary mistake is not a missing variable, it is
-# a *present* one from the wrong environment — and it is invisible, because the
-# build succeeds and the deployment looks fine until sign-in fails against a
-# Firebase project that never issued the token.
+# `WORKOS_CLIENT_ID` is a runtime var: the Worker reads it, the build never
+# does, so nothing about building or uploading would notice it missing. A
+# deployment without one is up, serves every page, and answers 503 to every
+# sign-in — which is a deployment nobody can use, found by a user rather than by
+# this script. `wrangler deploy` replaces the Worker's vars with exactly
+# `env.$env_name.vars`, so if it is not in that table it will not be on the
+# Worker, whatever the dashboard shows today.
 #
-# `env.$env_name.vars.FIREBASE_PROJECT_ID` is what the deployed Worker will
-# verify tokens against, and the client config names the project the browser
-# will get them from. If those two disagree, every sign-in on the deployment is
-# rejected. Comparing them here is the only point where both are in hand.
+# The shape is checked too. The id is public and belongs in the committed file;
+# the WorkOS *secret* key, which starts `sk_`, is the value most likely to be
+# pasted into the wrong field, and in this file it would be published.
 #
-# Skipped when the target environment declares no `FIREBASE_PROJECT_ID` —
-# `env.staging` currently does not — because a comparison against nothing would
-# fail every deploy of an environment that has simply not been filled in yet.
-expected_project="$(wrangler_var FIREBASE_PROJECT_ID 2>/dev/null || true)"
-if [ -n "$expected_project" ]; then
-  building_project="$(
-    printf '%s' "$NEXT_PUBLIC_FIREBASE_CONFIG" |
-      node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).projectId??""))}catch{process.stdout.write("")}})'
-  )"
+# What this cannot check is that the id and the Worker's WORKOS_API_KEY secret
+# come from the same WorkOS environment — the secret is not readable from here.
+# `npm run check:env` and the deployment-check skill cover that pairing.
+if ! WORKOS_CLIENT_ID="$(wrangler_var WORKOS_CLIENT_ID)"; then
+  cat >&2 <<EOF
+Refusing to build: apps/web/wrangler.toml declares no WORKOS_CLIENT_ID for
+env.$env_name.
 
-  if [ "$building_project" != "$expected_project" ]; then
+Every sign-in on the deployment would answer 503. Add the client id of the
+WorkOS environment this deployment signs people in against to
+[env.$env_name.vars] — the Production environment's for production, the
+Staging environment's for anything else. It is not a secret; the API key is,
+and that one belongs in \`wrangler secret put\`, not in the file.
+EOF
+  exit 1
+fi
+
+case "$WORKOS_CLIENT_ID" in
+  client_*) ;;
+  *)
     cat >&2 <<EOF
-Refusing to build: the Firebase project in this environment is not the one
-env.$env_name deploys against.
+Refusing to build: env.$env_name.vars.WORKOS_CLIENT_ID in apps/web/wrangler.toml
+is not a WorkOS client id (expected client_…).
 
-  NEXT_PUBLIC_FIREBASE_CONFIG projectId : ${building_project:-<unparseable>}
-  wrangler env.$env_name.FIREBASE_PROJECT_ID : $expected_project
-
-The client config almost certainly came from the wrong environment of whatever
-supplies it. With Phase, the environment is chosen explicitly:
-
-    phase run --env Production -- sh $0 $env_name
-
-Building anyway would deploy a site whose browser gets tokens from one Firebase
-project while the Worker verifies them against another, so every sign-in is
-rejected — and nothing about the build or the deploy would report it.
+If it is the API key (sk_…), it has been committed: rotate it in the WorkOS
+dashboard before doing anything else, then put the client id here and the new
+key in \`wrangler secret put WORKOS_API_KEY --env $env_name\`.
 EOF
     exit 1
-  fi
-fi
+    ;;
+esac
+
+echo "  (signing in against WorkOS client $WORKOS_CLIENT_ID — its API key must be from the same WorkOS environment)"
 
 # ── What `GET /api/version` will answer with ──
 #
