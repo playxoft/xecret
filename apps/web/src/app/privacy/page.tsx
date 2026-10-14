@@ -162,12 +162,16 @@ const SECTIONS: readonly LegalSection[] = [
           authorisation headers are scrubbed out of message text by pattern.
         </>,
         <>
-          <strong className="text-fg font-medium">Mail we send.</strong> A PIN reset link, and
-          organisation invitations to the address you type. WorkOS also sends, on our behalf, the
-          mail that belongs to signing in: a message to verify your email address, a password reset
-          link when you ask for one, a one-time sign-in code if you choose to sign in by email, and
-          the one-time code that confirms a vault reset. That is the whole of it: no newsletter, no
-          product marketing, and no tracking pixel in the mail we send ourselves.
+          <strong className="text-fg font-medium">Mail we send.</strong> A PIN reset link;
+          organisation invitations to the address you type; and, when you reset your vault, your{' '}
+          <LegalLink href="/docs/security/vault-archive">vault archive</LegalLink> — your secrets,
+          still encrypted, with the names of your organisations, projects, environments and secrets
+          in plain text — attached to a message to your own address, or a notice in its place if you
+          chose to reset without it. WorkOS also sends, on our behalf, the mail that belongs to
+          signing in: a message to verify your email address, a password reset link when you ask for
+          one, a one-time sign-in code if you choose to sign in by email, and the one-time code that
+          confirms a vault reset. That is the whole of it: no newsletter, no product marketing, and
+          no tracking pixel in the mail we send ourselves.
         </>,
       ],
       'There is no analytics on this site. No page-view tracker, no session recorder, no advertising pixel, no fingerprinting script. If that ever changes, this paragraph is the first thing that changes with it.',
@@ -254,7 +258,9 @@ const SECTIONS: readonly LegalSection[] = [
         </>,
         <>
           <strong className="text-fg font-medium">ZeptoMail (Zoho)</strong> — transactional email:
-          PIN reset links and organisation invitations.
+          PIN reset links, organisation invitations, and the vault archive or notice sent when you
+          reset your vault. The archive passes through it as an attachment: encrypted values it
+          cannot read, and names in plain text.
         </>,
         <>
           <strong className="text-fg font-medium">Better Stack</strong> — log shipping, when a
@@ -296,13 +302,22 @@ const SECTIONS: readonly LegalSection[] = [
           after deletion.
         </>,
         <>
+          <strong className="text-fg font-medium">Reset vaults</strong> — when you reset your vault,
+          the old one is kept for seven days so that you can recover it, and nothing in xecret can
+          delete it in that window — not you, and not us through the product. It is purged
+          automatically within about an hour after the seven days end. The archive emailed at the
+          reset is a copy in your mailbox, and stays there for as long as you keep it: we cannot
+          delete mail we have sent.
+        </>,
+        <>
           <strong className="text-fg font-medium">Closed accounts</strong> — deleting your account
           revokes every session and CLI token, deletes your PIN, removes you from the organisations
           you are not the last owner of, and soft-deletes the organisations that were only yours.
           The user record itself is soft-deleted rather than erased, because the audit records you
           made have to keep meaning something; the actor&rsquo;s label was written into each record
-          at the time, so the log still reads correctly with the account gone. Ask us if you need
-          the identity record erased outright.
+          at the time, so the log still reads correctly with the account gone. A vault you reset in
+          the last seven days is kept until its window ends, then purged as above. Ask us if you
+          need the identity record erased outright.
         </>,
         <>
           <strong className="text-fg font-medium">Sessions</strong> — 30 days from creation, and
