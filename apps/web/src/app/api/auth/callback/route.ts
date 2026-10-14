@@ -151,6 +151,22 @@ function seeOther(location: string, cookies: readonly string[]): Response {
  * refusal, reported as an expired attempt: naming which part was wrong tells an
  * attacker which part of a forged request to fix next.
  */
+/**
+ * Which side of the WorkOS call an `IdentityVerificationError` came from, for
+ * the log. A code refused by shape never reached WorkOS, and an answer that
+ * could not be used did — "WorkOS would not exchange its code" is true of
+ * neither, and a person reading the log at 3 a.m. would go looking at WorkOS.
+ */
+function verificationFailure(reason: string): string {
+  if (reason === 'malformed-code') {
+    return 'Refused a sign-in before asking WorkOS: the code in the callback URL was malformed.';
+  }
+  if (reason === 'no-email' || reason === 'malformed-subject' || reason === 'malformed-identity') {
+    return `Refused a sign-in because WorkOS's answer could not be used (${reason}).`;
+  }
+  return `Refused a sign-in because WorkOS would not exchange its code (${reason}).`;
+}
+
 function refused(services: ServiceContext, cause: unknown, next: string | null): Response {
   const log = services.log.at('callback');
   let code: SignInErrorCode;
@@ -161,8 +177,7 @@ function refused(services: ServiceContext, cause: unknown, next: string | null):
   } else if (cause instanceof IdentityVerificationError) {
     code = 'expired';
     log.warn(
-      `Refused a sign-in because WorkOS would not exchange its code (${cause.reason}). The ` +
-        'person was told only that the attempt expired.',
+      `${verificationFailure(cause.reason)} The person was told only that the attempt expired.`,
       { code, status: 400, reason: cause.reason },
     );
   } else if (cause instanceof IdentityProviderUnavailableError) {

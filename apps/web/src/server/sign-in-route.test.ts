@@ -597,6 +597,30 @@ describe('the request log', () => {
     expect(okLine?.signInOutcome).toBe('created');
     expect(okLine?.signInRefusal).toBeUndefined();
   });
+
+  it('says a malformed code was refused before WorkOS was asked, not that WorkOS refused it', async () => {
+    const flow = await startSignIn();
+
+    const result = await finishSignIn(flow, { code: 'not a code!' });
+
+    expect(result.error).toBe('expired');
+    expect(workos.authenticateWithCode).not.toHaveBeenCalled();
+    const line = lines.find((l) => l.reason === 'malformed-code');
+    expect(line?.message).toMatch(/^Refused a sign-in before asking WorkOS/);
+    expect(line?.message).not.toMatch(/would not exchange/);
+  });
+
+  it('says WorkOS would not exchange a code it refused', async () => {
+    const flow = await startSignIn();
+    workos.authenticateWithCode.mockRejectedValueOnce(
+      Object.assign(new Error('invalid grant'), { status: 400, error: 'invalid_grant' }),
+    );
+
+    await finishSignIn(flow);
+
+    const line = lines.find((l) => l.reason === 'invalid_grant');
+    expect(line?.message).toMatch(/WorkOS would not exchange its code \(invalid_grant\)/);
+  });
 });
 
 describe('the state check', () => {
