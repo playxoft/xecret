@@ -1451,3 +1451,42 @@ describe('the session route', () => {
     expect(audit.map((e) => e.action)).toContain('auth.logout');
   });
 });
+
+describe('whether a re-authentication arms lock one', () => {
+  const flowIssuedAt = 1_800_000_000;
+
+  it('arms only for a counting method with a fresh, numeric authentication time', async () => {
+    const { armsLockOne } = await import('./sign-in');
+    expect(
+      armsLockOne({ authenticationMethod: 'Passkey', authenticatedAt: flowIssuedAt }, flowIssuedAt),
+    ).toBe('armed');
+    expect(
+      armsLockOne(
+        { authenticationMethod: 'MagicAuth', authenticatedAt: flowIssuedAt },
+        flowIssuedAt,
+      ),
+    ).toBe('method');
+    expect(
+      armsLockOne(
+        { authenticationMethod: 'Passkey', authenticatedAt: flowIssuedAt - 3600 },
+        flowIssuedAt,
+      ),
+    ).toBe('stale');
+  });
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['a numeric string', String(flowIssuedAt)],
+    ['NaN', Number.NaN],
+    ['infinity', Number.POSITIVE_INFINITY],
+  ])('fails closed when the authentication time is %s', async (_name, authenticatedAt) => {
+    const { armsLockOne } = await import('./sign-in');
+    expect(
+      armsLockOne(
+        { authenticationMethod: 'Passkey', authenticatedAt: authenticatedAt as number | null },
+        flowIssuedAt,
+      ),
+    ).toBe('no-auth-time');
+  });
+});
