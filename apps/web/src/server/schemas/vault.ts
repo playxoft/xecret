@@ -328,11 +328,18 @@ export const REAUTH_MAX_CODE_SENDS = 3;
  * The bound is generous for a 47-character token and exists for the usual
  * reason: nothing unauthenticated-sized is buffered on the strength of a length
  * nobody checked.
+ *
+ * `proceedWithoutArchive` is the person's explicit "Reset without the emailed
+ * archive", ticked on a screen that has just told them why the archive cannot
+ * be emailed (`GET /api/auth/vault/reset/preflight`). Absent means false: a
+ * vault is never reset without its archive unless somebody chose that. It
+ * cannot override a production deployment with no mail at all.
  */
 export const vaultResetSchema = z.strictObject(
   {
     confirm: z.string().check(z.maxLength(100)),
     reauthProof: z.string().check(z.minLength(1), z.maxLength(128)),
+    proceedWithoutArchive: z.optional(z.boolean()),
   },
   UNEXPECTED_FIELD,
 );

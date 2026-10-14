@@ -783,13 +783,27 @@ export async function resetVault(
   services: ServiceContext,
   user: Extract<Principal, { kind: 'user' }>,
   now: Date = new Date(),
+  /**
+   * The public key of the vault the person was shown and emailed. The reset
+   * retains that vault or nothing: a vault set up again in between is refused
+   * with a 409, never retained in its place.
+   */
+  expectedEncPublicKey?: Uint8Array,
 ): Promise<RetainedVaultReceipt | null> {
-  return resetVaultRows(services.db, user.user.id, {
-    now,
-    requeue: async (tx) => {
-      await requeueKeySharesAfterVaultReset(tx, user.user.id);
-    },
-  });
+  try {
+    return await resetVaultRows(services.db, user.user.id, {
+      now,
+      expectedEncPublicKey,
+      requeue: async (tx) => {
+        await requeueKeySharesAfterVaultReset(tx, user.user.id);
+      },
+    });
+  } catch (cause) {
+    if (cause instanceof RepositoryError && cause.code === 'conflict') {
+      throw errors.vaultChangedDuringReset();
+    }
+    throw cause;
+  }
 }
 
 /**

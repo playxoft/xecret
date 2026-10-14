@@ -37,6 +37,7 @@ import {
   createVault,
   issueReauthProof,
   markSessionUnlocked,
+  measureArchiveSecrets,
   recordFreshSignIn,
   resetVault as resetVaultRows,
 } from '@xecret/db/repositories';
@@ -52,8 +53,10 @@ import type { LogEntry, RequestLog } from './logging';
  *  - a reset emails the escape archive — ZeptoMail is a stubbed `fetch`, and
  *    the attachment it was handed is opened with the old passphrase — and then
  *    retains the vault for seven days;
- *  - a failed send resets nothing; no mail provider, or a vault too large to
- *    email, resets anyway and says so;
+ *  - a failed send resets nothing; a production deployment with no mail
+ *    refuses; an archive that cannot be emailed is shown by the preflight and
+ *    resets only when the person chose to go without it (the owner decision);
+ *  - the reset retains the vault that was archived, or nothing;
  *  - the retained vault is recovered into a new one with the old passphrase,
  *    and only by its owner, from an unlocked session, with the proof;
  *  - the purge removes it after seven days, runs only from the scheduler, and
@@ -87,6 +90,7 @@ vi.mock('./logging', async (importOriginal) => ({
 }));
 
 const resetRoute = await import('@/app/api/auth/vault/reset/route');
+const preflightRoute = await import('@/app/api/auth/vault/reset/preflight/route');
 const retainedRoute = await import('@/app/api/auth/vault/retained/route');
 const retainedOneRoute = await import('@/app/api/auth/vault/retained/[retainedId]/route');
 const recoveryWrapRoute =
@@ -94,7 +98,8 @@ const recoveryWrapRoute =
 const restoreRoute = await import('@/app/api/auth/vault/retained/[retainedId]/restore/route');
 const purgeRoute = await import('@/app/api/internal/scheduled/vault-purge/route');
 const { runScheduledJob, VAULT_PURGE_PATH } = await import('./scheduled');
-const { emailVaultArchive } = await import('./vault-archive-service');
+const { ARCHIVE_EMAIL_LIMITS, archiveEnvironments, emailVaultArchive, surveyVaultArchive } =
+  await import('./vault-archive-service');
 const { VAULT_RESET_CONFIRMATION } = await import('./schemas/vault');
 
 let t: TestDatabase;
@@ -104,6 +109,8 @@ let deferred: Promise<unknown>[] = [];
 let env: Record<string, string>;
 let mailRequests: { url: string; body: Record<string, unknown> }[] = [];
 let mailStatus = 201;
+/** Runs inside the next send, once: a way to change the world mid-reset. */
+let onMail: (() => Promise<void>) | null = null;
 
 beforeAll(async () => {
   t = await createTestDatabase();
@@ -121,6 +128,7 @@ beforeEach(() => {
   deferred = [];
   mailRequests = [];
   mailStatus = 201;
+  onMail = null;
   env = {
     XECRET_PUBLIC_URL: ORIGIN,
     XECRET_ENV: 'production',
@@ -133,6 +141,9 @@ beforeEach(() => {
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url !== ZEPTO) throw new Error(`unexpected fetch to ${url}`);
+      const hook = onMail;
+      onMail = null;
+      await hook?.();
       mailRequests.push({ url, body: JSON.parse(String(init?.body)) as Record<string, unknown> });
       return new Response('{}', { status: mailStatus });
     }),
@@ -435,16 +446,64 @@ function call(
   );
 }
 
-async function reset(who: Account): Promise<Response> {
+async function reset(
+  who: Account,
+  options: { proceedWithoutArchive?: boolean } = {},
+): Promise<Response> {
   const reauthProof = await proofFor(who);
   return call(resetRoute, 'POST', '/api/auth/vault/reset', who, {
-    body: { confirm: VAULT_RESET_CONFIRMATION, reauthProof },
+    body: { confirm: VAULT_RESET_CONFIRMATION, reauthProof, ...options },
   });
+}
+
+/** Whether the session's reset proof is still unspent. */
+async function proofUnspent(who: Account): Promise<boolean> {
+  const rows = await t.pg.query<{ used_at: Date | null }>(
+    `select used_at from reauthentications where session_id = $1`,
+    [who.sessionId],
+  );
+  return rows.rows[0]?.used_at === null;
+}
+
+async function errorMessage(response: Response): Promise<string> {
+  return ((await response.json()) as { error: { message: string } }).error.message;
+}
+
+interface Preflight {
+  resettable: boolean;
+  archive: {
+    deliverable: boolean;
+    reason: string | null;
+    estimatedBytes: number;
+    maxBytes: number;
+    environmentCount: number;
+    secretCount: number;
+  };
+}
+
+async function preflight(who: Account): Promise<Response> {
+  return call(preflightRoute, 'GET', '/api/auth/vault/reset/preflight', who);
 }
 
 async function count(sql: string, params: unknown[]): Promise<number> {
   return (await t.pg.query<{ n: number }>(`select count(*)::int as n from ${sql}`, params)).rows[0]!
     .n;
+}
+
+/**
+ * A value as it could appear inside sent text: itself, and its base64 and
+ * base64url after 0, 1 and 2 bytes of lead-in — the middle of each, so the
+ * characters that depend on the neighbouring bytes are left out.
+ */
+function encodedForms(value: string): string[] {
+  const forms = [value];
+  for (let offset = 0; offset < 3; offset += 1) {
+    const full = btoa('x'.repeat(offset) + value);
+    const lead = Math.ceil((offset * 4) / 3);
+    const middle = full.slice(lead + 1, full.length - 4);
+    forms.push(middle, middle.replaceAll('+', '-').replaceAll('/', '_'));
+  }
+  return forms;
 }
 
 /** The attachment ZeptoMail was handed, as file bytes. */
@@ -502,9 +561,15 @@ describe('a vault reset', () => {
     expect(attachment.mimeType).toBe('application/zip');
     expect(attachment.name).toMatch(/^xecret-vault-archive-\d{4}-\d{2}-\d{2}\.zip$/);
 
-    // Nothing readable anywhere in what was sent.
-    expect(JSON.stringify(mail.body)).not.toContain('example-not-a-real-key');
-    expect(new TextDecoder().decode(attachment.bytes)).not.toContain('example-not-a-real-key');
+    // Nothing readable anywhere in what was sent — raw, or base64 / base64url
+    // at any of the three alignments a value can sit at inside a longer string.
+    const sentText = JSON.stringify(mail.body) + new TextDecoder().decode(attachment.bytes);
+    for (const value of [PLAINTEXT, NOTE]) {
+      for (const form of encodedForms(value)) expect(sentText).not.toContain(form);
+    }
+    // The positive control: the same check finds a value hidden in base64 at an offset.
+    const hidden = btoa(`xy${PLAINTEXT}`);
+    expect(encodedForms(PLAINTEXT).some((form) => hidden.includes(form))).toBe(true);
 
     // And the old passphrase opens it, offline, to exactly what was stored.
     const doc = await readArchiveFile(attachment.bytes);
@@ -549,6 +614,10 @@ describe('a vault reset', () => {
     const response = await reset(who);
 
     expect(response.status).toBe(503);
+    expect(await errorMessage(response)).toBe(
+      'We couldn’t email your vault archive, so nothing was reset. To try again you’ll need to ' +
+        'sign in again and get a new code.',
+    );
     expect(await count('user_keys where user_id = $1', [who.userId])).toBe(1);
     expect(await count('retained_vaults where user_id = $1', [who.userId])).toBe(0);
     // The proof was spent: a retry starts again from the sign-in.
@@ -558,12 +627,40 @@ describe('a vault reset', () => {
     expect(used.rows[0]).toMatchObject({ used_at: expect.any(Date) });
   });
 
-  it('resets anyway, and says so, where no mail provider is configured', async () => {
+  it('is refused in production with no mail provider, before the proof is spent', async () => {
     const who = await account();
     await environmentFor(who);
     delete env['ZEPTOMAIL_TOKEN'];
 
-    const response = await reset(who);
+    const refused = await reset(who);
+    expect(refused.status).toBe(503);
+    expect(await errorMessage(refused)).toMatch(/never reset a vault without emailing its archive/);
+    expect(await proofUnspent(who)).toBe(true);
+    expect(await count('user_keys where user_id = $1', [who.userId])).toBe(1);
+    expect(await count('retained_vaults where user_id = $1', [who.userId])).toBe(0);
+
+    // Not even by choosing to go without it: the archive would be missing only
+    // because of the deployment.
+    const second = { ...who, ...(await freshSession(who.userId)) };
+    expect((await reset(second, { proceedWithoutArchive: true })).status).toBe(503);
+    expect(await count('retained_vaults where user_id = $1', [who.userId])).toBe(0);
+  });
+
+  it('outside production with no mail, resets only when told to go without the archive', async () => {
+    const who = await account();
+    await environmentFor(who);
+    delete env['ZEPTOMAIL_TOKEN'];
+    env['XECRET_ENV'] = 'development';
+
+    const refused = await reset(who);
+    expect(refused.status).toBe(409);
+    expect(await errorMessage(refused)).toMatch(/Reset without the emailed archive/);
+    expect(await proofUnspent(who)).toBe(true);
+    expect(await count('retained_vaults where user_id = $1', [who.userId])).toBe(0);
+
+    // A new session for the second attempt: each session's sign-in is recorded once.
+    const second = { ...who, ...(await freshSession(who.userId)) };
+    const response = await reset(second, { proceedWithoutArchive: true });
 
     expect(response.status).toBe(200);
     expect(((await response.json()) as { archive: unknown }).archive).toEqual({
@@ -590,6 +687,55 @@ describe('a vault reset', () => {
     expect(mailRequests).toHaveLength(0);
   });
 
+  it('retains the vault that was archived or nothing: one set up again meanwhile is refused', async () => {
+    const who = await account();
+    await environmentFor(who);
+    // Mid-send, the vault is reset elsewhere and a new one set up.
+    onMail = async () => {
+      await t.pg.query(`delete from user_key_wraps where user_id = $1`, [who.userId]);
+      await t.pg.query(`delete from user_keys where user_id = $1`, [who.userId]);
+      await setUpVault(who.userId, `${who.passphrase} elsewhere`);
+    };
+
+    const response = await reset(who);
+
+    expect(response.status).toBe(409);
+    expect(await errorMessage(response)).toMatch(/^Your vault changed while it was being reset/);
+    expect(mailRequests).toHaveLength(1);
+    // The vault set up meanwhile is untouched, and nothing was retained.
+    expect(await count('user_keys where user_id = $1', [who.userId])).toBe(1);
+    expect(await count('retained_vaults where user_id = $1', [who.userId])).toBe(0);
+  });
+
+  it('writes names and slugs every reader accepts, whatever the rows hold', async () => {
+    const who = await account();
+    const environment = await environmentFor(who);
+    const escape = String.fromCharCode(0x1b);
+    const lineSeparator = String.fromCharCode(0x2028);
+    await t.pg.query(`update organizations set name = $1, slug = $2 where id = $3`, [
+      `Acme${escape}[2J${lineSeparator}`,
+      'Acme Corp!',
+      environment.orgId,
+    ]);
+    await t.pg.query(`update environments set slug = $1 where id = $2`, [
+      'prod\nfake',
+      environment.environmentId,
+    ]);
+
+    const response = await reset(who);
+    expect(response.status).toBe(200);
+
+    const doc = await readArchiveFile(attachmentOf(mailRequests[0]!).bytes);
+    expect(doc.environments[0]).toMatchObject({
+      orgName: 'Acme[2J',
+      orgSlug: `x-${environment.orgId.replaceAll('-', '')}`,
+      environmentSlug: `x-${environment.environmentId.replaceAll('-', '')}`,
+      projectSlug: 'api',
+    });
+    const opened = await openArchive(doc, { kind: 'passphrase', passphrase: who.passphrase });
+    expect(opened.environments[0]!.secrets[0]!.value).toBe(PLAINTEXT);
+  });
+
   it('keeps both vaults when it happens twice inside the window', async () => {
     const who = await account();
     await environmentFor(who);
@@ -611,34 +757,191 @@ async function freshSession(userId: string): Promise<{ sessionId: string; token:
   return { sessionId: session.id, token };
 }
 
-describe('emailing an archive too large for the budget', () => {
-  it('sends the notice instead, and reports it', async () => {
+/* ── the preflight, and a vault too large to email ───────────────────────── */
+
+describe('the reset preflight', () => {
+  it('reports an archive that can be emailed, sized as an upper bound', async () => {
     const who = await account();
     await environmentFor(who);
-    const sent: { subject: string; attachments?: unknown }[] = [];
-    const services = {
+    await environmentFor(who);
+
+    const response = await preflight(who);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Preflight;
+    expect(body).toMatchObject({
+      resettable: true,
+      archive: { deliverable: true, reason: null, environmentCount: 2, secretCount: 2 },
+    });
+    expect(body.archive.maxBytes).toBe(8 * 1024 * 1024);
+
+    // The estimate is never below what is then written.
+    expect((await reset(who)).status).toBe(200);
+    const doc = await readArchiveFile(attachmentOf(mailRequests[0]!).bytes);
+    const written = new TextEncoder().encode(JSON.stringify(doc, null, 2)).length;
+    expect(body.archive.estimatedBytes).toBeGreaterThanOrEqual(written);
+    // Generous by a fixed allowance per environment, not by a multiple.
+    expect(body.archive.estimatedBytes).toBeLessThan(written + 32 * 1024);
+  });
+
+  it('says a production deployment with no mail cannot reset at all', async () => {
+    const who = await account();
+    delete env['ZEPTOMAIL_TOKEN'];
+
+    const body = (await (await preflight(who)).json()) as Preflight;
+    expect(body.resettable).toBe(false);
+    expect(body.archive).toMatchObject({ deliverable: false, reason: 'mail-not-configured' });
+
+    env['XECRET_ENV'] = 'development';
+    const elsewhere = (await (await preflight(who)).json()) as Preflight;
+    expect(elsewhere.resettable).toBe(true);
+    expect(elsewhere.archive).toMatchObject({ deliverable: false, reason: 'mail-not-configured' });
+  });
+
+  it('is a 404 with no vault', async () => {
+    const who = await account();
+    await t.pg.query(`delete from user_key_wraps where user_id = $1`, [who.userId]);
+    await t.pg.query(`delete from user_keys where user_id = $1`, [who.userId]);
+    expect((await preflight(who)).status).toBe(404);
+  });
+});
+
+describe('sizing an archive in SQL', () => {
+  it('counts the latest version of each live secret, and only the bytes the archive carries', async () => {
+    const who = await account();
+    const environment = await environmentFor(who);
+    const sizes = await t.pg.query<{ value: number; note: number }>(
+      `select octet_length(v.ciphertext)::int as value, octet_length(s.enc_note)::int as note
+         from secret_versions v join secrets s on s.id = v.secret_id where s.id = $1`,
+      [environment.secretId],
+    );
+    const first = sizes.rows[0]!;
+    expect(await measureArchiveSecrets(t.db, [environment.environmentId])).toEqual({
+      count: 1,
+      bytes: first.value + first.note + 'DATABASE_URL'.length,
+    });
+
+    // A newer version replaces the older one in the measure, as in the archive.
+    const longer = new TextEncoder().encode(`xk2.gcm.${'A'.repeat(500)}`);
+    await t.pg.query(
+      `insert into secret_versions (id, secret_id, version, ciphertext, env_data_key_id, client_algorithm, value_hmac, created_by)
+       select $1, secret_id, 2, $2, env_data_key_id, client_algorithm, value_hmac, created_by
+         from secret_versions where secret_id = $3`,
+      [randomUUID(), longer, environment.secretId],
+    );
+    expect(await measureArchiveSecrets(t.db, [environment.environmentId])).toEqual({
+      count: 1,
+      bytes: longer.length + first.note + 'DATABASE_URL'.length,
+    });
+
+    // A deleted secret is not archived, so not measured.
+    await t.pg.query(`update secrets set deleted_at = now() where id = $1`, [environment.secretId]);
+    expect(await measureArchiveSecrets(t.db, [environment.environmentId])).toEqual({
+      count: 0,
+      bytes: 0,
+    });
+    expect(await measureArchiveSecrets(t.db, [])).toEqual({ count: 0, bytes: 0 });
+  });
+});
+
+describe('a vault too large to email', () => {
+  const original = { ...ARCHIVE_EMAIL_LIMITS };
+  beforeEach(() => {
+    ARCHIVE_EMAIL_LIMITS.maxDocumentBytes = 1_000;
+  });
+  afterEach(() => {
+    Object.assign(ARCHIVE_EMAIL_LIMITS, original);
+  });
+
+  it('is shown by the preflight, before anything is confirmed', async () => {
+    const who = await account();
+    await environmentFor(who);
+
+    const body = (await (await preflight(who)).json()) as Preflight;
+    expect(body).toMatchObject({
+      resettable: true,
+      archive: { deliverable: false, reason: 'too-large', environmentCount: 1, secretCount: 1 },
+    });
+    expect(body.archive.estimatedBytes).toBeGreaterThan(1_000);
+  });
+
+  it('is not reset without the choice: refused before the proof is spent, nothing sent', async () => {
+    const who = await account();
+    await environmentFor(who);
+
+    const response = await reset(who);
+
+    expect(response.status).toBe(409);
+    expect(await errorMessage(response)).toMatch(/too large to email/);
+    expect(await proofUnspent(who)).toBe(true);
+    expect(mailRequests).toHaveLength(0);
+    expect(await count('user_keys where user_id = $1', [who.userId])).toBe(1);
+    expect(await count('retained_vaults where user_id = $1', [who.userId])).toBe(0);
+  });
+
+  it('is reset with the choice, emailing the notice instead and retaining the vault', async () => {
+    const who = await account();
+    await environmentFor(who);
+
+    const response = await reset(who, { proceedWithoutArchive: true });
+
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { archive: unknown }).archive).toEqual({
+      emailed: false,
+      reason: 'too-large',
+    });
+    expect(mailRequests).toHaveLength(1);
+    expect(mailRequests[0]!.body['subject']).toBe('Resetting your xecret vault');
+    expect(mailRequests[0]!.body['attachments']).toBeUndefined();
+    expect(await count('retained_vaults where user_id = $1', [who.userId])).toBe(1);
+
+    await Promise.allSettled(deferred);
+    expect(audit.map((record) => [record.action, record.outcome])).toEqual([
+      ['vault.archive_emailed', 'error'],
+      ['vault.reset', 'success'],
+    ]);
+  });
+
+  it('is not reset when the notice cannot be sent either', async () => {
+    const who = await account();
+    await environmentFor(who);
+    mailStatus = 500;
+
+    const second = { ...who, ...(await freshSession(who.userId)) };
+    expect((await reset(second, { proceedWithoutArchive: true })).status).toBe(503);
+    expect(await count('retained_vaults where user_id = $1', [who.userId])).toBe(0);
+  });
+});
+
+describe('emailing an archive', () => {
+  const services = () =>
+    ({
       db: t.db,
       env,
       log: { at: () => ({ warn: () => {}, error: () => {} }) },
-    } as unknown as Parameters<typeof emailVaultArchive>[0];
+    }) as unknown as Parameters<typeof emailVaultArchive>[0];
+  const params = (who: Account) => ({
+    email: who.email,
+    now: new Date(),
+    retainedUntil: new Date(Date.now() + 7 * DAY),
+    archiveId: randomUUID(),
+  });
+
+  it('sends nothing when the plan needs more parts than allowed', async () => {
+    const who = await account();
+    await environmentFor(who);
+    const survey = await surveyVaultArchive(t.db, who.userId, { mailConfigured: true });
+    const sent: unknown[] = [];
 
     const delivery = await emailVaultArchive(
-      services,
-      {
-        userId: who.userId,
-        email: who.email,
-        now: new Date(),
-        retainedUntil: new Date(Date.now() + 7 * DAY),
-        archiveId: randomUUID(),
-      },
+      services(),
+      survey!,
+      params(who),
       { send: async (message) => void sent.push(message) },
-      { maxPartBytes: 2_000, maxParts: 1 },
+      { maxDocumentBytes: ARCHIVE_EMAIL_LIMITS.maxDocumentBytes, maxPartBytes: 2_000, maxParts: 1 },
     );
 
     expect(delivery).toEqual({ status: 'not-emailed', reason: 'too-large' });
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.subject).toBe('Your xecret vault was reset');
-    expect(sent[0]!.attachments).toBeUndefined();
+    expect(sent).toHaveLength(0);
   });
 
   it('splits into parts that each open alone', async () => {
@@ -646,23 +949,18 @@ describe('emailing an archive too large for the budget', () => {
     await environmentFor(who);
     await environmentFor(who);
     const sent: { attachments?: { content: Uint8Array }[] }[] = [];
-    const services = {
-      db: t.db,
-      env,
-      log: { at: () => ({ warn: () => {}, error: () => {} }) },
-    } as unknown as Parameters<typeof emailVaultArchive>[0];
+    const survey = await surveyVaultArchive(t.db, who.userId, { mailConfigured: true });
 
     const delivery = await emailVaultArchive(
-      services,
-      {
-        userId: who.userId,
-        email: who.email,
-        now: new Date(),
-        retainedUntil: new Date(Date.now() + 7 * DAY),
-        archiveId: randomUUID(),
-      },
+      services(),
+      survey!,
+      params(who),
       { send: async (message) => void sent.push(message as never) },
-      { maxPartBytes: 10_000, maxParts: 3 },
+      {
+        maxDocumentBytes: ARCHIVE_EMAIL_LIMITS.maxDocumentBytes,
+        maxPartBytes: 10_000,
+        maxParts: 3,
+      },
     );
 
     expect(delivery).toMatchObject({
@@ -678,6 +976,37 @@ describe('emailing an archive too large for the budget', () => {
         for (const secret of environment.secrets) expect(secret.value).toBe(PLAINTEXT);
       }
     }
+  });
+});
+
+describe('the archive’s environments', () => {
+  it('carry at most the newest 1000 key versions, once each', () => {
+    const environmentId = randomUUID();
+    const grant = (version: number) => ({
+      envDataKeyId: randomUUID(),
+      edkVersion: version,
+      edkSealed: new TextEncoder().encode('xk2.x25519.edk'),
+      ehkSealed: new TextEncoder().encode('xk2.x25519.ehk'),
+      environmentId,
+      environmentName: 'Production',
+      environmentSlug: 'production',
+      isProduction: true,
+      projectId: randomUUID(),
+      projectName: 'API',
+      projectSlug: 'api',
+      orgId: randomUUID(),
+      orgName: 'Acme',
+      orgSlug: 'acme',
+    });
+    const grants = Array.from({ length: 1001 }, (_, index) => grant(index + 1));
+    grants.push(grant(1001));
+
+    const [environment] = archiveEnvironments(grants);
+    const versions = environment!.keys.map((key) => key.edkVersion);
+    expect(versions).toHaveLength(1000);
+    expect(new Set(versions).size).toBe(1000);
+    expect(Math.min(...versions)).toBe(2);
+    expect(Math.max(...versions)).toBe(1001);
   });
 });
 
@@ -856,6 +1185,21 @@ describe('recovering a retained vault', () => {
     ]);
   });
 
+  it('does not hand out a grant the account may no longer read', async () => {
+    const who = await account();
+    const kept = await environmentFor(who);
+    const lost = await environmentFor(who, { role: 'owner', production: true });
+    const { retainedId } = await resetAndStartAgain(who);
+    await t.pg.query(
+      `update org_members set role = 'developer' where user_id = $1 and org_id = $2`,
+      [who.userId, lost.orgId],
+    );
+
+    const loaded = await material(who, retainedId);
+
+    expect(loaded.grants.map((grant) => grant.environmentId)).toEqual([kept.environmentId]);
+  });
+
   it('skips an environment the account may no longer read', async () => {
     const who = await account();
     const environment = await environmentFor(who, { role: 'owner', production: true });
@@ -1013,7 +1357,10 @@ describe('the scheduled purge', () => {
         new Request(`${ORIGIN}${VAULT_PURGE_PATH}`, { method: 'POST', headers }),
       );
       expect(response.status).toBe(404);
+      expect(await response.text()).toBe('');
     }
+    // Refused before anything was built: no services, so no database connection.
+    expect(context.createServiceContext).not.toHaveBeenCalled();
     expect(await count('retained_vaults where id = $1', [reset8!.id])).toBe(1);
   });
 

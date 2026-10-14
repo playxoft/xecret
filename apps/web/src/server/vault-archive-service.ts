@@ -2,17 +2,22 @@ import { can } from '@xecret/core/authz';
 import { parseBlob } from '@xecret/core/crypto/client';
 import { toBase64Url } from '@xecret/core/crypto';
 import {
+  ARCHIVE_MAX_KEYS_PER_ENVIRONMENT,
   ARCHIVE_PART_BUDGET_BYTES,
   ArchiveTooLargeError,
   encodeArchivePart,
+  isArchivableSecret,
   parseArchiveDocument,
   planArchiveParts,
   serializeArchiveDocument,
+  toArchiveLabel,
+  toArchiveSlug,
 } from '@xecret/core/vault-archive';
 import type {
   ArchiveEnvironment,
   ArchiveInput,
   ArchiveSecret,
+  ArchiveVault,
   VaultArchiveDocument,
 } from '@xecret/core/vault-archive';
 import {
@@ -20,21 +25,22 @@ import {
   listArchiveSecrets,
   loadArchiveVault,
   loadAuthorizationContext,
+  measureArchiveSecrets,
   toBytes,
 } from '@xecret/db/repositories';
-import type { Executor } from '@xecret/db/repositories';
+import type { ArchiveGrantRecord, Executor } from '@xecret/db/repositories';
 import { publicOrigin } from './bindings';
 import type { ServiceContext } from './context';
 import { errors } from './errors';
-import { describeMailFailure, mailerFrom } from './mail';
-import type { Mailer } from './mail';
+import { describeMailFailure } from './mail';
+import type { Mailer, MailMessage } from './mail';
 import { toGrantContext } from './tenancy';
 import { vaultArchiveMail, vaultResetNoticeMail } from './vault-archive-mail';
 
 /**
- * The vault escape archive, server side: assembled from rows this server
- * already stores, and emailed to the account's own address before its vault is
- * reset (P23; spec §14).
+ * The vault escape archive, server side: measured, assembled from rows this
+ * server already stores, and emailed to the account's own address before its
+ * vault is reset (P23; spec §14).
  *
  * ── What the server can and cannot do here ──
  * It can copy ciphertext. It cannot open any of it — there is no key in this
@@ -50,22 +56,73 @@ import { vaultArchiveMail, vaultResetNoticeMail } from './vault-archive-mail';
  * key outlives the access it stood for. So every environment goes through the
  * same `can(secret.read)` every request does.
  *
- * ── Why the email can be refused, and when it is not ──
- * The archive is sent *before* the reset, and a failed send refuses the reset:
- * a transient provider failure is a retry, and a retry must find the vault
- * still there. Two outcomes are not failures, because retrying cannot change
- * them: a deployment with no mail provider, and a vault too large to email.
- * Both reset anyway — the old vault is retained for seven days whatever happens
- * — and the response says plainly that no archive was sent.
+ * ── Measured first, loaded second ──
+ * {@link surveyVaultArchive} reads the small things — the key row, the grants —
+ * and asks the database for the *size* of the secrets, without loading one
+ * ciphertext. That is what the reset screen's preflight shows, and what lets a
+ * reset refuse, or go ahead without the archive when the person said so, before
+ * a vault too large to email has been read into a Worker's memory. Only an
+ * archive that will be sent is loaded ({@link emailVaultArchive}), each row's
+ * bytes turned into text and the row dropped at once, and each part encoded and
+ * sent before the next is made.
+ *
+ * ── Never without the archive, silently (owner decision, round 1 of PR #121) ──
+ * A failed send refuses the reset: a transient provider failure is a retry, and
+ * a retry must find the vault still there. A production deployment with no mail
+ * provider refuses every reset. A vault too large to email — or, outside
+ * production, a deployment with no mail — is shown on the reset screen before
+ * anything is confirmed, and resets only when the person ticks "Reset without
+ * the emailed archive". The seven-day retention applies either way.
  */
 
 /**
- * The most parts one reset emails. Three parts of 8 MiB is 24 MiB of
- * ciphertext — tens of thousands of secrets — held in a Worker's 128 MB beside
- * one part's zip, base64 and request body at a time. A vault beyond it resets
- * with a notice instead, and the seven-day window is how it is recovered.
+ * The largest archive a reset emails, as the estimated size of its documents:
+ * 8 MiB, in at most {@link ARCHIVE_EMAIL_MAX_PARTS} parts of
+ * {@link ARCHIVE_PART_BUDGET_BYTES}.
+ *
+ * Chosen from a measurement, for a Worker's 128 MB. Building and sending an
+ * archive of 8 MiB of ciphertext in Node — the stored rows, their text, the
+ * plan, one part's document, ZIP, base64 and request body at a time — peaked
+ * at 68 MiB of heap including a 14 MiB baseline, with the raw rows held for
+ * the whole run (round 1 of PR #121). The rows are now dropped as they are
+ * read, so the margin is wider than that, and a vault beyond the cap is never
+ * loaded at all. 8 MiB is still tens of thousands of secrets.
  */
-export const ARCHIVE_EMAIL_MAX_PARTS = 3;
+export const ARCHIVE_EMAIL_MAX_BYTES = 8 * 1024 * 1024;
+
+/** The most parts one reset emails. Two of 5 MiB hold the 8 MiB cap with room for the plan's margins. */
+export const ARCHIVE_EMAIL_MAX_PARTS = 2;
+
+export interface ArchiveEmailLimits {
+  /** The largest estimated archive that is emailed at all. */
+  maxDocumentBytes: number;
+  maxPartBytes: number;
+  maxParts: number;
+}
+
+export const ARCHIVE_EMAIL_LIMITS: ArchiveEmailLimits = {
+  maxDocumentBytes: ARCHIVE_EMAIL_MAX_BYTES,
+  maxPartBytes: ARCHIVE_PART_BUDGET_BYTES,
+  maxParts: ARCHIVE_EMAIL_MAX_PARTS,
+};
+
+/** Why a reset's archive cannot be emailed. */
+export type ArchiveUndeliverable = 'mail-not-configured' | 'too-large';
+
+/** What a reset would archive, sized without loading a ciphertext. */
+export interface ArchiveSurvey {
+  userId: string;
+  vault: ArchiveVault;
+  /** The vault's public key, to bind the reset to the vault that was archived. */
+  encPublicKey: Uint8Array;
+  /** Every environment the archive would hold, with its keys and no secrets yet. */
+  environments: ArchiveEnvironment[];
+  secretCount: number;
+  /** An upper bound on the archive documents' size, in bytes. */
+  estimatedBytes: number;
+  /** `null` when the archive can be emailed. */
+  undeliverable: ArchiveUndeliverable | null;
+}
 
 export type ArchiveDelivery =
   | {
@@ -73,50 +130,145 @@ export type ArchiveDelivery =
       parts: number;
       environmentCount: number;
       secretCount: number;
+      /** The public key of the vault this archive holds. */
+      encPublicKey: Uint8Array;
     }
-  | { status: 'not-emailed'; reason: 'mail-not-configured' | 'too-large' | 'no-vault' };
+  | { status: 'not-emailed'; reason: ArchiveUndeliverable };
+
+/* ─────────────────────────────── the estimate ─────────────────────────────── */
 
 /**
- * Reads everything an archive holds for this account. `null` when it has no
- * vault. Blobs that fail their own format check — which the API never stores,
- * so this is corruption — are left out rather than allowed to make the whole
- * archive unreadable; they could not be opened anyway.
+ * The bytes an entry adds to `archive.json` besides the variable-length values
+ * that are measured. Upper bounds, from the serialisation in
+ * `@xecret/core/vault-archive` at its real indentation:
+ *
+ *  - a secret's entry is 368 bytes around its name, value and note, with a
+ *    32-character value type and a ten-digit version;
+ *  - a key's is under 200 around its two sealed blobs;
+ *  - an environment's six names are 256 code points each, at most four bytes
+ *    and — after the writer's cleaning — at most one escape each, beside three
+ *    ids and three slugs;
+ *  - the document's own fields, the vault's fixed fields and each recovery
+ *    wrap's hash.
+ *
+ * Generous on purpose: the estimate decides what is promised on the reset
+ * screen, and an estimate that is ever low turns into a refusal after the
+ * person has re-authenticated.
  */
-export async function assembleVaultArchive(
+const SECRET_ENTRY_BYTES = 400;
+const KEY_ENTRY_BYTES = 256;
+const ENVIRONMENT_ENTRY_BYTES = 8 * 1024;
+const DOCUMENT_BYTES = 4 * 1024;
+const RECOVERY_WRAP_ENTRY_BYTES = 160;
+
+/**
+ * Everything a reset's archive would hold, and how large it would be — without
+ * loading any secret. `null` when the account has no vault.
+ *
+ * `mailConfigured` is whether this deployment can send mail at all; a survey
+ * says `mail-not-configured` before `too-large`, because no size helps then.
+ */
+export async function surveyVaultArchive(
   exec: Executor,
   userId: string,
-): Promise<ArchiveInput | null> {
-  const vault = await loadArchiveVault(exec, userId);
-  if (vault === null) return null;
+  options: { mailConfigured: boolean; limits?: ArchiveEmailLimits },
+): Promise<ArchiveSurvey | null> {
+  const limits = options.limits ?? ARCHIVE_EMAIL_LIMITS;
+  const record = await loadArchiveVault(exec, userId);
+  if (record === null) return null;
+
+  const vault: ArchiveVault = {
+    createdAt: record.createdAt.toISOString(),
+    kdfSaltB64Url: toBase64Url(toBytes(record.kdfSalt)),
+    kdfParams: record.kdfParams,
+    passphraseWrapBlob: text(record.passphraseWrap),
+    recoveryWraps: record.recoveryWraps.map((wrap) => ({
+      lookupHashHex: hex(wrap.lookupHash),
+      wrapBlob: text(wrap.wrap),
+    })),
+    encPublicKeyB64Url: toBase64Url(toBytes(record.encPublicKey)),
+    encPrivateKeyBlob: text(record.encPrivateKeyEnc),
+  };
 
   const grants = (await listArchiveGrants(exec, userId)).filter(
     (grant) =>
       wellFormed(text(grant.edkSealed), 'x25519') && wellFormed(text(grant.ehkSealed), 'x25519'),
   );
-
   const readable = await readableEnvironments(exec, userId, grants);
+  const environments = archiveEnvironments(grants.filter((g) => readable.has(g.environmentId)));
 
+  const secrets = await measureArchiveSecrets(
+    exec,
+    environments.map((environment) => environment.environmentId),
+  );
+
+  const estimatedBytes =
+    DOCUMENT_BYTES +
+    vault.passphraseWrapBlob.length +
+    vault.encPrivateKeyBlob.length +
+    vault.recoveryWraps.reduce(
+      (total, wrap) => total + RECOVERY_WRAP_ENTRY_BYTES + wrap.wrapBlob.length,
+      0,
+    ) +
+    environments.reduce(
+      (total, environment) =>
+        total +
+        ENVIRONMENT_ENTRY_BYTES +
+        environment.keys.reduce(
+          (sum, key) => sum + KEY_ENTRY_BYTES + key.edkSealedBlob.length + key.ehkSealedBlob.length,
+          0,
+        ),
+      0,
+    ) +
+    secrets.bytes +
+    secrets.count * SECRET_ENTRY_BYTES;
+
+  return {
+    userId,
+    vault,
+    encPublicKey: record.encPublicKey,
+    environments,
+    secretCount: secrets.count,
+    estimatedBytes,
+    undeliverable: !options.mailConfigured
+      ? 'mail-not-configured'
+      : estimatedBytes > limits.maxDocumentBytes
+        ? 'too-large'
+        : null,
+  };
+}
+
+/**
+ * The archive's environments, from the grants that may still be read: names
+ * cleaned and slugs kept in the product's grammar so every reader accepts them
+ * (§14.4), and at most the newest {@link ARCHIVE_MAX_KEYS_PER_ENVIRONMENT} key
+ * versions each — the reader's own limit. A secret under an older version than
+ * that opens as "no key", which is what it would be anyway.
+ */
+export function archiveEnvironments(grants: readonly ArchiveGrantRecord[]): ArchiveEnvironment[] {
   const environments = new Map<string, ArchiveEnvironment>();
   for (const grant of grants) {
-    if (!readable.has(grant.environmentId)) continue;
     let environment = environments.get(grant.environmentId);
     if (environment === undefined) {
       environment = {
         orgId: grant.orgId,
-        orgName: label(grant.orgName),
-        orgSlug: label(grant.orgSlug),
+        orgName: toArchiveLabel(grant.orgName),
+        orgSlug: toArchiveSlug(grant.orgSlug, 'slug', grant.orgId),
         projectId: grant.projectId,
-        projectName: label(grant.projectName),
-        projectSlug: label(grant.projectSlug),
+        projectName: toArchiveLabel(grant.projectName),
+        projectSlug: toArchiveSlug(grant.projectSlug, 'slug', grant.projectId),
         environmentId: grant.environmentId,
-        environmentName: label(grant.environmentName),
-        environmentSlug: label(grant.environmentSlug),
+        environmentName: toArchiveLabel(grant.environmentName),
+        environmentSlug: toArchiveSlug(grant.environmentSlug, 'environment', grant.environmentId),
         isProduction: grant.isProduction,
         keys: [],
         secrets: [],
       };
       environments.set(grant.environmentId, environment);
     }
+    // One grant per key version: a second for the same version is a row the
+    // reader would refuse as a repeat, and the first already opens it.
+    if (environment.keys.some((key) => key.edkVersion === grant.edkVersion)) continue;
     environment.keys.push({
       envDataKeyId: grant.envDataKeyId,
       edkVersion: grant.edkVersion,
@@ -125,68 +277,78 @@ export async function assembleVaultArchive(
     });
   }
 
-  for (const secret of await listArchiveSecrets(exec, [...environments.keys()])) {
-    const valueBlob = text(secret.ciphertext);
-    if (!wellFormed(valueBlob, 'gcm')) continue;
-    const noteBlob = secret.encNote === null ? null : text(secret.encNote);
+  for (const environment of environments.values()) {
+    if (environment.keys.length > ARCHIVE_MAX_KEYS_PER_ENVIRONMENT) {
+      environment.keys = [...environment.keys]
+        .sort((a, b) => b.edkVersion - a.edkVersion)
+        .slice(0, ARCHIVE_MAX_KEYS_PER_ENVIRONMENT);
+    }
+  }
+  return [...environments.values()];
+}
 
-    const entry: ArchiveSecret = {
-      secretId: secret.secretId,
-      name: secret.name,
-      valueType: secret.valueType,
-      version: secret.version,
-      envDataKeyId: secret.envDataKeyId,
+/* ─────────────────────────────── the archive ─────────────────────────────── */
+
+/**
+ * The surveyed archive with its secrets: the latest value of each, loaded now.
+ *
+ * Each row's bytes become text the moment it is read, and the row is let go
+ * before the next, so the vault's ciphertext is never held twice. Blobs that
+ * fail their own format check — which the API never stores, so this is
+ * corruption — and secrets with a name a reader refuses are left out rather
+ * than allowed to make the whole archive unreadable; neither could be imported.
+ */
+export async function assembleVaultArchive(
+  exec: Executor,
+  survey: ArchiveSurvey,
+): Promise<ArchiveInput> {
+  const environments = new Map(
+    survey.environments.map((environment) => [
+      environment.environmentId,
+      { ...environment, secrets: [] as ArchiveSecret[] },
+    ]),
+  );
+
+  const rows = await listArchiveSecrets(exec, [...environments.keys()]);
+  // Popped, not iterated: each row leaves the array as it is converted, so the
+  // raw bytes of a row already turned into text are free to be collected.
+  for (let row = rows.pop(); row !== undefined; row = rows.pop()) {
+    if (!isArchivableSecret(row)) continue;
+    const valueBlob = text(row.ciphertext);
+    if (!wellFormed(valueBlob, 'gcm')) continue;
+    const noteBlob = row.encNote === null ? null : text(row.encNote);
+
+    environments.get(row.environmentId)?.secrets.push({
+      secretId: row.secretId,
+      name: row.name,
+      valueType: row.valueType,
+      version: row.version,
+      envDataKeyId: row.envDataKeyId,
       valueBlob,
       noteBlob: noteBlob !== null && wellFormed(noteBlob, 'gcm') ? noteBlob : null,
-      updatedAt: secret.updatedAt.toISOString(),
-    };
-    environments.get(secret.environmentId)?.secrets.push(entry);
+      updatedAt: row.updatedAt.toISOString(),
+    });
   }
 
-  return {
-    userId,
-    vault: {
-      createdAt: vault.createdAt.toISOString(),
-      kdfSaltB64Url: toBase64Url(toBytes(vault.kdfSalt)),
-      kdfParams: vault.kdfParams,
-      passphraseWrapBlob: text(vault.passphraseWrap),
-      recoveryWraps: vault.recoveryWraps.map((wrap) => ({
-        lookupHashHex: hex(wrap.lookupHash),
-        wrapBlob: text(wrap.wrap),
-      })),
-      encPublicKeyB64Url: toBase64Url(toBytes(vault.encPublicKey)),
-      encPrivateKeyBlob: text(vault.encPrivateKeyEnc),
-    },
-    environments: [...environments.values()],
-  };
+  return { userId: survey.userId, vault: survey.vault, environments: [...environments.values()] };
 }
 
 /**
- * Builds the archive and emails it, one part per message, before a reset.
+ * Builds the surveyed archive and emails it, one part per message, before a
+ * reset. Called only for a survey with nothing `undeliverable`.
  *
- * Throws `unavailable` when the provider refuses a send — the reset must then
- * not happen. Returns `not-emailed` for the two outcomes a retry cannot change.
+ * Throws when the provider refuses a send — the reset must then not happen.
+ * Returns `not-emailed` / `too-large` in the one case the estimate did not
+ * foresee: the plan needed more parts than allowed. Nothing has been sent then.
  */
 export async function emailVaultArchive(
   services: ServiceContext,
-  params: { userId: string; email: string; now: Date; retainedUntil: Date; archiveId: string },
-  mailer: Mailer | null = mailerFrom(services.env),
-  /** The size budget. Overridden only by tests, which cannot build a 24 MiB vault. */
-  limits: { maxPartBytes: number; maxParts: number } = {
-    maxPartBytes: ARCHIVE_PART_BUDGET_BYTES,
-    maxParts: ARCHIVE_EMAIL_MAX_PARTS,
-  },
+  survey: ArchiveSurvey,
+  params: { email: string; now: Date; retainedUntil: Date; archiveId: string },
+  mailer: Mailer,
+  limits: ArchiveEmailLimits = ARCHIVE_EMAIL_LIMITS,
 ): Promise<ArchiveDelivery> {
-  const input = await assembleVaultArchive(services.db, params.userId);
-  if (input === null) return { status: 'not-emailed', reason: 'no-vault' };
-
-  if (mailer === null) {
-    services.log
-      .at('emailVaultArchive')
-      .warn('No mail provider is configured, so the vault archive was not emailed');
-    return { status: 'not-emailed', reason: 'mail-not-configured' };
-  }
-
+  const input = await assembleVaultArchive(services.db, survey);
   const origin = publicOrigin(services.env);
 
   let parts: VaultArchiveDocument[];
@@ -202,25 +364,20 @@ export async function emailVaultArchive(
     if (!(cause instanceof ArchiveTooLargeError)) throw cause;
     services.log
       .at('emailVaultArchive')
-      .warn('The vault is too large to email as an archive; sending the reset notice instead');
-    await send(
-      services,
-      mailer,
-      vaultResetNoticeMail({ to: params.email, retainedUntil: params.retainedUntil, origin }),
-    );
+      .warn('The vault archive did not fit the parts its estimate allowed', {
+        estimatedBytes: survey.estimatedBytes,
+      });
     return { status: 'not-emailed', reason: 'too-large' };
   }
 
-  for (const part of parts) {
-    // The writer's own output, read back by the reader the import screen uses.
-    // An archive that would not open must never be mailed in place of one that
-    // would; this is the check that it was not.
-    parseArchiveDocument(serializeArchiveDocument(part));
+  // Every part read back by the reader the import screen uses, before any is
+  // sent: an archive that would not open must never be mailed in place of one
+  // that would, and a refusal after part one went out would leave a half.
+  for (const part of parts) parseArchiveDocument(serializeArchiveDocument(part));
 
-    const file = encodeArchivePart(part, {
-      retainedUntil: params.retainedUntil,
-      maxPartBytes: limits.maxPartBytes,
-    });
+  // One part encoded and sent at a time, so only one part's ZIP, base64 and
+  // request body are ever held at once.
+  for (const part of parts) {
     await send(
       services,
       mailer,
@@ -228,7 +385,10 @@ export async function emailVaultArchive(
         to: params.email,
         part: part.part,
         parts: part.parts,
-        file,
+        file: encodeArchivePart(part, {
+          retainedUntil: params.retainedUntil,
+          maxPartBytes: limits.maxPartBytes,
+        }),
         retainedUntil: params.retainedUntil,
         origin,
       }),
@@ -243,35 +403,57 @@ export async function emailVaultArchive(
       (total, environment) => total + environment.secrets.length,
       0,
     ),
+    encPublicKey: survey.encPublicKey,
   };
 }
 
-async function send(
+/**
+ * The notice sent instead of an archive, when the person chose to reset
+ * without one: the inbox still records that a reset was asked for, and the
+ * seven-day window is written somewhere they will find it.
+ */
+export async function emailResetNotice(
   services: ServiceContext,
   mailer: Mailer,
-  message: Parameters<Mailer['send']>[0],
+  params: { email: string; retainedUntil: Date; reason: ArchiveUndeliverable },
 ): Promise<void> {
+  await send(
+    services,
+    mailer,
+    vaultResetNoticeMail({
+      to: params.email,
+      retainedUntil: params.retainedUntil,
+      origin: publicOrigin(services.env),
+    }),
+  );
+}
+
+async function send(services: ServiceContext, mailer: Mailer, message: MailMessage): Promise<void> {
   try {
     await mailer.send(message);
   } catch (cause) {
     services.log
       .at('emailVaultArchive')
       .error(
-        'Could not email the vault archive, so the vault was not reset. The person can try ' +
-          'again; the provider rejected it — see status and detail.',
+        'Could not email the vault archive or notice, so the vault was not reset. The person ' +
+          'can try again after re-authenticating; the provider rejected it — see status and detail.',
         describeMailFailure(cause),
       );
-    throw errors.unavailable(
-      'We could not email your vault archive, so nothing was reset. Try again in a few minutes.',
-    );
+    throw errors.vaultArchiveNotSent('vault archive send failed');
   }
 }
 
-/** The environments among these grants that this account may still read. */
-async function readableEnvironments(
+/* ─────────────────────────────── access ─────────────────────────────── */
+
+/**
+ * The environments among these that this account may still read, by the same
+ * `can(secret.read)` every request runs. Shared with the retained-vault
+ * screens, which must not show a key the account could no longer use either.
+ */
+export async function readableEnvironments(
   exec: Executor,
   userId: string,
-  grants: readonly {
+  candidates: readonly {
     orgId: string;
     projectId: string;
     environmentId: string;
@@ -281,33 +463,35 @@ async function readableEnvironments(
   const readable = new Set<string>();
   const contexts = new Map<string, Awaited<ReturnType<typeof loadAuthorizationContext>>>();
 
-  for (const grant of grants) {
-    if (readable.has(grant.environmentId)) continue;
-    if (!contexts.has(grant.orgId)) {
+  for (const candidate of candidates) {
+    if (readable.has(candidate.environmentId)) continue;
+    if (!contexts.has(candidate.orgId)) {
       contexts.set(
-        grant.orgId,
-        await loadAuthorizationContext(exec, { orgId: grant.orgId, userId }),
+        candidate.orgId,
+        await loadAuthorizationContext(exec, { orgId: candidate.orgId, userId }),
       );
     }
-    const context = contexts.get(grant.orgId) ?? null;
+    const context = contexts.get(candidate.orgId) ?? null;
     if (context === null) continue;
 
     const allowed = can(
-      { kind: 'user', userId, orgId: grant.orgId },
+      { kind: 'user', userId, orgId: candidate.orgId },
       'secret.read',
       {
         kind: 'environment',
-        orgId: grant.orgId,
-        projectId: grant.projectId,
-        environmentId: grant.environmentId,
+        orgId: candidate.orgId,
+        projectId: candidate.projectId,
+        environmentId: candidate.environmentId,
       },
-      { membership: toGrantContext(context), isProduction: grant.isProduction },
+      { membership: toGrantContext(context), isProduction: candidate.isProduction },
     ).allowed;
-    if (allowed) readable.add(grant.environmentId);
+    if (allowed) readable.add(candidate.environmentId);
   }
 
   return readable;
 }
+
+/* ─────────────────────────────── text forms ─────────────────────────────── */
 
 const decoder = new TextDecoder();
 
@@ -327,11 +511,4 @@ function wellFormed(blob: string, algorithm: 'gcm' | 'x25519'): boolean {
   } catch {
     return false;
   }
-}
-
-/** Display names in an archive are 1 to 256 code points (spec §14.4). */
-function label(value: string): string {
-  const characters = [...value];
-  if (characters.length === 0) return '-';
-  return characters.length > 256 ? characters.slice(0, 256).join('') : value;
 }

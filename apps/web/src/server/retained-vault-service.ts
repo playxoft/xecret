@@ -1,10 +1,8 @@
 import { evaluateUnlockLockout, nextUnlockFailure, unlockVerifierMatches } from '@xecret/core/auth';
-import { can } from '@xecret/core/authz';
 import { fromBase64Url } from '@xecret/core/crypto';
 import {
   findRetainedRecoveryWrap,
   listRetainedVaults,
-  loadAuthorizationContext,
   loadRetainedVault,
   countRetainedRecoveryFailure,
   RepositoryError,
@@ -22,7 +20,7 @@ import type {
   RetainedVaultPayload,
 } from './schemas/retained-vaults';
 import { decodeBlob, encodeBlob } from './schemas/vault';
-import { toGrantContext } from './tenancy';
+import { readableEnvironments } from './vault-archive-service';
 
 /**
  * Recovering a reset vault inside its seven-day window (P23).
@@ -52,11 +50,13 @@ import { toGrantContext } from './tenancy';
  * vault's User Key can derive. Every failure of that proof counts against the
  * retained vault's own lockout.
  *
- * ── What it never restores ──
+ * ── What it never restores, or hands out ──
  * Access the account no longer has. Each environment goes through the same
  * `can(secret.read)` every request does, inside the restore's transaction, and
  * one the account has lost since the reset is skipped as `no-access`. A
  * recovery is not a way to undo a revocation that happened during the window.
+ * The material endpoint applies the same check before it serves a grant: a key
+ * the account may no longer use is not sent to its browser either.
  */
 
 type UserPrincipal = Extract<Principal, { kind: 'user' }>;
@@ -70,14 +70,22 @@ export async function listRetained(
   return (await listRetainedVaults(services.db, user.user.id, now)).map(toRetainedVault);
 }
 
-/** Everything the browser needs to open one, or a 404 — for another account's alike. */
+/**
+ * Everything the browser needs to open one, or a 404 — for another account's
+ * alike. Only the grants of environments the account may still read.
+ */
 export async function retainedMaterial(
   services: ServiceContext,
   user: UserPrincipal,
   retainedVaultId: string,
   now: Date = new Date(),
 ): Promise<RetainedVaultMaterialPayload> {
-  return toRetainedVaultMaterial(await requireRetained(services, user, retainedVaultId, now));
+  const vault = await requireRetained(services, user, retainedVaultId, now);
+  const readable = await readableEnvironments(services.db, user.user.id, vault.grants);
+  return toRetainedVaultMaterial({
+    ...vault,
+    grants: vault.grants.filter((grant) => readable.has(grant.environmentId)),
+  });
 }
 
 /**
@@ -148,34 +156,7 @@ export async function restoreRetained(
         ehkSealed: encodeBlob(grant.ehkSealed),
         signature: encodeBlob(grant.signature),
       })),
-      authorize: async (tx, targets) => {
-        const readable = new Set<string>();
-        const contexts = new Map<string, Awaited<ReturnType<typeof loadAuthorizationContext>>>();
-        for (const target of targets) {
-          if (!contexts.has(target.orgId)) {
-            contexts.set(
-              target.orgId,
-              await loadAuthorizationContext(tx, { orgId: target.orgId, userId: user.user.id }),
-            );
-          }
-          const context = contexts.get(target.orgId) ?? null;
-          if (context === null) continue;
-
-          const allowed = can(
-            { kind: 'user', userId: user.user.id, orgId: target.orgId },
-            'secret.read',
-            {
-              kind: 'environment',
-              orgId: target.orgId,
-              projectId: target.projectId,
-              environmentId: target.environmentId,
-            },
-            { membership: toGrantContext(context), isProduction: target.isProduction },
-          ).allowed;
-          if (allowed) readable.add(target.environmentId);
-        }
-        return readable;
-      },
+      authorize: (tx, targets) => readableEnvironments(tx, user.user.id, targets),
     });
   } catch (cause) {
     if (cause instanceof RepositoryError) {

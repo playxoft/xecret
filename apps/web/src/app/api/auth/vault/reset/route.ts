@@ -1,13 +1,20 @@
 import { uuidv7 } from '@xecret/core/ids';
 import { VAULT_RETENTION_MS } from '@xecret/db/repositories';
+import { isProductionDeployment } from '@/server/bindings';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
+import { mailerFrom } from '@/server/mail';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 import { confirmationMatches } from '@/server/schemas/resources';
 import { assertRecentAccountOwner } from '@/server/reauth-service';
 import { VAULT_RESET_CONFIRMATION, vaultResetSchema } from '@/server/schemas/vault';
-import { emailVaultArchive } from '@/server/vault-archive-service';
+import {
+  emailResetNotice,
+  emailVaultArchive,
+  surveyVaultArchive,
+} from '@/server/vault-archive-service';
+import type { ArchiveDelivery } from '@/server/vault-archive-service';
 import {
   primaryOrgId,
   requireUserPrincipal,
@@ -60,12 +67,25 @@ import {
  * With the proof spent and before anything changes, the account's escape
  * archive — every ciphertext the vault could open, still sealed — is assembled
  * from stored rows and emailed to the account's own address
- * (`server/vault-archive-service.ts`). A provider failure refuses the reset,
- * so a retry finds the vault where it was. A deployment with no mail provider,
- * or a vault too large to email, resets anyway and the response says no archive
- * was sent; either way the old vault is **retained for seven days**, recoverable
- * with the old passphrase or a recovery code and undeletable by anyone, and is
- * purged by the scheduled job after that (migration 0020).
+ * (`server/vault-archive-service.ts`), and the reset then retains exactly the
+ * vault that was archived (a vault set up again in between is a 409). The old
+ * vault is **retained for seven days**, recoverable with the old passphrase or
+ * a recovery code and undeletable by anyone, and is purged by the scheduled job
+ * after that (migration 0020).
+ *
+ * ── Never without the archive, silently (owner decision) ──
+ * Checked before the proof is spent, from a survey that sizes the archive in
+ * SQL without loading it — the same one `GET …/reset/preflight` shows on the
+ * reset screen before anybody confirms:
+ *
+ *  - a production deployment with no mail provider refuses every reset (503);
+ *  - an archive that cannot be emailed — too large, or no mail outside
+ *    production — refuses the reset (409) unless the body says
+ *    `proceedWithoutArchive: true`, which the screen sends only when the person
+ *    ticked "Reset without the emailed archive". A notice is emailed instead
+ *    when mail works, so the inbox still records the reset;
+ *  - a provider failure on any send refuses the reset (503), and a retry finds
+ *    the vault where it was.
  *
  * Rate limited on `RL_LOGIN` under a **`vault_reset` key of its own**, keyed on
  * the user alone like the recovery counter it sits beside. Its own counter
@@ -90,11 +110,41 @@ export const POST = authenticatedRoute(
       throw errors.badRequest(`Type “${VAULT_RESET_CONFIRMATION}” exactly to confirm.`);
     }
 
-    // After the phrase, before anything is destroyed. The order matters only for
-    // the message a caller gets: a mistyped phrase should not be reported as an
-    // authentication failure, and a stale proof should not be reported as a typo.
-    // A typo costs nothing; the proof is spent here, whether the reset that
-    // follows succeeds or not.
+    // No mail at all, in production: nobody may choose to go without the
+    // archive here, because it would be missing only through our configuration.
+    // Before the proof, so a retry once mail is back needs no new sign-in.
+    const mailer = mailerFrom(services.env);
+    if (mailer === null && isProductionDeployment(services.env)) {
+      services.log
+        .at('vaultReset')
+        .error('A vault reset was refused because no mail provider is configured');
+      throw errors.vaultArchiveMailMissing('vault reset without a mail provider');
+    }
+
+    // Sized in SQL, nothing loaded: whether there is a vault, and whether its
+    // archive can be emailed.
+    const survey = await surveyVaultArchive(services.db, user.user.id, {
+      mailConfigured: mailer !== null,
+    });
+
+    // Nothing to reset. A 404 rather than a cheerful 200, for the same reason
+    // unenrolling a passkey that does not exist is a 404: a destructive call
+    // that reports success without changing anything teaches a client that the
+    // call worked, and the next screen it draws will be wrong.
+    if (survey === null) throw errors.notFound('no vault to reset');
+
+    // The archive cannot be emailed and nobody said to go on without it. The
+    // reset screen showed this before confirming; reaching it means the vault
+    // grew in between. Refused before the proof is spent.
+    if (survey.undeliverable !== null && body.proceedWithoutArchive !== true) {
+      throw errors.vaultArchiveUndeliverable(survey.undeliverable);
+    }
+
+    // After the phrase and the archive checks, before anything is sent or
+    // destroyed. The order matters only for the message a caller gets: a
+    // mistyped phrase should not be reported as an authentication failure, and
+    // a stale proof should not be reported as a typo. The proof is spent here,
+    // whether the reset that follows succeeds or not.
     await assertRecentAccountOwner(services, user, body.reauthProof);
 
     const now = new Date();
@@ -102,23 +152,35 @@ export const POST = authenticatedRoute(
 
     // Before the reset, never after: the order the owner decided is "archive
     // emailed, then reset", and a send that fails must leave the vault in place.
-    const archive = await emailVaultArchive(services, {
-      userId: user.user.id,
-      email: user.user.email,
-      now,
-      retainedUntil,
-      archiveId: uuidv7(),
-    });
+    const archive: ArchiveDelivery =
+      survey.undeliverable === null && mailer !== null
+        ? await emailVaultArchive(
+            services,
+            survey,
+            { email: user.user.email, now, retainedUntil, archiveId: uuidv7() },
+            mailer,
+          )
+        : { status: 'not-emailed', reason: survey.undeliverable ?? 'mail-not-configured' };
 
-    // Nothing to reset. A 404 rather than a cheerful 200, for the same reason
-    // unenrolling a passkey that does not exist is a 404: a destructive call
-    // that reports success without changing anything teaches a client that the
-    // call worked, and the next screen it draws will be wrong.
-    if (archive.status === 'not-emailed' && archive.reason === 'no-vault') {
-      throw errors.notFound('no vault to reset');
+    if (archive.status === 'not-emailed') {
+      // Only the person's own choice gets here without an archive. The one
+      // exception the survey could not foresee — the plan needed more parts
+      // than its estimate — is refused like any other; the proof is spent by
+      // now, so the screen starts again and shows it.
+      if (body.proceedWithoutArchive !== true) {
+        throw errors.vaultArchiveUndeliverable(archive.reason);
+      }
+      if (mailer !== null) {
+        await emailResetNotice(services, mailer, {
+          email: user.user.email,
+          retainedUntil,
+          reason: archive.reason,
+        });
+      }
     }
 
-    const retained = await resetVault(services, user, now);
+    // Exactly the vault that was surveyed — and archived — or nothing.
+    const retained = await resetVault(services, user, now, survey.encPublicKey);
     if (retained === null) {
       throw errors.notFound('no vault to reset');
     }

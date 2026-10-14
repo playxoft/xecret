@@ -38,7 +38,7 @@ describe('vaultArchiveMail', () => {
 
   it('states the seven-day window and where to recover', () => {
     const mail = vaultArchiveMail(params);
-    expect(mail.text).toContain('Until 2026-10-19 at 09:30 UTC');
+    expect(mail.text).toContain('until 2026-10-19 at 09:30 UTC');
     expect(mail.text).toContain('https://xecret.playxoft.com/app/settings/security');
     expect(mail.text).toContain('xecret vault open-archive');
   });
@@ -47,6 +47,14 @@ describe('vaultArchiveMail', () => {
     expect(vaultArchiveMail(params).attachments).toEqual([
       { name: file.fileName, mimeType: 'application/zip', content: file.bytes },
     ]);
+  });
+
+  it('says a reset was asked for, never that it happened: it is sent before the reset', () => {
+    const mail = vaultArchiveMail(params);
+    expect(mail.text).toContain('You asked to reset your xecret vault');
+    expect(mail.html).toContain('You asked to reset your xecret vault');
+    expect(mail.text).not.toMatch(/was reset/);
+    expect(mail.html).not.toMatch(/was reset/);
   });
 
   it('numbers the parts of a split archive', () => {
@@ -66,6 +74,9 @@ describe('vaultResetNoticeMail', () => {
     expect(mail.text).toContain('no');
     expect(mail.text).toContain('archive is attached');
     expect(mail.attachments).toBeUndefined();
+    expect(mail.subject).toBe('Resetting your xecret vault');
+    expect(mail.text).toContain('You asked to reset your xecret vault without the emailed archive');
+    expect(mail.text).not.toMatch(/was reset/);
   });
 });
 

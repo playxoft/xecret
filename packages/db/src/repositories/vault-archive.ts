@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { Argon2idParams } from '@xecret/core/crypto/client';
 import { envDataKeys, envKeyGrants } from '../schema/env-keys';
 import { environments, projects } from '../schema/resources';
@@ -145,6 +145,54 @@ export async function listArchiveGrants(
       ),
     )
     .orderBy(asc(environments.id), asc(envDataKeys.version));
+}
+
+/** How many secrets an archive of these environments holds, and the bytes they bring. */
+export interface ArchiveSecretMeasure {
+  count: number;
+  /** Sum of the latest ciphertext, the note ciphertext and the name, in bytes. */
+  bytes: number;
+}
+
+/**
+ * Sizes the secrets an archive of these environments would hold — in SQL,
+ * without loading a single ciphertext.
+ *
+ * This is what lets a reset decide that a vault is too large to email before
+ * it has read the vault into a Worker's memory: the lengths are summed by the
+ * database over the same "latest version of each live secret" the archive
+ * takes, and only two numbers come back.
+ */
+export async function measureArchiveSecrets(
+  exec: Executor,
+  environmentIds: readonly string[],
+): Promise<ArchiveSecretMeasure> {
+  if (environmentIds.length === 0) return { count: 0, bytes: 0 };
+
+  const latest = exec
+    .selectDistinctOn([secretVersions.secretId], {
+      secretId: secretVersions.secretId,
+      envDataKeyId: secretVersions.envDataKeyId,
+      length:
+        sql<number>`octet_length(${secretVersions.ciphertext}) + coalesce(octet_length(${secrets.encNote}), 0) + octet_length(${secrets.name})`.as(
+          'length',
+        ),
+    })
+    .from(secretVersions)
+    .innerJoin(secrets, eq(secrets.id, secretVersions.secretId))
+    .where(and(inArray(secrets.environmentId, [...environmentIds]), isNull(secrets.deletedAt)))
+    .orderBy(asc(secretVersions.secretId), desc(secretVersions.version))
+    .as('latest');
+
+  const [row] = await exec
+    .select({
+      count: count(),
+      bytes: sql<string>`coalesce(sum(${latest.length}), 0)`,
+    })
+    .from(latest)
+    .where(isNotNull(latest.envDataKeyId));
+
+  return { count: row?.count ?? 0, bytes: Number(row?.bytes ?? 0) };
 }
 
 /**

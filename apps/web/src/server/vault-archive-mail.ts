@@ -13,9 +13,15 @@ import type { MailMessage } from './mail';
  * sitting in an inbox that is backed up, indexed and forwarded.
  *
  * ── The notice ──
- * Sent instead when the reset goes ahead without an archive — the vault was too
- * large to email — so that the inbox still records that the reset happened, and
- * the seven-day window is stated somewhere the person will find it.
+ * Sent instead when the person chose to reset without the archive — the vault
+ * was too large to email — so that the inbox still records that a reset was
+ * asked for, and the seven-day window is stated somewhere they will find it.
+ *
+ * ── "You asked to reset", not "was reset" ──
+ * Both are sent *before* the reset, because a send that fails must leave the
+ * vault in place. So neither may say the reset happened: the reset that follows
+ * can still be refused — another vault set up in between — and a mail claiming
+ * otherwise would be the one false sentence in the flow.
  *
  * Neither mail ever contains a secret value, a name of a secret, or anything
  * that is not already in the attached ciphertext. The organisation, project and
@@ -45,8 +51,8 @@ export function vaultArchiveMail(params: ArchiveMailParams): MailMessage {
   const text = [
     'Hello,',
     '',
-    `Your xecret vault was reset. Attached${partLabel} is an encrypted copy of the`,
-    'secrets it could open, as xecret stored them.',
+    `You asked to reset your xecret vault. Before it is reset, here${partLabel} is an`,
+    'encrypted copy of the secrets it could open, as xecret stored them.',
     '',
     'READ THIS FIRST: anyone who gets this email or the attachment can try to',
     'guess your old master passphrase on their own computers, as fast and for as',
@@ -64,8 +70,8 @@ export function vaultArchiveMail(params: ArchiveMailParams): MailMessage {
         ]
       : []),
     '',
-    `Until ${until} you can also recover the old vault itself in`,
-    'xecret, with the same passphrase or a recovery code:',
+    `Once it is reset, until ${until} you can also recover the old vault`,
+    'itself in xecret, with the same passphrase or a recovery code:',
     `${params.origin}/app/settings/security`,
     '',
     'To open the attachment:',
@@ -74,7 +80,7 @@ export function vaultArchiveMail(params: ArchiveMailParams): MailMessage {
     '',
     `More: ${params.origin}/docs/security/vault-archive`,
     '',
-    'If you did not reset your vault, sign in and change your password now.',
+    'If you did not ask for this, sign in and secure your account now.',
     '',
     '— xecret',
   ].join('\n');
@@ -85,8 +91,8 @@ export function vaultArchiveMail(params: ArchiveMailParams): MailMessage {
     <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e3e5e8;border-radius:12px;padding:32px;">
       <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">Hello,</p>
       <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">
-        Your xecret vault was reset. Attached${escapeHtml(partLabel)} is an encrypted copy of the
-        secrets it could open, as xecret stored them.
+        You asked to reset your xecret vault. Before it is reset, here${escapeHtml(partLabel)} is an
+        encrypted copy of the secrets it could open, as xecret stored them.
       </p>
       <div style="margin:0 0 20px;padding:16px;border:1px solid #f0b4b4;background:#fdf2f2;border-radius:8px;">
         <p style="margin:0;font-size:14px;line-height:1.6;color:#7a1c1c;">
@@ -107,7 +113,7 @@ export function vaultArchiveMail(params: ArchiveMailParams): MailMessage {
           : ''
       }
       <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">
-        Until <strong>${escapeHtml(until)}</strong> you can also
+        Once it is reset, until <strong>${escapeHtml(until)}</strong> you can also
         <a href="${escapeHtml(params.origin)}/app/settings/security">recover the old vault itself</a> in
         xecret, with the same passphrase or a recovery code.
       </p>
@@ -121,7 +127,7 @@ export function vaultArchiveMail(params: ArchiveMailParams): MailMessage {
       </p>
       <hr style="border:0;border-top:1px solid #e3e5e8;margin:0 0 24px;" />
       <p style="margin:0;font-size:13px;line-height:1.6;color:#6b7078;">
-        If you did not reset your vault, sign in and change your password now.
+        If you did not ask for this, sign in and secure your account now.
       </p>
     </div>
   </body>
@@ -147,23 +153,23 @@ export interface ResetNoticeParams {
   origin: string;
 }
 
-/** The notice sent when a reset goes ahead without an archive: the vault was too large to email. */
+/** The notice sent when the person chose to reset without the archive: the vault was too large to email. */
 export function vaultResetNoticeMail(params: ResetNoticeParams): MailMessage {
   const until = formatWhen(params.retainedUntil);
 
   const text = [
     'Hello,',
     '',
-    'Your xecret vault was reset. It holds more than an email can carry, so no',
-    'archive is attached.',
+    'You asked to reset your xecret vault without the emailed archive: it holds',
+    'more than an email can carry, so no archive is attached.',
     '',
-    `Until ${until} you can recover the old vault in xecret with its`,
-    'master passphrase or one of its recovery codes:',
+    `Once it is reset, until ${until} you can recover the old vault in`,
+    'xecret with its master passphrase or one of its recovery codes:',
     `${params.origin}/app/settings/security`,
     '',
     'After that, xecret deletes it.',
     '',
-    'If you did not reset your vault, sign in and change your password now.',
+    'If you did not ask for this, sign in and secure your account now.',
     '',
     '— xecret',
   ].join('\n');
@@ -174,23 +180,23 @@ export function vaultResetNoticeMail(params: ResetNoticeParams): MailMessage {
     <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e3e5e8;border-radius:12px;padding:32px;">
       <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">Hello,</p>
       <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">
-        Your xecret vault was reset. It holds more than an email can carry, so no archive is
-        attached.
+        You asked to reset your xecret vault without the emailed archive: it holds more than an
+        email can carry, so no archive is attached.
       </p>
       <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">
-        Until <strong>${escapeHtml(until)}</strong> you can
+        Once it is reset, until <strong>${escapeHtml(until)}</strong> you can
         <a href="${escapeHtml(params.origin)}/app/settings/security">recover the old vault</a> in xecret
         with its master passphrase or one of its recovery codes. After that, xecret deletes it.
       </p>
       <hr style="border:0;border-top:1px solid #e3e5e8;margin:0 0 24px;" />
       <p style="margin:0;font-size:13px;line-height:1.6;color:#6b7078;">
-        If you did not reset your vault, sign in and change your password now.
+        If you did not ask for this, sign in and secure your account now.
       </p>
     </div>
   </body>
 </html>`;
 
-  return { to: params.to, subject: 'Your xecret vault was reset', text, html };
+  return { to: params.to, subject: 'Resetting your xecret vault', text, html };
 }
 
 function escapeHtml(value: string): string {
