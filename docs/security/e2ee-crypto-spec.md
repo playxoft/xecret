@@ -656,8 +656,10 @@ of a code, and it is what §3.3 and §7.5 take as input.
 is what the five-group display holds. Rather than pad to 26 characters and introduce two
 meaningless bits that two implementations could encode differently, the code is defined as a
 125-bit value. 125 bits is not a meaningful reduction from 128 for any adversary that exists:
-both are far past any brute-force horizon, and the code's practical exposure is a rate-limited,
-audited server lookup, not an offline attack.
+both are far past any brute-force horizon. Most of the time the code's exposure is a
+rate-limited, audited server lookup; the vault escape archive (§14) also puts every unused
+recovery wrap in a file anyone holding it can attack offline, and 125 bits keeps that out of
+reach too.
 
 **Canonical display form**, and the only form the UI, the Emergency Kit `.txt`, and the print
 sheet may render:
@@ -1350,6 +1352,13 @@ section does not define** — at every level. A document written by a future for
 fail to parse rather than be half-read as this one. Duplicate keys MUST NOT be written; both
 reference readers take the last occurrence.
 
+An **integer** field is a JSON number with an integral value in its stated range: `1`, `1.0`
+and `1e0` are the same integer, and both reference readers accept all three. A string MUST
+NOT contain a **lone surrogate**: an escape in the range `\uD800`–`\uDFFF` that is not one
+half of a high-then-low pair is a format error, wherever it appears, because one reader's JSON
+library keeps it and the other's silently replaces it with U+FFFD. (Raw surrogates cannot occur
+in valid UTF-8.)
+
 Encodings follow §1.2 and the vector conventions: `…Blob` is a full `xk2.<algo>.<b64url>`
 string exactly as stored; `…B64Url` is unpadded base64url; `…Hex` is lowercase hex; UUIDs are
 canonical lowercase text; timestamps are RFC 3339 in UTC with milliseconds
@@ -1387,9 +1396,11 @@ canonical lowercase text; timestamps are RFC 3339 in UTC with milliseconds
 | Field | Type | Rule |
 |---|---|---|
 | `orgId`, `projectId`, `environmentId` | UUID | AAD components (§4.2). |
-| `orgName`, `orgSlug`, `projectName`, `projectSlug`, `environmentName`, `environmentSlug` | string | 1 … 256 Unicode code points (not UTF-16 units, not bytes). Display only; never an AAD component. |
+| `orgName`, `projectName`, `environmentName` | string | 1 … 256 Unicode code points (not UTF-16 units, not bytes), containing no C0 or C1 control character (U+0000–U+001F, U+007F–U+009F) and neither U+2028 nor U+2029. Display only; never an AAD component. A reader prints these, and a name that could carry a newline or an escape sequence could draw its own lines in a terminal. |
+| `orgSlug`, `projectSlug` | string | The product's slug grammar: `^[a-z0-9]+(?:-[a-z0-9]+)*$`, at most 63 characters. |
+| `environmentSlug` | string | The product's environment-slug grammar: `^[a-z0-9]+(?:[-_][a-z0-9]+)*$`, at most 63 characters. Slugs are what a reader prints as a path and writes files under. |
 | `isProduction` | boolean | Display only. |
-| `keys` | array | ≥ 1 entry of `{ "envDataKeyId": UUID, "edkVersion": integer ≥ 1, "edkSealedBlob": "xk2.x25519.…", "ehkSealedBlob": "xk2.x25519.…" }` (types 6 and 7). `envDataKeyId` values are unique, and so are `edkVersion` values. |
+| `keys` | array | ≥ 1 entry of `{ "envDataKeyId": UUID, "edkVersion": integer ≥ 1, "edkSealedBlob": "xk2.x25519.…", "ehkSealedBlob": "xk2.x25519.…" }` (types 6 and 7), at most **1000**. `envDataKeyId` values are unique, and so are `edkVersion` values. A writer whose account holds more keys for one environment keeps the newest 1000; values written under the others then open as `no-key`. |
 | `secrets` | array | Entries below. `secretId` values are unique, and so are `name` values. |
 
 **Each `secrets[]` entry**
@@ -1404,6 +1415,10 @@ canonical lowercase text; timestamps are RFC 3339 in UTC with milliseconds
 | `valueBlob` | blob | `xk2.gcm.`, type 9, at most `MAX_SECRET_BLOB_LENGTH` (§2.2) characters. |
 | `noteBlob` | blob or `null` | `xk2.gcm.`, type 10, same bound, or `null` for no note. Notes carry no key reference on the server either; §14.5 says how one is found. |
 | `updatedAt` | timestamp | When this version was written. |
+
+`environmentId` values are unique across the document, and so are the
+`<orgSlug>/<projectSlug>/<environmentSlug>` paths: two entries for one environment would let
+one shadow the other wherever a reader prints or files them.
 
 A field that fails §2's blob parse — unknown version, unknown algorithm, short payload, bad
 base64url — is a format error of the whole document, raised before any key is derived.
@@ -1430,7 +1445,10 @@ Given the document and **one credential**, a reader:
 2. **Opens the private key**: `encPriv = open(encPrivateKeyBlob, UK, privkey-enc|<userId>)`,
    then **requires** `X25519.publicKeyOf(encPriv) = encPublicKey`. A mismatch is a format
    error: the file is internally inconsistent, and continuing would report every grant as
-   damaged for a reason that has nothing to do with them.
+   damaged for a reason that has nothing to do with them. An `encPrivateKeyBlob` that does not
+   open — tampered, or from another vault — is reported as the **uniform decryption failure**
+   of step 1: it is opened under the User Key, so from the outside it is indistinguishable from
+   a credential that opened the wrong thing, and a reader does not pretend otherwise.
 
 3. **Opens each key**: for every `keys[]` entry, `(EDK, EHK) = openGrant(...)` with
    `recipientKind = member`, `recipientId = userId`, and that entry's `environmentId` and
@@ -1447,9 +1465,11 @@ Given the document and **one credential**, a reader:
    | `no-key` | `envDataKeyId` is not among the environment's `keys`. |
    | `damaged` | The key is present but damaged, or the value failed to authenticate, or it is not UTF-8. |
 
-5. **Finds each note** by trying every opened key of the environment, **highest `edkVersion`
-   first**, under the AAD `secret-note|<orgId>|<environmentId>|<secretId>`, and taking the first
-   that authenticates. A note none of them opens is *unavailable*, which is reported and is not
+5. **Finds each note** by trying, under the AAD `secret-note|<orgId>|<environmentId>|<secretId>`,
+   the opened key its value was written under first and then the environment's other opened
+   keys **highest `edkVersion` first** — **at most 16 keys in all** — and taking the first that
+   authenticates. The cap is what stops a file with many keys and many notes from costing keys ×
+   notes decryptions. A note none of them opens is *unavailable*, which is reported and is not
    an error: the value is what matters, and a note written under a key the account never held
    is not damage.
 
@@ -1473,10 +1493,12 @@ its own right**:
   every part that carries any of its secrets;
 - the secrets are partitioned: each appears in exactly one part.
 
-The reference writer keeps each part's ZIP file at or below **8 MiB** (8 388 608 bytes) and
-splits only when it must. Eight mebibytes is a delivery choice, not a format limit: one part,
-base64-encoded into a message, stays under the mail provider's 15 MB ceiling with room for the
-message itself. It refuses to produce more than 64 parts.
+The reference writer keeps each part's ZIP file at or below **5 MiB** (5 242 880 bytes) and
+splits only when it must. Five mebibytes is a delivery choice, not a format limit: one part,
+base64-encoded (about 7 MB) into a message, stays under the 15 MB the sending provider allows
+and under the 10 MB many receiving mail gateways still enforce. It refuses to produce more than
+64 parts; the product's own reset sends at most a handful (`apps/web/src/server/vault-archive-service.ts`
+states the measured ceiling).
 
 ### 14.7 Security considerations
 
@@ -1489,10 +1511,21 @@ guess and a weak one a matter of time. No revocation reaches a copy of a file. T
 the product owner accepted when deciding to **email** the archive (2026-10-12); it is stated in
 the email, in `README.txt`, and in the threat model (T12), and nowhere softened.
 
-**It does not widen what a stolen session yields.** `GET /api/auth/vault` already serves the
-passphrase wrap, salt and parameters to any session of the account, locked or not, because the
-lock screen needs them. What the archive adds is a *channel*: the mailbox, its backups, its
-search index and every forward of the message.
+**What it adds to a stolen session, and to a stolen inbox.** A *locked* session already receives
+the passphrase wrap, salt and parameters (`GET /api/auth/vault`), because the lock screen needs
+them, so an offline attack on the passphrase was always open to it; what it cannot reach is the
+ciphertext, which only an *unlocked* session reads. An unlocked session reads the ciphertext and,
+during the seven-day window, a reset vault's wraps too (`GET /api/auth/vault/retained/{id}`).
+The archive puts both together, permanently, in a mailbox — and whoever controls that mailbox
+even briefly, with the sign-in that comes with it (threat model T11), can trigger a reset and
+receive the archive themselves.
+
+**What a cracked passphrase yields is the environment keys themselves.** Opening the archive
+opens each environment's data key (EDK), not merely an account's access: those keys decrypt every
+value written under them — what the archive holds, and anything written later under the same key
+version, wherever that ciphertext is found. So **if an archive may have been exposed, rotate the
+environment keys of every environment it covers**: rotation replaces the key that encrypts what
+is written next. It cannot take back what the archive already holds.
 
 **Recovery codes add no offline exposure.** Each is 125 bits of uniform randomness (§7.2); no
 amount of offline work recovers one. Including their wraps lets a person who kept the kit but
@@ -1521,7 +1554,13 @@ ZIP file** (so a writer that drifts fails), the document, and the outcome of ope
 passphrase and with a recovery code: every value, every note, every `no-key` and `damaged`
 case. Negative vectors pin rejection of an unknown `formatVersion`, an unknown field,
 `kdfParams` out of range, a ZIP with two `archive.json` entries, a CRC mismatch, a wrong
-passphrase, and an unknown recovery code. The Argon2id parameters are the §3.1 floor
+passphrase, and an unknown recovery code; and — because two readers can only be held to the
+same container rules by the same bytes — a ZIP64 end record, a multi-disk end record, a size
+mismatch, a deflate stream that inflates past its declared size, a newline in a slug, a slug one
+character too long, control and line-separator characters in names, a lone surrogate escape, and
+duplicate environments by id and by slug path. A deflated re-zip with an extra entry is a positive
+vector. Its deflate streams use stored blocks, so the bytes do not depend on a compressor. The
+Argon2id parameters are the §3.1 floor
 (`m = 19456`, `t = 2`) — inside the production range, so the reader under test runs its real
 validator, and cheap enough that the suite does not get skipped.
 

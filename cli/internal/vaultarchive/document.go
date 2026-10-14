@@ -40,6 +40,10 @@ const (
 	MaxDocumentBytes = 64 * 1024 * 1024
 	// MaxRecoveryWraps is the most recovery wraps an archive may carry.
 	MaxRecoveryWraps = 16
+	// MaxKeysPerEnvironment is the most key versions one environment may carry.
+	MaxKeysPerEnvironment = 1000
+	// maxSlugLength is the product's own slug limit (packages/core validation/slug.ts).
+	maxSlugLength = 63
 
 	maxNameLength = 256
 )
@@ -129,6 +133,12 @@ func Parse(text []byte) (*Document, error) {
 	if !utf8.Valid(text) {
 		return nil, formatErr("archive.json is not valid UTF-8")
 	}
+	// encoding/json turns a lone surrogate escape into U+FFFD without a word;
+	// the TypeScript reader keeps it and refuses it. Refusing it here, from the
+	// raw text, is what makes the two agree (§14.4).
+	if hasLoneSurrogateEscape(text) {
+		return nil, formatErr("archive.json contains a lone surrogate escape")
+	}
 
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(text, &top); err != nil || top == nil {
@@ -175,11 +185,22 @@ func Parse(text []byte) (*Document, error) {
 	if err != nil {
 		return nil, err
 	}
+	environmentIDs, environmentPaths := map[string]bool{}, map[string]bool{}
 	for index, raw := range rawEnvironments {
 		environment, err := parseEnvironment(raw, fmt.Sprintf("environments[%d]", index))
 		if err != nil {
 			return nil, err
 		}
+		// One entry per environment, by id and by the slug path a reader prints
+		// and writes files under — two would let one shadow the other.
+		path := environment.OrgSlug + "/" + environment.ProjectSlug + "/" + environment.EnvironmentSlug
+		if environmentIDs[environment.EnvironmentID] {
+			return nil, formatErr("environments repeats a environmentId")
+		}
+		if environmentPaths[path] {
+			return nil, formatErr("environments repeats a organisation, project and environment slug")
+		}
+		environmentIDs[environment.EnvironmentID], environmentPaths[path] = true, true
 		doc.Environments = append(doc.Environments, environment)
 	}
 
@@ -271,6 +292,9 @@ func parseEnvironment(raw json.RawMessage, path string) (Environment, error) {
 	if err != nil {
 		return Environment{}, err
 	}
+	if len(rawKeys) > MaxKeysPerEnvironment {
+		return Environment{}, formatErr("%s.keys has more entries than an archive may carry", path)
+	}
 	if len(rawKeys) == 0 {
 		return Environment{}, formatErr("%s.keys must hold at least one key", path)
 	}
@@ -320,13 +344,13 @@ func parseEnvironment(raw json.RawMessage, path string) (Environment, error) {
 	}{
 		{&environment.OrgID, "orgId", uuid},
 		{&environment.OrgName, "orgName", label},
-		{&environment.OrgSlug, "orgSlug", label},
+		{&environment.OrgSlug, "orgSlug", slugOf(slugPattern)},
 		{&environment.ProjectID, "projectId", uuid},
 		{&environment.ProjectName, "projectName", label},
-		{&environment.ProjectSlug, "projectSlug", label},
+		{&environment.ProjectSlug, "projectSlug", slugOf(slugPattern)},
 		{&environment.EnvironmentID, "environmentId", uuid},
 		{&environment.EnvironmentName, "environmentName", label},
-		{&environment.EnvironmentSlug, "environmentSlug", label},
+		{&environment.EnvironmentSlug, "environmentSlug", slugOf(environmentSlugPattern)},
 	} {
 		if *field.target, err = field.check(fields[field.name], path+"."+field.name); err != nil {
 			return Environment{}, err
@@ -494,7 +518,9 @@ func integer(raw json.RawMessage, path string, min, max int) (int, error) {
 	return int(value), nil
 }
 
-// label is a display name or slug: 1 to 256 characters, counted as code points.
+// label is a display name: 1 to 256 characters, counted as code points, with
+// no C0 or C1 control character, DEL, or U+2028/U+2029 (§14.4). A name is
+// printed to a terminal; any of these would let a file draw its own lines there.
 func label(raw json.RawMessage, path string) (string, error) {
 	value, err := jsonString(raw)
 	if err != nil {
@@ -503,7 +529,90 @@ func label(raw json.RawMessage, path string) (string, error) {
 	if count := utf8.RuneCountInString(value); count == 0 || count > maxNameLength {
 		return "", formatErr("%s must be 1 to %d characters", path, maxNameLength)
 	}
+	for _, r := range value {
+		if r <= 0x1f || (r >= 0x7f && r <= 0x9f) || r == 0x2028 || r == 0x2029 {
+			return "", formatErr("%s contains a character a name may not", path)
+		}
+	}
 	return value, nil
+}
+
+// The product's own slug grammar, as packages/core/src/validation/slug.ts
+// states it. Slugs are printed and used as path segments, so nothing else is
+// accepted.
+var (
+	slugPattern            = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+	environmentSlugPattern = regexp.MustCompile(`^[a-z0-9]+(?:[-_][a-z0-9]+)*$`)
+)
+
+func slugOf(pattern *regexp.Regexp) func(json.RawMessage, string) (string, error) {
+	return func(raw json.RawMessage, path string) (string, error) {
+		value, err := jsonString(raw)
+		if err != nil || len(value) > maxSlugLength || !pattern.MatchString(value) {
+			return "", formatErr("%s is not a valid slug", path)
+		}
+		return value, nil
+	}
+}
+
+// hasLoneSurrogateEscape reports a \uD800–\uDFFF escape in the JSON text that
+// is not one half of a high-then-low pair. Raw surrogates cannot occur — the
+// text is valid UTF-8 — so escapes are the only way one can appear.
+func hasLoneSurrogateEscape(text []byte) bool {
+	hexValue := func(at int) (int, bool) {
+		if at+6 > len(text) || text[at] != '\\' || text[at+1] != 'u' {
+			return 0, false
+		}
+		var value int
+		for _, c := range text[at+2 : at+6] {
+			value <<= 4
+			switch {
+			case c >= '0' && c <= '9':
+				value |= int(c - '0')
+			case c >= 'a' && c <= 'f':
+				value |= int(c-'a') + 10
+			case c >= 'A' && c <= 'F':
+				value |= int(c-'A') + 10
+			default:
+				return 0, false
+			}
+		}
+		return value, true
+	}
+
+	inString := false
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if !inString {
+			if c == '"' {
+				inString = true
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = false
+		case '\\':
+			value, ok := hexValue(i)
+			if !ok {
+				i++ // a two-character escape such as \" or \\
+				continue
+			}
+			switch {
+			case value >= 0xd800 && value <= 0xdbff:
+				low, ok := hexValue(i + 6)
+				if !ok || low < 0xdc00 || low > 0xdfff {
+					return true
+				}
+				i += 11
+			case value >= 0xdc00 && value <= 0xdfff:
+				return true
+			default:
+				i += 5
+			}
+		}
+	}
+	return false
 }
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)

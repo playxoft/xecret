@@ -1,5 +1,12 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { parseArchiveDocument, serializeArchiveDocument } from './document';
+import { ENVIRONMENT_SLUG_PATTERN, SLUG_MAX_LENGTH, SLUG_PATTERN } from '../validation/slug';
+import {
+  ARCHIVE_ENVIRONMENT_SLUG_PATTERN,
+  ARCHIVE_SLUG_MAX_LENGTH,
+  ARCHIVE_SLUG_PATTERN,
+  parseArchiveDocument,
+  serializeArchiveDocument,
+} from './document';
 import type { VaultArchiveDocument } from './document';
 import { planArchiveParts } from './build';
 import { ArchiveFormatError } from './errors';
@@ -262,5 +269,29 @@ describe('parseArchiveDocument', () => {
     const marker = 'xk2.gcm.SECRET_LOOKING_MARKER';
     const message = refusal((raw) => (at(raw, 'vault').passphraseWrapBlob = marker));
     expect(message).not.toContain('MARKER');
+  });
+
+  it('accepts a surrogate pair in a name, and refuses a lone surrogate', () => {
+    expect(
+      parseEdited((raw) => (at(raw, 'environments.0').orgName = 'Acme 😀')).environments[0]!
+        .orgName,
+    ).toBe('Acme 😀');
+    expect(refusal((raw) => (at(raw, 'environments.0').orgName = 'Acme \ud83d'))).toMatch(
+      /character a name may not/,
+    );
+  });
+
+  it('counts a name in code points, as the Go reader does', () => {
+    expect(() =>
+      parseEdited((raw) => (at(raw, 'environments.0').orgName = '😀'.repeat(256))),
+    ).not.toThrow();
+  });
+});
+
+describe('the slug grammar', () => {
+  it('is the product’s own, so the two cannot drift', () => {
+    expect(ARCHIVE_SLUG_PATTERN.source).toBe(SLUG_PATTERN.source);
+    expect(ARCHIVE_ENVIRONMENT_SLUG_PATTERN.source).toBe(ENVIRONMENT_SLUG_PATTERN.source);
+    expect(ARCHIVE_SLUG_MAX_LENGTH).toBe(SLUG_MAX_LENGTH);
   });
 });

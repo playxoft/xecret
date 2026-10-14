@@ -48,6 +48,9 @@ import type { InflateRaw } from './zip';
  * wants the other half.
  */
 
+/** The most keys a note is tried under (§14.5). */
+export const NOTE_TRIAL_KEYS = 16;
+
 export type ArchiveCredential =
   { kind: 'passphrase'; passphrase: string } | { kind: 'recovery-code'; code: string };
 
@@ -280,6 +283,18 @@ async function openEnvironment(
     // newest key, and trying it first is one decryption instead of several.
     const byVersion = [...opened.values()].sort((a, b) => b.edkVersion - a.edkVersion);
 
+    /**
+     * The keys a note is tried under (§14.5): the key its value was written
+     * under, then the others newest first — at most {@link NOTE_TRIAL_KEYS} in
+     * all, so a file with many keys and many notes cannot make opening cost
+     * keys × notes decryptions.
+     */
+    const noteCandidates = (envDataKeyId: string): OpenedKey[] => {
+      const own = opened.get(envDataKeyId);
+      const rest = byVersion.filter((key) => key !== own);
+      return (own === undefined ? rest : [own, ...rest]).slice(0, NOTE_TRIAL_KEYS);
+    };
+
     const secrets: OpenedSecret[] = [];
     for (const secret of environment.secrets) {
       const target = {
@@ -314,7 +329,7 @@ async function openEnvironment(
       let note: string | null = null;
       let noteUnavailable = false;
       if (secret.noteBlob !== null) {
-        for (const candidate of byVersion) {
+        for (const candidate of noteCandidates(secret.envDataKeyId)) {
           try {
             note = await decryptSecret({
               edk: candidate.edk,

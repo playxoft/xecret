@@ -224,15 +224,33 @@ describe('the no-plaintext sweep', () => {
       utf16[i * 2] = text.charCodeAt(i) & 0xff;
       utf16[i * 2 + 1] = text.charCodeAt(i) >> 8;
     }
-    return {
+    const needles: Record<string, Uint8Array> = {
       utf8,
       utf16le: utf16,
-      base64: encoder.encode(btoa(String.fromCharCode(...utf8))),
-      base64url: encoder.encode(toBase64Url(utf8)),
       hex: encoder.encode(toHex(utf8)),
       urlEncoded: encoder.encode(encodeURIComponent(text)),
       jsonEscaped: encoder.encode(JSON.stringify(text).slice(1, -1)),
     };
+    // A plaintext inside a larger base64 string encodes differently depending
+    // on where it starts relative to a three-byte boundary. Each alignment is
+    // its own needle: the plaintext's base64 after 0, 1 and 2 bytes of
+    // anything, with the characters the unknown neighbours touch trimmed off
+    // both ends. A sweep that only looked for `btoa(plaintext)` would miss two
+    // thirds of the leaks it exists for.
+    for (const offset of [0, 1, 2]) {
+      const padded = new Uint8Array(offset + utf8.length);
+      padded.set(utf8, offset);
+      const lead = offset === 0 ? 0 : 4;
+      const tail = (offset + utf8.length) % 3 === 0 ? 0 : 4;
+      for (const [label, encode] of [
+        ['base64', (bytes: Uint8Array<ArrayBuffer>) => btoa(String.fromCharCode(...bytes))],
+        ['base64url', (bytes: Uint8Array<ArrayBuffer>) => toBase64Url(bytes)],
+      ] as const) {
+        const full = encode(padded).replace(/=+$/, '');
+        needles[`${label}@${offset}`] = encoder.encode(full.slice(lead, full.length - tail));
+      }
+    }
+    return needles;
   }
 
   function contains(haystack: Uint8Array, needle: Uint8Array): boolean {
@@ -278,5 +296,22 @@ describe('the no-plaintext sweep', () => {
       maxPartBytes: ARCHIVE_PART_BUDGET_BYTES,
     }).bytes;
     expect(contains(bytes, encodings('Primary cluster. Rotated quarterly.')['utf8']!)).toBe(true);
+  });
+
+  it('would find one hidden in base64 at any alignment', () => {
+    // A writer that base64-encoded a value into some field would put it at
+    // whatever offset that field's content happened to reach. Each of the
+    // three alignments must be caught.
+    const plaintext = 'legacy-token-example-not-a-real-key';
+    for (const offset of [0, 1, 2]) {
+      const leaked = new Uint8Array(offset + plaintext.length);
+      leaked.set(new TextEncoder().encode(plaintext), offset);
+      const field = btoa(String.fromCharCode(...leaked));
+      const haystack = new TextEncoder().encode(`{"orgName":"x${field}y"}`);
+      const caught = Object.values(encodings(plaintext)).some((needle) =>
+        contains(haystack, needle),
+      );
+      expect(caught, `offset ${offset}`).toBe(true);
+    }
   });
 });

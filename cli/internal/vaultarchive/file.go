@@ -43,6 +43,10 @@ func readZipEntry(data []byte, name string) ([]byte, error) {
 	if isZip64(data) {
 		return nil, formatErr("ZIP64 archives are not supported")
 	}
+	// archive/zip ignores the end record's disk fields; §14.1 does not.
+	if err := checkEndRecord(data); err != nil {
+		return nil, err
+	}
 
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
@@ -101,19 +105,45 @@ func readZipEntry(data []byte, name string) ([]byte, error) {
 	return contents, nil
 }
 
-// isZip64 reports whether the file carries a ZIP64 end-of-central-directory
-// locator immediately before its end record. archive/zip accepts ZIP64
-// transparently; this format does not.
-func isZip64(data []byte) bool {
+// checkEndRecord refuses a multi-disk archive, and an end record whose two
+// entry counts disagree, before archive/zip reads it as if neither mattered.
+func checkEndRecord(data []byte) error {
+	end := findEndRecord(data)
+	if end < 0 {
+		return formatErr("the ZIP archive has no end-of-central-directory record")
+	}
+	disk := binary.LittleEndian.Uint16(data[end+4:])
+	centralDisk := binary.LittleEndian.Uint16(data[end+6:])
+	onDisk := binary.LittleEndian.Uint16(data[end+8:])
+	total := binary.LittleEndian.Uint16(data[end+10:])
+	if disk != 0 || centralDisk != 0 || onDisk != total {
+		return formatErr("multi-disk ZIP archives are not supported")
+	}
+	if total == 0xffff {
+		return formatErr("ZIP64 archives are not supported")
+	}
+	return nil
+}
+
+// findEndRecord returns the offset of the end-of-central-directory record
+// whose comment runs exactly to the end of the file, or -1.
+func findEndRecord(data []byte) int {
 	const endRecord = 22
 	for offset := len(data) - endRecord; offset >= 0 && offset >= len(data)-endRecord-0xffff; offset-- {
 		if binary.LittleEndian.Uint32(data[offset:]) != 0x06054b50 {
 			continue
 		}
-		if offset+endRecord+int(binary.LittleEndian.Uint16(data[offset+20:])) != len(data) {
-			continue
+		if offset+endRecord+int(binary.LittleEndian.Uint16(data[offset+20:])) == len(data) {
+			return offset
 		}
-		return offset >= 20 && binary.LittleEndian.Uint32(data[offset-20:]) == zip64LocatorSignature
 	}
-	return false
+	return -1
+}
+
+// isZip64 reports whether the file carries a ZIP64 end-of-central-directory
+// locator immediately before its end record. archive/zip accepts ZIP64
+// transparently; this format does not.
+func isZip64(data []byte) bool {
+	offset := findEndRecord(data)
+	return offset >= 20 && binary.LittleEndian.Uint32(data[offset-20:]) == zip64LocatorSignature
 }

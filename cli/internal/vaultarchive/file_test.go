@@ -152,3 +152,36 @@ func TestParseRefusesWhatTheSpecDoesNotDefine(t *testing.T) {
 		t.Errorf("a 256-character name must be accepted: %v", err)
 	}
 }
+
+func TestLoneSurrogateEscapesAreFoundAndPairsAreNot(t *testing.T) {
+	cases := map[string]bool{
+		`{"a":"\ud800"}`:              true,
+		`{"a":"\udc00"}`:              true,
+		`{"a":"\ud800x"}`:             true,
+		`{"a":"\ud800A"}`:             true,
+		`{"a":"😀"}`:                   false, // a valid pair: an emoji
+		`{"a":"\\ud800"}`:             false, // an escaped backslash, then text
+		`{"a":"\"😀\\"}`:               false,
+		`{"a":"plain é text"}`:        false,
+		`{"\ud800":"key, not value"}`: true,
+	}
+	for text, want := range cases {
+		if got := hasLoneSurrogateEscape([]byte(text)); got != want {
+			t.Errorf("hasLoneSurrogateEscape(%s) = %v, want %v", text, got, want)
+		}
+	}
+}
+
+func TestSlugPatternsAreTheProducts(t *testing.T) {
+	// The same strings packages/core/src/validation/slug.ts accepts and refuses.
+	for slug, ok := range map[string]bool{"acme": true, "payments-api": true, "a-b-c": true, "-a": false, "a--b": false, "Acme": false, "a_b": false} {
+		if slugPattern.MatchString(slug) != ok {
+			t.Errorf("slugPattern(%q) = %v, want %v", slug, !ok, ok)
+		}
+	}
+	for slug, ok := range map[string]bool{"production": true, "dev_eu": true, "dev-eu": true, "_dev": false, "dev__eu": false} {
+		if environmentSlugPattern.MatchString(slug) != ok {
+			t.Errorf("environmentSlugPattern(%q) = %v, want %v", slug, !ok, ok)
+		}
+	}
+}

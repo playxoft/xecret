@@ -40,11 +40,12 @@ import { writeStoredZip } from './zip';
  */
 
 /**
- * The reference writer's ceiling for one part's ZIP file (§14.6): 8 MiB, so
- * that one part base64-encoded into an email stays under the mail provider's
- * 15 MB per message with room for the message itself.
+ * The reference writer's ceiling for one part's ZIP file (§14.6): 5 MiB, so
+ * that one part base64-encoded into an email (about 7 MB) stays under the
+ * sending provider's 15 MB per message and under the 10 MB many receiving mail
+ * gateways still enforce.
  */
-export const ARCHIVE_PART_BUDGET_BYTES = 8 * 1024 * 1024;
+export const ARCHIVE_PART_BUDGET_BYTES = 5 * 1024 * 1024;
 
 /** What a writer is handed: the account, its vault, and its environments. */
 export interface ArchiveInput {

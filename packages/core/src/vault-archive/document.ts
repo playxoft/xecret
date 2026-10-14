@@ -34,6 +34,30 @@ export const ARCHIVE_MAX_PARTS = 64;
 export const ARCHIVE_MAX_DOCUMENT_BYTES = 64 * 1024 * 1024;
 /** The most recovery wraps an archive may carry (§14.4). */
 export const ARCHIVE_MAX_RECOVERY_WRAPS = 16;
+/** The most key versions one environment may carry (§14.4). */
+export const ARCHIVE_MAX_KEYS_PER_ENVIRONMENT = 1000;
+
+/**
+ * The product's own slug grammar (`validation/slug.ts`), restated here so this
+ * browser module does not import that one's schema library. A test pins the
+ * two together. Slugs are printed by the command-line reader and used as path
+ * segments by `--out-dir`, so nothing outside this grammar is accepted.
+ */
+export const ARCHIVE_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const ARCHIVE_ENVIRONMENT_SLUG_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
+export const ARCHIVE_SLUG_MAX_LENGTH = 63;
+
+/**
+ * What no display name may contain (§14.4): C0 and C1 control characters, DEL,
+ * and the two Unicode line and paragraph separators. A name is printed to a
+ * terminal and rendered in a page; any of these lets a hostile file draw its
+ * own lines there.
+ */
+// eslint-disable-next-line no-control-regex -- matching control characters is the point.
+const FORBIDDEN_IN_NAME = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+
+/** A UTF-16 surrogate with no partner: what `JSON.parse` yields for a lone `\\ud800`. */
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 
 /** The longest organisation, project, environment or secret name an archive carries. */
 const MAX_NAME_LENGTH = 256;
@@ -242,6 +266,21 @@ export function parseArchiveDocument(text: string): VaultArchiveDocument {
   const environments = array(top.environments, 'environments').map((entry, index) =>
     parseEnvironment(entry, `environments[${index}]`),
   );
+  // One entry per environment, by id and by the slug path a reader prints and
+  // writes files under — two entries for one would make one shadow the other.
+  unique(
+    environments.map((environment) => environment.environmentId),
+    'environments',
+    'environmentId',
+  );
+  unique(
+    environments.map(
+      (environment) =>
+        `${environment.orgSlug}/${environment.projectSlug}/${environment.environmentSlug}`,
+    ),
+    'environments',
+    'organisation, project and environment slug',
+  );
 
   return {
     format: ARCHIVE_FORMAT,
@@ -326,6 +365,9 @@ function parseEnvironment(value: unknown, path: string): ArchiveEnvironment {
   ]);
 
   const keyEntries = array(environment.keys, `${path}.keys`);
+  if (keyEntries.length > ARCHIVE_MAX_KEYS_PER_ENVIRONMENT) {
+    throw new ArchiveFormatError(`${path}.keys has more entries than an archive may carry.`);
+  }
   if (keyEntries.length === 0) {
     throw new ArchiveFormatError(`${path}.keys must hold at least one key.`);
   }
@@ -372,13 +414,17 @@ function parseEnvironment(value: unknown, path: string): ArchiveEnvironment {
   return {
     orgId: uuid(environment.orgId, `${path}.orgId`),
     orgName: label(environment.orgName, `${path}.orgName`),
-    orgSlug: label(environment.orgSlug, `${path}.orgSlug`),
+    orgSlug: slug(environment.orgSlug, `${path}.orgSlug`, ARCHIVE_SLUG_PATTERN),
     projectId: uuid(environment.projectId, `${path}.projectId`),
     projectName: label(environment.projectName, `${path}.projectName`),
-    projectSlug: label(environment.projectSlug, `${path}.projectSlug`),
+    projectSlug: slug(environment.projectSlug, `${path}.projectSlug`, ARCHIVE_SLUG_PATTERN),
     environmentId: uuid(environment.environmentId, `${path}.environmentId`),
     environmentName: label(environment.environmentName, `${path}.environmentName`),
-    environmentSlug: label(environment.environmentSlug, `${path}.environmentSlug`),
+    environmentSlug: slug(
+      environment.environmentSlug,
+      `${path}.environmentSlug`,
+      ARCHIVE_ENVIRONMENT_SLUG_PATTERN,
+    ),
     isProduction: boolean(environment.isProduction, `${path}.isProduction`),
     keys,
     secrets,
@@ -475,14 +521,28 @@ function integer(value: unknown, path: string, min: number, max: number): number
   return value;
 }
 
-/** A display name or slug: any string of 1 to 256 Unicode code points. */
+/**
+ * A display name: 1 to 256 Unicode code points — not UTF-16 units, so the two
+ * readers agree on an emoji — with no control or line-separator character and
+ * no lone surrogate.
+ */
 function label(value: unknown, path: string): string {
   const text = string(value, path);
-  // Code points, not UTF-16 units: `String.length` counts an emoji as two, Go
-  // counts it as one, and two readers must agree on which names fit.
   const length = [...text].length;
   if (length === 0 || length > MAX_NAME_LENGTH) {
     throw new ArchiveFormatError(`${path} must be 1 to ${MAX_NAME_LENGTH} characters.`);
+  }
+  if (FORBIDDEN_IN_NAME.test(text) || LONE_SURROGATE.test(text)) {
+    throw new ArchiveFormatError(`${path} contains a character a name may not.`);
+  }
+  return text;
+}
+
+/** A slug in the product's own grammar, at most 63 characters. */
+function slug(value: unknown, path: string, pattern: RegExp): string {
+  const text = string(value, path);
+  if (text.length > ARCHIVE_SLUG_MAX_LENGTH || !pattern.test(text)) {
+    throw new ArchiveFormatError(`${path} is not a valid slug.`);
   }
   return text;
 }

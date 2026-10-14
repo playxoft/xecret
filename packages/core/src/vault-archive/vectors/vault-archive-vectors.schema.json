@@ -167,10 +167,15 @@
                 "required": ["credential"],
                 "properties": {
                   "fileVector": { "type": "string" },
+                  "fileHex": { "$ref": "#/$defs/hex" },
                   "jsonText": { "type": "string" },
                   "credential": { "$ref": "#/$defs/credential" }
                 },
-                "oneOf": [{ "required": ["fileVector"] }, { "required": ["jsonText"] }]
+                "oneOf": [
+                  { "required": ["fileVector"] },
+                  { "required": ["fileHex"] },
+                  { "required": ["jsonText"] }
+                ]
               },
               "expected": {
                 "type": "object",

@@ -9,6 +9,9 @@ import (
 	"github.com/playxoft/xecret/cli/internal/e2ee"
 )
 
+// NoteTrialKeys is the most keys a note is tried under (§14.5).
+const NoteTrialKeys = 16
+
 // CredentialKind is which secret the person holds.
 type CredentialKind string
 
@@ -237,6 +240,27 @@ func openEnvironment(environment Environment, userID string, encPrivateKey []byt
 	}
 	sort.Slice(byVersion, func(i, j int) bool { return byVersion[i].version > byVersion[j].version })
 
+	// The keys a note is tried under (§14.5): its value's key, then the others
+	// newest first, at most NoteTrialKeys in all — so a file with many keys and
+	// many notes cannot make opening cost keys × notes decryptions.
+	noteCandidates := func(envDataKeyID string) []openedKey {
+		candidates := make([]openedKey, 0, NoteTrialKeys)
+		own, ownOpen := opened[envDataKeyID]
+		if ownOpen {
+			candidates = append(candidates, own)
+		}
+		for _, key := range byVersion {
+			if len(candidates) == NoteTrialKeys {
+				break
+			}
+			if ownOpen && key.version == own.version {
+				continue
+			}
+			candidates = append(candidates, key)
+		}
+		return candidates
+	}
+
 	for _, secret := range environment.Secrets {
 		out := OpenedSecret{
 			SecretID: secret.SecretID, Name: secret.Name, ValueType: secret.ValueType,
@@ -263,7 +287,7 @@ func openEnvironment(environment Environment, userID string, encPrivateKey []byt
 		}
 
 		if secret.HasNote {
-			for _, candidate := range byVersion {
+			for _, candidate := range noteCandidates(secret.EnvDataKeyID) {
 				note, err := e2ee.DecryptSecret(candidate.edk, e2ee.SecretContext{
 					Field: e2ee.FieldNote, OrgID: environment.OrgID, EnvironmentID: environment.EnvironmentID,
 					SecretID: secret.SecretID,

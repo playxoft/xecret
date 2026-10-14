@@ -11,6 +11,8 @@ import (
 	"sort"
 	"testing"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/playxoft/xecret/cli/internal/e2ee"
 )
 
@@ -360,8 +362,14 @@ func errorClass(err error) string {
 	return "unexpected"
 }
 
-func TestThePassphraseIsOneNFCChanges(t *testing.T) {
+// The passphrase vector exists to catch a reader that forgets to NFC-normalise
+// before Argon2id (§1.3). It only can if normalising actually changes it, and
+// if the open vector really uses it.
+func TestThePassphraseVectorIsOneNFCChanges(t *testing.T) {
 	file := loadVectors(t)
+	if norm.NFC.String(file.Passphrase) == file.Passphrase {
+		t.Fatal("the fixture passphrase is already NFC, so the vector cannot catch a missing normalisation")
+	}
 	opened := 0
 	for _, v := range of(t, file, "vault-archive/open") {
 		if in := input(t, v); in.Credential.Kind == "passphrase" {
