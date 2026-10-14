@@ -103,6 +103,19 @@ describe('request descriptions', () => {
       'Verified an emailed re-authentication code for the vault reset',
     );
     expect(sentence('POST', '/api/auth/vault/reset', 200)).toBe("Reset the account's vault");
+    expect(sentence('GET', '/api/auth/vault/reset/preflight', 200)).toBe(
+      'Checked what a vault reset would email',
+    );
+    expect(sentence('GET', '/api/auth/vault/retained', 200)).toBe(
+      "Listed the account's reset vaults",
+    );
+    expect(sentence('GET', '/api/auth/vault/retained/0192f0a1', 200)).toBe('Read a reset vault');
+    expect(sentence('POST', '/api/auth/vault/retained/0192f0a1/recovery-wrap', 200)).toBe(
+      'Used a recovery code of a reset vault',
+    );
+    expect(sentence('POST', '/api/auth/vault/retained/0192f0a1/restore', 200)).toBe(
+      "Recovered a reset vault's keys",
+    );
     expect(sentence('DELETE', '/api/auth/session', 204)).toBe(
       'Signed the user out and revoked their session',
     );
