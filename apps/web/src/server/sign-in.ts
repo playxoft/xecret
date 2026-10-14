@@ -362,14 +362,28 @@ export async function completeSignIn(
     );
   }
 
-  // Last, once the new session exists: the browser is about to be handed a
-  // new session cookie, which overwrites whatever it held. If that was a live
-  // session of this same account, it is revoked rather than left behind —
-  // nothing can present it any more, so all it could still do is be stolen,
-  // and it would sit in the device list looking like a second browser. Done
-  // after the issue, so a failure here costs a stale device-list row rather
-  // than a browser with no session at all.
-  await retireSupersededSession(services, params.presentedSessionToken, user.id);
+  // Last, once the new session has committed: the browser is about to be
+  // handed a new session cookie, which overwrites whatever it held. If that
+  // was a live session of this same account, it is revoked rather than left
+  // behind — nothing can present it any more, so all it could still do is be
+  // stolen, and it would sit in the device list looking like a second browser.
+  //
+  // After the issue, and never allowed to fail the sign-in. Before it, a
+  // sign-in that then failed would have revoked the session the browser still
+  // had and issued none. And a failure here, thrown, would answer with an
+  // error page while the new session — committed, and never handed to anybody
+  // — stayed live. So it is caught and logged: what it costs is the old
+  // session staying in the device list until it expires or somebody signs it
+  // out there, and the error line is what makes that visible.
+  try {
+    await retireSupersededSession(services, params.presentedSessionToken, user.id);
+  } catch (cause) {
+    log.error(
+      'Signed a user in, but could not revoke the session this browser held before — it stays ' +
+        'live, in the device list, until it expires or is signed out there',
+      { error: describeError(cause) },
+    );
+  }
 
   const primary = memberships[0];
   if (primary) {

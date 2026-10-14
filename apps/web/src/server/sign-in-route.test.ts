@@ -1115,6 +1115,65 @@ describe('the session a sign-in issues', () => {
     expect(sessions.filter((s) => s.revoked_at !== null)).toHaveLength(1);
   });
 
+  it('keeps the browser’s previous session when the sign-in fails before issuing a new one', async () => {
+    // The old session is retired only once the new one has committed: a
+    // sign-in that fails on the way must not leave the browser with neither.
+    const who = workosUser();
+    await signIn(who);
+    const [row] = await userRows('workos_user_id', who.id as string);
+    const old = await liveSession(row!.id);
+    await t.pg.exec(`
+      create function refuse_reauthentication() returns trigger language plpgsql as $$
+        begin raise exception 'refused for the test'; end $$;
+      create trigger refuse_reauthentication before insert on reauthentications
+        for each row execute function refuse_reauthentication();
+    `);
+    try {
+      const result = await signIn(
+        who,
+        { authenticationMethod: 'Password' },
+        { query: '?reauth=1', sessionToken: old },
+      );
+
+      expect(result.error).not.toBeNull();
+      expect(sessionCookieIssued(result)).toBe(false);
+      expect((await sessionsFor(row!.id)).every((s) => s.revoked_at === null)).toBe(true);
+    } finally {
+      await t.pg.exec(`
+        drop trigger refuse_reauthentication on reauthentications;
+        drop function refuse_reauthentication();
+      `);
+    }
+  });
+
+  it('still signs in when the previous session cannot be revoked, and logs it as an error', async () => {
+    const who = workosUser();
+    await signIn(who);
+    const [row] = await userRows('workos_user_id', who.id as string);
+    const old = await liveSession(row!.id);
+    await t.pg.exec(`
+      create function refuse_session_update() returns trigger language plpgsql as $$
+        begin raise exception 'refused for the test'; end $$;
+      create trigger refuse_session_update before update on sessions
+        for each row execute function refuse_session_update();
+    `);
+    try {
+      const result = await signIn(who, {}, { sessionToken: old });
+
+      expect(result.error).toBeNull();
+      expect(sessionCookieIssued(result)).toBe(true);
+      expect(lines.find((l) => l.message.includes('could not revoke the session'))?.level).toBe(
+        'error',
+      );
+      expect((await sessionsFor(row!.id)).every((s) => s.revoked_at === null)).toBe(true);
+    } finally {
+      await t.pg.exec(`
+        drop trigger refuse_session_update on sessions;
+        drop function refuse_session_update();
+      `);
+    }
+  });
+
   it('leaves another account’s session alone', async () => {
     const other = await seedUser({ workosUserId: unique('user_01OTHER') });
     const theirs = await liveSession(other.id);

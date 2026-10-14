@@ -393,7 +393,9 @@ session.
 A sign-in in a browser that already holds a live session *of the same account* revokes that
 session once the new one is issued — last, after the new session and any reauthentication
 record have committed: nothing can present the old one any more, so all it could still do is be
-stolen, and it would sit in the device list looking like a second browser.
+stolen, and it would sit in the device list looking like a second browser. If revoking it fails,
+the sign-in still succeeds and the failure is logged as an error: answering with an error page
+would leave the new, committed session live and handed to nobody.
 
 ### The `IdentityProvider` seam
 
