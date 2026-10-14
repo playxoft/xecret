@@ -30,6 +30,7 @@ import {
   DevicePinSection,
   PasskeysSection,
   setAutoLockMinutes,
+  RetainedVaultsCard,
   VaultCard,
 } from '@/components/vault';
 import { apiPath, appPath } from '../_lib/paths';
@@ -75,6 +76,10 @@ export function SecurityScreen() {
           browser and re-wraps the User Key, and that machinery belongs beside
           the ceremony and the unlock screen that share it. */}
       <VaultCard user={user} />
+      {/* Only while a vault reset in the last seven days can still be
+          recovered, and only while unlocked — recovering re-seals the old keys
+          to the current vault. Otherwise it renders nothing. */}
+      <RetainedVaultsCard />
       <LockCard />
       <DevicesCard />
     </div>

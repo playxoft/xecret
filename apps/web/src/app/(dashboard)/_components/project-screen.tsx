@@ -6,6 +6,7 @@ import { api, isApiError } from '@/lib/api';
 import { PageHeader } from '@/components/layout';
 import { Button, EmptyState, LayersIcon } from '@/components/ui';
 import { CreateEnvironmentDialog } from '@/components/projects/create-environment-dialog';
+import { ImportArchiveDialog } from '@/components/projects/import-archive-dialog';
 import { EnvironmentCards } from '@/components/projects/environment-cards';
 import type { SecretCounts } from '@/components/projects/environment-cards';
 import { ProjectActions } from '@/components/projects/project-actions';
@@ -19,6 +20,7 @@ export function ProjectScreen({ orgSlug, projectSlug }: { orgSlug: string; proje
   const organization = useOrganization(orgSlug);
   const project = useApiResource<ProjectResponse>(apiPath.project(orgSlug, projectSlug));
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const environments = project.data?.environments;
   const counts = useSecretCounts(orgSlug, projectSlug, environments);
@@ -37,6 +39,14 @@ export function ProjectScreen({ orgSlug, projectSlug }: { orgSlug: string; proje
               {canCreateEnvironment ? (
                 <Button variant="secondary" onClick={() => setCreating(true)}>
                   New environment
+                </Button>
+              ) : null}
+              {/* Offered to everyone who can see the project: whether they may
+                  write to an environment is the import request's question, and
+                  the dialog reports a refusal against that environment. */}
+              {organization !== null && project.data.environments.length > 0 ? (
+                <Button variant="secondary" onClick={() => setImporting(true)}>
+                  Import archive
                 </Button>
               ) : null}
               {organization !== null ? (
@@ -76,6 +86,18 @@ export function ProjectScreen({ orgSlug, projectSlug }: { orgSlug: string; proje
           projectSlug={projectSlug}
           environments={project.data.environments}
           counts={counts}
+        />
+      ) : null}
+
+      {project.data !== null && organization !== null ? (
+        <ImportArchiveDialog
+          open={importing}
+          onOpenChange={setImporting}
+          orgSlug={orgSlug}
+          orgId={organization.id}
+          projectSlug={projectSlug}
+          environments={project.data.environments}
+          onImported={project.reload}
         />
       ) : null}
 

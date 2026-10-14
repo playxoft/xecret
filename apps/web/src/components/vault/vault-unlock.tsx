@@ -55,7 +55,7 @@ import {
   verifyReauthCode,
   verifyReauthTotp,
 } from './vault-client';
-import type { ReauthStatus, VaultMaterial } from './vault-client';
+import type { ReauthStatus, VaultMaterial, VaultResetResult } from './vault-client';
 import { useVault } from './vault-keys';
 
 /**
@@ -1034,6 +1034,66 @@ function RecoveryFlow({
 /* ─────────────────────────── the honest dead end ─────────────────────────── */
 
 /**
+ * What a reset did, before the setup ceremony takes over the screen.
+ *
+ * Two facts and one action. Where the archive went — or, plainly, that it did
+ * not go anywhere and why — and until when the old vault can still be
+ * recovered. Both are things somebody will want to have read before they are
+ * absorbed by choosing a new passphrase, and neither appears anywhere else
+ * until they go looking.
+ */
+export function ResetResult({
+  result,
+  onContinue,
+}: {
+  result: VaultResetResult;
+  onContinue: () => void;
+}) {
+  const until = formatResetDeadline(result.retained.retainedUntil);
+
+  return (
+    <div role="status" className="flex flex-col gap-4">
+      <p className="text-fg text-sm font-medium">Your vault has been reset</p>
+
+      {result.archive.emailed ? (
+        <Alert tone="warning" title="Your archive is in your inbox">
+          We emailed{' '}
+          {result.archive.parts > 1 ? `${result.archive.parts} archive files` : 'an archive'} of
+          your encrypted secrets to {result.archive.to}. Your old passphrase or a recovery code
+          opens it. Save it somewhere private, then delete the email — anyone who gets it can try to
+          guess your passphrase offline.
+        </Alert>
+      ) : (
+        <Alert tone="info" title="No archive was emailed">
+          {result.archive.reason === 'too-large'
+            ? 'Your vault holds more than an email can carry, so we sent a notice instead of an archive.'
+            : 'This xecret installation has no email set up, so no archive could be sent.'}{' '}
+          Your old vault is still kept for seven days.
+        </Alert>
+      )}
+
+      <p className="text-fg-muted text-sm leading-6">
+        Until <span className="text-fg">{until}</span> you can recover your old vault from Settings
+        → Security with its passphrase or a recovery code. Nobody can delete it before then; after
+        that, it is deleted for good.
+      </p>
+
+      <Button variant="primary" onClick={onContinue}>
+        Set up my new vault
+      </Button>
+    </div>
+  );
+}
+
+/** `2026-10-19T09:30:00.000Z` as the reader's own date and time. */
+export function formatResetDeadline(iso: string): string {
+  return new Date(iso).toLocaleString([], {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+}
+
+/**
  * What to say when the passphrase and all five codes are gone, and the one
  * action left.
  *
@@ -1110,7 +1170,7 @@ function AllCodesLost({
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [showProblem, setShowProblem] = useState(false);
-  const [done, setDone] = useState(false);
+  const [result, setResult] = useState<VaultResetResult | null>(null);
 
   const accountChanged = resumedReset(resumedBy, userId) === 'account-changed';
 
@@ -1197,17 +1257,11 @@ function AllCodesLost({
         setTotp('');
         return;
       }
-      const result = await resetVault(typed, checked.proof);
-      // Adopted before anything navigates, so this provider stops describing a
-      // vault that no longer exists. `reload` follows to drop the material with
-      // it — safe here and nowhere else in this file, because the dead end is
-      // the one stage that renders without material.
-      vault.adopt({ vault: result });
-      setDone(true);
-      void vault.reload();
-      // Re-reads `/api/auth/me`, which now reports `configured: false` — and
-      // that is what swaps this screen for the setup ceremony.
-      onReset();
+      // The result is shown before anything navigates: where the archive went,
+      // and until when the old vault can be recovered, are the two facts
+      // somebody needs before setting up a new vault — and the setup ceremony
+      // replaces this screen the moment the provider learns there is no vault.
+      setResult(await resetVault(typed, checked.proof));
     } catch (cause) {
       setFailure(errorMessage(cause));
       if (mfaToken === null) setCode('');
@@ -1232,15 +1286,22 @@ function AllCodesLost({
     );
   }
 
-  if (done) {
+  if (result !== null) {
     return (
-      <div role="status" className="flex flex-col gap-3 text-center">
-        <p className="text-fg text-sm font-medium">Your vault has been reset</p>
-        <p className="text-fg-subtle text-sm leading-6">
-          Setting up a new one now. Nothing encrypted under the old vault is readable, by us or by
-          anyone.
-        </p>
-      </div>
+      <ResetResult
+        result={result}
+        onContinue={() => {
+          // Adopted before anything navigates, so this provider stops describing
+          // a vault that no longer exists. `reload` follows to drop the material
+          // with it — safe here and nowhere else in this file, because the dead
+          // end is the one stage that renders without material.
+          vault.adopt({ vault: result.vault });
+          void vault.reload();
+          // Re-reads `/api/auth/me`, which now reports `configured: false` —
+          // and that is what swaps this screen for the setup ceremony.
+          onReset();
+        }}
+      />
     );
   }
 
@@ -1266,8 +1327,20 @@ function AllCodesLost({
         <div className="text-fg-muted flex flex-col gap-3 text-sm leading-6">
           <p>
             <span className="text-fg">Resetting gives you a fresh start</span> — a new passphrase
-            and a new Emergency Kit. Nothing old comes back, and an owner or admin will need to
-            share team environments with you again.
+            and a new Emergency Kit. An owner or admin will need to share team environments with you
+            again.
+          </p>
+          <p>
+            <span className="text-fg">Before we reset, we email you an archive</span> of your
+            secrets, still encrypted. Your old passphrase or a recovery code opens it, any time,
+            even without xecret. Anyone who gets that email can try to guess your passphrase
+            offline, for as long as they like — keep the file somewhere private and delete the
+            email.
+          </p>
+          <p>
+            <span className="text-fg">We also keep your old vault for seven days.</span> If you find
+            your passphrase or a code in that time, you can recover it from Settings → Security.
+            Nobody can delete it before then; after that, it is deleted for good.
           </p>
           <p>Your teammates and your organisation’s data are unaffected.</p>
         </div>
@@ -1426,6 +1499,10 @@ function AllCodesLost({
             />
           </Field>
 
+          <p className="text-fg-subtle text-xs leading-5">
+            When you confirm, we email your archive to {status?.email ?? 'your address'}, then reset
+            your vault.
+          </p>
           <Button type="submit" variant="danger" loading={busy} disabled={!ready}>
             {mfaToken === null ? 'Reset my vault' : 'Confirm and reset my vault'}
           </Button>

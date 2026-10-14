@@ -582,14 +582,16 @@ export function resetConfirmationProblem(typed: string): string | null {
 }
 
 /**
- * Destroys this account's vault: the keys, every wrap, every passkey.
+ * Resets this account's vault: emails the escape archive, then retains the old
+ * vault for seven days and empties the live one.
  *
  * ── This is not recovery, and nothing here may imply that it is ──
- * Nothing is decrypted and nothing is restored, because nothing can be. The data
- * became unreadable when the last recovery code was lost; what this changes is
- * only whether the account can be *used* afterwards, instead of being parked at
- * a lock screen whose every action fails. The endpoint's own header says the
- * same thing at greater length.
+ * Nothing is decrypted and nothing is restored, because nothing can be without
+ * the old passphrase or a recovery code. What this changes is only whether the
+ * account can be *used* afterwards, instead of being parked at a lock screen
+ * whose every action fails. If the passphrase or a code turns up within seven
+ * days, `retained-vaults.ts` brings the old vault's keys back; after that the
+ * emailed archive is the only copy.
  *
  * The keys are released first rather than in a `finally`. There is nothing held
  * in this state — every caller arrives from a locked session — but a reset that
@@ -608,13 +610,21 @@ export function resetConfirmationProblem(typed: string): string | null {
  * exists as a local `const` in one call frame and is never held anywhere this
  * module could log or cache it.
  */
-export async function resetVault(confirm: string, reauthProof: string): Promise<VaultStatus> {
+export async function resetVault(confirm: string, reauthProof: string): Promise<VaultResetResult> {
   releaseVaultKeys();
-  const response = await api.post<{ vault: VaultStatus }>(apiPath.vaultReset(), {
-    confirm,
-    reauthProof,
-  });
-  return response.vault;
+  return api.post<VaultResetResult>(apiPath.vaultReset(), { confirm, reauthProof });
+}
+
+/**
+ * What a reset reports (P23): the new status, whether the escape archive was
+ * emailed — and if not, why — and until when the old vault can be recovered.
+ */
+export interface VaultResetResult {
+  vault: VaultStatus;
+  archive:
+    | { emailed: true; parts: number; to: string }
+    | { emailed: false; reason: 'mail-not-configured' | 'too-large' };
+  retained: { id: string; retainedUntil: string; grantCount: number };
 }
 
 /** Where this session's re-authentication for the reset stands. */
