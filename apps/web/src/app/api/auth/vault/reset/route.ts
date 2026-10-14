@@ -127,16 +127,10 @@ export const POST = authenticatedRoute(
       mailConfigured: mailer !== null,
     });
 
-    // Nothing to reset. A 404 rather than a cheerful 200, for the same reason
-    // unenrolling a passkey that does not exist is a 404: a destructive call
-    // that reports success without changing anything teaches a client that the
-    // call worked, and the next screen it draws will be wrong.
-    if (survey === null) throw errors.notFound('no vault to reset');
-
     // The archive cannot be emailed and nobody said to go on without it. The
     // reset screen showed this before confirming; reaching it means the vault
     // grew in between. Refused before the proof is spent.
-    if (survey.undeliverable !== null && body.proceedWithoutArchive !== true) {
+    if (survey !== null && survey.undeliverable !== null && body.proceedWithoutArchive !== true) {
       throw errors.vaultArchiveUndeliverable(survey.undeliverable);
     }
 
@@ -146,6 +140,14 @@ export const POST = authenticatedRoute(
     // a stale proof should not be reported as a typo. The proof is spent here,
     // whether the reset that follows succeeds or not.
     await assertRecentAccountOwner(services, user, body.reauthProof);
+
+    // Nothing to reset. A 404 rather than a cheerful 200, for the same reason
+    // unenrolling a passkey that does not exist is a 404: a destructive call
+    // that reports success without changing anything teaches a client that the
+    // call worked, and the next screen it draws will be wrong. After the proof,
+    // like every other outcome but the archive's: the proof is spent by the
+    // request that presents it, whatever it finds.
+    if (survey === null) throw errors.notFound('no vault to reset');
 
     const now = new Date();
     const retainedUntil = new Date(now.getTime() + VAULT_RETENTION_MS);
