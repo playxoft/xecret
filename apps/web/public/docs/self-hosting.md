@@ -383,9 +383,9 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
   `wrangler secret put`; rotating the cookie password costs only the sign-ins in
   flight at that moment. Signing out of xecret does not end somebody's AuthKit
   session, so a returning person may not be asked for a credential. Resetting a
-  vault asks AuthKit for a fresh sign-in, but nothing on the server can see
-  whether AuthKit honoured that, and it never reaches a Google or single sign-on
-  session — see the warning in step 2.
+  vault asks AuthKit for a fresh sign-in, and the server checks the sign-in
+  really happened during that request, but the check never reaches a Google or
+  single sign-on session — see the warning in step 2.
 - **Key rotation.** Every layer of the hierarchy is versioned so it can be
   rotated independently. Have a runbook before you need one.
 

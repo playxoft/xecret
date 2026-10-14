@@ -33,7 +33,7 @@ const TITLE = 'Privacy policy';
 const DESCRIPTION =
   'What xecret stores, what our encryption model does and does not protect, who else processes it, how long we keep it, and how to exercise your rights.';
 
-const UPDATED = '2026-10-12';
+const UPDATED = '2026-10-14';
 const EFFECTIVE = '2026-10-26';
 
 const CANONICAL = absoluteUrl('/privacy');
@@ -136,7 +136,12 @@ const SECTIONS: readonly LegalSection[] = [
           <strong className="text-fg font-medium">Sessions and devices.</strong> For each browser
           session: its IP address, its user agent, when it was created, when it was last seen, when
           it expires, and when its PIN was last accepted. The session token itself is stored only as
-          a hash, so a database dump yields hashes rather than usable sessions.
+          a hash, so a database dump yields hashes rather than usable sessions. If you reset your
+          vault, the session you signed in again with also records when that sign-in happened, when
+          a code was last emailed and how many were requested, and how many codes were tried &mdash;
+          never a code itself, and the proof it leads to only as a hash. That record belongs to the
+          session and is removed with it; it stops counting for anything ten minutes after the
+          sign-in.
         </>,
         <>
           <strong className="text-fg font-medium">Token metadata.</strong> For each CLI or service

@@ -11,7 +11,9 @@ import { requireUserPrincipal } from '@/server/vault-service';
  *
  * Rate limited per account, not per address: what is being spent is mail to
  * somebody's inbox, which belongs to them rather than to whoever is asking, so
- * the address has no business in the key (see `attemptKey`).
+ * the address has no business in the key (see `attemptKey`). The limiter is per
+ * location and fails open, so it is not what bounds the mail: `startReauth`
+ * reserves each request against a per-attempt cap in the database first.
  */
 export const POST = authenticatedRoute(
   async ({ principal, services }) => {

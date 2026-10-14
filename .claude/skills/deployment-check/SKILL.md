@@ -186,7 +186,9 @@ Look at them in **both** WorkOS environments.
   unit-tested against WorkOS's documented error shape only: MFA is not enabled
   in the Staging WorkOS environment, so it has not been checked live. Before
   relying on it in production, enable MFA in Staging and run a reset end to end
-  with an enrolled account.
+  with an enrolled account — entering a wrong authenticator code first (expect
+  "That authenticator code is not right. Enter the current code from your
+  app." and the same screen taking the next code), then the right one.
 
 ## Database
 
@@ -211,6 +213,18 @@ table its database does not have fails at request time, not at deploy time.
 
 Delete this subsection once production has run the WorkOS build for a while.
 
+- **Start with the migration runbook's §4 "Before the deploy" checklist**
+  (`docs/operations/workos-user-migration.md`), all of it, before this
+  preflight: `firebase login --reauth` and a rehearsal export;
+  `--check-hash-params` against the owner's own account (**MATCH**);
+  `--self-test` (`RESULT: ok`); the rehearsal import dry run, read; every
+  disabled Firebase user decided with `--soft-delete-disabled`, with
+  `--keep <uid>` for anyone kept on purpose; and, if any user signs in with
+  Google, Google OAuth set up in WorkOS Production with the Firebase
+  project's own client id and secret. The deploy freezes Firebase passwords,
+  and the export, import and backfill have to follow it without a break —
+  which only works if every decision was made first. If any item is open,
+  stop here.
 - `check:deploy` against the still-Firebase Worker warns about
   `FIREBASE_PROJECT_ID`, "a plaintext var on the Worker that neither
   wrangler.toml nor this script knows about". Expected: this deploy removes it.

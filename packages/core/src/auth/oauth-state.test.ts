@@ -95,9 +95,16 @@ describe('a cookie this module did not write', () => {
   it('is refused when the MAC changed', async () => {
     const value = flow();
     const cookie = await sealed(value);
-    const last = cookie.at(-1) === 'A' ? 'B' : 'A';
+    // The MAC's *first* character, not its last: 32 bytes are 43 base64url
+    // characters, and the last one's two low bits are padding that decoding
+    // drops — so swapping a final 'A' for 'B' changes nothing, and the cookie
+    // rightly verified one run in sixteen. Every bit of the first one counts.
+    const dot = cookie.lastIndexOf('.');
+    const first = cookie[dot + 1] === 'A' ? 'B' : 'A';
+    const changed = `${cookie.slice(0, dot + 1)}${first}${cookie.slice(dot + 2)}`;
 
-    expect(await open(`${cookie.slice(0, -1)}${last}`, value.state)).toMatchObject({ ok: false });
+    expect(changed).not.toBe(cookie);
+    expect(await open(changed, value.state)).toEqual({ ok: false, reason: 'signature' });
   });
 
   it('is refused under a different secret — a MAC verifies under one key only', async () => {

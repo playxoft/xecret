@@ -16,7 +16,9 @@ import type { Executor } from './shared';
  *  1. {@link recordFreshSignIn} — the fresh sign-in completed and issued this
  *     session. Written by the sign-in callback, in the same transaction as the
  *     session row.
- *  2. {@link markReauthCodeSent} — WorkOS was asked to email a code.
+ *  2. {@link reserveReauthCodeSend} — one code request is reserved against the
+ *     attempt's cap **before** WorkOS is asked to send it, and
+ *     {@link markReauthCodeSent} records that WorkOS accepted it.
  *  3. {@link reserveReauthGuess} — one guess (the emailed code, or the
  *     authenticator code WorkOS may ask for after it) is reserved against the
  *     attempt's and the user's budgets **before** WorkOS is asked to check it.
@@ -74,7 +76,77 @@ export async function findFreshSignIn(
   return row ?? null;
 }
 
-/** Step 2, bookkeeping: a code was requested for this attempt. */
+export type CodeSendReservation =
+  | { ok: true; attempt: Pick<Reauthentication, 'id'> }
+  /**
+   * No live attempt to send for: none, too old, already spent, or its guesses
+   * used up. The answer is "sign in again".
+   */
+  | { ok: false; reason: 'no-attempt' }
+  /** The attempt is live, but has asked for as many codes as it may. */
+  | { ok: false; reason: 'send-budget' };
+
+/**
+ * Step 2: reserves one code request, atomically, before anybody asks WorkOS to
+ * send it.
+ *
+ * Each request makes WorkOS email the account, so an attempt that has passed
+ * lock one could otherwise turn it into a stream of mail to somebody's inbox.
+ * The rate limiter in front of the route is per location and fails open where
+ * its binding is absent; this cap is a predicate on the row, and holds anyway.
+ *
+ * The cap is in the UPDATE's own predicate — `code_sends < max` — so of N
+ * concurrent requests at most the remaining allowance get a row back. The
+ * user's row is locked first, the same lock {@link reserveReauthGuess} takes,
+ * so a request and a guess on one account queue behind each other rather than
+ * interleave. Reserved whatever WorkOS then answers: a send that failed still
+ * cost one, which is the safe way for this count to be wrong.
+ */
+export async function reserveReauthCodeSend(
+  exec: Executor,
+  params: {
+    userId: string;
+    sessionId: string;
+    signedInSince: Date;
+    maxAttempts: number;
+    maxSends: number;
+  },
+): Promise<CodeSendReservation> {
+  return exec.transaction(async (tx) => {
+    await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, params.userId))
+      .limit(1)
+      .for('update');
+
+    const live = and(
+      eq(reauthentications.sessionId, params.sessionId),
+      eq(reauthentications.userId, params.userId),
+      gte(reauthentications.signedInAt, params.signedInSince),
+      isNull(reauthentications.usedAt),
+      lt(reauthentications.codeAttempts, params.maxAttempts),
+    );
+
+    const [reserved] = await tx
+      .update(reauthentications)
+      .set({ codeSends: sql`${reauthentications.codeSends} + 1` })
+      .where(and(live, lt(reauthentications.codeSends, params.maxSends)))
+      .returning({ id: reauthentications.id });
+    if (reserved) return { ok: true, attempt: reserved };
+
+    // Which refusal it was, for the person's sake: "sign in again" for an
+    // attempt that is over, "no more codes on this one" for one that is not.
+    const [exists] = await tx
+      .select({ id: reauthentications.id })
+      .from(reauthentications)
+      .where(live)
+      .limit(1);
+    return { ok: false, reason: exists ? 'send-budget' : 'no-attempt' };
+  });
+}
+
+/** Step 2, bookkeeping: WorkOS accepted a code request for this attempt. */
 export async function markReauthCodeSent(exec: Executor, id: string, at: Date): Promise<void> {
   await exec
     .update(reauthentications)
@@ -108,7 +180,8 @@ export type GuessReservation =
  *  - The per-user cap counts every attempt this account started in the window.
  *    A sum across rows cannot be made atomic by one row's predicate, so the
  *    user's own row is locked first: guesses from two sessions of one account
- *    queue on it, and each sees the other's reservation.
+ *    queue on it, and each sees the other's reservation (see the note on the
+ *    isolation level at the sum itself).
  *  - A guess is only taken on an attempt whose code was actually requested —
  *    there is nothing to guess before that, and refusing it keeps a guess
  *    burst from preceding the request it would be waiting for.
@@ -135,6 +208,14 @@ export async function reserveReauthGuess(
       .limit(1)
       .for('update');
 
+    // Correct only at READ COMMITTED, Postgres's default, which nothing in
+    // this codebase overrides (no `SET TRANSACTION ISOLATION LEVEL`, no
+    // `default_transaction_isolation`, no isolation option on a transaction).
+    // There, each statement takes a fresh snapshot, so this sum — run after the
+    // lock above was granted — sees every reservation the previous holder
+    // committed. Under REPEATABLE READ or SERIALIZABLE the snapshot would be
+    // taken at the transaction's first statement, before the lock wait, and two
+    // queued guesses could each count the budget without the other's.
     const [used] = await tx
       .select({ total: sql<number>`coalesce(sum(${reauthentications.codeAttempts}), 0)::int` })
       .from(reauthentications)

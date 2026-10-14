@@ -71,7 +71,8 @@ import type { WorkosIdentityProvider } from './workos';
  *  6. **Just-in-time join** the organisation whose SSO this was, if any.
  *  7. **Provision a personal organisation** for an account that still has none.
  *  8. **Issue the session**, and for a forced re-authentication, record that it
- *     happened.
+ *     happened — if the method counts and the provider says the person actually
+ *     authenticated during this flow (see {@link armsLockOne}).
  *
  * Steps 5 and 6 key on `authenticationMethod === 'SSO'` *and* the organisation
  * id together. AuthKit reports an organisation after organisation *selection*
@@ -117,6 +118,11 @@ export interface CompleteSignInParams {
   provider: Pick<WorkosIdentityProvider, 'verifiedDomains'>;
   /** The session cookie this browser presented, if any — replaced by the new one. */
   presentedSessionToken: string | null;
+  /**
+   * When this sign-in flow began — the state cookie's `issuedAt`, in seconds
+   * since the epoch, which only this server can have written.
+   */
+  flowIssuedAt: number;
 }
 
 /**
@@ -323,37 +329,61 @@ export async function completeSignIn(
   // in one transaction: either the browser gets a session that carries lock
   // one, or it gets nothing — never a session that silently does not, which
   // the reset screen would show as an unexplained "sign in again".
-  const armsLockOne =
-    params.purpose === 'reauth' && countsAsReauthentication(exchange.authenticationMethod);
+  const lockOne = params.purpose === 'reauth' ? armsLockOne(exchange, params.flowIssuedAt) : null;
   const { token, sessionId } = await services.db.transaction(async (tx) => {
     const issued = await issueSession(services, user.id, tx);
     // The first of the vault reset's two locks, recorded against the session
     // this sign-in just issued, so it is the new cookie — and only the new
     // cookie — that carries it.
-    if (armsLockOne) {
+    if (lockOne === 'armed') {
       await recordFreshSignIn(tx, { userId: user.id, sessionId: issued.sessionId, at: new Date() });
     }
     return issued;
   });
 
-  if (params.purpose === 'reauth' && !armsLockOne) {
-    // Signed in, but not with a method that counts — an emailed code, most
-    // likely, which would make the two locks one inbox twice. The person is
-    // signed in all the same; the reset screen asks them to sign in again
-    // with one that does.
-    log.warn('A re-authentication sign-in used a method that does not count as lock one', {
-      signInMethod: signInMethodOf(exchange.authenticationMethod),
-    });
+  if (lockOne !== null && lockOne !== 'armed') {
+    // Signed in, but not in a way that counts. The person is signed in all the
+    // same; the reset screen asks them to sign in again. Which way it fell
+    // short is for the log: a method that does not count is an emailed code,
+    // most likely, which would make the two locks one inbox twice; a stale
+    // authentication is a provider that reused its session without asking —
+    // `max_age=0` stripped from the URL, or not honoured.
+    log.warn(
+      lockOne === 'method'
+        ? 'A re-authentication sign-in used a method that does not count as lock one'
+        : 'A re-authentication sign-in did not show a fresh authentication, so it is not lock one',
+      {
+        signInMethod: signInMethodOf(exchange.authenticationMethod),
+        reason: lockOne,
+        ...(exchange.authenticatedAt === null
+          ? {}
+          : { authenticatedSecondsBeforeFlow: params.flowIssuedAt - exchange.authenticatedAt }),
+      },
+    );
   }
 
-  // Last, once the new session exists: the browser is about to be handed a
-  // new session cookie, which overwrites whatever it held. If that was a live
-  // session of this same account, it is revoked rather than left behind —
-  // nothing can present it any more, so all it could still do is be stolen,
-  // and it would sit in the device list looking like a second browser. Done
-  // after the issue, so a failure here costs a stale device-list row rather
-  // than a browser with no session at all.
-  await retireSupersededSession(services, params.presentedSessionToken, user.id);
+  // Last, once the new session has committed: the browser is about to be
+  // handed a new session cookie, which overwrites whatever it held. If that
+  // was a live session of this same account, it is revoked rather than left
+  // behind — nothing can present it any more, so all it could still do is be
+  // stolen, and it would sit in the device list looking like a second browser.
+  //
+  // After the issue, and never allowed to fail the sign-in. Before it, a
+  // sign-in that then failed would have revoked the session the browser still
+  // had and issued none. And a failure here, thrown, would answer with an
+  // error page while the new session — committed, and never handed to anybody
+  // — stayed live. So it is caught and logged: what it costs is the old
+  // session staying in the device list until it expires or somebody signs it
+  // out there, and the error line is what makes that visible.
+  try {
+    await retireSupersededSession(services, params.presentedSessionToken, user.id);
+  } catch (cause) {
+    log.error(
+      'Signed a user in, but could not revoke the session this browser held before — it stays ' +
+        'live, in the device list, until it expires or is signed out there',
+      { error: describeError(cause) },
+    );
+  }
 
   const primary = memberships[0];
   if (primary) {
@@ -422,7 +452,8 @@ export function emailDomain(email: string): string | null {
  *
  *  - `Password`, `Passkey` — typed or tapped on AuthKit's own page. The login
  *    route's `max_age=0` makes AuthKit ask for them even when it holds a
- *    session, so these are a credential presented just now.
+ *    session, and {@link armsLockOne} checks WorkOS's `auth_time` to see that
+ *    it did, so these are a credential presented just now.
  *  - `GoogleOAuth`, `SSO` — AuthKit hands off to Google or the company's
  *    identity provider, which WorkOS's `max_age` does not reach. A live Google
  *    or SSO session in the same browser satisfies them without a prompt. They
@@ -444,6 +475,46 @@ export const REAUTHENTICATING_METHODS: ReadonlySet<string> = new Set([
 /** Whether a sign-in by `method` counts as the vault reset's first lock. */
 export function countsAsReauthentication(method: string | null): boolean {
   return method !== null && REAUTHENTICATING_METHODS.has(method);
+}
+
+/**
+ * How far before the flow began an active authentication may be dated and
+ * still count, for the difference between this server's clock and WorkOS's.
+ */
+export const REAUTH_AUTH_TIME_SKEW_SECONDS = 30;
+
+/**
+ * Whether a `reauth` sign-in arms the vault reset's first lock — and if not,
+ * why not.
+ *
+ * Two conditions. The method has to be one of {@link REAUTHENTICATING_METHODS};
+ * and the provider has to say the person actively authenticated **during this
+ * flow** — `authenticatedAt` (WorkOS's `auth_time`) no earlier than the moment
+ * the flow began, less {@link REAUTH_AUTH_TIME_SKEW_SECONDS}.
+ *
+ * The second closes the gap `max_age=0` left open on its own. That parameter
+ * rides in a URL the browser follows, and somebody at an unlocked laptop can
+ * strip it; AuthKit then reuses the session it holds without asking for
+ * anything, and the code it mints is dated by that session's original sign-in.
+ * Checking the date makes AuthKit's honouring of `max_age=0` something the
+ * server sees, rather than takes on trust. A missing or unreadable date fails
+ * closed: no lock one.
+ *
+ * What it does not change: a Google or identity-provider session that signs the
+ * person in silently is, as far as WorkOS is concerned, an active
+ * authentication, so its date is fresh — ADR 0010 records that residual.
+ */
+export function armsLockOne(
+  exchange: Pick<
+    AuthorizationCodeExchange<WorkosIdentity>,
+    'authenticationMethod' | 'authenticatedAt'
+  >,
+  flowIssuedAt: number,
+): 'armed' | 'method' | 'no-auth-time' | 'stale' {
+  if (!countsAsReauthentication(exchange.authenticationMethod)) return 'method';
+  if (exchange.authenticatedAt === null) return 'no-auth-time';
+  if (exchange.authenticatedAt < flowIssuedAt - REAUTH_AUTH_TIME_SKEW_SECONDS) return 'stale';
+  return 'armed';
 }
 
 /** WorkOS's method names, folded into the audit log's closed set. */

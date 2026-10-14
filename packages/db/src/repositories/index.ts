@@ -367,9 +367,10 @@ export {
   markReauthCodeSent,
   recordFreshSignIn,
   recordReauthMfaPending,
+  reserveReauthCodeSend,
   reserveReauthGuess,
 } from './reauth';
-export type { GuessReservation, Reauthentication } from './reauth';
+export type { CodeSendReservation, GuessReservation, Reauthentication } from './reauth';
 
 export {
   consumeCliAuthCode,

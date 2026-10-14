@@ -199,10 +199,23 @@ function workosUser(over: Record<string, unknown> = {}) {
   };
 }
 
-/** What WorkOS will answer to the next code exchange. */
+/**
+ * An access token as WorkOS shapes one, carrying `auth_time` — when the person
+ * last actively authenticated. Only that claim is read; the signature never is.
+ */
+function accessTokenAuthenticatedAt(authTime: number | null): string {
+  const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const claims = { sub: 'user_01', sid: 'session_01', iat: Math.floor(Date.now() / 1000) };
+  return `${part({ alg: 'RS256' })}.${part(authTime === null ? claims : { ...claims, auth_time: authTime })}.c2ln`;
+}
+
+/**
+ * What WorkOS will answer to the next code exchange. By default, an
+ * authentication that happened just now, as a real one does.
+ */
 function workosAnswers(response: Record<string, unknown>) {
   workos.authenticateWithCode.mockResolvedValueOnce({
-    accessToken: 'workos-access-token',
+    accessToken: accessTokenAuthenticatedAt(Math.floor(Date.now() / 1000)),
     refreshToken: 'workos-refresh-token',
     ...response,
   });
@@ -583,6 +596,30 @@ describe('the request log', () => {
     const okLine = lines.findLast((l) => l.fn === 'request');
     expect(okLine?.signInOutcome).toBe('created');
     expect(okLine?.signInRefusal).toBeUndefined();
+  });
+
+  it('says a malformed code was refused before WorkOS was asked, not that WorkOS refused it', async () => {
+    const flow = await startSignIn();
+
+    const result = await finishSignIn(flow, { code: 'not a code!' });
+
+    expect(result.error).toBe('expired');
+    expect(workos.authenticateWithCode).not.toHaveBeenCalled();
+    const line = lines.find((l) => l.reason === 'malformed-code');
+    expect(line?.message).toMatch(/^Refused a sign-in before asking WorkOS/);
+    expect(line?.message).not.toMatch(/would not exchange/);
+  });
+
+  it('says WorkOS would not exchange a code it refused', async () => {
+    const flow = await startSignIn();
+    workos.authenticateWithCode.mockRejectedValueOnce(
+      Object.assign(new Error('invalid grant'), { status: 400, error: 'invalid_grant' }),
+    );
+
+    await finishSignIn(flow);
+
+    const line = lines.find((l) => l.reason === 'invalid_grant');
+    expect(line?.message).toMatch(/WorkOS would not exchange its code \(invalid_grant\)/);
   });
 });
 
@@ -1102,6 +1139,65 @@ describe('the session a sign-in issues', () => {
     expect(sessions.filter((s) => s.revoked_at !== null)).toHaveLength(1);
   });
 
+  it('keeps the browser’s previous session when the sign-in fails before issuing a new one', async () => {
+    // The old session is retired only once the new one has committed: a
+    // sign-in that fails on the way must not leave the browser with neither.
+    const who = workosUser();
+    await signIn(who);
+    const [row] = await userRows('workos_user_id', who.id as string);
+    const old = await liveSession(row!.id);
+    await t.pg.exec(`
+      create function refuse_reauthentication() returns trigger language plpgsql as $$
+        begin raise exception 'refused for the test'; end $$;
+      create trigger refuse_reauthentication before insert on reauthentications
+        for each row execute function refuse_reauthentication();
+    `);
+    try {
+      const result = await signIn(
+        who,
+        { authenticationMethod: 'Password' },
+        { query: '?reauth=1', sessionToken: old },
+      );
+
+      expect(result.error).not.toBeNull();
+      expect(sessionCookieIssued(result)).toBe(false);
+      expect((await sessionsFor(row!.id)).every((s) => s.revoked_at === null)).toBe(true);
+    } finally {
+      await t.pg.exec(`
+        drop trigger refuse_reauthentication on reauthentications;
+        drop function refuse_reauthentication();
+      `);
+    }
+  });
+
+  it('still signs in when the previous session cannot be revoked, and logs it as an error', async () => {
+    const who = workosUser();
+    await signIn(who);
+    const [row] = await userRows('workos_user_id', who.id as string);
+    const old = await liveSession(row!.id);
+    await t.pg.exec(`
+      create function refuse_session_update() returns trigger language plpgsql as $$
+        begin raise exception 'refused for the test'; end $$;
+      create trigger refuse_session_update before update on sessions
+        for each row execute function refuse_session_update();
+    `);
+    try {
+      const result = await signIn(who, {}, { sessionToken: old });
+
+      expect(result.error).toBeNull();
+      expect(sessionCookieIssued(result)).toBe(true);
+      expect(lines.find((l) => l.message.includes('could not revoke the session'))?.level).toBe(
+        'error',
+      );
+      expect((await sessionsFor(row!.id)).every((s) => s.revoked_at === null)).toBe(true);
+    } finally {
+      await t.pg.exec(`
+        drop trigger refuse_session_update on sessions;
+        drop function refuse_session_update();
+      `);
+    }
+  });
+
   it('leaves another account’s session alone', async () => {
     const other = await seedUser({ workosUserId: unique('user_01OTHER') });
     const theirs = await liveSession(other.id);
@@ -1156,6 +1252,90 @@ describe('the session a sign-in issues', () => {
       expect(await reauthRows(row!.id)).toEqual([]);
     },
   );
+
+  it('does not count a re-authentication AuthKit answered from a session it already held', async () => {
+    // `max_age=0` stripped from the URL, or not honoured: AuthKit signs the
+    // person straight back in, and the code is dated by the earlier sign-in.
+    const who = workosUser();
+    const anHourAgo = Math.floor(Date.now() / 1000) - 3600;
+
+    const result = await signIn(
+      who,
+      { authenticationMethod: 'Password', accessToken: accessTokenAuthenticatedAt(anHourAgo) },
+      { query: '?reauth=1' },
+    );
+
+    expect(result.error).toBeNull();
+    expect(sessionCookieIssued(result)).toBe(true);
+    const [row] = await userRows('workos_user_id', who.id as string);
+    expect(await reauthRows(row!.id)).toEqual([]);
+    const warning = lines.find((l) => l.message.includes('did not show a fresh authentication'));
+    expect(warning).toMatchObject({ level: 'warn', reason: 'stale' });
+    expect(warning?.authenticatedSecondsBeforeFlow).toBeGreaterThanOrEqual(3590);
+  });
+
+  it.each([
+    ['an opaque access token', 'workos-access-token'],
+    ['a token with no auth_time', accessTokenAuthenticatedAt(null)],
+    ['no access token at all', undefined],
+  ])('does not count a re-authentication with %s — fails closed', async (_name, accessToken) => {
+    const who = workosUser();
+
+    const result = await signIn(
+      who,
+      { authenticationMethod: 'Passkey', accessToken },
+      { query: '?reauth=1' },
+    );
+
+    expect(sessionCookieIssued(result)).toBe(true);
+    const [row] = await userRows('workos_user_id', who.id as string);
+    expect(await reauthRows(row!.id)).toEqual([]);
+    expect(lines.find((l) => l.reason === 'no-auth-time')).toBeDefined();
+  });
+
+  it('counts one authenticated a few seconds before the flow began, for clock difference', async () => {
+    const who = workosUser();
+
+    await signIn(
+      who,
+      {
+        authenticationMethod: 'Password',
+        accessToken: accessTokenAuthenticatedAt(Math.floor(Date.now() / 1000) - 15),
+      },
+      { query: '?reauth=1' },
+    );
+
+    const [row] = await userRows('workos_user_id', who.id as string);
+    expect(await reauthRows(row!.id)).toHaveLength(1);
+  });
+
+  it('does not count one authenticated a minute before the flow began', async () => {
+    const who = workosUser();
+
+    await signIn(
+      who,
+      {
+        authenticationMethod: 'GoogleOAuth',
+        accessToken: accessTokenAuthenticatedAt(Math.floor(Date.now() / 1000) - 60),
+      },
+      { query: '?reauth=1' },
+    );
+
+    const [row] = await userRows('workos_user_id', who.id as string);
+    expect(await reauthRows(row!.id)).toEqual([]);
+  });
+
+  it('needs no auth_time for an ordinary sign-in', async () => {
+    const who = workosUser();
+
+    const result = await signIn(who, {
+      authenticationMethod: 'Password',
+      accessToken: 'workos-access-token',
+    });
+
+    expect(result.error).toBeNull();
+    expect(sessionCookieIssued(result)).toBe(true);
+  });
 
   it('records nothing for an ordinary sign-in', async () => {
     const who = workosUser();

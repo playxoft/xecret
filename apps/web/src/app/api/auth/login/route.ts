@@ -45,7 +45,9 @@ import { workosProvider } from '@/server/workos';
  *  - `reauth=1` — sign in again for the vault reset's first lock. Sends AuthKit
  *    `max_age=0`, which makes AuthKit ask for a password or passkey even when it
  *    holds a session; it does not make Google or a company's identity provider
- *    re-prompt (ADR 0010).
+ *    re-prompt (ADR 0010). The parameter is only a request — whoever holds the
+ *    browser can strip it — so the callback checks the outcome, the access
+ *    token's `auth_time`, before it counts the sign-in (`armsLockOne`).
  *
  * ── A deployment that cannot sign anybody in ──
  * Missing WorkOS configuration is answered with a redirect to the sign-in

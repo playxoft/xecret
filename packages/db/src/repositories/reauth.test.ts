@@ -10,6 +10,7 @@ import {
   markReauthCodeSent,
   recordFreshSignIn,
   recordReauthMfaPending,
+  reserveReauthCodeSend,
   reserveReauthGuess,
 } from './reauth';
 
@@ -40,6 +41,7 @@ beforeEach(() => {
 
 const PER_ATTEMPT = 5;
 const PER_USER = 10;
+const SENDS = 3;
 const minutes = (n: number) => n * 60_000;
 const since = (n: number) => new Date(Date.now() - minutes(n));
 
@@ -82,6 +84,23 @@ const reserve = (who: { userId: string; sessionId: string }) =>
     maxUserAttempts: PER_USER,
     userWindowSince: since(24 * 60),
   });
+
+const reserveSend = (who: { userId: string; sessionId: string }) =>
+  reserveReauthCodeSend(t.db, {
+    userId: who.userId,
+    sessionId: who.sessionId,
+    signedInSince: since(10),
+    maxAttempts: PER_ATTEMPT,
+    maxSends: SENDS,
+  });
+
+async function sendsOf(sessionId: string): Promise<number> {
+  const result = await t.pg.query<{ code_sends: number }>(
+    `select code_sends from reauthentications where session_id = $1`,
+    [sessionId],
+  );
+  return result.rows[0]?.code_sends ?? -1;
+}
 
 async function attemptsOf(sessionId: string): Promise<number> {
   const result = await t.pg.query<{ code_attempts: number }>(
@@ -180,6 +199,28 @@ describe('reserving a guess', () => {
     expect(results.filter((r) => r.ok)).toHaveLength(PER_USER);
   });
 
+  it('counts an attempt signed in just inside the day, and not one just outside it', async () => {
+    // The boundary itself, both sides of it: the sum must be over the day, not
+    // over the ten minutes one attempt lives for. Every guess here was spent on
+    // an attempt long past its own window, which the attempt-window predicate
+    // would never see.
+    const inside = randomUUID();
+    const stale = await liveAttempt(inside);
+    await t.pg.query(
+      `update reauthentications set code_attempts = $2, signed_in_at = now() - interval '23 hours 59 minutes' where session_id = $1`,
+      [stale.sessionId, PER_USER],
+    );
+    expect(await reserve(await liveAttempt(inside))).toEqual({ ok: false, reason: 'user-budget' });
+
+    const outside = randomUUID();
+    const older = await liveAttempt(outside);
+    await t.pg.query(
+      `update reauthentications set code_attempts = $2, signed_in_at = now() - interval '24 hours 1 second' where session_id = $1`,
+      [older.sessionId, PER_USER],
+    );
+    expect(await reserve(await liveAttempt(outside))).toMatchObject({ ok: true });
+  });
+
   it('forgets guesses older than the window', async () => {
     const userId = randomUUID();
     const old = await liveAttempt(userId);
@@ -189,6 +230,67 @@ describe('reserving a guess', () => {
     );
 
     expect(await reserve(await liveAttempt(userId))).toMatchObject({ ok: true });
+  });
+});
+
+describe('reserving a code request', () => {
+  it('takes one request per call and stops at the attempt’s cap, as its own refusal', async () => {
+    const who = await liveAttempt();
+
+    for (let i = 1; i <= SENDS; i += 1) {
+      expect(await reserveSend(who)).toEqual({ ok: true, attempt: { id: who.attemptId } });
+      expect(await sendsOf(who.sessionId)).toBe(i);
+    }
+    expect(await reserveSend(who)).toEqual({ ok: false, reason: 'send-budget' });
+    expect(await sendsOf(who.sessionId)).toBe(SENDS);
+  });
+
+  it('holds the cap under a burst of concurrent requests', async () => {
+    const who = await liveAttempt();
+
+    const results = await Promise.all(Array.from({ length: 30 }, () => reserveSend(who)));
+
+    expect(results.filter((r) => r.ok)).toHaveLength(SENDS);
+    expect(await sendsOf(who.sessionId)).toBe(SENDS);
+  });
+
+  it('refuses an attempt that is over — aged out, spent, or out of guesses — as no attempt', async () => {
+    const none = await userWithSession();
+    expect(await reserveSend(none)).toEqual({ ok: false, reason: 'no-attempt' });
+
+    const old = await userWithSession();
+    await recordFreshSignIn(t.db, { ...old, at: new Date(Date.now() - minutes(11)) });
+    expect(await reserveSend(old)).toEqual({ ok: false, reason: 'no-attempt' });
+
+    const spent = await attemptWithProof();
+    await consumeReauthProof(t.db, { ...spent, now: new Date() });
+    expect(await reserveSend(spent)).toEqual({ ok: false, reason: 'no-attempt' });
+
+    const guessedOut = await liveAttempt();
+    for (let i = 0; i < PER_ATTEMPT; i += 1) await reserve(guessedOut);
+    expect(await reserveSend(guessedOut)).toEqual({ ok: false, reason: 'no-attempt' });
+  });
+
+  it('names the user and the session it reserves against', async () => {
+    const who = await liveAttempt();
+
+    expect(await reserveSend({ ...who, userId: randomUUID() })).toEqual({
+      ok: false,
+      reason: 'no-attempt',
+    });
+    expect(await reserveSend({ ...who, sessionId: randomUUID() })).toEqual({
+      ok: false,
+      reason: 'no-attempt',
+    });
+    expect(await sendsOf(who.sessionId)).toBe(0);
+  });
+
+  it('gives a fresh sign-in its own allowance — the cap is per attempt', async () => {
+    const userId = randomUUID();
+    const first = await liveAttempt(userId);
+    for (let i = 0; i < SENDS; i += 1) await reserveSend(first);
+
+    expect(await reserveSend(await liveAttempt(userId))).toMatchObject({ ok: true });
   });
 });
 
@@ -349,6 +451,19 @@ describe('the table', () => {
         [randomUUID(), who.userId, who.sessionId, raw],
       ),
     ).rejects.toMatchObject({ code: '23514' });
+  });
+
+  it('never holds a negative count of guesses or code requests', async () => {
+    for (const column of ['code_attempts', 'code_sends']) {
+      const who = await userWithSession();
+      await expect(
+        t.pg.query(
+          `insert into reauthentications (id, user_id, session_id, signed_in_at, ${column})
+           values ($1, $2, $3, now(), -1)`,
+          [randomUUID(), who.userId, who.sessionId],
+        ),
+      ).rejects.toMatchObject({ code: '23514' });
+    }
   });
 
   it('never holds a proof without an expiry, a spent attempt without a proof, or half an MFA step', async () => {

@@ -12,6 +12,7 @@ import {
   issueReauthProof,
   markReauthCodeSent,
   recordReauthMfaPending,
+  reserveReauthCodeSend,
   reserveReauthGuess,
   toBytes,
 } from '@xecret/db/repositories';
@@ -21,6 +22,7 @@ import type { ServiceContext } from './context';
 import { ApiError, errors } from './errors';
 import {
   REAUTH_MAX_CODE_ATTEMPTS,
+  REAUTH_MAX_CODE_SENDS,
   REAUTH_MAX_USER_ATTEMPTS,
   REAUTH_SIGN_IN_MAX_AGE_SECONDS,
   REAUTH_USER_WINDOW_SECONDS,
@@ -52,6 +54,9 @@ import type { AuthenticationStepCode } from './workos';
  *     but WorkOS documents it only for its own screens. It does not make Google
  *     or a company's identity provider re-prompt, so for those users a live
  *     Google or SSO session in the same browser satisfies lock one silently.
+ *     What the server does check is that an authentication happened during
+ *     the flow at all — WorkOS's `auth_time` (`armsLockOne`) — so a reused
+ *     AuthKit session, with `max_age=0` stripped, is not lock one.
  *  2. **The emailed code** — WorkOS Magic Auth. Requested and checked only
  *     while the sign-in is under {@link REAUTH_SIGN_IN_MAX_AGE_SECONDS} old,
  *     only by the session that sign-in issued, and only for the WorkOS user that
@@ -69,6 +74,9 @@ import type { AuthenticationStepCode } from './workos';
  * sign-ins, sessions or concurrent requests, and whatever WorkOS answers. Ten
  * guesses a day at a six-digit code is a one-in-a-hundred-thousand chance a
  * day; the rate limiter sits in front of that and fails open, this does not.
+ * Asking for the code is capped the same way, before WorkOS is asked to send
+ * it: {@link REAUTH_MAX_CODE_SENDS} per attempt, so lock one cannot be turned
+ * into a stream of mail to somebody's inbox.
  *
  * Every refusal here is a 403 and never a 401: the client's API layer treats a
  * 401 as "your session has ended" and bounces to the sign-in page, which would
@@ -117,17 +125,34 @@ export async function reauthStatus(
  *
  * Refused unless lock one is in place. That is the order the decision asks
  * for, and it also means nobody can make xecret email an account without first
- * signing in as it.
+ * signing in as it. And capped: each request is reserved against
+ * {@link REAUTH_MAX_CODE_SENDS} before WorkOS is asked (`reserveReauthCodeSend`),
+ * so a burst of requests sends no more than that between them, and a request
+ * WorkOS then refuses still counts.
  */
 export async function startReauth(
   services: ServiceContext,
   user: UserPrincipal,
   now: Date = new Date(),
 ): Promise<void> {
-  const attempt = await currentAttempt(services, user, now);
-  if (attempt === null) throw signInAgain();
-
   const workosUserId = await linkedWorkosUser(services, user);
+
+  const reservation = await reserveReauthCodeSend(services.db, {
+    userId: user.user.id,
+    sessionId: user.sessionId,
+    signedInSince: signedInSince(now),
+    maxAttempts: REAUTH_MAX_CODE_ATTEMPTS,
+    maxSends: REAUTH_MAX_CODE_SENDS,
+  });
+  if (!reservation.ok) {
+    services.log
+      .at('startReauth')
+      .warn('Refused a re-authentication code request before asking WorkOS', {
+        reason: reservation.reason,
+      });
+    throw reservation.reason === 'send-budget' ? codesUsedUp() : signInAgain();
+  }
+  const { attempt } = reservation;
 
   let created: { workosUserId: string };
   try {
@@ -353,6 +378,12 @@ function signInAgain() {
   return errors.forbidden('Sign in again to confirm it’s you, then request a new code.');
 }
 
+function codesUsedUp() {
+  return errors.forbidden(
+    'That’s as many codes as one sign-in can send. Sign in again to confirm it’s you, then request a new code.',
+  );
+}
+
 /**
  * What a person is told when WorkOS answered with a step this page cannot
  * take. Each is specific, because "that code is wrong" for a right code is
@@ -397,8 +428,13 @@ function refusalFor(services: ServiceContext, cause: unknown, call: string): unk
   }
   if (cause instanceof IdentityVerificationError) {
     log.warn(`WorkOS refused ${call}`, { reason: cause.reason });
+    // The person is looking at their authenticator app, not their inbox: a
+    // sentence about the email would send them to the wrong place. The step's
+    // pending token stays good, so the same screen can take the next code.
     return errors.forbidden(
-      'That code is not right, or it has expired. Check the email, or send a new code.',
+      call === 'authenticateWithTotp'
+        ? 'That authenticator code is not right. Enter the current code from your app.'
+        : 'That code is not right, or it has expired. Check the email, or send a new code.',
     );
   }
   return cause;

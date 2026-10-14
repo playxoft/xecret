@@ -19,7 +19,9 @@ import * as schema from './index';
  * guards fire, and the privileges are read back from the catalogue.
  *
  * Tables are taken from the Drizzle schema, not from the catalogue, so a table
- * the code declares but no migration grants is caught by name.
+ * the code declares but no migration grants is caught by name. And the two are
+ * compared the other way too: a table a migration creates that the schema does
+ * not declare would otherwise never be checked here at all.
  */
 
 const ROLE = 'xecret_app_permissions';
@@ -69,6 +71,17 @@ describe('the application role', () => {
 
   it('is checked against the tables the schema declares, reauthentications among them', () => {
     expect(declaredTables()).toEqual(expect.arrayContaining(['users', 'reauthentications']));
+  });
+
+  it('is checked against every table the migrations leave in public, none undeclared', async () => {
+    const result = await t.pg.query<{ name: string }>(
+      `select c.relname as name
+         from pg_class c join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public' and c.relkind in ('r', 'p') and not c.relispartition
+        order by c.relname`,
+    );
+
+    expect(result.rows.map((row) => row.name)).toEqual(declaredTables());
   });
 
   it.each(declaredTables())('may use %s', async (table) => {
