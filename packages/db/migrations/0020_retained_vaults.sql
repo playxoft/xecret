@@ -22,6 +22,10 @@
 --                                  the recovery bookkeeping does
 --   retained_vaults_no_early_delete  DELETE is refused while purge_after is in
 --                                  the future, by the database's own clock
+--   retained_vaults_not_in_future  a vault is retained now: retained_at may be
+--                                  at most five minutes ahead of the database's
+--                                  clock, so nobody can insert a row that stays
+--                                  undeletable for as long as they like
 --   …and the same refusal on the two child tables, so a vault cannot be
 --   hollowed out row by row either.
 --
@@ -183,6 +187,28 @@ $$;--> statement-breakpoint
 CREATE TRIGGER "retained_vaults_immutable"
 	BEFORE UPDATE ON "retained_vaults"
 	FOR EACH ROW EXECUTE FUNCTION "retained_vault_refuse_rewrite"();--> statement-breakpoint
+
+-- A vault is retained at the moment of its reset, not in the future. The window
+-- CHECK ties purge_after to retained_at, and retained_at comes from the
+-- application, so without this an INSERT dated a year ahead — a bug, or the
+-- application role in the wrong hands — would make a row nothing can delete for
+-- a year and seven days. Five minutes of slack for the application's clock.
+CREATE FUNCTION "retained_vault_refuse_future"() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+	IF NEW.retained_at > now() + interval '5 minutes' THEN
+		RAISE EXCEPTION 'a retained vault cannot be dated in the future'
+			USING ERRCODE = 'check_violation';
+	END IF;
+	RETURN NEW;
+END;
+$$;--> statement-breakpoint
+
+CREATE TRIGGER "retained_vaults_not_in_future"
+	BEFORE INSERT ON "retained_vaults"
+	FOR EACH ROW EXECUTE FUNCTION "retained_vault_refuse_future"();--> statement-breakpoint
 
 -- A child row goes only with its vault: refused while the vault exists inside
 -- its window. During the purge's cascade the vault row is already gone, so the

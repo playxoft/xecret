@@ -534,6 +534,34 @@ describe('the window cannot be bypassed by shadowing', () => {
   });
 });
 
+describe('a retained vault is dated now', () => {
+  it('refuses one dated beyond the database clock, which would be undeletable for as long as its author liked', async () => {
+    const userId = await account();
+    await createVault(t.db, vault(userId, 51));
+
+    await expect(
+      resetVault(t.db, userId, { now: new Date(Date.now() + 365 * DAY) }),
+    ).rejects.toThrow();
+    // Nothing moved: the vault is still live and nothing was retained.
+    expect(await findVaultKeys(t.db, userId)).not.toBeNull();
+    expect(await count('retained_vaults where user_id = $1', [userId])).toBe(0);
+    expect(
+      await attempt(
+        `insert into retained_vaults (id, user_id, enc_algorithm, enc_public_key, enc_private_key_enc, sign_algorithm, sign_public_key, sign_private_key_enc, kdf_salt, kdf_params, unlock_verifier_hash, uk_unlock_verifier_hash, vault_created_at, vault_rotated_at, retained_at, purge_after) select gen_random_uuid(), user_id, enc_algorithm, enc_public_key, enc_private_key_enc, sign_algorithm, sign_public_key, sign_private_key_enc, kdf_salt, kdf_params, unlock_verifier_hash, uk_unlock_verifier_hash, created_at, rotated_at, now() + interval '1 day', now() + interval '1 day' + interval '168 hours' from user_keys where user_id = $1`,
+        [userId],
+      ),
+    ).toMatch(/cannot be dated in the future/);
+  });
+
+  it('allows the application clock a few minutes ahead of the database', async () => {
+    const userId = await account();
+    await createVault(t.db, vault(userId, 52));
+    await expect(
+      resetVault(t.db, userId, { now: new Date(Date.now() + 60_000) }),
+    ).resolves.toMatchObject({ grantCount: 0 });
+  });
+});
+
 describe('the application role', () => {
   /** Runs `sql` as xecret_app_permissions, the role production runs as. */
   async function asApp(sql: string, params: unknown[]): Promise<string | null> {
