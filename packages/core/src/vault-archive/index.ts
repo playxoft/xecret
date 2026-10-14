@@ -21,11 +21,15 @@ export {
   ARCHIVE_FORMAT,
   ARCHIVE_FORMAT_VERSION,
   ARCHIVE_MAX_DOCUMENT_BYTES,
+  ARCHIVE_MAX_KEYS_PER_ENVIRONMENT,
   ARCHIVE_MAX_PARTS,
   ARCHIVE_MAX_RECOVERY_WRAPS,
   ARCHIVE_REASON,
+  isArchivableSecret,
   parseArchiveDocument,
   serializeArchiveDocument,
+  toArchiveLabel,
+  toArchiveSlug,
 } from './document';
 export type {
   ArchiveEnvironment,

@@ -62,6 +62,58 @@ const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[
 /** The longest organisation, project, environment or secret name an archive carries. */
 const MAX_NAME_LENGTH = 256;
 
+/* ─────────────────────── what a writer puts in a field ─────────────────────── */
+
+// eslint-disable-next-line no-control-regex -- matching control characters is the point.
+const FORBIDDEN_IN_NAME_ALL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
+const LONE_SURROGATE_ALL =
+  /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+
+/**
+ * A display name as a writer must put it in an archive: the characters a
+ * reader refuses (§14.4) removed, a lone surrogate replaced with U+FFFD,
+ * clamped to 256 code points, and `-` when nothing is left.
+ *
+ * The product validates names when they are typed, but an archive is written
+ * from whatever a row holds — a name from before a rule, or from an import —
+ * and a reader refuses the whole file over one bad name. A name in an archive
+ * is a label to recognise an environment by, so cleaning it costs nothing.
+ */
+export function toArchiveLabel(value: string): string {
+  const cleaned = [
+    ...value.replace(FORBIDDEN_IN_NAME_ALL, '').replace(LONE_SURROGATE_ALL, '\ufffd'),
+  ];
+  if (cleaned.length === 0) return '-';
+  return cleaned.slice(0, MAX_NAME_LENGTH).join('');
+}
+
+/**
+ * A slug as a writer must put it in an archive: the stored slug when it is in
+ * the product's grammar, and otherwise `x-` and the entity's id without its
+ * hyphens — 34 characters, valid in both grammars, and as unique as the id, so
+ * a replaced slug can never make two environments share a path (§14.4).
+ *
+ * A slug is not cleaned character by character, because two different bad
+ * slugs could clean to the same good one, and the reader refuses that file too.
+ */
+export function toArchiveSlug(value: string, kind: 'slug' | 'environment', id: string): string {
+  const pattern = kind === 'environment' ? ARCHIVE_ENVIRONMENT_SLUG_PATTERN : ARCHIVE_SLUG_PATTERN;
+  if (value.length <= ARCHIVE_SLUG_MAX_LENGTH && pattern.test(value)) return value;
+  return `x-${id.toLowerCase().replace(/[^0-9a-f]/g, '')}`;
+}
+
+/**
+ * Whether a reader accepts this secret's name and value type (§14.4). A writer
+ * leaves out a secret it would not, rather than write a file that cannot open.
+ */
+export function isArchivableSecret(secret: { name: string; valueType: string }): boolean {
+  return (
+    secret.name.length <= MAX_NAME_LENGTH &&
+    SECRET_NAME.test(secret.name) &&
+    VALUE_TYPE.test(secret.valueType)
+  );
+}
+
 export interface ArchiveRecoveryWrap {
   /** `SHA-256("xecret.v2.recovery-lookup" ‖ codeBytes)`, lowercase hex — also an AAD component. */
   lookupHashHex: string;

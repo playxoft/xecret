@@ -4,8 +4,11 @@ import {
   ARCHIVE_ENVIRONMENT_SLUG_PATTERN,
   ARCHIVE_SLUG_MAX_LENGTH,
   ARCHIVE_SLUG_PATTERN,
+  isArchivableSecret,
   parseArchiveDocument,
   serializeArchiveDocument,
+  toArchiveLabel,
+  toArchiveSlug,
 } from './document';
 import type { VaultArchiveDocument } from './document';
 import { planArchiveParts } from './build';
@@ -285,6 +288,44 @@ describe('parseArchiveDocument', () => {
     expect(() =>
       parseEdited((raw) => (at(raw, 'environments.0').orgName = '😀'.repeat(256))),
     ).not.toThrow();
+  });
+});
+
+describe('what a writer puts in a field', () => {
+  it('cleans a name into one every reader accepts', () => {
+    expect(toArchiveLabel('Acme')).toBe('Acme');
+    expect(toArchiveLabel('Acme\u001b[2J Prod\u2028uction\u0085')).toBe('Acme[2J Production');
+    expect(toArchiveLabel('Prod\ud800')).toBe('Prod\ufffd');
+    expect(toArchiveLabel('Acme 😀')).toBe('Acme 😀');
+    expect(toArchiveLabel('\u0000\u0001')).toBe('-');
+    expect([...toArchiveLabel('😀'.repeat(300))]).toHaveLength(256);
+
+    for (const name of ['Acme\u001b[2J', 'Prod\ud800', '', '\u2029', 'é'.repeat(400)]) {
+      expect(() =>
+        parseEdited((raw) => (at(raw, 'environments.0').orgName = toArchiveLabel(name))),
+      ).not.toThrow();
+    }
+  });
+
+  it('keeps a slug in the grammar, and replaces one outside it with one made from the id', () => {
+    const id = '0192f0a1-7c3d-7e4f-8a1b-000000000009';
+    expect(toArchiveSlug('acme', 'slug', id)).toBe('acme');
+    expect(toArchiveSlug('prod_eu', 'environment', id)).toBe('prod_eu');
+    expect(toArchiveSlug('prod_eu', 'slug', id)).toBe('x-0192f0a17c3d7e4f8a1b000000000009');
+    expect(toArchiveSlug('acme\nfake', 'slug', id)).toBe('x-0192f0a17c3d7e4f8a1b000000000009');
+    expect(toArchiveSlug('a'.repeat(64), 'environment', id)).toMatch(/^x-[0-9a-f]{32}$/);
+
+    const replaced = toArchiveSlug('Bad Slug', 'environment', id);
+    expect(replaced.length).toBeLessThanOrEqual(ARCHIVE_SLUG_MAX_LENGTH);
+    expect(ARCHIVE_SLUG_PATTERN.test(replaced)).toBe(true);
+    expect(ARCHIVE_ENVIRONMENT_SLUG_PATTERN.test(replaced)).toBe(true);
+  });
+
+  it('tells which secrets a reader would refuse', () => {
+    expect(isArchivableSecret({ name: 'DATABASE_URL', valueType: 'string' })).toBe(true);
+    expect(isArchivableSecret({ name: '1BAD', valueType: 'string' })).toBe(false);
+    expect(isArchivableSecret({ name: 'OK', valueType: 'URL' })).toBe(false);
+    expect(isArchivableSecret({ name: `A${'B'.repeat(256)}`, valueType: 'string' })).toBe(false);
   });
 });
 
