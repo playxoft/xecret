@@ -1067,15 +1067,20 @@ function RecoveryFlow({
 export function ResetResult({
   result,
   onContinue,
+  showHeading = true,
 }: {
   result: VaultResetResult;
   onContinue: () => void;
+  /** False when the frame around it already says the vault has been reset. */
+  showHeading?: boolean;
 }) {
   const until = formatResetDeadline(result.retained.retainedUntil);
 
   return (
     <div role="status" className="flex flex-col gap-4">
-      <p className="text-fg text-sm font-medium">Your vault has been reset</p>
+      {showHeading ? (
+        <p className="text-fg text-sm font-medium">Your vault has been reset</p>
+      ) : null}
 
       {result.archive.emailed ? (
         <Alert tone="warning" title="Your archive is in your inbox">
@@ -1163,9 +1168,10 @@ export function ArchivePreflightFacts({
 
   if (!preflight.resettable) {
     return (
-      <Alert tone="danger" title="Your vault can’t be reset right now">
-        We can’t send email right now, and we never reset a vault without emailing its archive
-        first. Nothing has changed. Please try again later.
+      <Alert tone="danger" title="This installation can’t reset vaults yet">
+        It has no email set up, and a vault is never reset without emailing its archive first.
+        Nothing has changed. Whoever runs this xecret installation needs to set up email before a
+        vault can be reset.
       </Alert>
     );
   }
@@ -1189,7 +1195,12 @@ export function ArchivePreflightFacts({
     >
       <p>
         {tooLarge
-          ? `Its archive would be about ${formatArchiveSize(preflight.archive.estimatedBytes)}, more than the ${formatArchiveSize(preflight.archive.maxBytes)} we can email. If you reset, we email you a notice instead of an archive.`
+          ? `${
+              preflight.archive.estimatedBytes !== undefined &&
+              preflight.archive.maxBytes !== undefined
+                ? `Its archive would be about ${formatArchiveSize(preflight.archive.estimatedBytes)}, more than the ${formatArchiveSize(preflight.archive.maxBytes)} we can email.`
+                : 'Its archive is more than we can email.'
+            } If you reset, we email you a notice instead of an archive.`
           : 'This xecret installation has no email set up, so we can’t send you an archive.'}{' '}
         Your old vault, kept for seven days, is then the only way back to these secrets.
       </p>
@@ -1353,6 +1364,34 @@ function AllCodesLost({
     void refreshStatus();
   }
 
+  /**
+   * Where a refused reset leaves the person.
+   *
+   * Some refusals come before the proof is spent — an archive that cannot be
+   * emailed without the choice, a deployment with no mail, a rate limit — and
+   * some after it: a failed send, a vault that changed. The status code does
+   * not say which (a 409 or a 503 can be either), but the server's own record
+   * does: an unspent proof leaves this session's re-authentication open.
+   *
+   * Open: stay on this step. The code already went into the proof, so it says
+   * nothing about a code sent; the person asks for a new one. Spent: back to
+   * signing in again. Either way the reason stays above the form.
+   */
+  async function afterRefusedReset() {
+    setStep('checking');
+    try {
+      const current = await fetchReauthStatus();
+      setStatus(current);
+      setMfaToken(null);
+      setSent(false);
+      if (!current.signedIn) setTyped('');
+      setStep(current.signedIn ? 'confirm' : 'sign-in');
+    } catch (cause) {
+      setFailure(errorMessage(cause));
+      setStep('sign-in');
+    }
+  }
+
   /** The asking half of {@link check}: state changes only once the answer is in. */
   async function refreshStatus() {
     try {
@@ -1443,16 +1482,15 @@ function AllCodesLost({
       setResult(await resetVault(typed, checked.proof, archiveBlocked && withoutArchive));
     } catch (cause) {
       if (resetting) {
-        // Nothing was reset, and the proof is gone either way. Back to where
-        // the server says the re-authentication stands — "sign in again" —
-        // with the reason kept above it, and the archive checked afresh.
+        // Nothing was reset. Whether the proof went with it is the server's to
+        // say (`afterRefusedReset`); the reason stays on screen, and the
+        // archive is checked afresh — it is what a 409 was about.
         setResetFailure(errorMessage(cause));
         setCode('');
         setTotp('');
-        setTyped('');
         setShowProblem(false);
         loadPreflight();
-        check();
+        void afterRefusedReset();
       } else {
         setFailure(errorMessage(cause));
         if (mfaToken === null) setCode('');
@@ -1482,6 +1520,7 @@ function AllCodesLost({
     return (
       <ResetResult
         result={result}
+        showHeading={onResultShown === undefined}
         onContinue={() => {
           // Adopted before anything navigates, so this provider stops describing
           // a vault that no longer exists. `reload` follows to drop the material

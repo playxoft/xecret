@@ -243,7 +243,7 @@ describe('what a recovery says', () => {
         { environmentId: 'e', reason: 'did-not-open' },
       ]),
     ).toEqual([
-      '2 environments you already had again — a teammate re-shared them.',
+      '2 environments already in your current vault, so nothing to bring back.',
       '1 environment you no longer have access to, so not restored.',
       '1 environment deleted since the reset.',
       '1 environment whose key in the old vault did not open, so not restored.',
@@ -330,6 +330,18 @@ describe('the reset result', () => {
     }
   });
 
+  it('leaves the heading to a frame that already says the vault was reset', () => {
+    const html = renderToStaticMarkup(
+      createElement(ResetResult, {
+        result: { vault, archive: { emailed: true, parts: 1, to: 'owner@example.com' }, retained },
+        onContinue: () => {},
+        showHeading: false,
+      }),
+    );
+    expect(html).not.toContain('Your vault has been reset');
+    expect(html).toContain('Your archive is in your inbox');
+  });
+
   it('never claims more than xecret can promise about deletion', () => {
     const html = renderToStaticMarkup(
       createElement(ResetResult, {
@@ -405,8 +417,22 @@ describe('what the reset screen says about the archive before anything is confir
         archive: { ...archive, deliverable: false, reason: 'mail-not-configured' },
       },
     });
-    expect(html).toContain('can’t be reset right now');
+    expect(html).toContain('can’t reset vaults yet');
+    expect(html).toContain('needs to set up email');
+    // Never "right now" about mail that was never set up.
+    expect(html).not.toContain('right now');
     expect(html).not.toContain('Reset without the emailed archive');
+  });
+
+  it('says a vault is too large when a locked session is not told the size', () => {
+    const html = render({
+      preflight: {
+        resettable: true,
+        archive: { deliverable: false, reason: 'too-large' },
+      },
+    });
+    expect(html).toContain('Its archive is more than we can email.');
+    expect(html).toContain('Reset without the emailed archive');
   });
 
   it('says it is still checking, and offers a retry when the check failed', () => {

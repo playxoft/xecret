@@ -644,11 +644,16 @@ export interface ResetPreflight {
   archive: {
     deliverable: boolean;
     reason: ArchiveUndeliverable | null;
-    /** An upper bound on the archive's size, in bytes. */
-    estimatedBytes: number;
-    maxBytes: number;
-    environmentCount: number;
-    secretCount: number;
+    /**
+     * An upper bound on the archive's size, in bytes, and the most that is
+     * emailed. A locked session — which the reset screen always is — gets
+     * these only when the size is the reason.
+     */
+    estimatedBytes?: number;
+    maxBytes?: number;
+    /** Only to an unlocked session. */
+    environmentCount?: number;
+    secretCount?: number;
   };
 }
 
