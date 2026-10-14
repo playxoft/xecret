@@ -4,7 +4,11 @@ import { useState } from 'react';
 
 import { DecryptionError, RecoveryCodeError } from '@xecret/core/crypto/client';
 import { ArchiveFormatError, openArchive, readArchiveFile } from '@xecret/core/vault-archive';
-import type { OpenedArchive, VaultArchiveDocument } from '@xecret/core/vault-archive';
+import type {
+  OpenedArchive,
+  OpenedEnvironment,
+  VaultArchiveDocument,
+} from '@xecret/core/vault-archive';
 import { errorMessage } from '@/lib/api';
 import { formatAbsoluteTime, pluralize } from '@/lib/format';
 import {
@@ -19,26 +23,28 @@ import {
   DialogTitle,
   Field,
   Input,
+  SecretValue,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-  Tabs,
-  TabsList,
-  TabsTrigger,
 } from '@/components/ui';
 import { argon2idProvider } from '@/components/vault/argon2';
+import { CredentialChoice, RECOVERY_CODE_HINT } from '@/components/vault/credential-choice';
+import type { CredentialMethod } from '@/components/vault/credential-choice';
 import { readRecoveryCode } from '@/components/vault/vault-client';
+import { useVaultKeys } from '@/components/vault/vault-keys';
 import {
   defaultMapping,
+  describeTarget,
   importableValues,
   importValues,
   ioForEnvironment,
   mappingProblem,
   summarise,
 } from './import-archive';
-import type { ArchiveMapping, ProjectEnvironment } from './import-archive';
+import type { ArchiveMapping, ProjectEnvironment, TargetState } from './import-archive';
 
 /**
  * "Import archive", on a project (P23).
@@ -46,10 +52,15 @@ import type { ArchiveMapping, ProjectEnvironment } from './import-archive';
  * Four steps, each asking for one thing: the file; the old passphrase or a
  * recovery code, which open it here, in this tab, and are never sent anywhere;
  * where each environment in the archive should go, and what to do with names
- * that already exist; then a preview and the import itself. The write is the
- * dashboard's ordinary import, environment by environment — `import-archive.ts`
- * explains what that means for end-to-end-encrypted environments, and for
- * permissions.
+ * that already exist; then a preview — every name and value, masked until
+ * revealed, per target — and only then the import. The write is the
+ * dashboard's ordinary import, environment by environment; `import-archive.ts`
+ * explains what that means for end-to-end-encrypted environments, why a
+ * server-encrypted one is never a target, and permissions.
+ *
+ * Opening an archive needs the vault unlocked in this tab — every target is
+ * written under a key the vault opens — so a locked tab is told so before the
+ * slow open, not after it.
  *
  * Closing the dialog drops everything it opened. The values were in this tab's
  * memory only, as JavaScript strings, which cannot be wiped — closing is what
@@ -64,11 +75,20 @@ type Step =
   | { kind: 'map'; archive: OpenedArchive }
   | { kind: 'done'; archive: OpenedArchive; results: TargetResult[] };
 
+/** What the dialog is waiting for: each has its own spinner, and only its own. */
+type Busy = 'reading' | 'opening' | 'checking' | 'previewing' | 'importing' | null;
+
 interface TargetResult {
   environmentId: string;
   target: string;
   status: 'imported' | 'previewed' | 'failed';
   message: string;
+}
+
+interface Target {
+  slug: string;
+  name: string;
+  state: TargetState;
 }
 
 export interface ImportArchiveDialogProps {
@@ -83,23 +103,31 @@ export interface ImportArchiveDialogProps {
 }
 
 export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
+  const vaultKeys = useVaultKeys();
+  const locked = vaultKeys === null;
   const [step, setStep] = useState<Step>({ kind: 'file' });
   const [failure, setFailure] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [method, setMethod] = useState<'passphrase' | 'recovery-code'>('passphrase');
+  const [busy, setBusy] = useState<Busy>(null);
+  const [method, setMethod] = useState<CredentialMethod>('passphrase');
   const [secret, setSecret] = useState('');
+  const [targets, setTargets] = useState<Target[] | null>(null);
   const [mapping, setMapping] = useState<ArchiveMapping>({});
   const [strategy, setStrategy] = useState<'skip' | 'overwrite'>('skip');
   const [preview, setPreview] = useState<TargetResult[] | null>(null);
+  // Bumped to remount the file input, which is the only way to clear what a
+  // file input holds — so the same file can be picked again after an error.
+  const [fileInput, setFileInput] = useState(0);
 
   function reset() {
     setStep({ kind: 'file' });
     setFailure(null);
-    setBusy(false);
+    setBusy(null);
     setSecret('');
+    setTargets(null);
     setMapping({});
     setStrategy('skip');
     setPreview(null);
+    setFileInput((n) => n + 1);
   }
 
   function onOpenChange(open: boolean) {
@@ -108,19 +136,23 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
   }
 
   async function chooseFile(file: File | undefined) {
-    if (file === undefined) return;
+    if (file === undefined || busy !== null) return;
     setFailure(null);
+    setBusy('reading');
     try {
       const doc = await readArchiveFile(new Uint8Array(await file.arrayBuffer()));
       setStep({ kind: 'credential', doc });
     } catch (cause) {
       setFailure(cause instanceof ArchiveFormatError ? cause.message : errorMessage(cause));
+      setFileInput((n) => n + 1);
+    } finally {
+      setBusy(null);
     }
   }
 
   async function open(event: React.FormEvent) {
     event.preventDefault();
-    if (step.kind !== 'credential' || busy) return;
+    if (step.kind !== 'credential' || busy !== null || locked) return;
 
     let credential: Parameters<typeof openArchive>[1];
     if (method === 'recovery-code') {
@@ -134,35 +166,50 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
       credential = { kind: 'passphrase', passphrase: secret };
     }
 
-    setBusy(true);
+    setBusy('opening');
     setFailure(null);
+    let archive: OpenedArchive;
     try {
-      const archive = await openArchive(step.doc, credential, { argon2id: argon2idProvider });
+      archive = await openArchive(step.doc, credential, { argon2id: argon2idProvider });
       setSecret('');
-      setMapping(
-        defaultMapping(archive, {
-          orgSlug: props.orgSlug,
-          projectSlug: props.projectSlug,
-          environments: props.environments,
-        }),
-      );
-      setStep({ kind: 'map', archive });
     } catch (cause) {
       setFailure(describeOpenFailure(cause, method));
-    } finally {
-      setBusy(false);
+      setBusy(null);
+      return;
     }
+
+    // Every environment of this project, as a target: its mode, and whether
+    // this account can write to it now. Asked once, so the mapping can say
+    // which targets are offered and why the others are not.
+    setBusy('checking');
+    setStep({ kind: 'map', archive });
+    const surveyed: Target[] = [];
+    for (const environment of props.environments) {
+      surveyed.push({
+        slug: environment.slug,
+        name: environment.name,
+        state: await ioForEnvironment({
+          orgSlug: props.orgSlug,
+          orgId: props.orgId,
+          projectSlug: props.projectSlug,
+          envSlug: environment.slug,
+        }),
+      });
+    }
+    setTargets(surveyed);
+    setMapping(defaultMapping(archive, surveyed));
+    setBusy(null);
   }
 
   async function run(dryRun: boolean) {
-    if (step.kind !== 'map' || busy) return;
+    if (step.kind !== 'map' || busy !== null) return;
     const problem = mappingProblem(mapping);
     if (problem !== null) {
       setFailure(problem);
       return;
     }
 
-    setBusy(true);
+    setBusy(dryRun ? 'previewing' : 'importing');
     setFailure(null);
     const results: TargetResult[] = [];
     let wrote = false;
@@ -172,6 +219,8 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
       if (target === null) continue;
 
       try {
+        // Asked again rather than reused from the survey: a key rotated or a
+        // grant revoked since then must be the import's answer too.
         const io = await ioForEnvironment({
           orgSlug: props.orgSlug,
           orgId: props.orgId,
@@ -183,12 +232,7 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
             environmentId: environment.environmentId,
             target,
             status: 'failed',
-            message:
-              io.reason === 'locked'
-                ? 'Unlock your vault, then try again.'
-                : io.reason === 'downgraded'
-                  ? 'This environment changed its encryption mode since this browser last saw it, so nothing was sent.'
-                  : 'You do not hold this environment’s key yet — ask a teammate to share it.',
+            message: describeTarget(io),
           });
           continue;
         }
@@ -217,7 +261,7 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
       }
     }
 
-    setBusy(false);
+    setBusy(null);
     if (dryRun) {
       setPreview(results);
     } else {
@@ -229,6 +273,10 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
   const nameOf = (slug: string) =>
     props.environments.find((environment) => environment.slug === slug)?.name ?? slug;
 
+  // Import is offered only once a preview for exactly this mapping and this
+  // strategy has shown every name and value it would write.
+  const previewed = preview !== null && preview.some((result) => result.status === 'previewed');
+
   return (
     <Dialog open={props.open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
@@ -239,6 +287,15 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
             browser, with that vault’s passphrase or a recovery code; neither is sent anywhere.
           </DialogDescription>
         </DialogHeader>
+
+        {locked && step.kind !== 'done' ? (
+          <div className="px-5 pt-4">
+            <Alert tone="warning" title="Unlock your vault first">
+              Each value is encrypted here, under its environment’s key, before it is sent — and
+              your vault is what opens those keys.
+            </Alert>
+          </div>
+        ) : null}
 
         {failure !== null ? (
           <div className="px-5 pt-4">
@@ -252,11 +309,17 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
           <DialogBody>
             <Field
               label="Archive file"
-              hint="The .zip attached to the email, or the archive.json inside it."
+              hint={
+                busy === 'reading'
+                  ? 'Reading the file…'
+                  : 'The .zip attached to the email, or the archive.json inside it.'
+              }
             >
               <Input
+                key={fileInput}
                 type="file"
                 accept=".zip,.json,application/zip,application/json"
+                disabled={busy !== null}
                 onChange={(event) => void chooseFile(event.target.files?.[0])}
               />
             </Field>
@@ -271,22 +334,27 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
                 {step.doc.parts > 1 ? `, part ${step.doc.part} of ${step.doc.parts}` : ''}, holding{' '}
                 {pluralize(step.doc.environments.length, 'environment')}.
               </p>
-              <Tabs
+              <CredentialChoice
                 value={method}
-                onValueChange={(value) => setMethod(value as 'passphrase' | 'recovery-code')}
-              >
-                <TabsList>
-                  <TabsTrigger value="passphrase">Old passphrase</TabsTrigger>
-                  <TabsTrigger value="recovery-code">Old recovery code</TabsTrigger>
-                </TabsList>
-              </Tabs>
+                disabled={busy !== null}
+                onChange={(next) => {
+                  // A passphrase must not reappear unmasked in the code field.
+                  setMethod(next);
+                  setSecret('');
+                  setFailure(null);
+                }}
+              />
               <Field
                 label={
                   method === 'passphrase'
                     ? 'Master passphrase of the vault that was reset'
                     : 'A recovery code of the vault that was reset'
                 }
-                hint="Opening takes a few seconds."
+                hint={
+                  method === 'passphrase'
+                    ? 'Opening takes a few seconds. It is checked here, never sent.'
+                    : RECOVERY_CODE_HINT
+                }
               >
                 <Input
                   type={method === 'passphrase' ? 'password' : 'text'}
@@ -295,14 +363,19 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
                   autoComplete="off"
                   spellCheck={false}
                   autoFocus
+                  className={method === 'recovery-code' ? 'font-mono' : undefined}
                 />
               </Field>
             </DialogBody>
             <DialogFooter>
-              <Button type="button" variant="ghost" onClick={reset} disabled={busy}>
+              <Button type="button" variant="ghost" onClick={reset} disabled={busy !== null}>
                 Choose another file
               </Button>
-              <Button type="submit" loading={busy} disabled={secret.length === 0}>
+              <Button
+                type="submit"
+                loading={busy === 'opening'}
+                disabled={secret.length === 0 || locked}
+              >
                 Open archive
               </Button>
             </DialogFooter>
@@ -312,101 +385,83 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
         {step.kind === 'map' ? (
           <>
             <DialogBody className="flex flex-col gap-4">
-              {step.archive.environments.length === 0 ? (
-                <p className="text-fg-muted text-sm">This archive holds no environments.</p>
-              ) : null}
-              {step.archive.environments.map((environment) => {
-                const summary = summarise(environment);
-                return (
-                  <div
-                    key={environment.environmentId}
-                    className="border-border flex flex-col gap-2 rounded-lg border p-3"
-                  >
-                    <div className="text-sm">
-                      <span className="text-fg font-medium">
-                        {environment.orgName} / {environment.projectName} /{' '}
-                        {environment.environmentName}
-                      </span>
-                      <span className="text-fg-muted">
-                        {' '}
-                        — {pluralize(summary.importable, 'secret')} to import
-                        {summary.noKey + summary.damaged > 0
-                          ? `, ${summary.noKey + summary.damaged} that did not open`
-                          : ''}
-                      </span>
-                    </div>
-                    <Select
-                      value={mapping[environment.environmentId] ?? NOT_IMPORTED}
-                      onValueChange={(value) => {
+              {busy === 'checking' || targets === null ? (
+                <p role="status" className="text-fg-muted text-sm">
+                  Checking this project’s environments…
+                </p>
+              ) : (
+                <>
+                  <TargetList targets={targets} />
+                  {step.archive.environments.length === 0 ? (
+                    <p className="text-fg-muted text-sm">This archive holds no environments.</p>
+                  ) : null}
+                  {step.archive.environments.map((environment) => (
+                    <ArchiveEnvironmentCard
+                      key={environment.environmentId}
+                      environment={environment}
+                      targets={targets}
+                      target={mapping[environment.environmentId] ?? null}
+                      preview={
+                        preview?.find(
+                          (result) => result.environmentId === environment.environmentId,
+                        ) ?? null
+                      }
+                      disabled={busy !== null}
+                      onTarget={(slug) => {
                         setPreview(null);
                         setMapping((current) => ({
                           ...current,
-                          [environment.environmentId]: value === NOT_IMPORTED ? null : value,
+                          [environment.environmentId]: slug,
                         }));
                       }}
+                    />
+                  ))}
+
+                  <Field label="When a secret with the same name already exists">
+                    <Select
+                      value={strategy}
+                      disabled={busy !== null}
+                      onValueChange={(value) => {
+                        setPreview(null);
+                        setStrategy(value as 'skip' | 'overwrite');
+                      }}
                     >
-                      <SelectTrigger aria-label={`Import ${environment.environmentName} into`}>
+                      <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value={NOT_IMPORTED}>Don’t import</SelectItem>
-                        {props.environments.map((target) => (
-                          <SelectItem key={target.slug} value={target.slug}>
-                            Into {target.name}
-                          </SelectItem>
-                        ))}
+                        <SelectItem value="skip">Keep the existing value</SelectItem>
+                        <SelectItem value="overwrite">
+                          Replace it with the archive’s value
+                        </SelectItem>
                       </SelectContent>
                     </Select>
-                    {preview
-                      ?.filter((result) => result.environmentId === environment.environmentId)
-                      .map((result) => (
-                        <p
-                          key={result.target}
-                          className={
-                            result.status === 'failed'
-                              ? 'text-danger-text text-sm'
-                              : 'text-fg-muted text-sm'
-                          }
-                        >
-                          {result.status === 'failed' ? 'Cannot import: ' : 'Would import: '}
-                          {result.message}
-                        </p>
-                      ))}
-                  </div>
-                );
-              })}
-
-              <Field label="When a secret with the same name already exists">
-                <Select
-                  value={strategy}
-                  onValueChange={(value) => {
-                    setPreview(null);
-                    setStrategy(value as 'skip' | 'overwrite');
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="skip">Keep the existing value</SelectItem>
-                    <SelectItem value="overwrite">Replace it with the archive’s value</SelectItem>
-                  </SelectContent>
-                </Select>
-              </Field>
-              <p className="text-fg-subtle text-xs leading-5">
-                Values only: notes and value types are not imported.
-              </p>
+                  </Field>
+                  <p className="text-fg-subtle text-xs leading-5">
+                    Values only: notes and value types are not imported.
+                    {previewed
+                      ? null
+                      : ' Preview first: it shows every name and value it would write.'}
+                  </p>
+                </>
+              )}
             </DialogBody>
             <DialogFooter>
               <Button
                 type="button"
                 variant="secondary"
-                loading={busy && preview === null}
+                loading={busy === 'previewing'}
+                disabled={busy !== null || targets === null || locked}
                 onClick={() => void run(true)}
               >
                 Preview
               </Button>
-              <Button type="button" loading={busy} onClick={() => void run(false)}>
+              <Button
+                type="button"
+                loading={busy === 'importing'}
+                disabled={busy !== null || !previewed || locked}
+                onClick={() => void run(false)}
+              >
                 Import
               </Button>
             </DialogFooter>
@@ -436,11 +491,135 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
   );
 }
 
+/** Short words for a target's mode, inside a select item. */
+function targetMode(state: TargetState): string {
+  if (state.status === 'ready') return 'end-to-end encrypted';
+  switch (state.reason) {
+    case 'server-mode':
+      return 'server-encrypted, not offered';
+    case 'downgraded':
+      return 'encryption mode changed, not offered';
+    default:
+      return 'end-to-end encrypted, key unavailable';
+  }
+}
+
+/** This project's environments: each one's mode, and why one cannot take the import. */
+export function TargetList({ targets }: { targets: readonly Target[] }) {
+  if (targets.every((target) => target.state.status === 'ready')) return null;
+  return (
+    <div className="border-line bg-canvas-inset flex flex-col gap-2 rounded-lg border p-3 text-sm">
+      <p className="text-fg font-medium">Environments in this project</p>
+      <ul className="flex flex-col gap-1.5">
+        {targets.map((target) => (
+          <li key={target.slug} className="text-fg-muted leading-6">
+            <span className="text-fg">{target.name}</span> — {targetMode(target.state)}
+            {target.state.status === 'unavailable' ? (
+              <span className="block text-xs leading-5">{describeTarget(target.state)}</span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** One environment of the archive: where it goes, and — once previewed — what it would write. */
+export function ArchiveEnvironmentCard({
+  environment,
+  targets,
+  target,
+  preview,
+  disabled,
+  onTarget,
+}: {
+  environment: OpenedEnvironment;
+  targets: readonly Target[];
+  target: string | null;
+  preview: TargetResult | null;
+  disabled: boolean;
+  onTarget: (slug: string | null) => void;
+}) {
+  const summary = summarise(environment);
+  // The environment this one came from, when it is in this project and cannot
+  // take the import: said here, so its absence from the default is explained.
+  const origin = targets.find(
+    (candidate) => candidate.state.environmentId === environment.environmentId,
+  );
+  const values = importableValues(environment);
+
+  return (
+    <div className="border-border flex flex-col gap-2 rounded-lg border p-3">
+      <div className="text-sm">
+        <span className="text-fg font-medium">
+          {environment.orgName} / {environment.projectName} / {environment.environmentName}
+        </span>
+        <span className="text-fg-muted">
+          {' '}
+          — {pluralize(summary.importable, 'secret')} to import
+          {summary.noKey + summary.damaged > 0
+            ? `, ${summary.noKey + summary.damaged} that did not open`
+            : ''}
+        </span>
+      </div>
+      {origin !== undefined && origin.state.status === 'unavailable' ? (
+        <p className="text-warning-text text-sm leading-6">
+          Its environment here, {origin.name}: {describeTarget(origin.state)}
+        </p>
+      ) : null}
+      <Select
+        value={target ?? NOT_IMPORTED}
+        disabled={disabled}
+        onValueChange={(value) => onTarget(value === NOT_IMPORTED ? null : value)}
+      >
+        <SelectTrigger aria-label={`Import ${environment.environmentName} into`}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={NOT_IMPORTED}>Don’t import</SelectItem>
+          {targets.map((candidate) => (
+            <SelectItem
+              key={candidate.slug}
+              value={candidate.slug}
+              disabled={candidate.state.status !== 'ready'}
+            >
+              Into {candidate.name} · {targetMode(candidate.state)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      {preview !== null ? (
+        <div className="flex flex-col gap-2">
+          <p
+            className={
+              preview.status === 'failed' ? 'text-danger-text text-sm' : 'text-fg-muted text-sm'
+            }
+          >
+            {preview.status === 'failed' ? 'Cannot import: ' : 'Would import: '}
+            {preview.message}
+          </p>
+          {preview.status === 'previewed' ? (
+            <ul
+              className="flex flex-col gap-1.5"
+              aria-label={`Values for ${environment.environmentName}`}
+            >
+              {Object.entries(values).map(([name, value]) => (
+                <li key={name} className="grid grid-cols-[minmax(0,14rem)_1fr] items-center gap-3">
+                  <span className="text-fg truncate font-mono text-xs">{name}</span>
+                  <SecretValue name={name} onReveal={async () => value} />
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** Why the archive did not open, in one sentence. Pure, so the mapping can be tested. */
-export function describeOpenFailure(
-  cause: unknown,
-  method: 'passphrase' | 'recovery-code',
-): string {
+export function describeOpenFailure(cause: unknown, method: CredentialMethod): string {
   if (cause instanceof DecryptionError) {
     return method === 'passphrase'
       ? 'That passphrase does not open this archive. It needs the passphrase of the vault that was reset, not your current one.'

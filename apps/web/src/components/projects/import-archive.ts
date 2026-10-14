@@ -4,15 +4,16 @@ import type { OpenedArchive, OpenedEnvironment } from '@xecret/core/vault-archiv
 import {
   clientSecretIo,
   fetchEnvironmentKeys,
+  fetchRecipients,
   modeIsAllowed,
   modePinKey,
   openEnvironmentKeys,
   readModePins,
   recordModePin,
-  serverSecretIo,
 } from '@/components/envkeys';
 import type { SecretIo } from '@/components/envkeys';
 import { readVaultKeys } from '@/components/vault/key-store';
+import { errorMessage } from '@/lib/api';
 import type { ImportPlanResponse } from '@/components/secrets/types';
 
 /**
@@ -22,11 +23,17 @@ import type { ImportPlanResponse } from '@/components/secrets/types';
  * The archive is opened in this tab with the passphrase or a recovery code that
  * opened it; neither ever leaves the browser. Each target environment is then
  * written through exactly the path the dashboard's own import uses
- * (`SecretIo.runImport`): for an end-to-end-encrypted environment that path
+ * (`SecretIo.runImport`), which for an end-to-end-encrypted environment
  * encrypts every value here, under that environment's current key, before any
- * request exists — so nothing readable reaches the server. A `server`-mode
- * environment is the existing exception, as it is for every write to one: its
- * values travel to the server, which encrypts them under its own envelope.
+ * request exists — so nothing readable reaches the server.
+ *
+ * ── Only into end-to-end-encrypted environments ──
+ * Every value in an archive came out of an `e2ee` environment: the archive is a
+ * source that says "end to end", and it is pinned like one. A `server`-mode
+ * target would send the values to the server readable, so it is not offered —
+ * shown with its mode and refused, never confirmed past. An environment whose
+ * mode this browser has seen as `e2ee` and the server now calls `server` is
+ * refused as a downgrade, as everywhere (`pins.ts`).
  *
  * ── Who may write ──
  * Whatever the server says. Each import is an ordinary import request,
@@ -48,24 +55,132 @@ export interface ProjectEnvironment {
   encryptionMode: string;
 }
 
+/** Why a target environment cannot take an import. */
+export type TargetUnavailable =
+  /** This tab holds no vault keys. */
+  | 'locked'
+  /** The account holds no grant, and somebody else does: a teammate can share it. */
+  | 'no-key'
+  /** Nobody holds a grant: the key is gone for good. */
+  | 'nobody-holds'
+  /** The server says `server` for an environment this browser saw as `e2ee`. */
+  | 'downgraded'
+  /** Server-side encryption: the values would reach the server readable. */
+  | 'server-mode'
+  /** The environment's key state could not be read. */
+  | 'failed';
+
+/** One environment of this project, as an import target. */
+export type TargetState =
+  | { status: 'ready'; environmentId: string; io: SecretIo }
+  | {
+      status: 'unavailable';
+      environmentId: string | null;
+      reason: TargetUnavailable;
+      /** For `failed`: the request's own message. */
+      detail?: string;
+    };
+
 /**
- * The default mapping: an archive environment goes to the environment of the
- * same slug **only** when it came from this very project in this very
- * organisation. Anything else starts as "don't import" — putting another
- * project's production values into this one's because both are called
- * `production` is a default nobody should have to notice and undo.
+ * The write path for one environment of this project, exactly as the editor
+ * builds it — the mode pin included — or why there is none.
+ */
+export async function ioForEnvironment(context: {
+  orgSlug: string;
+  orgId: string;
+  projectSlug: string;
+  envSlug: string;
+}): Promise<TargetState> {
+  let keys: Awaited<ReturnType<typeof fetchEnvironmentKeys>>;
+  try {
+    keys = await fetchEnvironmentKeys(context);
+  } catch (cause) {
+    return {
+      status: 'unavailable',
+      environmentId: null,
+      reason: 'failed',
+      detail: errorMessage(cause),
+    };
+  }
+  const environmentId = keys.environmentId;
+
+  const pin = modePinKey(context);
+  if (!modeIsAllowed(readModePins(), pin, keys.encryptionMode).allowed) {
+    return { status: 'unavailable', environmentId, reason: 'downgraded' };
+  }
+  recordModePin(pin, keys.encryptionMode);
+
+  if (keys.encryptionMode !== 'e2ee') {
+    return { status: 'unavailable', environmentId, reason: 'server-mode' };
+  }
+
+  const opened = await openEnvironmentKeys(keys, readVaultKeys());
+  if (opened.status === 'open') {
+    return { status: 'ready', environmentId, io: clientSecretIo(context, opened.material) };
+  }
+  if (opened.reason === 'locked') return { status: 'unavailable', environmentId, reason: 'locked' };
+  if (opened.reason === 'pending' && (await nobodyHoldsKey(context))) {
+    return { status: 'unavailable', environmentId, reason: 'nobody-holds' };
+  }
+  return { status: 'unavailable', environmentId, reason: 'no-key' };
+}
+
+/**
+ * Whether no principal holds a grant for this environment's key: a solo owner
+ * after a reset, typically. Asked only when this account holds none; `false`
+ * when the answer is not ours to read, so the sentence falls back to "ask a
+ * teammate" rather than claiming the key is lost.
+ */
+async function nobodyHoldsKey(context: {
+  orgSlug: string;
+  projectSlug: string;
+  envSlug: string;
+}): Promise<boolean> {
+  try {
+    const { recipients } = await fetchRecipients(context);
+    return recipients.every((recipient) => !recipient.holdsGrant);
+  } catch {
+    return false;
+  }
+}
+
+/** What to say about a target that cannot take an import. */
+export function describeTarget(state: Extract<TargetState, { status: 'unavailable' }>): string {
+  switch (state.reason) {
+    case 'locked':
+      return 'Unlock your vault, then try again.';
+    case 'no-key':
+      return 'You don’t hold this environment’s key yet — ask a teammate to share it.';
+    case 'nobody-holds':
+      return 'Nobody can open this environment’s key any more. Create a new environment and import into it.';
+    case 'downgraded':
+      return 'This environment changed its encryption mode since this browser last saw it, so nothing will be sent.';
+    case 'server-mode':
+      return 'Server-encrypted. An archive is imported only into an end-to-end encrypted environment, so its values never reach the server readable.';
+    case 'failed':
+      return state.detail ?? 'This environment could not be checked.';
+  }
+}
+
+/**
+ * The default mapping: an archive environment goes to the environment of this
+ * project with **the same id** — the very environment it came from — and only
+ * when that environment can take the import now. Anything else starts as
+ * "don't import": slugs repeat across projects, and putting another project's
+ * production values into this one's because both are called `production` is a
+ * default nobody should have to notice and undo.
  */
 export function defaultMapping(
   archive: OpenedArchive,
-  target: { orgSlug: string; projectSlug: string; environments: readonly ProjectEnvironment[] },
+  targets: readonly { slug: string; state: TargetState }[],
 ): ArchiveMapping {
-  const slugs = new Set(target.environments.map((environment) => environment.slug));
   const mapping: ArchiveMapping = {};
   for (const environment of archive.environments) {
-    const sameProject =
-      environment.orgSlug === target.orgSlug && environment.projectSlug === target.projectSlug;
-    mapping[environment.environmentId] =
-      sameProject && slugs.has(environment.environmentSlug) ? environment.environmentSlug : null;
+    const same = targets.find(
+      (target) =>
+        target.state.status === 'ready' && target.state.environmentId === environment.environmentId,
+    );
+    mapping[environment.environmentId] = same?.slug ?? null;
   }
   return mapping;
 }
@@ -105,39 +220,6 @@ export function summarise(environment: OpenedEnvironment): EnvironmentSummary {
     if (secret.note !== null) summary.notes += 1;
   }
   return summary;
-}
-
-export type IoResult =
-  | { status: 'ready'; io: SecretIo }
-  | { status: 'unavailable'; reason: 'locked' | 'no-key' | 'downgraded' };
-
-/**
- * The write path for one environment of this project, exactly as the editor
- * builds it — the mode pin included. A `server` answer from an environment this
- * browser has seen as end-to-end encrypted is refused, not obeyed: an import is
- * the worst moment to be told to send plaintext (`pins.ts`).
- */
-export async function ioForEnvironment(context: {
-  orgSlug: string;
-  orgId: string;
-  projectSlug: string;
-  envSlug: string;
-}): Promise<IoResult> {
-  const keys = await fetchEnvironmentKeys(context);
-
-  const pin = modePinKey(context);
-  if (!modeIsAllowed(readModePins(), pin, keys.encryptionMode).allowed) {
-    return { status: 'unavailable', reason: 'downgraded' };
-  }
-  recordModePin(pin, keys.encryptionMode);
-
-  if (keys.encryptionMode !== 'e2ee') return { status: 'ready', io: serverSecretIo(context) };
-
-  const opened = await openEnvironmentKeys(keys, readVaultKeys());
-  if (opened.status !== 'open') {
-    return { status: 'unavailable', reason: opened.reason === 'locked' ? 'locked' : 'no-key' };
-  }
-  return { status: 'ready', io: clientSecretIo(context, opened.material) };
 }
 
 /**
