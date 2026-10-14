@@ -622,6 +622,8 @@ describe('every declared metadata field survives sanitisation', () => {
       addonName: 'saml',
       limitName: 'projects',
       seatCount: 12,
+      partCount: 2,
+      environmentCount: 6,
       operator: 'ops-alice',
       source: 'dashboard',
     });
@@ -665,6 +667,8 @@ describe('every declared metadata field survives sanitisation', () => {
       addonName: 'saml',
       limitName: 'projects',
       seatCount: 12,
+      partCount: 2,
+      environmentCount: 6,
       operator: 'ops-alice',
       source: 'dashboard',
     });

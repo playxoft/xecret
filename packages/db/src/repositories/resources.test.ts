@@ -641,7 +641,23 @@ describe('destroying a vault destroys every key sealed to it', () => {
     // the vault this destroyed.
     expect(sql).toMatch(/update "sessions"/);
 
-    for (const statement of statements) {
+    // Retained before anything is deleted (P23): the copy is the first write,
+    // so there is no point in the transaction at which the live vault is gone
+    // and the retained one not yet written.
+    const firstWrite = statements.findIndex((statement) =>
+      /^(insert|update|delete)/i.test(statement.sql.trim()),
+    );
+    expect(statements[firstWrite]?.sql).toMatch(/insert into "retained_vaults"/);
+    expect(sql.indexOf('insert into "retained_vaults"')).toBeLessThan(
+      sql.indexOf('delete from "user_keys"'),
+    );
+
+    // Every destructive statement is scoped to this account. The inserts into
+    // the retained tables name the retained vault instead, which is the row the
+    // first of them created for this account.
+    for (const statement of statements.filter((each) =>
+      /^(update|delete)/i.test(each.sql.trim()),
+    )) {
       expect(statement.params).toContain(USER_ID);
     }
   });

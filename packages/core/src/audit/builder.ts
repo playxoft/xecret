@@ -448,6 +448,12 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   if (metadata.holderCount !== undefined && Number.isFinite(metadata.holderCount)) {
     clean.holderCount = metadata.holderCount;
   }
+  if (metadata.partCount !== undefined && Number.isFinite(metadata.partCount)) {
+    clean.partCount = metadata.partCount;
+  }
+  if (metadata.environmentCount !== undefined && Number.isFinite(metadata.environmentCount)) {
+    clean.environmentCount = metadata.environmentCount;
+  }
 
   // Closed unions of literals; there is nothing to sanitise.
   if (metadata.source !== undefined) clean.source = metadata.source;

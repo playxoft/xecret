@@ -13,3 +13,4 @@ export * from './tokens';
 export * from './audit';
 export * from './billing';
 export * from './reauth';
+export * from './retained-vaults';

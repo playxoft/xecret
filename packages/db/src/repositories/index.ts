@@ -62,6 +62,30 @@ export type {
 } from './sessions';
 
 export {
+  findRetainedRecoveryWrap,
+  listRetainedVaults,
+  loadRetainedVault,
+  purgeExpiredRetainedVaults,
+  recordRetainedRecoveryAttempt,
+  restoreRetainedGrants,
+  retainVaultForReset,
+} from './retained-vaults';
+export type {
+  PurgedRetainedVault,
+  RestoredGrantSeed,
+  RestoreResult,
+  RestoreSkipReason,
+  RestoreTarget,
+  RetainedGrantRecord,
+  RetainedVaultMaterial,
+  RetainedVaultReceipt,
+  RetainedVaultSummary,
+} from './retained-vaults';
+
+export { listArchiveGrants, listArchiveSecrets, loadArchiveVault } from './vault-archive';
+export type { ArchiveGrantRecord, ArchiveSecretRecord, ArchiveVaultRecord } from './vault-archive';
+
+export {
   changePassphrase,
   completeRecovery,
   createVault,
