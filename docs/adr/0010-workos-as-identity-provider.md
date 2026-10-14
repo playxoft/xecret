@@ -366,6 +366,10 @@ it, and an archive of the account's still-encrypted secrets emailed to its addre
 reset happens. None of it is built in this change, and P23 records its own risks, among them
 that whoever reads the inbox receives that archive and can attack the passphrase offline.
 
+*P23 has since built it* (2026-10-12): the reset now emails the escape archive after the
+proof is spent and before anything changes, then retains the vault for seven days — migration
+0020, ADR 0009 trade-off 6, spec §14, and threat model T11 and T12.
+
 ### Logout, and the AuthKit session it leaves behind
 
 `DELETE /api/auth/session` is unchanged: CSRF-checked, revokes the row, clears both cookies.
@@ -430,7 +434,7 @@ nothing added for WorkOS, because the browser only navigates there.
   setting, not a migration.
 - **The escape archive and the seven-day recoverable reset** (follow-up P23). The archive is
   emailed to the account's address when the reset happens, not offered as a download before
-  it, and no waiting period comes before a reset.
+  it, and no waiting period comes before a reset. Built in P23.
 - **A provider that is not WorkOS**, for self-hosters who want none.
 - **Decommissioning `users.firebase_uid`.** It is nullable, read and written by nothing, and
   kept as the import's join key and the rollback until a deliberate migration drops it.

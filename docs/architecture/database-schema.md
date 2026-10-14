@@ -822,7 +822,16 @@ audit_logs — no FKs by design; references are soft
       organizations.workos_org_id and sso_required — additive, nothing dropped
 0019  reauthentications — the vault reset's re-authentication, its user index and the
       application role's grant — additive
+0020  retained vaults (retained_vaults, retained_vault_wraps, retained_vault_grants) —
+      a reset vault kept seven days; CHECK pins the window, triggers refuse an early
+      delete and any rewrite of key material; the application role's grants — additive
 ```
+
+Migration 0020 (P23) is additive: three new tables nothing older reads. Apply it before
+deploying the code that resets a vault, which writes them in the reset's transaction; the
+reverse order fails only the reset, with a 500. The triggers compare against the database's
+own `now()`, so no application clock can push a delete earlier than seven days after the
+reset, and nothing in the application issues one before then.
 
 Migration 0018 is the storage half of the move from Firebase to WorkOS (ADR 0010) and drops
 nothing: `firebase_uid` stays, nullable, until a decommission migration — which must replace

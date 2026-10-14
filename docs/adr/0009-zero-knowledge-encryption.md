@@ -306,6 +306,26 @@ The debts are re-queued in the same transaction, and `GET …/keys` reports the 
 independently as `missingGrants`, derived from the rows rather than from a record of what
 somebody meant to do.
 
+**Amended by P23 (2026-10-12): a reset is recoverable for seven days, and leaves an archive.**
+By the product owner's decision, a reset no longer destroys the vault. It moves the key row,
+the live passphrase wrap, the unused recovery wraps and every member grant into retained tables
+(migration 0020), where for seven days the old passphrase or a recovery code can open it in the
+browser and re-seal its environment keys into the account's *current* vault — a merge, never a
+swap, so nothing sealed to the new vault is touched and the account ends with one working
+hierarchy. Nobody can delete a retained vault early: a CHECK pins the window to 168 hours and
+triggers refuse the DELETE by the database's own clock; an hourly Cron Trigger purges it after.
+And before the reset, the server emails the account an **escape archive** — every ciphertext the
+vault could open, still sealed, with the wraps that open it (spec §14) — openable offline by
+`xecret vault open-archive` or imported into a project in the browser.
+
+None of this weakens the sentence this trade-off opens with. The retained tables hold exactly
+what `user_keys`, `user_key_wraps` and `env_key_grants` held — public keys, salts and
+ciphertext under keys the server has never had — and recovery still needs the passphrase or a
+code, checked nowhere but in the browser. There is still no escrow and no support-side reset.
+What the archive does change is where an offline-attackable copy of the wrapped hierarchy lives:
+the account's mailbox, permanently. The owner accepted that explicitly; threat model T12 states
+it.
+
 **8. Encryption mode is pinned, not proved.** An environment's `encryption_mode` is a column,
 not a signed statement, and every client branches on it: a `server` answer means the dashboard
 puts plaintext values in request bodies and the CLI injects whatever it is handed into a child
