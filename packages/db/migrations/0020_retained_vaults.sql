@@ -6,11 +6,11 @@
 -- recovery wrap, and every environment-key grant the account held as a member.
 -- The account is free to set up a new vault at once. For seven days the old one
 -- can be recovered — the old passphrase or a recovery code opens it in the
--- browser, which re-seals its environment keys to the new vault — and nobody can
--- delete it. Then the scheduled purge removes it.
+-- browser, which re-seals its environment keys to the new vault — and nothing in
+-- xecret can delete it. Then the scheduled purge removes it.
 --
 -- ── The window is the database's to keep, not the application's ──
--- "Nobody can permanently delete it during the window" is enforced here, so no
+-- "Nothing in xecret can delete it during the window" is enforced here, so no
 -- route added later, no bug, and no injected statement running as the
 -- application role can shorten it:
 --
@@ -24,8 +24,8 @@
 --                                  the future, by the database's own clock
 --   retained_vaults_not_in_future  a vault is retained now: retained_at may be
 --                                  at most five minutes ahead of the database's
---                                  clock, so nobody can insert a row that stays
---                                  undeletable for as long as they like
+--                                  clock, so no insert can make a row that stays
+--                                  undeletable for as long as its author likes
 --   …and the same refusal on the two child tables, so a vault cannot be
 --   hollowed out row by row either.
 --

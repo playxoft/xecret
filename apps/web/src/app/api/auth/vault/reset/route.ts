@@ -70,8 +70,8 @@ import {
  * (`server/vault-archive-service.ts`), and the reset then retains exactly the
  * vault that was archived (a vault set up again in between is a 409). The old
  * vault is **retained for seven days**, recoverable with the old passphrase or
- * a recovery code and undeletable by anyone, and is purged by the scheduled job
- * after that (migration 0020).
+ * a recovery code; nothing in xecret deletes it early, and the scheduled job
+ * purges it after that (migration 0020).
  *
  * ── Never without the archive, silently (owner decision) ──
  * Checked before the proof is spent, from a survey that sizes the archive in

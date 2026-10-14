@@ -842,8 +842,8 @@ deploying the code that uses it** — the deployment-check skill lists it. The r
 worse than a plain 500, because the reset does its irreversible-looking part first: a vault
 reset **emails the archive and then fails** to retain the vault, so the person holds the email,
 nothing was reset, and their reset proof is spent (a retry needs a new sign-in and code);
-Settings → Security fails for every unlocked account, because its "Recover a previous vault"
-card reads the retained tables; and the hourly purge Cron Trigger fails every run. The triggers
+Settings → Security shows an error in place of its "Recover a previous vault" card for every
+unlocked account, because the card reads the retained tables; and the hourly purge Cron Trigger fails every run. The triggers
 compare against the database's own `now()` with a pinned `search_path` and qualified table
 names, so neither an application clock nor a session-local table can push a delete earlier
 than seven days after the reset; the application role may update only the recovery

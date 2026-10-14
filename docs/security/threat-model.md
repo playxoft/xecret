@@ -386,7 +386,12 @@ attacker set up a vault of their own after the reset, the victim resets again an
 own; then recovers the original vault with its passphrase. Each reset retains its own vault for
 its own seven days, so the second reset does not touch the first retained vault — it only adds
 the attacker's to the list. The user docs walk through this ("If somebody else reset your
-vault"). The archive the attacker's reset emailed is treated as exposed (T12).
+vault"). **Recovery may have to wait up to an hour**: between the hostile reset
+and the victim's own, which locks every session the account has, an attacker
+unlocked into a vault of their own can send wrong proofs at the original's
+`…/restore` and run its lockout to the maximum (`nextUnlockFailure`, one hour).
+The window is not shortened by it, and the lockout can never outlast the purge.
+The archive the attacker's reset emailed is treated as exposed (T12).
 
 **Residual risk:** **Medium** without MFA — an unlocked laptop with a live Google or
 identity-provider session and an open inbox, or full control of the inbox alone, passes both
@@ -522,3 +527,4 @@ customer's own systems after legitimate secret delivery.
 | 2026-10-14 | — | T11, round 2: lock one checks the access token's `auth_time` against the flow's start (the stripped-`max_age=0` path closed); code requests capped at three per attempt |
 | 2026-10-14 | — | P23 built: T11 restated — a reset retains the vault for seven days, recoverable and undeletable, then purged hourly; T12 added — the emailed escape archive as a permanent offline target, the owner's accepted risk, and what it does and does not concede |
 | 2026-10-14 | — | P23, review round 1: owner decision recorded — never reset without the archive silently (production without mail refuses; too large needs an explicit choice); T11 gains the way back from a hostile reset and loses "nobody can delete it"; T12 corrected on locked versus unlocked sessions and brief inbox control, states the retained vault is offline-attackable by any unlocked session and its lockout is abuse control, and adds rotating environment keys and the import's preview and e2ee-only targets |
+| 2026-10-14 | — | P23, review round 2: T11 states that recovery after a hostile reset may wait up to an hour (the attacker can run the retained vault's lockout to its maximum before the victim's reset locks their sessions); a retained vault can no longer be inserted dated in the future; a locked session's reset preflight no longer reveals the archive's counts or size |

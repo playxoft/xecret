@@ -236,8 +236,9 @@ table its database does not have fails at request time, not at deploy time.
   - a **vault reset emails the archive and then fails** to retain the vault —
     the person has the email, nothing was reset, and their reset proof is spent,
     so they must sign in again and get a new code to retry;
-  - **Settings → Security fails** for every unlocked account, because the
-    "Recover a previous vault" card reads the retained tables;
+  - **Settings → Security shows an error** in place of the "Recover a
+    previous vault" card for every unlocked account, because the card reads the
+    retained tables (the rest of the page works);
   - the **hourly Cron Trigger fails every run** until the tables exist.
 
   `check:deploy` does not read the database, so it cannot warn about this:

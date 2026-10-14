@@ -22,7 +22,7 @@ import { users } from './identity';
  * See migration 0020 for the whole argument. The short version: a reset moves
  * the vault here instead of deleting it, the account sets up a new one at once,
  * and for seven days the old passphrase or a recovery code can bring the old
- * vault's environment keys back. **Nobody can delete one early** — the database
+ * vault's environment keys back. **Nothing in xecret can delete one early** — the database
  * refuses a DELETE while `purge_after` is in the future, refuses any change to
  * the key material or the window, and pins the window to exactly seven days
  * with a CHECK. The scheduled purge removes it afterwards.

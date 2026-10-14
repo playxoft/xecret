@@ -17,8 +17,9 @@ old one.
 
 ## What a reset does
 
-You start a reset from the unlock screen, under **I have lost my passphrase and
-every recovery code**. You sign in again, then enter a code we email you. Then:
+You start a reset from the unlock screen: **Forgot your passphrase?**, then
+**I have lost all five codes**. You sign in again, then enter a code we email
+you. Then:
 
 1. **We email you an archive** of your secrets, still encrypted (see below).
 2. **We reset your vault.** You set up a new one straight away, with a new
@@ -50,7 +51,7 @@ The archive is a `.zip` file attached to an email sent to your account's address
 It holds every secret in the end-to-end encrypted environments your old vault
 could open — **still encrypted**, exactly as xecret stored them — plus the
 organisation, project, environment and secret **names**, in plain text. A large
-vault arrives as several emails, each with one part; each part opens on its own.
+vault arrives as two emails, each with one part; each part opens on its own.
 
 Only the old vault's master passphrase, or one of its unused recovery codes, can
 open it.
@@ -107,7 +108,10 @@ would need both. If you get a reset email you did not ask for:
    affected by the second reset: each reset keeps its own old vault for its own
    seven days.
 3. Recover your original vault from **Settings → Security → Recover a previous
-   vault** with your passphrase.
+   vault** with your passphrase. Somebody who held your account in between may
+   have spent its wrong-guess allowance on purpose, so recovering can be refused
+   for a while — **up to an hour** — before it works. The seven days are not
+   shortened by it.
 4. Treat the archive that email carried as exposed, and rotate environment keys
    as described above.
 
@@ -125,11 +129,14 @@ secrets back into a project:
    it goes into, or **Don't import**. Each of this project's environments is
    shown with its encryption mode. An archive environment starts matched only to
    the environment it came from — the same environment, not just the same name —
-   and only when you can write to it now.
+   and only when your vault can open that environment's key now. Whether you may
+   write to it is checked when you import.
 5. Choose what happens when a secret with the same name already exists: keep the
    existing value, or replace it with the archive's.
-6. **Preview**. The preview lists every secret it would write, with each value
-   hidden until you reveal it. **Import** is available only after it.
+6. **Preview**. The preview lists every secret, with each value hidden until
+   you reveal it, and marks the ones that would not be written — a name that
+   already exists, when you chose to keep the existing value. **Import** is
+   available only after it.
 
 Each value is encrypted in your browser with the target environment's current
 key before it is sent, so xecret never sees it. That is why only end-to-end

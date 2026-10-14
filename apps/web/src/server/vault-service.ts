@@ -773,7 +773,7 @@ export async function revokeDevicePins(
  * ── Retained for seven days (P23) ──
  * The old vault is not destroyed: the repository moves it to the retained
  * tables in the same transaction, where the old passphrase or a recovery code
- * can bring its environments back for seven days and nobody can delete it.
+ * can bring its environments back for seven days and nothing in xecret deletes it.
  *
  * Returns what was retained, or `null` when there was no vault, so the caller
  * can answer "nothing to reset" rather than reporting a reset that did not

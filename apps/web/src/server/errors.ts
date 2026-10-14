@@ -348,9 +348,9 @@ export const errors = {
       'conflict',
       reason === 'too-large'
         ? 'Your vault is too large to email as an archive, so nothing was reset. To reset it ' +
-            'anyway, choose “Reset without the emailed archive” and start again.'
+            'anyway, choose “Reset without the emailed archive” and confirm again.'
         : 'This installation has no email set up, so no archive can be sent and nothing was ' +
-            'reset. To reset anyway, choose “Reset without the emailed archive” and start again.',
+            'reset. To reset anyway, choose “Reset without the emailed archive” and confirm again.',
       { logDetail: `vault archive ${reason}` },
     ),
 
