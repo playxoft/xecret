@@ -428,8 +428,13 @@ function refusalFor(services: ServiceContext, cause: unknown, call: string): unk
   }
   if (cause instanceof IdentityVerificationError) {
     log.warn(`WorkOS refused ${call}`, { reason: cause.reason });
+    // The person is looking at their authenticator app, not their inbox: a
+    // sentence about the email would send them to the wrong place. The step's
+    // pending token stays good, so the same screen can take the next code.
     return errors.forbidden(
-      'That code is not right, or it has expired. Check the email, or send a new code.',
+      call === 'authenticateWithTotp'
+        ? 'That authenticator code is not right. Enter the current code from your app.'
+        : 'That code is not right, or it has expired. Check the email, or send a new code.',
     );
   }
   return cause;

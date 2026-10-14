@@ -702,6 +702,47 @@ describe('the authenticator step WorkOS may ask for', () => {
     },
   );
 
+  it('answers a wrong authenticator code in the authenticator’s words, spends a guess, and takes the next code', async () => {
+    const who = await account();
+    await signedInFreshly(who);
+    mfaChallenge();
+    const { mfaToken } = (await (await verify(who, '123456')).json()) as { mfaToken: string };
+    workos.authenticateWithTotp.mockRejectedValueOnce(
+      Object.assign(new Error('Invalid code'), { status: 400, code: 'invalid_one_time_code' }),
+    );
+
+    const wrong = await verifyTotp(who, '000000', mfaToken);
+
+    expect(wrong.status).toBe(403);
+    expect((await errorOf(wrong)).message).toBe(
+      'That authenticator code is not right. Enter the current code from your app.',
+    );
+    expect((await attempt(who))?.code_attempts).toBe(2);
+
+    workos.authenticateWithTotp.mockResolvedValueOnce({
+      user: { id: who.workosUserId, email: who.email, emailVerified: true },
+      accessToken: 'at',
+      refreshToken: 'rt',
+      authenticationMethod: 'MagicAuth',
+    });
+    const retried = await verifyTotp(who, '654321', mfaToken);
+
+    expect(retried.status).toBe(200);
+    expect(((await retried.json()) as { reauthProof: string }).reauthProof).toMatch(/^xrp_live_/);
+    expect((await attempt(who))?.code_attempts).toBe(3);
+  });
+
+  it('still answers a wrong emailed code in the email’s words', async () => {
+    const who = await account();
+    await signedInFreshly(who);
+    wrongCode();
+
+    const response = await verify(who, '123456');
+
+    expect(response.status).toBe(403);
+    expect((await errorOf(response)).message).toMatch(/Check the email/);
+  });
+
   it('refuses an authenticator code with a token this attempt was not given, without asking WorkOS', async () => {
     const who = await account();
     await signedInFreshly(who);
