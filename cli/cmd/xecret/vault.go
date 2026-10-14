@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
@@ -108,9 +110,9 @@ func (o *archiveOpener) run(args []string) error {
 		return fmt.Errorf("unknown format %q — use env, json, yaml, shell or docker", *format)
 	}
 
-	data, err := os.ReadFile(positional[0])
+	data, err := readArchiveBytes(positional[0])
 	if err != nil {
-		return fmt.Errorf("could not read %s", positional[0])
+		return err
 	}
 	doc, err := vaultarchive.ReadFile(data)
 	if err != nil {
@@ -172,23 +174,70 @@ func selectEnvironments(all []vaultarchive.Environment, only string) ([]vaultarc
 		}
 	}
 	if len(matched) == 0 {
-		return nil, fmt.Errorf("the archive has no environment %q — run with --list to see what it holds", only)
+		return nil, fmt.Errorf("the archive has no environment %q — run with --list to see what it holds", printable(only))
 	}
 	return matched, nil
 }
 
 func environmentPath(org, project, environment string) string {
-	return org + "/" + project + "/" + environment
+	return printable(org + "/" + project + "/" + environment)
+}
+
+// maxArchiveFileBytes bounds what is read into memory before anything is
+// parsed: the largest archive.json a reader accepts (§14.1), plus room for the
+// ZIP around it and a README.
+const maxArchiveFileBytes = vaultarchive.MaxDocumentBytes + 16*1024*1024
+
+// readArchiveBytes reads at most maxArchiveFileBytes, and refuses a larger file
+// rather than reading it whole: a file of any size can be named here.
+func readArchiveBytes(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("could not read %s", printable(path))
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxArchiveFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("could not read %s", printable(path))
+	}
+	if len(data) > maxArchiveFileBytes {
+		return nil, fmt.Errorf("%s is larger than any vault archive", printable(path))
+	}
+	return data, nil
+}
+
+// printable renders a label from an archive so it can be printed safely: every
+// rune that is not a printable, ordinary character — control characters, line
+// and paragraph separators, bidirectional overrides, invisible format
+// characters — is written as \u{XXXX} instead of being sent to the terminal.
+// The reader's grammar already refuses most of these (§14.4); this is the
+// second wall, applied to every label this command prints wherever it came from.
+func printable(value string) string {
+	var out strings.Builder
+	for _, r := range value {
+		if r == utf8.RuneError || !unicode.IsPrint(r) || unicode.Is(unicode.Cf, r) || r == 0x2028 || r == 0x2029 {
+			fmt.Fprintf(&out, "\\u{%04X}", r)
+			continue
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
 }
 
 // readSecret takes the passphrase or code without echoing it, and never from a
 // flag — a flag would put it in shell history and the process table.
+//
+// --passphrase-stdin reads a pipe; when stdin turns out to be a terminal after
+// all, it is read the hidden way, so the flag never makes typing echo. The
+// bytes read are overwritten once the string is made — Go strings cannot be
+// wiped, but the buffer behind them can.
 func (o *archiveOpener) readSecret(prompt string, fromStdin bool) (string, error) {
-	if fromStdin {
+	if fromStdin && !o.stdinIsTTY() {
 		data, err := io.ReadAll(o.stdin)
 		if err != nil {
 			return "", errors.New("could not read from stdin")
 		}
+		defer wipe(data)
 		value := strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
 		if value == "" {
 			return "", errors.New("stdin was empty")
@@ -201,6 +250,7 @@ func (o *archiveOpener) readSecret(prompt string, fromStdin bool) (string, error
 	fmt.Fprint(o.stderr, prompt)
 	raw, err := o.readPassword()
 	fmt.Fprintln(o.stderr)
+	defer wipe(raw)
 	if err != nil {
 		return "", errors.New("could not read from the terminal")
 	}
@@ -208,6 +258,13 @@ func (o *archiveOpener) readSecret(prompt string, fromStdin bool) (string, error
 		return "", errors.New("nothing was entered")
 	}
 	return string(raw), nil
+}
+
+// wipe overwrites a buffer that held a passphrase or a recovery code.
+func wipe(buffer []byte) {
+	for i := range buffer {
+		buffer[i] = 0
+	}
 }
 
 func describeOpenFailure(err error, recoveryCode bool) error {
@@ -226,7 +283,7 @@ func describeOpenFailure(err error, recoveryCode bool) error {
 }
 
 func (o *archiveOpener) describe(doc *vaultarchive.Document, environments []vaultarchive.Environment) {
-	fmt.Fprintf(o.stdout, "Vault archive made %s for account %s", doc.CreatedAt, doc.UserID)
+	fmt.Fprintf(o.stdout, "Vault archive made %s for account %s", printable(doc.CreatedAt), printable(doc.UserID))
 	if doc.Parts > 1 {
 		fmt.Fprintf(o.stdout, " (part %d of %d)", doc.Part, doc.Parts)
 	}
@@ -236,10 +293,10 @@ func (o *archiveOpener) describe(doc *vaultarchive.Document, environments []vaul
 		if environment.IsProduction {
 			production = "  [production]"
 		}
-		fmt.Fprintf(o.stdout, "%s / %s / %s%s\n", environment.OrgName, environment.ProjectName, environment.EnvironmentName, production)
+		fmt.Fprintf(o.stdout, "%s / %s / %s%s\n", printable(environment.OrgName), printable(environment.ProjectName), printable(environment.EnvironmentName), production)
 		fmt.Fprintf(o.stdout, "  %s — %d secret(s)\n", environmentPath(environment.OrgSlug, environment.ProjectSlug, environment.EnvironmentSlug), len(environment.Secrets))
 		for _, secret := range environment.Secrets {
-			fmt.Fprintf(o.stdout, "    %s\n", secret.Name)
+			fmt.Fprintf(o.stdout, "    %s\n", printable(secret.Name))
 		}
 	}
 }
@@ -262,7 +319,10 @@ func lineFormat(format string) bool {
 
 // notesBlock renders an environment's notes as comment lines, for the
 // line-oriented formats. A note is free text and may span lines; every line is
-// commented, so no note can ever be read as an assignment.
+// commented, so no note can ever be read as an assignment, and each is passed
+// through printable, so none can carry a control sequence to a terminal. A
+// value is printed exactly as it is — producing it is the command's purpose —
+// but a note is commentary beside it.
 func notesBlock(environment vaultarchive.OpenedEnvironment) string {
 	var out strings.Builder
 	for _, secret := range environment.Secrets {
@@ -277,7 +337,7 @@ func notesBlock(environment vaultarchive.OpenedEnvironment) string {
 			if index > 0 {
 				label = strings.Repeat(" ", len(label))
 			}
-			fmt.Fprintf(&out, "#   %s%s\n", label, strings.ReplaceAll(line, "\r", ""))
+			fmt.Fprintf(&out, "#   %s%s\n", label, printable(strings.TrimSuffix(line, "\r")))
 		}
 	}
 	return out.String()
@@ -337,18 +397,31 @@ func pathSegment(value string) string {
 	return cleaned
 }
 
+// A split archive's parts are opened one run at a time, and each holds
+// different secrets of the same environments. So a part's files are named for
+// the part — production.part-2-of-3.env — and two parts never write one file:
+// the second run would otherwise refuse, or with --force replace, the first.
 func (o *archiveOpener) writeFiles(opened *vaultarchive.Opened, dir, format string, force bool) error {
 	extension := map[string]string{"env": ".env", "json": ".json", "yaml": ".yaml", "shell": ".sh", "docker": ".docker.env"}[format]
+	written := map[string]bool{}
 
 	for _, environment := range opened.Environments {
 		folder := filepath.Join(dir, pathSegment(environment.OrgSlug), pathSegment(environment.ProjectSlug))
-		path := filepath.Join(folder, pathSegment(environment.EnvironmentSlug)+extension)
+		stem := pathSegment(environment.EnvironmentSlug)
+		if opened.Parts > 1 {
+			stem = fmt.Sprintf("%s.part-%d-of-%d", stem, opened.Part, opened.Parts)
+		}
+		path := filepath.Join(folder, stem+extension)
+		if written[path] {
+			return fmt.Errorf("two environments in this archive would both be written to %s", printable(path))
+		}
+		written[path] = true
 
 		if _, err := os.Stat(path); err == nil && !force {
-			return fmt.Errorf("%s already exists — pass --force to overwrite it", path)
+			return fmt.Errorf("%s already exists — pass --force to overwrite it", printable(path))
 		}
 		if err := os.MkdirAll(folder, 0o700); err != nil {
-			return fmt.Errorf("could not create %s", folder)
+			return fmt.Errorf("could not create %s", printable(folder))
 		}
 
 		document, err := formatSecrets(values(environment), format)
@@ -361,7 +434,7 @@ func (o *archiveOpener) writeFiles(opened *vaultarchive.Opened, dir, format stri
 		if err := writeSecretDocument(path, document); err != nil {
 			return err
 		}
-		fmt.Fprintf(o.stderr, "Wrote %s (mode 0600).\n", path)
+		fmt.Fprintf(o.stderr, "Wrote %s (mode 0600).\n", printable(path))
 	}
 
 	fmt.Fprintln(o.stderr, "warning: those files hold plaintext secrets. Delete them when you have moved the values somewhere safe.")
@@ -377,12 +450,12 @@ func (o *archiveOpener) report(opened *vaultarchive.Opened) error {
 		for _, secret := range environment.Secrets {
 			switch secret.Outcome {
 			case vaultarchive.OutcomeNoKey:
-				noKey = append(noKey, where+" "+secret.Name)
+				noKey = append(noKey, where+" "+printable(secret.Name))
 			case vaultarchive.OutcomeDamaged:
-				damaged = append(damaged, where+" "+secret.Name)
+				damaged = append(damaged, where+" "+printable(secret.Name))
 			}
 			if secret.NoteUnavailable {
-				notes = append(notes, where+" "+secret.Name)
+				notes = append(notes, where+" "+printable(secret.Name))
 			}
 		}
 	}

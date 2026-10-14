@@ -250,3 +250,151 @@ func TestVaultCommandUsage(t *testing.T) {
 		t.Errorf("got %v", err)
 	}
 }
+
+func TestPrintableEscapesEverythingThatIsNotPlainText(t *testing.T) {
+	for input, want := range map[string]string{
+		"Acme Corp":            "Acme Corp",
+		"Café — 日本語 😀":         "Café — 日本語 😀",
+		"line\nforged":         `line\u{000A}forged`,
+		"esc\x1b[2J":           `esc\u{001B}[2J`,
+		"del\x7f":              `del\u{007F}`,
+		"c1\u0085":             `c1\u{0085}`,
+		"sep arator":           `sep\u{2028}arator`,
+		"bidi‮eman":            `bidi\u{202E}eman`,
+		"zero​width":           `zero\u{200B}width`,
+		"bad\xffutf8":          `bad\u{FFFD}utf8`,
+		"tab\there":            `tab\u{0009}here`,
+		"slash/and\\backslash": "slash/and\\backslash",
+	} {
+		if got := printable(input); got != want {
+			t.Errorf("printable(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+// The split vector's parts, written into one --out-dir one run at a time,
+// never overwrite each other: each part's files are named for the part, and
+// between them they hold every secret of the archive.
+func TestSplitPartsIntoOneOutDirKeepEverySecret(t *testing.T) {
+	data, err := os.ReadFile(filepath.FromSlash(archiveVectorsPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		RecoveryCodes []string `json:"recoveryCodes"`
+		Vectors       []struct {
+			ID    string `json:"id"`
+			Input struct {
+				PartsHex []string `json:"partsHex"`
+			} `json:"input"`
+		} `json:"vectors"`
+	}
+	if err := json.Unmarshal(data, &file); err != nil {
+		t.Fatal(err)
+	}
+	var parts []string
+	for _, v := range file.Vectors {
+		if v.ID == "vault-archive/split/fixture" {
+			parts = v.Input.PartsHex
+		}
+	}
+	if len(parts) < 2 {
+		t.Fatal("the split vector has fewer than two parts")
+	}
+
+	dir := t.TempDir()
+	for index, partHex := range parts {
+		bytes, err := hex.DecodeString(partHex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "part.zip")
+		if err := os.WriteFile(path, bytes, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// No --force: a part may never need to replace another part's file.
+		run := runOpener(t, file.RecoveryCodes[0], false, path, "--recovery-code", "--passphrase-stdin", "--out-dir", dir)
+		if run.err != nil && !strings.Contains(run.err.Error(), "damaged") {
+			t.Fatalf("part %d: %v", index+1, run.err)
+		}
+	}
+
+	var production []string
+	err = filepath.WalkDir(filepath.Join(dir, "acme", "payments-api"), func(path string, entry os.DirEntry, err error) error {
+		if err == nil && !entry.IsDir() {
+			production = append(production, filepath.Base(path))
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(production) < 2 {
+		t.Fatalf("production should span parts and so files, got %v", production)
+	}
+	for _, name := range production {
+		if !strings.HasPrefix(name, "production.part-") {
+			t.Errorf("a part's file is not named for its part: %s", name)
+		}
+	}
+
+	all := ""
+	for _, name := range production {
+		content, err := os.ReadFile(filepath.Join(dir, "acme", "payments-api", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		all += string(content)
+	}
+	for _, secret := range []string{"DATABASE_URL=", "EMPTY_FLAG=", "GREETING=", "LEGACY_TOKEN=", "NOTE_UNDER_OLD_KEY="} {
+		if !strings.Contains(all, secret) {
+			t.Errorf("no part wrote %s", secret)
+		}
+	}
+}
+
+func TestOpenArchiveRefusesAFileLargerThanAnyArchive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "huge.zip")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxArchiveFileBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	file.Close()
+
+	run := runOpener(t, "", false, path, "--list")
+	if run.err == nil || !strings.Contains(run.err.Error(), "larger than any vault archive") {
+		t.Errorf("got %v", run.err)
+	}
+}
+
+func TestPassphraseStdinOnATerminalIsReadHiddenAndWiped(t *testing.T) {
+	fixture := loadArchiveFixture(t)
+	var handed []byte
+	var stdout, stderr bytes.Buffer
+	opener := &archiveOpener{
+		stdin:      strings.NewReader("this must not be read"),
+		stdout:     &stdout,
+		stderr:     &stderr,
+		stdinIsTTY: func() bool { return true },
+		readPassword: func() ([]byte, error) {
+			handed = []byte(fixture.passphrase)
+			return handed, nil
+		},
+	}
+
+	err := opener.run([]string{fixture.path, "--passphrase-stdin", "--environment", "staging"})
+	if err != nil {
+		t.Fatalf("got %v", err)
+	}
+	if !strings.Contains(stderr.String(), "input hidden") {
+		t.Error("a terminal on stdin must be read with the hidden prompt, even with --passphrase-stdin")
+	}
+	for _, b := range handed {
+		if b != 0 {
+			t.Fatal("the passphrase buffer was not wiped")
+		}
+	}
+}
