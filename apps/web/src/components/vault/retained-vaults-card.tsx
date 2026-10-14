@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { DecryptionError, RecoveryCodeError } from '@xecret/core/crypto/client';
 import { formatAbsoluteTime, formatRelativeTime, pluralize, toIsoString } from '@/lib/format';
 import { errorMessage } from '@/lib/api';
+import { createGeneration } from '@/lib/generation';
 import {
   Alert,
   Button,
@@ -108,8 +109,11 @@ export function RetainedVaultsCard() {
                 {entry.recoveredAt !== null ? ' · recovered' : ''}
               </span>
             </div>
+            {/* Offered again after a recovery: one that skipped an environment
+                for lost access can be run again if the access comes back
+                inside the window. Nothing already held is written twice. */}
             <Button variant="secondary" onClick={() => setRecovering(entry)}>
-              Recover
+              {entry.recoveredAt !== null ? 'Recover again' : 'Recover'}
             </Button>
           </div>
         ))}
@@ -143,8 +147,12 @@ function RecoverDialog({
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<RecoveryReport | null>(null);
+  // A recovery still running when the dialog closes cannot be called back, so
+  // its answer is ignored: reopening shows a fresh form, never a stale result.
+  const generation = useRef(createGeneration());
 
   function close() {
+    generation.current.end();
     setSecret('');
     setFailure(null);
     setOutcome(null);
@@ -172,17 +180,21 @@ function RecoverDialog({
       credential = { kind: 'passphrase', passphrase: secret };
     }
 
+    const current = generation.current.start();
     setBusy(true);
     setFailure(null);
     try {
       const result = await recoverRetainedVault({ id: entry.id, credential, current: vault.keys });
+      // Recovered is recovered, closed or not: the list has to say so.
+      onRecovered();
+      if (!current()) return;
       setSecret('');
       setOutcome(result);
-      onRecovered();
     } catch (cause) {
+      if (!current()) return;
       setFailure(describeRecoverFailure(cause, method));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }
 

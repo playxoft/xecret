@@ -360,8 +360,10 @@ export function describeSkips(skipped: RecoveryReport['skipped']): string[] {
 
   const lines: string[] = [];
   if (counts['already-held'] > 0) {
+    // Neutral on purpose: a teammate's re-share and an earlier recovery of
+    // this same vault look identical from here.
     lines.push(
-      `${pluralize(counts['already-held'], 'environment')} you already had again — a teammate re-shared ${counts['already-held'] === 1 ? 'it' : 'them'}.`,
+      `${pluralize(counts['already-held'], 'environment')} already in your current vault, so nothing to bring back.`,
     );
   }
   if (counts['no-access'] > 0) {

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 import { DecryptionError, RecoveryCodeError } from '@xecret/core/crypto/client';
 import { ArchiveFormatError, openArchive, readArchiveFile } from '@xecret/core/vault-archive';
@@ -10,6 +10,7 @@ import type {
   VaultArchiveDocument,
 } from '@xecret/core/vault-archive';
 import { errorMessage } from '@/lib/api';
+import { createGeneration } from '@/lib/generation';
 import { formatAbsoluteTime, pluralize } from '@/lib/format';
 import {
   Alert,
@@ -45,6 +46,7 @@ import {
   summarise,
 } from './import-archive';
 import type { ArchiveMapping, ProjectEnvironment, TargetState } from './import-archive';
+import type { ImportPlanItem } from '@/components/secrets/types';
 
 /**
  * "Import archive", on a project (P23).
@@ -64,7 +66,10 @@ import type { ArchiveMapping, ProjectEnvironment, TargetState } from './import-a
  *
  * Closing the dialog drops everything it opened. The values were in this tab's
  * memory only, as JavaScript strings, which cannot be wiped — closing is what
- * makes them unreachable.
+ * makes them unreachable. A step still running when the dialog closes cannot
+ * be cancelled, so it is ignored instead: every step checks, after each await,
+ * that the dialog has not been closed since it started, and a reopened dialog
+ * never shows what a closed one was opening.
  */
 
 const NOT_IMPORTED = '__none__';
@@ -83,6 +88,8 @@ interface TargetResult {
   target: string;
   status: 'imported' | 'previewed' | 'failed';
   message: string;
+  /** For a preview: what the import would do with each name. */
+  plan?: Readonly<Record<string, ImportPlanItem['status']>>;
 }
 
 interface Target {
@@ -117,8 +124,10 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
   // Bumped to remount the file input, which is the only way to clear what a
   // file input holds — so the same file can be picked again after an error.
   const [fileInput, setFileInput] = useState(0);
+  const generation = useRef(createGeneration());
 
   function reset() {
+    generation.current.end();
     setStep({ kind: 'file' });
     setFailure(null);
     setBusy(null);
@@ -137,16 +146,19 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
 
   async function chooseFile(file: File | undefined) {
     if (file === undefined || busy !== null) return;
+    const current = generation.current.start();
     setFailure(null);
     setBusy('reading');
     try {
       const doc = await readArchiveFile(new Uint8Array(await file.arrayBuffer()));
+      if (!current()) return;
       setStep({ kind: 'credential', doc });
     } catch (cause) {
+      if (!current()) return;
       setFailure(cause instanceof ArchiveFormatError ? cause.message : errorMessage(cause));
       setFileInput((n) => n + 1);
     } finally {
-      setBusy(null);
+      if (current()) setBusy(null);
     }
   }
 
@@ -166,17 +178,21 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
       credential = { kind: 'passphrase', passphrase: secret };
     }
 
+    const current = generation.current.start();
     setBusy('opening');
     setFailure(null);
     let archive: OpenedArchive;
     try {
       archive = await openArchive(step.doc, credential, { argon2id: argon2idProvider });
-      setSecret('');
     } catch (cause) {
+      if (!current()) return;
       setFailure(describeOpenFailure(cause, method));
       setBusy(null);
       return;
     }
+    // Closed while Argon2 ran: the opened archive goes nowhere.
+    if (!current()) return;
+    setSecret('');
 
     // Every environment of this project, as a target: its mode, and whether
     // this account can write to it now. Asked once, so the mapping can say
@@ -195,6 +211,7 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
           envSlug: environment.slug,
         }),
       });
+      if (!current()) return;
     }
     setTargets(surveyed);
     setMapping(defaultMapping(archive, surveyed));
@@ -209,6 +226,7 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
       return;
     }
 
+    const current = generation.current.start();
     setBusy(dryRun ? 'previewing' : 'importing');
     setFailure(null);
     const results: TargetResult[] = [];
@@ -250,6 +268,7 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
           target,
           status: dryRun ? 'previewed' : 'imported',
           message: `${pluralize(plan.counts.create, 'new secret')}, ${pluralize(plan.counts.overwrite, 'overwrite')}, ${pluralize(plan.counts.skip + plan.counts.unchanged, 'unchanged or skipped secret')}`,
+          plan: Object.fromEntries(plan.items.map((item) => [item.name, item.status])),
         });
       } catch (cause) {
         results.push({
@@ -261,11 +280,13 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
       }
     }
 
+    // Written is written, closed or not: the project's listing has to show it.
+    if (!dryRun && wrote) props.onImported();
+    if (!current()) return;
     setBusy(null);
     if (dryRun) {
       setPreview(results);
     } else {
-      if (wrote) props.onImported();
       setStep({ kind: 'done', archive: step.archive, results });
     }
   }
@@ -604,18 +625,52 @@ export function ArchiveEnvironmentCard({
               className="flex flex-col gap-1.5"
               aria-label={`Values for ${environment.environmentName}`}
             >
-              {Object.entries(values).map(([name, value]) => (
-                <li key={name} className="grid grid-cols-[minmax(0,14rem)_1fr] items-center gap-3">
-                  <span className="text-fg truncate font-mono text-xs">{name}</span>
-                  <SecretValue name={name} onReveal={async () => value} />
-                </li>
-              ))}
+              {Object.entries(values).map(([name, value]) => {
+                const written = willWrite(preview.plan?.[name]);
+                return (
+                  <li
+                    key={name}
+                    className={`grid grid-cols-[minmax(0,14rem)_1fr] items-center gap-3 ${written ? '' : 'opacity-60'}`}
+                  >
+                    <span className="flex min-w-0 flex-col">
+                      <span className="text-fg truncate font-mono text-xs">{name}</span>
+                      <span className="text-fg-subtle text-xs">
+                        {describePlanStatus(preview.plan?.[name])}
+                      </span>
+                    </span>
+                    <SecretValue name={name} onReveal={async () => value} />
+                  </li>
+                );
+              })}
             </ul>
           ) : null}
         </div>
       ) : null}
     </div>
   );
+}
+
+/** Whether the import would write this name's value. */
+function willWrite(status: ImportPlanItem['status'] | undefined): boolean {
+  return status === 'create' || status === 'overwrite';
+}
+
+/** What the import would do with one name, for the preview list. */
+export function describePlanStatus(status: ImportPlanItem['status'] | undefined): string {
+  switch (status) {
+    case 'create':
+      return 'new';
+    case 'overwrite':
+      return 'replaces the current value';
+    case 'skip':
+      return 'not written — the current value is kept';
+    case 'unchanged':
+      return 'not written — already this value';
+    case undefined:
+      return 'not in the plan';
+    default:
+      return 'not written';
+  }
 }
 
 /** Why the archive did not open, in one sentence. Pure, so the mapping can be tested. */

@@ -58,7 +58,8 @@ const {
   summarise,
 } = await import('./import-archive');
 type TargetState = import('./import-archive').TargetState;
-const { describeOpenFailure, ImportArchiveDialog } = await import('./import-archive-dialog');
+const { describeOpenFailure, describePlanStatus, ImportArchiveDialog } =
+  await import('./import-archive-dialog');
 
 /**
  * Importing an archive into a project: the default mapping, what is importable,
@@ -361,6 +362,14 @@ describe('the dialog', () => {
     expect(html).toContain('accept=".zip,.json,application/zip,application/json"');
     // A locked tab is told before anything slow happens.
     expect(html).toContain('Unlock your vault first');
+  });
+
+  it('marks, in the preview, every value the chosen strategy would not write', () => {
+    expect(describePlanStatus('create')).toBe('new');
+    expect(describePlanStatus('overwrite')).toBe('replaces the current value');
+    expect(describePlanStatus('skip')).toBe('not written — the current value is kept');
+    expect(describePlanStatus('unchanged')).toBe('not written — already this value');
+    expect(describePlanStatus('invalid')).toBe('not written');
   });
 
   it('says which credential, and which vault, did not open it', () => {
