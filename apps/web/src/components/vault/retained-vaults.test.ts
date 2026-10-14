@@ -36,7 +36,7 @@ vi.mock('./argon2', () => ({ argon2idProvider: nobleArgon2idProvider }));
 
 const { buildRestore, describeSkips, openRetainedUserKey } = await import('./retained-vaults');
 const { describeRecoverFailure } = await import('./retained-vaults-card');
-const { ResetResult } = await import('./vault-unlock');
+const { ArchivePreflightFacts, ResetResult } = await import('./vault-unlock');
 import type { RetainedVaultMaterial } from './retained-vaults';
 
 /**
@@ -276,7 +276,7 @@ describe('the reset result', () => {
 
   it('says plainly when no archive was sent, and why', () => {
     for (const [reason, sentence] of [
-      ['too-large', 'more than an email can carry'],
+      ['too-large', 'too large to email'],
       ['mail-not-configured', 'no email set up'],
     ] as const) {
       const html = renderToStaticMarkup(
@@ -286,8 +286,93 @@ describe('the reset result', () => {
         }),
       );
       expect(html).toContain('No archive was emailed');
+      expect(html).toContain('As you chose');
       expect(html).toContain(sentence);
       expect(html).toContain('still kept for seven days');
     }
+  });
+
+  it('never claims more than xecret can promise about deletion', () => {
+    const html = renderToStaticMarkup(
+      createElement(ResetResult, {
+        result: { vault, archive: { emailed: true, parts: 1, to: 'owner@example.com' }, retained },
+        onContinue: () => {},
+      }),
+    );
+    expect(html).toContain('Nothing in xecret can delete it');
+    expect(html).not.toMatch(/Nobody can delete/);
+  });
+});
+
+describe('what the reset screen says about the archive before anything is confirmed', () => {
+  const render = (props: Partial<Parameters<typeof ArchivePreflightFacts>[0]>) =>
+    renderToStaticMarkup(
+      createElement(ArchivePreflightFacts, {
+        preflight: null,
+        failure: null,
+        withoutArchive: false,
+        onWithoutArchive: () => {},
+        onRetry: () => {},
+        ...props,
+      }),
+    );
+  const archive = {
+    deliverable: true,
+    reason: null,
+    estimatedBytes: 40_000,
+    maxBytes: 8 * 1024 * 1024,
+    environmentCount: 2,
+    secretCount: 9,
+  };
+
+  it('promises the emailed archive only when it can be emailed', () => {
+    const html = render({ preflight: { resettable: true, archive } });
+    expect(html).toContain('Before we reset, we email you an archive');
+    expect(html).not.toContain('Reset without the emailed archive');
+  });
+
+  it('states a vault too large to email, with its size, and asks for the choice', () => {
+    const html = render({
+      preflight: {
+        resettable: true,
+        archive: {
+          ...archive,
+          deliverable: false,
+          reason: 'too-large',
+          estimatedBytes: 9 * 1024 * 1024,
+        },
+      },
+    });
+    expect(html).toContain('Your vault is too large to email');
+    expect(html).toContain('about 9.0 MB, more than the 8.0 MB we can email');
+    expect(html).toContain('Reset without the emailed archive');
+    expect(html).not.toContain('Before we reset, we email you an archive');
+  });
+
+  it('asks for the same choice where no mail is set up outside production', () => {
+    const html = render({
+      preflight: {
+        resettable: true,
+        archive: { ...archive, deliverable: false, reason: 'mail-not-configured' },
+      },
+    });
+    expect(html).toContain('no email set up');
+    expect(html).toContain('Reset without the emailed archive');
+  });
+
+  it('offers nothing to choose where nothing can be reset', () => {
+    const html = render({
+      preflight: {
+        resettable: false,
+        archive: { ...archive, deliverable: false, reason: 'mail-not-configured' },
+      },
+    });
+    expect(html).toContain('can’t be reset right now');
+    expect(html).not.toContain('Reset without the emailed archive');
+  });
+
+  it('says it is still checking, and offers a retry when the check failed', () => {
+    expect(render({})).toContain('Checking whether your archive can be emailed');
+    expect(render({ failure: 'Network down.' })).toContain('Try again');
   });
 });

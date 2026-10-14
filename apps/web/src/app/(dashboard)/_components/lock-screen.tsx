@@ -56,7 +56,12 @@ export interface LockScreenProps {
 }
 
 export function LockScreen({ status, user, onUnlocked }: LockScreenProps) {
-  const configured = status.configured;
+  // While a vault reset's result is on screen, the unlock flow stays up even
+  // once the session says there is no vault: where the archive went and until
+  // when the old vault is kept must be read before setup takes over, and a
+  // background re-read of the session must not be what decides that.
+  const [resetResultShowing, setResetResultShowing] = useState(false);
+  const configured = status.configured || resetResultShowing;
 
   // The unlock flow reports which of its stages is on screen, so the frame
   // can title each one honestly — a person typing a recovery code is not
@@ -123,7 +128,12 @@ export function LockScreen({ status, user, onUnlocked }: LockScreenProps) {
         >
           <div className="flex flex-col gap-6">
             {configured ? (
-              <VaultUnlock user={user} onUnlocked={onUnlocked} onStageChange={setStage} />
+              <VaultUnlock
+                user={user}
+                onUnlocked={onUnlocked}
+                onStageChange={setStage}
+                onResetResultShown={setResetResultShowing}
+              />
             ) : (
               <VaultSetup user={user} onComplete={onUnlocked} />
             )}

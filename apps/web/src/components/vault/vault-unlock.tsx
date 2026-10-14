@@ -8,6 +8,7 @@ import { errorMessage, SIGN_IN_PATH } from '@/lib/api';
 import {
   Alert,
   Button,
+  Checkbox,
   EyeIcon,
   EyeOffIcon,
   Field,
@@ -38,7 +39,9 @@ import {
   describePasskeyUnlockFailure,
   describeUnlockFailure,
   fetchReauthStatus,
+  fetchResetPreflight,
   fetchVault,
+  formatArchiveSize,
   materialSupersedes,
   openRecoveryWrap,
   readRecoveryCode,
@@ -55,7 +58,7 @@ import {
   verifyReauthCode,
   verifyReauthTotp,
 } from './vault-client';
-import type { ReauthStatus, VaultMaterial, VaultResetResult } from './vault-client';
+import type { ReauthStatus, ResetPreflight, VaultMaterial, VaultResetResult } from './vault-client';
 import { useVault } from './vault-keys';
 
 /**
@@ -147,9 +150,21 @@ export interface VaultUnlockProps {
    * the reissued kit, which is five full-width codes and a row of save buttons.
    */
   onStageChange?: (stage: Stage) => void;
+  /**
+   * Told while a vault reset's result is on screen. A host that chooses between
+   * this component and the setup ceremony by `configured` keeps this one up
+   * until the result has been read — a background re-read of the session would
+   * otherwise swap it out the moment it learned the vault is gone.
+   */
+  onResetResultShown?: (showing: boolean) => void;
 }
 
-export function VaultUnlock({ user, onUnlocked, onStageChange }: VaultUnlockProps) {
+export function VaultUnlock({
+  user,
+  onUnlocked,
+  onStageChange,
+  onResetResultShown,
+}: VaultUnlockProps) {
   const vault = useVault();
   // Back from the reset's fresh sign-in: reopen the reset. The marker carries
   // the id of the account that started it, and only chooses the screen; what
@@ -202,6 +217,7 @@ export function VaultUnlock({ user, onUnlocked, onStageChange }: VaultUnlockProp
           setStage('code');
         }}
         onReset={onUnlocked}
+        onResultShown={onResetResultShown}
       />
     );
   }
@@ -1072,16 +1088,16 @@ export function ResetResult({
       ) : (
         <Alert tone="info" title="No archive was emailed">
           {result.archive.reason === 'too-large'
-            ? 'Your vault holds more than an email can carry, so we sent a notice instead of an archive.'
-            : 'This xecret installation has no email set up, so no archive could be sent.'}{' '}
+            ? 'As you chose: your vault was too large to email, so we sent a notice instead of an archive.'
+            : 'As you chose: this xecret installation has no email set up, so no archive could be sent.'}{' '}
           Your old vault is still kept for seven days.
         </Alert>
       )}
 
       <p className="text-fg-muted text-sm leading-6">
         Until <span className="text-fg">{until}</span> you can recover your old vault from Settings
-        → Security with its passphrase or a recovery code. Nobody can delete it before then; after
-        that, it is deleted for good.
+        → Security with its passphrase or a recovery code. Nothing in xecret can delete it before
+        then; after that, it is deleted for good.
       </p>
 
       <Button variant="primary" onClick={onContinue}>
@@ -1097,6 +1113,96 @@ export function formatResetDeadline(iso: string): string {
     dateStyle: 'medium',
     timeStyle: 'short',
   });
+}
+
+/**
+ * What the reset will do with the escape archive, said before anybody signs in
+ * again or confirms anything (owner decision, PR #121 round 1: never without
+ * the archive, silently).
+ *
+ * Four answers. The archive can be emailed: the paragraph that has always been
+ * here. This deployment cannot send mail at all, in production: nothing can be
+ * reset, and the screen says so instead of offering a button that would be
+ * refused. The archive cannot be emailed — too large, or no mail on a
+ * development deployment: said plainly, with the size, and a box the person
+ * must tick to go on. Or the check itself failed: a retry.
+ */
+export function ArchivePreflightFacts({
+  preflight,
+  failure,
+  withoutArchive,
+  onWithoutArchive,
+  onRetry,
+}: {
+  preflight: ResetPreflight | null;
+  failure: string | null;
+  withoutArchive: boolean;
+  onWithoutArchive: (checked: boolean) => void;
+  onRetry: () => void;
+}) {
+  if (failure !== null) {
+    return (
+      <Alert tone="danger" title="We couldn’t check your vault">
+        <p>{failure}</p>
+        <Button variant="secondary" size="sm" className="mt-3" onClick={onRetry}>
+          Try again
+        </Button>
+      </Alert>
+    );
+  }
+
+  if (preflight === null) {
+    return (
+      <div role="status" className="flex flex-col gap-2">
+        <span className="sr-only">Checking whether your archive can be emailed…</span>
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-4/5" />
+      </div>
+    );
+  }
+
+  if (!preflight.resettable) {
+    return (
+      <Alert tone="danger" title="Your vault can’t be reset right now">
+        We can’t send email right now, and we never reset a vault without emailing its archive
+        first. Nothing has changed. Please try again later.
+      </Alert>
+    );
+  }
+
+  if (preflight.archive.deliverable) {
+    return (
+      <p>
+        <span className="text-fg">Before we reset, we email you an archive</span> of your secrets,
+        still encrypted. Your old passphrase or a recovery code opens it, any time, even without
+        xecret. Anyone who gets that email can try to guess your passphrase offline, for as long as
+        they like — keep the file somewhere private and delete the email.
+      </p>
+    );
+  }
+
+  const tooLarge = preflight.archive.reason === 'too-large';
+  return (
+    <Alert
+      tone="warning"
+      title={tooLarge ? 'Your vault is too large to email' : 'No archive can be emailed from here'}
+    >
+      <p>
+        {tooLarge
+          ? `Its archive would be about ${formatArchiveSize(preflight.archive.estimatedBytes)}, more than the ${formatArchiveSize(preflight.archive.maxBytes)} we can email. If you reset, we email you a notice instead of an archive.`
+          : 'This xecret installation has no email set up, so we can’t send you an archive.'}{' '}
+        Your old vault, kept for seven days, is then the only way back to these secrets.
+      </p>
+      <label className="text-fg mt-3 flex cursor-pointer items-start gap-2.5">
+        <Checkbox
+          checked={withoutArchive}
+          onCheckedChange={(checked) => onWithoutArchive(checked === true)}
+          className="mt-0.5"
+        />
+        <span>Reset without the emailed archive</span>
+      </label>
+    </Alert>
+  );
 }
 
 /**
@@ -1116,11 +1222,17 @@ export function formatResetDeadline(iso: string): string {
  * accuses us of having deleted their secrets, which is the one accusation this
  * product cannot afford to have half-deserved.
  *
+ * ── The archive is stated before anything is confirmed ──
+ * {@link ArchivePreflightFacts}, from `GET /api/auth/vault/reset/preflight`,
+ * on the first screen and again on the last. A reset whose archive cannot be
+ * emailed is offered only once "Reset without the emailed archive" is ticked,
+ * and is refused outright where a production deployment cannot send mail.
+ *
  * ── The gates ──
- * A typed phrase, matching what the endpoint checks, because this is the only
- * action in the product with no undo of any kind — not a recoverable delete, not
- * a soft delete, not a thirty-day window. And the phrase states the act rather
- * than naming the account, so it cannot be satisfied by muscle memory.
+ * A typed phrase, matching what the endpoint checks, because this is the one
+ * action in the product that ends access to everything the vault held — the
+ * seven-day retention is a way back, not an undo. And the phrase states the act
+ * rather than naming the account, so it cannot be satisfied by muscle memory.
  *
  * And **two re-authentications, in this order**, which the typed phrase is not a
  * substitute for. The phrase is printed on the screen above the field, so it
@@ -1135,6 +1247,14 @@ export function formatResetDeadline(iso: string): string {
  *     the person's authenticator app. Checked by the server against the account
  *     the session belongs to, and turned into a five-minute proof the reset
  *     spends.
+ *
+ * ── After a reset that failed ──
+ * The proof is spent whatever happens next, so a failed reset — a mail the
+ * provider refused, a vault that changed — goes back to asking the server where
+ * the re-authentication stands, which lands on "sign in again", with the reason
+ * the vault was not reset kept on screen above it. The archive is checked
+ * again too: a vault that grew past what can be emailed says so before the
+ * next attempt.
  *
  * ── Coming back from the sign-in page ──
  * The facts are shown again: a reset should be confirmed by somebody who has
@@ -1160,6 +1280,7 @@ function AllCodesLost({
   resumedBy,
   onBack,
   onReset,
+  onResultShown,
 }: {
   /** The account this screen is showing for. */
   userId: string;
@@ -1167,6 +1288,8 @@ function AllCodesLost({
   resumedBy: string | null;
   onBack: () => void;
   onReset: () => void;
+  /** Told while the reset's result is on screen, so the host keeps it there. */
+  onResultShown?: ((showing: boolean) => void) | undefined;
 }) {
   const vault = useVault();
   const [typed, setTyped] = useState('');
@@ -1175,8 +1298,13 @@ function AllCodesLost({
   const [mfaToken, setMfaToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  /** Why the last reset was refused — kept across the return to the sign-in step. */
+  const [resetFailure, setResetFailure] = useState<string | null>(null);
   const [showProblem, setShowProblem] = useState(false);
   const [result, setResult] = useState<VaultResetResult | null>(null);
+  const [preflight, setPreflight] = useState<ResetPreflight | null>(null);
+  const [preflightFailure, setPreflightFailure] = useState<string | null>(null);
+  const [withoutArchive, setWithoutArchive] = useState(false);
 
   const accountChanged = resumedReset(resumedBy, userId) === 'account-changed';
 
@@ -1188,6 +1316,35 @@ function AllCodesLost({
   const [sent, setSent] = useState(false);
 
   const problem = resetConfirmationProblem(typed);
+
+  // The archive is blocked when it cannot be emailed; the reset is then offered
+  // only with the box ticked, and never where nothing can be reset at all.
+  const archiveBlocked = preflight !== null && !preflight.archive.deliverable;
+  const canProceed =
+    preflight !== null && preflight.resettable && (!archiveBlocked || withoutArchive);
+
+  // What a reset would do with the archive: asked as the screen opens, and
+  // again whenever `preflightRound` moves — a retry, or a reset that failed.
+  const [preflightRound, setPreflightRound] = useState(0);
+  const loadPreflight = () => setPreflightRound((round) => round + 1);
+  useEffect(() => {
+    let cancelled = false;
+    fetchResetPreflight()
+      .then((answer) => {
+        if (cancelled) return;
+        setPreflight(answer);
+        setPreflightFailure(null);
+        // A box ticked for an archive that has since become deliverable means
+        // nothing; one ticked for a vault that is still too large stays ticked.
+        if (answer.archive.deliverable) setWithoutArchive(false);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setPreflightFailure(errorMessage(cause));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [preflightRound]);
 
   /** Asks the server where this session's re-authentication stands. */
   function check() {
@@ -1225,6 +1382,15 @@ function AllCodesLost({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The host keeps this screen up while the result is showing: a background
+  // re-read of the session that learned the vault is gone would otherwise swap
+  // it for the setup ceremony before the result had been read.
+  useEffect(() => {
+    onResultShown?.(result !== null);
+    // Keyed on the result alone: a new callback identity carries no news.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result]);
+
   async function sendCode() {
     if (busy) return;
     setBusy(true);
@@ -1235,6 +1401,7 @@ function AllCodesLost({
       setMfaToken(null);
       setCode('');
       setTotp('');
+      setResetFailure(null);
     } catch (cause) {
       setFailure(errorMessage(cause));
     } finally {
@@ -1250,9 +1417,13 @@ function AllCodesLost({
       setShowProblem(true);
       return;
     }
+    if (!canProceed) return;
 
     setBusy(true);
     setFailure(null);
+    // Set once the reset request itself is under way: a failure after that
+    // point spent the proof, and the screen has to start the sign-in again.
+    let resetting = false;
     try {
       // Verified and spent in one call frame: the proof never outlives this
       // handler, and a second click cannot replay it.
@@ -1268,11 +1439,25 @@ function AllCodesLost({
       // and until when the old vault can be recovered, are the two facts
       // somebody needs before setting up a new vault — and the setup ceremony
       // replaces this screen the moment the provider learns there is no vault.
-      setResult(await resetVault(typed, checked.proof));
+      resetting = true;
+      setResult(await resetVault(typed, checked.proof, archiveBlocked && withoutArchive));
     } catch (cause) {
-      setFailure(errorMessage(cause));
-      if (mfaToken === null) setCode('');
-      else setTotp('');
+      if (resetting) {
+        // Nothing was reset, and the proof is gone either way. Back to where
+        // the server says the re-authentication stands — "sign in again" —
+        // with the reason kept above it, and the archive checked afresh.
+        setResetFailure(errorMessage(cause));
+        setCode('');
+        setTotp('');
+        setTyped('');
+        setShowProblem(false);
+        loadPreflight();
+        check();
+      } else {
+        setFailure(errorMessage(cause));
+        if (mfaToken === null) setCode('');
+        else setTotp('');
+      }
     } finally {
       setBusy(false);
     }
@@ -1304,6 +1489,9 @@ function AllCodesLost({
           // end is the one stage that renders without material.
           vault.adopt({ vault: result.vault });
           void vault.reload();
+          // Released before the re-read, so the host is free to swap this
+          // screen for the setup ceremony when the answer arrives.
+          onResultShown?.(false);
           // Re-reads `/api/auth/me`, which now reports `configured: false` —
           // and that is what swaps this screen for the setup ceremony.
           onReset();
@@ -1313,11 +1501,30 @@ function AllCodesLost({
   }
 
   const signInAgainHref = reauthSignInUrl(window.location, userId);
+  const notReset =
+    resetFailure !== null ? (
+      <Alert tone="danger" title="Your vault was not reset">
+        {resetFailure}
+      </Alert>
+    ) : null;
+  const preflightFacts = (
+    <ArchivePreflightFacts
+      preflight={preflight}
+      failure={preflightFailure}
+      withoutArchive={withoutArchive}
+      onWithoutArchive={setWithoutArchive}
+      onRetry={() => {
+        setPreflightFailure(null);
+        loadPreflight();
+      }}
+    />
+  );
 
   // Screen one: the facts, and every way out that is not a reset. The copy
   // keeps its two sentences apart — the data is gone, and here is how to
   // start again — see the header comment for why that order is load-bearing.
   if (step === 'facts') {
+    const blockedHintId = `${formId}-blocked`;
     return (
       <div className="flex flex-col gap-4">
         {resumedBy !== null ? (
@@ -1325,6 +1532,7 @@ function AllCodesLost({
             Read this once more before you continue.
           </Alert>
         ) : null}
+        {notReset}
 
         <Alert tone="danger" title="We can’t bring your secrets back">
           They were sealed with keys only your passphrase and recovery codes could open. With both
@@ -1337,24 +1545,32 @@ function AllCodesLost({
             and a new Emergency Kit. An owner or admin will need to share team environments with you
             again.
           </p>
-          <p>
-            <span className="text-fg">Before we reset, we email you an archive</span> of your
-            secrets, still encrypted. Your old passphrase or a recovery code opens it, any time,
-            even without xecret. Anyone who gets that email can try to guess your passphrase
-            offline, for as long as they like — keep the file somewhere private and delete the
-            email.
-          </p>
+          {preflightFacts}
           <p>
             <span className="text-fg">We also keep your old vault for seven days.</span> If you find
             your passphrase or a code in that time, you can recover it from Settings → Security.
-            Nobody can delete it before then; after that, it is deleted for good.
+            Nothing in xecret can delete it before then; after that, it is deleted for good.
           </p>
           <p>Your teammates and your organisation’s data are unaffected.</p>
         </div>
 
-        <Button variant="danger-outline" onClick={check}>
+        <Button
+          variant="danger-outline"
+          onClick={check}
+          disabled={!canProceed}
+          aria-describedby={canProceed ? undefined : blockedHintId}
+        >
           I understand — reset my vault
         </Button>
+        {!canProceed && archiveBlocked && preflight?.resettable === true ? (
+          <p id={blockedHintId} className="text-fg-subtle -mt-2 text-xs">
+            Tick “Reset without the emailed archive” to continue.
+          </p>
+        ) : !canProceed ? (
+          <span id={blockedHintId} className="sr-only">
+            The reset is not available yet.
+          </span>
+        ) : null}
         <Button variant="secondary" onClick={onBack}>
           I have found a code after all
         </Button>
@@ -1384,6 +1600,7 @@ function AllCodesLost({
   if (step === 'sign-in') {
     return (
       <div className="flex flex-col gap-4">
+        {notReset}
         {failure !== null ? (
           <Alert tone="danger" title="Something went wrong">
             {failure}
@@ -1396,8 +1613,9 @@ function AllCodesLost({
           attached or it reads as the same demand repeated.
         */}
         <p className="text-fg-muted text-sm leading-6">
-          First, sign in again with the password, passkey, Google account or company sign-in you use
-          for xecret. It protects you if someone else has this browser. Then we’ll email you a code.
+          {resetFailure !== null ? 'To try again, sign' : 'First, sign'} in again with the password,
+          passkey, Google account or company sign-in you use for xecret. It protects you if someone
+          else has this browser. Then we’ll email you a code.
         </p>
         <p className="text-fg-subtle text-sm leading-6">
           A sign-in with an emailed code doesn’t count for this step — the code comes next.
@@ -1422,10 +1640,11 @@ function AllCodesLost({
           minute: '2-digit',
         });
   const ready =
-    mfaToken === null
+    (mfaToken === null
       ? code.replace(/\s+/g, '').length === 6
-      : totp.replace(/\s+/g, '').length === 6;
+      : totp.replace(/\s+/g, '').length === 6) && canProceed;
   const notReadyHintId = `${formId}-not-ready`;
+  const email = status?.email ?? 'your address';
 
   // Screen three: the second lock and the act, and nothing else to read.
   return (
@@ -1434,7 +1653,9 @@ function AllCodesLost({
         <Alert tone="danger" title="Your vault was not reset">
           {failure}
         </Alert>
-      ) : null}
+      ) : (
+        notReset
+      )}
 
       <p className="text-fg-muted text-sm leading-6">
         {mfaToken !== null ? (
@@ -1451,6 +1672,12 @@ function AllCodesLost({
         )}{' '}
         {deadline !== null ? <>Finish before {deadline}, ten minutes after you signed in.</> : null}
       </p>
+
+      {/* The archive again, beside the act: what was read on the first screen
+          may have changed, and the box is part of what is being confirmed. */}
+      {archiveBlocked || preflight === null || preflightFailure !== null ? (
+        <div className="text-fg-muted text-sm leading-6">{preflightFacts}</div>
+      ) : null}
 
       {sent ? null : (
         <Button variant="primary" loading={busy} onClick={() => void sendCode()}>
@@ -1507,8 +1734,11 @@ function AllCodesLost({
           </Field>
 
           <p className="text-fg-subtle text-xs leading-5">
-            When you confirm, we email your archive to {status?.email ?? 'your address'}, then reset
-            your vault.
+            {!archiveBlocked
+              ? `When you confirm, we email your archive to ${email}, then reset your vault.`
+              : preflight?.archive.reason === 'too-large'
+                ? `When you confirm, we reset your vault without emailing an archive, and email a notice to ${email} instead. Your old vault is kept for seven days.`
+                : 'When you confirm, we reset your vault without emailing an archive. Your old vault is kept for seven days.'}
           </p>
           <Button
             type="submit"
@@ -1521,7 +1751,11 @@ function AllCodesLost({
           </Button>
           {!ready ? (
             <p id={notReadyHintId} className="text-fg-subtle -mt-2 text-xs">
-              Enter the six-digit code to enable this button.
+              {canProceed
+                ? 'Enter the six-digit code to enable this button.'
+                : archiveBlocked && preflight?.resettable === true
+                  ? 'Tick “Reset without the emailed archive” to enable this button.'
+                  : 'The reset is not available right now.'}
             </p>
           ) : null}
           <Button variant="ghost" disabled={busy} onClick={() => void sendCode()}>

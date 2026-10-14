@@ -609,10 +609,57 @@ export function resetConfirmationProblem(typed: string): string | null {
  * It is a parameter rather than something this function fetches, so the proof
  * exists as a local `const` in one call frame and is never held anywhere this
  * module could log or cache it.
+ *
+ * ── `proceedWithoutArchive` is the person's choice, never a default ──
+ * `true` only when the screen showed that the archive cannot be emailed
+ * ({@link fetchResetPreflight}) and the person ticked "Reset without the
+ * emailed archive". Without it the server refuses a reset whose archive cannot
+ * be sent, and it refuses every reset where a production deployment has no mail.
  */
-export async function resetVault(confirm: string, reauthProof: string): Promise<VaultResetResult> {
+export async function resetVault(
+  confirm: string,
+  reauthProof: string,
+  proceedWithoutArchive = false,
+): Promise<VaultResetResult> {
   releaseVaultKeys();
-  return api.post<VaultResetResult>(apiPath.vaultReset(), { confirm, reauthProof });
+  return api.post<VaultResetResult>(apiPath.vaultReset(), {
+    confirm,
+    reauthProof,
+    ...(proceedWithoutArchive ? { proceedWithoutArchive: true } : {}),
+  });
+}
+
+/** Why an archive cannot be emailed. */
+export type ArchiveUndeliverable = 'mail-not-configured' | 'too-large';
+
+/**
+ * What a reset would do with the escape archive (owner decision, PR #121 round
+ * 1): asked when the reset screen opens, so a vault too large to email — or a
+ * deployment that cannot send mail — is stated before anybody signs in again
+ * or confirms anything.
+ */
+export interface ResetPreflight {
+  /** `false` only where a production deployment has no mail: every reset is refused. */
+  resettable: boolean;
+  archive: {
+    deliverable: boolean;
+    reason: ArchiveUndeliverable | null;
+    /** An upper bound on the archive's size, in bytes. */
+    estimatedBytes: number;
+    maxBytes: number;
+    environmentCount: number;
+    secretCount: number;
+  };
+}
+
+export function fetchResetPreflight(): Promise<ResetPreflight> {
+  return api.get<ResetPreflight>(apiPath.vaultResetPreflight());
+}
+
+/** "8.4 MB" — the size the preflight reports, for a person rather than a log. */
+export function formatArchiveSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /**
@@ -622,8 +669,7 @@ export async function resetVault(confirm: string, reauthProof: string): Promise<
 export interface VaultResetResult {
   vault: VaultStatus;
   archive:
-    | { emailed: true; parts: number; to: string }
-    | { emailed: false; reason: 'mail-not-configured' | 'too-large' };
+    { emailed: true; parts: number; to: string } | { emailed: false; reason: ArchiveUndeliverable };
   retained: { id: string; retainedUntil: string; grantCount: number };
 }
 
