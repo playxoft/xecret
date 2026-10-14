@@ -1509,7 +1509,7 @@ base64-encoded (about 7 MB) into a message, stays under the 15 MB the sending pr
 and under the 10 MB many receiving mail gateways still enforce. It refuses to produce more than
 64 parts. The product's own reset sends at most **two**, and never emails an archive whose
 documents it estimates at over **8 MiB** — sized in SQL before anything is loaded, from a
-measured peak of 68 MiB of heap for 8 MiB of ciphertext in a Worker's 128 MB
+measured live peak of about 70 MiB of heap for 8 MiB of ciphertext in a Worker's 128 MB
 (`apps/web/src/server/vault-archive-service.ts`). Such a vault is reset only when the person
 explicitly chooses to go without the archive (owner decision, PR #121 round 1).
 
@@ -1580,7 +1580,9 @@ same container rules by the same bytes — a ZIP64 end record, a multi-disk end 
 mismatch, a deflate stream that inflates past its declared size, a newline in a slug, a slug one
 character too long, control and line-separator characters in names, a lone surrogate escape, and
 duplicate environments by id and by slug path. A deflated re-zip with an extra entry is a positive
-vector. Its deflate streams use stored blocks, so the bytes do not depend on a compressor. The
+vector, and so is the document with its integers written as `1.0`, `1e0` and `6.5536e4` —
+inside `kdfParams` too, where a strict integer decoder would otherwise refuse what the other
+reader accepts. Its deflate streams use stored blocks, so the bytes do not depend on a compressor. The
 Argon2id parameters are the §3.1 floor
 (`m = 19456`, `t = 2`) — inside the production range, so the reader under test runs its real
 validator, and cheap enough that the suite does not get skipped.

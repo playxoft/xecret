@@ -27,7 +27,12 @@ import type { ArchiveInput } from '../build';
 import { serializeArchiveDocument } from '../document';
 import type { ArchiveEnvironment, ArchiveSecret, VaultArchiveDocument } from '../document';
 import { writeStoredZip } from '../zip';
-import { containerRejectVectors, documentRejectVectors, rezipVector } from './container';
+import {
+  containerRejectVectors,
+  documentRejectVectors,
+  integerFormsVector,
+  rezipVector,
+} from './container';
 
 /**
  * Builds `vault-archive-vectors.json`: an archive made by the real writer from a
@@ -671,6 +676,7 @@ export async function buildArchiveVectors(): Promise<{
   ];
 
   vectors.push(rezipVector(doc!, code1, opened));
+  vectors.push(integerFormsVector(doc!, code1, opened));
   vectors.push(splitVector(fixture, code1));
   vectors.push(...rejectVectors(doc!, file.bytes, fixture, code1));
   vectors.push(...containerRejectVectors(doc!));

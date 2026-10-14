@@ -266,3 +266,34 @@ export function documentRejectVectors(doc: VaultArchiveDocument): ArchiveVector[
     ),
   ];
 }
+
+/**
+ * The single-part document with its integers written as `1.0`, `1e0` and
+ * `6.5536e4` — the same integers (§14.4), which every reader must accept as
+ * such, inside `kdfParams` as much as anywhere else.
+ */
+export function integerFormsVector(
+  doc: VaultArchiveDocument,
+  code: string,
+  opened: unknown[],
+): ArchiveVector {
+  let jsonText = serializeArchiveDocument(doc);
+  const rewrite = (pattern: RegExp, replacement: (digits: string) => string) => {
+    const next = jsonText.replace(pattern, (_match, digits: string) => replacement(digits));
+    if (next === jsonText) throw new Error(`integer-forms: ${String(pattern)} matched nothing`);
+    jsonText = next;
+  };
+  rewrite(/"formatVersion": (1),/, () => '"formatVersion": 1.0,');
+  rewrite(/"part": (1),/, () => '"part": 1e0,');
+  rewrite(/"m": (\d+),/, (digits) => `"m": ${Number(digits) / 10_000}e4,`);
+  rewrite(/"t": (\d+),/, (digits) => `"t": ${digits}.0,`);
+
+  return {
+    id: 'vault-archive/open/integer-forms',
+    kind: 'vault-archive/open',
+    description:
+      'Integers written as 1.0, 1e0 and an exponent, in the document and inside kdfParams: the same integers, accepted by every reader (§14.4).',
+    input: { jsonText, credential: { kind: 'recovery-code', code } },
+    expected: { environments: opened },
+  };
+}

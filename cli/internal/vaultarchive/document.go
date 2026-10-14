@@ -226,9 +226,18 @@ func parseVault(raw json.RawMessage) (Vault, error) {
 		return Vault{}, err
 	}
 
+	// The integer rule of §14.4 holds inside kdfParams too — "m": 6.5536e4 is
+	// the integer 65536 — so its numbers are rewritten as plain integers before
+	// the KDF's own strict parser sees them. The TypeScript reader gets this from
+	// JSON.parse; without it the two readers would disagree on such a file.
+	kdfParams, err := canonicalKdfParams(fields["kdfParams"])
+	if err != nil {
+		return Vault{}, err
+	}
+
 	// §3.1's ranges, applied to a file exactly as to a server response: an
 	// unvalidated m is a memory allocation chosen by whoever wrote the file.
-	if _, err := e2ee.ParseKdfParams(fields["kdfParams"]); err != nil {
+	if _, err := e2ee.ParseKdfParams(kdfParams); err != nil {
 		return Vault{}, formatErr("vault.kdfParams is not acceptable: %v", err)
 	}
 
@@ -240,7 +249,7 @@ func parseVault(raw json.RawMessage) (Vault, error) {
 		return Vault{}, formatErr("vault.recoveryWraps has more entries than an archive may carry")
 	}
 
-	vault := Vault{KdfParams: fields["kdfParams"]}
+	vault := Vault{KdfParams: kdfParams}
 	seen := map[string]bool{}
 	for index, rawWrap := range wraps {
 		path := fmt.Sprintf("vault.recoveryWraps[%d]", index)
@@ -435,6 +444,33 @@ func parseSecret(raw json.RawMessage, path string) (Secret, error) {
 /* ─────────────────────────────── field checks ─────────────────────────────── */
 
 // object decodes the object at path and requires exactly these keys.
+// canonicalKdfParams rewrites every number in kdfParams as a plain integer,
+// refusing one that is not integral. Anything else is passed through untouched
+// for e2ee.ParseKdfParams to judge: unknown fields, strings, the ranges.
+func canonicalKdfParams(raw json.RawMessage) (json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return nil, formatErr("vault.kdfParams must be an object")
+	}
+	out := make(map[string]json.RawMessage, len(fields))
+	for key, value := range fields {
+		number, err := jsonNumber(value)
+		if err != nil {
+			out[key] = value
+			continue
+		}
+		if number != math.Trunc(number) || math.Abs(number) > 1<<53 {
+			return nil, formatErr("vault.kdfParams is not acceptable: its numbers must be integers")
+		}
+		out[key] = json.RawMessage(fmt.Sprintf("%d", int64(number)))
+	}
+	canonical, err := json.Marshal(out)
+	if err != nil {
+		return nil, formatErr("vault.kdfParams must be an object")
+	}
+	return canonical, nil
+}
+
 func object(raw json.RawMessage, path string, keys ...string) (map[string]json.RawMessage, error) {
 	var fields map[string]json.RawMessage
 	if len(raw) == 0 || json.Unmarshal(raw, &fields) != nil || fields == nil {
