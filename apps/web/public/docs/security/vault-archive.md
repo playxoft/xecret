@@ -3,7 +3,7 @@ title: Resetting your vault, the archive, and the seven-day window
 navTitle: Vault reset and archive
 description: What happens when you reset a vault you cannot open — the emailed archive and its risk, the seven days to recover, and how to import or open the archive offline.
 keywords: [vault reset, lost passphrase, recovery codes, encrypted backup, offline decryption, xecret vault open-archive]
-updated: 2026-10-12
+updated: 2026-10-14
 ---
 
 Your secrets are encrypted with keys only your master passphrase and your
@@ -24,19 +24,25 @@ every recovery code**. You sign in again, then enter a code we email you. Then:
 2. **We reset your vault.** You set up a new one straight away, with a new
    passphrase and a new Emergency Kit.
 3. **We keep your old vault for seven days.** If your passphrase or a recovery
-   code turns up in that time, you can recover it (see below). Nobody — not you,
-   not your teammates, not xecret — can delete it before the seven days are up.
-   After that it is deleted automatically, for good.
+   code turns up in that time, you can recover it (see below). Nothing in xecret
+   can delete it before the seven days are up. After that it is deleted
+   automatically, for good.
 
 Your teammates and your organisation's data are not affected. Until you recover
 the old vault, an owner or admin will need to share each team environment with
 you again; the dashboard asks them to.
 
-If we cannot send the archive, nothing is reset and you can try again. Two cases
-reset anyway, because trying again would not change them: a self-hosted xecret
-with no email set up, and a vault too large to email (tens of thousands of
-secrets). In both, the reset screen tells you no archive was sent, and the
-seven-day window still applies.
+**We never reset a vault without its archive unless you choose to.**
+
+- If we cannot send the archive, nothing is reset. To try again you will need to
+  sign in again and get a new code.
+- If xecret cannot send email at all, it does not reset vaults until it can.
+- If your vault is too large to email — more than about 8 MB of encrypted
+  secrets, which is tens of thousands of them — the reset screen says so
+  **before** you sign in again or confirm anything. You can still reset by
+  ticking **Reset without the emailed archive**; we then email you a notice
+  instead of an archive, and the seven days below are the only way back to the
+  old secrets.
 
 ## The archive, and the risk that comes with it
 
@@ -62,7 +68,9 @@ So:
   disk — and **delete the email**, including from your bin;
 - do not forward it, and be aware that mailbox backups keep copies;
 - if you believe somebody else has had the email, assume anything the old
-  passphrase protected may be exposed, and rotate those secrets.
+  passphrase protected may be exposed: the archive holds each environment's
+  **key** as well as its values, so **rotate the environment keys** (an owner
+  can, from each environment's key settings) and rotate the secrets themselves.
 
 Environments that are not end-to-end encrypted are not in the archive. A reset
 does not affect them: you can still read them after setting up your new vault.
@@ -87,6 +95,22 @@ passphrase. Anything you or your teammates did after the reset is kept:
 The old passphrase and recovery codes are checked in your browser and are never
 sent to xecret.
 
+### If somebody else reset your vault
+
+A reset needs a fresh sign-in **and** a code sent to your inbox, so somebody
+would need both. If you get a reset email you did not ask for:
+
+1. Sign in and secure your account — change how you sign in, and sign out your
+   other sessions.
+2. If the vault you now find is not yours (somebody set up their own after the
+   reset), reset again and set up your own vault. Your original vault is not
+   affected by the second reset: each reset keeps its own old vault for its own
+   seven days.
+3. Recover your original vault from **Settings → Security → Recover a previous
+   vault** with your passphrase.
+4. Treat the archive that email carried as exposed, and rotate environment keys
+   as described above.
+
 ## Importing the archive into a project
 
 Any time — including long after the seven days — you can put the archive's
@@ -98,16 +122,27 @@ secrets back into a project:
    is opened in your browser; neither the file's contents nor the passphrase is
    sent to xecret.
 4. For each environment in the archive, choose which environment of this project
-   it goes into, or **Don't import**. By default only this same project's
-   environments are matched.
+   it goes into, or **Don't import**. Each of this project's environments is
+   shown with its encryption mode. An archive environment starts matched only to
+   the environment it came from — the same environment, not just the same name —
+   and only when you can write to it now.
 5. Choose what happens when a secret with the same name already exists: keep the
    existing value, or replace it with the archive's.
-6. **Preview**, then **Import**.
+6. **Preview**. The preview lists every secret it would write, with each value
+   hidden until you reveal it. **Import** is available only after it.
 
-For an end-to-end encrypted environment, each value is encrypted in your browser
-with that environment's current key before it is sent, so xecret never sees it.
-You need permission to write to each environment you import into. Only values
-are imported — notes and value types are not.
+Each value is encrypted in your browser with the target environment's current
+key before it is sent, so xecret never sees it. That is why only end-to-end
+encrypted environments are offered: a server-encrypted environment would
+receive the values readable, so it is shown but cannot be chosen. You need your
+vault unlocked, and permission to write to each environment you import into.
+Only values are imported — notes and value types are not.
+
+If you were the only member of an environment, its key was in the vault you
+reset, and nobody else holds it. The import says so — "Nobody can open this
+environment's key any more" — and the way through is to **create a new
+environment and import into it**. (Recovering the old vault within seven days
+brings the key back instead.)
 
 ## Opening the archive without xecret
 

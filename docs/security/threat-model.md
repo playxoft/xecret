@@ -372,12 +372,21 @@ The victim's own vault, and with it their copy of every end-to-end-encrypted key
 
 **Since P23 (2026-10-12) a reset is not destruction.** The old vault is retained for seven
 days (migration 0020): the victim can recover it with their passphrase or a recovery code, from
-Settings → Security, which re-seals its keys into whatever vault the account now has — and nobody,
-the attacker included, can delete it early: the database refuses the DELETE by its own clock,
-and there is no route that issues one. What an attacker who passes both locks gains is unchanged
-— server-mode secrets, and re-share prompts to teammates — but what the victim loses is no longer
-permanent within the window. The victim also receives the escape archive by email, which tells
-them a reset happened; an attacker who controls the inbox receives it too (T12).
+Settings → Security, which re-seals its keys into whatever vault the account now has — and
+nothing in xecret, the attacker's session included, can delete it early: the database refuses
+the DELETE by its own clock, the application's role cannot update the window, and there is no
+route that issues one. What an attacker who passes both locks gains is unchanged — server-mode
+secrets, and re-share prompts to teammates — but what the victim loses is no longer permanent
+within the window. The victim also receives the escape archive by email — or, when the vault was
+too large and the person resetting chose to go without it, a notice — which tells them a reset
+happened; an attacker who controls the inbox receives it too (T12).
+
+**The way back from a hostile reset.** The victim signs in and secures the account; if the
+attacker set up a vault of their own after the reset, the victim resets again and sets up their
+own; then recovers the original vault with its passphrase. Each reset retains its own vault for
+its own seven days, so the second reset does not touch the first retained vault — it only adds
+the attacker's to the list. The user docs walk through this ("If somebody else reset your
+vault"). The archive the attacker's reset emailed is treated as exposed (T12).
 
 **Residual risk:** **Medium** without MFA — an unlocked laptop with a live Google or
 identity-provider session and an open inbox, or full control of the inbox alone, passes both
@@ -424,8 +433,24 @@ earlier "browser download only" decision, and accepted the risk below after it w
 hold (every byte in it is already in the database, under keys the server has never had); no
 recovery code is weakened (each is 125 bits of uniform randomness); the Ed25519 signing key, the
 unlock verifiers, PRF wraps, superseded passphrase wraps and redeemed codes are deliberately left
-out. It does not widen what a stolen session yields either: `GET /api/auth/vault` already serves
-the passphrase wrap, salt and parameters to any session, because the lock screen needs them.
+out.
+
+**What it widens, for a stolen session, stated precisely.** `GET /api/auth/vault` serves the
+passphrase wrap, salt and parameters to any session of the account, **locked or not**, because
+the lock screen needs them — so a stolen *locked* session already permits the same offline
+guessing of the passphrase. What a locked session does not give is the ciphertext and the
+environment keys to use a guessed passphrase on once the session is revoked; the archive is
+exactly that, in a copy no revocation reaches. A stolen *unlocked* session already reads
+everything the account can while it lives. And **brief control of the inbox**, together with a
+fresh sign-in (T11), is enough to trigger a reset and receive the archive.
+
+**The retained vault is offline-attackable too, by any unlocked session.** For seven days
+`GET /api/auth/vault/retained/{id}` serves the old vault's passphrase wrap, salt, encrypted
+private key and grants to any *unlocked* session of the account — the recovery screen needs
+them. The retained vault's own lockout counts misses at the API (`…/recovery-wrap`,
+`…/restore`) and is **abuse control, not a defence of the passphrase**: the restore's proof is a
+256-bit HKDF output nobody guesses, and an offline attack on the passphrase never goes through
+the API at all.
 
 **Mitigations:**
 - The email, the archive's `README.txt`, the reset screen and the user docs all state the
@@ -434,9 +459,24 @@ the passphrase wrap, salt and parameters to any session, because the lock screen
 - The archive covers only end-to-end-encrypted environments the account **may still read**
   (`can(secret.read)` at assembly), only the latest version of each live secret, and only the
   keys the account held.
-- The archive is sent **before** the reset; a provider refusal resets nothing. Each part's ZIP is
-  at most 8 MiB, so an attachment never exceeds ZeptoMail's 15 MB message limit; a vault over
-  three parts is reset with a notice and no archive, recoverable in the seven-day window.
+- The archive is sent **before** the reset; a provider refusal of any send resets nothing, and
+  the reset then retains exactly the vault that was archived (a vault set up again in between is
+  a 409). Each part's ZIP is at most 5 MiB — about 7 MB base64-encoded, under ZeptoMail's 15 MB
+  per message and the 10 MB many receiving gateways still enforce — and at most two parts.
+- **Never without the archive, silently** (owner decision, PR #121 round 1). The archive is sized
+  in SQL before the reset is confirmed; one estimated over 8 MiB is never loaded or emailed. The
+  reset screen states that before anybody re-authenticates, and the reset goes ahead only when
+  the person ticks "Reset without the emailed archive" — a notice is emailed instead, and the
+  seven-day retention is then the only way back. A production deployment with no mail provider
+  refuses every reset.
+- **Rotate environment keys if the archive may be exposed.** The exposure is the environment
+  keys themselves, sealed to the old X25519 key, not only today's values: a passphrase guessed
+  from the archive opens every EDK it carries. Rotating each environment's key (`envkey.rotated`)
+  puts every future value out of the archive's reach; values already in it must be rotated at
+  their source. The user docs say both.
+- Importing writes only into end-to-end-encrypted environments — the archive is pinned as an
+  `e2ee` source, so a server-mode target is refused — and only after a preview that shows every
+  name and value, masked until revealed (spec §14.7).
 - `vault.archive_emailed` records that it happened, with counts and never names.
 
 **Residual risk:** **Medium**, accepted by the product owner — for an account with a weak
@@ -481,3 +521,4 @@ customer's own systems after legitimate secret delivery.
 | 2026-10-12 | — | T11: the product owner's decisions recorded — no waiting period before a reset; the seven-day recoverable reset and the archive emailed at reset time are follow-up P23, which restates T11 |
 | 2026-10-14 | — | T11, round 2: lock one checks the access token's `auth_time` against the flow's start (the stripped-`max_age=0` path closed); code requests capped at three per attempt |
 | 2026-10-14 | — | P23 built: T11 restated — a reset retains the vault for seven days, recoverable and undeletable, then purged hourly; T12 added — the emailed escape archive as a permanent offline target, the owner's accepted risk, and what it does and does not concede |
+| 2026-10-14 | — | P23, review round 1: owner decision recorded — never reset without the archive silently (production without mail refuses; too large needs an explicit choice); T11 gains the way back from a hostile reset and loses "nobody can delete it"; T12 corrected on locked versus unlocked sessions and brief inbox control, states the retained vault is offline-attackable by any unlocked session and its lockout is abuse control, and adds rotating environment keys and the import's preview and e2ee-only targets |

@@ -1326,6 +1326,16 @@ It **never** holds, and a writer MUST NOT add:
 | Grants to anyone else — tokens, invitations, other members | Not the account's. |
 | Deleted secrets, environments and projects; versions before the latest | An escape hatch, not a backup. Size grows with history; the latest value is what a person needs back. |
 
+**A writer writes only what every reader accepts (§14.4).** The rows an archive is assembled
+from were validated when they were written, but under the rules of their day. So the reference
+writer cleans each display name — removes the characters §14.4 refuses, replaces a lone
+surrogate with U+FFFD, clamps to 256 code points, and writes `-` for one left empty; keeps a
+slug that is in the product's grammar and otherwise writes `x-` followed by the entity's id
+without its hyphens (34 characters, valid in both grammars, and as unique as the id, so a
+replaced slug cannot make two environments share a path); leaves out a secret whose name or
+value type a reader would refuse; and carries at most the newest 1 000 key versions of an
+environment. A secret under a key version left out opens as `no-key`, which it would be anyway.
+
 ### 14.3 `README.txt`
 
 UTF-8, LF line endings. Its wording is not normative and a reader MUST NOT parse it, but a
@@ -1497,8 +1507,11 @@ The reference writer keeps each part's ZIP file at or below **5 MiB** (5 242 880
 splits only when it must. Five mebibytes is a delivery choice, not a format limit: one part,
 base64-encoded (about 7 MB) into a message, stays under the 15 MB the sending provider allows
 and under the 10 MB many receiving mail gateways still enforce. It refuses to produce more than
-64 parts; the product's own reset sends at most a handful (`apps/web/src/server/vault-archive-service.ts`
-states the measured ceiling).
+64 parts. The product's own reset sends at most **two**, and never emails an archive whose
+documents it estimates at over **8 MiB** — sized in SQL before anything is loaded, from a
+measured peak of 68 MiB of heap for 8 MiB of ciphertext in a Worker's 128 MB
+(`apps/web/src/server/vault-archive-service.ts`). Such a vault is reset only when the person
+explicitly chooses to go without the archive (owner decision, PR #121 round 1).
 
 ### 14.7 Security considerations
 
@@ -1538,8 +1551,16 @@ key is in it — can add an environment whose grant is sealed to that key and wh
 whatever they like, and a reader will open them. This is ADR 0009's trade-off 3 (grant
 signatures are created but not yet verified) seen from a file rather than from the API, and the
 mitigation is the same: treat what an archive yields as what it is — a copy, received over
-email — and review it before importing it anywhere that matters. The import screen shows every
-name and value before anything is written.
+email — and review it before importing it anywhere that matters. The import screen offers its
+Import only after a preview that lists every name and value it would write, each value masked
+until revealed.
+
+**An archive is an end-to-end-encrypted source.** Every value in it came out of an `e2ee`
+environment, so an importer MUST NOT write it anywhere the values would reach a server readable:
+the reference import refuses a `server`-mode target outright — shown with its mode, never
+confirmed past — and refuses a target whose mode the browser saw as `e2ee` and the server now
+calls `server`, as every write does. An archive environment is preselected only for the
+environment with the **same id**, never by matching slugs, which repeat across projects.
 
 **The names are plaintext.** Organisation, project, environment and secret names travel in the
 clear, in the archive and therefore in the mailbox. The product treats names as non-secret
