@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { fromBase64Url, zeroize } from '@xecret/core/crypto/client';
 import type { Bytes, RecoveryCode } from '@xecret/core/crypto/client';
 
@@ -153,8 +153,11 @@ export function VaultUnlock({ user, onUnlocked, onStageChange }: VaultUnlockProp
   const vault = useVault();
   // Back from the reset's fresh sign-in: reopen the reset. The marker carries
   // the id of the account that started it, and only chooses the screen; what
-  // the screen shows is the server's answer.
-  const [resumedBy] = useState(() => resumingVaultReset());
+  // the screen shows is the server's answer. It describes that one return and
+  // nothing after it: leaving the reset screen forgets it, or a later "I have
+  // lost all five codes" would open on its stale alerts — "you're signed in
+  // again", or "a different account came back".
+  const [resumedBy, setResumedBy] = useState(() => resumingVaultReset());
   const [stage, setStage] = useState<Stage>(resumedBy !== null ? 'lost' : 'unlock');
 
   useEffect(() => {
@@ -194,7 +197,10 @@ export function VaultUnlock({ user, onUnlocked, onStageChange }: VaultUnlockProp
       <AllCodesLost
         userId={user.id}
         resumedBy={resumedBy}
-        onBack={() => setStage('code')}
+        onBack={() => {
+          setResumedBy(null);
+          setStage('code');
+        }}
         onReset={onUnlocked}
       />
     );
@@ -1117,6 +1123,7 @@ function AllCodesLost({
   // Screens: the facts, the fresh sign-in, then the code(s) and the act. Each
   // asks the reader for exactly one thing. A resumed reset starts at the facts.
   const [step, setStep] = useState<'facts' | 'checking' | 'sign-in' | 'confirm'>('facts');
+  const formId = useId();
   const [status, setStatus] = useState<ReauthStatus | null>(null);
   const [sent, setSent] = useState(false);
 
@@ -1286,13 +1293,12 @@ function AllCodesLost({
   }
 
   if (step === 'checking') {
+    // The words are inside the live region, where a screen reader announces
+    // them; an `aria-label` on a status is not reliably read, and `aria-busy`
+    // would tell it to wait for content that never comes.
     return (
-      <div
-        role="status"
-        aria-busy="true"
-        aria-label="Checking your sign-in"
-        className="flex flex-col gap-3"
-      >
+      <div role="status" className="flex flex-col gap-3">
+        <span className="sr-only">Checking your sign-in…</span>
         <Skeleton className="h-10 w-full" />
         <Skeleton className="h-11 w-full" />
       </div>
@@ -1346,6 +1352,7 @@ function AllCodesLost({
     mfaToken === null
       ? code.replace(/\s+/g, '').length === 6
       : totp.replace(/\s+/g, '').length === 6;
+  const notReadyHintId = `${formId}-not-ready`;
 
   // Screen three: the second lock and the act, and nothing else to read.
   return (
@@ -1426,11 +1433,17 @@ function AllCodesLost({
             />
           </Field>
 
-          <Button type="submit" variant="danger" loading={busy} disabled={!ready}>
+          <Button
+            type="submit"
+            variant="danger"
+            loading={busy}
+            disabled={!ready}
+            aria-describedby={ready ? undefined : notReadyHintId}
+          >
             {mfaToken === null ? 'Reset my vault' : 'Confirm and reset my vault'}
           </Button>
           {!ready ? (
-            <p className="text-fg-subtle -mt-2 text-xs">
+            <p id={notReadyHintId} className="text-fg-subtle -mt-2 text-xs">
               Enter the six-digit code to enable this button.
             </p>
           ) : null}
