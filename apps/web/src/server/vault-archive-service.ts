@@ -81,12 +81,13 @@ import { vaultArchiveMail, vaultResetNoticeMail } from './vault-archive-mail';
  * {@link ARCHIVE_PART_BUDGET_BYTES}.
  *
  * Chosen from a measurement, for a Worker's 128 MB. Building and sending an
- * archive of 8 MiB of ciphertext in Node — the stored rows, their text, the
- * plan, one part's document, ZIP, base64 and request body at a time — peaked
- * at 68 MiB of heap including a 14 MiB baseline, with the raw rows held for
- * the whole run (round 1 of PR #121). The rows are now dropped as they are
- * read, so the margin is wider than that, and a vault beyond the cap is never
- * loaded at all. 8 MiB is still tens of thousands of secrets.
+ * archive of 8 MiB of ciphertext in Node, exactly as below — the rows released
+ * as they become text, every part parsed back, then one part's ZIP, base64 and
+ * request body at a time — peaks at about 70 MiB of live heap, including a
+ * 14 MiB baseline (round 1 of PR #121; the peak is the second part's encoding
+ * beside the plan, not the rows). That leaves well over a third of the
+ * isolate, and a vault beyond the cap is never loaded at all. 8 MiB is still
+ * tens of thousands of secrets.
  */
 export const ARCHIVE_EMAIL_MAX_BYTES = 8 * 1024 * 1024;
 
