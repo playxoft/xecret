@@ -293,6 +293,19 @@ export const REAUTH_MAX_USER_ATTEMPTS = 10;
 export const REAUTH_USER_WINDOW_SECONDS = 24 * 60 * 60;
 
 /**
+ * Codes one re-authentication attempt may ask WorkOS to email before the
+ * person has to sign in again.
+ *
+ * Every request is a message in the account's inbox. Three covers a code that
+ * was slow to arrive and one that expired while somebody found their phone;
+ * past that, a fresh sign-in starts a new attempt. Reserved before WorkOS is
+ * asked, under the account's row lock, so a burst of requests cannot get more
+ * than this between them. The rate limiter in front is per location and fails
+ * open; this does not.
+ */
+export const REAUTH_MAX_CODE_SENDS = 3;
+
+/**
  * The reset body: a typed phrase, and proof of account ownership.
  *
  * ── Why the phrase alone was not enough ──

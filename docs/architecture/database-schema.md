@@ -103,6 +103,7 @@ CREATE TABLE reauthentications (                 -- 0019
   signed_in_at     timestamptz NOT NULL,         -- lock one: the sign-in for the reset
   code_sent_at     timestamptz,                  -- a code was requested; the code is never stored
   code_attempts    smallint    NOT NULL DEFAULT 0 CHECK (code_attempts >= 0),
+  code_sends       smallint    NOT NULL DEFAULT 0 CHECK (code_sends >= 0),
   mfa_pending_hash bytea,                        -- SHA-256 (32 bytes) of WorkOS's pending-
                                                  --   authentication token, never the token
   mfa_factor_id    text,                         -- the WorkOS TOTP factor to challenge
@@ -151,6 +152,13 @@ and an unexpired `proof_expires_at`, so two concurrent resets with one proof can
   — `reauthentications_user_idx` is that sum's index, and the user foreign key's cascade reads
   through it too. A guess is accepted only where `code_sent_at` is set. The budget is a column,
   not a rate-limiter counter, so it holds where the rate-limit binding is absent and fails open.
+  The sum is correct only at READ COMMITTED, Postgres's default, which nothing here overrides:
+  each statement takes a fresh snapshot, so a guess that waited for the row lock sees the
+  reservations committed ahead of it.
+- `code_sends` counts **code requests** — each one an email to the account. Reserved the same
+  way, before WorkOS is asked and under the same user-row lock: at most three per attempt
+  (`code_sends < 3` in the reserving UPDATE), whatever WorkOS then answers. A fresh sign-in is
+  a new attempt with its own three.
 - `mfa_pending_hash` and `mfa_factor_id` are set together when WorkOS answers a correct emailed
   code with an MFA challenge. The browser holds the pending-authentication token, which WorkOS
   would accept back with an authenticator code; this row holds only its SHA-256, so the TOTP
@@ -833,7 +841,8 @@ the per-request session lookup among them — fails against a database without t
 order is safe. The same holds for 0019, where the cost of getting it wrong is confined to the
 vault reset — its sign-in included, since the callback writes that session and its
 `reauthentications` row in one transaction. 0019 was amended in place (the grant, the index,
-`code_failures` renamed `code_attempts`, the two MFA columns) before any database applied it.
+`code_failures` renamed `code_attempts`, the two MFA columns, `code_sends`) before any database
+applied it.
 
 Migration 0013 drops nothing and loses nothing. Every existing environment keeps its `env_keys`
 row and keeps working exactly as before; the one column that could not be added as a nullable

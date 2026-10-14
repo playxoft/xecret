@@ -280,7 +280,9 @@ check is added. **Both** of the following, **in this order**:
    therefore proves a live session at Google or the identity provider *in this browser*, not
    knowledge of a credential, and it can pass silently.
 2. **An emailed one-time code** (WorkOS Magic Auth). `POST /api/auth/reauth/start` has WorkOS
-   email it — only within ten minutes of lock one, and only from the session lock one issued.
+   email it — only within ten minutes of lock one, only from the session lock one issued, and
+   at most three times per attempt, reserved before WorkOS is asked so that lock one cannot be
+   turned into a stream of mail to the account's inbox.
    WorkOS delivers the code; xecret drops its copy unread. `POST /api/auth/reauth/verify` checks
    it, and it counts only if it proved control of the WorkOS user this account is linked to and
    nobody was impersonating them. A good one mints a one-time, five-minute **reauth proof**,

@@ -33,6 +33,8 @@ export const reauthentications = pgTable(
     codeSentAt: timestamp('code_sent_at', { withTimezone: true }),
     /** Guesses reserved against this attempt, before WorkOS is asked. */
     codeAttempts: smallint('code_attempts').notNull().default(0),
+    /** Codes requested on this attempt, reserved before WorkOS is asked to send one. */
+    codeSends: smallint('code_sends').notNull().default(0),
     /** SHA-256 of WorkOS's pending-authentication token, while it wants a TOTP. */
     mfaPendingHash: bytea('mfa_pending_hash'),
     /** The TOTP factor to challenge, alongside `mfaPendingHash`. */
@@ -64,5 +66,6 @@ export const reauthentications = pgTable(
     ),
     check('reauthentications_used_check', sql`${t.usedAt} is null or ${t.proofHash} is not null`),
     check('reauthentications_code_attempts_check', sql`${t.codeAttempts} >= 0`),
+    check('reauthentications_code_sends_check', sql`${t.codeSends} >= 0`),
   ],
 );

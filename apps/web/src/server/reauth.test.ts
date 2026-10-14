@@ -76,8 +76,12 @@ const statusRoute = await import('@/app/api/auth/reauth/route');
 const startRoute = await import('@/app/api/auth/reauth/start/route');
 const verifyRoute = await import('@/app/api/auth/reauth/verify/route');
 const resetRoute = await import('@/app/api/auth/vault/reset/route');
-const { REAUTH_MAX_CODE_ATTEMPTS, REAUTH_MAX_USER_ATTEMPTS, VAULT_RESET_CONFIRMATION } =
-  await import('./schemas/vault');
+const {
+  REAUTH_MAX_CODE_ATTEMPTS,
+  REAUTH_MAX_CODE_SENDS,
+  REAUTH_MAX_USER_ATTEMPTS,
+  VAULT_RESET_CONFIRMATION,
+} = await import('./schemas/vault');
 
 let t: TestDatabase;
 let lines: LogEntry[] = [];
@@ -297,11 +301,12 @@ async function attempt(who: Account) {
     await t.pg.query<{
       code_sent_at: Date | null;
       code_attempts: number;
+      code_sends: number;
       proof_hash: Uint8Array | null;
       proof_expires_at: Date | null;
       used_at: Date | null;
     }>(
-      `select code_sent_at, code_attempts, proof_hash, proof_expires_at, used_at
+      `select code_sent_at, code_attempts, code_sends, proof_hash, proof_expires_at, used_at
          from reauthentications where session_id = $1`,
       [who.sessionId],
     )
@@ -423,6 +428,59 @@ describe('asking for the code', () => {
 
     expect((await start(who)).status).toBe(403);
     expect(workos.createMagicAuth).not.toHaveBeenCalled();
+  });
+
+  it('sends three codes per sign-in, then refuses in its own words without asking WorkOS', async () => {
+    const who = await account();
+    await signedInFreshly(who, 30, { codeRequested: false });
+    magicAuthReaches(who.workosUserId);
+
+    for (let i = 0; i < REAUTH_MAX_CODE_SENDS; i += 1) expect((await start(who)).status).toBe(204);
+    const refused = await start(who);
+
+    expect(REAUTH_MAX_CODE_SENDS).toBe(3);
+    expect(refused.status).toBe(403);
+    expect((await errorOf(refused)).message).toMatch(/as many codes as one sign-in can send/);
+    expect(workos.createMagicAuth).toHaveBeenCalledTimes(REAUTH_MAX_CODE_SENDS);
+    expect((await attempt(who))?.code_sends).toBe(REAUTH_MAX_CODE_SENDS);
+  });
+
+  it('lets at most three of a burst of concurrent requests reach WorkOS', async () => {
+    const who = await account();
+    await signedInFreshly(who, 30, { codeRequested: false });
+    magicAuthReaches(who.workosUserId);
+
+    const statuses = (await Promise.all(Array.from({ length: 12 }, () => start(who)))).map(
+      (r) => r.status,
+    );
+
+    expect(statuses.filter((s) => s === 204)).toHaveLength(REAUTH_MAX_CODE_SENDS);
+    expect(statuses.filter((s) => s === 403)).toHaveLength(12 - REAUTH_MAX_CODE_SENDS);
+    expect(workos.createMagicAuth).toHaveBeenCalledTimes(REAUTH_MAX_CODE_SENDS);
+  });
+
+  it('counts a request WorkOS refused, too', async () => {
+    const who = await account();
+    await signedInFreshly(who, 30, { codeRequested: false });
+    workos.createMagicAuth.mockRejectedValue(
+      Object.assign(new Error('Service unavailable'), { status: 503 }),
+    );
+
+    expect((await start(who)).status).toBe(503);
+    expect((await attempt(who))?.code_sends).toBe(1);
+    expect((await attempt(who))?.code_sent_at).toBeNull();
+  });
+
+  it('gives a fresh sign-in a fresh allowance', async () => {
+    const who = await account();
+    await signedInFreshly(who, 30, { codeRequested: false });
+    magicAuthReaches(who.workosUserId);
+    for (let i = 0; i < REAUTH_MAX_CODE_SENDS; i += 1) await start(who);
+
+    const again = { ...who, ...(await anotherSession(who.userId)) };
+    await signedInFreshly(again, 30, { codeRequested: false });
+
+    expect((await start(again)).status).toBe(204);
   });
 });
 

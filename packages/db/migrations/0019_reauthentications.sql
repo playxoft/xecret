@@ -19,6 +19,12 @@
 --                     WorkOS is asked, so a guess costs the same whatever
 --                     WorkOS answers and however many arrive at once. Capped by
 --                     the application, per attempt and per user per day.
+--   code_sends        codes requested on this attempt, counted *before* WorkOS
+--                     is asked to send one, under the same lock as the guesses.
+--                     Capped by the application per attempt, so a session that
+--                     passed lock one cannot turn it into a stream of mail to
+--                     the account's inbox: the rate limiter in front is per
+--                     location and fails open.
 --   mfa_pending_hash  when the emailed code was right but WorkOS wants the
 --   mfa_factor_id     user's authenticator too: SHA-256 of WorkOS's pending-
 --                     authentication token (the browser holds the token; the
@@ -55,6 +61,7 @@ CREATE TABLE "reauthentications" (
 	"signed_in_at" timestamp with time zone NOT NULL,
 	"code_sent_at" timestamp with time zone,
 	"code_attempts" smallint DEFAULT 0 NOT NULL,
+	"code_sends" smallint DEFAULT 0 NOT NULL,
 	"mfa_pending_hash" "bytea",
 	"mfa_factor_id" text,
 	"proof_hash" "bytea",
@@ -80,7 +87,8 @@ CREATE TABLE "reauthentications" (
 	-- Spent means a proof existed to spend.
 	CONSTRAINT "reauthentications_used_check"
 		CHECK ("used_at" IS NULL OR "proof_hash" IS NOT NULL),
-	CONSTRAINT "reauthentications_code_attempts_check" CHECK ("code_attempts" >= 0)
+	CONSTRAINT "reauthentications_code_attempts_check" CHECK ("code_attempts" >= 0),
+	CONSTRAINT "reauthentications_code_sends_check" CHECK ("code_sends" >= 0)
 );
 --> statement-breakpoint
 ALTER TABLE "reauthentications" ADD CONSTRAINT "reauthentications_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint

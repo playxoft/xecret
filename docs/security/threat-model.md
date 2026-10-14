@@ -344,6 +344,9 @@ The victim's own vault, and with it their copy of every end-to-end-encrypted key
   counted under the user's row lock. A guess is accepted only on an attempt whose code was
   actually requested, and a WorkOS error xecret cannot classify costs a guess too. The budget
   holds where the rate limiter is absent and fails open.
+- **Code requests are capped the same way**: at most three per attempt, reserved under the same
+  row lock before WorkOS is asked to send one, so a session past lock one cannot turn the
+  account's inbox into a mail stream.
 - **WorkOS MFA.** With an authenticator app enrolled, WorkOS answers a correct emailed code with
   an MFA challenge; xecret answers `{ mfaRequired: true, mfaToken }`, keeps only the SHA-256 of
   WorkOS's pending-authentication token, and mints the proof only after the TOTP code
