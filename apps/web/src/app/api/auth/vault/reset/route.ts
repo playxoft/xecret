@@ -1,3 +1,5 @@
+import { uuidv7 } from '@xecret/core/ids';
+import { VAULT_RETENTION_MS } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
@@ -5,6 +7,7 @@ import { authenticatedRoute } from '@/server/route';
 import { confirmationMatches } from '@/server/schemas/resources';
 import { assertRecentAccountOwner } from '@/server/reauth-service';
 import { VAULT_RESET_CONFIRMATION, vaultResetSchema } from '@/server/schemas/vault';
+import { emailVaultArchive } from '@/server/vault-archive-service';
 import {
   primaryOrgId,
   requireUserPrincipal,
@@ -53,6 +56,17 @@ import {
  * has the argument). The proof is bound to this session and this user, lives
  * five minutes, and is spent by this request whatever happens next.
  *
+ * ── Then the archive, then the reset (P23) ──
+ * With the proof spent and before anything changes, the account's escape
+ * archive — every ciphertext the vault could open, still sealed — is assembled
+ * from stored rows and emailed to the account's own address
+ * (`server/vault-archive-service.ts`). A provider failure refuses the reset,
+ * so a retry finds the vault where it was. A deployment with no mail provider,
+ * or a vault too large to email, resets anyway and the response says no archive
+ * was sent; either way the old vault is **retained for seven days**, recoverable
+ * with the old passphrase or a recovery code and undeletable by anyone, and is
+ * purged by the scheduled job after that (migration 0020).
+ *
  * Rate limited on `RL_LOGIN` under a **`vault_reset` key of its own**, keyed on
  * the user alone like the recovery counter it sits beside. Its own counter
  * rather than recovery's, deliberately: somebody arrives here having just
@@ -83,27 +97,56 @@ export const POST = authenticatedRoute(
     // follows succeeds or not.
     await assertRecentAccountOwner(services, user, body.reauthProof);
 
-    const destroyed = await resetVault(services, user);
+    const now = new Date();
+    const retainedUntil = new Date(now.getTime() + VAULT_RETENTION_MS);
+
+    // Before the reset, never after: the order the owner decided is "archive
+    // emailed, then reset", and a send that fails must leave the vault in place.
+    const archive = await emailVaultArchive(services, {
+      userId: user.user.id,
+      email: user.user.email,
+      now,
+      retainedUntil,
+      archiveId: uuidv7(),
+    });
 
     // Nothing to reset. A 404 rather than a cheerful 200, for the same reason
     // unenrolling a passkey that does not exist is a 404: a destructive call
-    // that reports success without destroying anything teaches a client that
-    // the call worked, and the next screen it draws will be wrong.
-    if (!destroyed) {
+    // that reports success without changing anything teaches a client that the
+    // call worked, and the next screen it draws will be wrong.
+    if (archive.status === 'not-emailed' && archive.reason === 'no-vault') {
+      throw errors.notFound('no vault to reset');
+    }
+
+    const retained = await resetVault(services, user, now);
+    if (retained === null) {
       throw errors.notFound('no vault to reset');
     }
 
     const orgId = await primaryOrgId(services, user.user.id);
     if (orgId !== null) {
-      // The only record that this account's existing ciphertext became
-      // permanently unreadable at a particular moment. Without it, "I cannot see
-      // any of my secrets and I never deleted them" has no answer in the log.
+      const subject = { type: 'user', id: user.user.id } as const;
       record(
-        audit(orgId).success(
-          'vault.reset',
-          { type: 'user', id: user.user.id },
-          { source: 'dashboard', reason: 'passphrase and recovery codes lost' },
-        ),
+        archive.status === 'emailed'
+          ? audit(orgId).success('vault.archive_emailed', subject, {
+              source: 'dashboard',
+              partCount: archive.parts,
+              environmentCount: archive.environmentCount,
+              secretCount: archive.secretCount,
+            })
+          : audit(orgId).error(
+              'vault.archive_emailed',
+              subject,
+              archive.reason === 'too-large' ? 'quotaExceeded' : 'upstreamUnavailable',
+              { source: 'dashboard' },
+            ),
+        // The record that this account's existing ciphertext stopped being
+        // readable to it at a particular moment — recoverable until the purge.
+        audit(orgId).success('vault.reset', subject, {
+          source: 'dashboard',
+          reason: 'passphrase and recovery codes lost; old vault retained for seven days',
+          grantCount: retained.grantCount,
+        }),
       );
     }
 
@@ -112,7 +155,18 @@ export const POST = authenticatedRoute(
     // `vault_unlocked_at` on every session in the same transaction, so this
     // request's own principal is stale by exactly one field — and the field it
     // is stale in is one `vaultStatus` recomputes from the absent vault anyway.
-    return json({ vault: await vaultStatus(services, { ...user, vaultUnlockedAt: null }) });
+    return json({
+      vault: await vaultStatus(services, { ...user, vaultUnlockedAt: null }),
+      archive:
+        archive.status === 'emailed'
+          ? { emailed: true, parts: archive.parts, to: user.user.email }
+          : { emailed: false, reason: archive.reason },
+      retained: {
+        id: retained.id,
+        retainedUntil: retained.purgeAfter.toISOString(),
+        grantCount: retained.grantCount,
+      },
+    });
   },
   { allowLocked: true },
 );

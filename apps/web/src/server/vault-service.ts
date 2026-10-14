@@ -37,7 +37,7 @@ import {
   setAutoLockMinutes,
   toBytes,
 } from '@xecret/db/repositories';
-import type { VaultKeyRecord } from '@xecret/db/repositories';
+import type { RetainedVaultReceipt, VaultKeyRecord } from '@xecret/db/repositories';
 import { vaultUnlockStateOf } from './actor';
 import type { Principal } from './actor';
 import type { ServiceContext } from './context';
@@ -740,13 +740,13 @@ export async function revokeDevicePins(
 }
 
 /**
- * Destroys the vault, so an account with no way into it can start again.
+ * Resets the vault, so an account with no way into it can start again.
  *
  * ── The dead end this exists for ──
  * Somebody who has lost their master passphrase *and* every recovery code holds
  * nothing that opens their User Key, and no one can produce one for them — not a
- * teammate, not an operator, not us. No copy of it exists outside the wraps this
- * destroys. That is the promise the product makes, and it is kept even here.
+ * teammate, not an operator, not us. No copy of it exists outside its wraps.
+ * That is the promise the product makes, and it is kept even here.
  *
  * So this does not lose their data; the last recovery code did. What it does is
  * let them out of the room: the row disappears, `vaultStatus` reports
@@ -756,10 +756,10 @@ export async function revokeDevicePins(
  * account afterwards.
  *
  * ── What it costs, stated where the caller can see it ──
- * Every environment key ever sealed to the old public key becomes unopenable.
- * Their historical secrets stay in the database as ciphertext nobody can read,
- * and a teammate has to re-share each environment before they can work again.
- * The route says this in the confirmation phrase; this is the code that means it.
+ * The new vault holds none of the environment keys sealed to the old public key.
+ * Until a teammate re-shares each environment, or the old vault is recovered,
+ * the person cannot read them. After the seven-day window below, recovery is
+ * gone, and only the emailed archive — opened with the old passphrase — remains.
  *
  * ── The teammate is told, rather than hoped for ──
  * "A teammate has to re-share each environment" was the honest description of the
@@ -770,14 +770,22 @@ export async function revokeDevicePins(
  * transaction, so the sentence above describes something the product actually
  * does.
  *
- * Returns `false` when there was no vault, so the caller can answer "nothing to
- * reset" rather than reporting a destruction that did not happen.
+ * ── Retained for seven days (P23) ──
+ * The old vault is not destroyed: the repository moves it to the retained
+ * tables in the same transaction, where the old passphrase or a recovery code
+ * can bring its environments back for seven days and nobody can delete it.
+ *
+ * Returns what was retained, or `null` when there was no vault, so the caller
+ * can answer "nothing to reset" rather than reporting a reset that did not
+ * happen.
  */
 export async function resetVault(
   services: ServiceContext,
   user: Extract<Principal, { kind: 'user' }>,
-): Promise<boolean> {
+  now: Date = new Date(),
+): Promise<RetainedVaultReceipt | null> {
   return resetVaultRows(services.db, user.user.id, {
+    now,
     requeue: async (tx) => {
       await requeueKeySharesAfterVaultReset(tx, user.user.id);
     },

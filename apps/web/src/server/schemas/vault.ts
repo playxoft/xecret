@@ -94,7 +94,7 @@ const MAX_GCM_BLOB_LENGTH = 512;
  * follow spec §2, and they disagree about nothing else because this one stops
  * at the prefix.
  */
-const gcmBlobSchema = z
+export const gcmBlobSchema = z
   .string()
   .check(
     z.regex(/^xk2\.gcm\.[A-Za-z0-9_-]+$/, MALFORMED_BLOB),
@@ -124,13 +124,13 @@ const unlockVerifierSchema = base64UrlBytes(
  * what says which branch a value came from, and the server compares it against
  * the matching digest and no other.
  */
-const ukUnlockVerifierSchema = base64UrlBytes(
+export const ukUnlockVerifierSchema = base64UrlBytes(
   32,
   'An unlock verifier is 32 bytes, base64url encoded.',
 );
 
 /** `SHA-256("xecret.v2.recovery-lookup" ‖ codeBytes)` (spec §7.5). */
-const lookupHashSchema = base64UrlBytes(32, 'A lookup hash is 32 bytes, base64url encoded.');
+export const lookupHashSchema = base64UrlBytes(32, 'A lookup hash is 32 bytes, base64url encoded.');
 
 /**
  * Argon2id parameters, bounded to the range spec §3.1 defines.

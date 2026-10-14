@@ -69,7 +69,7 @@ const MIN_SEALED_LENGTH = 'xk2.x25519.'.length + Math.ceil((60 * 4) / 3);
 const MAX_SEALED_LENGTH = 512;
 
 /** An `xk2.x25519.` blob: a prefix, and base64url after it. Never decoded here. */
-const sealedBlobSchema = z
+export const sealedBlobSchema = z
   .string()
   .check(
     z.regex(/^xk2\.x25519\.[A-Za-z0-9_-]+$/, MALFORMED_SEALED),
@@ -89,7 +89,7 @@ const sealedBlobSchema = z
  */
 const SIGNATURE_LENGTH = 'xk2.ed25519.'.length + Math.ceil((64 * 4) / 3);
 
-const signatureSchema = z
+export const signatureSchema = z
   .string()
   .check(
     z.regex(/^xk2\.ed25519\.[A-Za-z0-9_-]+$/, MALFORMED_SIGNATURE),

@@ -295,7 +295,7 @@ export function archiveReadme(
       '',
       `  Until ${until}, xecret keeps the old vault itself, and`,
       '  you can recover it in the app with the same passphrase or a recovery code:',
-      '  Account settings, Vault, "Recover a previous vault". After that, xecret',
+      '  Settings, Security, "Recover a previous vault". After that, xecret',
       '  deletes it, and this file is the only copy.',
     );
   }

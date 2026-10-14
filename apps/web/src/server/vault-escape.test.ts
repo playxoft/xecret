@@ -1,0 +1,1047 @@
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { generateToken, hashUnlockVerifier } from '@xecret/core/auth';
+import type { AuditRecord } from '@xecret/core/audit';
+import {
+  computeValueHmac,
+  derivePassphraseWrapKey,
+  deriveRecoveryKey,
+  deriveStretchedKey,
+  deriveUkUnlockVerifier,
+  deriveUnlockVerifier,
+  encodePublicKey,
+  encryptSecret,
+  fromBase64Url,
+  generateEncryptionKeyPair,
+  generateEnvironmentDataKey,
+  generateEnvironmentHmacKey,
+  generateKdfSalt,
+  generateRecoveryCodes,
+  generateSigningKeyPair,
+  generateUserKey,
+  openGrant,
+  recoveryLookupHash,
+  sealGrant,
+  signGrant,
+  toBase64Url,
+  toHex,
+  unwrapPrivateKey,
+  unwrapUserKey,
+  wrapPrivateKey,
+  wrapUserKey,
+} from '@xecret/core/crypto/client';
+import type { Argon2idParams, Bytes, RecoveryCode } from '@xecret/core/crypto/client';
+import { openArchive, readArchiveFile } from '@xecret/core/vault-archive';
+import {
+  createSession,
+  createVault,
+  issueReauthProof,
+  markSessionUnlocked,
+  recordFreshSignIn,
+  resetVault as resetVaultRows,
+} from '@xecret/db/repositories';
+import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '@xecret/db/testing';
+import type { TestDatabase } from '@xecret/db/testing';
+import { createLogger } from './logging';
+import type { LogEntry, RequestLog } from './logging';
+
+/**
+ * P23 end to end, through the real routes and the real `authenticatedRoute`
+ * against a real database, with real cryptography on the "browser" side:
+ *
+ *  - a reset emails the escape archive — ZeptoMail is a stubbed `fetch`, and
+ *    the attachment it was handed is opened with the old passphrase — and then
+ *    retains the vault for seven days;
+ *  - a failed send resets nothing; no mail provider, or a vault too large to
+ *    email, resets anyway and says so;
+ *  - the retained vault is recovered into a new one with the old passphrase,
+ *    and only by its owner, from an unlocked session, with the proof;
+ *  - the purge removes it after seven days, runs only from the scheduler, and
+ *    removes nothing earlier.
+ */
+
+const ORIGIN = 'https://xecret.playxoft.com';
+const CSRF = 'csrf-token-for-tests';
+const ZEPTO = 'https://api.zeptomail.com/v1.1/email';
+const DAY = 24 * 60 * 60 * 1000;
+
+/** Cheap but in range (§3.1): the archive reader validates what it runs. */
+const KDF: Argon2idParams = { alg: 'argon2id', v: 19, m: 19456, t: 1, p: 1, len: 32 };
+
+const PLAINTEXT = 'postgres://app:example-not-a-real-key@db.internal:5432/escape';
+const NOTE = 'escape-test note, example-not-a-real-key';
+
+const context = vi.hoisted(() => ({ workerContext: vi.fn(), createServiceContext: vi.fn() }));
+const auditSink = vi.hoisted(() => ({ write: vi.fn() }));
+const logging = vi.hoisted(() => ({ createRequestLog: vi.fn() }));
+
+vi.mock('./context', () => context);
+vi.mock('./audit-sink', () => ({
+  DatabaseAuditSink: class {
+    write = auditSink.write;
+  },
+}));
+vi.mock('./logging', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./logging')>()),
+  createRequestLog: logging.createRequestLog,
+}));
+
+const resetRoute = await import('@/app/api/auth/vault/reset/route');
+const retainedRoute = await import('@/app/api/auth/vault/retained/route');
+const retainedOneRoute = await import('@/app/api/auth/vault/retained/[retainedId]/route');
+const recoveryWrapRoute =
+  await import('@/app/api/auth/vault/retained/[retainedId]/recovery-wrap/route');
+const restoreRoute = await import('@/app/api/auth/vault/retained/[retainedId]/restore/route');
+const purgeRoute = await import('@/app/api/internal/scheduled/vault-purge/route');
+const { runScheduledJob, VAULT_PURGE_PATH } = await import('./scheduled');
+const { emailVaultArchive } = await import('./vault-archive-service');
+const { VAULT_RESET_CONFIRMATION } = await import('./schemas/vault');
+
+let t: TestDatabase;
+let audit: AuditRecord[] = [];
+let lines: LogEntry[] = [];
+let deferred: Promise<unknown>[] = [];
+let env: Record<string, string>;
+let mailRequests: { url: string; body: Record<string, unknown> }[] = [];
+let mailStatus = 201;
+
+beforeAll(async () => {
+  t = await createTestDatabase();
+}, TEST_DATABASE_TIMEOUT_MS);
+
+afterAll(async () => {
+  await t.close();
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  t.reset();
+  audit = [];
+  lines = [];
+  deferred = [];
+  mailRequests = [];
+  mailStatus = 201;
+  env = {
+    XECRET_PUBLIC_URL: ORIGIN,
+    XECRET_ENV: 'production',
+    ZEPTOMAIL_TOKEN: 'zepto-test-token',
+    ZEPTOMAIL_FROM_ADDRESS: 'no-reply@example.com',
+  };
+
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url !== ZEPTO) throw new Error(`unexpected fetch to ${url}`);
+      mailRequests.push({ url, body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return new Response('{}', { status: mailStatus });
+    }),
+  );
+
+  logging.createRequestLog.mockImplementation((_env: unknown, base: Record<string, unknown>) =>
+    createLogger({
+      sink: { write: (entry) => lines.push(entry), flush: () => Promise.resolve() },
+      minimum: 'debug',
+      base,
+    }),
+  );
+  context.workerContext.mockImplementation(async () => ({ env, ctx: { waitUntil: () => {} } }));
+  context.createServiceContext.mockImplementation(
+    async (
+      request: Request,
+      _worker: unknown,
+      requestId: string,
+      log: RequestLog,
+      startedAt: number,
+    ) => ({
+      env,
+      db: t.db,
+      envelope: {},
+      meta: {
+        requestId,
+        rayId: null,
+        ipAddress: '203.0.113.5',
+        userAgent: 'vitest',
+        method: request.method,
+        path: new URL(request.url).pathname,
+        startedAt,
+      },
+      log: log.logger,
+      bindLog: log.bind,
+      waitUntil: (promise: Promise<unknown>) => deferred.push(promise),
+      settled: () => Promise.allSettled(deferred),
+      dispose: () => {},
+    }),
+  );
+  auditSink.write.mockImplementation(async (events: AuditRecord[]) => {
+    audit.push(...events);
+  });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+/* ── fixtures: a vault built the way the browser builds one ───────────────── */
+
+interface Keys {
+  userKey: Bytes;
+  encPrivateKey: Bytes;
+  encPublicKey: Bytes;
+  signPrivateKey: Bytes;
+  signPublicKey: Bytes;
+  codes: RecoveryCode[];
+}
+
+interface Account {
+  userId: string;
+  email: string;
+  sessionId: string;
+  token: string;
+  passphrase: string;
+  keys: Keys;
+}
+
+async function setUpVault(userId: string, passphrase: string): Promise<Keys> {
+  const userKey = generateUserKey();
+  const enc = generateEncryptionKeyPair();
+  const sign = generateSigningKeyPair();
+  const salt = generateKdfSalt();
+  const stretched = await deriveStretchedKey({ passphrase, salt, params: KDF });
+  const wrapKey = await derivePassphraseWrapKey(stretched);
+  const codes = generateRecoveryCodes(2);
+
+  const recoveryWraps = [];
+  for (const code of codes) {
+    const lookupHash = await recoveryLookupHash(code.codeBytes);
+    recoveryWraps.push({
+      lookupHash,
+      wrap: new TextEncoder().encode(
+        await wrapUserKey({
+          wrapKey: await deriveRecoveryKey(code.codeBytes),
+          userKey,
+          context: { userId, wrapKind: 'recovery', lookupHash },
+        }),
+      ),
+    });
+  }
+
+  const ascii = (value: string) => new TextEncoder().encode(value);
+  await createVault(t.db, {
+    userId,
+    encAlgorithm: 'X25519',
+    encPublicKey: enc.publicKey,
+    encPrivateKeyEnc: ascii(
+      await wrapPrivateKey({ userKey, privateKey: enc.privateKey, userId, purpose: 'encryption' }),
+    ),
+    signAlgorithm: 'Ed25519',
+    signPublicKey: sign.publicKey,
+    signPrivateKeyEnc: ascii(
+      await wrapPrivateKey({ userKey, privateKey: sign.privateKey, userId, purpose: 'signing' }),
+    ),
+    kdfSalt: salt,
+    kdfParams: KDF,
+    unlockVerifierHash: await hashUnlockVerifier(await deriveUnlockVerifier(stretched)),
+    ukUnlockVerifierHash: await hashUnlockVerifier(await deriveUkUnlockVerifier(userKey)),
+    passphraseWrap: ascii(
+      await wrapUserKey({ wrapKey, userKey, context: { userId, wrapKind: 'passphrase' } }),
+    ),
+    recoveryWraps,
+  });
+
+  return {
+    userKey,
+    encPrivateKey: enc.privateKey,
+    encPublicKey: enc.publicKey,
+    signPrivateKey: sign.privateKey,
+    signPublicKey: sign.publicKey,
+    codes,
+  };
+}
+
+async function account(): Promise<Account> {
+  const userId = randomUUID();
+  const email = `escape-${userId.slice(0, 8)}@example.com`;
+  await t.pg.query(
+    `insert into users (id, workos_user_id, email, email_verified) values ($1, $2, $3, true)`,
+    [userId, `user_01${userId.replaceAll('-', '').slice(0, 20)}`, email],
+  );
+  const { token } = await generateToken('session');
+  const session = await createSession(t.db, { userId, token, ipAddress: null, userAgent: null });
+  const passphrase = `correct horse ${userId.slice(0, 6)} battery staple`;
+  const keys = await setUpVault(userId, passphrase);
+  return { userId, email, sessionId: session.id, token, passphrase, keys };
+}
+
+interface Environment {
+  orgId: string;
+  projectId: string;
+  environmentId: string;
+  edkId: string;
+  edk: Bytes;
+  ehk: Bytes;
+  secretId: string;
+}
+
+/**
+ * An org the account owns (or, with `member: false`, one it is not in), one
+ * e2ee environment with an active key granted to the account, and one secret
+ * with a value and a note encrypted under it.
+ */
+async function environmentFor(
+  who: Account,
+  options: { member?: boolean; role?: 'owner' | 'developer'; production?: boolean } = {},
+): Promise<Environment> {
+  const orgId = randomUUID();
+  const projectId = randomUUID();
+  const environmentId = randomUUID();
+  const edkId = randomUUID();
+  const secretId = randomUUID();
+  const edk = generateEnvironmentDataKey();
+  const ehk = generateEnvironmentHmacKey();
+
+  await t.pg.query(
+    `insert into organizations (id, name, slug, created_by) values ($1, 'Acme', $2, $3)`,
+    [orgId, `acme-${orgId.slice(0, 8)}`, who.userId],
+  );
+  if (options.member !== false) {
+    await t.pg.query(
+      `insert into org_members (id, org_id, user_id, role) values ($1, $2, $3, $4)`,
+      [randomUUID(), orgId, who.userId, options.role ?? 'owner'],
+    );
+  }
+  await t.pg.query(
+    `insert into projects (id, org_id, name, slug, created_by) values ($1, $2, 'API', 'api', $3)`,
+    [projectId, orgId, who.userId],
+  );
+  await t.pg.query(
+    `insert into environments (id, project_id, name, slug, encryption_mode, is_production) values ($1, $2, 'Production', 'production', 'e2ee', $3)`,
+    [environmentId, projectId, options.production ?? false],
+  );
+  await t.pg.query(
+    `insert into env_data_keys (id, environment_id, version, status, created_by) values ($1, $2, 1, 'active', $3)`,
+    [edkId, environmentId, who.userId],
+  );
+  await grantTo(who.userId, who.keys, environmentId, edkId, edk, ehk);
+
+  const value = await encryptSecret({
+    edk,
+    context: { field: 'value', orgId, environmentId, secretId, version: 1 },
+    plaintext: PLAINTEXT,
+  });
+  const note = await encryptSecret({
+    edk,
+    context: { field: 'note', orgId, environmentId, secretId },
+    plaintext: NOTE,
+  });
+  await t.pg.query(
+    `insert into secrets (id, environment_id, name, enc_note, created_by) values ($1, $2, 'DATABASE_URL', $3, $4)`,
+    [secretId, environmentId, new TextEncoder().encode(note), who.userId],
+  );
+  await t.pg.query(
+    `insert into secret_versions (id, secret_id, version, ciphertext, env_data_key_id, client_algorithm, value_hmac, created_by)
+     values ($1, $2, 1, $3, $4, 'xk2.gcm', $5, $6)`,
+    [
+      randomUUID(),
+      secretId,
+      new TextEncoder().encode(value),
+      edkId,
+      await computeValueHmac({ ehk, plaintext: PLAINTEXT }),
+      who.userId,
+    ],
+  );
+
+  return { orgId, projectId, environmentId, edkId, edk, ehk, secretId };
+}
+
+async function grantTo(
+  userId: string,
+  keys: Pick<Keys, 'encPublicKey' | 'signPrivateKey'>,
+  environmentId: string,
+  edkId: string,
+  edk: Bytes,
+  ehk: Bytes,
+): Promise<void> {
+  const recipient = {
+    environmentId,
+    edkVersion: 1,
+    recipientKind: 'member' as const,
+    recipientId: userId,
+    recipientPublicKey: keys.encPublicKey,
+  };
+  const sealed = await sealGrant({ recipient, edk, ehk });
+  const signature = signGrant({
+    signerPrivateSeed: keys.signPrivateKey,
+    fields: { ...recipient, edkSealedBlob: sealed.edkSealed, ehkSealedBlob: sealed.ehkSealed },
+  });
+  const ascii = (value: string) => new TextEncoder().encode(value);
+  await t.pg.query(
+    `insert into env_key_grants (id, env_data_key_id, member_user_id, edk_sealed, ehk_sealed, recipient_public_key, signature, signed_by_user_id)
+     values ($1, $2, $3, $4, $5, $6, $7, $3)`,
+    [
+      randomUUID(),
+      edkId,
+      userId,
+      ascii(sealed.edkSealed),
+      ascii(sealed.ehkSealed),
+      keys.encPublicKey,
+      ascii(signature),
+    ],
+  );
+}
+
+/** Both re-authentication locks, recorded as the routes record them, and the proof. */
+async function proofFor(who: Account): Promise<string> {
+  await recordFreshSignIn(t.db, { userId: who.userId, sessionId: who.sessionId, at: new Date() });
+  // The emailed code was requested — no proof is minted on an attempt without one.
+  await t.pg.query(`update reauthentications set code_sent_at = now() where session_id = $1`, [
+    who.sessionId,
+  ]);
+  const { token, hash } = await generateToken('reauthProof');
+  const issued = await issueReauthProof(t.db, {
+    userId: who.userId,
+    sessionId: who.sessionId,
+    signedInSince: new Date(Date.now() - 60_000),
+    proofHash: hash,
+    expiresAt: new Date(Date.now() + 300_000),
+  });
+  expect(issued).toBeTruthy();
+  return token;
+}
+
+function call(
+  route: Record<string, unknown>,
+  method: 'GET' | 'POST',
+  path: string,
+  who: Pick<Account, 'token'>,
+  options: { body?: unknown; params?: Record<string, string> } = {},
+): Promise<Response> {
+  const handler = route[method] as (
+    request: Request,
+    args?: { params: Promise<Record<string, string>> },
+  ) => Promise<Response>;
+  return handler(
+    new Request(`${ORIGIN}${path}`, {
+      method,
+      headers: {
+        origin: ORIGIN,
+        cookie: `__Host-xecret_session=${who.token}; __Host-xecret_csrf=${CSRF}`,
+        'x-xecret-csrf': CSRF,
+        ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
+      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+    }),
+    options.params === undefined ? undefined : { params: Promise.resolve(options.params) },
+  );
+}
+
+async function reset(who: Account): Promise<Response> {
+  const reauthProof = await proofFor(who);
+  return call(resetRoute, 'POST', '/api/auth/vault/reset', who, {
+    body: { confirm: VAULT_RESET_CONFIRMATION, reauthProof },
+  });
+}
+
+async function count(sql: string, params: unknown[]): Promise<number> {
+  return (await t.pg.query<{ n: number }>(`select count(*)::int as n from ${sql}`, params)).rows[0]!
+    .n;
+}
+
+/** The attachment ZeptoMail was handed, as file bytes. */
+function attachmentOf(request: { body: Record<string, unknown> }): {
+  name: string;
+  mimeType: string;
+  bytes: Uint8Array;
+} {
+  const [attachment] = request.body['attachments'] as {
+    name: string;
+    mime_type: string;
+    content: string;
+  }[];
+  const binary = atob(attachment!.content);
+  return {
+    name: attachment!.name,
+    mimeType: attachment!.mime_type,
+    bytes: Uint8Array.from(binary, (character) => character.charCodeAt(0)),
+  };
+}
+
+/* ── the reset emails the archive, then retains ──────────────────────────── */
+
+describe('a vault reset', () => {
+  it('emails an archive the old passphrase opens, then retains the vault for seven days', async () => {
+    const who = await account();
+    const readable = await environmentFor(who);
+    // A grant in an organisation the account is no longer in, and a stale one
+    // on a production environment its role may no longer read: never archived.
+    const foreign = await environmentFor(who, { member: false });
+    const revoked = await environmentFor(who, { role: 'developer', production: true });
+
+    const before = Date.now();
+    const response = await reset(who);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      vault: { configured: boolean };
+      archive: { emailed: boolean; parts: number; to: string };
+      retained: { id: string; retainedUntil: string; grantCount: number };
+    };
+
+    expect(body.vault.configured).toBe(false);
+    expect(body.archive).toEqual({ emailed: true, parts: 1, to: who.email });
+    const until = new Date(body.retained.retainedUntil).getTime();
+    expect(until - before).toBeGreaterThanOrEqual(7 * DAY);
+    expect(until - Date.now()).toBeLessThanOrEqual(7 * DAY);
+    expect(body.retained.grantCount).toBe(3);
+
+    // One mail, to the account's own address, with one zip attached.
+    expect(mailRequests).toHaveLength(1);
+    const mail = mailRequests[0]!;
+    expect(mail.body['to']).toEqual([{ email_address: { address: who.email } }]);
+    expect(String(mail.body['textbody'])).toContain('anyone who gets this email');
+    const attachment = attachmentOf(mail);
+    expect(attachment.mimeType).toBe('application/zip');
+    expect(attachment.name).toMatch(/^xecret-vault-archive-\d{4}-\d{2}-\d{2}\.zip$/);
+
+    // Nothing readable anywhere in what was sent.
+    expect(JSON.stringify(mail.body)).not.toContain('example-not-a-real-key');
+    expect(new TextDecoder().decode(attachment.bytes)).not.toContain('example-not-a-real-key');
+
+    // And the old passphrase opens it, offline, to exactly what was stored.
+    const doc = await readArchiveFile(attachment.bytes);
+    expect(doc.account.userId).toBe(who.userId);
+    expect(doc.environments.map((environment) => environment.environmentId)).toEqual([
+      readable.environmentId,
+    ]);
+    const opened = await openArchive(doc, { kind: 'passphrase', passphrase: who.passphrase });
+    expect(opened.environments[0]!.secrets).toMatchObject([
+      { name: 'DATABASE_URL', outcome: 'ok', value: PLAINTEXT, note: NOTE },
+    ]);
+    // …and so does a recovery code.
+    const byCode = await openArchive(doc, {
+      kind: 'recovery-code',
+      code: who.keys.codes[1]!.displayForm,
+    });
+    expect(byCode.environments[0]!.secrets[0]!.value).toBe(PLAINTEXT);
+
+    // The live vault is gone and the retained one holds it.
+    expect(await count('user_keys where user_id = $1', [who.userId])).toBe(0);
+    expect(await count('retained_vaults where user_id = $1', [who.userId])).toBe(1);
+    expect(
+      await count('retained_vault_grants where retained_vault_id = $1', [body.retained.id]),
+    ).toBe(3);
+    void foreign;
+    void revoked;
+
+    await Promise.allSettled(deferred);
+    expect(audit.map((record) => [record.action, record.outcome])).toEqual([
+      ['vault.archive_emailed', 'success'],
+      ['vault.reset', 'success'],
+    ]);
+    expect(audit[0]!.metadata).toMatchObject({ partCount: 1, environmentCount: 1, secretCount: 1 });
+    expect(JSON.stringify(audit)).not.toContain('example-not-a-real-key');
+  });
+
+  it('resets nothing when the archive cannot be sent', async () => {
+    const who = await account();
+    await environmentFor(who);
+    mailStatus = 500;
+
+    const response = await reset(who);
+
+    expect(response.status).toBe(503);
+    expect(await count('user_keys where user_id = $1', [who.userId])).toBe(1);
+    expect(await count('retained_vaults where user_id = $1', [who.userId])).toBe(0);
+    // The proof was spent: a retry starts again from the sign-in.
+    const used = await t.pg.query(`select used_at from reauthentications where session_id = $1`, [
+      who.sessionId,
+    ]);
+    expect(used.rows[0]).toMatchObject({ used_at: expect.any(Date) });
+  });
+
+  it('resets anyway, and says so, where no mail provider is configured', async () => {
+    const who = await account();
+    await environmentFor(who);
+    delete env['ZEPTOMAIL_TOKEN'];
+
+    const response = await reset(who);
+
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { archive: unknown }).archive).toEqual({
+      emailed: false,
+      reason: 'mail-not-configured',
+    });
+    expect(mailRequests).toHaveLength(0);
+    expect(await count('retained_vaults where user_id = $1', [who.userId])).toBe(1);
+    await Promise.allSettled(deferred);
+    expect(audit.map((record) => [record.action, record.outcome])).toEqual([
+      ['vault.archive_emailed', 'error'],
+      ['vault.reset', 'success'],
+    ]);
+  });
+
+  it('is a 404 with no vault, and sends nothing', async () => {
+    const who = await account();
+    await t.pg.query(`delete from user_key_wraps where user_id = $1`, [who.userId]);
+    await t.pg.query(`delete from user_keys where user_id = $1`, [who.userId]);
+
+    const response = await reset(who);
+
+    expect(response.status).toBe(404);
+    expect(mailRequests).toHaveLength(0);
+  });
+
+  it('keeps both vaults when it happens twice inside the window', async () => {
+    const who = await account();
+    await environmentFor(who);
+    expect((await reset(who)).status).toBe(200);
+    const again = await setUpVault(who.userId, `${who.passphrase} again`);
+    void again;
+    // A fresh session for the second attempt: a proof is bound to the session
+    // whose sign-in minted it, and each session takes one attempt.
+    const second = { ...who, ...(await freshSession(who.userId)) };
+    expect((await reset(second)).status).toBe(200);
+
+    expect(await count('retained_vaults where user_id = $1', [who.userId])).toBe(2);
+  });
+});
+
+async function freshSession(userId: string): Promise<{ sessionId: string; token: string }> {
+  const { token } = await generateToken('session');
+  const session = await createSession(t.db, { userId, token, ipAddress: null, userAgent: null });
+  return { sessionId: session.id, token };
+}
+
+describe('emailing an archive too large for the budget', () => {
+  it('sends the notice instead, and reports it', async () => {
+    const who = await account();
+    await environmentFor(who);
+    const sent: { subject: string; attachments?: unknown }[] = [];
+    const services = {
+      db: t.db,
+      env,
+      log: { at: () => ({ warn: () => {}, error: () => {} }) },
+    } as unknown as Parameters<typeof emailVaultArchive>[0];
+
+    const delivery = await emailVaultArchive(
+      services,
+      {
+        userId: who.userId,
+        email: who.email,
+        now: new Date(),
+        retainedUntil: new Date(Date.now() + 7 * DAY),
+        archiveId: randomUUID(),
+      },
+      { send: async (message) => void sent.push(message) },
+      { maxPartBytes: 2_000, maxParts: 1 },
+    );
+
+    expect(delivery).toEqual({ status: 'not-emailed', reason: 'too-large' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.subject).toBe('Your xecret vault was reset');
+    expect(sent[0]!.attachments).toBeUndefined();
+  });
+
+  it('splits into parts that each open alone', async () => {
+    const who = await account();
+    await environmentFor(who);
+    await environmentFor(who);
+    const sent: { attachments?: { content: Uint8Array }[] }[] = [];
+    const services = {
+      db: t.db,
+      env,
+      log: { at: () => ({ warn: () => {}, error: () => {} }) },
+    } as unknown as Parameters<typeof emailVaultArchive>[0];
+
+    const delivery = await emailVaultArchive(
+      services,
+      {
+        userId: who.userId,
+        email: who.email,
+        now: new Date(),
+        retainedUntil: new Date(Date.now() + 7 * DAY),
+        archiveId: randomUUID(),
+      },
+      { send: async (message) => void sent.push(message as never) },
+      { maxPartBytes: 10_000, maxParts: 3 },
+    );
+
+    expect(delivery).toMatchObject({
+      status: 'emailed',
+      parts: 2,
+      environmentCount: 2,
+      secretCount: 2,
+    });
+    for (const message of sent) {
+      const doc = await readArchiveFile(message.attachments![0]!.content);
+      const opened = await openArchive(doc, { kind: 'passphrase', passphrase: who.passphrase });
+      for (const environment of opened.environments) {
+        for (const secret of environment.secrets) expect(secret.value).toBe(PLAINTEXT);
+      }
+    }
+  });
+});
+
+/* ── recovery ─────────────────────────────────────────────────────────────── */
+
+/** Resets, sets up a new vault, and unlocks the session into it. */
+async function resetAndStartAgain(who: Account): Promise<{ retainedId: string; current: Keys }> {
+  const response = await reset(who);
+  expect(response.status).toBe(200);
+  const retainedId = ((await response.json()) as { retained: { id: string } }).retained.id;
+  const current = await setUpVault(who.userId, `${who.passphrase} new`);
+  await markSessionUnlocked(t.db, who.sessionId, new Date());
+  return { retainedId, current };
+}
+
+interface RetainedMaterial {
+  id: string;
+  kdfSalt: string;
+  kdfParams: unknown;
+  passphraseWrap: string;
+  encPrivateKeyEnc: string;
+  grants: {
+    envDataKeyId: string;
+    edkVersion: number;
+    environmentId: string;
+    edkSealed: string;
+    ehkSealed: string;
+  }[];
+}
+
+/** What the recovery screen does in the browser, with the old passphrase. */
+async function resealWithPassphrase(who: Account, material: RetainedMaterial, current: Keys) {
+  const stretched = await deriveStretchedKey({
+    passphrase: who.passphrase,
+    salt: fromBase64Url(material.kdfSalt),
+    params: material.kdfParams,
+  });
+  const oldUserKey = await unwrapUserKey({
+    wrapKey: await derivePassphraseWrapKey(stretched),
+    blob: material.passphraseWrap,
+    context: { userId: who.userId, wrapKind: 'passphrase' },
+  });
+  return reseal(who.userId, oldUserKey, material, current);
+}
+
+async function reseal(
+  userId: string,
+  oldUserKey: Bytes,
+  material: RetainedMaterial,
+  current: Keys,
+) {
+  const oldPrivate = await unwrapPrivateKey({
+    userKey: oldUserKey,
+    blob: material.encPrivateKeyEnc,
+    userId,
+    purpose: 'encryption',
+  });
+
+  const grants = [];
+  for (const grant of material.grants) {
+    const recipient = {
+      environmentId: grant.environmentId,
+      edkVersion: grant.edkVersion,
+      recipientKind: 'member' as const,
+      recipientId: userId,
+    };
+    const { edk, ehk } = await openGrant({
+      recipient,
+      recipientPrivateKey: oldPrivate,
+      grant: { edkSealed: grant.edkSealed, ehkSealed: grant.ehkSealed },
+    });
+    const sealed = await sealGrant({
+      recipient: { ...recipient, recipientPublicKey: current.encPublicKey },
+      edk,
+      ehk,
+    });
+    grants.push({
+      envDataKeyId: grant.envDataKeyId,
+      recipientPublicKey: encodePublicKey(current.encPublicKey),
+      edkSealed: sealed.edkSealed,
+      ehkSealed: sealed.ehkSealed,
+      signature: signGrant({
+        signerPrivateSeed: current.signPrivateKey,
+        fields: {
+          ...recipient,
+          recipientPublicKey: current.encPublicKey,
+          edkSealedBlob: sealed.edkSealed,
+          ehkSealedBlob: sealed.ehkSealed,
+        },
+      }),
+    });
+  }
+
+  return { ukUnlockVerifier: toBase64Url(await deriveUkUnlockVerifier(oldUserKey)), grants };
+}
+
+async function material(who: Account, retainedId: string): Promise<RetainedMaterial> {
+  const response = await call(
+    retainedOneRoute,
+    'GET',
+    `/api/auth/vault/retained/${retainedId}`,
+    who,
+    {
+      params: { retainedId },
+    },
+  );
+  expect(response.status).toBe(200);
+  return ((await response.json()) as { retained: RetainedMaterial }).retained;
+}
+
+const restore = (who: Account, retainedId: string, body: unknown) =>
+  call(restoreRoute, 'POST', `/api/auth/vault/retained/${retainedId}/restore`, who, {
+    params: { retainedId },
+    body,
+  });
+
+describe('recovering a retained vault', () => {
+  it('brings its keys into the new vault with the old passphrase, and settles the pending share', async () => {
+    const who = await account();
+    const environment = await environmentFor(who);
+    const { retainedId, current } = await resetAndStartAgain(who);
+    expect(
+      await count('pending_key_grants where target_user_id = $1 and environment_id = $2', [
+        who.userId,
+        environment.environmentId,
+      ]),
+    ).toBe(1);
+
+    const listed = await call(retainedRoute, 'GET', '/api/auth/vault/retained', who);
+    expect(
+      ((await listed.json()) as { retained: { id: string }[] }).retained.map((each) => each.id),
+    ).toEqual([retainedId]);
+
+    const loaded = await material(who, retainedId);
+    expect(loaded.grants.map((grant) => grant.environmentId)).toContain(environment.environmentId);
+
+    const response = await restore(
+      who,
+      retainedId,
+      await resealWithPassphrase(who, loaded, current),
+    );
+    expect(response.status).toBe(200);
+    const result = (await response.json()) as { restored: number; skipped: { reason: string }[] };
+    // The foreign-org grant is not offered at all: the account is not in that organisation.
+    expect(result.restored).toBe(1);
+
+    // The restored grant opens with the *new* vault's private key.
+    const row = (
+      await t.pg.query<{ edk_sealed: Uint8Array; ehk_sealed: Uint8Array }>(
+        `select edk_sealed, ehk_sealed from env_key_grants where member_user_id = $1`,
+        [who.userId],
+      )
+    ).rows[0]!;
+    const opened = await openGrant({
+      recipient: {
+        environmentId: environment.environmentId,
+        edkVersion: 1,
+        recipientKind: 'member',
+        recipientId: who.userId,
+      },
+      recipientPrivateKey: current.encPrivateKey,
+      grant: {
+        edkSealed: new TextDecoder().decode(row.edk_sealed),
+        ehkSealed: new TextDecoder().decode(row.ehk_sealed),
+      },
+    });
+    expect(toHex(opened.edk)).toBe(toHex(environment.edk));
+    expect(await count('pending_key_grants where target_user_id = $1', [who.userId])).toBe(0);
+
+    await Promise.allSettled(deferred);
+    expect(audit.filter((record) => record.action === 'vault.recovered')).toEqual([
+      expect.objectContaining({
+        orgId: environment.orgId,
+        metadata: expect.objectContaining({ grantCount: 1 }),
+      }),
+    ]);
+  });
+
+  it('skips an environment the account may no longer read', async () => {
+    const who = await account();
+    const environment = await environmentFor(who, { role: 'owner', production: true });
+    const { retainedId, current } = await resetAndStartAgain(who);
+    const loaded = await material(who, retainedId);
+    // Demoted during the window: a developer has no production access by default.
+    await t.pg.query(
+      `update org_members set role = 'developer' where user_id = $1 and org_id = $2`,
+      [who.userId, environment.orgId],
+    );
+
+    const response = await restore(
+      who,
+      retainedId,
+      await resealWithPassphrase(who, loaded, current),
+    );
+
+    expect(await response.json()).toEqual({
+      restored: 0,
+      skipped: [{ envDataKeyId: environment.edkId, reason: 'no-access' }],
+    });
+    expect(await count('env_key_grants where member_user_id = $1', [who.userId])).toBe(0);
+  });
+
+  it('works with an old recovery code, fetched by its lookup hash', async () => {
+    const who = await account();
+    await environmentFor(who);
+    const { retainedId, current } = await resetAndStartAgain(who);
+    const loaded = await material(who, retainedId);
+    const code = who.keys.codes[0]!;
+    const lookupHash = await recoveryLookupHash(code.codeBytes);
+
+    const response = await call(
+      recoveryWrapRoute,
+      'POST',
+      `/api/auth/vault/retained/${retainedId}/recovery-wrap`,
+      who,
+      { params: { retainedId }, body: { lookupHash: toBase64Url(lookupHash) } },
+    );
+    expect(response.status).toBe(200);
+    const { wrap } = (await response.json()) as { wrap: string };
+    const oldUserKey = await unwrapUserKey({
+      wrapKey: await deriveRecoveryKey(code.codeBytes),
+      blob: wrap,
+      context: { userId: who.userId, wrapKind: 'recovery', lookupHash },
+    });
+
+    const restored = await restore(
+      who,
+      retainedId,
+      await reseal(who.userId, oldUserKey, loaded, current),
+    );
+    expect(((await restored.json()) as { restored: number }).restored).toBe(1);
+  });
+
+  it('refuses, and counts, a code that is not the vault’s', async () => {
+    const who = await account();
+    const { retainedId } = await resetAndStartAgain(who);
+
+    const response = await call(
+      recoveryWrapRoute,
+      'POST',
+      `/api/auth/vault/retained/${retainedId}/recovery-wrap`,
+      who,
+      { params: { retainedId }, body: { lookupHash: toBase64Url(new Uint8Array(32).fill(7)) } },
+    );
+
+    expect(response.status).toBe(400);
+    expect(
+      await count('retained_vaults where id = $1 and recovery_failed_attempts = 1', [retainedId]),
+    ).toBe(1);
+  });
+
+  it('refuses a restore without the proof of the old User Key, and counts it', async () => {
+    const who = await account();
+    await environmentFor(who);
+    const { retainedId, current } = await resetAndStartAgain(who);
+    const loaded = await material(who, retainedId);
+    const body = await resealWithPassphrase(who, loaded, current);
+
+    const response = await restore(who, retainedId, {
+      ...body,
+      ukUnlockVerifier: toBase64Url(new Uint8Array(32).fill(9)),
+    });
+
+    expect(response.status).toBe(403);
+    expect(await count('env_key_grants where member_user_id = $1', [who.userId])).toBe(0);
+    expect(
+      await count('retained_vaults where id = $1 and recovery_failed_attempts = 1', [retainedId]),
+    ).toBe(1);
+  });
+
+  it('is invisible to every other account', async () => {
+    const who = await account();
+    await environmentFor(who);
+    const { retainedId, current } = await resetAndStartAgain(who);
+    const loaded = await material(who, retainedId);
+    const body = await resealWithPassphrase(who, loaded, current);
+
+    const stranger = await account();
+    await markSessionUnlocked(t.db, stranger.sessionId, new Date());
+
+    const fetched = await call(
+      retainedOneRoute,
+      'GET',
+      `/api/auth/vault/retained/${retainedId}`,
+      stranger,
+      {
+        params: { retainedId },
+      },
+    );
+    expect(fetched.status).toBe(404);
+    // Even holding the owner's valid proof and grants.
+    expect((await restore(stranger, retainedId, body)).status).toBe(404);
+    const listed = await call(retainedRoute, 'GET', '/api/auth/vault/retained', stranger);
+    expect(((await listed.json()) as { retained: unknown[] }).retained).toEqual([]);
+  });
+
+  it('needs an unlocked session', async () => {
+    const who = await account();
+    const { retainedId } = await resetAndStartAgain(who);
+    await t.pg.query(`update sessions set vault_unlocked_at = null where id = $1`, [who.sessionId]);
+
+    const response = await call(
+      retainedOneRoute,
+      'GET',
+      `/api/auth/vault/retained/${retainedId}`,
+      who,
+      {
+        params: { retainedId },
+      },
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it('has no route that deletes a retained vault', () => {
+    for (const route of [retainedRoute, retainedOneRoute, recoveryWrapRoute, restoreRoute]) {
+      expect(Object.keys(route).filter((name) => /^(DELETE|PUT|PATCH)$/.test(name))).toEqual([]);
+    }
+  });
+});
+
+/* ── the purge ────────────────────────────────────────────────────────────── */
+
+describe('the scheduled purge', () => {
+  const callPurge = (request: Request) =>
+    (purgeRoute.POST as (request: Request) => Promise<Response>)(request);
+
+  it('answers 404 to anything but the scheduler, and purges nothing', async () => {
+    const who = await account();
+    const reset8 = await resetVaultRows(t.db, who.userId, { now: new Date(Date.now() - 8 * DAY) });
+
+    for (const headers of [{}, { 'x-xecret-scheduled': 'guess' }]) {
+      const response = await callPurge(
+        new Request(`${ORIGIN}${VAULT_PURGE_PATH}`, { method: 'POST', headers }),
+      );
+      expect(response.status).toBe(404);
+    }
+    expect(await count('retained_vaults where id = $1', [reset8!.id])).toBe(1);
+  });
+
+  it('removes vaults past their seven days, and nothing younger, as the system', async () => {
+    const old = await account();
+    const young = await account();
+    const expired = await resetVaultRows(t.db, old.userId, { now: new Date(Date.now() - 8 * DAY) });
+    const recent = await resetVaultRows(t.db, young.userId, {
+      now: new Date(Date.now() - 6 * DAY),
+    });
+    // The record goes to the account's primary organisation, so it needs one.
+    const orgId = randomUUID();
+    await t.pg.query(
+      `insert into organizations (id, name, slug, created_by) values ($1, 'Old', $2, $3)`,
+      [orgId, `old-${orgId.slice(0, 8)}`, old.userId],
+    );
+    await t.pg.query(
+      `insert into org_members (id, org_id, user_id, role) values ($1, $2, $3, 'owner')`,
+      [randomUUID(), orgId, old.userId],
+    );
+
+    await runScheduledJob(callPurge, ORIGIN, VAULT_PURGE_PATH);
+
+    expect(await count('retained_vaults where id = $1', [expired!.id])).toBe(0);
+    expect(await count('retained_vaults where id = $1', [recent!.id])).toBe(1);
+    const purged = audit.filter((record) => record.action === 'vault.purged');
+    expect(purged).toEqual([
+      expect.objectContaining({ actorType: 'system', resourceId: old.userId, orgId }),
+    ]);
+  });
+});

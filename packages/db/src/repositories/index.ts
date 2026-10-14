@@ -83,6 +83,7 @@ export type {
 } from './retained-vaults';
 
 export { listArchiveGrants, listArchiveSecrets, loadArchiveVault } from './vault-archive';
+export { VAULT_RETENTION_DAYS, VAULT_RETENTION_MS } from '../schema/retained-vaults';
 export type { ArchiveGrantRecord, ArchiveSecretRecord, ArchiveVaultRecord } from './vault-archive';
 
 export {
