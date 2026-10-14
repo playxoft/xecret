@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '../testing/pglite';
 import type { TestDatabase } from '../testing/pglite';
 import {
+  countRetainedRecoveryFailure,
   findRetainedRecoveryWrap,
   listRetainedVaults,
   loadRetainedVault,
@@ -80,12 +81,6 @@ function vault(userId: string, seed: number): CreateVaultParams {
 /** The first recovery code's lookup hash, as `vault()` minted it. */
 function firstCode(params: CreateVaultParams): Uint8Array {
   return params.recoveryWraps[0]!.lookupHash;
-}
-
-/** The message of a database error, through the query builder's wrapper. */
-function databaseMessage(cause: unknown): string {
-  const error = cause as { message?: string; cause?: { message?: string } };
-  return `${error.message ?? ''} ${error.cause?.message ?? ''}`;
 }
 
 interface Environment {
@@ -373,7 +368,7 @@ describe('the purge', () => {
     await grant(env.edkV2, userId, filled(32, 10));
     const receipt = await resetVault(t.db, userId, { now: daysAgo(8) });
 
-    const purged = await purgeExpiredRetainedVaults(t.db, new Date(), 100);
+    const purged = await purgeExpiredRetainedVaults(t.db, 100);
 
     expect(purged.find((each) => each.id === receipt!.id)).toMatchObject({ userId, grantCount: 1 });
     expect(await count('retained_vaults where id = $1', [receipt!.id])).toBe(0);
@@ -388,27 +383,41 @@ describe('the purge', () => {
     await createVault(t.db, vault(userId, 11));
     const receipt = await resetVault(t.db, userId, { now: daysAgo(6) });
 
-    const purged = await purgeExpiredRetainedVaults(t.db, new Date(), 100);
+    const purged = await purgeExpiredRetainedVaults(t.db, 100);
 
     expect(purged.map((each) => each.id)).not.toContain(receipt!.id);
     expect(await count('retained_vaults where id = $1', [receipt!.id])).toBe(1);
   });
 
-  it('cannot be tricked into an early delete by a clock that runs fast', async () => {
-    // The application's clock says the window ended; the database's says it has
-    // not. The purge picks the row and the trigger refuses the DELETE, so the
-    // whole purge fails rather than deleting anything early.
+  it('chooses by the database clock: an application clock has no say', async () => {
+    // The purge asks the database which vaults are past their window; a vault
+    // six days into it is not chosen however the caller's clock is set.
     const userId = await account();
     await createVault(t.db, vault(userId, 12));
-    const receipt = await resetVault(t.db, userId);
+    const receipt = await resetVault(t.db, userId, { now: daysAgo(6) });
 
-    const failure = await purgeExpiredRetainedVaults(
-      t.db,
-      new Date(Date.now() + 8 * DAY),
-      100,
-    ).catch((cause: unknown) => cause);
-    expect(databaseMessage(failure)).toMatch(/inside its seven-day window/);
+    expect((await purgeExpiredRetainedVaults(t.db, 100)).map((each) => each.id)).not.toContain(
+      receipt!.id,
+    );
     expect(await count('retained_vaults where id = $1', [receipt!.id])).toBe(1);
+  });
+
+  it('records each purge in its own transaction: a failed record purges nothing', async () => {
+    const userId = await account();
+    await createVault(t.db, vault(userId, 17));
+    const receipt = await resetVault(t.db, userId, { now: daysAgo(8) });
+
+    await expect(
+      purgeExpiredRetainedVaults(t.db, 100, () => Promise.reject(new Error('audit down'))),
+    ).rejects.toThrow('audit down');
+    expect(await count('retained_vaults where id = $1', [receipt!.id])).toBe(1);
+
+    const recorded: string[] = [];
+    await purgeExpiredRetainedVaults(t.db, 100, async (_tx, purged) => {
+      recorded.push(...purged.map((each) => each.id));
+    });
+    expect(recorded).toContain(receipt!.id);
+    expect(await count('retained_vaults where id = $1', [receipt!.id])).toBe(0);
   });
 
   it('takes at most `limit` vaults per call', async () => {
@@ -417,7 +426,151 @@ describe('the purge', () => {
       await createVault(t.db, vault(userId, seed));
       await resetVault(t.db, userId, { now: daysAgo(9) });
     }
-    expect(await purgeExpiredRetainedVaults(t.db, new Date(), 1)).toHaveLength(1);
+    expect(await purgeExpiredRetainedVaults(t.db, 1)).toHaveLength(1);
+  });
+});
+
+describe('a reset bound to the vault its archive was built from', () => {
+  it('refuses to retain a different vault, and changes nothing', async () => {
+    const userId = await account();
+    await createVault(t.db, vault(userId, 40));
+
+    const failure = await resetVault(t.db, userId, { expectedEncPublicKey: filled(32, 41) }).catch(
+      (cause: unknown) => cause,
+    );
+
+    expect(failure).toBeInstanceOf(RepositoryError);
+    expect((failure as RepositoryError).code).toBe('conflict');
+    expect(await findVaultKeys(t.db, userId)).not.toBeNull();
+    expect(await count('retained_vaults where user_id = $1', [userId])).toBe(0);
+  });
+
+  it('retains the vault it names', async () => {
+    const userId = await account();
+    await createVault(t.db, vault(userId, 42));
+    await expect(
+      resetVault(t.db, userId, { expectedEncPublicKey: filled(32, 42) }),
+    ).resolves.toMatchObject({ grantCount: 0 });
+  });
+});
+
+describe('counting failed recovery proofs', () => {
+  it('adds one per failure in SQL, and only ever lengthens the lockout', async () => {
+    const userId = await account();
+    await createVault(t.db, vault(userId, 43));
+    const receipt = await resetVault(t.db, userId);
+    const soon = new Date(Date.now() + 60_000);
+    const later = new Date(Date.now() + 3_600_000);
+
+    await countRetainedRecoveryFailure(t.db, receipt!.id, () => null);
+    await countRetainedRecoveryFailure(t.db, receipt!.id, () => later);
+    const state = await countRetainedRecoveryFailure(t.db, receipt!.id, () => soon);
+
+    expect(state.failedAttempts).toBe(3);
+    // The shorter lockout the third failure earned does not shorten the second's.
+    expect(state.lockedUntil?.getTime()).toBe(later.getTime());
+  });
+});
+
+describe('the window cannot be bypassed by shadowing', () => {
+  it('ignores a temporary table named retained_vaults', async () => {
+    const userId = await account();
+    await createVault(t.db, vault(userId, 44));
+    const receipt = await resetVault(t.db, userId);
+
+    await t.pg.exec(`create temp table retained_vaults (id uuid, purge_after timestamptz)`);
+    // Any role may do this, and without it a plan cached from an earlier call
+    // would hide whether the function resolves the name afresh.
+    await t.pg.exec(`discard plans`);
+    try {
+      expect(
+        await attempt(`delete from public.retained_vault_wraps where retained_vault_id = $1`, [
+          receipt!.id,
+        ]),
+      ).toMatch(/inside its seven-day window/);
+      expect(
+        await attempt(`delete from public.retained_vaults where id = $1`, [receipt!.id]),
+      ).toMatch(/inside its seven-day window/);
+    } finally {
+      await t.pg.exec(`drop table pg_temp.retained_vaults`);
+    }
+    expect(await count('retained_vault_wraps where retained_vault_id = $1', [receipt!.id])).toBe(3);
+  });
+
+  it('ignores a now() of the caller’s own making', async () => {
+    const userId = await account();
+    await createVault(t.db, vault(userId, 45));
+    const receipt = await resetVault(t.db, userId);
+
+    await t.pg.exec(
+      `create function public.now() returns timestamptz language sql as $$ select timestamptz '2999-01-01' $$`,
+    );
+    try {
+      expect(
+        await attempt(`delete from public.retained_vaults where id = $1`, [receipt!.id]),
+      ).toMatch(/inside its seven-day window/);
+    } finally {
+      await t.pg.exec(`drop function public.now()`);
+    }
+  });
+});
+
+describe('the application role', () => {
+  /** Runs `sql` as xecret_app_permissions, the role production runs as. */
+  async function asApp(sql: string, params: unknown[]): Promise<string | null> {
+    await t.pg.exec('set role xecret_app_permissions');
+    try {
+      return await attempt(sql, params);
+    } finally {
+      await t.pg.exec('reset role');
+    }
+  }
+
+  it('may purge an expired vault, the wraps and grants going by cascade', async () => {
+    const userId = await account();
+    const env = await environmentFor(userId);
+    await createVault(t.db, vault(userId, 46));
+    await grant(env.edkV2, userId, filled(32, 46));
+    const receipt = await resetVault(t.db, userId, { now: daysAgo(8) });
+
+    expect(
+      await asApp(`delete from public.retained_vaults where id = $1 and purge_after <= now()`, [
+        receipt!.id,
+      ]),
+    ).toBeNull();
+    expect(await count('retained_vault_wraps where retained_vault_id = $1', [receipt!.id])).toBe(0);
+    expect(await count('retained_vault_grants where retained_vault_id = $1', [receipt!.id])).toBe(
+      0,
+    );
+  });
+
+  it('may not touch a wrap or a grant, or the key material or the window, at all', async () => {
+    const userId = await account();
+    await createVault(t.db, vault(userId, 47));
+    const receipt = await resetVault(t.db, userId);
+
+    for (const statement of [
+      `delete from public.retained_vault_wraps where retained_vault_id = $1`,
+      `update public.retained_vault_wraps set wrap = wrap where retained_vault_id = $1`,
+      `delete from public.retained_vault_grants where retained_vault_id = $1`,
+      `update public.retained_vaults set purge_after = purge_after where id = $1`,
+      `update public.retained_vaults set enc_public_key = enc_public_key where id = $1`,
+    ]) {
+      expect(await asApp(statement, [receipt!.id]), statement).toMatch(/permission denied/);
+    }
+  });
+
+  it('may update the recovery bookkeeping', async () => {
+    const userId = await account();
+    await createVault(t.db, vault(userId, 48));
+    const receipt = await resetVault(t.db, userId);
+
+    expect(
+      await asApp(
+        `update public.retained_vaults set recovered_at = now(), recovery_failed_attempts = 1, recovery_locked_until = null where id = $1`,
+        [receipt!.id],
+      ),
+    ).toBeNull();
   });
 });
 

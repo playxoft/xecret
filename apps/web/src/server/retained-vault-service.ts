@@ -6,7 +6,7 @@ import {
   listRetainedVaults,
   loadAuthorizationContext,
   loadRetainedVault,
-  recordRetainedRecoveryAttempt,
+  countRetainedRecoveryFailure,
   RepositoryError,
   restoreRetainedGrants,
   toBytes,
@@ -212,8 +212,13 @@ async function recordFailure(
   now: Date,
   surface: 'recovery-code' | 'restore',
 ): Promise<void> {
-  const state = nextUnlockFailure(vault, now);
-  await recordRetainedRecoveryAttempt(services.db, vault.id, state);
+  // Counted in SQL (`+ 1`), so two wrong guesses in flight at once count as two.
+  const state = await countRetainedRecoveryFailure(
+    services.db,
+    vault.id,
+    (failedAttempts) =>
+      nextUnlockFailure({ failedAttempts: failedAttempts - 1, lockedUntil: null }, now).lockedUntil,
+  );
   services.log
     .at('retainedVault')
     .warn(

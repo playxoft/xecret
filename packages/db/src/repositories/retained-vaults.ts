@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gt, inArray, isNull, lte, or } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import type { Argon2idParams } from '@xecret/core/crypto/client';
 import type { UnlockAttemptState } from '@xecret/core/auth';
 import { uuidv7 } from '@xecret/core/ids';
@@ -112,6 +112,13 @@ export async function retainVaultForReset(
   tx: Executor,
   userId: string,
   now: Date,
+  /**
+   * The X25519 public key of the vault the escape archive was built from. When
+   * given, the reset proceeds only if the row it has just locked is that vault:
+   * a vault set up again in another tab between the archive and the reset would
+   * otherwise be retained in place of the one the person was emailed.
+   */
+  expectedEncPublicKey?: Uint8Array,
 ): Promise<RetainedVaultReceipt | null> {
   const [keys] = await tx
     .select()
@@ -121,6 +128,13 @@ export async function retainVaultForReset(
     .for('update');
 
   if (!keys) return null;
+
+  if (expectedEncPublicKey !== undefined && !bytesEqual(keys.encPublicKey, expectedEncPublicKey)) {
+    throw new RepositoryError(
+      'conflict',
+      'Your vault changed while it was being reset. Nothing was reset; start again.',
+    );
+  }
 
   const id = uuidv7();
   const purgeAfter = new Date(now.getTime() + VAULT_RETENTION_MS);
@@ -403,15 +417,46 @@ export async function findRetainedRecoveryWrap(
 }
 
 /** Records the outcome of one recovery proof against a retained vault. */
-export async function recordRetainedRecoveryAttempt(
+/**
+ * Counts one failed recovery proof against a retained vault, atomically.
+ *
+ * The count is `+ 1` in SQL, never a value the caller read and wrote back: two
+ * concurrent wrong guesses read the same count, and a read-then-write would
+ * record one. The lockout the new count earns is computed by the caller's
+ * policy (`nextUnlockFailure`) from the count the database returned, and only
+ * ever lengthens an existing one.
+ *
+ * Abuse control rather than a security boundary, and worth saying so: what this
+ * counts are guesses at a 256-bit value (a recovery lookup hash, or the
+ * `HKDF(UK)` restore proof), which no counter needs to protect.
+ */
+export async function countRetainedRecoveryFailure(
   exec: Executor,
   retainedVaultId: string,
-  state: UnlockAttemptState,
-): Promise<void> {
-  await exec
-    .update(retainedVaults)
-    .set({ recoveryFailedAttempts: state.failedAttempts, recoveryLockedUntil: state.lockedUntil })
-    .where(eq(retainedVaults.id, retainedVaultId));
+  lockoutFor: (failedAttempts: number) => Date | null,
+): Promise<UnlockAttemptState> {
+  return exec.transaction(async (tx) => {
+    const [row] = await tx
+      .update(retainedVaults)
+      .set({ recoveryFailedAttempts: sql`${retainedVaults.recoveryFailedAttempts} + 1` })
+      .where(eq(retainedVaults.id, retainedVaultId))
+      .returning({
+        failedAttempts: retainedVaults.recoveryFailedAttempts,
+        lockedUntil: retainedVaults.recoveryLockedUntil,
+      });
+    if (!row) return { failedAttempts: 0, lockedUntil: null };
+
+    const earned = lockoutFor(row.failedAttempts);
+    if (earned === null || (row.lockedUntil !== null && row.lockedUntil >= earned)) {
+      return row;
+    }
+
+    await tx
+      .update(retainedVaults)
+      .set({ recoveryLockedUntil: earned })
+      .where(eq(retainedVaults.id, retainedVaultId));
+    return { failedAttempts: row.failedAttempts, lockedUntil: earned };
+  });
 }
 
 /** One re-sealed grant, as the browser sends it. */
@@ -620,21 +665,26 @@ export interface PurgedRetainedVault {
 }
 
 /**
- * Deletes retained vaults whose window has ended — at most `limit` per call.
+ * Deletes retained vaults whose window has ended — at most `limit` per call —
+ * and records each deletion in the same transaction.
  *
  * The only DELETE on these tables anywhere in the application, and it names
- * `purge_after <= now` twice: once to choose the rows, under `SKIP LOCKED` so two
- * purges running at once take different rows instead of waiting on each other,
- * and again on the delete itself. Below that, migration 0020's trigger refuses a
- * delete of any row still inside its window by the database's own clock, so a
- * caller whose `now` ran fast deletes nothing early: the statement fails.
+ * `purge_after <= now()` twice, by the **database's** clock rather than the
+ * application's: once to choose the rows, under `SKIP LOCKED` so two purges
+ * running at once take different rows instead of waiting on each other, and
+ * again on the delete itself. Below that, migration 0020's trigger refuses a
+ * delete of any row still inside its window by that same clock.
+ *
+ * `record` runs inside the transaction, after the delete: the record that a
+ * vault was purged commits with the purge or not at all, so neither can exist
+ * without the other.
  *
  * The wraps and grants go with each vault, by cascade.
  */
 export async function purgeExpiredRetainedVaults(
   exec: Executor,
-  now: Date,
   limit: number,
+  record?: (tx: Executor, purged: readonly PurgedRetainedVault[]) => Promise<void>,
 ): Promise<PurgedRetainedVault[]> {
   return exec.transaction(async (tx) => {
     const doomed = await tx
@@ -645,7 +695,7 @@ export async function purgeExpiredRetainedVaults(
         purgeAfter: retainedVaults.purgeAfter,
       })
       .from(retainedVaults)
-      .where(lte(retainedVaults.purgeAfter, now))
+      .where(lte(retainedVaults.purgeAfter, sql`now()`))
       .orderBy(asc(retainedVaults.purgeAfter))
       .limit(limit)
       .for('update', { skipLocked: true });
@@ -662,9 +712,11 @@ export async function purgeExpiredRetainedVaults(
 
     await tx
       .delete(retainedVaults)
-      .where(and(inArray(retainedVaults.id, ids), lte(retainedVaults.purgeAfter, now)));
+      .where(and(inArray(retainedVaults.id, ids), lte(retainedVaults.purgeAfter, sql`now()`)));
 
-    return doomed.map((vault) => ({ ...vault, grantCount: grantsBy.get(vault.id) ?? 0 }));
+    const purged = doomed.map((vault) => ({ ...vault, grantCount: grantsBy.get(vault.id) ?? 0 }));
+    await record?.(tx, purged);
+    return purged;
   });
 }
 

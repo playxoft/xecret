@@ -66,7 +66,7 @@ export {
   listRetainedVaults,
   loadRetainedVault,
   purgeExpiredRetainedVaults,
-  recordRetainedRecoveryAttempt,
+  countRetainedRecoveryFailure,
   restoreRetainedGrants,
   retainVaultForReset,
 } from './retained-vaults';

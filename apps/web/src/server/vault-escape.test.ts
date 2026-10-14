@@ -1039,9 +1039,24 @@ describe('the scheduled purge', () => {
 
     expect(await count('retained_vaults where id = $1', [expired!.id])).toBe(0);
     expect(await count('retained_vaults where id = $1', [recent!.id])).toBe(1);
-    const purged = audit.filter((record) => record.action === 'vault.purged');
-    expect(purged).toEqual([
-      expect.objectContaining({ actorType: 'system', resourceId: old.userId, orgId }),
-    ]);
+    // Written by the purge's own transaction, straight to the table.
+    const purged = await t.pg.query<{ actor_type: string; resource_id: string; org_id: string }>(
+      `select actor_type, resource_id, org_id from audit_logs where action = 'vault.purged'
+        and resource_id in ($1, $2)`,
+      [old.userId, young.userId],
+    );
+    expect(purged.rows).toEqual([{ actor_type: 'system', resource_id: old.userId, org_id: orgId }]);
+  });
+
+  it('still purges an account in no organisation, logging it instead', async () => {
+    const lonely = await account();
+    const expired = await resetVaultRows(t.db, lonely.userId, {
+      now: new Date(Date.now() - 8 * DAY),
+    });
+
+    await runScheduledJob(callPurge, ORIGIN, VAULT_PURGE_PATH);
+
+    expect(await count('retained_vaults where id = $1', [expired!.id])).toBe(0);
+    expect(lines.some((line) => line.message.includes('in no organisation'))).toBe(true);
   });
 });

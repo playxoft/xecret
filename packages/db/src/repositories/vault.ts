@@ -818,10 +818,20 @@ export async function resetVault(
     requeue?: ((tx: Executor) => Promise<void>) | undefined;
     /** When the reset happens. The retained window runs seven days from it. */
     now?: Date | undefined;
+    /**
+     * The public key of the vault whose archive was emailed. The reset refuses
+     * (`conflict`) to retain any other vault — see `retainVaultForReset`.
+     */
+    expectedEncPublicKey?: Uint8Array | undefined;
   } = {},
 ): Promise<RetainedVaultReceipt | null> {
   return exec.transaction(async (tx) => {
-    const retained = await retainVaultForReset(tx, userId, options.now ?? new Date());
+    const retained = await retainVaultForReset(
+      tx,
+      userId,
+      options.now ?? new Date(),
+      options.expectedEncPublicKey,
+    );
     if (retained === null) return null;
 
     const removed = await deleteVault(tx, userId);

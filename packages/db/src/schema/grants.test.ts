@@ -32,6 +32,16 @@ const ROLE = 'xecret_app_permissions';
  */
 const APPEND_ONLY = new Set(['audit_logs', 'billing_webhook_events']);
 
+/**
+ * Narrower still, by design (migration 0020): a retained vault's wraps and
+ * grants are only ever inserted, and go with their vault by the foreign key's
+ * cascade, which runs as the owner. The vault itself may be read, inserted and
+ * deleted — the purge — and updated only in its three bookkeeping columns,
+ * which is a column privilege and therefore not a table-wide UPDATE.
+ */
+const INSERT_ONLY = new Set(['retained_vault_wraps', 'retained_vault_grants']);
+const NO_TABLE_UPDATE = new Set(['retained_vaults']);
+
 let t: TestDatabase;
 
 beforeAll(async () => {
@@ -89,9 +99,25 @@ describe('the application role', () => {
 
     expect(granted, `${table} is declared in the schema but not in the database`).toBeDefined();
     expect(granted).toEqual(
-      APPEND_ONLY.has(table)
+      APPEND_ONLY.has(table) || INSERT_ONLY.has(table)
         ? { s: true, i: true, u: false, d: false }
-        : { s: true, i: true, u: true, d: true },
+        : NO_TABLE_UPDATE.has(table)
+          ? { s: true, i: true, u: false, d: true }
+          : { s: true, i: true, u: true, d: true },
     );
+  });
+
+  it('may update exactly the bookkeeping columns of a retained vault', async () => {
+    const result = await t.pg.query<{ column_name: string }>(
+      `select column_name from information_schema.column_privileges
+        where grantee = $1 and table_name = 'retained_vaults' and privilege_type = 'UPDATE'
+        order by column_name`,
+      [ROLE],
+    );
+    expect(result.rows.map((row) => row.column_name)).toEqual([
+      'recovered_at',
+      'recovery_failed_attempts',
+      'recovery_locked_until',
+    ]);
   });
 });
