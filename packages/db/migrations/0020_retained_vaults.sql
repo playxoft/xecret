@@ -73,7 +73,11 @@ CREATE TABLE "retained_vaults" (
 		CHECK (octet_length("unlock_verifier_hash") = 32 AND octet_length("uk_unlock_verifier_hash") = 32),
 	CONSTRAINT "retained_vaults_public_keys_check"
 		CHECK (octet_length("enc_public_key") = 32 AND octet_length("sign_public_key") = 32),
-	CONSTRAINT "retained_vaults_attempts_check" CHECK ("recovery_failed_attempts" >= 0)
+	CONSTRAINT "retained_vaults_attempts_check" CHECK ("recovery_failed_attempts" >= 0),
+	-- The application may write the lockout, but never past the purge: a lock that
+	-- outlives the vault it guards is not a lock, only a way to hide the window.
+	CONSTRAINT "retained_vaults_lock_check"
+		CHECK ("recovery_locked_until" IS NULL OR "recovery_locked_until" <= "purge_after")
 );
 --> statement-breakpoint
 ALTER TABLE "retained_vaults" ADD CONSTRAINT "retained_vaults_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint

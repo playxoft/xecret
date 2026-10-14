@@ -478,12 +478,16 @@ export async function countRetainedRecoveryFailure(
       .returning({
         failedAttempts: retainedVaults.recoveryFailedAttempts,
         lockedUntil: retainedVaults.recoveryLockedUntil,
+        purgeAfter: retainedVaults.purgeAfter,
       });
     if (!row) return { failedAttempts: 0, lockedUntil: null };
 
-    const earned = lockoutFor(row.failedAttempts);
+    // Never past the purge: the CHECK refuses it, and a lock that outlives the
+    // vault it guards would guard nothing.
+    const wanted = lockoutFor(row.failedAttempts);
+    const earned = wanted === null ? null : wanted > row.purgeAfter ? row.purgeAfter : wanted;
     if (earned === null || (row.lockedUntil !== null && row.lockedUntil >= earned)) {
-      return row;
+      return { failedAttempts: row.failedAttempts, lockedUntil: row.lockedUntil };
     }
 
     await tx

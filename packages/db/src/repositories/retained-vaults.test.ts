@@ -475,6 +475,20 @@ describe('counting failed recovery proofs', () => {
     // The shorter lockout the third failure earned does not shorten the second's.
     expect(state.lockedUntil?.getTime()).toBe(later.getTime());
   });
+
+  it('never locks past the purge', async () => {
+    const userId = await account();
+    await createVault(t.db, vault(userId, 49));
+    const receipt = await resetVault(t.db, userId);
+
+    const state = await countRetainedRecoveryFailure(
+      t.db,
+      receipt!.id,
+      () => new Date(Date.now() + 30 * DAY),
+    );
+
+    expect(state.lockedUntil?.getTime()).toBe(receipt!.purgeAfter.getTime());
+  });
 });
 
 describe('the window cannot be bypassed by shadowing', () => {
@@ -573,6 +587,25 @@ describe('the application role', () => {
     expect(
       await asApp(
         `update public.retained_vaults set recovered_at = now(), recovery_failed_attempts = 1, recovery_locked_until = null where id = $1`,
+        [receipt!.id],
+      ),
+    ).toBeNull();
+  });
+
+  it('may not lock recovery past the purge', async () => {
+    const userId = await account();
+    await createVault(t.db, vault(userId, 50));
+    const receipt = await resetVault(t.db, userId);
+
+    expect(
+      await asApp(
+        `update public.retained_vaults set recovery_locked_until = purge_after + interval '1 second' where id = $1`,
+        [receipt!.id],
+      ),
+    ).toMatch(/retained_vaults_lock_check/);
+    expect(
+      await asApp(
+        `update public.retained_vaults set recovery_locked_until = purge_after where id = $1`,
         [receipt!.id],
       ),
     ).toBeNull();

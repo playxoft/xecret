@@ -90,6 +90,10 @@ export const retainedVaults = pgTable(
       sql`octet_length(${t.encPublicKey}) = 32 and octet_length(${t.signPublicKey}) = 32`,
     ),
     check('retained_vaults_attempts_check', sql`${t.recoveryFailedAttempts} >= 0`),
+    check(
+      'retained_vaults_lock_check',
+      sql`${t.recoveryLockedUntil} is null or ${t.recoveryLockedUntil} <= ${t.purgeAfter}`,
+    ),
     index('retained_vaults_user_idx').on(t.userId, t.purgeAfter),
     index('retained_vaults_purge_idx').on(t.purgeAfter),
   ],
