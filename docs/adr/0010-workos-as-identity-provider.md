@@ -446,8 +446,8 @@ nothing added for WorkOS, because the browser only navigates there.
 - **A custom AuthKit domain.** AuthKit's default domain works; moving later is DNS and a
   setting, not a migration.
 - **The escape archive and the seven-day recoverable reset** (follow-up P23). The archive is
-  emailed to the account's address when the reset happens, not offered as a download before
-  it, and no waiting period comes before a reset.
+  emailed to the account's address when the reset happens, and no waiting period comes before
+  a reset.
 - **A provider that is not WorkOS**, for self-hosters who want none.
 - **Decommissioning `users.firebase_uid`.** It is nullable, read and written by nothing, and
   kept as the import's join key and the rollback until a deliberate migration drops it.

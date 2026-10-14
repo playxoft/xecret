@@ -61,9 +61,10 @@ XECRET_ROOT_KEY_VERSION = "1"
 # because it names WHICH WorkOS environment this deployment signs people in
 # against, and it has to agree with the WORKOS_API_KEY secret: Production's key
 # with this id, Staging's key with the Staging id. The key's format does not say
-# which environment issued it, so the pairing is checked in the WorkOS
-# dashboard. A key from one environment and a client id from the other fails
-# every sign-in in a way that reads like a code bug and is not. The redirect
+# which environment issued it, so the pairing is checked by asking WorkOS:
+# `npm run phase:check-env:production` presents the key and this id together
+# and reads the answer. A key from one environment and a client id from the
+# other fails every sign-in in a way that reads like a code bug and is not. The redirect
 # URI is configured nowhere: it is derived from XECRET_PUBLIC_URL
 # (`server/workos.ts`), and must be registered in the WorkOS dashboard as
 # exactly https://xecret.playxoft.com/api/auth/callback.
@@ -188,7 +189,8 @@ WORKOS_CLIENT_ID = "client_01M36CECEQ1FY9TA1F952FY958"
 #                             code exchange that decides who a sign-in is.
 #                             `sk_…`, from the same WorkOS environment as the
 #                             WORKOS_CLIENT_ID var above — which its format
-#                             does not reveal, so check it in the dashboard
+#                             does not reveal; `npm run check:env` asks
+#                             WorkOS whether the two belong together
 #   WORKOS_COOKIE_PASSWORD    32+ characters; the MAC key for the sign-in state
 #                             cookie. Whoever holds it can complete a sign-in
 #                             in somebody else's browser
@@ -202,9 +204,10 @@ WORKOS_CLIENT_ID = "client_01M36CECEQ1FY9TA1F952FY958"
 # All are plain strings the Worker reads from `process.env`, so they can be set
 # per environment without a code change. They are deliberately not `vars` here:
 # this file is committed, and is on its way to a public repository. The two
-# WorkOS values are the only REQUIRED ones — without either, nobody can sign in
-# and the sign-in routes answer 503 — and like the rest they originate in
-# Phase.dev, in the environment matching the one being deployed.
+# WorkOS values are the only REQUIRED ones — without either, nobody can sign in,
+# and the sign-in routes send the browser to /sign-in?error=unavailable — and
+# like the rest they originate in Phase.dev, in the environment matching the one
+# being deployed.
 #
 # Set them with `wrangler secret put <NAME> --env <env>`, which is not merely
 # "more secure" — it is the only form that PERSISTS. The two mechanisms behave
