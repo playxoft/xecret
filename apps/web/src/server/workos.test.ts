@@ -7,6 +7,7 @@ import {
   AuthenticationStepRequired,
   callbackUrl,
   IdentityProviderUnavailableError,
+  lastActiveAuthentication,
   MAX_CODE_LENGTH,
   providerFailure,
   resetWorkosClientForTesting,
@@ -118,6 +119,12 @@ function stubApi(over: Partial<Record<string, unknown>> = {}) {
   } as unknown as WorkosApi;
 
   return { api, calls, provider: new WorkosIdentityProvider(api, CONFIG) };
+}
+
+/** A JWT-shaped access token with `claims` as its payload. The signature is never read. */
+function accessToken(claims: unknown): string {
+  const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  return `${part({ alg: 'RS256', typ: 'JWT' })}.${part(claims)}.c2lnbmF0dXJl`;
 }
 
 function failure(status: number | undefined, fields: Record<string, unknown> = {}) {
@@ -258,6 +265,27 @@ describe('the code exchange', () => {
     expect(exchange.impersonator).toBeNull();
   });
 
+  it('reads when the person last actively authenticated from the access token’s auth_time', async () => {
+    const authTime = 1_790_000_000;
+    const { provider } = stubApi({
+      authenticateWithCode: vi.fn(async () => ({
+        user: user(),
+        accessToken: accessToken({
+          sub: 'user_01HZXK9P3Q',
+          auth_time: authTime,
+          iat: authTime + 5,
+        }),
+        refreshToken: 'rt',
+      })),
+    });
+
+    const exchange = await provider.exchangeCode('code', CONTEXT);
+
+    expect(exchange.authenticatedAt).toBe(authTime);
+    // The date is carried; the token is not.
+    expect(JSON.stringify(exchange)).not.toContain('c2lnbmF0dXJl');
+  });
+
   it('passes an unverified address through as unverified, for the callback to refuse', async () => {
     const { provider } = stubApi({
       authenticateWithCode: vi.fn(async () => ({ user: user({ emailVerified: false }) })),
@@ -315,6 +343,32 @@ describe('the code exchange', () => {
       reason: 'malformed-code',
     });
     expect(calls.authenticateWithCode).not.toHaveBeenCalled();
+  });
+});
+
+describe('reading auth_time', () => {
+  it.each([
+    ['no token', undefined],
+    ['not a string', 42],
+    ['an opaque token', 'at'],
+    ['two parts', 'a.b'],
+    ['four parts', 'a.b.c.d'],
+    ['a payload that is not base64url', 'a.!!!.c'],
+    ['a payload that is not JSON', `a.${Buffer.from('not json').toString('base64url')}.c`],
+    ['a payload that is not UTF-8', `a.${Buffer.from([0xff, 0xfe]).toString('base64url')}.c`],
+    ['a payload that is not an object', accessToken('auth_time')],
+    ['no auth_time', accessToken({ sub: 'user_01', iat: 1_790_000_000 })],
+    ['auth_time as a string', accessToken({ auth_time: '1790000000' })],
+    ['auth_time as a fraction', accessToken({ auth_time: 1_790_000_000.5 })],
+    ['auth_time of zero', accessToken({ auth_time: 0 })],
+    ['a negative auth_time', accessToken({ auth_time: -1 })],
+    ['an oversized token', accessToken({ auth_time: 1_790_000_000, pad: 'x'.repeat(9000) })],
+  ])('reads %s as null — "not shown to be fresh"', (_name, token) => {
+    expect(lastActiveAuthentication(token)).toBeNull();
+  });
+
+  it('reads a well-formed claim', () => {
+    expect(lastActiveAuthentication(accessToken({ auth_time: 1_790_000_000 }))).toBe(1_790_000_000);
   });
 });
 

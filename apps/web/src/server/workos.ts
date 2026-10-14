@@ -1,5 +1,6 @@
 import { GenerateLinkIntent, WorkOS } from '@workos-inc/node';
 import { IdentityVerificationError, workosIdentity } from '@xecret/core/auth';
+import { fromBase64Url } from '@xecret/core/crypto';
 import type {
   AuthorizationCodeExchange,
   CodeExchangeContext,
@@ -33,10 +34,15 @@ import { MissingBindingError, publicOrigin } from './bindings';
  * bundled, and only reached by session-cookie helpers this file never calls).
  *
  * ── What is never done here ──
- * Nothing decodes a token. Every fact about a person comes back from an
- * authenticated API call this server made with its own secret key — the code
- * exchange, the Magic Auth check — so there is no signature for a client to
- * forge and no audience for one to get wrong.
+ * Nothing verifies a token, because nothing trusts one a client presented.
+ * Every fact about a person comes back from an authenticated API call this
+ * server made with its own secret key — the code exchange, the Magic Auth
+ * check — so there is no signature for a client to forge and no audience for
+ * one to get wrong. The one token read at all is the access token in the code
+ * exchange's own response, for its `auth_time` claim (see
+ * {@link lastActiveAuthentication}): it arrived over the same authenticated
+ * call as the user it describes, so it is believed exactly as far as that user
+ * is, and is otherwise dropped like the rest.
  */
 
 /**
@@ -77,6 +83,8 @@ export interface WorkosAuthentication {
   organizationId?: string | undefined;
   authenticationMethod?: string | undefined;
   impersonator?: { email: string; reason: string | null } | undefined;
+  /** Read only for its `auth_time` claim; never stored, logged or passed on. */
+  accessToken?: string | undefined;
 }
 
 /**
@@ -412,10 +420,48 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
       identity: workosIdentity(verified),
       organizationId: nonEmpty(response.organizationId),
       authenticationMethod: nonEmpty(response.authenticationMethod),
+      authenticatedAt: lastActiveAuthentication(response.accessToken),
       impersonator:
         response.impersonator === undefined ? null : { email: response.impersonator.email },
     };
   }
+}
+
+/** Longer than any access token WorkOS issues; anything bigger is not read. */
+const MAX_ACCESS_TOKEN_LENGTH = 8192;
+
+/**
+ * The `auth_time` claim of an access token WorkOS returned — "the user's most
+ * recent active authentication", which WorkOS documents as advancing only when
+ * the person actually authenticates, never on a refresh or a reused session —
+ * or `null` when there is none to read.
+ *
+ * Decoded, not verified, and that is deliberate: the token is not something a
+ * browser presented. It came back in the body of the code exchange this server
+ * made to WorkOS with its own secret key, beside the `user` the sign-in is
+ * built on, so it is exactly as trustworthy as that user — and a forger able to
+ * change it could change the user instead. Anything malformed reads as `null`,
+ * which the vault reset's first lock treats as "not shown to be fresh".
+ *
+ * Checked live against WorkOS Staging (2026-10-14): a password sign-in's token
+ * carries `auth_time` equal to the sign-in; a refresh keeps it; a second
+ * sign-in moves it.
+ */
+export function lastActiveAuthentication(accessToken: unknown): number | null {
+  if (typeof accessToken !== 'string' || accessToken.length > MAX_ACCESS_TOKEN_LENGTH) return null;
+  const parts = accessToken.split('.');
+  if (parts.length !== 3 || parts[1] === undefined) return null;
+  let claims: unknown;
+  try {
+    claims = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(fromBase64Url(parts[1])));
+  } catch {
+    return null;
+  }
+  if (typeof claims !== 'object' || claims === null) return null;
+  const authTime = (claims as Record<string, unknown>)['auth_time'];
+  return typeof authTime === 'number' && Number.isSafeInteger(authTime) && authTime > 0
+    ? authTime
+    : null;
 }
 
 function assertCodeShape(code: string, pattern: RegExp): void {

@@ -99,8 +99,9 @@ export function SecurityScreen() {
  * does not reach Google or a company's identity provider, which may let a
  * live session straight through — ADR 0010.) Coming back makes a fresh xecret
  * session — the callback retires this one — and, when the method is one of
- * the sign-in's `REAUTHENTICATING_METHODS`, it is recorded as the vault reset's
- * first lock, exactly as a sign-in from the reset screen would be. The reset
+ * the sign-in's `REAUTHENTICATING_METHODS` and the sign-in really happened
+ * during the flow (`armsLockOne`), it is recorded as the vault reset's first
+ * lock, exactly as a sign-in from the reset screen would be. The reset
  * still wants its emailed code.
  *
  * ── Why a plain link ──

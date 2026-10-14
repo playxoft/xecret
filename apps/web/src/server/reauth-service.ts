@@ -54,6 +54,9 @@ import type { AuthenticationStepCode } from './workos';
  *     but WorkOS documents it only for its own screens. It does not make Google
  *     or a company's identity provider re-prompt, so for those users a live
  *     Google or SSO session in the same browser satisfies lock one silently.
+ *     What the server does check is that an authentication happened during
+ *     the flow at all — WorkOS's `auth_time` (`armsLockOne`) — so a reused
+ *     AuthKit session, with `max_age=0` stripped, is not lock one.
  *  2. **The emailed code** — WorkOS Magic Auth. Requested and checked only
  *     while the sign-in is under {@link REAUTH_SIGN_IN_MAX_AGE_SECONDS} old,
  *     only by the session that sign-in issued, and only for the WorkOS user that

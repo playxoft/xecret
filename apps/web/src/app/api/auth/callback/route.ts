@@ -103,6 +103,7 @@ export const GET = publicRoute(async ({ request, services }) => {
       purpose: flow.purpose,
       provider,
       presentedSessionToken: cookies.get(SESSION_COOKIE_NAME) ?? null,
+      flowIssuedAt: flow.issuedAt,
     });
 
     services.bindLog({ signInOutcome: result.outcome, signInPurpose: flow.purpose });

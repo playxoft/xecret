@@ -272,6 +272,17 @@ check is added. **Both** of the following, **in this order**:
    count, and adding one is a deliberate edit. A sign-in completed with an emailed code is
    excluded on purpose, or the two locks would be one inbox twice.
 
+   **And only for an authentication that happened during this flow.** The access token WorkOS
+   returns with the code carries `auth_time`, which WorkOS documents as the person's most recent
+   *active* authentication: it does not move on a refresh or when AuthKit reuses a session it
+   already holds (checked against Staging on 2026-10-14 — a password sign-in sets it, a refresh
+   keeps it, a second sign-in moves it). The callback reads that one claim from the token —
+   decoded, not verified, because the token came back in the server's own authenticated call
+   to WorkOS beside the user it describes — and counts lock one only when `auth_time` is no
+   earlier than the moment the flow began (the state cookie's `issuedAt`), less 30 seconds for
+   the difference between two clocks. A token without a readable `auth_time` does not count.
+   This is what makes `max_age=0` something the server checks rather than trusts.
+
    **What lock one proves depends on the method, and it is less than "a fresh credential".**
    WorkOS documents `max_age` only for AuthKit's own sign-in (`provider=authkit`): it can make
    AuthKit ask for a password or a passkey again. It does not make Google or an enterprise
@@ -330,9 +341,9 @@ stolen live session — with AuthKit's, Google's or the identity provider's sess
 one click from the same outcome. Together they stop a stolen session cookie used from another
 browser, which holds none of the victim's sessions elsewhere and cannot read their mail. For an
 account that signs in with a password or a passkey, they also stop somebody at an unlocked
-laptop who does not know the password — if AuthKit honours `max_age=0`, which the server cannot
-see (below). They do **not** stop somebody at an unlocked laptop whose victim signs in with
-Google or SSO.
+laptop who does not know the password: if AuthKit does not ask for it again, the code it mints
+is dated by the earlier sign-in, and lock one does not count it. They do **not** stop somebody
+at an unlocked laptop whose victim signs in with Google or SSO.
 
 **Residual risks, accepted and recorded:**
 
@@ -345,10 +356,12 @@ Google or SSO.
   of the victim's inbox alone can use AuthKit's "Forgot password" to set a new password, sign in
   with it — which counts, because it is a password — and then receive the emailed code. For that
   attacker both locks are inbox-strength.
-- **`max_age=0` is a parameter in a URL the browser follows**, and the server cannot see whether
-  AuthKit honoured it. Somebody at an unlocked laptop who strips it, **and** whose browser holds
-  the victim's AuthKit session, **and** who can read the victim's inbox passes both locks. It is
-  recorded so that nobody mistakes `max_age=0` for a control the server enforces.
+- **`auth_time` is only as fresh as WorkOS's idea of an active authentication.** `max_age=0`
+  rides in a URL the browser follows, and somebody at an unlocked laptop can strip it; the
+  `auth_time` check is why that no longer passes lock one with a reused AuthKit session. But
+  whatever WorkOS counts as an active authentication is fresh as far as the check can tell, and
+  a silent pass through Google or an identity provider that still holds a session is, by every
+  sign, one of those — which is the first residual above, not a new one.
 - **What a reset hands such an attacker is not only destruction.** After resetting, they set up
   a new vault on the victim's account, which unlocks the session they hold. Through it they can
   **read** every server-mode (not end-to-end encrypted) environment the account can read. And
@@ -468,8 +481,9 @@ nothing added for WorkOS, because the browser only navigates there.
 - The vault-reset residuals above. For a Google or SSO account, lock one is a live session at
   Google or the identity provider, not a fresh credential, so an unlocked laptop with that
   session and an open inbox passes both locks. Without MFA, an attacker who owns the victim's
-  inbox can open both locks through password recovery. `max_age=0` is not something the server
-  sees. And a reset is a way *into* the account's secrets, not only a way to destroy its keys:
+  inbox can open both locks through password recovery. The `auth_time` check reaches only as
+  far as WorkOS's own notion of an active authentication. And a reset is a way *into* the
+  account's secrets, not only a way to destroy its keys:
   the new vault reads every server-mode environment, and teammates are prompted to re-share the
   end-to-end-encrypted ones.
 - Email verification, and Magic Auth with WorkOS's own Magic Auth email, are settings in a
@@ -490,9 +504,9 @@ nothing added for WorkOS, because the browser only navigates there.
   subject column and linker, is the answer.
 - The AuthKit session outliving our logout bothers anyone: WorkOS's logout URL, with the
   session id the code exchange currently discards, is the fix.
-- WorkOS offers a server-verifiable time of last authentication — one that covers Google and
-  SSO sign-ins too: lock one of the vault reset should check it, closing the `max_age=0`
-  residual.
+- WorkOS passes `max_age` on to Google and to identity providers, or reports *their*
+  authentication time rather than its own: lock one's `auth_time` check would then reach a
+  silent Google or SSO sign-in too, closing the residual it leaves today.
 - MFA becomes something xecret can see per sign-in: lock one could then require it of an owner,
   closing the inbox-only path rather than merely recommending MFA against it.
 - The TOTP branch of lock two has been exercised against a WorkOS environment with MFA

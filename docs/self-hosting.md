@@ -300,9 +300,11 @@ today, so a second provider needs its own.
   the sign-ins in flight at that moment, whose state cookies stop verifying.
   Logging out of xecret does not end the person's AuthKit session, so a
   returning person may not be asked for a credential; that is accepted. The
-  vault reset asks AuthKit for a fresh sign-in (`max_age=0`), but the server
-  cannot see whether AuthKit honoured that, and it does not reach a Google or
-  identity-provider session — see Magic Auth, above.
+  vault reset asks AuthKit for a fresh sign-in (`max_age=0`) and counts it only
+  if the access token WorkOS returns shows an authentication during that flow
+  (its `auth_time`), but that does not reach a Google or identity-provider
+  session, which WorkOS treats as a fresh authentication — see Magic Auth,
+  above.
 - **Mail, monitoring, error reporting** are yours to wire; the log pipeline
   never contains secret values by construction, but where the logs go is your
   decision.

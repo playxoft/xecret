@@ -172,10 +172,10 @@ export function isWorkosIdentity(value: unknown): value is WorkosIdentity {
 /**
  * What one authorization-code exchange establishes.
  *
- * The identity, and the three facts about *this* sign-in that the callback
+ * The identity, and the four facts about *this* sign-in that the callback
  * decides on and that the identity alone cannot carry: which organisation's
- * connection it came through (if any), how the person authenticated, and
- * whether somebody else is acting as them.
+ * connection it came through (if any), how the person authenticated, when they
+ * last actually did, and whether somebody else is acting as them.
  */
 export interface AuthorizationCodeExchange<Identity extends VerifiedIdentity = VerifiedIdentity> {
   identity: Identity;
@@ -190,6 +190,17 @@ export interface AuthorizationCodeExchange<Identity extends VerifiedIdentity = V
   organizationId: string | null;
   /** e.g. `SSO`, `Password`, `GoogleOAuth`. `null` when the provider did not say. */
   authenticationMethod: string | null;
+  /**
+   * When the person last *actively* authenticated at the provider — entered a
+   * password, used a passkey, went through Google or their identity provider —
+   * in seconds since the epoch, or `null` when the provider did not say.
+   *
+   * Not the moment of the exchange: a provider that reused a session it already
+   * held, without asking for anything, mints a code whose `authenticatedAt` is
+   * that session's original sign-in. That difference is what the vault reset's
+   * first lock checks (`server/sign-in.ts`); nothing else reads it.
+   */
+  authenticatedAt: number | null;
   /**
    * Set when a provider administrator is signing in *as* this user. Refused by
    * the callback; carried so that the refusal can name who tried.
