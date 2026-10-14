@@ -18,6 +18,7 @@ export { VaultUnlock } from './vault-unlock';
 export type { Stage as VaultUnlockStage, VaultUnlockProps } from './vault-unlock';
 
 export { VaultCard } from './vault-card';
+export { RetainedVaultsCard } from './retained-vaults-card';
 export type { VaultCardProps } from './vault-card';
 
 export { PasskeyEnrolment } from './passkey-enrolment';

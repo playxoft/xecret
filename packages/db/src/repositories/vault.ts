@@ -4,6 +4,8 @@ import type { UnlockAttemptState } from '@xecret/core/auth';
 import { uuidv7 } from '@xecret/core/ids';
 import { userKeys, userKeyWraps, userPasskeys } from '../schema/vault';
 import { deleteGrantsForUser } from './env-keys';
+import { retainVaultForReset } from './retained-vaults';
+import type { RetainedVaultReceipt } from './retained-vaults';
 import { revokeAllPinPeppers } from './vault-pin';
 import { lockSessions } from './sessions';
 import { isUniqueViolation } from './users';
@@ -765,80 +767,90 @@ export async function deleteVault(exec: Executor, userId: string): Promise<boole
 }
 
 /**
- * The dead end, made survivable: destroys the vault and locks every session the
- * account has, in one transaction.
+ * The dead end, made survivable: retains the vault for seven days, then empties
+ * the live tables and locks every session the account has — in one transaction.
  *
  * ── When this is the right answer ──
  * A person who has lost their master passphrase *and* every recovery code has
  * nothing left that opens their User Key. Nobody can produce one — not a
  * teammate, not an operator, not us — because no copy of it exists outside the
- * wraps this deletes. Their account is fine and their encrypted rows are still
- * there; what is gone is the ability to read them, and it went the moment the
- * last code was lost rather than the moment this runs.
+ * wraps this moves away. Their account is fine and their encrypted rows are
+ * still there; what is gone is the ability to read them.
  *
  * So this is not what makes the data unreadable. It is what lets somebody who is
- * already in that position start again: the row disappears, `findVaultKeys`
+ * already in that position start again: the live row disappears, `findVaultKeys`
  * answers `null`, and the setup ceremony runs from the beginning with fresh
- * keys. Without it the account is bricked at a lock screen with no path forward,
- * which is a worse outcome and not a safer one.
+ * keys. Without it the account is bricked at a lock screen with no path forward.
+ *
+ * ── Retained, not destroyed (P23) ──
+ * The first statement copies the vault — keys, live wraps, member grants — into
+ * the retained tables (`retainVaultForReset`), under a row lock that serialises
+ * two resets racing each other. For seven days the old passphrase or a recovery
+ * code can bring its environment keys back into the new vault, and nobody can
+ * delete it (migration 0020); then the scheduled purge does. Retention happens
+ * here, inside the reset's transaction, so there is no instant at which the live
+ * vault is gone and the retained one not yet written.
  *
  * ── Why the sessions are locked in the same transaction ──
- * Every session that was unlocked was unlocked *into the vault this deletes*. A
+ * Every session that was unlocked was unlocked *into the vault this removes*. A
  * session left with a live `vault_unlocked_at` would pass the route gate while
- * holding keys to a hierarchy that no longer exists — reads that should meet the
- * setup ceremony would instead meet whatever a half-initialised client does. The
- * lock is not revocation: the user stays signed in, which is what lets them run
- * the ceremony immediately.
+ * holding keys to a hierarchy that is no longer current. The lock is not
+ * revocation: the user stays signed in, which is what lets them run the ceremony
+ * immediately.
  *
  * ── Why the debts are re-recorded rather than merely dropped ──
- * The grants and the queued rows both have to go — they address a public key
- * that no longer exists. But "this person is owed a key on production" is still
- * true after the reset, and it is *more* true than before: they now hold nothing
- * at all. Deleting the queue without re-recording it leaves an entitled member
- * invisible from every screen — no grant, no pending row, nothing in any banner —
- * and the reset UI's promise that "a teammate can share those environments with
- * you again" would depend on somebody remembering unaided.
+ * The live grants and the queued rows both have to go — they address a public
+ * key that is no longer current. But "this person is owed a key on production"
+ * is still true after the reset, and *more* true than before. So `requeue` runs
+ * in this same transaction, after the delete, and re-records a debt for every
+ * environment the account may still read. A later recovery settles the debts it
+ * answers. It is a callback for the reason `rotateEnvDataKey.assertGrantSet` is:
+ * deciding what somebody may read needs `can()`, and this layer does not import
+ * the policy engine.
  *
- * So `requeue` runs in this same transaction, after the delete, and re-records a
- * debt for every environment the account may still read. It is a callback for the
- * reason `rotateEnvDataKey.assertGrantSet` is: deciding what somebody may read
- * needs `can()`, and this layer does not import the policy engine.
- *
- * Returns whether there was a vault to destroy, so the caller can answer "no
- * such thing" rather than reporting a success that did nothing.
+ * Returns what was retained, or `null` when there was no vault, so the caller
+ * can answer "no such thing" rather than reporting a reset that did nothing.
  */
 export async function resetVault(
   exec: Executor,
   userId: string,
-  options: { requeue?: ((tx: Executor) => Promise<void>) | undefined } = {},
-): Promise<boolean> {
+  options: {
+    requeue?: ((tx: Executor) => Promise<void>) | undefined;
+    /** When the reset happens. The retained window runs seven days from it. */
+    now?: Date | undefined;
+    /**
+     * The public key of the vault whose archive was emailed. The reset refuses
+     * (`conflict`) to retain any other vault — see `retainVaultForReset`.
+     */
+    expectedEncPublicKey?: Uint8Array | undefined;
+  } = {},
+): Promise<RetainedVaultReceipt | null> {
   return exec.transaction(async (tx) => {
-    const removed = await deleteVault(tx, userId);
-    if (!removed) return false;
+    const retained = await retainVaultForReset(
+      tx,
+      userId,
+      options.now ?? new Date(),
+      options.expectedEncPublicKey,
+    );
+    if (retained === null) return null;
 
-    // Every environment key ever sealed to this account goes with the vault.
+    const removed = await deleteVault(tx, userId);
+    if (!removed) return null;
+
+    // Every live grant goes with the vault — copied above, so nothing is lost.
     //
-    // Each grant is an EDK and an EHK sealed to the public key this transaction
-    // just destroyed, so what remains after the `user_keys` row is gone is
-    // ciphertext addressed to a principal that no longer has a private key. It is
-    // not merely useless — it is actively misleading: a re-invitation would look
-    // like it had nothing to do, because a grant row already exists for the
-    // member, and they would land in an environment they cannot decrypt with
-    // nothing anywhere explaining why.
-    //
-    // The queued debts go too. A pending row asks somebody to seal a key to a
-    // public key that no longer exists, so leaving it would put an unfulfillable
-    // item in a teammate's "pending key shares" banner for ever.
-    //
-    // In the same transaction as the delete, so the account cannot be left
-    // holding grants for a vault it no longer has.
+    // Each is an EDK and an EHK sealed to a public key that is no longer
+    // current, so leaving it would make a re-invitation look like it had nothing
+    // to do, because a grant row would already exist for the member, and they
+    // would land in an environment they cannot decrypt with nothing anywhere
+    // explaining why. The queued debts go too: a pending row asks somebody to
+    // seal a key to a public key that no longer exists.
     await deleteGrantsForUser(tx, userId);
 
     // And every device PIN. A reset replaces the User Key outright, so every
-    // browser-held PIN wrap is now a ciphertext of a key that no longer exists —
-    // and this server cannot delete those wraps, only the peppers without which
-    // they can never be opened. Left behind, they would keep each of those
-    // browsers offering a PIN unlock that can only fail.
+    // browser-held PIN wrap is now a ciphertext of a key that is no longer
+    // current — and this server cannot delete those wraps, only the peppers
+    // without which they can never be opened.
     await revokeAllPinPeppers(tx, userId);
 
     // After the delete, never before: `deleteGrantsForUser` clears the queue
@@ -847,6 +859,6 @@ export async function resetVault(
     await options.requeue?.(tx);
 
     await lockSessions(tx, { userId });
-    return true;
+    return retained;
   });
 }

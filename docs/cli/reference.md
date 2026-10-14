@@ -275,6 +275,26 @@ holds the pull bundle verbatim — ciphertext and the sealed grant, never values
 so the file is encrypted twice over and the vault key is needed to read it even
 with the cache key in hand.
 
+### Vault archive
+
+```
+xecret vault open-archive FILE      # open a vault escape archive, offline
+  [--recovery-code] [--passphrase-stdin] [--format FMT]
+  [--environment ORG/PROJECT/ENV] [--out-dir DIR] [--force] [--list]
+```
+
+- Reads the archive a vault reset emails (spec §14): the `.zip`, a desktop
+  tool's re-zip of it, or the bare `archive.json`. Implemented in
+  `cli/internal/vaultarchive`, against the spec, and checked against the same
+  vector file as the TypeScript writer.
+- **Makes no network request** and reads no configuration, credential or
+  keychain entry. The upgrade notice is skipped for the `vault` group.
+- The passphrase or code is read without echo, or from stdin with
+  `--passphrase-stdin`; never from a flag.
+- Exit status is non-zero when any value is *damaged*; values the account never
+  held a key for (`no-key`) and notes no held key opens are reported on stderr
+  and are not failures.
+
 ### Housekeeping
 
 ```

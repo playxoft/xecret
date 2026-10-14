@@ -27,9 +27,18 @@ import { errorName, scrubText } from './logging';
  * default.
  *
  * ── What is never in an email ──
- * No secret value, no key material, no session token, and no statement about whether an
- * account exists. The reset mail contains a single-use link and nothing else
- * that would be useful to somebody who intercepted it after it had been used.
+ * No secret value in plaintext, no unencrypted key, no session token, and no
+ * statement about whether an account exists.
+ *
+ * ── The one exception, and it is a deliberate one ──
+ * The vault escape archive (`vault-archive-mail.ts`, spec §14) is emailed to
+ * the account's own address when its vault is reset — the product owner's
+ * decision of 2026-10-12. Everything in it is still encrypted: the secrets under
+ * their environment keys, those keys to the vault's public key, its private key
+ * under the User Key, and the User Key under the passphrase and the recovery
+ * codes. But it is the whole wrapped key hierarchy, so whoever reads that inbox
+ * can attack the passphrase offline, with no rate limit, for ever. The mail, the
+ * archive's README and threat model T12 all say so.
  */
 
 export interface MailMessage {
@@ -40,7 +49,27 @@ export interface MailMessage {
   /** Both bodies are always sent. A text/plain part is not optional. */
   text: string;
   html: string;
+  /**
+   * Files attached to the message. Exactly one mail carries any: the vault
+   * escape archive, which is ciphertext by construction (spec §14). Nothing
+   * that is not already encrypted is ever attached.
+   */
+  attachments?: readonly MailAttachment[] | undefined;
 }
+
+export interface MailAttachment {
+  /** The file name the recipient sees. */
+  name: string;
+  mimeType: string;
+  content: Uint8Array;
+}
+
+/**
+ * ZeptoMail's ceiling on one message — headers, both bodies and every
+ * attachment after base64 — is 15 MB. Callers size what they attach against
+ * this; see `ARCHIVE_PART_BUDGET_BYTES`.
+ */
+export const ZEPTOMAIL_MAX_MESSAGE_BYTES = 15 * 1000 * 1000;
 
 export interface Mailer {
   send(message: MailMessage): Promise<void>;
@@ -159,6 +188,15 @@ export class ZeptoMailer implements Mailer {
         subject: message.subject,
         textbody: message.text,
         htmlbody: message.html,
+        ...(message.attachments === undefined || message.attachments.length === 0
+          ? {}
+          : {
+              attachments: message.attachments.map((attachment) => ({
+                name: attachment.name,
+                mime_type: attachment.mimeType,
+                content: base64Of(attachment.content),
+              })),
+            }),
       }),
     });
 
@@ -170,6 +208,26 @@ export class ZeptoMailer implements Mailer {
       throw new MailDeliveryError(response.status, detail.slice(0, 500));
     }
   }
+}
+
+/**
+ * Standard base64 of a byte array, in chunks.
+ *
+ * `btoa(String.fromCharCode(...bytes))` overflows the call stack on anything
+ * the size of an archive part, and a string built a byte at a time is quadratic
+ * on some engines. 24 KiB chunks are a multiple of three, so each encodes
+ * without padding and the pieces concatenate into one valid encoding.
+ */
+export function base64Of(bytes: Uint8Array): string {
+  const CHUNK = 24 * 1024;
+  const pieces: string[] = [];
+  for (let offset = 0; offset < bytes.length; offset += CHUNK) {
+    const slice = bytes.subarray(offset, offset + CHUNK);
+    let binary = '';
+    for (let i = 0; i < slice.length; i += 1) binary += String.fromCharCode(slice[i]!);
+    pieces.push(btoa(binary));
+  }
+  return pieces.join('');
 }
 
 /**

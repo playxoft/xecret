@@ -57,6 +57,17 @@ person's name on a write they did not make is worse than useless.
 | `auth.account_deleted` | An account deleted itself. Terminal. |
 | `auth.reauthenticated` | The account proved itself again for a vault reset — signed in again, then entered the emailed code (and its authenticator code, if one is enrolled) — and was given the five-minute proof the reset spends. A reset that follows it was not a stolen session alone |
 
+### Vault reset and recovery
+
+| Action | Recorded when |
+|---|---|
+| `vault.archive_emailed` | Before a reset, the encrypted archive of the vault was emailed to the account's address — with how many parts, environments and secrets, never which. Recorded as an error when no archive could be sent (no email set up, or the vault was too large) |
+| `vault.reset` | A vault was reset. The old one is kept for seven days, recoverable and undeletable |
+| `vault.recovered` | A reset vault's environment keys were brought back into the account's current vault, with its old passphrase or a recovery code. Recorded in each organisation that got keys back, with how many |
+| `vault.purged` | A reset vault's seven days ended and it was deleted. Recorded by the system, not a person |
+
+See [Resetting your vault](/docs/security/vault-archive) for what each of these means.
+
 The sign-in events — `auth.login`, `auth.signup` and `auth.identity_linked` —
 carry `signInMethod`: how the person authenticated, as one of a closed set:
 `password`, `oauth`, `sso`, `magic_auth` (a code sent by email), `passkey`, or

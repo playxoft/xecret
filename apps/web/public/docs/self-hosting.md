@@ -3,7 +3,7 @@ title: Self-hosting xecret
 navTitle: Self-hosting
 description: Run xecret yourself — the honest dependency list, the root-key ceremony, a step-by-step deployment, and what you are signing up to operate.
 keywords: [self host secret manager, cloudflare workers deployment, open source secrets manager, agpl, neon postgres, root key]
-updated: 2026-10-12
+updated: 2026-10-14
 ---
 
 xecret is AGPL-3.0 and designed to be run by people other than us. This page is
@@ -19,7 +19,7 @@ about the one thing it sells.
 | **PostgreSQL** (Neon recommended) | All data. Hyperdrive in front of it on Cloudflare. | Yes |
 | **Cloudflare Secrets Store** | Holds the runtime copy of the root key, bound to the Worker. | Yes |
 | **A WorkOS account** | Identity only — AuthKit's hosted pages handle password, Google, MFA and enterprise single sign-on (though single sign-on connections cannot be set up from xecret yet). xecret checks the result once, server to server, and issues its own sessions. | Yes, and **this is real friction**. AuthKit is free up to a million monthly active users; enterprise SSO connections are billed by WorkOS. An identity-provider interface exists so another provider can be contributed. |
-| **A mail provider** | PIN-reset links and invitation emails. | No. Without it, invitations return a shareable link instead of sending mail, and PIN reset answers `sent: false` with a reason. |
+| **A mail provider** | PIN-reset links, invitation emails, and the archive emailed before every vault reset. | **Yes, in production** — a production deployment without one resets no vault, because a vault is never reset without its archive being emailed first; the reset screen says so. Elsewhere optional: invitations return a shareable link instead, PIN reset answers `sent: false` with a reason, and a vault resets only when the person ticks "Reset without the emailed archive". |
 | **A deploy-time secret source** | Where *your* copy of the root key lives between deploys. The Worker never calls it at runtime. | Your choice — anything that can populate environment variables at deploy time. |
 
 If that list looks like a lot for a tool that injects environment variables:

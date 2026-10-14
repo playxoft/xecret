@@ -78,7 +78,7 @@ describe('a vault reset', () => {
     const userId = await account();
     await createVault(t.db, vault(userId, 1));
 
-    await expect(resetVault(t.db, userId)).resolves.toBe(true);
+    await expect(resetVault(t.db, userId)).resolves.toMatchObject({ grantCount: 0 });
 
     // The setup ceremony a reset exists to reach. It used to be refused with
     // "this account already has a vault", by the old live passphrase wrap.

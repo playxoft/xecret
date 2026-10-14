@@ -105,6 +105,8 @@ export const apiPath = {
   vaultPin: (deviceId: string): string => `${apiPath.vaultPins()}/${segment(deviceId)}`,
   /** Destroys the vault when the passphrase and every recovery code are gone. */
   vaultReset: (): string => '/api/auth/vault/reset',
+  /** What a reset would do with the escape archive, asked before anybody confirms. */
+  vaultResetPreflight: (): string => '/api/auth/vault/reset/preflight',
   /**
    * The reset's re-authentication: where it stands, the emailed code, and the
    * check that turns the code into the proof the reset spends.

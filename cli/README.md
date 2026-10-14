@@ -52,6 +52,9 @@ xecret audit --action secret.revealed --since 7d
 xecret members
 xecret tokens list / tokens revoke ID --kind service
 
+xecret vault open-archive FILE.zip      # a vault escape archive, offline, no account
+xecret vault open-archive FILE.zip --recovery-code --out-dir secrets/  # one 0600 file each
+
 xecret completion zsh                    # bash | zsh | fish
 xecret doctor                            # what this machine is set up to do
 xecret upgrade                           # is a newer release published?

@@ -582,14 +582,16 @@ export function resetConfirmationProblem(typed: string): string | null {
 }
 
 /**
- * Destroys this account's vault: the keys, every wrap, every passkey.
+ * Resets this account's vault: emails the escape archive, then retains the old
+ * vault for seven days and empties the live one.
  *
  * ── This is not recovery, and nothing here may imply that it is ──
- * Nothing is decrypted and nothing is restored, because nothing can be. The data
- * became unreadable when the last recovery code was lost; what this changes is
- * only whether the account can be *used* afterwards, instead of being parked at
- * a lock screen whose every action fails. The endpoint's own header says the
- * same thing at greater length.
+ * Nothing is decrypted and nothing is restored, because nothing can be without
+ * the old passphrase or a recovery code. What this changes is only whether the
+ * account can be *used* afterwards, instead of being parked at a lock screen
+ * whose every action fails. If the passphrase or a code turns up within seven
+ * days, `retained-vaults.ts` brings the old vault's keys back; after that the
+ * emailed archive is the only copy.
  *
  * The keys are released first rather than in a `finally`. There is nothing held
  * in this state — every caller arrives from a locked session — but a reset that
@@ -607,14 +609,73 @@ export function resetConfirmationProblem(typed: string): string | null {
  * It is a parameter rather than something this function fetches, so the proof
  * exists as a local `const` in one call frame and is never held anywhere this
  * module could log or cache it.
+ *
+ * ── `proceedWithoutArchive` is the person's choice, never a default ──
+ * `true` only when the screen showed that the archive cannot be emailed
+ * ({@link fetchResetPreflight}) and the person ticked "Reset without the
+ * emailed archive". Without it the server refuses a reset whose archive cannot
+ * be sent, and it refuses every reset where a production deployment has no mail.
  */
-export async function resetVault(confirm: string, reauthProof: string): Promise<VaultStatus> {
+export async function resetVault(
+  confirm: string,
+  reauthProof: string,
+  proceedWithoutArchive = false,
+): Promise<VaultResetResult> {
   releaseVaultKeys();
-  const response = await api.post<{ vault: VaultStatus }>(apiPath.vaultReset(), {
+  return api.post<VaultResetResult>(apiPath.vaultReset(), {
     confirm,
     reauthProof,
+    ...(proceedWithoutArchive ? { proceedWithoutArchive: true } : {}),
   });
-  return response.vault;
+}
+
+/** Why an archive cannot be emailed. */
+export type ArchiveUndeliverable = 'mail-not-configured' | 'too-large';
+
+/**
+ * What a reset would do with the escape archive (owner decision, PR #121 round
+ * 1): asked when the reset screen opens, so a vault too large to email — or a
+ * deployment that cannot send mail — is stated before anybody signs in again
+ * or confirms anything.
+ */
+export interface ResetPreflight {
+  /** `false` only where a production deployment has no mail: every reset is refused. */
+  resettable: boolean;
+  archive: {
+    deliverable: boolean;
+    reason: ArchiveUndeliverable | null;
+    /**
+     * An upper bound on the archive's size, in bytes, and the most that is
+     * emailed. A locked session — which the reset screen always is — gets
+     * these only when the size is the reason.
+     */
+    estimatedBytes?: number;
+    maxBytes?: number;
+    /** Only to an unlocked session. */
+    environmentCount?: number;
+    secretCount?: number;
+  };
+}
+
+export function fetchResetPreflight(): Promise<ResetPreflight> {
+  return api.get<ResetPreflight>(apiPath.vaultResetPreflight());
+}
+
+/** "8.4 MB" — the size the preflight reports, for a person rather than a log. */
+export function formatArchiveSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * What a reset reports (P23): the new status, whether the escape archive was
+ * emailed — and if not, why — and until when the old vault can be recovered.
+ */
+export interface VaultResetResult {
+  vault: VaultStatus;
+  archive:
+    { emailed: true; parts: number; to: string } | { emailed: false; reason: ArchiveUndeliverable };
+  retained: { id: string; retainedUntil: string; grantCount: number };
 }
 
 /** Where this session's re-authentication for the reset stands. */

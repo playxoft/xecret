@@ -306,6 +306,67 @@ export const errors = {
       { logDetail },
     ),
 
+  /**
+   * A vault reset refused because its escape archive — or, when the person
+   * chose to go without it, the notice — could not be emailed. Nothing was
+   * reset: the mail goes first. The reset's proof was spent, so the sentence
+   * says what a retry takes.
+   */
+  vaultArchiveNotSent: (logDetail: string, what: 'archive' | 'notice' = 'archive'): ApiError =>
+    new ApiError(
+      'unavailable',
+      (what === 'archive'
+        ? 'We couldn’t email your vault archive, so nothing was reset. '
+        : 'We couldn’t email you about the reset, so nothing was reset. ') +
+        'To try again you’ll need to sign in again and get a new code.',
+      { logDetail },
+    ),
+
+  /**
+   * A vault reset refused because this production deployment cannot send mail
+   * at all. A vault is never reset without its archive unless the person chose
+   * that, and nobody can choose it here — the archive would only be missing
+   * because of our configuration.
+   */
+  vaultArchiveMailMissing: (logDetail: string): ApiError =>
+    new ApiError(
+      'unavailable',
+      'This xecret installation has no email set up, and a vault is never reset without ' +
+        'emailing its archive first. Nothing was reset. Whoever runs this installation needs to ' +
+        'set up email before a vault can be reset.',
+      { logDetail },
+    ),
+
+  /**
+   * A vault reset whose archive cannot be emailed, asked for without saying
+   * "reset without the emailed archive". Refused before the reset's proof is
+   * spent; the reset screen shows the same fact before anybody confirms, so
+   * this is reached only when the vault changed in between.
+   */
+  vaultArchiveUndeliverable: (reason: 'too-large' | 'mail-not-configured'): ApiError =>
+    new ApiError(
+      'conflict',
+      reason === 'too-large'
+        ? 'Your vault is too large to email as an archive, so nothing was reset. To reset it ' +
+            'anyway, choose “Reset without the emailed archive” and confirm again.'
+        : 'This installation has no email set up, so no archive can be sent and nothing was ' +
+            'reset. To reset anyway, choose “Reset without the emailed archive” and confirm again.',
+      { logDetail: `vault archive ${reason}` },
+    ),
+
+  /**
+   * A vault reset refused because the vault it would retain is not the one
+   * its archive was made from — another reset, and a new vault, landed in
+   * between. The archive already sent says "you asked to reset", not "was".
+   */
+  vaultChangedDuringReset: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'Your vault changed while it was being reset, so nothing was reset. To try again you’ll ' +
+        'need to sign in again and get a new code.',
+      { logDetail: 'vault changed between archive and reset' },
+    ),
+
   internal: (logDetail: string): ApiError =>
     new ApiError('internal_error', 'Something went wrong.', { logDetail }),
 } as const;

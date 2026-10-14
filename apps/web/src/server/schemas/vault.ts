@@ -94,7 +94,7 @@ const MAX_GCM_BLOB_LENGTH = 512;
  * follow spec §2, and they disagree about nothing else because this one stops
  * at the prefix.
  */
-const gcmBlobSchema = z
+export const gcmBlobSchema = z
   .string()
   .check(
     z.regex(/^xk2\.gcm\.[A-Za-z0-9_-]+$/, MALFORMED_BLOB),
@@ -124,13 +124,13 @@ const unlockVerifierSchema = base64UrlBytes(
  * what says which branch a value came from, and the server compares it against
  * the matching digest and no other.
  */
-const ukUnlockVerifierSchema = base64UrlBytes(
+export const ukUnlockVerifierSchema = base64UrlBytes(
   32,
   'An unlock verifier is 32 bytes, base64url encoded.',
 );
 
 /** `SHA-256("xecret.v2.recovery-lookup" ‖ codeBytes)` (spec §7.5). */
-const lookupHashSchema = base64UrlBytes(32, 'A lookup hash is 32 bytes, base64url encoded.');
+export const lookupHashSchema = base64UrlBytes(32, 'A lookup hash is 32 bytes, base64url encoded.');
 
 /**
  * Argon2id parameters, bounded to the range spec §3.1 defines.
@@ -328,11 +328,18 @@ export const REAUTH_MAX_CODE_SENDS = 3;
  * The bound is generous for a 47-character token and exists for the usual
  * reason: nothing unauthenticated-sized is buffered on the strength of a length
  * nobody checked.
+ *
+ * `proceedWithoutArchive` is the person's explicit "Reset without the emailed
+ * archive", ticked on a screen that has just told them why the archive cannot
+ * be emailed (`GET /api/auth/vault/reset/preflight`). Absent means false: a
+ * vault is never reset without its archive unless somebody chose that. It
+ * cannot override a production deployment with no mail at all.
  */
 export const vaultResetSchema = z.strictObject(
   {
     confirm: z.string().check(z.maxLength(100)),
     reauthProof: z.string().check(z.minLength(1), z.maxLength(128)),
+    proceedWithoutArchive: z.optional(z.boolean()),
   },
   UNEXPECTED_FIELD,
 );

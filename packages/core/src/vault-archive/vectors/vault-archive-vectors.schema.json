@@ -1,0 +1,255 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xecret.playxoft.com/schemas/vault-archive-vectors.schema.json",
+  "title": "xecret vault archive test vectors",
+  "description": "Cross-implementation vectors for docs/security/e2ee-crypto-spec.md §14. Read by packages/core (TypeScript) and cli/internal/vaultarchive (Go).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "specVersion",
+    "generatedAt",
+    "generator",
+    "passphrase",
+    "recoveryCodes",
+    "vectors"
+  ],
+  "properties": {
+    "$schema": { "const": "./vault-archive-vectors.schema.json" },
+    "specVersion": { "const": "2.1" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "generator": {
+      "type": "string",
+      "pattern": "^packages/core/scripts/generate-archive-vectors\\.ts@"
+    },
+    "passphrase": { "type": "string", "minLength": 1 },
+    "recoveryCodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9A-HJKMNP-TV-Z]{5}(-[0-9A-HJKMNP-TV-Z]{5}){4}-[0-9A-HJKMNP-TV-Z]$"
+      }
+    },
+    "vectors": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/vector" },
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "kind": { "const": "vault-archive/file" } }
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "kind": { "const": "vault-archive/open" } }
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "kind": { "const": "vault-archive/split" } }
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "kind": { "const": "vault-archive/reject" } }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "hex": { "type": "string", "pattern": "^([0-9a-f]{2})*$" },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "credential": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "passphrase"],
+          "properties": {
+            "kind": { "const": "passphrase" },
+            "passphrase": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "code"],
+          "properties": {
+            "kind": { "const": "recovery-code" },
+            "code": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "openedEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environmentId", "damagedKeyVersions", "secrets"],
+      "properties": {
+        "environmentId": { "$ref": "#/$defs/uuid" },
+        "damagedKeyVersions": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+        "secrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "outcome", "value", "note", "noteUnavailable"],
+            "properties": {
+              "name": { "type": "string" },
+              "outcome": { "enum": ["ok", "no-key", "damaged"] },
+              "value": { "type": ["string", "null"] },
+              "note": { "type": ["string", "null"] },
+              "noteUnavailable": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "vector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "description", "input", "expected"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^vault-archive/[a-z-]+/[a-z0-9-]+$" },
+        "kind": {
+          "enum": [
+            "vault-archive/file",
+            "vault-archive/open",
+            "vault-archive/split",
+            "vault-archive/reject"
+          ]
+        },
+        "description": { "type": "string", "minLength": 1 },
+        "input": { "type": "object" },
+        "expected": { "type": "object" }
+      },
+      "allOf": [
+        {
+          "if": { "type": "object", "properties": { "kind": { "const": "vault-archive/file" } } },
+          "then": {
+            "type": "object",
+            "properties": {
+              "expected": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["fileName", "fileHex", "sha256Hex", "archiveJson"],
+                "properties": {
+                  "fileName": {
+                    "type": "string",
+                    "pattern": "^xecret-vault-archive-\\d{4}-\\d{2}-\\d{2}(-part-\\d+-of-\\d+)?\\.zip$"
+                  },
+                  "fileHex": { "$ref": "#/$defs/hex" },
+                  "sha256Hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                  "archiveJson": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "kind": { "const": "vault-archive/open" } } },
+          "then": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["credential"],
+                "properties": {
+                  "fileVector": { "type": "string" },
+                  "fileHex": { "$ref": "#/$defs/hex" },
+                  "jsonText": { "type": "string" },
+                  "credential": { "$ref": "#/$defs/credential" }
+                },
+                "oneOf": [
+                  { "required": ["fileVector"] },
+                  { "required": ["fileHex"] },
+                  { "required": ["jsonText"] }
+                ]
+              },
+              "expected": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["environments"],
+                "properties": {
+                  "environments": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/openedEnvironment" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "kind": { "const": "vault-archive/split" } } },
+          "then": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["maxPartBytes", "credential", "partsHex"],
+                "properties": {
+                  "maxPartBytes": { "type": "integer", "minimum": 1 },
+                  "credential": { "$ref": "#/$defs/credential" },
+                  "partsHex": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/hex" } }
+                }
+              },
+              "expected": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["parts", "partSecretNames"],
+                "properties": {
+                  "parts": { "type": "integer", "minimum": 2 },
+                  "partSecretNames": { "type": "array" }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "kind": { "const": "vault-archive/reject" } } },
+          "then": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "fileVector": { "type": "string" },
+                  "fileHex": { "$ref": "#/$defs/hex" },
+                  "jsonText": { "type": "string" },
+                  "credential": { "$ref": "#/$defs/credential" }
+                },
+                "oneOf": [
+                  { "required": ["fileVector"] },
+                  { "required": ["fileHex"] },
+                  { "required": ["jsonText"] }
+                ]
+              },
+              "expected": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["errorClass"],
+                "properties": {
+                  "errorClass": { "enum": ["format", "decryption", "recovery-code"] }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

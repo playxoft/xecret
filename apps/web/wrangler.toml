@@ -1,5 +1,8 @@
 name = "xecret"
-main = ".open-next/worker.js"
+# OpenNext's generated handler, wrapped to add the hourly Cron Trigger below
+# (`worker.ts` says how; the retained-vault purge is the job). Build first:
+# `.open-next/worker.js` is what it imports.
+main = "worker.ts"
 
 # nodejs_compat is required by the OpenNext adapter and by postgres.js (ADR 0006).
 compatibility_date = "2026-08-05"
@@ -92,6 +95,15 @@ ZEPTOMAIL_FROM_NAME = "Xecret"
 # about the omission on every run; an unanswered warning is one that eventually
 # gets read past.
 ZEPTOMAIL_API_URL = "https://api.zeptomail.com/v1.1/email"
+
+# The hourly scheduled job (`apps/web/worker.ts`): deletes reset vaults whose
+# seven-day retention has ended (P23, migration 0020). Declared here, under the
+# environment, rather than at the top level, so that local development and the
+# staging stub — which has no database — never run it. Correctness does not hang
+# on its timing: every read of a retained vault already ignores one past its
+# window; this is what removes the rows.
+[env.production.triggers]
+crons = ["17 * * * *"]
 
 # ADR 0002 — the Root KEK map. Sourced from Phase.dev, pushed to the
 # account's default Secrets Store by scripts/deploy-bootstrap.sh.

@@ -56,7 +56,7 @@ export const DOCS_SECTIONS: readonly DocsSection[] = [
   {
     title: 'Security',
     summary: 'What xecret can and cannot see, stated plainly rather than implied.',
-    slugs: ['security/trust-model', 'security/audit-log'],
+    slugs: ['security/trust-model', 'security/audit-log', 'security/vault-archive'],
   },
   {
     title: 'Running it yourself',

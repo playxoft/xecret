@@ -113,7 +113,14 @@ beforeEach(() => {
   audit = [];
   deferred = [];
 
-  const env = { XECRET_PUBLIC_URL: ORIGIN, XECRET_ENV: 'production' };
+  // Mail configured, because a production deployment without it refuses every
+  // reset before the proof is looked at. No vault here, so nothing is sent.
+  const env = {
+    XECRET_PUBLIC_URL: ORIGIN,
+    XECRET_ENV: 'production',
+    ZEPTOMAIL_TOKEN: 'zepto-test-token',
+    ZEPTOMAIL_FROM_ADDRESS: 'no-reply@example.com',
+  };
   logging.createRequestLog.mockImplementation((_env: unknown, base: Record<string, unknown>) =>
     createLogger({
       sink: { write: (entry) => lines.push(entry), flush: () => Promise.resolve() },

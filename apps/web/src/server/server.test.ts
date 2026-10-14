@@ -35,7 +35,7 @@ function bindings(overrides: Partial<Bindings> = {}): Bindings {
   return {
     ASSETS: undefined as unknown as Fetcher,
     XECRET_ENV: 'development',
-    XECRET_PUBLIC_URL: 'http://localhost:3000',
+    XECRET_PUBLIC_URL: 'http://localhost:3030',
     ...overrides,
   };
 }

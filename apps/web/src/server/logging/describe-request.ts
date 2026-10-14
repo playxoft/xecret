@@ -206,7 +206,24 @@ function describeAuth(verb: string, rest: readonly string[]): RequestAction {
           ? action('auth.vault_passkey', 'Removed', 'remove', 'a passkey from the vault')
           : action('auth.vault_passkey', 'Listed', 'list', "the vault's passkeys");
       case 'reset':
-        return action('auth.vault_reset', 'Reset', 'reset', "the account's vault");
+        return rest[2] === 'preflight'
+          ? action(
+              'auth.vault_reset_preflight',
+              'Checked',
+              'check',
+              'what a vault reset would email',
+            )
+          : action('auth.vault_reset', 'Reset', 'reset', "the account's vault");
+      case 'retained':
+        if (rest[3] === 'restore') {
+          return action('auth.vault_retained', 'Recovered', 'recover', "a reset vault's keys");
+        }
+        if (rest[3] === 'recovery-wrap') {
+          return action('auth.vault_retained', 'Used', 'use', 'a recovery code of a reset vault');
+        }
+        return rest[2] === undefined
+          ? action('auth.vault_retained', 'Listed', 'list', "the account's reset vaults")
+          : action('auth.vault_retained', 'Read', 'read', 'a reset vault');
       case 'pin':
         if (rest[2] === 'attempt') {
           return action('auth.vault_pin', 'Unlocked', 'unlock', "the session's vault with a PIN");

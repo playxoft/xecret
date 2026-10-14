@@ -1,6 +1,6 @@
 # xecret E2EE Crypto Format Specification
 
-**Version:** 2.0 · **Date:** 2026-09-08 · **Status:** normative
+**Version:** 2.1 · **Date:** 2026-10-12 · **Status:** normative
 **Implements:** [ADR 0009](../adr/0009-zero-knowledge-encryption.md)
 
 This document defines every cryptographic artifact xecret stores or transmits under the
@@ -656,8 +656,10 @@ of a code, and it is what §3.3 and §7.5 take as input.
 is what the five-group display holds. Rather than pad to 26 characters and introduce two
 meaningless bits that two implementations could encode differently, the code is defined as a
 125-bit value. 125 bits is not a meaningful reduction from 128 for any adversary that exists:
-both are far past any brute-force horizon, and the code's practical exposure is a rate-limited,
-audited server lookup, not an offline attack.
+both are far past any brute-force horizon. Most of the time the code's exposure is a
+rate-limited, audited server lookup; the vault escape archive (§14) also puts every unused
+recovery wrap in a file anyone holding it can attack offline, and 125 bits keeps that out of
+reach too.
 
 **Canonical display form**, and the only form the UI, the Emergency Kit `.txt`, and the print
 sheet may render:
@@ -1233,7 +1235,361 @@ the account.
 
 ---
 
-## 14. Review log
+## 14. The vault escape archive
+
+A vault reset (ADR 0009, trade-off 6) retires a User Key, and with it every environment key the
+account held. The escape archive is what the account keeps afterwards: every ciphertext and wrap
+the server already stores for that vault, **still sealed**, in one file that the passphrase or
+one of the recovery codes opens offline — with no xecret account, no network, and no version of
+this service still running. The server assembles it from rows it holds and never opens any of
+it; it holds no key that could.
+
+This section is normative for the file's bytes and for how a reader opens it. Where and when an
+archive is produced is product behaviour (the reset route, `docs/security/threat-model.md` T11
+and T12), not format.
+
+### 14.1 Container
+
+An archive file is a **ZIP file** (PKWARE APPNOTE 6.3.10) holding exactly two entries, in this
+order:
+
+| Entry | Contents |
+|---|---|
+| `README.txt` | Plain-language text for a person (§14.3). Never parsed. |
+| `archive.json` | The archive document (§14.4). |
+
+**A writer MUST produce exactly this**, so that two writers given the same document produce the
+same bytes and a vector can pin them:
+
+- compression method `0` (stored) for both entries; general-purpose bit flag `0`; no extra
+  fields, no file comments, no archive comment, no data descriptors, no ZIP64 records, no
+  encryption;
+- `version needed to extract` = `10`; in the central directory, `version made by` = `20`
+  (`0x0014`, MS-DOS host);
+- last-modified time and date = the DOS encoding of the document's `createdAt` in UTC
+  (`time = hour<<11 | minute<<5 | second>>1`, `date = (year−1980)<<9 | month<<5 | day`);
+- internal and external file attributes `0`; disk numbers `0`;
+- CRC-32 is the ISO 3309 / ITU-T V.42 polynomial `0xEDB88320`, as zlib computes it.
+
+**A reader is liberal about the container and strict about the document.** A person may unzip
+an archive and zip it again with a desktop tool, which deflates and adds entries of its own.
+So a reader:
+
+- MUST accept a **bare `archive.json`** as well as a ZIP: if the first byte of the file is
+  `{` (`0x7B`), the whole file is the document. Otherwise the file MUST begin with the local
+  file header signature `PK\x03\x04`, or it is a format error;
+- MUST locate entries through the end-of-central-directory record and the central directory,
+  and MUST reject a multi-disk archive, a ZIP64 archive, and an entry count that disagrees
+  with the directory;
+- MUST find **exactly one** entry named `archive.json` — byte-exact, at the root,
+  case-sensitive. None, or more than one, is a format error;
+- MUST accept method `0` or `8` (deflate) for that entry and reject any other; MUST reject it
+  when bit 0 of its flags (encrypted) is set; MUST reject an uncompressed size above
+  **64 MiB** (67 108 864 bytes) before inflating; and MUST check, after inflating, that both
+  the size and the CRC-32 match the directory;
+- MUST ignore every other entry, `README.txt` included.
+
+Every failure above is a **format error** (§5.2's class): a statement about a file the reader
+already holds, with nothing learned from it.
+
+The reference writer names the file `xecret-vault-archive-YYYY-MM-DD.zip`, or
+`xecret-vault-archive-YYYY-MM-DD-part-K-of-N.zip` for a split archive (§14.6). Names carry no
+meaning; a reader MUST NOT depend on one.
+
+### 14.2 What the server puts in an archive, and what it never does
+
+An archive holds **the latest version of every live secret in every end-to-end-encrypted
+environment the account held a key grant for and could still read** at the moment it was made,
+plus exactly the wraps and keys that open them:
+
+- the passphrase wrap and every **unused** recovery wrap of the User Key (blob types 1 and 2),
+  with the Argon2id salt and parameters (§3.1);
+- the X25519 public key and the **encrypted X25519 private key** (blob type 4);
+- per environment, every EDK/EHK grant addressed to the account as a `member`, at every key
+  version it holds (blob types 6 and 7);
+- per secret, the value blob (type 9) and the note blob (type 10), with the plaintext metadata
+  §14.4 lists: organisation, project, environment and secret **names**, slugs, ids, versions,
+  value types and timestamps. Names are not values, and an archive that cannot say which blob
+  is `DATABASE_URL` is an archive nobody can use.
+
+It **never** holds, and a writer MUST NOT add:
+
+| Excluded | Why |
+|---|---|
+| Any plaintext value or note, in any encoding | The archive's whole claim. The server cannot produce one, and a test sweeps every built archive for every encoding of every plaintext it was built from. |
+| Any key in the clear — `SK`, the UK, a wrap key, an EDK, an EHK, a private key | The same claim, one level up. |
+| The encrypted **Ed25519** private key (blob type 5) | Not needed to read anything. Whoever cracks the passphrase would otherwise also be able to sign grants as the retired identity. |
+| `unlock_verifier_hash`, `uk_unlock_verifier_hash` | Not needed to open anything, and each is one more offline-checkable value. |
+| Passkey PRF wraps (blob type 3) | A PRF output needs the authenticator and the relying party; no offline reader can produce one. |
+| Superseded passphrase wraps; redeemed recovery codes | Old credentials of a retired key, each one more thing to attack. |
+| `server`-mode environments | A reset does not touch them — the server's envelope still opens them — and including them would mean plaintext. |
+| Grants to anyone else — tokens, invitations, other members | Not the account's. |
+| Deleted secrets, environments and projects; versions before the latest | An escape hatch, not a backup. Size grows with history; the latest value is what a person needs back. |
+
+**A writer writes only what every reader accepts (§14.4).** The rows an archive is assembled
+from were validated when they were written, but under the rules of their day. So the reference
+writer cleans each display name — removes the characters §14.4 refuses, replaces a lone
+surrogate with U+FFFD, clamps to 256 code points, and writes `-` for one left empty; keeps a
+slug that is in the product's grammar and otherwise writes `x-` followed by the entity's id
+without its hyphens (34 characters, valid in both grammars, and as unique as the id, so a
+replaced slug cannot make two environments share a path); leaves out a secret whose name or
+value type a reader would refuse; and carries at most the newest 1 000 key versions of an
+environment. A secret under a key version left out opens as `no-key`, which it would be anyway.
+
+### 14.3 `README.txt`
+
+UTF-8, LF line endings. Its wording is not normative and a reader MUST NOT parse it, but a
+writer MUST say, in plain language:
+
+1. what the file is, for which account (by `userId`), made when, and — for a split archive —
+   which part of how many;
+2. that every value inside is encrypted and opens only with **that vault's master passphrase or
+   one of its unused recovery codes**, and that nobody — not xecret — can open it otherwise;
+3. **the offline-attack warning**, in these terms or stronger: anyone who obtains this file can
+   try passphrases against it on their own hardware for as long as they like, with no rate
+   limit and no lockout, and no deletion or revocation will ever take that ability away; a
+   strong passphrase holds, a weak one does not;
+4. how to open it: `xecret vault open-archive <file>` (works offline, needs no account) and the
+   **Import archive** action on a project;
+5. that the format is specified in this section of this document.
+
+### 14.4 `archive.json`
+
+UTF-8 JSON (RFC 8259), no byte-order mark. The writer emits fields in the order below with
+two-space indentation; a reader MUST accept any valid JSON regardless of order and whitespace,
+and MUST reject a document with a missing field, a field of the wrong type, or **a field this
+section does not define** — at every level. A document written by a future format version must
+fail to parse rather than be half-read as this one. Duplicate keys MUST NOT be written; both
+reference readers take the last occurrence.
+
+An **integer** field is a JSON number with an integral value in its stated range: `1`, `1.0`
+and `1e0` are the same integer, and both reference readers accept all three. A string MUST
+NOT contain a **lone surrogate**: an escape in the range `\uD800`–`\uDFFF` that is not one
+half of a high-then-low pair is a format error, wherever it appears, because one reader's JSON
+library keeps it and the other's silently replaces it with U+FFFD. (Raw surrogates cannot occur
+in valid UTF-8.)
+
+Encodings follow §1.2 and the vector conventions: `…Blob` is a full `xk2.<algo>.<b64url>`
+string exactly as stored; `…B64Url` is unpadded base64url; `…Hex` is lowercase hex; UUIDs are
+canonical lowercase text; timestamps are RFC 3339 in UTC with milliseconds
+(`2026-10-12T09:30:00.000Z`).
+
+**The document**
+
+| Field | Type | Rule |
+|---|---|---|
+| `format` | string | Exactly `"xecret.vault-archive"`. |
+| `formatVersion` | integer | Exactly `1`. Any other value is a format error that names the version found. |
+| `archiveId` | UUID | One per archive; the same in every part of a split one. |
+| `part` | integer | `1` ≤ `part` ≤ `parts`. |
+| `parts` | integer | `1` … `64`. |
+| `createdAt` | timestamp | When the archive was made. |
+| `reason` | string | Exactly `"vault-reset"`. |
+| `account` | object | `{ "userId": UUID }` — the account the wraps and grants are bound to. Every AAD below that names a user names this one. |
+| `vault` | object | Below. |
+| `environments` | array | Below. May be empty. |
+
+**`vault`**
+
+| Field | Type | Rule |
+|---|---|---|
+| `createdAt` | timestamp | When this vault was set up. |
+| `kdfSaltB64Url` | base64url | Exactly 16 bytes. |
+| `kdfParams` | object | The §3.1 stored form, exactly its six keys. **Validated against §3.1's ranges before Argon2id runs**: an archive is untrusted input exactly as a server response is, and an unvalidated `m` is a memory allocation chosen by whoever wrote the file. Out of range is a format error. |
+| `passphraseWrapBlob` | blob | `xk2.gcm.`, type 1. |
+| `recoveryWraps` | array | 0 … 16 entries of `{ "lookupHashHex": 64 hex chars, "wrapBlob": "xk2.gcm.…" }` (type 2), the account's unused codes. `lookupHashHex` values are unique. |
+| `encPublicKeyB64Url` | base64url | Exactly 32 bytes: the X25519 public key every grant below was sealed to. |
+| `encPrivateKeyBlob` | blob | `xk2.gcm.`, type 4. |
+
+**Each `environments[]` entry**
+
+| Field | Type | Rule |
+|---|---|---|
+| `orgId`, `projectId`, `environmentId` | UUID | AAD components (§4.2). |
+| `orgName`, `projectName`, `environmentName` | string | 1 … 256 Unicode code points (not UTF-16 units, not bytes), containing no C0 or C1 control character (U+0000–U+001F, U+007F–U+009F) and neither U+2028 nor U+2029. Display only; never an AAD component. A reader prints these, and a name that could carry a newline or an escape sequence could draw its own lines in a terminal. |
+| `orgSlug`, `projectSlug` | string | The product's slug grammar: `^[a-z0-9]+(?:-[a-z0-9]+)*$`, at most 63 characters. |
+| `environmentSlug` | string | The product's environment-slug grammar: `^[a-z0-9]+(?:[-_][a-z0-9]+)*$`, at most 63 characters. Slugs are what a reader prints as a path and writes files under. |
+| `isProduction` | boolean | Display only. |
+| `keys` | array | ≥ 1 entry of `{ "envDataKeyId": UUID, "edkVersion": integer ≥ 1, "edkSealedBlob": "xk2.x25519.…", "ehkSealedBlob": "xk2.x25519.…" }` (types 6 and 7), at most **1000**. `envDataKeyId` values are unique, and so are `edkVersion` values. A writer whose account holds more keys for one environment keeps the newest 1000; values written under the others then open as `no-key`. |
+| `secrets` | array | Entries below. `secretId` values are unique, and so are `name` values. |
+
+**Each `secrets[]` entry**
+
+| Field | Type | Rule |
+|---|---|---|
+| `secretId` | UUID | AAD component. |
+| `name` | string | Matches `^[A-Za-z_][A-Za-z0-9_]*$`, at most 256 characters. |
+| `valueType` | string | 1 … 32 characters of `[a-z0-9]`. A hint for an importer; never checked against the value. |
+| `version` | integer | ≥ 1. AAD component — the version this ciphertext is bound to. |
+| `envDataKeyId` | UUID | The key the value was written under. It MAY name a key absent from `keys`: the account was never given that version (it joined after the write, say). That is not a format error; §14.5 reports the value as `no-key`. |
+| `valueBlob` | blob | `xk2.gcm.`, type 9, at most `MAX_SECRET_BLOB_LENGTH` (§2.2) characters. |
+| `noteBlob` | blob or `null` | `xk2.gcm.`, type 10, same bound, or `null` for no note. Notes carry no key reference on the server either; §14.5 says how one is found. |
+| `updatedAt` | timestamp | When this version was written. |
+
+`environmentId` values are unique across the document, and so are the
+`<orgSlug>/<projectSlug>/<environmentSlug>` paths: two entries for one environment would let
+one shadow the other wherever a reader prints or files them.
+
+A field that fails §2's blob parse — unknown version, unknown algorithm, short payload, bad
+base64url — is a format error of the whole document, raised before any key is derived.
+
+### 14.5 Opening an archive
+
+Given the document and **one credential**, a reader:
+
+1. **Opens the User Key.**
+   - *With the passphrase*: validates `kdfParams` (§3.1), derives
+     `SK = Argon2id(utf8(NFC(passphrase)), kdfSalt, kdfParams)`, then
+     `wrapKey = HKDF(SK, "", "xecret.v2.uk-wrap", 32)`, and opens `passphraseWrapBlob` under the
+     AAD `uk-wrap|<userId>|passphrase`.
+   - *With a recovery code*: parses it (§7.1–7.3 — a bad check character is reported as a typo,
+     not as a wrong code), computes `lookupHashHex` (§7.5), finds the `recoveryWraps` entry with
+     that value, derives `RCK` (§7.6), and opens its `wrapBlob` under
+     `uk-wrap|<userId>|recovery|<lookupHashHex>`. **A code with no matching entry is the same
+     outcome as a code that fails to open one** — the uniform decryption error, carrying no
+     detail — exactly as the server answers a recovery lookup.
+
+   A wrong passphrase and a wrong code are the uniform `DecryptionError` of §5.2. Nothing is
+   learned about which part was wrong.
+
+2. **Opens the private key**: `encPriv = open(encPrivateKeyBlob, UK, privkey-enc|<userId>)`,
+   then **requires** `X25519.publicKeyOf(encPriv) = encPublicKey`. A mismatch is a format
+   error: the file is internally inconsistent, and continuing would report every grant as
+   damaged for a reason that has nothing to do with them. An `encPrivateKeyBlob` that does not
+   open — tampered, or from another vault — is reported as the **uniform decryption failure**
+   of step 1: it is opened under the User Key, so from the outside it is indistinguishable from
+   a credential that opened the wrong thing, and a reader does not pretend otherwise.
+
+3. **Opens each key**: for every `keys[]` entry, `(EDK, EHK) = openGrant(...)` with
+   `recipientKind = member`, `recipientId = userId`, and that entry's `environmentId` and
+   `edkVersion` (§5.2, AADs from §4.2). A grant that fails to open makes its key **damaged**;
+   it is not fatal to the archive.
+
+4. **Opens each value** under the key its `envDataKeyId` names, with the AAD
+   `secret-value|<orgId>|<environmentId>|<secretId>|<version>`, and requires the plaintext to
+   be valid UTF-8 (§2.2). The outcome per secret is exactly one of:
+
+   | Outcome | When |
+   |---|---|
+   | `ok` | The value opened. |
+   | `no-key` | `envDataKeyId` is not among the environment's `keys`. |
+   | `damaged` | The key is present but damaged, or the value failed to authenticate, or it is not UTF-8. |
+
+5. **Finds each note** by trying, under the AAD `secret-note|<orgId>|<environmentId>|<secretId>`,
+   the opened key its value was written under first and then the environment's other opened
+   keys **highest `edkVersion` first** — **at most 16 keys in all** — and taking the first that
+   authenticates. The cap is what stops a file with many keys and many notes from costing keys ×
+   notes decryptions. A note none of them opens is *unavailable*, which is reported and is not
+   an error: the value is what matters, and a note written under a key the account never held
+   is not damage.
+
+Steps 3–5 never stop at the first failure. A reader reports what opened and what did not; a
+command-line reader exits non-zero when anything was `damaged`, and zero when the only gaps are
+`no-key` and unavailable notes. Every key, the UK and the private key are zeroised (§1.1) once
+the outcome is produced.
+
+A split archive (§14.6) opens part by part, each with the same credential; no part depends on
+another.
+
+### 14.6 Split archives
+
+The reset route emails an archive as an attachment, and one message may not carry it whole.
+So a writer MAY split one archive into `parts` files, each of which is a **complete archive in
+its own right**:
+
+- `format`, `formatVersion`, `archiveId`, `parts`, `createdAt`, `reason`, `account` and `vault`
+  are identical in every part; `part` numbers them `1 … parts`;
+- every environment appears in at least one part, and its metadata and `keys` are repeated in
+  every part that carries any of its secrets;
+- the secrets are partitioned: each appears in exactly one part.
+
+The reference writer keeps each part's ZIP file at or below **5 MiB** (5 242 880 bytes) and
+splits only when it must. Five mebibytes is a delivery choice, not a format limit: one part,
+base64-encoded (about 7 MB) into a message, stays under the 15 MB the sending provider allows
+and under the 10 MB many receiving mail gateways still enforce. It refuses to produce more than
+64 parts. The product's own reset sends at most **two**, and never emails an archive whose
+documents it estimates at over **8 MiB** — sized in SQL before anything is loaded, from a
+measured live peak of about 70 MiB of heap for 8 MiB of ciphertext in a Worker's 128 MB
+(`apps/web/src/server/vault-archive-service.ts`). Such a vault is reset only when the person
+explicitly chooses to go without the archive (owner decision, PR #121 round 1).
+
+### 14.7 Security considerations
+
+**The archive is an offline target, permanently.** Online, the passphrase is defended by the
+server's backoff and lockout (§7.5, §8). An archive has neither: whoever holds the file can
+run Argon2id at the vault's own parameters — 64 MiB and three passes per guess at the current
+ones — on their own hardware, for as long as they like. That cost makes a strong passphrase
+(the setup ceremony enforces at least twelve characters and a zxcvbn score of 4) infeasible to
+guess and a weak one a matter of time. No revocation reaches a copy of a file. This is the risk
+the product owner accepted when deciding to **email** the archive (2026-10-12); it is stated in
+the email, in `README.txt`, and in the threat model (T12), and nowhere softened.
+
+**What it adds to a stolen session, and to a stolen inbox.** A *locked* session already receives
+the passphrase wrap, salt and parameters (`GET /api/auth/vault`), because the lock screen needs
+them, so an offline attack on the passphrase was always open to it; what it cannot reach is the
+ciphertext, which only an *unlocked* session reads. An unlocked session reads the ciphertext and,
+during the seven-day window, a reset vault's wraps too (`GET /api/auth/vault/retained/{id}`).
+The archive puts both together, permanently, in a mailbox — and whoever controls that mailbox
+even briefly, with the sign-in that comes with it (threat model T11), can trigger a reset and
+receive the archive themselves.
+
+**What a cracked passphrase yields is the environment keys themselves.** Opening the archive
+opens each environment's data key (EDK), not merely an account's access: those keys decrypt every
+value written under them — what the archive holds, and anything written later under the same key
+version, wherever that ciphertext is found. So **if an archive may have been exposed, rotate the
+environment keys of every environment it covers**: rotation replaces the key that encrypts what
+is written next. It cannot take back what the archive already holds.
+
+**Recovery codes add no offline exposure.** Each is 125 bits of uniform randomness (§7.2); no
+amount of offline work recovers one. Including their wraps lets a person who kept the kit but
+lost the passphrase open the archive.
+
+**An archive is confidential, not authenticated.** Nothing in it is signed by a key the reader
+could check, and nothing could be: the server writes it, and the server holds no key of the
+account's. Anyone able to alter the file before it is opened — and the account's X25519 public
+key is in it — can add an environment whose grant is sealed to that key and whose values say
+whatever they like, and a reader will open them. This is ADR 0009's trade-off 3 (grant
+signatures are created but not yet verified) seen from a file rather than from the API, and the
+mitigation is the same: treat what an archive yields as what it is — a copy, received over
+email — and review it before importing it anywhere that matters. The import screen offers its
+Import only after a preview that lists every name and value it would write, each value masked
+until revealed.
+
+**An archive is an end-to-end-encrypted source.** Every value in it came out of an `e2ee`
+environment, so an importer MUST NOT write it anywhere the values would reach a server readable:
+the reference import refuses a `server`-mode target outright — shown with its mode, never
+confirmed past — and refuses a target whose mode the browser saw as `e2ee` and the server now
+calls `server`, as every write does. An archive environment is preselected only for the
+environment with the **same id**, never by matching slugs, which repeat across projects.
+
+**The names are plaintext.** Organisation, project, environment and secret names travel in the
+clear, in the archive and therefore in the mailbox. The product treats names as non-secret
+everywhere else (audit records, listings); the archive does not change that.
+
+### 14.8 Test vectors
+
+`packages/core/src/vault-archive/vectors/vault-archive-vectors.json`, generated by
+`npm run -w @xecret/core archive-vectors:generate` from the TypeScript writer with pinned
+randomness, and read by both suites — the same discipline as §12. They pin the **bytes of the
+ZIP file** (so a writer that drifts fails), the document, and the outcome of opening it with the
+passphrase and with a recovery code: every value, every note, every `no-key` and `damaged`
+case. Negative vectors pin rejection of an unknown `formatVersion`, an unknown field,
+`kdfParams` out of range, a ZIP with two `archive.json` entries, a CRC mismatch, a wrong
+passphrase, and an unknown recovery code; and — because two readers can only be held to the
+same container rules by the same bytes — a ZIP64 end record, a multi-disk end record, a size
+mismatch, a deflate stream that inflates past its declared size, a newline in a slug, a slug one
+character too long, control and line-separator characters in names, a lone surrogate escape, and
+duplicate environments by id and by slug path. A deflated re-zip with an extra entry is a positive
+vector, and so is the document with its integers written as `1.0`, `1e0` and `6.5536e4` —
+inside `kdfParams` too, where a strict integer decoder would otherwise refuse what the other
+reader accepts. Its deflate streams use stored blocks, so the bytes do not depend on a compressor. The
+Argon2id parameters are the §3.1 floor
+(`m = 19456`, `t = 2`) — inside the production range, so the reader under test runs its real
+validator, and cheap enough that the suite does not get skipped.
+
+---
+
+## 15. Review log
 
 | Date | Change |
 |---|---|
@@ -1245,3 +1601,4 @@ the account.
 | 2026-09-10 | Review fixes, second batch — lifecycle. §10 moves invite-grant consumption from acceptance to the write that stores the re-sealed grant, per environment and in one transaction, and states the residual window that buys: deleting the grants on the acceptance response bounded a leaked fragment but destroyed the flow for the people it exists for, who arrive with no vault and therefore no key to re-seal to. §7.1 enumerates the whitespace class a parser must strip, because JavaScript's `\s` and Go's `unicode.IsSpace` miss opposite halves of it (U+FEFF and U+0085) and a recovery code that one side prints and the other refuses has nothing on screen to explain itself. §2.2 assigns authenticated-but-invalid-UTF-8 to the format-error class and forbids U+FFFD substitution. §13.2 states what the hand-off AAD does *not* bind — which process holds the recipient key — specifies the fingerprint both sides display so a person can compare them, records that the sealed blob persists in browser history, and documents the vault material the CLI keeps in the OS keyring so that `--offline` is offline. No format, no derivation, and no byte layout changed; the fingerprint is a display format and everything else is prose about existing bytes. |
 | 2026-09-11 | Phase 3 of the unlock-convenience work (device PIN). Adds §13.3, blob type 12 to §2.2, two branches to §3.3 and the `pin-wrap` purpose to §4.2. The one construction here that is new in kind is a wrap key whose input keying material is split between two parties — `HKDF(pinKey ‖ pepper)`, with the pepper held only by the server and released only under a five-attempt counter — which is what makes it defensible to wrap a User Key under six digits. §13.3 states the concession this makes and the exact adversary it makes it to: a server colluding with whoever holds the device, and nobody else. No existing format, derivation, or byte layout changed; the additions are additive, and blob type 12 is the first in §2.2 that is never stored by or transmitted to this server. |
 | 2026-09-10 | Review fixes. Adds §4.3, the client-write contract: every client-encrypted write states the `secretId` and version its ciphertext is bound to, and the server refuses rather than substitutes — closing a class of silent, unrepairable data loss reachable from an ordinary double-restore or an import planned against a truncated listing. §6.1 now requires `recipientPublicKey` to be stored on the grant row, because every other source for it is mutable and a deferred verifier reading one would report honest grants as forged. §13.1 states where a service token is split, after a client was found sending both halves in the `Authorization` header. No format, no derivation, and no byte layout changed; the additions are request fields and one column. |
+| 2026-10-12 | P23 (vault escape archive). Adds §14, written before the code that implements it: the archive's ZIP container byte for byte, the `archive.json` document field by field, the opening procedure with its three per-value outcomes (`ok`, `no-key`, `damaged`), split archives, and the security considerations — above all that an archive is a permanent offline target, which the product owner accepted when deciding to email it, and that it is confidential but not authenticated. No new blob type, AAD purpose or HKDF branch: an archive is a container of existing blobs, opened by existing constructions. The review log moves to §15. |

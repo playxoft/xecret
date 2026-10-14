@@ -56,7 +56,13 @@ export interface LockScreenProps {
 }
 
 export function LockScreen({ status, user, onUnlocked }: LockScreenProps) {
-  const configured = status.configured;
+  // While a vault reset's result is on screen, this frame keeps showing the
+  // unlock flow — and so the result — even if the session is re-read meanwhile
+  // and reports no vault: where the archive went and until when the old vault
+  // is kept should be read before setup takes over. It decides only between
+  // this frame's two children; it does not hold back anything above it.
+  const [resetResultShowing, setResetResultShowing] = useState(false);
+  const configured = status.configured || resetResultShowing;
 
   // The unlock flow reports which of its stages is on screen, so the frame
   // can title each one honestly — a person typing a recovery code is not
@@ -96,6 +102,15 @@ export function LockScreen({ status, user, onUnlocked }: LockScreenProps) {
     },
   }[stage];
 
+  // The result of a reset is not the reset screen any more.
+  const frame = resetResultShowing
+    ? {
+        title: 'Your vault has been reset',
+        description:
+          'Before you set up a new one: where your archive went, and how long the old vault is kept.',
+      }
+    : stageCopy;
+
   return (
     <div className="bg-canvas flex min-h-dvh flex-col">
       <header className="border-line bg-canvas sticky top-0 z-10 flex h-[var(--topbar-height)] shrink-0 items-center border-b px-4 sm:px-6">
@@ -114,16 +129,21 @@ export function LockScreen({ status, user, onUnlocked }: LockScreenProps) {
           icon={
             configured ? <LockIcon className="size-5" /> : <ShieldCheckIcon className="size-5" />
           }
-          title={configured ? stageCopy.title : 'Set up your vault'}
+          title={configured ? frame.title : 'Set up your vault'}
           description={
             configured
-              ? stageCopy.description
+              ? frame.description
               : `Signed in as ${user.email}. A master passphrase encrypts everything you store, on your device, before it leaves it.`
           }
         >
           <div className="flex flex-col gap-6">
             {configured ? (
-              <VaultUnlock user={user} onUnlocked={onUnlocked} onStageChange={setStage} />
+              <VaultUnlock
+                user={user}
+                onUnlocked={onUnlocked}
+                onStageChange={setStage}
+                onResetResultShown={setResetResultShowing}
+              />
             ) : (
               <VaultSetup user={user} onComplete={onUnlocked} />
             )}

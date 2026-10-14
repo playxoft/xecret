@@ -88,16 +88,44 @@ export type AuditAction =
   /** The recovery-code set was replaced, invalidating every previous code. */
   | 'vault.recovery_codes_regenerated'
   /**
-   * The vault was destroyed and the account sent back to the setup ceremony.
+   * The vault was reset: the account was sent back to the setup ceremony, and
+   * its old vault moved into a seven-day retained state (P23).
    *
    * The end of the road for somebody who has lost both their passphrase and
    * every recovery code: there is no key left that opens their old data, and
-   * nothing — no support ticket, no operator — can produce one. This event is
-   * the only record that the data still sitting in the database became
-   * permanently unreadable at a particular moment, which is what makes an
-   * otherwise inexplicable "I cannot see any of my secrets" answerable.
+   * nothing — no support ticket, no operator — can produce one. Until the
+   * retained vault is purged, the old passphrase or a recovery code can still
+   * bring its environments back (`vault.recovered`); after that, this event is
+   * the record that the data still sitting in the database became unreadable to
+   * this account at a particular moment.
    */
   | 'vault.reset'
+  /**
+   * The escape archive — every ciphertext the old vault could open, still
+   * sealed — was emailed to the account's address, just before a reset.
+   *
+   * Its own event, beside `vault.reset`, because it is the one act that puts an
+   * offline-attackable copy of an account's vault somewhere this product can
+   * never reach again: a mailbox. `partCount`, `environmentCount` and
+   * `secretCount` say how much; nothing in the record says what.
+   */
+  | 'vault.archive_emailed'
+  /**
+   * A retained vault's environment keys were brought back into the account's
+   * current vault, by somebody who proved they hold its User Key — the old
+   * passphrase or one of its recovery codes opened it in their browser.
+   *
+   * Filed in every organisation whose environments were restored, so the
+   * teammates who were asked to re-share after the reset can see why the request
+   * went away. `grantCount` is how many keys came back there.
+   */
+  | 'vault.recovered'
+  /**
+   * A retained vault reached the end of its seven-day window and was deleted by
+   * the scheduled purge — the moment the old passphrase and recovery codes stop
+   * opening anything this server holds. Recorded with a `system` actor.
+   */
+  | 'vault.purged'
   /**
    * A **bearer credential** read the account's vault material: the passphrase
    * wrap, the KDF salt and the Argon2 parameters.
@@ -510,6 +538,13 @@ export interface AuditMetadata {
    * was a PIN" is a posture somebody may want to notice.
    */
   method?: 'passphrase' | 'passkey' | 'pin';
+  /**
+   * How many parts an emailed vault archive was split into, and how many
+   * environments it covered. Counts, never names: the archive itself carries
+   * the names, and the audit trail has no business repeating them.
+   */
+  partCount?: number;
+  environmentCount?: number;
   /** How many recovery codes a regeneration issued. A count, never a code. */
   recoveryCodeCount?: number;
   /** How many sessions one act affected — "lock everywhere", "sign out everywhere". */

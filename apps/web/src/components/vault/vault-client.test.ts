@@ -37,6 +37,7 @@ import {
   resumedReset,
   resetConfirmationProblem,
   resetVault,
+  formatArchiveSize,
   unlockBody,
   unlockWithPasskey,
   unlockWithPassphrase,
@@ -727,8 +728,10 @@ describe('the vault reset', () => {
 
     nextResponse = {
       vault: { ...STATUS, configured: false, unlocked: false, unlockedUntil: null },
+      archive: { emailed: true, parts: 1, to: 'owner@example.com' },
+      retained: { id: 'r1', retainedUntil: '2026-10-19T09:30:00.000Z', grantCount: 2 },
     };
-    const status = await resetVault(VAULT_RESET_CONFIRMATION, 'xrp_live_a-reauth-proof');
+    const result = await resetVault(VAULT_RESET_CONFIRMATION, 'xrp_live_a-reauth-proof');
 
     expect(readVaultKeys()).toBeNull();
     expect(posted[0]?.path).toBe('/api/auth/vault/reset');
@@ -739,8 +742,35 @@ describe('the vault reset', () => {
       confirm: VAULT_RESET_CONFIRMATION,
       reauthProof: 'xrp_live_a-reauth-proof',
     });
-    // `configured: false` is what routes the screen to the setup ceremony.
-    expect(status.configured).toBe(false);
+    // `configured: false` is what routes the screen to the setup ceremony,
+    // once the result — where the archive went, until when the old vault is
+    // kept — has been shown.
+    expect(result.vault.configured).toBe(false);
+    expect(result.archive).toEqual({ emailed: true, parts: 1, to: 'owner@example.com' });
+    expect(result.retained.retainedUntil).toBe('2026-10-19T09:30:00.000Z');
+  });
+
+  it('sends proceedWithoutArchive only when the person chose it', async () => {
+    nextResponse = {
+      vault: { ...STATUS, configured: false, unlocked: false, unlockedUntil: null },
+      archive: { emailed: false, reason: 'too-large' },
+      retained: { id: 'r1', retainedUntil: '2026-10-19T09:30:00.000Z', grantCount: 2 },
+    };
+    await resetVault(VAULT_RESET_CONFIRMATION, 'xrp_live_a-reauth-proof', true);
+    expect(posted[0]?.body).toEqual({
+      confirm: VAULT_RESET_CONFIRMATION,
+      reauthProof: 'xrp_live_a-reauth-proof',
+      proceedWithoutArchive: true,
+    });
+
+    await resetVault(VAULT_RESET_CONFIRMATION, 'xrp_live_a-reauth-proof', false);
+    expect(posted[1]?.body).not.toHaveProperty('proceedWithoutArchive');
+  });
+
+  it('states an archive size for a person', () => {
+    expect(formatArchiveSize(2_000)).toBe('2 KB');
+    expect(formatArchiveSize(10)).toBe('1 KB');
+    expect(formatArchiveSize(9 * 1024 * 1024)).toBe('9.0 MB');
   });
 
   it('leaves nothing held when the request fails', async () => {

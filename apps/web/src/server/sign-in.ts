@@ -355,7 +355,7 @@ export async function completeSignIn(
       {
         signInMethod: signInMethodOf(exchange.authenticationMethod),
         reason: lockOne,
-        ...(exchange.authenticatedAt === null
+        ...(typeof exchange.authenticatedAt !== 'number'
           ? {}
           : { authenticatedSecondsBeforeFlow: params.flowIssuedAt - exchange.authenticatedAt }),
       },
@@ -498,7 +498,10 @@ export const REAUTH_AUTH_TIME_SKEW_SECONDS = 30;
  * anything, and the code it mints is dated by that session's original sign-in.
  * Checking the date makes AuthKit's honouring of `max_age=0` something the
  * server sees, rather than takes on trust. A missing or unreadable date fails
- * closed: no lock one.
+ * closed: no lock one. "Unreadable" is anything that is not a finite number —
+ * checked as such here rather than as `=== null`, so a value that slipped past
+ * the parser's type (a string, `undefined`, `NaN`) can never compare its way
+ * into arming the lock.
  *
  * What it does not change: a Google or identity-provider session that signs the
  * person in silently is, as far as WorkOS is concerned, an active
@@ -512,7 +515,9 @@ export function armsLockOne(
   flowIssuedAt: number,
 ): 'armed' | 'method' | 'no-auth-time' | 'stale' {
   if (!countsAsReauthentication(exchange.authenticationMethod)) return 'method';
-  if (exchange.authenticatedAt === null) return 'no-auth-time';
+  if (typeof exchange.authenticatedAt !== 'number' || !Number.isFinite(exchange.authenticatedAt)) {
+    return 'no-auth-time';
+  }
   if (exchange.authenticatedAt < flowIssuedAt - REAUTH_AUTH_TIME_SKEW_SECONDS) return 'stale';
   return 'armed';
 }

@@ -51,6 +51,9 @@ Administration:
   members      List who is in the organisation
   tokens       list | revoke — devices and CI service tokens
 
+Vault:
+  vault        open-archive — open a vault archive offline, with no account
+
 Housekeeping:
   cache        clear — remove the encrypted offline cache
   completion   Print a shell completion script  (bash|zsh|fish)
@@ -98,7 +101,11 @@ func dispatch(args []string) int {
 	//
 	// Not after `upgrade`, which has just said more about versions than this
 	// ever will, and would otherwise end by repeating itself.
-	if command != "upgrade" {
+	//
+	// Nor after `vault`: `vault open-archive` promises to work with no account
+	// and no network, and a notice about what some server last advertised has no
+	// place in output that may be piped into a file of secrets.
+	if command != "upgrade" && command != "vault" {
 		defer maybeShowUpgradeNotice(output.New(false))
 	}
 
@@ -159,6 +166,8 @@ func dispatch(args []string) int {
 		err = cmdDoctor(rest)
 	case "upgrade":
 		err = cmdUpgrade(rest)
+	case "vault":
+		err = cmdVault(rest)
 	default:
 		err = fmt.Errorf("unknown command %q\n\nRun 'xecret help' to see available commands", command)
 	}

@@ -424,6 +424,28 @@ recorded as `secret.read` with a count.
 > one at a time, which is less safe and completely unaudited. Add the file to
 > `.gitignore` and delete it when you are done.
 
+### `xecret vault open-archive`
+
+```bash
+xecret vault open-archive FILE [--recovery-code] [--passphrase-stdin]
+                               [--format env|json|yaml|shell|docker]
+                               [--environment ORG/PROJECT/ENV] [--out-dir DIR] [--force] [--list]
+```
+
+Opens the archive xecret emails when a vault is reset — the `.zip`, or the
+`archive.json` inside it — with the **old** vault's master passphrase or one of
+its recovery codes, and prints every secret, grouped by environment. It works
+fully offline: no account, no login, no network, no configuration, no keychain.
+
+The passphrase (or, with `--recovery-code`, the code) is asked for without
+echo; `--passphrase-stdin` reads it from a pipe instead, never from a flag.
+`--out-dir` writes one file per environment, mode `0600`, instead of printing.
+`--list` shows what the archive holds without asking for anything.
+
+A value written under a key the account never held is reported, not printed; a
+damaged value is reported and makes the command exit non-zero. Everything that
+opened is still printed. See [Resetting your vault](/docs/security/vault-archive).
+
 ## The golden path {#run}
 
 ### `xecret run`
@@ -697,6 +719,9 @@ xecret import .env --dry-run
 xecret secrets restore API_KEY --version 3
 xecret audit --action secret.revealed --since 24h
 xecret doctor
+
+# after a vault reset: open the emailed archive, offline
+xecret vault open-archive xecret-vault-archive-2026-10-12.zip
 
 # in CI (no login, no config file)
 XECRET_TOKEN=xst_… xecret run -- npm run build

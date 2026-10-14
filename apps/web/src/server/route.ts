@@ -257,6 +257,9 @@ export interface AuthenticatedRouteOptions {
    *    honest dead end for somebody who has lost the passphrase *and* every
    *    recovery code. Guarded instead by a fresh sign-in and an emailed code
    *    (`server/reauth-service.ts`), because the lock cannot guard it.
+   *  - `GET /api/auth/vault/reset/preflight` — what that reset will email, shown
+   *    before the person signs in again. While locked it answers only whether a
+   *    reset is possible and whether the archive can be sent, never the counts.
    *  - `DELETE /api/auth/session` — not an `authenticatedRoute` at all, but the
    *    same rule: signing out must never require unlocking first. "I cannot
    *    remember my passphrase, let me just sign out" has to work.
