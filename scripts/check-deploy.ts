@@ -69,6 +69,11 @@ interface Contract {
   home: Home;
   /** Whether the deployment is broken without it. */
   required: boolean;
+  /**
+   * Environments where it is required although `required` is false: the
+   * deployment works without it elsewhere, and is broken without it here.
+   */
+  requiredIn?: readonly string[];
   /** What breaks, in the words an operator would use. */
   matters: string;
 }
@@ -127,7 +132,10 @@ const CONTRACT: Contract[] = [
     name: 'ZEPTOMAIL_FROM_ADDRESS',
     home: 'var',
     required: false,
-    matters: 'the address every message is sent from; absent means mail is declined',
+    requiredIn: ['production'],
+    matters:
+      'the address every message is sent from; absent means mail is declined — and in ' +
+      'production every vault reset is refused, because the escape archive is emailed first',
   },
   {
     name: 'ZEPTOMAIL_FROM_NAME',
@@ -139,7 +147,14 @@ const CONTRACT: Contract[] = [
     name: 'ZEPTOMAIL_TOKEN',
     home: 'secret',
     required: false,
-    matters: 'authorises sending; absent means invitation mail is never delivered',
+    // The vault escape archive (P23) is emailed before every reset, and a
+    // production deployment with no mail refuses resets rather than reset
+    // without it. Optional elsewhere: staging and local resets can choose to
+    // go without the archive.
+    requiredIn: ['production'],
+    matters:
+      'authorises sending; absent means no mail — invitations never arrive, and in ' +
+      'production every vault reset is refused, because the escape archive is emailed first',
   },
   {
     name: 'ZEPTOMAIL_API_URL',
@@ -349,7 +364,11 @@ function audit(
     findings.push({ verdict, name, detail });
   };
 
-  for (const entry of CONTRACT) {
+  for (const contract of CONTRACT) {
+    const entry = {
+      ...contract,
+      required: contract.required || (contract.requiredIn?.includes(env) ?? false),
+    };
     const inPhase = typeof process.env[entry.name] === 'string' && process.env[entry.name] !== '';
     const inConfig = config.vars.has(entry.name);
     const onWorker =

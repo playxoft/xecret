@@ -797,6 +797,8 @@ org_members.custom_role_id references custom_roles (org_id, id) — same organis
   composite FK; organizations ──< custom_roles (0017, not drawn above)
 sessions ── reauthentications — at most one per session, also referencing users (0019, not
   drawn above)
+users ──< retained_vaults ──< retained_vault_wraps, retained_vault_grants — a reset vault
+  kept seven days; each grant also references env_data_keys (0020, not drawn above)
 audit_logs — no FKs by design; references are soft
 ```
 
@@ -835,11 +837,17 @@ audit_logs — no FKs by design; references are soft
       delete and any rewrite of key material; the application role's grants — additive
 ```
 
-Migration 0020 (P23) is additive: three new tables nothing older reads. Apply it before
-deploying the code that resets a vault, which writes them in the reset's transaction; the
-reverse order fails only the reset, with a 500. The triggers compare against the database's
-own `now()`, so no application clock can push a delete earlier than seven days after the
-reset, and nothing in the application issues one before then.
+Migration 0020 (P23) is additive: three new tables nothing older reads. **Apply it before
+deploying the code that uses it** — the deployment-check skill lists it. The reverse order is
+worse than a plain 500, because the reset does its irreversible-looking part first: a vault
+reset **emails the archive and then fails** to retain the vault, so the person holds the email,
+nothing was reset, and their reset proof is spent (a retry needs a new sign-in and code);
+Settings → Security fails for every unlocked account, because its "Recover a previous vault"
+card reads the retained tables; and the hourly purge Cron Trigger fails every run. The triggers
+compare against the database's own `now()` with a pinned `search_path` and qualified table
+names, so neither an application clock nor a session-local table can push a delete earlier
+than seven days after the reset; the application role may update only the recovery
+bookkeeping columns, and nothing in the application issues a delete before then.
 
 Migration 0018 is the storage half of the move from Firebase to WorkOS (ADR 0010) and drops
 nothing: `firebase_uid` stays, nullable, until a decommission migration — which must replace

@@ -27,9 +27,13 @@ means the *build* can see it; it says nothing about the Worker.
 
 This has already cost real outages:
 
-- Production ran with no `ZEPTOMAIL_TOKEN`. Mail is optional by design, so every
+- Production ran with no `ZEPTOMAIL_TOKEN`. Mail was optional by design, so every
   PIN reset email was declined silently — a green deploy, a healthy site, and
-  reset links that never arrived.
+  reset links that never arrived. Mail is **no longer optional in production**:
+  the vault escape archive is emailed before every vault reset, and a production
+  Worker with no mail refuses every reset (503) rather than reset without it.
+  `check:deploy production` fails on a missing `ZEPTOMAIL_TOKEN` or
+  `ZEPTOMAIL_FROM_ADDRESS`.
 - `BETTERSTACK_SOURCE_TOKEN` was never on the Worker, so production logs existed
   only in Cloudflare's tail.
 
@@ -87,6 +91,22 @@ Production's.
    Then sign in for real, through the deployed site. `check:env` proved the pair
    Phase holds; only a real sign-in proves the key the *Worker* holds as a
    secret, and the redirect URI, belong with the client id.
+9. Confirm the scheduled purge (P23). The retained-vault purge runs from the
+   Worker's own Cron Trigger, declared in `apps/web/wrangler.toml`
+   (`[env.production.triggers]`, `crons = ["17 * * * *"]`):
+   - Cloudflare dashboard → Workers & Pages → `xecret-production` → Settings →
+     Triggers lists the Cron Trigger `17 * * * *`. The deploy output also
+     prints the schedule it set. No trigger means retained vaults are never
+     purged — the seven-day promise breaks silently.
+   - The internal route must **not** answer the internet:
+     ```sh
+     curl -s -o /dev/null -w '%{http_code}\n' -X POST https://xecret.playxoft.com/api/internal/scheduled/vault-purge
+     ```
+     prints `404`. Anything else — a `200` above all — is a deployment that
+     lets anybody run the purge, and is rolled back.
+   - After the next `:17` past the hour, the Worker's logs show the scheduled
+     run: a `POST /api/internal/scheduled/vault-purge` answered `200`, made
+     in-process by the Cron Trigger rather than from outside.
 
 ## Identity provider (WorkOS)
 
@@ -208,6 +228,20 @@ table its database does not have fails at request time, not at deploy time.
   session is written in the same transaction as its `reauthentications` row.
   `db:migrate` applies only what is pending and prints what it applied, so it is
   safe to re-run to confirm.
+- **This build needs migration `0020_retained_vaults`** (P23: the
+  `retained_vaults`, `retained_vault_wraps` and `retained_vault_grants`
+  tables, the triggers that refuse an early delete or a widened window, and the
+  application role's narrowed grants). Apply it **before** deploying, the same
+  way. Deploying the build first is worse than a plain 500:
+  - a **vault reset emails the archive and then fails** to retain the vault —
+    the person has the email, nothing was reset, and their reset proof is spent,
+    so they must sign in again and get a new code to retry;
+  - **Settings → Security fails** for every unlocked account, because the
+    "Recover a previous vault" card reads the retained tables;
+  - the **hourly Cron Trigger fails every run** until the tables exist.
+
+  `check:deploy` does not read the database, so it cannot warn about this:
+  `db:migrate` is the check, and it is safe to re-run.
 
 ### First deploy after the Firebase → WorkOS switch (one-off)
 
@@ -233,6 +267,18 @@ Delete this subsection once production has run the WorkOS build for a while.
   removing it after that is a person's decision, not part of a deploy.
 - `NEXT_PUBLIC_FIREBASE_CONFIG` and `FIREBASE_PROJECT_ID` in Phase.dev are read
   by nothing now. Same rule: they go when rollback is off the table.
+
+### Mail (ZeptoMail)
+
+- **`ZEPTOMAIL_TOKEN`** (a secret) and **`ZEPTOMAIL_FROM_ADDRESS`** (a var) are
+  **required in production**. The vault reset emails the escape archive before
+  it changes anything, and a production deployment without mail refuses every
+  reset — by the owner's decision, a vault is never reset without its archive
+  for a reason the person did not choose. Invitations and PIN resets need the
+  same two values.
+- Staging and local development may run without mail: the reset screen then
+  says no archive can be sent, and a reset goes ahead only when the person
+  ticks "Reset without the emailed archive".
 
 ## Adding a new variable
 
