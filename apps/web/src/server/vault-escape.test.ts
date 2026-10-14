@@ -783,6 +783,36 @@ describe('the reset preflight', () => {
     expect(body.archive.estimatedBytes).toBeLessThan(written + 32 * 1024);
   });
 
+  it('stays an upper bound for many small secrets, where the per-entry overhead dominates', async () => {
+    const who = await account();
+    const environment = await environmentFor(who);
+    // Eighty more secrets beside the first, each a copy of its version row
+    // under a new name: well-formed, small, and what the estimate's per-secret
+    // allowance exists for.
+    for (let index = 0; index < 80; index += 1) {
+      const secretId = randomUUID();
+      await t.pg.query(
+        `insert into secrets (id, environment_id, name, created_by) values ($1, $2, $3, $4)`,
+        [secretId, environment.environmentId, `EXTRA_${index}`, who.userId],
+      );
+      await t.pg.query(
+        `insert into secret_versions (id, secret_id, version, ciphertext, env_data_key_id, client_algorithm, value_hmac, created_by)
+         select $1, $2, 1, ciphertext, env_data_key_id, client_algorithm, value_hmac, created_by
+           from secret_versions where secret_id = $3`,
+        [randomUUID(), secretId, environment.secretId],
+      );
+    }
+
+    const body = (await (await preflight(who)).json()) as Preflight;
+    expect(body.archive.secretCount).toBe(81);
+
+    expect((await reset(who)).status).toBe(200);
+    const doc = await readArchiveFile(attachmentOf(mailRequests[0]!).bytes);
+    const written = new TextEncoder().encode(JSON.stringify(doc, null, 2)).length;
+    expect(body.archive.estimatedBytes).toBeGreaterThanOrEqual(written);
+    expect(body.archive.estimatedBytes).toBeLessThan(written * 2);
+  });
+
   it('says a production deployment with no mail cannot reset at all', async () => {
     const who = await account();
     delete env['ZEPTOMAIL_TOKEN'];
