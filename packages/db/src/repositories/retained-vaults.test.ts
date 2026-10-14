@@ -172,9 +172,11 @@ describe('a reset retains the vault', () => {
     expect(await count('env_key_grants where member_user_id = $1', [userId])).toBe(0);
 
     const material = await loadRetainedVault(t.db, userId, receipt!.id, now);
+    // Two key versions of one environment: two grants, one environment.
     expect(material).toMatchObject({
       userId,
       grantCount: 2,
+      environmentCount: 1,
       recoveryCodesRemaining: 2,
       kdfParams: { m: 65536 },
     });
@@ -184,6 +186,9 @@ describe('a reset retains the vault', () => {
     expect(material!.grants.map((each) => [each.edkVersion, each.edkStatus])).toEqual([
       [1, 'retired'],
       [2, 'active'],
+    ]);
+    expect(await listRetainedVaults(t.db, userId, now)).toMatchObject([
+      { grantCount: 2, environmentCount: 1 },
     ]);
   });
 

@@ -1,4 +1,17 @@
-import { and, asc, count, desc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  countDistinct,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  lte,
+  or,
+  sql,
+} from 'drizzle-orm';
 import type { Argon2idParams } from '@xecret/core/crypto/client';
 import type { UnlockAttemptState } from '@xecret/core/auth';
 import { uuidv7 } from '@xecret/core/ids';
@@ -47,8 +60,10 @@ export interface RetainedVaultSummary {
   retainedAt: Date;
   purgeAfter: Date;
   recoveredAt: Date | null;
-  /** Environment-key grants the vault held. */
+  /** Environment-key grants the vault held — one per key version. */
   grantCount: number;
+  /** The environments those grants open: what a person counts. */
+  environmentCount: number;
   /** Unused recovery codes that open it. */
   recoveryCodesRemaining: number;
 }
@@ -260,12 +275,31 @@ export async function listRetainedVaults(
 
   const grantsBy = new Map(grantCounts.map((row) => [row.id, row.total]));
   const codesBy = new Map(codeCounts.map((row) => [row.id, row.total]));
+  const environmentsBy = await countRetainedEnvironments(exec, ids);
 
   return vaults.map((vault) => ({
     ...vault,
     grantCount: grantsBy.get(vault.id) ?? 0,
+    environmentCount: environmentsBy.get(vault.id) ?? 0,
     recoveryCodesRemaining: codesBy.get(vault.id) ?? 0,
   }));
+}
+
+/** How many distinct environments each retained vault's grants open. */
+async function countRetainedEnvironments(
+  exec: Executor,
+  ids: readonly string[],
+): Promise<Map<string, number>> {
+  const rows = await exec
+    .select({
+      id: retainedVaultGrants.retainedVaultId,
+      total: countDistinct(envDataKeys.environmentId),
+    })
+    .from(retainedVaultGrants)
+    .innerJoin(envDataKeys, eq(envDataKeys.id, retainedVaultGrants.envDataKeyId))
+    .where(inArray(retainedVaultGrants.retainedVaultId, [...ids]))
+    .groupBy(retainedVaultGrants.retainedVaultId);
+  return new Map(rows.map((row) => [row.id, row.total]));
 }
 
 /**
@@ -332,6 +366,7 @@ export async function loadRetainedVault(
     purgeAfter: vault.purgeAfter,
     recoveredAt: vault.recoveredAt,
     grantCount: grantTotal?.total ?? 0,
+    environmentCount: (await countRetainedEnvironments(exec, [vault.id])).get(vault.id) ?? 0,
     recoveryCodesRemaining: codes?.total ?? 0,
     encPublicKey: vault.encPublicKey,
     encPrivateKeyEnc: vault.encPrivateKeyEnc,

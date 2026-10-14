@@ -22,12 +22,11 @@ import {
   DialogTitle,
   Field,
   Input,
-  Tabs,
-  TabsList,
-  TabsTrigger,
 } from '@/components/ui';
+import { CredentialChoice, RECOVERY_CODE_HINT } from './credential-choice';
+import type { CredentialMethod } from './credential-choice';
 import { describeSkips, listRetainedVaults, recoverRetainedVault } from './retained-vaults';
-import type { RestoreOutcome, RetainedVault } from './retained-vaults';
+import type { RecoveryReport, RetainedVault } from './retained-vaults';
 import { readRecoveryCode } from './vault-client';
 import { useVault } from './vault-keys';
 
@@ -84,8 +83,8 @@ export function RetainedVaultsCard() {
         <CardDescription>
           You reset your vault recently. We keep the old one for seven days. If you have found its
           passphrase or one of its recovery codes, you can bring back its environments into your
-          current vault. Nobody can delete it before the date shown; after that, it is deleted for
-          good.
+          current vault. Nothing in xecret can delete it before the date shown; after that, it is
+          deleted for good.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
@@ -102,7 +101,7 @@ export function RetainedVaultsCard() {
                 </time>
               </span>
               <span className="text-fg-muted">
-                {pluralize(entry.grantCount, 'environment key')} · recoverable until{' '}
+                {pluralize(entry.environmentCount, 'environment')} · recoverable until{' '}
                 <time dateTime={toIsoString(entry.retainedUntil)}>
                   {formatAbsoluteTime(entry.retainedUntil)}
                 </time>
@@ -127,7 +126,7 @@ export function RetainedVaultsCard() {
   );
 }
 
-type Method = 'passphrase' | 'recovery-code';
+type Method = CredentialMethod;
 
 function RecoverDialog({
   entry,
@@ -143,7 +142,7 @@ function RecoverDialog({
   const [secret, setSecret] = useState('');
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const [outcome, setOutcome] = useState<RestoreOutcome | null>(null);
+  const [outcome, setOutcome] = useState<RecoveryReport | null>(null);
 
   function close() {
     setSecret('');
@@ -202,9 +201,9 @@ function RecoverDialog({
           <>
             <DialogBody className="flex flex-col gap-3">
               <Alert tone="success" title="Recovered">
-                {outcome.restored === 0
+                {outcome.restoredEnvironments === 0
                   ? 'There was nothing new to bring back.'
-                  : `${pluralize(outcome.restored, 'environment key')} brought back into your vault.`}
+                  : `${pluralize(outcome.restoredEnvironments, 'environment')} brought back into your vault.`}
               </Alert>
               {describeSkips(outcome.skipped).map((line) => (
                 <p key={line} className="text-fg-muted text-sm leading-6">
@@ -219,12 +218,16 @@ function RecoverDialog({
         ) : (
           <form onSubmit={recover} noValidate>
             <DialogBody className="flex flex-col gap-4">
-              <Tabs value={method} onValueChange={(value) => setMethod(value as Method)}>
-                <TabsList>
-                  <TabsTrigger value="passphrase">Old passphrase</TabsTrigger>
-                  <TabsTrigger value="recovery-code">Old recovery code</TabsTrigger>
-                </TabsList>
-              </Tabs>
+              <CredentialChoice
+                value={method}
+                disabled={busy}
+                onChange={(next) => {
+                  // A passphrase must not reappear unmasked in the code field.
+                  setMethod(next);
+                  setSecret('');
+                  setFailure(null);
+                }}
+              />
 
               {failure !== null ? (
                 <Alert tone="danger" title="Not recovered">
@@ -241,7 +244,7 @@ function RecoverDialog({
                 hint={
                   method === 'passphrase'
                     ? 'It is checked here, in your browser. It is never sent to xecret.'
-                    : 'XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-X. Spaces and hyphens do not matter.'
+                    : RECOVERY_CODE_HINT
                 }
               >
                 <Input

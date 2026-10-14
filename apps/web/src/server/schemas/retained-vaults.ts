@@ -71,7 +71,9 @@ export interface RetainedVaultPayload {
   /** When the scheduled purge may delete it. Recoverable and undeletable until then. */
   retainedUntil: string;
   recoveredAt: string | null;
+  /** Key versions held; `environmentCount` is what the screens show. */
   grantCount: number;
+  environmentCount: number;
   recoveryCodesRemaining: number;
 }
 
@@ -110,6 +112,7 @@ export function toRetainedVault(vault: RetainedVaultSummary): RetainedVaultPaylo
     retainedUntil: vault.purgeAfter.toISOString(),
     recoveredAt: vault.recoveredAt?.toISOString() ?? null,
     grantCount: vault.grantCount,
+    environmentCount: vault.environmentCount,
     recoveryCodesRemaining: vault.recoveryCodesRemaining,
   };
 }

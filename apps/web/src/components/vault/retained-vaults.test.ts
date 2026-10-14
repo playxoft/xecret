@@ -34,7 +34,8 @@ vi.mock('@/lib/api', async (importOriginal) => ({
 }));
 vi.mock('./argon2', () => ({ argon2idProvider: nobleArgon2idProvider }));
 
-const { buildRestore, describeSkips, openRetainedUserKey } = await import('./retained-vaults');
+const { buildRestore, describeSkips, openRetainedUserKey, reportByEnvironment } =
+  await import('./retained-vaults');
 const { describeRecoverFailure } = await import('./retained-vaults-card');
 const { ArchivePreflightFacts, ResetResult } = await import('./vault-unlock');
 import type { RetainedVaultMaterial } from './retained-vaults';
@@ -85,6 +86,7 @@ async function oldVault(passphrase: string) {
     retainedUntil: '2026-10-19T09:30:00.000Z',
     recoveredAt: null,
     grantCount: 1,
+    environmentCount: 1,
     recoveryCodesRemaining: 1,
     encPublicKey: toBase64Url(enc.publicKey),
     encPrivateKeyEnc: await wrapPrivateKey({
@@ -181,6 +183,7 @@ describe('building the restore', () => {
 
     expect(body.ukUnlockVerifier).toBe(toBase64Url(await deriveUkUnlockVerifier(old.userKey)));
     expect(body.grants).toHaveLength(1);
+    expect(body.unopened).toEqual([]);
     const [grant] = body.grants;
     expect(grant!.recipientPublicKey).toBe(toBase64Url(current.encPublicKey));
 
@@ -211,36 +214,71 @@ describe('building the restore', () => {
     expect(oldUserKey.every((byte) => byte === 0)).toBe(true);
   });
 
-  it('wipes the old User Key even when a grant will not open', async () => {
+  it('skips and reports a grant that will not open, and still restores the rest', async () => {
     const old = await oldVault('right');
     const oldUserKey = old.userKey.slice();
+    const good = old.material.grants[0]!;
     const broken = {
       ...old.material,
-      grants: [{ ...old.material.grants[0]!, edkVersion: 3 }],
+      // Bound to version 3 in its AAD claim, sealed as version 2: will not open.
+      grants: [{ ...good, envDataKeyId: 'broken-key', edkVersion: 3 }, good],
     };
 
-    await expect(
-      buildRestore({ material: broken, oldUserKey, current: currentVault() }),
-    ).rejects.toBeInstanceOf(DecryptionError);
+    const body = await buildRestore({ material: broken, oldUserKey, current: currentVault() });
+
+    expect(body.unopened).toEqual(['broken-key']);
+    expect(body.grants.map((grant) => grant.envDataKeyId)).toEqual([good.envDataKeyId]);
     expect(oldUserKey.every((byte) => byte === 0)).toBe(true);
   });
 });
 
 describe('what a recovery says', () => {
-  it('names each kind of skip', () => {
+  it('names each kind of skip, counting environments', () => {
     expect(
       describeSkips([
-        { envDataKeyId: 'a', reason: 'already-held' },
-        { envDataKeyId: 'b', reason: 'already-held' },
-        { envDataKeyId: 'c', reason: 'no-access' },
-        { envDataKeyId: 'd', reason: 'environment-gone' },
+        { environmentId: 'a', reason: 'already-held' },
+        { environmentId: 'b', reason: 'already-held' },
+        { environmentId: 'c', reason: 'no-access' },
+        { environmentId: 'd', reason: 'environment-gone' },
+        { environmentId: 'e', reason: 'did-not-open' },
       ]),
     ).toEqual([
-      '2 you already had again — a teammate re-shared them.',
-      '1 you no longer have access to, so they were not restored.',
-      '1 belonged to environments deleted since the reset.',
+      '2 environments you already had again — a teammate re-shared them.',
+      '1 environment you no longer have access to, so not restored.',
+      '1 environment deleted since the reset.',
+      '1 environment whose key in the old vault did not open, so not restored.',
     ]);
     expect(describeSkips([])).toEqual([]);
+  });
+
+  it('counts an environment once, restored when any of its keys came back', () => {
+    const grants = [
+      { envDataKeyId: 'p1', environmentId: 'prod' },
+      { envDataKeyId: 'p2', environmentId: 'prod' },
+      { envDataKeyId: 's1', environmentId: 'staging' },
+      { envDataKeyId: 's2', environmentId: 'staging' },
+      { envDataKeyId: 'd1', environmentId: 'dev' },
+    ];
+    const report = reportByEnvironment(
+      grants,
+      {
+        restored: 1,
+        skipped: [
+          { envDataKeyId: 'p1', reason: 'already-held' },
+          { envDataKeyId: 's1', reason: 'already-held' },
+          { envDataKeyId: 's2', reason: 'no-access' },
+        ],
+      },
+      ['d1'],
+    );
+
+    expect(report).toEqual({
+      restoredEnvironments: 1,
+      skipped: [
+        { environmentId: 'staging', reason: 'no-access' },
+        { environmentId: 'dev', reason: 'did-not-open' },
+      ],
+    });
   });
 
   it('tells a typo from a wrong credential', () => {

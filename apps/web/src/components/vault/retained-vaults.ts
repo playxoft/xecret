@@ -16,6 +16,7 @@ import {
 import type { Argon2idProvider, Bytes, RecoveryCode } from '@xecret/core/crypto/client';
 
 import { api } from '@/lib/api';
+import { pluralize } from '@/lib/format';
 import { sealGrantFor } from '@/components/envkeys/env-keys';
 import { argon2idProvider } from './argon2';
 import { withVaultKeys } from './key-store';
@@ -37,6 +38,10 @@ import type { VaultKeyMaterial } from './key-store';
  * is the same key, and the server skips it.
  *
  * Every key opened here is zeroised before the function returns, on every path.
+ *
+ * A grant that does not open with the old private key — damaged, or sealed to
+ * something else — is skipped and reported, like the archive reader's "no
+ * key": one bad row must not keep every other environment from coming back.
  */
 
 const path = {
@@ -51,7 +56,10 @@ export interface RetainedVault {
   retainedAt: string;
   retainedUntil: string;
   recoveredAt: string | null;
+  /** Key versions held. */
   grantCount: number;
+  /** The environments they open: what the screens count. */
+  environmentCount: number;
   recoveryCodesRemaining: number;
 }
 
@@ -87,9 +95,21 @@ export type RetainedCredential =
 
 export type RestoreSkipReason = 'no-access' | 'already-held' | 'environment-gone';
 
+/** What the server answers: per key version. */
 export interface RestoreOutcome {
   restored: number;
   skipped: { envDataKeyId: string; reason: RestoreSkipReason }[];
+}
+
+/** Why an environment got nothing back. `did-not-open` is decided here, before any request. */
+export type RecoverySkipReason = RestoreSkipReason | 'did-not-open';
+
+/** What a recovery did, per environment — what a person counts. */
+export interface RecoveryReport {
+  /** Environments with at least one key brought back. */
+  restoredEnvironments: number;
+  /** Each environment that got nothing back, once, with the reason. */
+  skipped: { environmentId: string; reason: RecoverySkipReason }[];
 }
 
 export interface RestoredGrantBody {
@@ -178,7 +198,7 @@ export async function buildRestore(params: {
   material: RetainedVaultMaterial;
   oldUserKey: Bytes;
   current: VaultKeyMaterial;
-}): Promise<{ ukUnlockVerifier: string; grants: RestoredGrantBody[] }> {
+}): Promise<{ ukUnlockVerifier: string; grants: RestoredGrantBody[]; unopened: string[] }> {
   const { material, current } = params;
   let oldPrivateKey: Bytes | null = null;
 
@@ -192,17 +212,26 @@ export async function buildRestore(params: {
     });
 
     const grants: RestoredGrantBody[] = [];
+    const unopened: string[] = [];
     for (const grant of material.grants) {
-      const { edk, ehk } = await openGrant({
-        recipient: {
-          environmentId: grant.environmentId,
-          edkVersion: grant.edkVersion,
-          recipientKind: 'member',
-          recipientId: material.userId,
-        },
-        recipientPrivateKey: oldPrivateKey,
-        grant: { edkSealed: grant.edkSealed, ehkSealed: grant.ehkSealed },
-      });
+      let opened: { edk: Bytes; ehk: Bytes };
+      try {
+        opened = await openGrant({
+          recipient: {
+            environmentId: grant.environmentId,
+            edkVersion: grant.edkVersion,
+            recipientKind: 'member',
+            recipientId: material.userId,
+          },
+          recipientPrivateKey: oldPrivateKey,
+          grant: { edkSealed: grant.edkSealed, ehkSealed: grant.ehkSealed },
+        });
+      } catch {
+        // Skipped and reported, not fatal: the rest still come back.
+        unopened.push(grant.envDataKeyId);
+        continue;
+      }
+      const { edk, ehk } = opened;
       try {
         const sealed = await sealGrantFor({
           vault: current,
@@ -227,7 +256,7 @@ export async function buildRestore(params: {
       }
     }
 
-    return { ukUnlockVerifier, grants };
+    return { ukUnlockVerifier, grants, unopened };
   } finally {
     if (oldPrivateKey !== null) zeroize(oldPrivateKey);
     zeroize(params.oldUserKey);
@@ -244,7 +273,7 @@ export async function recoverRetainedVault(params: {
   credential: RetainedCredential;
   current: VaultKeyMaterial;
   argon2id?: Argon2idProvider;
-}): Promise<RestoreOutcome> {
+}): Promise<RecoveryReport> {
   const material = await fetchRetainedVault(params.id);
   if (material.userId !== params.current.userId) {
     // The server scopes every retained vault to its owner; this is the same
@@ -260,8 +289,13 @@ export async function recoverRetainedVault(params: {
 
   try {
     return await withVaultKeys(params.current, async () => {
-      const body = await buildRestore({ material, oldUserKey, current: params.current });
-      return api.post<RestoreOutcome>(path.restore(params.id), body);
+      const { unopened, ...body } = await buildRestore({
+        material,
+        oldUserKey,
+        current: params.current,
+      });
+      const outcome = await api.post<RestoreOutcome>(path.restore(params.id), body);
+      return reportByEnvironment(material.grants, outcome, unopened);
     });
   } finally {
     // `buildRestore` wipes it; a lock that refused the lease first did not reach it.
@@ -269,20 +303,79 @@ export async function recoverRetainedVault(params: {
   }
 }
 
-/** A sentence for what a restore skipped, for the result screen. */
-export function describeSkips(skipped: RestoreOutcome['skipped']): string[] {
-  const counts = { 'already-held': 0, 'no-access': 0, 'environment-gone': 0 };
+/**
+ * The server's answer, per key version, turned into one per environment: an
+ * environment is restored when any of its keys came back, and otherwise
+ * skipped once, for the most telling of its keys' reasons.
+ */
+export function reportByEnvironment(
+  grants: readonly Pick<RetainedGrant, 'envDataKeyId' | 'environmentId'>[],
+  outcome: RestoreOutcome,
+  unopened: readonly string[],
+): RecoveryReport {
+  const reasons = new Map<string, RecoverySkipReason>();
+  for (const id of unopened) reasons.set(id, 'did-not-open');
+  for (const skip of outcome.skipped) reasons.set(skip.envDataKeyId, skip.reason);
+
+  const byEnvironment = new Map<string, RecoverySkipReason[] | 'restored'>();
+  for (const grant of grants) {
+    const reason = reasons.get(grant.envDataKeyId);
+    const current = byEnvironment.get(grant.environmentId);
+    if (reason === undefined) byEnvironment.set(grant.environmentId, 'restored');
+    else if (current !== 'restored') {
+      byEnvironment.set(grant.environmentId, [...(current ?? []), reason]);
+    }
+  }
+
+  const skipped: RecoveryReport['skipped'] = [];
+  let restoredEnvironments = 0;
+  for (const [environmentId, state] of byEnvironment) {
+    if (state === 'restored') {
+      restoredEnvironments += 1;
+      continue;
+    }
+    const reason = SKIP_PRIORITY.find((candidate) => state.includes(candidate)) ?? state[0]!;
+    skipped.push({ environmentId, reason });
+  }
+  return { restoredEnvironments, skipped };
+}
+
+/** Which reason describes an environment whose keys were skipped for several. */
+const SKIP_PRIORITY: readonly RecoverySkipReason[] = [
+  'did-not-open',
+  'no-access',
+  'environment-gone',
+  'already-held',
+];
+
+/** A sentence for each kind of environment a recovery skipped, for the result screen. */
+export function describeSkips(skipped: RecoveryReport['skipped']): string[] {
+  const counts: Record<RecoverySkipReason, number> = {
+    'already-held': 0,
+    'no-access': 0,
+    'environment-gone': 0,
+    'did-not-open': 0,
+  };
   for (const skip of skipped) counts[skip.reason] += 1;
 
   const lines: string[] = [];
   if (counts['already-held'] > 0) {
-    lines.push(`${counts['already-held']} you already had again — a teammate re-shared them.`);
+    lines.push(
+      `${pluralize(counts['already-held'], 'environment')} you already had again — a teammate re-shared ${counts['already-held'] === 1 ? 'it' : 'them'}.`,
+    );
   }
   if (counts['no-access'] > 0) {
-    lines.push(`${counts['no-access']} you no longer have access to, so they were not restored.`);
+    lines.push(
+      `${pluralize(counts['no-access'], 'environment')} you no longer have access to, so not restored.`,
+    );
   }
   if (counts['environment-gone'] > 0) {
-    lines.push(`${counts['environment-gone']} belonged to environments deleted since the reset.`);
+    lines.push(`${pluralize(counts['environment-gone'], 'environment')} deleted since the reset.`);
+  }
+  if (counts['did-not-open'] > 0) {
+    lines.push(
+      `${pluralize(counts['did-not-open'], 'environment')} whose key in the old vault did not open, so not restored.`,
+    );
   }
   return lines;
 }
