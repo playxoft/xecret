@@ -242,6 +242,8 @@ deliberate.
 |---|---|---|
 | Neon unavailable | API down; **CLI falls back to its encrypted local cache** with a loud warning | Neon failover; cache keeps developers working |
 | WorkOS unavailable | New sign-ins and vault resets fail, and the sign-in page says sign-in is unavailable; existing sessions and all CLI/CI operations continue | Wait |
+| ZeptoMail unavailable, or refusing | **Vault resets are refused** (503, nothing reset): the escape archive is emailed before every reset, and a failed send stops it. Invitations fall back to a shareable link; PIN-reset mail is not sent. A production deployment with no mail configured at all refuses every reset | Wait; each retry needs a fresh sign-in and code |
+| Cron Trigger missing or failing | **Nothing is purged**: reset vaults stay in the database past their seven days. Nothing is exposed — every read filters by the window, so an expired vault is unreachable — but the retention promise is broken until it runs | Restore `[env.production.triggers]` and redeploy; the next run purges the backlog in batches (the deployment-check skill's post-deploy step) |
 | Phase.dev unavailable | No effect on runtime; deploys blocked | Wait — see key-recovery §4.1 |
 | Cloudflare Secrets Store entry deleted | **Total outage** — nothing decryptable | Re-deploy from Phase.dev |
 | Root KEK lost | **Permanent, total data loss** | Escrow only — see [key-recovery](../security/key-recovery.md) |

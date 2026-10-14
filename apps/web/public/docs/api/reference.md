@@ -3,7 +3,7 @@ title: API endpoint reference
 navTitle: Endpoint reference
 description: Every HTTP endpoint — auth, organisations, projects, environments, secrets, bulk read, import and export, members, tokens and the audit log.
 keywords: [xecret api endpoints, secrets rest endpoints, pull endpoint, audit api, members api, api reference]
-updated: 2026-10-12
+updated: 2026-10-14
 ---
 
 Every route, grouped the way you will look for them. Paths are relative to
@@ -68,9 +68,10 @@ shown: telling a caller which part of a forged request to fix is a gift.
 
 ### Re-authentication for a vault reset
 
-Resetting a vault destroys it for good, so it asks for proof twice, in order: a
-fresh sign-in (`/auth/login?reauth=1`, which makes the provider ask for a
-credential even if it remembers you), then a one-time code emailed to you.
+Resetting a vault ends access to everything it held — the old vault is kept,
+recoverable, for seven days, then deleted for good — so it asks for proof twice,
+in order: a fresh sign-in (`/auth/login?reauth=1`, which makes the provider ask
+for a credential even if it remembers you), then a one-time code emailed to you.
 Browser sessions only, and usable while the vault is locked — which is the
 point. A refused re-authentication is a **403**, never a 401, so it does not
 sign you out.
@@ -80,7 +81,24 @@ sign you out.
 | `GET` | `/auth/reauth` | Where this session's attempt stands: `{ signedIn, signedInUntil, codeSent, email }`. Sends nothing. |
 | `POST` | `/auth/reauth/start` | Emails the code. Only within 10 minutes of the fresh sign-in, and at most three times per sign-in (then **403**: sign in again). **204**. |
 | `POST` | `/auth/reauth/verify` | Body `{ code }` (six digits, from the email) — or, after a `{ mfaRequired: true, mfaToken }` answer, `{ totp, mfaToken }` with the code from your authenticator app. Returns `{ reauthProof, expiresAt }` — single-use, five minutes, good for this session only. Every guess counts: five per attempt, ten per account per day; past the daily limit, **429**. |
-| `POST` | `/auth/vault/reset` | Body `{ confirm: "reset my vault", reauthProof }`. Spends the proof, then destroys the vault. **This is not recovery** — nothing is decrypted or restored. |
+| `GET` | `/auth/vault/reset/preflight` | What a reset would do with the vault's escape archive, asked before you confirm: `{ resettable, archive: { deliverable, reason } }`. `reason` is `null`, `too-large` (the archive is over 8 MiB, and then `estimatedBytes` and `maxBytes` are included) or `mail-not-configured`. `resettable` is `false` on a production deployment with no email set up: it resets no vault. An unlocked session also gets the size and the counts of environments and secrets. **404** with no vault. Usable while locked. |
+| `POST` | `/auth/vault/reset` | Body `{ confirm: "reset my vault", reauthProof, proceedWithoutArchive? }`. First, before the proof is spent: **503** on a production deployment with no email set up, whatever the body says; **409** when the archive cannot be emailed (too large, or no email outside production) and `proceedWithoutArchive` is not `true`. Then it spends the proof, emails the escape archive to your address (at most two parts; a notice instead when you chose to go without), and resets the vault — keeping the old one, recoverable, for seven days. **503** if an email cannot be sent, **409** if your vault changed in between; nothing is reset in either case, and a retry needs a new proof. **404** with no vault. Returns `{ vault, archive, retained }`: `archive` is `{ emailed: true, parts, to }` or `{ emailed: false, reason }`; `retained` is `{ id, retainedUntil, grantCount }`. **This is not recovery** — nothing is decrypted or restored. |
+
+### Recovering a reset vault
+
+Inside its seven days, a reset vault can be brought back into the vault you
+have now, in the browser, with its old passphrase or one of its recovery codes
+(see [Vault reset and archive](/docs/security/vault-archive)). These endpoints
+need an **unlocked** session — re-sealing the old keys into the current vault
+needs it open — and answer only the vault's owner, only inside the window: the
+same **404** for anything else, a malformed id included.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/auth/vault/retained` | Your reset vaults still inside their window: `{ retained: [{ id, retainedAt, retainedUntil, recoveredAt, grantCount, environmentCount, recoveryCodesRemaining }] }`. |
+| `GET` | `/auth/vault/retained/{id}` | What the browser needs to open one: its passphrase wrap, salt and parameters, encrypted private key, and the grants of environments you may still read. Never its recovery wraps. |
+| `POST` | `/auth/vault/retained/{id}/recovery-wrap` | Body `{ lookupHash }` → `{ wrap }`: the recovery wrap one of its codes opens. Every miss is one **400**, counted against the retained vault's own lockout; **429** while locked out. |
+| `POST` | `/auth/vault/retained/{id}/restore` | Body `{ ukUnlockVerifier, grants }`: its keys, re-sealed in the browser to your current vault and signed by it, with proof the old vault was opened. A wrong proof is **403** and counted; **429** while locked out. Returns `{ restored, skipped }`. There is no endpoint that deletes a reset vault. |
 
 ## CLI authorization
 
