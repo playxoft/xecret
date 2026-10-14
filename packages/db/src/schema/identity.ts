@@ -3,7 +3,8 @@ import { boolean, check, index, pgTable, text, timestamp, uuid } from 'drizzle-o
 import { bytea, citext, inet } from './columns';
 
 /**
- * Identity. See docs/adr/0003-firebase-as-identity-provider.md.
+ * Identity. See docs/adr/0010-workos-as-identity-provider.md, which superseded
+ * the Firebase design of docs/adr/0003-firebase-as-identity-provider.md.
  *
  * The provider authenticates; xecret owns the session. The provider id column
  * is the only coupling, which is what made adding a second one a column rather
@@ -78,7 +79,8 @@ export const users = pgTable(
 );
 
 /**
- * Sessions issued by xecret, not by Firebase.
+ * Sessions issued by xecret, not by the identity provider. WorkOS is consulted
+ * once, at sign-in, and the tokens it issues are discarded unread (ADR 0010).
  *
  * Only the SHA-256 of the opaque 256-bit cookie token is stored, so a database
  * dump yields hashes rather than usable sessions (threat T6).

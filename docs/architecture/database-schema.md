@@ -29,7 +29,7 @@ document is wrong and must be updated.
 ```sql
 CREATE TABLE users (
   id              uuid PRIMARY KEY,
-  firebase_uid    text        UNIQUE,              -- nullable since 0018; retired with Firebase
+  firebase_uid    text        UNIQUE,              -- retired: nullable, read and written by nothing
   workos_user_id  text        UNIQUE,              -- 0018; `user_…`, NULL until linked
   email           citext      NOT NULL UNIQUE,
   email_verified  boolean     NOT NULL DEFAULT false,
@@ -48,17 +48,18 @@ CREATE INDEX users_firebase_uid_idx ON users (firebase_uid) WHERE deleted_at IS 
 ```
 
 The provider id columns are the join keys to the identity provider — see
+[ADR 0010](../adr/0010-workos-as-identity-provider.md), which superseded the Firebase design of
 [ADR 0003](../adr/0003-firebase-as-identity-provider.md). Swapping providers was meant to
-mean adding a column, not restructuring, and migration `0018` is exactly that: during the
-move from Firebase to WorkOS both columns exist, each written by exactly one sign-in path in
-the application.
+mean adding a column, not restructuring, and migration `0018` is exactly that. The WorkOS
+column is the live one; the Firebase column is kept, retired, for the transition.
 
-- `firebase_uid` is written only by the Firebase sign-in (`upsertUserFromFirebaseIdentity`).
-  It became **nullable** in `0018` — a user who joins through WorkOS never had a Firebase
-  account — but keeps its unique constraint, because it is the key the WorkOS import's
-  backfill matches on and the rollback if the cutover goes wrong. It is dropped by a later,
-  deliberate decommission migration.
-- `workos_user_id` has one application writer, the WorkOS linking pass
+- `firebase_uid` is **retired**. The Firebase sign-in that wrote it is gone, and nothing in the
+  application reads or writes it any more. It became **nullable** in `0018` — a user who joins
+  through WorkOS never had a Firebase account — but keeps its unique constraint and
+  `users_firebase_uid_idx`, because it is the key the WorkOS import's backfill matches on and
+  the rollback if the cutover goes wrong. It is dropped by a later, deliberate decommission
+  migration.
+- `workos_user_id` has one application writer, the sign-in callback's linking pass
   (`upsertUserFromWorkosIdentity`): match on `workos_user_id`, else adopt the account
   holding the same **verified** address, else create. Its one other writer is operational:
   the one-off backfill after the WorkOS user import, which writes the imported id onto rows
@@ -94,6 +95,83 @@ CREATE INDEX sessions_user_idx ON sessions (user_id, created_at DESC);
 A database dump yields hashes, not usable sessions. `sessions_user_idx` powers the "active
 devices" list and "sign out everywhere".
 
+```sql
+CREATE TABLE reauthentications (                 -- 0019
+  id               uuid        PRIMARY KEY,
+  user_id          uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  session_id       uuid        NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
+  signed_in_at     timestamptz NOT NULL,         -- lock one: the sign-in for the reset
+  code_sent_at     timestamptz,                  -- a code was requested; the code is never stored
+  code_attempts    smallint    NOT NULL DEFAULT 0 CHECK (code_attempts >= 0),
+  code_sends       smallint    NOT NULL DEFAULT 0 CHECK (code_sends >= 0),
+  mfa_pending_hash bytea,                        -- SHA-256 (32 bytes) of WorkOS's pending-
+                                                 --   authentication token, never the token
+  mfa_factor_id    text,                         -- the WorkOS TOTP factor to challenge
+  proof_hash       bytea       UNIQUE,           -- lock two: SHA-256 of the proof, never the proof
+  proof_expires_at timestamptz,
+  used_at          timestamptz,                  -- the reset spent the proof
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT reauthentications_proof_pair_check
+    CHECK ((proof_hash IS NULL) = (proof_expires_at IS NULL)),
+  CONSTRAINT reauthentications_proof_hash_length_check
+    CHECK (proof_hash IS NULL OR octet_length(proof_hash) = 32),
+  CONSTRAINT reauthentications_mfa_pending_hash_length_check
+    CHECK (mfa_pending_hash IS NULL OR octet_length(mfa_pending_hash) = 32),
+  CONSTRAINT reauthentications_mfa_pair_check
+    CHECK ((mfa_pending_hash IS NULL) = (mfa_factor_id IS NULL)),
+  CONSTRAINT reauthentications_used_check
+    CHECK (used_at IS NULL OR proof_hash IS NOT NULL)
+);
+CREATE INDEX reauthentications_user_idx ON reauthentications (user_id, signed_in_at);
+GRANT SELECT, INSERT, UPDATE, DELETE ON reauthentications TO xecret_app_permissions;
+  -- guarded: only where that role exists, as in 0017
+```
+
+The vault reset's re-authentication, kept by the server rather than the client. The reset
+destroys a vault for good and must stay reachable from a locked session, so it is guarded by
+two re-authentications in a fixed order (ADR 0010): a sign-in again, recorded here by the
+sign-in callback against the **new** session it issues, in the same transaction that inserts
+that session; then a code WorkOS emails — and, for an account with an authenticator app, its
+TOTP code — whose verification mints a five-minute proof stored as `proof_hash`. The reset
+spends it with one UPDATE that requires this proof, this user, this session, `used_at IS NULL`
+and an unexpired `proof_expires_at`, so two concurrent resets with one proof cannot both pass.
+
+- `session_id` is **unique**: an attempt belongs to the session the sign-in issued, and a proof
+  minted here is refused by every other session, including another of the same account.
+- **What happens to a row when its session ends.** Sessions are *revoked* by an UPDATE
+  (`revoked_at`) — on sign-out, "sign out everywhere", account deletion, or a newer sign-in in
+  the same browser — not deleted, so the row survives its session's revocation. It is inert
+  from then on: a revoked or expired session cannot authenticate the reauth or reset requests
+  that would read it. The row goes, by cascade, only when its session row is actually deleted —
+  the expired-session cleanup (`deleteExpiredSessions`, which nothing schedules yet) — or its
+  user row is hard-deleted, which the application never does (account deletion soft-deletes).
+- `code_attempts` counts **guesses**, not failures — the emailed code and the TOTP step alike.
+  Each is reserved here atomically before WorkOS is called: at most five per attempt
+  (`code_attempts < 5` in the reserving UPDATE's own predicate), and at most ten per user,
+  summed across the attempts that user started in the last 24 hours under the user's row lock
+  — `reauthentications_user_idx` is that sum's index, and the user foreign key's cascade reads
+  through it too. A guess is accepted only where `code_sent_at` is set. The budget is a column,
+  not a rate-limiter counter, so it holds where the rate-limit binding is absent and fails open.
+  The sum is correct only at READ COMMITTED, Postgres's default, which nothing here overrides:
+  each statement takes a fresh snapshot, so a guess that waited for the row lock sees the
+  reservations committed ahead of it.
+- `code_sends` counts **code requests** — each one an email to the account. Reserved the same
+  way, before WorkOS is asked and under the same user-row lock: at most three per attempt
+  (`code_sends < 3` in the reserving UPDATE), whatever WorkOS then answers. A fresh sign-in is
+  a new attempt with its own three.
+- `mfa_pending_hash` and `mfa_factor_id` are set together when WorkOS answers a correct emailed
+  code with an MFA challenge. The browser holds the pending-authentication token, which WorkOS
+  would accept back with an authenticator code; this row holds only its SHA-256, so the TOTP
+  step is accepted only with the token this attempt was given.
+- The CHECKs make the column shapes honest: a proof exists only with an expiry, is exactly a
+  SHA-256 digest — a raw proof here is the one mistake that would make a database read worth
+  the same as the proof — and can only be spent if it exists; the pending-authentication hash
+  is exactly a digest too, and never present without the factor it belongs to.
+- The application role is granted `SELECT, INSERT, UPDATE, DELETE` in the migration itself,
+  guarded the way 0017's grant is, because a new table gets nothing from the role
+  automatically and a self-hoster who never created that role must not be blocked by its
+  absence.
+
 ---
 
 ## 2. Tenancy
@@ -108,7 +186,7 @@ CREATE TABLE organizations (
   slug          citext      NOT NULL UNIQUE,
   seat_limit    integer     NOT NULL DEFAULT 5 CHECK (seat_limit >= 0),
   workos_org_id text        UNIQUE,                  -- 0018; set lazily, on enabling SSO
-  sso_required  boolean     NOT NULL DEFAULT false,  -- 0018; inert until enforced
+  sso_required  boolean     NOT NULL DEFAULT false,  -- 0018; enforced, not yet settable
   created_by    uuid        NOT NULL REFERENCES users(id),
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now(),
@@ -140,10 +218,19 @@ provisioned at first login and never needs one — and is set once (`setOrgWorko
 refuses to re-point it). The sign-in callback resolves WorkOS organisations back to tenants
 with `findOrgByWorkosOrgId`, which ignores soft-deleted organisations.
 
-`sso_required` ("members may only sign in through this organisation's SSO connection")
-ships ahead of its enforcement and is **inert**: false everywhere, with no code path that can
-set it. Its setter lands in the same change as the check in the sign-in callback, never
-before — a flag that claims a bypass is closed while it is open is worse than no flag.
+`sso_required` ("members may only sign in through this organisation's SSO connection") is
+**enforced** by the sign-in callback — a sign-in must have come through this organisation's
+own connection (`authenticationMethod` `SSO` *and* this `workos_org_id`), or it is refused —
+but nothing can set it yet: false everywhere. The setter ships with the organisation's SSO
+settings, together with the guards it owes (owner/admin only, and an exemption for when the
+identity provider is misconfigured, without which switching it on can lock an organisation
+out of itself). Enforcement first is the safe order: a flag that claims a bypass is closed
+while it is open is worse than no flag.
+
+An SSO sign-in through an organisation's connection also admits a newcomer just in time, as a
+`viewer` `org_members` row with `invited_by` NULL, under the seat limit and the same
+organisation row lock an invitation acceptance takes (`joinOrganizationJustInTime`). It never
+reinstates a suspended membership.
 
 **Invariant enforced in application code, tested explicitly:** an organisation always has at
 least one `owner` with `status = 'active'`. Removing or demoting the last owner is rejected.
@@ -708,6 +795,8 @@ users ──┬──< sessions
 secret_versions references env_keys OR env_data_keys — exactly one, by CHECK.
 org_members.custom_role_id references custom_roles (org_id, id) — same organisation, by
   composite FK; organizations ──< custom_roles (0017, not drawn above)
+sessions ── reauthentications — at most one per session, also referencing users (0019, not
+  drawn above)
 audit_logs — no FKs by design; references are soft
 ```
 
@@ -737,7 +826,23 @@ audit_logs — no FKs by design; references are soft
       billing_webhook_events)
 0017  custom roles (custom_roles, org_members.custom_role_id) — additive, every
       existing member keeps NULL
+0018  WorkOS identity: users.workos_user_id, users.firebase_uid becomes nullable,
+      organizations.workos_org_id and sso_required — additive, nothing dropped
+0019  reauthentications — the vault reset's re-authentication, its user index and the
+      application role's grant — additive
 ```
+
+Migration 0018 is the storage half of the move from Firebase to WorkOS (ADR 0010) and drops
+nothing: `firebase_uid` stays, nullable, until a decommission migration — which must replace
+`users_identity_present_check`, because dropping the column drops the constraint with it.
+Apply 0018 before deploying code that selects the new columns: Drizzle's `select()` names every
+column the schema declares, so from that build on every read of `users` or `organizations` —
+the per-request session lookup among them — fails against a database without them. The reverse
+order is safe. The same holds for 0019, where the cost of getting it wrong is confined to the
+vault reset — its sign-in included, since the callback writes that session and its
+`reauthentications` row in one transaction. 0019 was amended in place (the grant, the index,
+`code_failures` renamed `code_attempts`, the two MFA columns, `code_sends`) before any database
+applied it.
 
 Migration 0013 drops nothing and loses nothing. Every existing environment keeps its `env_keys`
 row and keeps working exactly as before; the one column that could not be added as a nullable

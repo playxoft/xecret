@@ -105,6 +105,13 @@ export const apiPath = {
   vaultPin: (deviceId: string): string => `${apiPath.vaultPins()}/${segment(deviceId)}`,
   /** Destroys the vault when the passphrase and every recovery code are gone. */
   vaultReset: (): string => '/api/auth/vault/reset',
+  /**
+   * The reset's re-authentication: where it stands, the emailed code, and the
+   * check that turns the code into the proof the reset spends.
+   */
+  reauth: (): string => '/api/auth/reauth',
+  reauthStart: (): string => '/api/auth/reauth/start',
+  reauthVerify: (): string => '/api/auth/reauth/verify',
   orgs: (): string => '/api/orgs',
   /**
    * Whether an organisation slug is free. Takes `?slug=`.

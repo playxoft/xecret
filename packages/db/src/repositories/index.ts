@@ -31,14 +31,12 @@ export type { Executor, RepositoryErrorCode, Transaction } from './shared';
 
 export {
   findUserByEmail,
-  findUserByFirebaseUid,
   findUserById,
   findUserByWorkosId,
   isUniqueViolation,
   softDeleteUser,
   touchLastLogin,
   updateUserProfile,
-  upsertUserFromFirebaseIdentity,
   upsertUserFromWorkosIdentity,
 } from './users';
 export type { IdentityLinkOutcome, UpsertedUser, User, UserProfilePatch } from './users';
@@ -319,6 +317,7 @@ export {
   findInvitationByToken,
   findInvitationByTokenHash,
   invitationClaimQuery,
+  joinOrganizationJustInTime,
   listInvitations,
   pendingInvitationsQuery,
   revokeInvitation,
@@ -332,8 +331,21 @@ export type {
   InvitationListEntry,
   InvitationRecord,
   IssuedInvitation,
+  JustInTimeJoin,
   SeatUsage,
 } from './invitations';
+
+export {
+  consumeReauthProof,
+  findFreshSignIn,
+  issueReauthProof,
+  markReauthCodeSent,
+  recordFreshSignIn,
+  recordReauthMfaPending,
+  reserveReauthCodeSend,
+  reserveReauthGuess,
+} from './reauth';
+export type { CodeSendReservation, GuessReservation, Reauthentication } from './reauth';
 
 export {
   consumeCliAuthCode,

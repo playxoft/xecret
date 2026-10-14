@@ -122,9 +122,57 @@ function describeAuth(verb: string, rest: readonly string[]): RequestAction {
   const [first, second] = rest;
 
   if (first === 'session') {
-    return verb === 'DELETE'
-      ? action('auth.logout', 'Signed', 'sign', 'the user out and revoked their session')
-      : action('auth.login', 'Signed', 'sign', 'the user in and issued a new session');
+    // Only DELETE remains: the sign-in that used to POST here is
+    // `callback` below. Anything else is a 405 from Next before it gets here.
+    return action('auth.logout', 'Signed', 'sign', 'the user out and revoked their session');
+  }
+
+  if (first === 'login') {
+    return action(
+      'auth.login_start',
+      'Sent',
+      'send',
+      'the browser to the identity provider to sign in',
+    );
+  }
+
+  if (first === 'callback') {
+    // Neutral on purpose. The callback answers 303 whether it signed somebody
+    // in or refused them, so a sentence derived from the status would call
+    // every refusal a sign-in. The route binds `signInOutcome` (and, for a
+    // refusal, `signInRefusal`) onto the same line — that field is the answer.
+    return action(
+      'auth.callback',
+      'Completed',
+      'complete',
+      'a sign-in callback from the identity provider',
+    );
+  }
+
+  if (first === 'reauth') {
+    switch (second) {
+      case 'start':
+        return action(
+          'auth.reauth_start',
+          'Emailed',
+          'email',
+          'a re-authentication code for the vault reset',
+        );
+      case 'verify':
+        return action(
+          'auth.reauth_verify',
+          'Verified',
+          'verify',
+          'an emailed re-authentication code for the vault reset',
+        );
+      default:
+        return action(
+          'auth.reauth_status',
+          'Read',
+          'read',
+          "the session's re-authentication for the vault reset",
+        );
+    }
   }
 
   if (first === 'sessions') {
@@ -157,6 +205,8 @@ function describeAuth(verb: string, rest: readonly string[]): RequestAction {
         return verb === 'DELETE'
           ? action('auth.vault_passkey', 'Removed', 'remove', 'a passkey from the vault')
           : action('auth.vault_passkey', 'Listed', 'list', "the vault's passkeys");
+      case 'reset':
+        return action('auth.vault_reset', 'Reset', 'reset', "the account's vault");
       case 'pin':
         if (rest[2] === 'attempt') {
           return action('auth.vault_pin', 'Unlocked', 'unlock', "the session's vault with a PIN");

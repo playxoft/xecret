@@ -3,7 +3,7 @@ title: Frequently asked questions
 navTitle: FAQ
 description: Short answers about pricing, security, offline use, team access, migrating away, self-hosting and how xecret compares to .env files and other tools.
 keywords: [xecret faq, secret manager questions, is it secure, offline, pricing, migrate away, doppler alternative]
-updated: 2026-08-16
+updated: 2026-10-12
 schema: faq
 ---
 
@@ -146,7 +146,7 @@ Version history is not part of a bulk export. See
 ### Can I run it myself?
 
 Yes — it is AGPL-3.0 and self-hosting is a documented first-class path. It
-needs Cloudflare Workers, PostgreSQL and a Firebase project for identity. The
+needs Cloudflare Workers, PostgreSQL and a WorkOS account for identity. The
 honest dependency list is in [self-hosting](self-hosting.md).
 
 ### What licence is it under?

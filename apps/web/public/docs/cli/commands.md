@@ -3,7 +3,7 @@ title: CLI command reference
 navTitle: Command reference
 description: Every xecret command and flag — login, init, projects, secrets, versions, import, pull, export, run, audit, tokens and cache — with examples and the exact behaviour of each.
 keywords: [xecret command reference, xecret run flags, xecret secrets set, xecret secrets versions, xecret audit, xecret import, xecret pull, cli reference]
-updated: 2026-08-18
+updated: 2026-10-12
 ---
 
 Every command the `xecret` binary accepts. Run `xecret help` for the same list
@@ -29,8 +29,9 @@ Authenticates this machine through your browser.
 The CLI opens a consent page, listens on `127.0.0.1` on a random port for the
 one-time code that page redirects back, and exchanges that code — together with
 a PKCE verifier only this process knows — for a credential it stores in your OS
-keychain. It never talks to Firebase directly; the consent screen and the token
-exchange are both xecret's own.
+keychain. It never talks to the identity provider directly; the consent screen
+and the token exchange are both xecret's own. If the browser is not signed in to
+xecret yet, it signs in first and comes back to the consent screen.
 
 | Flag | Effect |
 |---|---|

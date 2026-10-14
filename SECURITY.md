@@ -84,7 +84,7 @@ window.
 **In scope:** the web application, the API, the CLI, the cryptographic design,
 authorization logic, and the published release artifacts.
 
-**Out of scope:** vulnerabilities in Cloudflare, Neon, Firebase, or Phase.dev
+**Out of scope:** vulnerabilities in Cloudflare, Neon, WorkOS, or Phase.dev
 themselves (report those to the respective vendors), social engineering,
 physical attacks, and denial of service through resource exhaustion.
 

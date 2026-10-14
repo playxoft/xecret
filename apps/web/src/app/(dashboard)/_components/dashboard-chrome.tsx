@@ -177,9 +177,10 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   }
 
   if (organizations.length === 0) {
-    // An organisation is created at first sign-in (`POST /api/auth/session`), so
-    // this is reachable only once every membership is gone — removed by someone
-    // else, or deleted by this account itself on the organisation settings page.
+    // A personal organisation is created at sign-in for an account that has none
+    // (the sign-in callback, `GET /api/auth/callback`), so this is reachable only
+    // once every membership is gone — removed by someone else, or deleted by this
+    // account itself on the organisation settings page.
     //
     // Starting a new one is offered first, and it is the reason this screen is
     // not a dead end: without it, an owner who deleted their last organisation

@@ -31,7 +31,7 @@ had its name, and nothing in it was still true.
 
 > **Nothing here has run against a real database.** Every query is verified by shape
 > (`.toSQL()` assertions) and every pure rule by unit test, but no code path has touched
-> PostgreSQL, Firebase, or Cloudflare. Integration testing is the first task once the Neon
+> PostgreSQL, the identity provider, or Cloudflare. Integration testing is the first task once the Neon
 > project and the Phase.dev values exist. A test suite that has never seen its own database
 > proves the code is *consistent*, not that it *works*.
 
@@ -53,12 +53,12 @@ These are decided. Do not re-open them without an ADR.
 | D3 | Hosting | Cloudflare Workers, **Paid plan** |
 | D4 | Web framework | Next.js 16.3 (App Router) via `@opennextjs/cloudflare` |
 | D5 | Database | Neon PostgreSQL |
-| D6 | Auth provider | **Firebase Auth** (Google + email/password), verified on the edge via `firebase-auth-cloudflare-workers`. `firebase-admin` never enters the repo. |
+| D6 | Auth provider | **WorkOS AuthKit** (hosted: password, Google, MFA, enterprise SSO), reached server-side with `@workos-inc/node` — never `@workos-inc/authkit-nextjs`, which needs middleware. Was Firebase Auth via `firebase-auth-cloudflare-workers` until [ADR 0010](adr/0010-workos-as-identity-provider.md). |
 | D7 | CLI language | **Go** (single static binary, no runtime, ideal for CI images) |
 | D8 | Repo layout | **Monorepo** — web + CLI + shared packages in one repo |
 | D9 | No Redis | Cloudflare native primitives instead |
 | D10 | Root key custody | **Phase.dev** as source of truth → synced to **Cloudflare Secrets Store** at deploy time → read from a binding at runtime. Offline Shamir escrow as backup. |
-| D11 | Firebase role | Identity provider **only** — xecret issues its own sessions |
+| D11 | Identity provider's role | Identity **only** — xecret issues its own sessions. Unchanged by the move from Firebase to WorkOS. |
 | D12 | DB access | **Drizzle ORM + Hyperdrive + `postgres.js`** |
 | D13 | Licence | **AGPL-3.0** (server) + **MIT** (CLI & client SDKs) + CLA |
 
@@ -70,7 +70,7 @@ Researched, not assumed:
 - **OpenNext Cloudflare** supports all Next.js 16 minors. Next 16.2 shipped a stable Adapter API built with Cloudflare + OpenNext.
 - **Rate Limiting binding is GA** (since Sep 2025, wrangler ≥ 4.36.0). No Redis, no DB counters for the hot path.
 - **Neon on Workers:** Hyperdrive + a native driver (`postgres.js` / `pg`) is the fastest and Cloudflare-recommended path. The Neon serverless HTTP driver is the fallback for self-hosters without Hyperdrive.
-- **Firebase Admin SDK does not run on Workers** (Node-native deps). ID tokens must be verified as plain RS256 JWTs against Google's JWKS using Web Crypto.
+- **Firebase Admin SDK does not run on Workers** (Node-native deps). ID tokens must be verified as plain RS256 JWTs against Google's JWKS using Web Crypto. *(Moot since ADR 0010: `@workos-inc/node` is fetch-based and resolves to a workerd build, and a WorkOS sign-in is an authenticated code exchange — there is no token to verify at all.)*
 
 ---
 
@@ -147,29 +147,34 @@ Considered and rejected for v1: per-request KMS unwrap (adds a round-trip to eve
 
 ---
 
-### D11 — Firebase Auth: use it as an identity provider only
+### D11 — The identity provider: use it for identity only
 
-You want Firebase and don't want to run auth yourself. Fine — but **do not use Firebase for sessions.** Here's why and what to do instead.
+> Decided for Firebase, and carried over unchanged when Firebase was replaced by WorkOS
+> AuthKit ([ADR 0010](adr/0010-workos-as-identity-provider.md)) — which is the point of the
+> decision: swapping the provider swapped one module, not the session model. What follows
+> describes the current flow.
+
+You don't want to run auth yourself. Fine — but **do not use the identity provider for sessions.** Here's why and what to do instead.
 
 ```
-Browser ──Firebase JS SDK (Google / email+password)──▶ Firebase
-Browser ──POST /api/auth/session { idToken }──────────▶ Worker
-Worker  ──verify RS256 vs Google JWKS (Web Crypto, JWKS cached in KV)
-        ──check aud == projectId, iss, exp, email_verified
-        ──upsert user, create OUR session row in Postgres
+Browser ──GET /api/auth/login──────────────────────────▶ Worker
+Worker  ──signed state cookie (state + PKCE verifier), 307 → AuthKit hosted pages
+Browser ──GET /api/auth/callback?code&state────────────▶ Worker
+Worker  ──check state against the cookie, exchange the code with WorkOS (one authenticated call)
+        ──link or create the user, create OUR session row in Postgres
         ──Set-Cookie: HttpOnly; Secure; SameSite=Lax; opaque 256-bit token (store SHA-256 hash only)
-Browser ──all further requests use OUR session, never a Firebase token
+Browser ──all further requests use OUR session, never a WorkOS token
 ```
 
-Verification uses **`firebase-auth-cloudflare-workers`** — zero dependencies, Web Standard APIs only, purpose-built for Workers, caches Google's JWKS in KV. The browser still uses the normal Firebase JS SDK to render the login UI; the Worker only verifies. **`firebase-admin` is banned by an ESLint `no-restricted-imports` rule** so it can never creep in.
+WorkOS is reached with **`@workos-inc/node`** — fetch-based, no Node-only dependencies, runs on Workers. The browser never runs any identity-provider code: it only navigates to AuthKit's hosted pages and back. **`@workos-inc/authkit-nextjs` is banned by an ESLint `no-restricted-imports` rule** because it is built around middleware, which this stack cannot have (ADR 0008); the Firebase packages are banned beside it.
 
 Why this shape:
-- No Admin SDK anywhere → no Workers incompatibility.
-- **Real revocation.** Firebase ID tokens live ~1 hour with no kill switch. Ours die instantly.
+- Nothing Node-only anywhere → no Workers incompatibility.
+- **Real revocation.** A provider's tokens are not ours to kill; WorkOS's are discarded at the callback. Ours die instantly.
 - One session model shared by dashboard, CLI, and CI.
-- Firebase stays swappable behind an `IdentityProvider` interface.
+- The provider stays swappable behind an `IdentityProvider` interface — and was swapped.
 
-**Honest trade-off you're accepting:** self-hosters will need their own Firebase project. That's real friction for an open-source product. The `IdentityProvider` interface means someone can contribute a Postgres-native provider later without touching authz, crypto, or the API. This will be stated plainly in `docs/self-hosting.md` — not hidden.
+**Honest trade-off you're accepting:** self-hosters need their own WorkOS account (AuthKit is free up to a million monthly active users). That's real friction for an open-source product. The `IdentityProvider` interface means someone can contribute another provider later without touching authz, crypto, or the API. This is stated plainly in `docs/self-hosting.md` — not hidden.
 
 ---
 
@@ -288,7 +293,7 @@ Estimates assume focused work; treat as relative sizing, not commitments.
 
 #### ✅ Phase 0 — Decisions & threat model
 
-- [x] ADRs 0001–0007: trust model, root key custody, Firebase-as-IdP, Go CLI, monorepo, database access, licensing
+- [x] ADRs 0001–0007: trust model, root key custody, Firebase-as-IdP, Go CLI, monorepo, database access, licensing *(0001 since superseded by 0009, 0003 by 0010)*
 - [x] `docs/security/threat-model.md` — 10 attacker classes × (threat, impact, likelihood, mitigation, residual risk)
 - [x] `docs/security/key-recovery.md` — **gate: no crypto code before this exists**
 - [x] Full DB schema on paper, reviewed end-to-end before a single migration
@@ -331,9 +336,9 @@ Built **before** the API, because it is the highest-risk component and the harde
 
 #### ✅ Phase 3 — Auth & organisations
 
-- [x] `IdentityProvider` interface so Firebase is swappable
-- [x] Worker-side ID token verification via `firebase-auth-cloudflare-workers`, JWKS cached in KV (in-memory fallback when the binding is absent)
-- [x] Firebase client SDK wiring: Google + email/password, verification, password reset
+- [x] `IdentityProvider` interface so the provider is swappable — and it was swapped: Firebase → WorkOS AuthKit ([ADR 0010](adr/0010-workos-as-identity-provider.md))
+- [x] Worker-side identity verification — built as Firebase ID-token verification via `firebase-auth-cloudflare-workers` with JWKS cached in KV; now one server-side WorkOS code exchange per sign-in, bound to the browser by a signed state cookie and PKCE
+- [x] Google + email/password sign-in, verification, password reset — built on the Firebase client SDK; now AuthKit's hosted pages
 - [x] Session policy + token/cookie primitives (`packages/core/auth`)
 - [x] Session lifecycle wired to the database: create, resolve, touch, revoke, revoke-all
 - [x] Auto-create personal organisation on first login (owner role, org + env keys, default project, all in one transaction)
@@ -378,9 +383,9 @@ Built **before** the API, because it is the highest-risk component and the harde
 - [x] Production styling that survives greyscale: a reserved accent **plus** hazard hatching and letterform, never colour alone
 - [x] Destructive actions confirmed; production requires typing the resource name
 - [x] Search, filter, empty states, skeletons, error states surfacing the `requestId`
-- [x] Auth pages: sign in, sign up, forgot password, reset — with the four "wrong credential" Firebase codes collapsed into one message, so the form is not a user-enumeration oracle
+- [x] Auth pages: sign in, sign up, forgot password, reset — with the four "wrong credential" Firebase codes collapsed into one message, so the form is not a user-enumeration oracle *(the forms have since moved to AuthKit's hosted pages — ADR 0010; the sign-in page's error messages keep the same rule)*
 
-**Caught while measuring:** the root layout's barrel imports were pulling `UserMenu → lib/firebase → firebase/auth`, shipping **310 KB of the Firebase SDK to the public landing page**. Fixed structurally — sign-out no longer needs the Firebase SDK at all, since it is one `DELETE /api/auth/session`.
+**Caught while measuring:** the root layout's barrel imports were pulling `UserMenu → lib/firebase → firebase/auth`, shipping **310 KB of the Firebase SDK to the public landing page**. Fixed structurally — sign-out no longer needs the Firebase SDK at all, since it is one `DELETE /api/auth/session`. *(Since ADR 0010 there is no identity-provider SDK in the browser at all.)*
 
 **Removed:** `src/proxy.ts`. Next 16 defaults Proxy to the Node.js runtime and throws if `runtime` is set; `@opennextjs/cloudflare` refuses to build Node middleware. It could never have deployed. The signed-out redirect lives in the API client's 401 handling, which is where Next's own docs say authorization belongs anyway.
 
@@ -400,7 +405,7 @@ xecret run -- npm run dev
 xecret cache clear
 ```
 
-- **Auth:** OAuth-style loopback + PKCE against *your* server (never Firebase directly). `xecret login` → PKCE challenge → loopback listener on `127.0.0.1:<random>` → browser consent screen showing the device name → code → exchange for a refresh token in the **OS keychain** (Keychain / Credential Manager / Secret Service), falling back to a `0600` file with a visible warning. Never printed, never in argv, never in shell history.
+- **Auth:** OAuth-style loopback + PKCE against *your* server (never the identity provider directly). `xecret login` → PKCE challenge → loopback listener on `127.0.0.1:<random>` → browser consent screen showing the device name → code → exchange for a refresh token in the **OS keychain** (Keychain / Credential Manager / Secret Service), falling back to a `0600` file with a visible warning. Never printed, never in argv, never in shell history.
 - **`run`:** fetch → decrypt server-side → inject into child env → exec → forward signals → propagate exit code. Secrets never touch disk, argv, or stdout.
 - **Encrypted local cache:** AES-256-GCM, key in the OS keychain, `0600` file in `~/.xecret/cache/`, per project+env. Used automatically when the API is unreachable, with a loud stderr warning showing cache age. `--offline` forces it, `--no-cache` disables it, logout wipes it. **This is what stops a xecret outage from stopping every customer's `npm run dev`.**
 - `.xecret.yaml`: `project` + `environment` only. Never secrets. Safe to commit.
@@ -534,14 +539,14 @@ the day the integration pass produces a deployment to point a terminal at.
 - **Adversarial security pass** — I attack the app as an external tester: IDOR/BOLA, authz bypass, privilege escalation, token replay, session fixation, invitation reuse, cross-env leakage, rate-limit bypass, SSRF, XSS, CSRF, injection, timing attacks on token comparison, CLI credential theft
 - Verify the log pipeline for secret leakage end to end (app logs, error responses, Sentry-equivalent, CF analytics)
 - Performance: bundle size, CPU per request, DB query count (kill all N+1s), p50/p99 secret retrieval, CLI startup time, cold-start impact
-- Production: migrations runbook, Firebase prod config, key ceremony + escrow, monitoring, error reporting, backup + **tested** restore, incident response doc
+- Production: migrations runbook, WorkOS Production environment config, key ceremony + escrow, monitoring, error reporting, backup + **tested** restore, incident response doc
 - Third-party review recommendation before accepting real customer secrets
 
 ---
 
 ## 4. Deliberately NOT in v1
 
-Billing · custom roles · SSO/SAML · automatic third-party rotation · secret referencing across envs · webhooks · Kubernetes operator · approval workflows · integrations marketplace · AI features · mobile app · E2E encryption mode
+Billing · custom roles · SSO/SAML settings *(since ADR 0010 sign-in understands SSO and enforces `sso_required`; the organisation settings that switch it on are next)* · automatic third-party rotation · secret referencing across envs · webhooks · Kubernetes operator · approval workflows · integrations marketplace · AI features · mobile app · E2E encryption mode
 
 Each is a schema-compatible addition, not a rewrite. That's the point of the phasing.
 
@@ -585,7 +590,7 @@ Next phase           — and what I need from you
 | ✅ | Repo restructure to `apps/web` + `cli` + `packages` | Approved |
 | ✅ | Go module path | `github.com/playxoft/xecret` |
 | ✅ | Database access | Hyperdrive (D12) |
-| ✅ | Firebase edge library | `firebase-auth-cloudflare-workers` (D6/D11) |
+| ✅ | Identity provider library | `@workos-inc/node` (D6/D11, ADR 0010) — was `firebase-auth-cloudflare-workers` |
 | ✅ | Licence | AGPL-3.0 server + MIT CLI + CLA (D13) — confirmed |
 | ✅ | **Domain name** | `xecret.playxoft.com` — settled 2026-08-19. No separate apex domain. See below. |
 
@@ -595,12 +600,11 @@ Next phase           — and what I need from you
 
 That decision is what unblocked shipping a CLI binary, because the origin is compiled into every distributed copy and changing it afterwards breaks every installation — including the ones nobody can reach to update.
 
-It is wired into four places, all of them now pointing at the settled name:
+It is wired into three places, all of them pointing at the settled name:
 
-1. **Firebase authorised domains** — Google sign-in only works on pre-registered domains.
-2. **Google OAuth redirect URI** — must match exactly, character for character.
-3. **CLI login target** — `xecret login` opens `https://<domain>/cli/authorize`; `internal/buildinfo.DefaultAPIURL` is the compiled-in default. Self-hosters override it with `XECRET_API_URL` or `xecret login --api-url`, which is the whole reason those exist.
-4. **Cloudflare Worker route** — the custom domain in the Worker configuration.
+1. **WorkOS redirect URI** — `https://xecret.playxoft.com/api/auth/callback`, registered in the WorkOS Production environment; AuthKit refuses any other. Derived from `XECRET_PUBLIC_URL` at runtime, never configured beside it. *(Until ADR 0010 this was two places: Firebase's authorised domains and the Google OAuth redirect URI. Google sign-in now goes through WorkOS, so the redirect URI registered with Google is WorkOS's, not ours.)*
+2. **CLI login target** — `xecret login` opens `https://<domain>/cli/authorize`; `internal/buildinfo.DefaultAPIURL` is the compiled-in default. Self-hosters override it with `XECRET_API_URL` or `xecret login --api-url`, which is the whole reason those exist.
+3. **Cloudflare Worker route** — the custom domain in the Worker configuration.
 
 `github.com/playxoft/xecret` is held. **The npm names are not yet**: `xecret` and the six `xecret-{platform}-{arch}` packages the CLI is distributed as were all unregistered as of 2026-08-19, and the first release is what claims them. That is a release prerequisite, not a completed step — the name is the product and squatters are fast, so publish (or reserve) before announcing anywhere. The npm `@xecret` *scope* is not needed; the wrapper takes the unscoped name.
 

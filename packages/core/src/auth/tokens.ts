@@ -62,6 +62,17 @@ export const TOKEN_PREFIXES = {
    * recognisable to a secret scanner like every other xecret token.
    */
   cliAuthCode: 'xac',
+  /**
+   * Proof that a session's owner has just re-authenticated twice over — a
+   * forced sign-in, then a code emailed to them — minted for the vault reset and
+   * spent by it.
+   *
+   * Not a credential either: it is bound to the session that earned it and to
+   * that session's user, lives five minutes, and is consumed by the one request
+   * it authorises. It shares the token shape for the same reasons the CLI code
+   * does — hashed at rest, and recognisable if it ever turns up in a log.
+   */
+  reauthProof: 'xrp',
 } as const;
 
 export type TokenKind = keyof typeof TOKEN_PREFIXES;

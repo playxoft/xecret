@@ -12,3 +12,4 @@ export * from './access';
 export * from './tokens';
 export * from './audit';
 export * from './billing';
+export * from './reauth';

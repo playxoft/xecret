@@ -84,7 +84,7 @@ out later. Full reasoning: [ADR 0001](docs/adr/0001-trust-model.md) ·
 ## Stack
 
 Next.js 16 on Cloudflare Workers · Neon PostgreSQL via Hyperdrive · Drizzle ·
-Firebase Auth (identity only — sessions are ours) · Go CLI · AES-256-GCM
+WorkOS AuthKit (identity only — sessions are ours) · Go CLI · AES-256-GCM
 envelope encryption
 
 Every significant decision is written down in [`docs/adr/`](docs/adr/), including

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 
 import { AUTO_LOCK_MINUTES_OPTIONS, nearestAutoLockOption } from '@xecret/core/auth';
+import { loginHref } from '@/app/(auth)/_components/login-href';
 import { api, errorMessage } from '@/lib/api';
 import { formatAbsoluteTime, formatRelativeTime, pluralize, toIsoString } from '@/lib/format';
 import {
@@ -16,7 +17,6 @@ import {
   CardTitle,
   ConfirmDialog,
   Field,
-  Input,
   Select,
   SelectContent,
   SelectItem,
@@ -32,20 +32,22 @@ import {
   setAutoLockMinutes,
   VaultCard,
 } from '@/components/vault';
-import { apiPath } from '../_lib/paths';
+import { apiPath, appPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState } from './resource-states';
 import { useSession } from './session';
 
 /**
- * The Security tab: the password, the vault, the lock, and every session that
- * can currently act as this account.
+ * The Security tab: how you sign in, the vault, the lock, and every session
+ * that can currently act as this account.
  *
- * The password card talks to Firebase — the identity provider owns passwords
- * (ADR 0003) — and the module is imported *dynamically inside the submit
- * handler*, so the ~300 KB Firebase SDK stays out of this route's chunk for
- * everyone who never changes a password. Phase 5 already fought this exact
- * bundle once; the import style is the fix being kept won.
+ * The first card is the only one that changes nothing here. The identity
+ * provider owns credentials — ADR 0003's rule, kept when WorkOS replaced
+ * Firebase — and since AuthKit it owns the screens for them too: the password,
+ * Google, multi-factor and single sign-on all live on the hosted sign-in page,
+ * so this page's part is to say so and to send you there. Everything below it
+ * — the vault, the lock, the sessions — is xecret's own and is changed in
+ * place.
  */
 
 interface DeviceSession {
@@ -66,7 +68,7 @@ export function SecurityScreen() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PasswordCard />
+      <SignInCard />
       {/* The vault card lives with the rest of the vault client, in
           `components/vault`, because it is the only card on this page that
           composes cryptography: changing a passphrase re-derives Argon2id in the
@@ -79,107 +81,71 @@ export function SecurityScreen() {
   );
 }
 
-function PasswordCard() {
-  const { user } = useSession();
-  const { toast } = useToast();
-
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
-
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault();
-    if (saving) return;
-
-    if (newPassword.length < 8) {
-      setProblem('Use at least 8 characters for the new password.');
-      return;
-    }
-    if (newPassword !== confirmPassword) {
-      setProblem('The new passwords do not match.');
-      return;
-    }
-
-    setSaving(true);
-    setProblem(null);
-    try {
-      // Loaded on demand — see the header comment.
-      const firebase = await import('@/lib/firebase');
-      await firebase.changePassword(user.email, currentPassword, newPassword);
-
-      setCurrentPassword('');
-      setNewPassword('');
-      setConfirmPassword('');
-      toast({
-        variant: 'success',
-        title: 'Password changed',
-        description:
-          'Devices signed in with the old password keep their xecret sessions — revoke those below if this change was about a lost device.',
-      });
-    } catch (cause) {
-      const firebase = await import('@/lib/firebase').catch(() => null);
-      setProblem(firebase ? firebase.describeAuthError(cause) : errorMessage(cause));
-    } finally {
-      setSaving(false);
-    }
-  }
-
+/**
+ * Where your password, Google sign-in and multi-factor live now: not here.
+ *
+ * This card used to change the password in place. Since AuthKit, xecret never
+ * sees a password at all — it is typed into the hosted sign-in page and checked
+ * by WorkOS — so there is nothing for a form here to submit, and the honest
+ * version of the card is a sentence saying where those settings went and a way
+ * to get there.
+ *
+ * ── Why `reauth=1` ──
+ * AuthKit keeps a session of its own beside xecret's. An ordinary sign-in link
+ * would find it, skip the hosted page entirely and bounce straight back here,
+ * which for somebody who came to change a password is a button that appears to
+ * do nothing. `reauth=1` sends AuthKit `max_age=0`, which makes it ask for a
+ * password or passkey again, on the page that has "Forgot password" on it. (It
+ * does not reach Google or a company's identity provider, which may let a
+ * live session straight through — ADR 0010.) Coming back makes a fresh xecret
+ * session — the callback retires this one — and, when the method is one of
+ * the sign-in's `REAUTHENTICATING_METHODS` and the sign-in really happened
+ * during the flow (`armsLockOne`), it is recorded as the vault reset's first
+ * lock, exactly as a sign-in from the reset screen would be. The reset
+ * still wants its emailed code.
+ *
+ * ── Why a plain link ──
+ * The login route answers with a 307 to AuthKit's origin, and a form following
+ * that redirect would be stopped by the CSP's `form-action 'self'` — see
+ * `(auth)/sign-in/page.tsx` for the full story. A link is a top-level navigation,
+ * which also throws this document away, so nothing rendered for the old
+ * session survives into the new one.
+ */
+function SignInCard() {
   return (
-    <Card id="password" data-settings-section>
-      <form onSubmit={handleSubmit} noValidate>
-        <CardHeader>
-          <CardTitle>Password</CardTitle>
-          <CardDescription>
-            For accounts that sign in with email and password. Signed in with Google? Your password
-            lives with Google, and there is nothing to change here.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          {problem !== null ? (
-            <Alert tone="danger" title="The password was not changed">
-              {problem}
-            </Alert>
-          ) : null}
+    <Card id="sign-in" data-settings-section>
+      <CardHeader>
+        <CardTitle>Password &amp; sign-in</CardTitle>
+        <CardDescription>
+          Your password, Google sign-in and multi-factor authentication are handled on
+          xecret&rsquo;s secure sign-in page, hosted for us by WorkOS, rather than in this
+          dashboard. If your organisation signs in with single sign-on, your credentials are managed
+          by your company&rsquo;s identity provider — change them there, or ask your IT team.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <div className="text-fg-muted flex flex-col gap-2 text-sm leading-6">
+          <p>
+            Opening the sign-in page asks you to sign in again, even though you are signed in here.
+            To change your password, choose &ldquo;Forgot password&rdquo; on that page and follow
+            the link it emails you. Signing in there starts a new session, so your vault, if you
+            have set one up, will need unlocking again.
+          </p>
+          <p>
+            A new password does not sign out your other devices: xecret issues its own sessions. If
+            you are changing it because of a lost or shared device, sign that device out under
+            Signed-in devices below as well.
+          </p>
+        </div>
 
-          <Field label="Current password">
-            <Input
-              type="password"
-              value={currentPassword}
-              onChange={(event) => setCurrentPassword(event.target.value)}
-              autoComplete="current-password"
-            />
-          </Field>
-          <Field label="New password" hint="At least 8 characters. Length beats complexity rules.">
-            <Input
-              type="password"
-              value={newPassword}
-              onChange={(event) => setNewPassword(event.target.value)}
-              autoComplete="new-password"
-            />
-          </Field>
-          <Field label="Confirm new password">
-            <Input
-              type="password"
-              value={confirmPassword}
-              onChange={(event) => setConfirmPassword(event.target.value)}
-              autoComplete="new-password"
-            />
-          </Field>
-
-          <div className="flex justify-end">
-            <Button
-              type="submit"
-              variant="primary"
-              loading={saving}
-              disabled={currentPassword.length === 0 || newPassword.length === 0}
-            >
-              Change password
-            </Button>
-          </div>
-        </CardContent>
-      </form>
+        <div className="flex justify-end">
+          <Button variant="secondary" asChild>
+            <a href={loginHref({ reauth: true, next: appPath.settingsSecurity() })}>
+              Open sign-in page
+            </a>
+          </Button>
+        </div>
+      </CardContent>
     </Card>
   );
 }

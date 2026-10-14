@@ -25,6 +25,12 @@ XECRET_PUBLIC_URL = "http://localhost:3030"
 # rotation runbook in docs/security/key-recovery.md, only after the new key
 # is present in XECRET_ROOT_KEYS.
 XECRET_ROOT_KEY_VERSION = "1"
+# The WorkOS *Staging* environment, the same one env.staging uses: local
+# development signs in against staging's user pool and never production's. It
+# pairs with the Staging environment's WORKOS_API_KEY, and the Staging
+# environment must list http://localhost:3030/api/auth/callback as a redirect
+# URI. The note on the production value below says why this is a var at all.
+WORKOS_CLIENT_ID = "client_01M36CECEQ1FY9TA1F952FY958"
 
 # ── production ──────────────────────────────────────────────────────────────
 #
@@ -45,16 +51,24 @@ routes = [{ pattern = "xecret.playxoft.com", custom_domain = true }]
 # against the DIRECT endpoint (Hyperdrive pools; pgbouncer must not).
 hyperdrive = [{ binding = "HYPERDRIVE", id = "c9733ac7b6104546ac59ec53df58a948" }]
 
-# ADR 0003 — Google's JWKS, cached so verification costs no fetch.
-kv_namespaces = [{ binding = "JWKS_CACHE", id = "de8e11e521b8491a97e8d4f0d4557c0f" }]
-
 [env.production.vars]
 XECRET_ENV = "production"
 XECRET_PUBLIC_URL = "https://xecret.playxoft.com"
 XECRET_ROOT_KEY_VERSION = "1"
-# Not a secret — it is the `aud` claim an ID token must carry, and is
-# embedded in every client bundle anyway (see bindings.ts).
-FIREBASE_PROJECT_ID = "xecret-management"
+# The WorkOS *Production* environment's client id (see
+# docs/adr/0010-workos-as-identity-provider.md). Not a secret: it is in every
+# authorization URL a browser is sent to. It is stated here, per environment,
+# because it names WHICH WorkOS environment this deployment signs people in
+# against, and it has to agree with the WORKOS_API_KEY secret: Production's key
+# with this id, Staging's key with the Staging id. The key's format does not say
+# which environment issued it, so the pairing is checked by asking WorkOS:
+# `npm run phase:check-env:production` presents the key and this id together
+# and reads the answer. A key from one environment and a client id from the
+# other fails every sign-in in a way that reads like a code bug and is not. The redirect
+# URI is configured nowhere: it is derived from XECRET_PUBLIC_URL
+# (`server/workos.ts`), and must be registered in the WorkOS dashboard as
+# exactly https://xecret.playxoft.com/api/auth/callback.
+WORKOS_CLIENT_ID = "client_01M36CECX3Z66Q2FYY2FN8WG73"
 # Transactional mail. Neither of these is a credential: the address is stamped
 # on every message xecret sends and the name sits beside it in the inbox. The
 # token that authorises sending is not here — see the foot of this file.
@@ -151,19 +165,35 @@ simple = { limit = 3, period = 60 }
 # ── staging ─────────────────────────────────────────────────────────────────
 #
 # A stub: no routes and no bindings, so a deploy of it produces a Worker with no
-# database, no root key and no JWKS cache. `lib/site.ts` names
-# `scripts/deploy-web.sh <env>` in its error message, and `staging` is the only
-# other <env> — fill this in before pointing anyone at it.
+# database and no root key. `lib/site.ts` names `scripts/deploy-web.sh <env>` in
+# its error message, and `staging` is the only other <env> — fill this in before
+# pointing anyone at it.
 [env.staging]
 name = "xecret-staging"
 
 [env.staging.vars]
 XECRET_ENV = "staging"
 XECRET_PUBLIC_URL = "https://xecret-staging.playxoft.com"
+# The WorkOS *Staging* environment, paired with that environment's
+# WORKOS_API_KEY. Stated although the rest of this environment is a stub:
+# staging used to omit the identity provider's setting altogether, which left
+# it the one environment whose sign-in configuration nothing could check.
+# `scripts/deploy-web.sh` now refuses to build any environment that does not
+# name one.
+WORKOS_CLIENT_ID = "client_01M36CECEQ1FY9TA1F952FY958"
 
 # ────────────────────────────────────────────────────────────────────────────
 # NOT IN THIS FILE — credentials, and the two ways to hold them
 #
+#   WORKOS_API_KEY            authenticates every call to WorkOS, including the
+#                             code exchange that decides who a sign-in is.
+#                             `sk_…`, from the same WorkOS environment as the
+#                             WORKOS_CLIENT_ID var above — which its format
+#                             does not reveal; `npm run check:env` asks
+#                             WorkOS whether the two belong together
+#   WORKOS_COOKIE_PASSWORD    32+ characters; the MAC key for the sign-in state
+#                             cookie. Whoever holds it can complete a sign-in
+#                             in somebody else's browser
 #   ZEPTOMAIL_TOKEN           authorises sending as your domain
 #   DISCORD_CONTACT_WEBHOOK_URL  where the contact form posts; the token is a
 #                             path segment, so the whole URL is the credential
@@ -173,7 +203,11 @@ XECRET_PUBLIC_URL = "https://xecret-staging.playxoft.com"
 #
 # All are plain strings the Worker reads from `process.env`, so they can be set
 # per environment without a code change. They are deliberately not `vars` here:
-# this file is committed, and is on its way to a public repository.
+# this file is committed, and is on its way to a public repository. The two
+# WorkOS values are the only REQUIRED ones — without either, nobody can sign in,
+# and the sign-in routes send the browser to /sign-in?error=unavailable — and
+# like the rest they originate in Phase.dev, in the environment matching the one
+# being deployed.
 #
 # Set them with `wrangler secret put <NAME> --env <env>`, which is not merely
 # "more secure" — it is the only form that PERSISTS. The two mechanisms behave
@@ -207,9 +241,6 @@ XECRET_PUBLIC_URL = "https://xecret-staging.playxoft.com"
 #     must match the one read in apps/web/src/server/bindings.ts, and the value
 #     is the JSON version→key map documented in
 #     packages/core/src/crypto/key-provider.ts, produced by `npm run keygen`.
-#
-#   Firebase JWKS cache (ADR 0003)
-#     npx wrangler kv namespace create JWKS_CACHE
 #
 #   rate limiting (GA binding, no Redis — see system-architecture.md §6)
 #     No resource to create; the namespace_id values are chosen here.

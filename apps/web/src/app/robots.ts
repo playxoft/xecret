@@ -10,9 +10,11 @@ import { absoluteUrl, SITE_HOST } from '@/lib/site';
  * crawling them produces nothing but redirects and 401s, and a site whose index
  * is mostly error pages ranks worse for the pages that do matter.
  *
- * Single-use links (`/invite`, `/reset-password`, `/cli/authorize`) are
- * disallowed for the same reason plus one more: those URLs land in email, and
- * email lands in places that fetch every link in it.
+ * Single-use links (`/invite`, `/cli/authorize`) are disallowed for the same
+ * reason plus one more: those URLs land in email, and email lands in places
+ * that fetch every link in it. `/reset-password` stays listed although the page
+ * is gone: Firebase reset emails still in inboxes point there, and it now
+ * redirects to the sign-in page with the old one-time code still in the query.
  *
  * `host` names which of the deployment's hostnames is the real one. It still
  * earns its place now that `xecret.playxoft.com` is settled: a Worker answers

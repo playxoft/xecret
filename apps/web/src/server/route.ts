@@ -127,10 +127,10 @@ type NextRouteArgs<Params> = { params?: Promise<Params> | undefined } | undefine
 /**
  * Wraps a handler that does not require a credential.
  *
- * Used by `POST /api/auth/session` — which authenticates by verifying a Firebase
- * ID token rather than by presenting an xecret credential — and by the logout
- * route, which must succeed even when the session it is clearing is already
- * invalid.
+ * Used by the sign-in routes — `GET /api/auth/login` and `GET /api/auth/callback`,
+ * which *establish* authentication rather than presenting it — and by the
+ * logout route, which must succeed even when the session it is clearing is
+ * already invalid.
  */
 export function publicRoute<Params = Record<string, never>>(
   handler: Handler<PublicRouteContext<Params>>,
@@ -241,18 +241,25 @@ export interface AuthenticatedRouteOptions {
    * **Deny by default.** The option exists at all only because a locked user
    * must still be able to reach the handful of endpoints that get them unlocked
    * — otherwise the lock screen cannot function and the account is bricked until
-   * the session expires. Exactly six routes opt out, and each says why:
+   * the session expires. These routes opt out, and each says why:
    *
    *  - `GET /api/auth/me` — the dashboard has to learn *that* it is locked, and
    *    whether a vault exists at all, before it can render anything.
    *  - `GET` and `POST /api/auth/vault` — reading the wraps an unlock attempt
    *    needs, and running the setup ceremony, both happen from a locked session
    *    by definition; a new session has never been unlocked.
-   *  - `POST /api/auth/vault/unlock` — the unlock itself.
+   *  - `POST /api/auth/vault/unlock` and `POST /api/auth/vault/pin/attempt` —
+   *    the unlock itself, by passphrase or by device PIN.
    *  - `POST /api/auth/vault/recovery` and `…/recovery/complete` — the way back
    *    in for somebody who has forgotten the passphrase entirely.
-   *  - `DELETE /api/auth/session` — signing out must never require unlocking
-   *    first. "I cannot remember my passphrase, let me just sign out" has to work.
+   *  - `POST /api/auth/vault/reset`, and the re-authentication in front of it —
+   *    `GET /api/auth/reauth`, `POST …/reauth/start` and `…/reauth/verify` — the
+   *    honest dead end for somebody who has lost the passphrase *and* every
+   *    recovery code. Guarded instead by a fresh sign-in and an emailed code
+   *    (`server/reauth-service.ts`), because the lock cannot guard it.
+   *  - `DELETE /api/auth/session` — not an `authenticatedRoute` at all, but the
+   *    same rule: signing out must never require unlocking first. "I cannot
+   *    remember my passphrase, let me just sign out" has to work.
    *
    * Any other route reaching for this is a bug: the gate is what makes the lock
    * a security control rather than a screen the client chooses to draw.

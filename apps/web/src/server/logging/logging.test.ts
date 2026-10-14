@@ -90,9 +90,19 @@ describe('request descriptions', () => {
   });
 
   it('describes the account and organisation routes', () => {
-    expect(sentence('POST', '/api/auth/session', 200)).toBe(
-      'Signed the user in and issued a new session',
+    expect(sentence('GET', '/api/auth/login', 307)).toBe(
+      'Sent the browser to the identity provider to sign in',
     );
+    expect(sentence('GET', '/api/auth/callback', 303)).toBe(
+      'Completed a sign-in callback from the identity provider',
+    );
+    expect(sentence('POST', '/api/auth/reauth/start', 204)).toBe(
+      'Emailed a re-authentication code for the vault reset',
+    );
+    expect(sentence('POST', '/api/auth/reauth/verify', 200)).toBe(
+      'Verified an emailed re-authentication code for the vault reset',
+    );
+    expect(sentence('POST', '/api/auth/vault/reset', 200)).toBe("Reset the account's vault");
     expect(sentence('DELETE', '/api/auth/session', 204)).toBe(
       'Signed the user out and revoked their session',
     );
@@ -114,7 +124,7 @@ describe('request descriptions', () => {
     expect(
       describeRequest('GET', '/api/orgs/acme/projects/api/environments/production/pull').event,
     ).toBe('secret.pull');
-    expect(describeRequest('POST', '/api/auth/session').event).toBe('auth.login');
+    expect(describeRequest('GET', '/api/auth/callback').event).toBe('auth.callback');
   });
 
   // A route with no entry is a gap in the mapping, not a reason to say nothing.

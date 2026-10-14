@@ -11,10 +11,10 @@
  * Postgres. This runs against *the* database, over the production driver, and
  * is the code that finds out.
  *
- * It covers the path a first sign-in actually takes, and the provider migration
- * after it: the live Firebase sign-in creates the user, the same person's first
- * WorkOS sign-in adopts that account by its verified address, and a WorkOS-only
- * sign-up is created beside it. Then it bootstraps an organisation and its
+ * It covers the provider migration a sign-in actually takes: a Firebase-era
+ * account (as every pre-WorkOS row looks), the same person's first WorkOS
+ * sign-in adopting that account by its verified address, and a WorkOS-only
+ * sign-up created beside it. Then it bootstraps an organisation and its
  * master key, makes a project and an environment, stores an encrypted secret
  * and reads it back — plus the properties the design rests on and that no unit
  * test can reach:
@@ -22,7 +22,12 @@
  *  - a ciphertext moved to another row fails to decrypt (the AAD binding);
  *  - the `value_type` CHECK refuses a write that bypassed the application;
  *  - a session is authenticated and **locked** the moment it is created, and
- *    locking it again clears the unlock without revoking the session.
+ *    locking it again clears the unlock without revoking the session;
+ *  - the vault reset's re-authentication works on the real table, as the
+ *    role the application runs as: a fresh sign-in recorded, its guesses
+ *    capped under the users row lock, and a one-time proof spent exactly once.
+ *    (Migration 0019 first shipped that table without the application's
+ *    grant, which no test running as the superuser could see.)
  *
  * ## Nothing is left behind
  *
@@ -35,23 +40,29 @@
 import { sql } from 'drizzle-orm';
 import { createDatabase } from '../packages/db/src/client.ts';
 import {
+  consumeReauthProof,
   createEnvironment,
   createProject,
   createSecret,
   createSession,
   createVault,
+  findFreshSignIn,
   findSecretByName,
   findSessionByTokenHash,
   findVaultKeys,
+  issueReauthProof,
   loadEnvironmentKeyChain,
   loadVault,
   lockSessions,
+  markReauthCodeSent,
   markSessionUnlocked,
   provisionOrganization,
+  recordFreshSignIn,
+  reserveReauthGuess,
   updateSecretMetadata,
-  upsertUserFromFirebaseIdentity,
   upsertUserFromWorkosIdentity,
 } from '../packages/db/src/repositories/index.ts';
+import { users } from '../packages/db/src/schema/index.ts';
 import { EnvelopeService, keyProviderFromEnv } from '../packages/core/src/crypto/index.ts';
 import { DecryptionError } from '../packages/core/src/crypto/types.ts';
 import {
@@ -119,18 +130,27 @@ async function main(): Promise<void> {
       const authTime = Math.floor(Date.now() / 1000);
       const email = `smoke-${uuidv7()}@example.invalid`;
 
-      // The live path: `POST /api/auth/session`'s upsert, keyed on and writing
-      // `firebase_uid`, exactly as production creates an account today.
+      // A Firebase-era account, exactly as every pre-WorkOS row looks: a
+      // `firebase_uid` and no WorkOS id. Written directly, because the
+      // Firebase sign-in that used to create these is gone (ADR 0010) — the
+      // rows it left behind are what the migration below has to carry across.
       const firebaseUid = `smoke${uuidv7().replaceAll('-', '')}`;
-      const user = await upsertUserFromFirebaseIdentity(tx, {
-        subject: firebaseUid,
-        email,
-        emailVerified: true,
-        displayName: 'Smoke Test',
-        authTime,
-      });
+      const now = new Date();
+      const [user] = await tx
+        .insert(users)
+        .values({
+          id: uuidv7(),
+          firebaseUid,
+          email,
+          emailVerified: true,
+          displayName: 'Smoke Test',
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+      if (!user) throw new Error('the Firebase-era account was not written');
       step(
-        'user created by the Firebase sign-in',
+        'Firebase-era account in place',
         user.firebaseUid === firebaseUid && user.workosUserId === null,
         `id ${user.id.slice(0, 8)}…, firebase_uid only`,
       );
@@ -505,6 +525,62 @@ async function main(): Promise<void> {
         'locking does not sign the user out',
         relocked !== null && relocked.vaultUnlockedAt === null && relocked.revokedAt === null,
         'vault_unlocked_at cleared, session still live',
+      );
+
+      // The vault reset's two locks, as the server drives them. The numbers
+      // are the route's own (REAUTH_MAX_CODE_ATTEMPTS and the per-account
+      // budget); what is under test is the table and the statements.
+      const signedInAt = new Date();
+      const freshSince = new Date(signedInAt.getTime() - 60_000);
+      await recordFreshSignIn(tx, { userId: user.id, sessionId: session.id, at: signedInAt });
+      const lockOne = await findFreshSignIn(tx, {
+        userId: user.id,
+        sessionId: session.id,
+        signedInSince: freshSince,
+        maxAttempts: 5,
+      });
+      step(
+        'a fresh sign-in is recorded against its session',
+        lockOne !== null && lockOne.codeAttempts === 0,
+        'reauthentications written and read back as the application role',
+      );
+
+      if (lockOne !== null) await markReauthCodeSent(tx, lockOne.id, signedInAt);
+      const reservations = [];
+      for (let guess = 0; guess < 6; guess++) {
+        reservations.push(
+          await reserveReauthGuess(tx, {
+            userId: user.id,
+            sessionId: session.id,
+            signedInSince: freshSince,
+            maxAttempts: 5,
+            maxUserAttempts: 10,
+            userWindowSince: freshSince,
+          }),
+        );
+      }
+      step(
+        'the emailed-code guesses are capped',
+        reservations.slice(0, 5).every((reservation) => reservation.ok) &&
+          reservations[5]?.ok === false,
+        'five reserved under the users row lock, the sixth refused before WorkOS would be asked',
+      );
+
+      const { hash: proofHash } = await generateToken('reauthProof');
+      const issued = await issueReauthProof(tx, {
+        userId: user.id,
+        sessionId: session.id,
+        signedInSince: freshSince,
+        proofHash,
+        expiresAt: new Date(signedInAt.getTime() + 5 * 60_000),
+      });
+      const spend = { userId: user.id, sessionId: session.id, proofHash, now: new Date() };
+      const spent = await consumeReauthProof(tx, spend);
+      const spentAgain = await consumeReauthProof(tx, spend);
+      step(
+        'a reset proof is spent exactly once',
+        issued && spent && !spentAgain,
+        'issued for this session, consumed, and refused the second time',
       );
 
       throw new Rollback();

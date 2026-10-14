@@ -2,8 +2,9 @@ import type { Metadata, Viewport } from 'next';
 import { Geist, Geist_Mono } from 'next/font/google';
 
 // Imported from their own modules rather than the barrels: a barrel makes
-// the root layout depend on every component in it, which is how the Firebase
-// SDK ends up in the bundle for a static marketing page.
+// the root layout depend on every component in it, which is how the dashboard
+// shell and the API client behind it end up in the bundle for a static
+// marketing page.
 import { ThemeProvider } from '@/components/layout/theme-provider';
 import { JsonLd } from '@/components/marketing/json-ld';
 import { Toaster } from '@/components/ui/toast';

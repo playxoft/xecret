@@ -2,20 +2,30 @@
 /**
  * Validates the deployment's configuration before anything depends on it.
  *
- *   phase run -- npx tsx scripts/check-env.ts
+ *   phase run --env Development -- npm run check:env     # local / staging values
+ *   phase run --env Production -- npm run check:env      # production's
+ *   … -- npm run check:env -- --offline                  # skip the one network call
+ *
+ * Run it under the environment you are about to deploy: it checks whatever
+ * values are in the shell, and `phase run` alone means `.phase.json`'s default,
+ * which is Development.
  *
  * Every check here corresponds to a misconfiguration that is silent until it is
  * expensive. A root key of the wrong length surfaces as a decryption failure on
- * a customer's request; a `FIREBASE_PROJECT_ID` that disagrees with the client
- * config surfaces as a 401 the user cannot act on and the operator cannot
- * explain. Both are two lines of arithmetic to catch here.
+ * a customer's request; a WorkOS cookie password a few characters short sends
+ * every sign-in to the sign-in page's "unavailable" error, which the user
+ * cannot act on and the operator has to trace back to a binding. Both are a
+ * line or two to catch here.
  *
  * It reads values but never prints them. Where a value must be shown to be
- * useful — a project id, a key version — it is one that is already public.
+ * useful — a client id, a key version — it is one that is already public.
+ *
+ * One check makes a network call: asking WorkOS whether the API key and the
+ * client id belong together (see `checkWorkosPairing`). `--offline` skips it.
  */
 
 import { parseRootKeyMaterial } from '../packages/core/src/crypto/key-provider.ts';
-import { parseFirebaseConfig } from '../apps/web/src/lib/firebase.ts';
+import { MIN_STATE_SECRET_LENGTH } from '../packages/core/src/auth/oauth-state.ts';
 
 interface Result {
   name: string;
@@ -70,59 +80,73 @@ function checkRootKeys(): void {
 }
 
 /**
- * The client config, checked by the same parser the browser uses.
+ * The identity provider, WorkOS (docs/adr/0010-workos-as-identity-provider.md).
  *
- * `parseFirebaseConfig` is imported rather than reimplemented so this script
- * cannot pass a value the application then refuses — including the `authDomain`
- * hostname check, which is the one failure here that is otherwise completely
- * silent: a wildcard, a stray trailing space or a pasted `https://` prefix
- * leaves sign-in dead and every directive in `lib/csp.ts` looking reasonable.
+ * All three values are required: without any one of them nobody can sign in,
+ * and the sign-in routes send the browser to the sign-in page's "unavailable"
+ * error rather than guess. Shape is checked here because each one fails
+ * *later* otherwise — a malformed client id as a redirect AuthKit refuses, a
+ * short cookie password on the first sign-in, a key that is not a key as an
+ * outage that reads like WorkOS's.
  *
- * The domain is printed beside the project id because it is the value that ends
- * up inside `frame-src` and `connect-src`, and seeing it is how an operator
- * catches it pointing at the wrong project.
+ * Which WorkOS environment the key belongs to is not read from the key: WorkOS
+ * has issued `sk_test_…`, `sk_live_…` and plain `sk_…` keys, and this
+ * deployment's Production key is the last kind, so a prefix rule would warn on
+ * the correct production key or pass a wrong one. Whether the key and the
+ * client id *belong together* is asked of WorkOS instead —
+ * {@link checkWorkosPairing}.
  */
-function checkFirebase(): string | null {
-  const raw = required('NEXT_PUBLIC_FIREBASE_CONFIG');
-  if (raw === null) return null;
-
-  const parsed = parseFirebaseConfig(raw);
-  if ('problem' in parsed) {
-    check('NEXT_PUBLIC_FIREBASE_CONFIG', false, parsed.problem);
-    return null;
+function checkWorkos(): void {
+  const clientId = required('WORKOS_CLIENT_ID');
+  if (clientId !== null) {
+    const ok = /^client_[0-9A-Za-z]+$/.test(clientId);
+    // Printed when well-formed: it is in every authorization URL a browser is
+    // sent to, and seeing it is how an operator notices it names the wrong
+    // WorkOS environment. Not printed when malformed, which is when it is most
+    // likely to be something else pasted into the wrong field.
+    check(
+      'WORKOS_CLIENT_ID',
+      ok,
+      ok ? `"${clientId}"` : 'not a WorkOS client id — expected `client_` and letters and digits',
+    );
   }
 
-  check(
-    'NEXT_PUBLIC_FIREBASE_CONFIG',
-    true,
-    `project "${parsed.config.projectId}", auth domain "${parsed.config.authDomain}"`,
-  );
-  return parsed.config.projectId;
-}
+  const apiKey = required('WORKOS_API_KEY');
+  if (apiKey !== null) {
+    // `sk_` and nothing more — see above. Enough to tell a secret key from the
+    // client id or a publishable value pasted into the wrong field.
+    const ok = apiKey.startsWith('sk_');
+    check(
+      'WORKOS_API_KEY',
+      ok,
+      ok
+        ? 'set — whether it belongs with the client id is asked of WorkOS below'
+        : 'not a WorkOS secret key — expected `sk_…`',
+    );
+  }
 
-/**
- * The cross-check that motivated this script.
- *
- * `FIREBASE_PROJECT_ID` is what the Worker checks an ID token's `aud` claim
- * against. If it disagrees with the project the browser signs in to, every
- * login produces a valid token that the server correctly rejects — and the
- * user sees "Authentication required" with nothing in the UI to act on. The two
- * are deliberately separate variables (server trust vs client config), which is
- * exactly why they can drift.
- */
-function checkFirebaseAgreement(clientProjectId: string | null): void {
-  const serverProjectId = required('FIREBASE_PROJECT_ID');
-  if (serverProjectId === null || clientProjectId === null) return;
-
-  const agree = serverProjectId === clientProjectId;
-  check(
-    'FIREBASE_PROJECT_ID',
-    agree,
-    agree
-      ? `"${serverProjectId}" — matches the client config`
-      : `"${serverProjectId}" does NOT match the client config's "${clientProjectId}". ` +
-          'Every sign-in would be rejected.',
-  );
+  const cookiePassword = required('WORKOS_COOKIE_PASSWORD');
+  if (cookiePassword !== null) {
+    if (cookiePassword.length < MIN_STATE_SECRET_LENGTH) {
+      check(
+        'WORKOS_COOKIE_PASSWORD',
+        false,
+        `shorter than ${MIN_STATE_SECRET_LENGTH} characters — the sign-in routes refuse it`,
+      );
+    } else if (cookiePassword === apiKey) {
+      // Not a theoretical mistake: deriving this from the API key was once on
+      // the table. Two credentials that are one value are one credential: a
+      // leak of the key would also let its holder mint the state cookie that
+      // binds a sign-in to a browser.
+      check(
+        'WORKOS_COOKIE_PASSWORD',
+        false,
+        'the same value as WORKOS_API_KEY — it must be an independent random value',
+      );
+    } else {
+      check('WORKOS_COOKIE_PASSWORD', true, `set, ${MIN_STATE_SECRET_LENGTH}+ characters`);
+    }
+  }
 }
 
 function checkDatabase(): void {
@@ -300,26 +324,112 @@ function checkLogging(): void {
   );
 }
 
-checkDatabase();
-checkRootKeys();
-checkFirebaseAgreement(checkFirebase());
-checkEmail();
-checkLogging();
+/**
+ * Asks WorkOS whether the API key and the client id in this shell belong to the
+ * same WorkOS environment — the pairing a key's format cannot tell you.
+ *
+ * It presents a deliberately bogus authorization code with both. WorkOS checks
+ * the client credentials before the code: a matching pair gets as far as the
+ * code and answers `invalid_grant`; a key and a client id from different
+ * environments (or a revoked key) are refused as `invalid_client` / 401 before
+ * the code is looked at. Observed in all four Staging/Production pairings
+ * (PR #113). Nothing is created, and the code can never be valid.
+ *
+ * Anything else — no answer, a 5xx, a shape not seen before — fails the check
+ * with what came back, rather than passing a pairing nobody confirmed.
+ */
+async function checkWorkosPairing(): Promise<void> {
+  const clientId = process.env['WORKOS_CLIENT_ID'];
+  const apiKey = process.env['WORKOS_API_KEY'];
+  // The shape checks above already reported anything missing or malformed.
+  if (
+    !clientId ||
+    !apiKey ||
+    !/^client_[0-9A-Za-z]+$/.test(clientId) ||
+    !apiKey.startsWith('sk_')
+  ) {
+    return;
+  }
 
-const width = Math.max(...results.map((r) => r.name.length));
-const failed = results.filter((r) => !r.ok).length;
+  const name = 'WORKOS key ↔ client';
+  let status: number;
+  let error: string | undefined;
+  try {
+    const response = await fetch('https://api.workos.com/user_management/authenticate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        client_id: clientId,
+        client_secret: apiKey,
+        grant_type: 'authorization_code',
+        code: 'xecret-check-env-pairing-probe',
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    status = response.status;
+    const body = (await response.json().catch(() => ({}))) as { error?: unknown; code?: unknown };
+    error =
+      typeof body.error === 'string'
+        ? body.error
+        : typeof body.code === 'string'
+          ? body.code
+          : undefined;
+  } catch (cause) {
+    check(
+      name,
+      false,
+      `could not ask WorkOS (${cause instanceof Error ? cause.message : String(cause)}) — rerun ` +
+        'with network access, or with --offline to skip this one check',
+    );
+    return;
+  }
 
-console.warn('');
-for (const result of results) {
-  console.warn(`${result.ok ? '✅' : '❌'}  ${result.name.padEnd(width)}  ${result.detail}`);
+  if (error === 'invalid_grant') {
+    check(name, true, `the key belongs to ${clientId}'s WorkOS environment`);
+  } else if (error === 'invalid_client' || status === 401) {
+    check(
+      name,
+      false,
+      `WorkOS refused this key for ${clientId} — the API key and the client id are from ` +
+        'different WorkOS environments, or the key was revoked',
+    );
+  } else {
+    check(
+      name,
+      false,
+      `unexpected answer from WorkOS (HTTP ${status}, ${error ?? 'no error code'})`,
+    );
+  }
 }
 
-if (failed > 0) {
-  console.error(
-    `\n${failed} problem(s). See .env.example for what each variable is, and ` +
-      'docs/operations/database-setup.md for the database ones.\n',
-  );
-  process.exit(1);
+async function main(): Promise<void> {
+  checkDatabase();
+  checkRootKeys();
+  checkWorkos();
+  if (!process.argv.includes('--offline')) await checkWorkosPairing();
+  checkEmail();
+  checkLogging();
+
+  const width = Math.max(...results.map((r) => r.name.length));
+  const failed = results.filter((r) => !r.ok).length;
+
+  console.warn('');
+  for (const result of results) {
+    console.warn(`${result.ok ? '✅' : '❌'}  ${result.name.padEnd(width)}  ${result.detail}`);
+  }
+
+  if (failed > 0) {
+    console.error(
+      `\n${failed} problem(s). See .env.example for what each variable is, and ` +
+        'docs/operations/database-setup.md for the database ones.\n',
+    );
+    process.exit(1);
+  }
+
+  console.warn('\nConfiguration is valid.\n');
 }
 
-console.warn('\nConfiguration is valid.\n');
+// Called rather than awaited at the top level: the root package.json has no
+// `"type": "module"`, so tsx transpiles to CJS, where top-level await is a
+// syntax error.
+void main();

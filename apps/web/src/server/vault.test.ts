@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ZodMiniType } from 'zod/mini';
 import {
   DEFAULT_AUTO_LOCK_MINUTES,
-  IdentityVerificationError,
   MAX_AUTO_LOCK_MINUTES,
   MIN_AUTO_LOCK_MINUTES,
   VAULT_FREE_ATTEMPTS,
@@ -64,7 +63,6 @@ const repo = vi.hoisted(() => ({
   listEnvironmentsForOrganization: vi.fn(),
   loadAuthorizationContext: vi.fn(),
   queuePendingKeyGrant: vi.fn(),
-  findUserByFirebaseUid: vi.fn(),
 }));
 
 /**
@@ -77,22 +75,6 @@ const repo = vi.hoisted(() => ({
 vi.mock('@xecret/db/repositories', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@xecret/db/repositories')>()),
   ...repo,
-}));
-
-/**
- * Only the token verifier is replaced.
- *
- * The reset's re-authentication gate is *about* the identity provider, and what
- * is under test is what the service does with a verified claim set — whose token
- * it is and how recently its holder actually authenticated. Verifying a real
- * Firebase signature is `firebase-auth-cloudflare-workers`' job and is exercised
- * against a stubbed verifier in `server.test.ts`.
- */
-const firebase = vi.hoisted(() => ({ verify: vi.fn() }));
-
-vi.mock('./firebase', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./firebase')>()),
-  firebaseIdentityProvider: () => ({ verify: firebase.verify }),
 }));
 
 const { RepositoryError } = await import('@xecret/db/repositories');
@@ -305,8 +287,8 @@ describe('the remaining request schemas', () => {
     expect(rejected(vaultCreateSchema, withoutUk).code).toBe('validation_failed');
   });
 
-  it('takes a typed confirmation and a re-authentication token on reset, and nothing else', () => {
-    const body = { confirm: VAULT_RESET_CONFIRMATION, idToken: 'a-fresh-id-token' };
+  it('takes a typed confirmation and a re-authentication proof on reset, and nothing else', () => {
+    const body = { confirm: VAULT_RESET_CONFIRMATION, reauthProof: 'xrp_live_proof' };
     expect(parseWith(vaultResetSchema, body)).toEqual(body);
 
     expect(rejected(vaultResetSchema, {}).code).toBe('validation_failed');
@@ -323,11 +305,17 @@ describe('the remaining request schemas', () => {
     );
   });
 
-  it('bounds the token at the same 8192 the session route applies', () => {
+  it('bounds the proof, and no longer accepts the retired Firebase ID token', () => {
     expect(
       rejected(vaultResetSchema, {
         confirm: VAULT_RESET_CONFIRMATION,
-        idToken: 'x'.repeat(8193),
+        reauthProof: 'x'.repeat(129),
+      }).code,
+    ).toBe('validation_failed');
+    expect(
+      rejected(vaultResetSchema, {
+        confirm: VAULT_RESET_CONFIRMATION,
+        idToken: 'a-fresh-id-token',
       }).code,
     ).toBe('validation_failed');
   });
@@ -972,121 +960,9 @@ describe('the vault service', () => {
       await expect(service.resetVault(services(), userPrincipal())).resolves.toBe(false);
     });
 
-    /**
-     * The second credential the reset now demands.
-     *
-     * ── The finding ──
-     * The route is `allowLocked` by necessity — every caller of it is locked out
-     * by definition — so the vault lock that stands in front of every other
-     * destructive act cannot stand in front of this one. What was left was a
-     * typed phrase that is printed on the screen above the field. Against a
-     * mistake that is exactly right; against somebody holding a stolen session
-     * cookie it is worth nothing, and what they could reach with it was the one
-     * irreversible, unrecoverable act in the product.
-     */
-    describe('the re-authentication gate', () => {
-      const NOW = new Date('2026-03-01T12:00:00Z');
-      const authTime = (secondsAgo: number) => Math.floor(NOW.getTime() / 1000) - secondsAgo;
-
-      function verifies(identity: Record<string, unknown>) {
-        firebase.verify.mockResolvedValue({
-          subject: 'firebase-uid-1',
-          email: 'nitheesh@playxoft.com',
-          emailVerified: true,
-          authTime: authTime(30),
-          ...identity,
-        });
-      }
-
-      async function refusal(idToken = 'a-token'): Promise<ApiError> {
-        let thrown: unknown;
-        try {
-          await service.assertRecentAccountOwner(services(), userPrincipal(), idToken, NOW);
-        } catch (cause) {
-          thrown = cause;
-        }
-        expect(thrown).toBeInstanceOf(ApiErrorClass);
-        return thrown as ApiError;
-      }
-
-      it('accepts a token for this account, minted moments ago', async () => {
-        verifies({});
-        repo.findUserByFirebaseUid.mockResolvedValue({ id: USER_ID });
-
-        await expect(
-          service.assertRecentAccountOwner(services(), userPrincipal(), 'a-token', NOW),
-        ).resolves.toBeUndefined();
-      });
-
-      it('refuses a token that belongs to another account', async () => {
-        // Resolved through `firebase_uid`, not through the email: an address can
-        // be changed at the provider and two accounts can share one over time,
-        // whereas the uid is the identity this system is keyed by.
-        verifies({});
-        repo.findUserByFirebaseUid.mockResolvedValue({ id: uuidv7() });
-
-        expect((await refusal()).code).toBe('unauthenticated');
-      });
-
-      it('refuses a token whose subject resolves to no account at all', async () => {
-        verifies({});
-        repo.findUserByFirebaseUid.mockResolvedValue(null);
-
-        expect((await refusal()).code).toBe('unauthenticated');
-      });
-
-      it('refuses a token whose holder authenticated too long ago', async () => {
-        // The claim checked is `auth_time`, not `iat`. A refresh token mints a
-        // fresh ID token every hour with nobody at the keyboard, so an `iat`
-        // check would be satisfied by exactly the idle browser an attacker stole.
-        verifies({ authTime: authTime(6 * 60) });
-        repo.findUserByFirebaseUid.mockResolvedValue({ id: USER_ID });
-
-        expect((await refusal()).code).toBe('unauthenticated');
-      });
-
-      it('refuses a token with no auth_time, which fails closed as the distant past', async () => {
-        verifies({ authTime: 0 });
-        repo.findUserByFirebaseUid.mockResolvedValue({ id: USER_ID });
-
-        expect((await refusal()).code).toBe('unauthenticated');
-      });
-
-      it('refuses a token dated in the future beyond the tolerated skew', async () => {
-        verifies({ authTime: authTime(-3600) });
-        repo.findUserByFirebaseUid.mockResolvedValue({ id: USER_ID });
-
-        expect((await refusal()).code).toBe('unauthenticated');
-      });
-
-      it('refuses a token the provider would not verify', async () => {
-        firebase.verify.mockRejectedValue(new IdentityVerificationError('token-expired'));
-
-        expect((await refusal()).code).toBe('unauthenticated');
-      });
-
-      it('gives the same message whatever failed', async () => {
-        // Naming which part was wrong tells an attacker which part of a forged
-        // token to fix next — the rule `POST /api/auth/session` already keeps.
-        verifies({});
-        repo.findUserByFirebaseUid.mockResolvedValue({ id: uuidv7() });
-        const wrongAccount = await refusal();
-
-        verifies({ authTime: 0 });
-        repo.findUserByFirebaseUid.mockResolvedValue({ id: USER_ID });
-        const tooOld = await refusal();
-
-        expect(tooOld.message).toBe(wrongAccount.message);
-      });
-
-      it('never reaches the database when the token does not verify', async () => {
-        firebase.verify.mockRejectedValue(new IdentityVerificationError('invalid-token'));
-
-        await refusal();
-
-        expect(repo.findUserByFirebaseUid).not.toHaveBeenCalled();
-      });
-    });
+    // The second credential the reset demands — a forced fresh sign-in, then
+    // an emailed code, spent as a one-time proof — has its own suite against a
+    // real database: `reauth.test.ts`.
 
     it('needs no verifier, which is the entire point', async () => {
       // Every caller of this path has lost their passphrase and every recovery

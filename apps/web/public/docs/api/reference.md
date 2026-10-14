@@ -3,7 +3,7 @@ title: API endpoint reference
 navTitle: Endpoint reference
 description: Every HTTP endpoint — auth, organisations, projects, environments, secrets, bulk read, import and export, members, tokens and the audit log.
 keywords: [xecret api endpoints, secrets rest endpoints, pull endpoint, audit api, members api, api reference]
-updated: 2026-08-17
+updated: 2026-10-12
 ---
 
 Every route, grouped the way you will look for them. Paths are relative to
@@ -31,8 +31,8 @@ check is the one request made by someone holding a hostname and nothing else.
 }
 ```
 
-The only unauthenticated endpoint that answers a `GET`, and the only one that
-touches no database. Use it to check what a deployment is running before
+The only unauthenticated `GET` that answers with data rather than a sign-in
+redirect, and the only endpoint that touches no database. Use it to check what a deployment is running before
 reporting a bug against it, and to watch a deploy roll out.
 
 `commit` is `git describe --always --dirty`, so a build made from a modified
@@ -40,14 +40,15 @@ tree says `a1b2c3d-dirty`. Both `commit` and `builtAt` read `unknown` on a build
 that did not come from `scripts/deploy-web.sh` — a local `next build`, or CI.
 
 It reports the build, never the install: no environment name, no bindings, no
-dependency versions, no Firebase or database detail. Those describe how one
+dependency versions, no identity-provider or database detail. Those describe how one
 deployment is configured, which is not public.
 
 ## Auth
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/auth/session` | Body `{ idToken }`. Verifies with the identity provider, creates the user on first sign-in, bootstraps a personal organisation, sets the session and CSRF cookies. |
+| `GET` | `/auth/login` | Starts a sign-in: sets a short-lived signed cookie and redirects (**307**) to the identity provider's hosted sign-in page. Optional `?next=` (a path on this site to land on afterwards), `?hint=sign-up`, `?org=<slug>` (start that organisation's single sign-on directly, if it has one). A link, not an API call. |
+| `GET` | `/auth/callback` | Where the identity provider sends the browser back. Checks the flow belongs to this browser, verifies the sign-in with the provider, creates the account on first sign-in, bootstraps a personal organisation, sets the session and CSRF cookies, and redirects (**303**) to `next`. |
 | `DELETE` | `/auth/session` | Signs out. Idempotent. |
 | `GET` | `/auth/me` | You, your organisations, your role in each, and the PIN state. |
 | `GET` `POST` | `/auth/pin` | Read the PIN state; set or change the PIN. Changing requires the current one. |
@@ -59,10 +60,27 @@ deployment is configured, which is not public.
 | `DELETE` | `/auth/sessions` | Sign out everywhere. Optional `?except=current`. |
 | `DELETE` | `/auth/account` | Deletes your account. Body `{ confirm: "<your email>" }`. Browser sessions only, PIN-gated. **409** if you are the only active owner of an organisation other people are in. |
 
-A failed `POST /auth/session` returns 401 with a **fixed** message for every
-cause — expired, wrong audience, bad signature, unverified email. The specific
-reason is logged and never returned: telling a caller which part of a forged
-token to fix is a gift.
+Signing in is a sequence of browser navigations, not an API call: nothing on
+this server accepts an identity-provider token, and there is no endpoint to post
+a password to. A refused sign-in redirects to `/sign-in?error=<code>`, which
+shows a fixed sentence for that code. The specific reason is logged and never
+shown: telling a caller which part of a forged request to fix is a gift.
+
+### Re-authentication for a vault reset
+
+Resetting a vault destroys it for good, so it asks for proof twice, in order: a
+fresh sign-in (`/auth/login?reauth=1`, which makes the provider ask for a
+credential even if it remembers you), then a one-time code emailed to you.
+Browser sessions only, and usable while the vault is locked — which is the
+point. A refused re-authentication is a **403**, never a 401, so it does not
+sign you out.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/auth/reauth` | Where this session's attempt stands: `{ signedIn, signedInUntil, codeSent, email }`. Sends nothing. |
+| `POST` | `/auth/reauth/start` | Emails the code. Only within 10 minutes of the fresh sign-in, and at most three times per sign-in (then **403**: sign in again). **204**. |
+| `POST` | `/auth/reauth/verify` | Body `{ code }` (six digits, from the email) — or, after a `{ mfaRequired: true, mfaToken }` answer, `{ totp, mfaToken }` with the code from your authenticator app. Returns `{ reauthProof, expiresAt }` — single-use, five minutes, good for this session only. Every guess counts: five per attempt, ten per account per day; past the daily limit, **429**. |
+| `POST` | `/auth/vault/reset` | Body `{ confirm: "reset my vault", reauthProof }`. Spends the proof, then destroys the vault. **This is not recovery** — nothing is decrypted or restored. |
 
 ## CLI authorization
 

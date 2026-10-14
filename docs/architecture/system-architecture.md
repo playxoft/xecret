@@ -27,20 +27,22 @@ they fit together.
                     │  ─────────────────────────────────────────── │
                     │  packages/core: crypto · authz · audit        │
                     │  Root KEK held as non-extractable CryptoKey   │
-                    └───┬────────────┬────────────┬────────────┬───┘
-                        │            │            │            │
-                 Hyperdrive       KV          Secrets      Rate Limit
-                        │            │         Store        binding
-                        ▼            ▼            ▼            ▼
-                ┌──────────────┐  JWKS      Root KEK      per-endpoint
-                │ Neon Postgres│  cache     (deploy-time  buckets
-                │  ciphertext  │            from Phase)
+                    └───┬───────────────────┬──────────────────┬───┘
+                        │                   │                  │
+                 Hyperdrive              Secrets           Rate Limit
+                        │                 Store             binding
+                        ▼                   ▼                  ▼
+                ┌──────────────┐        Root KEK          per-endpoint
+                │ Neon Postgres│        (deploy-time      buckets
+                │  ciphertext  │         from Phase)
                 │  + metadata  │
                 └──────────────┘
 ```
 
 External services touched **at deploy time only**: Phase.dev.
-External services touched **at login only**: Firebase (token verification, via cached JWKS).
+External services touched **at sign-in only**: WorkOS — one authenticated code exchange per
+sign-in, plus a read of the organisation's verified domains for an SSO sign-in. The vault
+reset's emailed code is the only other call, and only on that path.
 External services touched **on the secret-read path**: none.
 
 ---
@@ -76,26 +78,36 @@ already-issued CLI tokens.
 ### 3.1 Browser
 
 ```
-Firebase JS SDK (Google or email+password)  →  Firebase ID token
+GET /api/auth/login?next=…
+   ├─ validate next (same-origin path only)
+   ├─ Set-Cookie: __Host-xecret_oauth_state  (HMAC-signed: state, PKCE verifier, next,
+   │                                          purpose; HttpOnly; SameSite=Lax; 10 min)
+   └─ 307 → AuthKit hosted pages (password · Google · MFA · SSO)
                                                      │
-POST /api/auth/session  { idToken }  ────────────────┘
+GET /api/auth/callback?code=…&state=…  ◀─────────────┘
    │
-   ├─ verify RS256 against Google JWKS (firebase-auth-cloudflare-workers, JWKS in KV)
-   ├─ assert aud == FIREBASE_PROJECT_ID, iss, exp, email_verified
-   ├─ upsert user by firebase_uid (upsertUserFromFirebaseIdentity — never by email)
+   ├─ rate limit (IP); verify the state cookie (MAC, age, constant-time match); clear it
+   ├─ authenticateWithCode(code, code_verifier)  — one authenticated call to WorkOS
+   ├─ refuse impersonation · unverified email · SSO outside the org's verified domains
+   ├─ rate limit (IP + WorkOS user id)
+   ├─ link: workos_user_id → else the verified address → else create (upsertUserFromWorkosIdentity)
+   ├─ sso_required · just-in-time membership · personal organisation if none
    ├─ insert sessions row  (store SHA-256 of a 256-bit opaque token — never the token)
-   └─ Set-Cookie: __Host-xecret_session; HttpOnly; Secure; SameSite=Lax; Path=/
+   ├─ Set-Cookie: __Host-xecret_session; HttpOnly; Secure; SameSite=Lax; Path=/
+   └─ 303 → next
 ```
 
-The Firebase ID token is used exactly once and then discarded. See
-[ADR 0003](../adr/0003-firebase-as-identity-provider.md).
+The browser never holds a provider token. The authorization code is exchanged once, server to
+server, and the access and refresh tokens WorkOS returns with it are discarded unread. Every
+refusal is a 303 to `/sign-in?error=<code>`. See
+[ADR 0010](../adr/0010-workos-as-identity-provider.md), which supersedes the Firebase design of
+[ADR 0003](../adr/0003-firebase-as-identity-provider.md) and keeps its central decision: the
+provider proves who somebody is, once, and every session after that is ours.
 
-This path is being replaced by WorkOS AuthKit: a server-initiated redirect, an authorization
-code exchanged at `/api/auth/callback`, and the WorkOS linking pass
-(`upsertUserFromWorkosIdentity` — match `workos_user_id`, else adopt the account holding the
-same *verified* address, else create). The two upserts are separate functions on purpose: the
-Firebase one above keys only on `firebase_uid`, and neither may be handed the other's identity.
-Everything after the upsert — the session row, the cookie — is unchanged by the move.
+The linking pass is the one piece of logic that decides which account a returning person
+lands in: match `workos_user_id` (deleted accounts are refused, not skipped); else adopt the
+account holding the same **verified** address, under ASCII-only case folding; else create one.
+Everything after it — the session row, the cookie — is the same as it was under Firebase.
 
 ### 3.2 CLI — loopback + PKCE against *our* server
 
@@ -111,7 +123,8 @@ xecret login
 ```
 
 The one-time code is single-use, expires in 60 seconds, and is bound to the challenge.
-Firebase tokens are never used as CLI credentials. Nothing is ever printed to the terminal.
+Identity-provider tokens are never used as CLI credentials — none is ever kept. Nothing is
+ever printed to the terminal.
 
 ### 3.3 CI — service token
 
@@ -141,8 +154,8 @@ CLI ──GET /api/v1/secrets?project=…&environment=…──▶ Worker
 ```
 
 **Three database queries. Zero outgoing `fetch` calls.** The Root KEK is already in isolate
-memory; JWKS is not consulted (this is a Bearer token, not a Firebase token); Phase.dev is
-not involved.
+memory; the identity provider is not consulted (it is asked only at sign-in, and this is a
+Bearer token of ours); Phase.dev is not involved.
 
 This matters because a Worker invocation may only have **6 outgoing connections in flight**
 at once. Designs that call an external KMS per secret would queue and degrade precisely as a
@@ -174,7 +187,7 @@ Cloudflare's native rate-limit binding (GA) — no Redis, no database counters o
 
 | Bucket | Limit | Keyed on |
 |---|---|---|
-| Login / session create | strict | IP + email |
+| Sign-in callback | strict | IP, then IP + WorkOS user id |
 | CLI token exchange | strict | IP |
 | Invitation accept | strict | IP + token |
 | Secret read (interactive) | moderate | user |
@@ -210,7 +223,13 @@ binding exists. The script closes that gap by resolving the environment's `vars`
 exporting them into the build, which is what makes the origin in the HTML and the origin the
 Worker answers on the same string rather than two strings kept in step by hand.
 
-The account's Secrets Store entry and the Hyperdrive and KV resources are created once by
+Nothing about the identity provider reaches the build: sign-in is a server-initiated redirect,
+so the client bundle carries no provider configuration. `WORKOS_CLIENT_ID` is a per-environment
+var in `wrangler.toml`, which the script refuses to deploy without, and `WORKOS_API_KEY` and
+`WORKOS_COOKIE_PASSWORD` are Worker secrets that originate in Phase.dev. The redirect URI is
+derived from `XECRET_PUBLIC_URL` at runtime rather than configured.
+
+The account's Secrets Store entry and the Hyperdrive resource are created once by
 `scripts/deploy-bootstrap.sh`, not by a deploy — a deploy binds those resources and fails if
 they are absent. See [key recovery §3](../security/key-recovery.md) for why that separation is
 deliberate.
@@ -222,7 +241,7 @@ deliberate.
 | Failure | Effect | Recovery |
 |---|---|---|
 | Neon unavailable | API down; **CLI falls back to its encrypted local cache** with a loud warning | Neon failover; cache keeps developers working |
-| Firebase unavailable | New logins fail; existing sessions and all CLI/CI operations continue | Wait |
+| WorkOS unavailable | New sign-ins and vault resets fail, and the sign-in page says sign-in is unavailable; existing sessions and all CLI/CI operations continue | Wait |
 | Phase.dev unavailable | No effect on runtime; deploys blocked | Wait — see key-recovery §4.1 |
 | Cloudflare Secrets Store entry deleted | **Total outage** — nothing decryptable | Re-deploy from Phase.dev |
 | Root KEK lost | **Permanent, total data loss** | Escrow only — see [key-recovery](../security/key-recovery.md) |

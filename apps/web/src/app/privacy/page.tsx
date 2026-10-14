@@ -25,7 +25,7 @@ import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } fro
  * cookie names, the two `localStorage` keys — because "we collect certain
  * information to provide and improve our services" is not a disclosure. That
  * specificity is also the maintenance burden: change the session table or add a
- * third cookie and this page is wrong until it is edited.
+ * fourth cookie and this page is wrong until it is edited.
  */
 
 const TITLE = 'Privacy policy';
@@ -33,7 +33,7 @@ const TITLE = 'Privacy policy';
 const DESCRIPTION =
   'What xecret stores, what our encryption model does and does not protect, who else processes it, how long we keep it, and how to exercise your rights.';
 
-const UPDATED = '2026-09-26';
+const UPDATED = '2026-10-14';
 const EFFECTIVE = '2026-10-26';
 
 const CANONICAL = absoluteUrl('/privacy');
@@ -66,7 +66,7 @@ const SUMMARY = [
   'We hold your email address, the names of your organisations, projects, environments and secrets, the encrypted secret values themselves, and a log of who read or changed what.',
   'xecret can technically decrypt your secret values. Envelope encryption, decryption inside one request handler, and every decryption written to an append-only audit log. This is not a zero-knowledge product and we will not describe it as one.',
   'Secret names, structure and audit metadata are not encrypted the way values are. Treat the name of a secret as something we can read.',
-  'We do not sell or share personal information. There is no advertising or analytics cookie on this site — the only two cookies are your session and a CSRF token.',
+  'We do not sell or share personal information. There is no advertising or analytics cookie on this site — the only cookies are your session, a CSRF token, and a ten-minute one that protects a sign-in in progress.',
   'You can export everything with the CLI and delete your own account. If you self-host, none of this is us: the operator of that deployment writes their own policy.',
 ] as const;
 
@@ -99,11 +99,14 @@ const SECTIONS: readonly LegalSection[] = [
       [
         <>
           <strong className="text-fg font-medium">Account identity.</strong> Your email address,
-          whether it has been verified, and the identifier Firebase issues for your account. If you
-          sign in with Google, that includes the Google account identifier and the display name and
-          avatar URL Google returns. We never receive your Google password, and we never see a
-          password you set through Firebase: Firebase verifies who you are once, and xecret issues
-          its own session afterwards.
+          whether it has been verified, and the identifier WorkOS issues for your account. If WorkOS
+          holds a name or a profile picture for you — as it does when you sign in with Google, which
+          supplies both — we receive the name and the picture&rsquo;s URL too. We never see your
+          password, and never receive your Google password: a password is entered on a sign-in page
+          hosted by WorkOS, or on Google&rsquo;s own for a Google account, WorkOS verifies who you
+          are once, and xecret issues its own session afterwards. Accounts created before we moved
+          to WorkOS also still carry the identifier our previous identity provider, Firebase, issued
+          them.
         </>,
         <>
           <strong className="text-fg font-medium">Structure.</strong> The names and slugs of your
@@ -133,7 +136,12 @@ const SECTIONS: readonly LegalSection[] = [
           <strong className="text-fg font-medium">Sessions and devices.</strong> For each browser
           session: its IP address, its user agent, when it was created, when it was last seen, when
           it expires, and when its PIN was last accepted. The session token itself is stored only as
-          a hash, so a database dump yields hashes rather than usable sessions.
+          a hash, so a database dump yields hashes rather than usable sessions. If you reset your
+          vault, the session you signed in again with also records when that sign-in happened, when
+          a code was last emailed and how many were requested, and how many codes were tried &mdash;
+          never a code itself, and the proof it leads to only as a hash. That record belongs to the
+          session and is removed with it; it stops counting for anything ten minutes after the
+          sign-in.
         </>,
         <>
           <strong className="text-fg font-medium">Token metadata.</strong> For each CLI or service
@@ -155,8 +163,11 @@ const SECTIONS: readonly LegalSection[] = [
         </>,
         <>
           <strong className="text-fg font-medium">Mail we send.</strong> A PIN reset link, and
-          organisation invitations to the address you type. That is the whole of it: no newsletter,
-          no product marketing, no tracking pixel.
+          organisation invitations to the address you type. WorkOS also sends, on our behalf, the
+          mail that belongs to signing in: a message to verify your email address, a password reset
+          link when you ask for one, a one-time sign-in code if you choose to sign in by email, and
+          the one-time code that confirms a vault reset. That is the whole of it: no newsletter, no
+          product marketing, and no tracking pixel in the mail we send ourselves.
         </>,
       ],
       'There is no analytics on this site. No page-view tracker, no session recorder, no advertising pixel, no fingerprinting script. If that ever changes, this paragraph is the first thing that changes with it.',
@@ -234,9 +245,12 @@ const SECTIONS: readonly LegalSection[] = [
           that holds everything in section 2. A self-hosted deployment can use any PostgreSQL.
         </>,
         <>
-          <strong className="text-fg font-medium">Google (Firebase Authentication)</strong> —
-          identity only. It verifies who you are; xecret issues its own session, and the Firebase
-          admin SDK does not run anywhere in this product.
+          <strong className="text-fg font-medium">WorkOS, Inc.</strong> — identity only. It hosts
+          the sign-in page, checks your password if you use one, and verifies who you are, so it
+          sees your email address, your name and your sign-in events, including the IP address and
+          browser each one came from. It also sends the sign-in mail listed in section 2. It never
+          receives a secret or anything else you store in xecret. Once it has verified you, xecret
+          issues its own session and keeps none of the tokens WorkOS issues.
         </>,
         <>
           <strong className="text-fg font-medium">ZeptoMail (Zoho)</strong> — transactional email:
@@ -365,7 +379,7 @@ const SECTIONS: readonly LegalSection[] = [
     id: 'cookies',
     heading: 'Cookies and browser storage',
     paragraphs: [
-      'Two cookies, both strictly necessary, neither of them a tracker:',
+      'Three cookies, all strictly necessary, none of them a tracker:',
       [
         <>
           <code className="text-fg font-mono text-[0.9em]">__Host-xecret_session</code> — your
@@ -377,7 +391,15 @@ const SECTIONS: readonly LegalSection[] = [
           site&rsquo;s own JavaScript reads and echoes back, so a form on somebody else&rsquo;s site
           cannot make a request as you. Same lifetime as the session.
         </>,
+        <>
+          <code className="text-fg font-mono text-[0.9em]">__Host-xecret_oauth_state</code> — set
+          when you leave for the sign-in page and cleared when you come back, so that a sign-in can
+          only be completed in the browser that started it. HttpOnly, secure, signed, and valid for
+          ten minutes. It holds the one-time values that tie the sign-in to your browser and the
+          page to return you to.
+        </>,
       ],
+      'The sign-in page itself is served by WorkOS, and whatever it stores in your browser is governed by WorkOS’s own policy rather than this one.',
       <>
         Two preferences live in <code className="text-fg font-mono text-[0.9em]">localStorage</code>{' '}
         on your own device and are never sent to us:{' '}

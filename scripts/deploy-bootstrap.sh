@@ -10,11 +10,15 @@
 #   2. The XECRET_ROOT_KEYS secret in the account's default Secrets Store —
 #      value piped on stdin, never in argv (ADR 0002: Phase.dev is the source
 #      of truth, Cloudflare serves the runtime copy).
-#   3. KV namespace JWKS_CACHE — Google's signing keys, so token verification
-#      costs no outgoing fetch.
+#
+# There used to be a third: the JWKS_CACHE KV namespace, which cached Google's
+# signing keys for Firebase token verification. Sign-in is WorkOS now
+# (docs/adr/0010-workos-as-identity-provider.md) and verifies no token, so
+# there is nothing to cache. An existing namespace can be deleted once a
+# rollback to Firebase is off the table.
 #
 # Idempotent: anything that already exists is reported, not recreated. Output
-# is the three ids to paste into apps/web/wrangler.toml — ids are plain
+# is the two ids to paste into apps/web/wrangler.toml — ids are plain
 # configuration, not secrets. No credential is ever printed.
 
 set -eu
@@ -50,31 +54,6 @@ else
       --name XECRET_ROOT_KEYS --scopes workers --remote >/dev/null
 fi
 
-# ── 3. JWKS cache ────────────────────────────────────────────────────────────
-KV_ID=$(npx wrangler kv namespace list 2>/dev/null | node -e '
-  let raw = "";
-  process.stdin.on("data", (c) => (raw += c));
-  process.stdin.on("end", () => {
-    const ns = JSON.parse(raw).find((n) => n.title.includes("JWKS_CACHE"));
-    if (ns) process.stdout.write(ns.id);
-  });
-')
-if [ -z "$KV_ID" ]; then
-  say "kv: creating JWKS_CACHE…"
-  npx wrangler kv namespace create JWKS_CACHE >/dev/null
-  KV_ID=$(npx wrangler kv namespace list 2>/dev/null | node -e '
-    let raw = "";
-    process.stdin.on("data", (c) => (raw += c));
-    process.stdin.on("end", () => {
-      const ns = JSON.parse(raw).find((n) => n.title.includes("JWKS_CACHE"));
-      if (ns) process.stdout.write(ns.id);
-    });
-  ')
-else
-  say "kv: JWKS_CACHE already exists"
-fi
-
 # ── Result — paste these into apps/web/wrangler.toml ───────────────────────
 echo "HYPERDRIVE_ID=$HYPERDRIVE_ID"
 echo "STORE_ID=$STORE_ID"
-echo "KV_ID=$KV_ID"

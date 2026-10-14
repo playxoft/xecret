@@ -2,10 +2,11 @@
 // listener, and opening the browser.
 //
 // The shape is RFC 8252 (OAuth for native apps) against xecret's own server —
-// never Firebase directly. The CLI holds the PKCE verifier in memory, the
-// consent screen mints a one-time code, and the exchange requires both. The
-// resulting token is the credential; the code and verifier are worthless the
-// moment the flow ends.
+// never the identity provider (WorkOS AuthKit, ADR 0010) directly, whose own
+// sign-in flow is the web app's business. The CLI holds the PKCE verifier in
+// memory, the consent screen mints a one-time code, and the exchange requires
+// both. The resulting token is the credential; the code and verifier are
+// worthless the moment the flow ends.
 package auth
 
 import (

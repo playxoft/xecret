@@ -40,20 +40,30 @@ declare global {
     XECRET_ROOT_KEY_VERSION?: string | undefined;
 
     /**
-     * Caches Google's Firebase signing keys (JWKS).
-     *
-     * Without it, verifying an ID token costs an outgoing fetch — spending one
-     * of six connections on the login path, on every cold isolate.
+     * The WorkOS application's client id (`client_…`). Not a secret — it is in
+     * every authorization URL a browser is sent to — but it names *which*
+     * WorkOS environment this deployment signs people in against, so it is
+     * stated per environment in `wrangler.toml` and must agree with the API key
+     * below. A Staging key with a Production client id fails in a way that looks
+     * like a code bug and is not.
      */
-    JWKS_CACHE?: KVNamespace;
+    WORKOS_CLIENT_ID?: string | undefined;
 
     /**
-     * Firebase project id. Not a secret: it is embedded in every client bundle.
-     * It is still required server-side, because it is the `aud` claim an ID
-     * token must carry, and skipping that check would accept a token minted for
-     * a different Firebase project.
+     * The WorkOS secret key (`sk_…`). A credential: it authenticates every call
+     * this server makes to WorkOS, including the code exchange that decides who
+     * a sign-in is. Phase.dev → Worker secret; never in `wrangler.toml`.
      */
-    FIREBASE_PROJECT_ID?: string | undefined;
+    WORKOS_API_KEY?: string | undefined;
+
+    /**
+     * Key material for the sign-in state cookie's MAC (`@xecret/core/auth`
+     * `oauth-state.ts`), at least 32 characters. A credential: whoever holds it
+     * can mint a state cookie and so complete a sign-in in somebody else's
+     * browser. The name is AuthKit's convention for the same purpose; nothing
+     * here seals a WorkOS session with it.
+     */
+    WORKOS_COOKIE_PASSWORD?: string | undefined;
 
     /**
      * Direct database URL, for local development and self-hosters without
@@ -205,7 +215,9 @@ export function connectionString(env: Bindings): string {
 const PROCESS_SUPPLIED = [
   'DATABASE_URL',
   'DISCORD_CONTACT_WEBHOOK_URL',
-  'FIREBASE_PROJECT_ID',
+  'WORKOS_API_KEY',
+  'WORKOS_CLIENT_ID',
+  'WORKOS_COOKIE_PASSWORD',
   'XECRET_ROOT_KEY_VERSION',
   'ZEPTOMAIL_TOKEN',
   'ZEPTOMAIL_FROM_ADDRESS',
@@ -226,8 +238,8 @@ const PROCESS_SUPPLIED = [
  * the identical configuration works in every script.
  *
  * Done once, over a list, rather than at each call site: the first version of
- * this fixed only `DATABASE_URL`, and the next request failed on
- * `FIREBASE_PROJECT_ID` with the same message for the same reason. A per-value
+ * this fixed only `DATABASE_URL`, and the next request failed on the identity
+ * provider's project id with the same message for the same reason. A per-value
  * fix guarantees a per-value bug.
  *
  * **A binding always wins.** In production the values below arrive from

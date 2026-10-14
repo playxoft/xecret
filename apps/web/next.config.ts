@@ -84,6 +84,27 @@ const nextConfig: NextConfig = {
   // `'unsafe-inline'` regardless. An experimental flag that rewrites every
   // script tag in a secret manager should buy more than that.
 
+  // ── Where Firebase's emails still point ──
+  // Every email Firebase Auth sent — password resets, address verifications —
+  // linked to `/reset-password?mode=…&oobCode=…`, and the screen that requested
+  // a reset lived at `/forgot-password`. Both pages are gone: AuthKit hosts
+  // password reset and verification now, and an `oobCode` has no successor
+  // here. The mail is still in people's inboxes, so both paths answer with a
+  // redirect to the sign-in page, whose hosted screen offers its own reset,
+  // rather than with a 404 that reads like the product broke.
+  //
+  // Permanent (308) because nothing will ever live at either path again; a
+  // browser that caches the answer is right to. Next carries the query string
+  // across, so a stale link lands on `/sign-in?mode=resetPassword&oobCode=…`.
+  // That is harmless: the sign-in page reads only its own parameters, and the
+  // code belongs to a Firebase project nothing here talks to any more.
+  async redirects() {
+    return [
+      { source: '/forgot-password', destination: '/sign-in', permanent: true },
+      { source: '/reset-password', destination: '/sign-in', permanent: true },
+    ];
+  },
+
   async headers() {
     return [
       {
@@ -102,13 +123,13 @@ const nextConfig: NextConfig = {
             value: 'max-age=63072000; includeSubDomains; preload',
           },
           {
-            // Built here rather than written as a literal because it has to
-            // name the deployment's own Firebase domain — see `lib/csp.ts`,
-            // which also records what this policy can and cannot enforce.
+            // Built in `lib/csp.ts` rather than written as a literal here,
+            // because `next dev` needs an allowance a deployment must never
+            // get, and because that is where the policy is tested source by
+            // source — and where it records what it can and cannot enforce.
             key: 'Content-Security-Policy',
             value: contentSecurityPolicy({
               isDevelopment: process.env.NODE_ENV === 'development',
-              firebaseConfig: process.env.NEXT_PUBLIC_FIREBASE_CONFIG,
             }),
           },
         ],

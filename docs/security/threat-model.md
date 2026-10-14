@@ -57,13 +57,22 @@ Likelihood is judged over a 12-month horizon for a product of this profile.
 
 **Threats:** credential stuffing on login · brute force on invitation and CLI tokens ·
 enumerating IDs on API routes · SQL injection · SSRF via user-supplied URLs · exploiting an
-unauthenticated route added by accident.
+unauthenticated route added by accident · login CSRF on the sign-in callback (completing the
+attacker's sign-in in the victim's browser) · taking over an existing account at sign-in, by
+registering its address unverified at the identity provider or by having another company's
+SSO assert it.
 
 **Mitigations:** authentication is deny-by-default — routes opt *in* to being public, never
 out · Cloudflare rate limiting on login, token exchange, and invitation acceptance ·
 parameterised queries only (Drizzle) · 256-bit random tokens compared in constant time ·
 no user-supplied URL is ever fetched server-side in v1 · security headers and strict CORS ·
-a Content Security Policy on every response (`apps/web/src/lib/csp.ts`).
+a Content Security Policy on every response (`apps/web/src/lib/csp.ts`) · credential entry,
+password reset and MFA happen on WorkOS's hosted AuthKit pages, never on ours · the sign-in
+callback accepts a code only in the browser that started the flow — a signed, ten-minute
+state cookie plus PKCE — and exchanges it server to server, so no provider token ever reaches
+or comes from a browser · an existing account is adopted only on a **verified** address, and
+an SSO sign-in is believed only for the domains its organisation has verified with WorkOS
+([ADR 0010](../adr/0010-workos-as-identity-provider.md)).
 
 **Residual risk:** Low. A zero-day in Cloudflare or Next.js remains possible.
 
@@ -71,23 +80,22 @@ a Content Security Policy on every response (`apps/web/src/lib/csp.ts`).
 stop an injected inline `<script>` from running — the App Router streams its RSC payload as
 a per-page inline script, and the nonce that would replace it requires a Proxy this stack
 cannot have (ADR 0008). What the policy does remove is what such a script could accomplish.
-`img-src` names no remote origin at all; `connect-src` names only this origin, Google's two
-identity endpoints and the deployment's own Firebase domain — so the `fetch` and the `<img>`
-beacon a review actually demonstrated are both refused. `form-action` refuses a redirected
-POST, and `base-uri 'self'` refuses a rewrite of every relative URL on the page.
+`img-src` names no remote origin at all, and `connect-src` names only this origin — so the
+`fetch` and the `<img>` beacon a review actually demonstrated are both refused. `form-action`
+refuses a redirected POST, and `base-uri 'self'` refuses a rewrite of every relative URL on the
+page.
 
-`script-src` is **not** `'self'` alone, and reading it as such overstates the policy. Sign-in
-needs Google's script loader at `apis.google.com`, and the email/password flows load
-reCAPTCHA Enterprise from `www.google.com/recaptcha/` and `www.gstatic.com/recaptcha/` by
-themselves whenever an operator enables enforcement in the Firebase console. So a second
-stage has nowhere to be loaded from *except* those three Google-operated sources. Two are
-scoped to a path, which keeps the rest of `www.google.com` — an origin with a long history
-of script-reflecting endpoints — out of the allowlist; `apis.google.com` cannot be, because
-gapi fetches its own modules from a different prefix on the same host. A host allowlist is
-only ever as tight as the least careful endpoint on an allowed origin, and that residual is
-the price of Google sign-in working at all. `apps/web/src/lib/csp.test.ts` enumerates each
-directive's sources exactly, so widening any of them is a deliberate edit in two places
-rather than a silent one.
+`script-src` is this origin plus `'unsafe-inline'`, and no third-party source. That is recent.
+Under Firebase, sign-in needed Google's script loader at `apis.google.com`, and the
+email/password flows loaded reCAPTCHA Enterprise from two Google paths whenever an operator
+enabled enforcement in the Firebase console, so a second stage could be loaded from three
+Google-operated sources — and a host allowlist is only ever as tight as the least careful
+endpoint on an allowed origin. Since [ADR 0010](../adr/0010-workos-as-identity-provider.md)
+sign-in is a plain navigation to WorkOS's hosted pages: the browser runs no identity-provider
+code, so the policy names no identity-provider host in any directive, and nothing had to be
+added for WorkOS. A second stage now has nowhere to be loaded from but this origin.
+`apps/web/src/lib/csp.test.ts` enumerates each directive's sources exactly, so widening any of
+them is a deliberate edit in two places rather than a silent one.
 
 Treat inline execution as *contained*, not prevented, and keep escaping at the point of
 render — see the documentation renderer, which is where this was learned.
@@ -280,6 +288,100 @@ the recovery document is a hard gate on Phase 2.
 
 ---
 
+### T11 — Account takeover through the vault reset (an unlocked laptop, or an inbox)
+
+| | |
+|---|---|
+| **Goal** | Pass the vault reset's re-authentication on somebody else's account, then use the account |
+| **Impact** | High · **Likelihood** | Low–Medium |
+
+The vault reset destroys an account's vault and must stay reachable from a locked session, so
+the vault lock cannot guard it. Two re-authentications do instead, in order and bound to the
+session the first one issues ([ADR 0010](../adr/0010-workos-as-identity-provider.md), amending
+ADR 0009's trade-off 6): **lock one**, a sign-in again through AuthKit (`reauth=1`, which sends
+`max_age=0`), counted only for the methods `Password`, `Passkey`, `GoogleOAuth` and `SSO`; then
+**lock two**, a one-time code WorkOS emails (Magic Auth) — and, for an account with an
+authenticator app enrolled in WorkOS, its TOTP code as well.
+
+**Lock one is not a fresh credential for everyone.** WorkOS documents `max_age` only for
+AuthKit's own sign-in (`provider=authkit`). It does not make Google or an enterprise identity
+provider ask again, so for a Google or SSO account a live session there satisfies lock one
+silently. For a password or passkey account it is a fresh credential when AuthKit honours
+`max_age=0` — and the server checks that it did: lock one counts only if the access token
+WorkOS returns with the code carries an `auth_time` (the person's most recent *active*
+authentication, unmoved by a reused session or a refresh) no earlier than the flow's start, less
+30 seconds for clock difference. A token without one does not count.
+
+**Threats:**
+- somebody at an unlocked laptop whose browser holds the victim's Google (or identity-provider)
+  session and has their Gmail open in another tab: lock one passes silently, the code arrives
+  in the open inbox, and both locks fall without the attacker knowing anything;
+- somebody in control of the inbox alone: AuthKit's "Forgot password" sets a new password, a
+  Password sign-in with it counts as lock one, and the code arrives in the same inbox — both
+  locks are inbox-strength;
+- somebody at an unlocked laptop holding the victim's AuthKit session who strips `max_age=0`
+  from the URL, and can read the inbox — closed by the `auth_time` check below;
+- guessing the six-digit emailed code or the TOTP code;
+- a stolen session cookie, replayed from another browser.
+
+**The impact of a reset is not only destruction.** After resetting, the attacker sets up a new
+vault on the victim's account, which unlocks the session they hold:
+- through it they can **read** every server-mode (not end-to-end encrypted) environment the
+  account can read;
+- the reset re-queues a key share for every end-to-end-encrypted environment the account may
+  still read, so the victim's teammates are prompted to re-share it — and a teammate who
+  approves seals that environment's keys to the attacker's new vault.
+
+The victim's own vault, and with it their copy of every end-to-end-encrypted key, is gone.
+
+**Mitigations:**
+- **Lock one checks the date of the sign-in, not just its method.** The callback reads
+  `auth_time` from the access token returned in its own authenticated call to WorkOS (decoded,
+  not verified — it arrived beside the user it describes), and arms lock one only if it falls
+  within this flow. A stripped or ignored `max_age=0` produces a code dated by an earlier
+  sign-in, which does not count. Confirmed against WorkOS Staging: `auth_time` is set by a
+  sign-in, kept by a refresh, moved by the next sign-in.
+- Both locks, in order, on one session. Lock two is refused unless lock one recorded a row for
+  *this* session within ten minutes, and a sign-in completed by emailed code never counts as
+  lock one. A cookie replayed from another browser has none of the victim's sessions at Google,
+  AuthKit or the mail provider, so it stops at lock one.
+- A one-time, five-minute proof, bound to the session and the user, stored as its SHA-256 and
+  spent in one atomic UPDATE before anything is destroyed.
+- **A guess budget in the database, not the rate limiter.** Every guess — the emailed code and
+  the TOTP step alike — is reserved atomically before WorkOS is called: at most five per attempt,
+  and at most ten per account in any rolling 24 hours across all its attempts, the second
+  counted under the user's row lock. A guess is accepted only on an attempt whose code was
+  actually requested, and a WorkOS error xecret cannot classify costs a guess too. The budget
+  holds where the rate limiter is absent and fails open.
+- **Code requests are capped the same way**: at most three per attempt, reserved under the same
+  row lock before WorkOS is asked to send one, so a session past lock one cannot turn the
+  account's inbox into a mail stream.
+- **WorkOS MFA.** With an authenticator app enrolled, WorkOS answers a correct emailed code with
+  an MFA challenge; xecret answers `{ mfaRequired: true, mfaToken }`, keeps only the SHA-256 of
+  WorkOS's pending-authentication token, and mints the proof only after the TOTP code
+  authenticates. An inbox, or an open Gmail tab, does not supply that code — this is what
+  closes the paths above, and it is recommended for organisation owners. **It is unit-tested
+  against WorkOS's documented error shape only**: MFA is not enabled in the Staging WorkOS
+  environment, so the live check is pending.
+- The other authentication errors WorkOS can raise on Magic Auth — organisation selection,
+  email verification or SSO required, MFA enrolment required, a Radar challenge — are refused
+  by name, never passed through as a success.
+- Detection: `auth.reauthenticated` and `vault.reset` are audited, and re-sharing an
+  end-to-end-encrypted environment is a teammate's deliberate act, not something the attacker
+  can complete alone.
+
+**Residual risk:** **Medium** without MFA — an unlocked laptop with a live Google or
+identity-provider session and an open inbox, or full control of the inbox alone, passes both
+locks, and the reset then opens the account's server-mode secrets and asks teammates for the
+rest. Lower with MFA enrolled, once the TOTP branch is confirmed against WorkOS. By the product
+owner's decision (2026-10-12) no waiting period comes before a reset. Follow-up P23 keeps the
+old vault for seven days, recoverable in that window, and emails an archive of the account's
+still-encrypted secrets to its address at reset time; neither is built yet. When it lands, T11
+is restated: the victim can undo an attacker's reset within the window, and the emailed archive
+hands whoever reads the inbox an offline attack on the passphrase.
+
+---
+
 ## 4. Risk summary
 
 | ID | Threat | Impact | Likelihood | Residual |
@@ -294,6 +396,7 @@ the recovery document is a hard gate on Phase 2.
 | T8 | Supply chain | Critical | Low–Med | Medium |
 | T9 | Insider | Critical | Low | **High (inherent)** |
 | T10 | Root key loss | Existential | Low | Low *if drilled* |
+| T11 | Vault reset by whoever holds the browser or the inbox | High | Low–Med | **Medium** without MFA |
 
 **Where to spend effort, in order:** T2 (test matrix as a CI gate) · T10 (escrow drills) ·
 T7 (dependency discipline, anomaly detection) · T5 (blast-radius limits, OIDC in v2).
@@ -309,3 +412,7 @@ customer's own systems after legitimate secret delivery.
 | Date | Reviewer | Change |
 |---|---|---|
 | 2026-08-10 | — | Initial version, Phase 0 |
+| 2026-10-12 | — | Identity moves from Firebase to WorkOS AuthKit (ADR 0010): T1 gains login CSRF and account takeover at sign-in; the CSP loses every Google and Firebase source |
+| 2026-10-12 | — | T11 added: the vault reset's two locks — lock one is a live session, not a fresh credential, for Google and SSO accounts; a reset opens server-mode secrets and prompts re-shares; the guess budget; MFA as the mitigation, its live check pending |
+| 2026-10-12 | — | T11: the product owner's decisions recorded — no waiting period before a reset; the seven-day recoverable reset and the archive emailed at reset time are follow-up P23, which restates T11 |
+| 2026-10-14 | — | T11, round 2: lock one checks the access token's `auth_time` against the flow's start (the stripped-`max_age=0` path closed); code requests capped at three per attempt |

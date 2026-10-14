@@ -93,6 +93,7 @@ route remembering to say so.
 | `status` | HTTP status. |
 | `outcome` | `success` \| `client_error` \| `server_error`. Derived so a dashboard need not express `status >= 500` in every panel. |
 | `durationMs` | |
+| `signInOutcome`, `signInRefusal`, `signInPurpose` | The sign-in callback only. It answers every refusal with a **303** to the sign-in page, so its `status` and `outcome` read as a success either way; these say what happened. `signInOutcome` is `matched` \| `linked` \| `created` \| `refused`; `signInRefusal` is the code the person was shown (`expired`, `rate-limited`, `sso-domain`, `account-conflict`, …); `signInPurpose`, on a sign-in that completed, is `sign-in` or `reauth`. |
 
 ---
 
@@ -173,6 +174,11 @@ Query on `event` and `level`, never on `message` — the prose is meant to be im
   `fn:failRecovery` is somebody working through recovery codes, which is far more interesting: a
   legitimate owner redeems one, not a series.
 - `level:warn AND fn:failure` grouped by `userId` — an account probing for resources it cannot reach.
+- `signInOutcome:refused` grouped by `signInRefusal` — refused sign-ins, which `outcome` counts
+  as successes because the callback answers with a redirect. Each code reads differently: a rise
+  in `expired` is replayed or stale codes (or a clock problem); `rate-limited` is somebody
+  hammering the callback; `unavailable` is WorkOS down or misconfigured and already a
+  `level:error`; `sso-domain`, `impersonation` and `account-conflict` are worth a look every time.
 
 ---
 

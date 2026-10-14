@@ -722,12 +722,30 @@ function asVaultConflict(cause: unknown, message: string): unknown {
 }
 
 /**
- * Deletes a vault outright. The wraps and passkeys go with it, by cascade.
+ * Deletes a vault outright: the keys, every wrap of the User Key, and every
+ * passkey enrolled to open one.
  *
  * Called by account deletion, and — through {@link resetVault} — by the reset
  * ceremony. Kept here rather than left as a raw `DELETE` because of what it
  * means: every environment key sealed to this account's public key becomes
  * unopenable, and no teammate can restore it without re-sharing.
+ *
+ * ── The wraps are deleted by name, not by cascade ──
+ * This function used to delete the `user_keys` row and nothing else, on the
+ * belief that the wraps and passkeys went "with it, by cascade". They do not:
+ * `user_key_wraps` and `user_passkeys` reference `users`, not `user_keys`, so the
+ * delete left every wrap of the destroyed User Key live. Two failures followed,
+ * and both were total. The setup ceremony that a reset exists to reach was
+ * refused for ever — the old live passphrase wrap occupies
+ * `user_key_wraps_passphrase_unique`, so `createVault` answered "this account
+ * already has a vault" to an account that had none. And the old recovery codes
+ * still resolved by lookup hash, to wraps of a key whose private keys were gone.
+ * The statements below name the tables, so the next schema change cannot quietly
+ * reintroduce the dependence on a cascade that was never there.
+ *
+ * Passkeys first: their `prf` wraps cascade from `user_passkeys`, and the CHECK
+ * pairing a `prf` wrap with its passkey means deleting the wraps first would be
+ * deleting rows a cascade was about to remove anyway.
  *
  * Unlike the soft delete of the `users` row beside it, this is a hard delete.
  * A soft-deleted account is one the identity upsert refuses to revive, so
@@ -739,6 +757,9 @@ export async function deleteVault(exec: Executor, userId: string): Promise<boole
     .delete(userKeys)
     .where(eq(userKeys.userId, userId))
     .returning({ userId: userKeys.userId });
+
+  await exec.delete(userPasskeys).where(eq(userPasskeys.userId, userId));
+  await exec.delete(userKeyWraps).where(eq(userKeyWraps.userId, userId));
 
   return removed.length > 0;
 }

@@ -77,12 +77,33 @@ export type {
 } from './vault';
 
 export {
+  clearedOAuthStateCookie,
+  deriveOAuthStateKey,
+  generateOAuthSecrets,
+  MAX_NEXT_LENGTH,
+  MIN_STATE_SECRET_LENGTH,
+  OAUTH_STATE_COOKIE_NAME,
+  OAUTH_STATE_TTL_SECONDS,
+  oauthStateCookie,
+  openOAuthState,
+  sealOAuthState,
+} from './oauth-state';
+export type {
+  OAuthPurpose,
+  OAuthState,
+  OAuthStateRejection,
+  OAuthStateResult,
+} from './oauth-state';
+
+export {
   IdentityVerificationError,
   isWorkosIdentity,
   WORKOS_USER_ID_PATTERN,
   workosIdentity,
 } from './types';
 export type {
+  AuthorizationCodeExchange,
+  CodeExchangeContext,
   IdentityProvider,
   Session,
   SessionRejection,

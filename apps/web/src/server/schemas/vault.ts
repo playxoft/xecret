@@ -252,15 +252,58 @@ export type VaultUnlockRequest = z.infer<typeof vaultUnlockSchema>;
 export const VAULT_RESET_CONFIRMATION = 'reset my vault';
 
 /**
- * How recently the caller must have actually authenticated, in seconds.
+ * How long the reset's proof of re-authentication lives, in seconds.
  *
- * Long enough to type a passphrase into a Google popup and then a confirmation
- * phrase into ours; short enough that an ID token captured earlier in the session
- * is already useless. It is compared against Firebase's `auth_time`, which a
- * refresh does not move — so this is five minutes since somebody proved who they
- * were, not five minutes since a token was minted.
+ * Long enough to read the warning and type the confirmation phrase after the
+ * emailed code verified; short enough that a proof left behind in a tab is
+ * useless by the time anybody else could find it. The clock starts when the code
+ * verifies, and the proof is spent by the one reset it authorises.
  */
-export const VAULT_RESET_MAX_AUTH_AGE_SECONDS = 5 * 60;
+export const VAULT_RESET_MAX_REAUTH_AGE_SECONDS = 5 * 60;
+
+/**
+ * How long after the forced fresh sign-in its emailed code may still be
+ * requested and verified, in seconds.
+ *
+ * Ten minutes: the lifetime of the code WorkOS sends, so a code that is still
+ * valid at WorkOS is never refused here merely for having taken its time to
+ * arrive. Together with the proof's five minutes, a reset happens at most a
+ * quarter of an hour after somebody actually proved who they were.
+ */
+export const REAUTH_SIGN_IN_MAX_AGE_SECONDS = 10 * 60;
+
+/**
+ * Guesses one re-authentication attempt may make — at the emailed code and at
+ * the authenticator code alike — before it is over and the person has to sign
+ * in again. Reserved before WorkOS is asked, so a right guess counts too.
+ */
+export const REAUTH_MAX_CODE_ATTEMPTS = 5;
+
+/**
+ * Guesses one account may make across every attempt in
+ * {@link REAUTH_USER_WINDOW_SECONDS} — the cap a fresh sign-in does not reset.
+ *
+ * The code is six digits, so this bounds an attacker to one chance in a
+ * hundred thousand a day. The rate limiter sits in front and fails open where
+ * its binding is absent; this does not, because it is a sum over rows.
+ */
+export const REAUTH_MAX_USER_ATTEMPTS = 10;
+
+/** The window {@link REAUTH_MAX_USER_ATTEMPTS} is counted over: a rolling day. */
+export const REAUTH_USER_WINDOW_SECONDS = 24 * 60 * 60;
+
+/**
+ * Codes one re-authentication attempt may ask WorkOS to email before the
+ * person has to sign in again.
+ *
+ * Every request is a message in the account's inbox. Three covers a code that
+ * was slow to arrive and one that expired while somebody found their phone;
+ * past that, a fresh sign-in starts a new attempt. Reserved before WorkOS is
+ * asked, under the account's row lock, so a burst of requests cannot get more
+ * than this between them. The rate limiter in front is per location and fails
+ * open; this does not.
+ */
+export const REAUTH_MAX_CODE_SENDS = 3;
 
 /**
  * The reset body: a typed phrase, and proof of account ownership.
@@ -274,25 +317,55 @@ export const VAULT_RESET_MAX_AUTH_AGE_SECONDS = 5 * 60;
  * the product: destroy the vault, and with it every environment key the account
  * held, permanently, for an attacker who never knew the passphrase.
  *
- * So the request carries a **fresh Firebase ID token**, verified server-side
- * through exactly the path `POST /api/auth/session` uses — same signature, same
- * issuer, same audience. Two things are then required of it: that its subject is
- * this session's own account, and that its `auth_time` is inside
- * {@link VAULT_RESET_MAX_AUTH_AGE_SECONDS}. The first stops a token for another
- * account being presented; the second is what makes it *re-authentication* rather
- * than a second copy of the credential the attacker already has.
+ * So the request carries a **reauth proof**: the token `POST
+ * /api/auth/reauth/verify` mints once the person has both signed in again with
+ * the identity provider told to ignore any session it held, and then entered a
+ * code emailed to them — two locks, in that order (`.local/workos-auth.md` §8
+ * Q5). The server checks the proof's hash, that it belongs to this session and
+ * this user, that it is under {@link VAULT_RESET_MAX_REAUTH_AGE_SECONDS} old,
+ * and that it has never been spent — and spends it.
  *
- * The bound is the same 8192 the session route applies, and for the same reason:
- * an unauthenticated-sized blob must not be buffered and base64-decoded on the
- * strength of a length nobody checked.
+ * The bound is generous for a 47-character token and exists for the usual
+ * reason: nothing unauthenticated-sized is buffered on the strength of a length
+ * nobody checked.
  */
 export const vaultResetSchema = z.strictObject(
   {
     confirm: z.string().check(z.maxLength(100)),
-    idToken: z.string().check(z.minLength(1), z.maxLength(8192)),
+    reauthProof: z.string().check(z.minLength(1), z.maxLength(128)),
   },
   UNEXPECTED_FIELD,
 );
+
+/**
+ * A guess at lock two: the emailed code, or — when WorkOS asked for the user's
+ * authenticator after a right code — the TOTP code with the pending token
+ * WorkOS handed out.
+ *
+ * Six digits either way. Whitespace is the one forgiveness — a code pasted
+ * from an email arrives with a space or a newline as often as not — and it is
+ * the client's job to strip it, so the server's rule stays exactly the code's
+ * own shape.
+ */
+export const reauthVerifySchema = z.union([
+  z.strictObject(
+    {
+      code: z.string().check(z.regex(/^[0-9]{6}$/, 'Enter the six-digit code from the email.')),
+    },
+    UNEXPECTED_FIELD,
+  ),
+  z.strictObject(
+    {
+      totp: z
+        .string()
+        .check(z.regex(/^[0-9]{6}$/, 'Enter the six-digit code from your authenticator app.')),
+      mfaToken: z.string().check(z.minLength(1), z.maxLength(2048)),
+    },
+    UNEXPECTED_FIELD,
+  ),
+]);
+
+export type ReauthVerifyRequest = z.infer<typeof reauthVerifySchema>;
 
 /**
  * Locking, optionally everywhere.

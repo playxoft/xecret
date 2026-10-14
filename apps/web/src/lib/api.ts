@@ -148,21 +148,10 @@ export interface ApiRequestOptions {
   redirectOnUnauthenticated?: boolean;
 }
 
-/**
- * Accepts only a same-origin absolute path.
- *
- * The `?next=` parameter is attacker-supplied, and a sign-in page that
- * forwards to an arbitrary URL after authenticating is a phishing primitive:
- * the victim really did sign in to the real site, then landed on the
- * attacker's. `//evil.example` and `/\evil.example` are both protocol-relative
- * in browsers, so a leading-slash check alone is not enough.
- */
-export function safeRedirectPath(value: string | null | undefined, fallback = '/'): string {
-  if (typeof value !== 'string' || value.length === 0) return fallback;
-  if (!value.startsWith('/')) return fallback;
-  if (value.startsWith('//') || value.startsWith('/\\')) return fallback;
-  return value;
-}
+// Re-exported so the callers that have always imported it from here keep
+// working. It lives in `lib/redirect-path.ts` because the server needs the
+// identical check and must not import the browser's API client to get it.
+export { safeRedirectPath } from './redirect-path';
 
 function buildUrl(path: string, query: Record<string, QueryValue> | undefined): string {
   const url = path.startsWith('/api/')
@@ -400,14 +389,11 @@ export const api = {
 /**
  * Ends the xecret session.
  *
- * This lives here rather than in `lib/firebase.ts` on purpose. Signing out of
- * the product means revoking *our* session — there is nothing to sign out of
- * on the Firebase side, because `exchangeForSession` drops the Firebase user
- * the moment the session cookie exists and persistence is in-memory anyway.
- *
- * Keeping it out of the Firebase module also keeps the Firebase SDK out of
- * every bundle that renders the app shell. That is ~300 KB the signed-in
- * dashboard has no use for.
+ * Signing out of the product means revoking *our* session, and nothing else.
+ * The identity provider's tokens were discarded at the sign-in callback, so
+ * there is nothing of WorkOS's in this browser to revoke. (AuthKit's own
+ * session on its hosted domain survives this — a returning person may not be
+ * asked for a password again — which ADR 0010 records as accepted for now.)
  */
 export function endSession(): Promise<void> {
   return api.delete<void>('/auth/session', undefined, { redirectOnUnauthenticated: false });

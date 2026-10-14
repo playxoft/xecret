@@ -18,9 +18,32 @@ export type AuditOutcome = 'success' | 'denied' | 'error';
 /** Every auditable action. Dot-namespaced to match `Action` where they overlap. */
 export type AuditAction =
   | 'auth.login'
+  /**
+   * A sign-in created the account: nobody held this identity or this address
+   * before. Recorded instead of `auth.login` for that one sign-in, so "when did
+   * this person join" is a filter rather than a search for their earliest login.
+   */
+  | 'auth.signup'
+  /**
+   * A sign-in adopted an existing account by its verified email address and
+   * linked the provider identity to it — the step that carries an account across
+   * the identity-provider swap. Recorded instead of `auth.login`, and loudly,
+   * because it is the one sign-in that changes which identity an account
+   * answers to: "who could sign in as this account, and since when" is answered
+   * by finding it.
+   */
+  | 'auth.identity_linked'
   | 'auth.logout'
   | 'auth.login_failed'
   | 'auth.session_revoked'
+  /**
+   * The session's owner proved themselves twice over for the vault reset — a
+   * forced fresh sign-in, then a code emailed to them — and was handed the
+   * five-minute proof the reset spends. Its own event because a reset that
+   * follows it is the most destructive act in the product, and the record of
+   * the proof is what shows the reset was not a stolen cookie alone.
+   */
+  | 'auth.reauthenticated'
   /**
    * The user vault was created: the moment an account acquires the key
    * hierarchy that every secret it can read is encrypted under.
@@ -177,6 +200,20 @@ export type AuditAction =
   | 'secret.imported'
   | 'member.invited'
   | 'member.joined'
+  /**
+   * Somebody signing in through an organisation's single sign-on was made a
+   * member of it on the spot (just-in-time provisioning), at the default role.
+   * Distinct from `member.joined`, which records an invitation accepted: here
+   * nobody invited them, and what admitted them was the organisation's identity
+   * provider vouching for an address in a domain the organisation verified.
+   */
+  | 'member.jit_joined'
+  /**
+   * The same, refused: the organisation had no seat free. The sign-in fails and
+   * the person is told to ask an administrator; this is the record that lets an
+   * administrator see who was turned away.
+   */
+  | 'member.jit_denied'
   | 'member.removed'
   | 'member.role_changed'
   /**
@@ -520,7 +557,19 @@ export interface AuditMetadata {
    */
   operator?: string;
   source?: 'dashboard' | 'cli' | 'ci' | 'api';
+  /**
+   * How a person authenticated to the identity provider for a sign-in.
+   *
+   * A closed set, coarser than the provider's own vocabulary on purpose: a
+   * review asks "was this a password, a Google account or the company's SSO",
+   * not which of nineteen OAuth providers. `other` is a method the provider
+   * named that this list does not know, recorded as such rather than guessed at.
+   */
+  signInMethod?: SignInMethod;
 }
+
+/** See `AuditMetadata.signInMethod`. */
+export type SignInMethod = 'password' | 'oauth' | 'sso' | 'magic_auth' | 'passkey' | 'other';
 
 /** A custom role's ceiling as an audit record carries it: two level names. */
 export interface AuditAccessCeiling {

@@ -20,6 +20,14 @@ phase run -- npm run dev     # secrets come from Phase.dev, not a .env file
 
 Requires Node ≥ 20.9 and Go ≥ 1.25.
 
+Signing in locally goes through the WorkOS **Staging** environment. Never do
+that with a real person's address against a database whose accounts sign in
+through WorkOS Production: the sign-in links their account to a Staging
+identity, and their real sign-in is refused from then on until the row is
+repaired by hand. Unless you know the database you are pointed at is your own,
+click through sign-in locally only with a brand-new address, or test it on the
+deployed site. See [ADR 0010](docs/adr/0010-workos-as-identity-provider.md).
+
 Before pushing:
 
 ```bash
@@ -68,8 +76,12 @@ asked to change, however good the rest of it is.
    from a request body or URL are inputs to an ownership check, never a
    shortcut past one.
 5. **No dependency that cannot run on Cloudflare Workers.** Prefer Web APIs.
-   `firebase-admin` is blocked by lint rule and is not up for discussion — see
-   [ADR 0003](docs/adr/0003-firebase-as-identity-provider.md).
+   `@workos-inc/authkit-nextjs` (built around middleware, which this deployment
+   cannot have) and the retired Firebase packages are blocked by lint rule and
+   are not up for discussion — WorkOS is reached through `@workos-inc/node`, in
+   `apps/web/src/server/workos.ts`. See
+   [ADR 0010](docs/adr/0010-workos-as-identity-provider.md) and
+   [ADR 0008](docs/adr/0008-no-middleware.md).
 6. **Security-relevant changes need a test that fails without the fix.**
 
 ## Architecture decisions

@@ -53,7 +53,13 @@ type Home =
   | 'secret'
   /** Held in Cloudflare Secrets Store and reached through a binding. */
   | 'store'
-  /** Consumed by `next build`; never reaches the Worker and must not be a var. */
+  /**
+   * Consumed by `next build`; never reaches the Worker and must not be a var.
+   * Nothing lives here today — the identity provider's client config was the
+   * one tenant, and WorkOS sign-in is server-initiated, so it has no
+   * `NEXT_PUBLIC_*` successor. Kept because the next build-time value needs a
+   * home that is not `var`.
+   */
   | 'build'
   /** The Worker never reads it. Present in Phase for migrations or local work. */
   | 'unused';
@@ -94,11 +100,28 @@ const CONTRACT: Contract[] = [
     matters: 'which root key wraps new secrets',
   },
   {
-    name: 'FIREBASE_PROJECT_ID',
+    name: 'WORKOS_CLIENT_ID',
     home: 'var',
     required: true,
     matters:
-      'the `aud` claim every ID token is checked against; wrong means every sign-in is rejected',
+      'which WorkOS environment sign-in runs against; absent means nobody can sign in, and it ' +
+      'must be from the same WorkOS environment as WORKOS_API_KEY',
+  },
+  {
+    name: 'WORKOS_API_KEY',
+    home: 'secret',
+    required: true,
+    matters:
+      'authenticates every call to WorkOS, the sign-in code exchange included; absent means ' +
+      'nobody can sign in',
+  },
+  {
+    name: 'WORKOS_COOKIE_PASSWORD',
+    home: 'secret',
+    required: true,
+    matters:
+      'keys the sign-in state cookie; absent or under 32 characters means every sign-in is ' +
+      'sent to the sign-in page\'s "unavailable" error',
   },
   {
     name: 'ZEPTOMAIL_FROM_ADDRESS',
@@ -147,12 +170,6 @@ const CONTRACT: Contract[] = [
     home: 'store',
     required: true,
     matters: 'the Root KEK map — without it no secret in the product can be decrypted',
-  },
-  {
-    name: 'NEXT_PUBLIC_FIREBASE_CONFIG',
-    home: 'build',
-    required: true,
-    matters: 'inlined into the client bundle at build time; on the Worker it would do nothing',
   },
   {
     name: 'DATABASE_URL',
@@ -221,7 +238,9 @@ function wrangler(args: string[]): string {
 }
 
 /** The `vars` and Secrets Store bindings wrangler.toml declares for `env`. */
-async function fromConfig(env: string): Promise<{ vars: Set<string>; store: Set<string> }> {
+async function fromConfig(
+  env: string,
+): Promise<{ vars: Set<string>; store: Set<string>; values: Record<string, unknown> }> {
   const { unstable_readConfig } = await import('wrangler');
   const previous = process.cwd();
   process.chdir(WEB_DIR);
@@ -230,6 +249,7 @@ async function fromConfig(env: string): Promise<{ vars: Set<string>; store: Set<
     return {
       vars: new Set(Object.keys(config.vars ?? {})),
       store: new Set((config.secrets_store_secrets ?? []).map((entry) => entry.binding)),
+      values: { ...(config.vars ?? {}) },
     };
   } finally {
     process.chdir(previous);
@@ -453,6 +473,50 @@ function audit(
 
 const SYMBOL: Record<Verdict, string> = { ok: '  ok  ', warn: ' warn ', fail: ' FAIL ' };
 
+/**
+ * Phase's `WORKOS_CLIENT_ID` against wrangler.toml's for this environment.
+ *
+ * The Worker reads the client id from wrangler.toml and the API key from its
+ * secrets, which are pushed from Phase — so a Phase environment whose client
+ * id differs from the file's is one whose key (which `check:env` proved
+ * belongs with *Phase's* id) will be paired on the Worker with a different
+ * one, and every sign-in fails. Client ids are public, so both are printed.
+ */
+function compareClientId(env: string, values: Record<string, unknown>): Finding[] {
+  const fromFile = values['WORKOS_CLIENT_ID'];
+  const fromPhase = process.env['WORKOS_CLIENT_ID'];
+  if (typeof fromFile !== 'string') return [];
+  if (!fromPhase) {
+    return [
+      {
+        verdict: 'warn',
+        name: 'WORKOS_CLIENT_ID pairing',
+        detail:
+          'not in this shell, so not compared with wrangler.toml — run under the Phase ' +
+          'environment being deployed',
+      },
+    ];
+  }
+  return fromPhase === fromFile
+    ? [
+        {
+          verdict: 'ok',
+          name: 'WORKOS_CLIENT_ID pairing',
+          detail: `Phase and wrangler.toml env.${env} agree (${fromFile})`,
+        },
+      ]
+    : [
+        {
+          verdict: 'fail',
+          name: 'WORKOS_CLIENT_ID pairing',
+          detail:
+            `Phase has ${fromPhase} but wrangler.toml env.${env} has ${fromFile} — the Worker ` +
+            "would pair this Phase environment's API key with the other client id. Run under " +
+            'the Phase environment that matches, or fix the file',
+        },
+      ];
+}
+
 async function main(): Promise<void> {
   const env = process.argv[2] ?? 'production';
 
@@ -472,6 +536,7 @@ async function main(): Promise<void> {
   console.log('');
 
   const findings = audit(env, config, live);
+  findings.push(...compareClientId(env, config.values));
 
   // A check that could not see the Worker must not be allowed to report success.
   // Every "NOT on the Worker" line below is then unverified, and a genuinely

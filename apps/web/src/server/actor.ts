@@ -57,8 +57,8 @@ export type Principal =
        *
        * Note what this is *not*: it is not part of authentication. A session with
        * `null` here is fully authenticated — we know exactly who it is — and
-       * merely locked. Conflating the two would send a locked user back to
-       * Firebase, which is the whole thing this design avoids.
+       * merely locked. Conflating the two would send a locked user back to the
+       * identity provider, which is the whole thing this design avoids.
        */
       vaultUnlockedAt: Date | null;
       /**

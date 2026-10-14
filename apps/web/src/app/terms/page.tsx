@@ -30,7 +30,7 @@ const TITLE = 'Terms of service';
 const DESCRIPTION =
   'The terms for the hosted xecret service: pre-alpha status, plans and billing, your account and your tokens, the AGPL and MIT licences, and liability.';
 
-const UPDATED = '2026-09-26';
+const UPDATED = '2026-10-12';
 const EFFECTIVE = '2026-10-26';
 
 const CANONICAL = absoluteUrl('/terms');
@@ -101,9 +101,10 @@ const SECTIONS: readonly LegalSection[] = [
       'You are responsible for what happens under your account, and for everything any credential you created can reach.',
       [
         <>
-          <strong className="text-fg font-medium">Your sign-in.</strong> Firebase verifies it, so if
-          your email account or your Google account is compromised, your xecret account is too. Turn
-          on two-factor authentication wherever you sign in from.
+          <strong className="text-fg font-medium">Your sign-in.</strong> WorkOS verifies it on our
+          behalf, so if your email account, your Google account or your company&rsquo;s single
+          sign-on account is compromised, your xecret account is too. Turn on two-factor
+          authentication wherever you sign in from.
         </>,
         <>
           <strong className="text-fg font-medium">Your PIN.</strong> It gates reveals and
@@ -306,7 +307,7 @@ const SECTIONS: readonly LegalSection[] = [
     heading: 'Third-party services',
     paragraphs: [
       <>
-        The hosted service depends on Cloudflare, a managed PostgreSQL provider, Firebase for
+        The hosted service depends on Cloudflare, a managed PostgreSQL provider, WorkOS for
         identity, and an email provider. Their terms govern their part, and an outage at any of them
         is an outage here. <LegalLink href="/privacy#sub-processors">The privacy policy</LegalLink>{' '}
         names each of them and says what it processes.

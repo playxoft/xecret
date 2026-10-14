@@ -17,13 +17,15 @@
     "phase:plan:show": "phase run -- npm run plan:show --",
     "phase:dev": "phase run -- npm run dev",
     "phase:build": "phase run -- npm run build",
-    "// phase:deploy": "Names the Phase environment rather than taking .phase.json's defaultEnv, which is Development. NEXT_PUBLIC_FIREBASE_CONFIG is inlined into the client bundle at build time, so the default would ship development's Firebase project inside a production deployment — a build that succeeds and a site nobody can sign in to. deploy-web.sh cross-checks the two and refuses, but the flag is what makes it right rather than merely caught.",
+    "// phase:deploy": "Names the Phase environment rather than taking .phase.json's defaultEnv, which is Development. Nothing identity-related is inlined at build time any more: WorkOS sign-in is server-initiated, the client id comes from wrangler.toml per environment, and WORKOS_API_KEY / WORKOS_COOKIE_PASSWORD reach the Worker as secrets that a deploy carries forward rather than sets. The flag still matters, because whatever the build and the upload do read from the environment — Cloudflare's credentials included — should be Production's, and because it is the environment `phase:check-deploy` compared against the live Worker. A deploy run under Development's values is one nobody preflighted.",
     "phase:deploy": "phase run --env Production -- npm run deploy",
     "phase:migrate": "phase run -- npm run db:migrate",
     "phase:studio": "phase run -- npm run db:studio",
     "phase:check-db": "phase run -- npm run check:db-role",
     "phase:check-deploy": "phase run --env Production -- npm run check:deploy production",
     "phase:check-env": "phase run -- npm run check:env",
+    "// phase:check-env:production": "check:env checks whatever is in the shell, and `phase run` alone means .phase.json's defaultEnv, Development. Before a production deploy, this is the one to run — it also asks WorkOS whether Production's key and client id belong together.",
+    "phase:check-env:production": "phase run --env Production -- npm run check:env",
     "phase:smoke": "phase run -- npm run smoke",
     "// phase:migrate-users": "The one-off Firebase → WorkOS user import (docs/operations/workos-user-migration.md). Each script pairs a Phase environment with the matching --env, because the script refuses a key from the other WorkOS environment and the database is shared: a Staging id written there would block the Production link. Dry run unless --apply.",
     "phase:migrate-users:staging": "phase run --env Development -- npm run migrate:users -- --env staging",
@@ -81,9 +83,5 @@
     "sharp": "^0.35.5",
     "tsx": "^4.23.13",
     "typescript-eslint": "^8.70.0"
-  },
-  "// overrides": "@grpc/grpc-js: @firebase/firestore pins ~1.9.0 in every release up to firebase 13, so no firebase version reaches the fix for GHSA-m9gg-hp2v-232j (patched in 1.13.6) and the production audit gate cannot pass without forcing it. ~1.13.6 is the nearest patched line and keeps @grpc/proto-loader on the ^0.7 firestore already uses. Nothing ships it: the app imports firebase/app and firebase/auth, never firestore, and the gRPC transport is firestore's Node build only. Delete this when firebase leaves the tree (WorkOS migration) or firestore widens its range. npm honours a root override only when it resolves the edge afresh: across the apps/web workspace link it neither re-resolves an existing lockfile entry when this changes nor credits it in `npm ls`, which reports 1.13.7 as invalid against ~1.9.0. The lockfile entry is what installs; check it with `npm audit`, not `npm ls`.",
-  "overrides": {
-    "@grpc/grpc-js": "~1.13.6"
   }
 }

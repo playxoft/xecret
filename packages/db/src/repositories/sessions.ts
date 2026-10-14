@@ -175,8 +175,8 @@ export async function markSessionUnlocked(
  *
  * Clearing the timestamp rather than revoking the row is the whole point of the
  * feature: the user stays signed in for their 30 days and simply has to prove
- * presence again. Revoking would send them back to Firebase, which is the cost
- * this design exists to avoid.
+ * presence again. Revoking would send them back through a full sign-in at WorkOS
+ * AuthKit, which is the cost this design exists to avoid.
  *
  * `userId` locks every session the account has — "lock everywhere", for a laptop
  * left behind rather than lost.

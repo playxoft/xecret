@@ -3,13 +3,9 @@ import { json, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 import { confirmationMatches } from '@/server/schemas/resources';
+import { assertRecentAccountOwner } from '@/server/reauth-service';
+import { VAULT_RESET_CONFIRMATION, vaultResetSchema } from '@/server/schemas/vault';
 import {
-  VAULT_RESET_CONFIRMATION,
-  VAULT_RESET_MAX_AUTH_AGE_SECONDS,
-  vaultResetSchema,
-} from '@/server/schemas/vault';
-import {
-  assertRecentAccountOwner,
   primaryOrgId,
   requireUserPrincipal,
   resetVault,
@@ -50,12 +46,12 @@ import {
  * permanently — reachable by anybody holding a stolen session cookie, without
  * ever knowing the passphrase.
  *
- * So the body carries a fresh Firebase ID token and this route verifies it
- * server-side, through the same `FirebaseIdentityProvider` that backs
- * `POST /api/auth/session`. Its subject must be this session's own account, and
- * its `auth_time` must be inside {@link VAULT_RESET_MAX_AUTH_AGE_SECONDS} — the
- * claim a refresh does *not* move, which is what makes this a second act of
- * authentication rather than a second copy of the same credential.
+ * So the body carries a **reauth proof**, minted by `POST
+ * /api/auth/reauth/verify` only after two re-authentications in a fixed order:
+ * a fresh sign-in with the identity provider told to ignore any session it
+ * held, then a one-time code emailed to the account (`server/reauth-service.ts`
+ * has the argument). The proof is bound to this session and this user, lives
+ * five minutes, and is spent by this request whatever happens next.
  *
  * Rate limited on `RL_LOGIN` under a **`vault_reset` key of its own**, keyed on
  * the user alone like the recovery counter it sits beside. Its own counter
@@ -82,8 +78,10 @@ export const POST = authenticatedRoute(
 
     // After the phrase, before anything is destroyed. The order matters only for
     // the message a caller gets: a mistyped phrase should not be reported as an
-    // authentication failure, and a stale token should not be reported as a typo.
-    await assertRecentAccountOwner(services, user, body.idToken);
+    // authentication failure, and a stale proof should not be reported as a typo.
+    // A typo costs nothing; the proof is spent here, whether the reset that
+    // follows succeeds or not.
+    await assertRecentAccountOwner(services, user, body.reauthProof);
 
     const destroyed = await resetVault(services, user);
 
