@@ -307,15 +307,18 @@ export const errors = {
     ),
 
   /**
-   * A vault reset refused because its escape archive could not be emailed: the
-   * provider rejected a send. Nothing was reset — the archive goes first — and
-   * the reset's proof was spent, so the sentence says what a retry takes.
+   * A vault reset refused because its escape archive — or, when the person
+   * chose to go without it, the notice — could not be emailed. Nothing was
+   * reset: the mail goes first. The reset's proof was spent, so the sentence
+   * says what a retry takes.
    */
-  vaultArchiveNotSent: (logDetail: string): ApiError =>
+  vaultArchiveNotSent: (logDetail: string, what: 'archive' | 'notice' = 'archive'): ApiError =>
     new ApiError(
       'unavailable',
-      'We couldn’t email your vault archive, so nothing was reset. To try again you’ll need to ' +
-        'sign in again and get a new code.',
+      (what === 'archive'
+        ? 'We couldn’t email your vault archive, so nothing was reset. '
+        : 'We couldn’t email you about the reset, so nothing was reset. ') +
+        'To try again you’ll need to sign in again and get a new code.',
       { logDetail },
     ),
 
@@ -328,8 +331,9 @@ export const errors = {
   vaultArchiveMailMissing: (logDetail: string): ApiError =>
     new ApiError(
       'unavailable',
-      'We can’t send email right now, and we never reset a vault without emailing its archive ' +
-        'first. Nothing was reset. Please try again later.',
+      'This xecret installation has no email set up, and a vault is never reset without ' +
+        'emailing its archive first. Nothing was reset. Whoever runs this installation needs to ' +
+        'set up email before a vault can be reset.',
       { logDetail },
     ),
 

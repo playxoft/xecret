@@ -1,3 +1,4 @@
+import { isUnlocked } from '@/server/actor';
 import { isProductionDeployment } from '@/server/bindings';
 import { errors } from '@/server/errors';
 import { json } from '@/server/http';
@@ -23,10 +24,17 @@ import { requireUserPrincipal } from '@/server/vault-service';
  * Sized in SQL from the same rows the archive would hold, without loading a
  * ciphertext (`surveyVaultArchive`); the estimate is an upper bound.
  *
- * `allowLocked`, like the reset: everybody who needs it is locked out. It
- * reveals counts and a size of the caller's own vault — nothing secret, and
- * nothing a stolen session could not read off the reset screen. Rate limited
- * on its own `RL_LOGIN` key, because each call runs the survey's queries.
+ * ── What a locked session is told ──
+ * `allowLocked`, like the reset: everybody who needs it is locked out. But a
+ * locked session is also what a stolen cookie is, so it gets only what the
+ * reset screen needs: whether the archive can be emailed, why not, and — only
+ * when the reason is its size — the size and the limit it is over. The counts
+ * of environments and secrets, and the size of an archive that can be
+ * emailed, are for an unlocked session, which could read far more than that
+ * anyway.
+ *
+ * Rate limited on its own `RL_LOGIN` key, because each call runs the survey's
+ * queries.
  */
 export const GET = authenticatedRoute(
   async ({ principal, services }) => {
@@ -39,8 +47,25 @@ export const GET = authenticatedRoute(
     });
     if (survey === null) throw errors.notFound('no vault to reset');
 
+    const resettable = mailer !== null || !isProductionDeployment(services.env);
+    const size =
+      survey.undeliverable === 'too-large'
+        ? { estimatedBytes: survey.estimatedBytes, maxBytes: ARCHIVE_EMAIL_MAX_BYTES }
+        : {};
+
+    if (!isUnlocked(principal, new Date())) {
+      return json({
+        resettable,
+        archive: {
+          deliverable: survey.undeliverable === null,
+          reason: survey.undeliverable,
+          ...size,
+        },
+      });
+    }
+
     return json({
-      resettable: mailer !== null || !isProductionDeployment(services.env),
+      resettable,
       archive: {
         deliverable: survey.undeliverable === null,
         reason: survey.undeliverable,

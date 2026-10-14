@@ -338,9 +338,10 @@ export async function assembleVaultArchive(
  * Builds the surveyed archive and emails it, one part per message, before a
  * reset. Called only for a survey with nothing `undeliverable`.
  *
- * Throws when the provider refuses a send — the reset must then not happen.
- * Returns `not-emailed` / `too-large` in the one case the estimate did not
- * foresee: the plan needed more parts than allowed. Nothing has been sent then.
+ * Throws `unavailable` (503) when a part cannot be sent — the reset must then
+ * not happen. Returns `not-emailed` / `too-large` in the one case the
+ * estimate did not foresee: the plan needed more parts than allowed, or a
+ * part's ZIP came out over the budget. Nothing has been sent then.
  */
 export async function emailVaultArchive(
   services: ServiceContext,
@@ -371,18 +372,43 @@ export async function emailVaultArchive(
     return { status: 'not-emailed', reason: 'too-large' };
   }
 
-  // Every part read back by the reader the import screen uses, before any is
-  // sent: an archive that would not open must never be mailed in place of one
-  // that would, and a refusal after part one went out would leave a half.
-  for (const part of parts) parseArchiveDocument(serializeArchiveDocument(part));
+  // Every part checked before the first is sent, so nothing about a later
+  // part's own content can stop the sends once one has gone out: each is read
+  // back by the reader the import screen uses — an archive that would not open
+  // must never be mailed in place of one that would — and encoded once to prove
+  // its ZIP fits the budget. The encoding is thrown away and made again at send
+  // time, so only one part's bytes are ever held; the price is encoding twice.
+  try {
+    for (const part of parts) {
+      parseArchiveDocument(serializeArchiveDocument(part));
+      encodeArchivePart(part, {
+        retainedUntil: params.retainedUntil,
+        maxPartBytes: limits.maxPartBytes,
+      });
+    }
+  } catch (cause) {
+    if (cause instanceof ArchiveTooLargeError) {
+      services.log
+        .at('emailVaultArchive')
+        .warn('A vault archive part came out over its budget; nothing was sent');
+      return { status: 'not-emailed', reason: 'too-large' };
+    }
+    services.log
+      .at('emailVaultArchive')
+      .error('The vault archive failed its own check; nothing was sent', {
+        error: cause instanceof Error ? cause.name : 'unknown',
+      });
+    throw errors.vaultArchiveNotSent('vault archive failed its own check', 'archive');
+  }
 
   // One part encoded and sent at a time, so only one part's ZIP, base64 and
-  // request body are ever held at once.
+  // request body are ever held at once. What can still stop the sends part way
+  // is the provider refusing one; that refuses the reset like any failed send,
+  // and the parts already delivered say "you asked to reset", never "was".
   for (const part of parts) {
-    await send(
-      services,
-      mailer,
-      vaultArchiveMail({
+    let message: MailMessage;
+    try {
+      message = vaultArchiveMail({
         to: params.email,
         part: part.part,
         parts: part.parts,
@@ -392,8 +418,13 @@ export async function emailVaultArchive(
         }),
         retainedUntil: params.retainedUntil,
         origin,
-      }),
-    );
+      });
+    } catch {
+      // Checked above, so unreachable short of a bug — and still a 503 that
+      // resets nothing, never a 500 after a part has gone out.
+      throw errors.vaultArchiveNotSent('vault archive part failed to encode', 'archive');
+    }
+    await send(services, mailer, message, 'archive');
   }
 
   return {
@@ -426,21 +457,27 @@ export async function emailResetNotice(
       retainedUntil: params.retainedUntil,
       origin: publicOrigin(services.env),
     }),
+    'notice',
   );
 }
 
-async function send(services: ServiceContext, mailer: Mailer, message: MailMessage): Promise<void> {
+async function send(
+  services: ServiceContext,
+  mailer: Mailer,
+  message: MailMessage,
+  what: 'archive' | 'notice',
+): Promise<void> {
   try {
     await mailer.send(message);
   } catch (cause) {
     services.log
       .at('emailVaultArchive')
       .error(
-        'Could not email the vault archive or notice, so the vault was not reset. The person ' +
-          'can try again after re-authenticating; the provider rejected it — see status and detail.',
+        `Could not email the vault ${what}, so the vault was not reset. The person can try ` +
+          'again after re-authenticating; the provider rejected it — see status and detail.',
         describeMailFailure(cause),
       );
-    throw errors.vaultArchiveNotSent('vault archive send failed');
+    throw errors.vaultArchiveNotSent(`vault ${what} send failed`, what);
   }
 }
 

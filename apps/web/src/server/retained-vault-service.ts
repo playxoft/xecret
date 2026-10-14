@@ -19,6 +19,7 @@ import type {
   RetainedVaultMaterialPayload,
   RetainedVaultPayload,
 } from './schemas/retained-vaults';
+import { isUuid } from './schemas/ids';
 import { decodeBlob, encodeBlob } from './schemas/vault';
 import { readableEnvironments } from './vault-archive-service';
 
@@ -174,6 +175,9 @@ async function requireRetained(
   retainedVaultId: string,
   now: Date,
 ): Promise<RetainedVaultMaterial> {
+  // A malformed id is the same 404 as anybody else's: never a query, so never
+  // the database's own refusal of a non-uuid surfacing as a 500.
+  if (!isUuid(retainedVaultId)) throw errors.notFound('malformed retained vault id');
   const vault = await loadRetainedVault(services.db, user.user.id, retainedVaultId, now);
   // The same 404 whether the id is another account's, nobody's, or past its
   // window (threat T2).
