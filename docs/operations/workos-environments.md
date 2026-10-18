@@ -44,8 +44,9 @@ SELECT id, slug, workos_org_id
 - **A row you know production made** (you can find its `workos_org_id` in the WorkOS
   **Production** dashboard): apply 0023; the backfill records it correctly.
 - **A row you cannot vouch for** — not in the Production dashboard, or found in Staging's: do
-  not apply 0023 yet. Clear the link (§3) — on a 0022 database, a row like this cannot even be
-  updated through the product, so do it with SQL — then apply 0023.
+  not apply 0023 yet. Clear the link (§3) — on a 0022 database a row like this cannot be updated
+  through the product, nor have its policies switched off by SQL on their own, so it is cleared
+  with the single statement in §3, step 2 — then apply 0023.
 
 ## 3. Clearing a foreign link
 
@@ -53,7 +54,8 @@ For an organisation linked to an organisation in the wrong WorkOS environment. T
 otherwise never cleared, by design: re-pointing an organisation's SSO re-points it at another
 identity provider. This is the operator's override, so it is done by hand, as the database
 owner, inside one transaction, and only while both SSO policies are off — which the statement
-itself insists on.
+itself insists on (or, for the one row step 2 cannot switch off on its own, switches off in the
+same statement).
 
 1. **Find it.** `workos_client_id` is not `workos_home`'s (or is NULL, before 0023):
 
@@ -68,17 +70,33 @@ itself insists on.
    `o.workos_client_id IS DISTINCT FROM 'client_01M36CECX3Z66Q2FYY2FN8WG73'` instead.
 
 2. **Switch both policies off** — from the deployed product (Organisation settings → Single
-   sign-on; switching a policy off works from any environment, and is audited), or, on a 0022
-   database where the row cannot be updated through the product, by hand:
+   sign-on; switching a policy off works from any environment, and is audited). A link must
+   never be cleared under `sso_required` or the just-in-time opt-in:
+   `organizations_sso_flags_need_link_check` would refuse it anyway, and step 3 insists on it
+   too.
+
+   **On a 0022 database, a row with a link and no `workos_client_id` (the §2 case) cannot have
+   its policies switched off on their own** — not through the product, and not by an `UPDATE`
+   that sets only the two flags. 0022 added `organizations_workos_link_client_check` `NOT
+   VALID`, and Postgres checks a `NOT VALID` constraint on every `UPDATE` of a row, whatever the
+   statement changes: such a row fails it (SQLSTATE `23514`) until it has a client id or no
+   link. Nor can the link be cleared first, while a policy is on — the flags check refuses that.
+   So for that row, switch the policies off **and** clear the link in one statement, which
+   leaves a row both checks accept, and skip step 3:
 
    ```sql
-   UPDATE organizations SET sso_required = false, jit_join_enabled = false, updated_at = now()
-    WHERE id = '<organisation id>';
+   BEGIN;
+   UPDATE organizations
+      SET sso_required = false, jit_join_enabled = false,
+          workos_org_id = NULL, workos_client_id = NULL, updated_at = now()
+    WHERE id = '<organisation id>'
+      AND workos_org_id IS NOT NULL
+      AND workos_client_id IS NULL;
+   -- Expect: UPDATE 1. Anything else: ROLLBACK and look again.
+   COMMIT;
    ```
 
-   A link must never be cleared under `sso_required` or the just-in-time opt-in:
-   `organizations_sso_flags_need_link_check` would refuse it anyway, and the next statement
-   insists on it too.
+   (`packages/db/src/schema/migration-0023.test.ts` replays exactly this against such a row.)
 
 3. **Clear the link**, and only the link — the statement touches nothing with a policy still
    on, nothing linked in this database's own environment, and nothing but the one row:
