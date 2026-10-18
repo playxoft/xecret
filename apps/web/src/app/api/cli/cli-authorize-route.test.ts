@@ -305,6 +305,59 @@ describe('POST /api/cli/authorize — which organisation may be named', () => {
     );
   });
 
+  it('files the owner exemption when an owner approves a device outside the required single sign-on (review round 2)', async () => {
+    // The device inherits the session, so it too reaches the organisation only
+    // by the exemption — for as long as it lives. That is filed beside the
+    // approval, as the sign-in that used it was.
+    repository.findOrganizationBySlugWithEntitlements.mockResolvedValue({
+      organization: organization('acme-corp', {
+        workosOrgId: 'org_01ACME',
+        workosClientId: 'client_01',
+        ssoRequired: true,
+      }),
+      entitlements: null,
+    });
+    const filed: Array<{ action: string; metadata: Record<string, unknown> }> = [];
+    auditSink.write.mockImplementation(async (events: typeof filed) => {
+      filed.push(...events);
+    });
+
+    expect((await route.POST(approve('acme-corp'))).status).toBe(200);
+    await Promise.allSettled(deferred);
+
+    expect(filed.map((e) => e.action)).toEqual(['token.authorized', 'auth.sso_exemption_used']);
+    expect(filed[1]?.metadata).toMatchObject({ signInMethod: 'password' });
+  });
+
+  it('files no exemption for an owner approving from the organisation’s own SSO, or where none is required', async () => {
+    const filed: Array<{ action: string }> = [];
+    auditSink.write.mockImplementation(async (events: typeof filed) => {
+      filed.push(...events);
+    });
+    repository.findOrganizationBySlugWithEntitlements.mockResolvedValue({
+      organization: organization('acme-corp'),
+      entitlements: null,
+    });
+    expect((await route.POST(approve('acme-corp'))).status).toBe(200);
+
+    repository.findOrganizationBySlugWithEntitlements.mockResolvedValue({
+      organization: organization('acme-corp', {
+        workosOrgId: 'org_01ACME',
+        workosClientId: 'client_01',
+        ssoRequired: true,
+      }),
+      entitlements: null,
+    });
+    actor.authenticate.mockResolvedValue({
+      principal: { ...userPrincipal, signIn: { method: 'sso', ssoWorkosOrgId: 'org_01ACME' } },
+      source: 'cookie',
+    });
+    expect((await route.POST(approve('acme-corp'))).status).toBe(200);
+    await Promise.allSettled(deferred);
+
+    expect(filed.map((e) => e.action)).not.toContain('auth.sso_exemption_used');
+  });
+
   // The shape rules are untouched: a reference is still bounded before it
   // reaches a query.
   it.each(['Playxoft', 'not a slug', '-acme', ''])('refuses %o as malformed', async (slug) => {

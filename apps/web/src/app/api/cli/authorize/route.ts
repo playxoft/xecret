@@ -7,7 +7,7 @@ import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
-import { authorize, resolveOrg } from '@/server/tenancy';
+import { authorize, resolveOrg, usesOwnerSsoExemption } from '@/server/tenancy';
 
 /**
  * The consent screen's server half: a signed-in person approves CLI access for
@@ -138,6 +138,28 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
       { deviceName: body.deviceName, source: 'dashboard' },
     ),
   );
+
+  // An owner approving a device from a session that did not come through this
+  // organisation's required single sign-on: the device inherits that session,
+  // so it too reaches the organisation only by the owner exemption — for as
+  // long as it lives. Filed beside the approval (review round 2), as the
+  // sign-in that used the exemption was.
+  if (
+    scope.membership !== undefined &&
+    usesOwnerSsoExemption(scope.organization, scope.membership.role, principal.signIn)
+  ) {
+    record(
+      audit(orgId).success(
+        'auth.sso_exemption_used',
+        { type: 'token', id: issued.id },
+        {
+          deviceName: body.deviceName,
+          source: 'dashboard',
+          ...(principal.signIn.method === null ? {} : { signInMethod: principal.signIn.method }),
+        },
+      ),
+    );
+  }
 
   return json({ code: issued.code, expiresAt: issued.expiresAt.toISOString() });
 });

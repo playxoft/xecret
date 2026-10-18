@@ -448,6 +448,36 @@ export const errors = {
       { logDetail: 'workos client id mismatch' },
     ),
 
+  /**
+   * Turning SSO on, or switching a policy on, from a deployment whose WorkOS
+   * environment is not the one this database belongs to (`workos_home`,
+   * migration 0023) — local development against WorkOS Staging over the
+   * production database, most likely. Refused before WorkOS is asked anything:
+   * a link written from here would be one no sign-in in the database's own
+   * environment could ever come through.
+   */
+  ssoNotHomeEnvironment: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'Single sign-on can only be changed from the deployment whose WorkOS environment this ' +
+        'database belongs to, and this one uses a different WorkOS environment — so nothing was ' +
+        'changed. Make this change from that deployment.',
+      { logDetail: 'workos client id is not workos_home' },
+    ),
+
+  /**
+   * The same, for a database with no WorkOS environment recorded at all — a
+   * self-hosted deployment that has not done the one-time operator step.
+   */
+  ssoHomeUnrecorded: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'Single sign-on cannot be turned on yet: this deployment’s database has no WorkOS ' +
+        'environment recorded. An operator records it once (the “WorkOS environment” step in ' +
+        'docs/self-hosting.md), and then it can.',
+      { logDetail: 'workos_home is empty' },
+    ),
+
   /** See the `sso_required` code above. */
   ssoRequired: (logDetail?: string): ApiError =>
     new ApiError(

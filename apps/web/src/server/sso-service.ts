@@ -8,14 +8,14 @@ import type {
 } from '@xecret/core/audit';
 import { auditingDenials } from '@xecret/core/authz';
 import type { Action } from '@xecret/core/authz';
-import { findFreshSignIn, listMemberAddresses } from '@xecret/db/repositories';
+import { findSessionFreshAuth, findWorkosHome, listMemberAddresses } from '@xecret/db/repositories';
 import type { Organization } from '@xecret/db/repositories';
 import type { Principal } from './actor';
 import type { ServiceContext } from './context';
 import { describeError } from './logging';
 import { errors } from './errors';
 import { requireAddon } from './entitlements';
-import { REAUTH_MAX_CODE_ATTEMPTS, REAUTH_SIGN_IN_MAX_AGE_SECONDS } from './schemas/vault';
+import { REAUTH_SIGN_IN_MAX_AGE_SECONDS } from './schemas/vault';
 import { toSsoStatus } from './schemas/sso';
 import type { SsoStatusPayload } from './schemas/sso';
 import { emailDomain } from './sign-in';
@@ -51,7 +51,11 @@ import type { SsoConnectionSummary, SsoDomainSummary, WorkosIdentityProvider } f
  *  3. **This deployment's WorkOS environment** (review S9). A link records the
  *     client id it was made with; a link made elsewhere — local development
  *     runs against WorkOS Staging over the production database — is refused
- *     rather than acted on, and an enable never adopts one.
+ *     rather than acted on, and an enable never adopts one. And anything that
+ *     *writes* — turning SSO on, switching a policy on — also needs this
+ *     deployment to be the environment the database belongs to
+ *     (`workos_home`, review round 2, {@link requireWorkosHome}), so no other
+ *     environment can write a link, or a requirement, in the first place.
  *  4. **The single sign-on add-on** (`samlSso`), for anything that turns
  *     something *on*: creating the WorkOS organisation, opening the setup
  *     portal, switching either policy on. Each WorkOS connection costs real
@@ -157,6 +161,47 @@ export function requireThisWorkosEnvironment(
 }
 
 /**
+ * Step 3 again, for anything that *writes* (review round 2): turning SSO on —
+ * the only writer of the link — and switching a policy on refuse unless this
+ * deployment's WorkOS environment is the one this database belongs to
+ * (`workos_home`, migration 0023). Comparing a link with this deployment, as
+ * {@link requireThisWorkosEnvironment} does, only refuses to *act on* another
+ * environment's link; local development against WorkOS Staging over the
+ * production database could still *write* one — a permanent link no
+ * production sign-in can ever come through — or require a single sign-on
+ * nobody in production can satisfy. Files `error` (`conflict`) for each action
+ * it stopped.
+ */
+export async function requireWorkosHome(
+  services: ServiceContext,
+  clientId: string,
+  file: AuditFile,
+  organizationId: string,
+  attempted: readonly AuditAction[],
+): Promise<void> {
+  const home = await findWorkosHome(services.db);
+  if (home === clientId) return;
+  for (const action of attempted) {
+    file.record(file.audit.error(action, ssoResource(organizationId), 'conflict'));
+  }
+  if (home === null) {
+    services.log
+      .at('sso')
+      .error(
+        'Refused an SSO change: this database has no WorkOS environment recorded in workos_home ' +
+          '(docs/self-hosting.md)',
+      );
+    throw errors.ssoHomeUnrecorded();
+  }
+  services.log
+    .at('sso')
+    .warn('Refused an SSO change from a WorkOS environment this database does not belong to', {
+      clientId,
+    });
+  throw errors.ssoNotHomeEnvironment();
+}
+
+/**
  * Step 4 above. Files an `error` record (`quotaExceeded`, naming the add-on)
  * for each action the refusal stopped, then refuses with the `plan_limit`
  * the dashboard knows how to render.
@@ -185,19 +230,29 @@ export function requireSsoAddon(
  *
  * The link is credential-grade — whoever opens it chooses the identity provider
  * that signs in as the organisation's members — so a stolen session cookie or
- * an unlocked laptop must not be enough to mint one. The proof is the vault
- * reset's first lock, reused: `GET /api/auth/login?reauth=1` makes AuthKit ask
- * for the credential again (`max_age=0`), the callback checks WorkOS's
- * `auth_time` to see that it did (`armsLockOne`), and records it against the
- * brand-new session it issues (`recordFreshSignIn`). That record is what is
- * asked for here: one for this session, under
- * {@link REAUTH_SIGN_IN_MAX_AGE_SECONDS} old. It is read, never spent, so the
- * owner can open the portal more than once in those minutes (each link is
- * audited) and the vault reset's own attempt is left untouched.
+ * an unlocked laptop must not be enough to mint one. The proof: `GET
+ * /api/auth/login?reauth=1` makes AuthKit ask for the credential again
+ * (`max_age=0`), the callback checks WorkOS's `auth_time` to see that it did,
+ * and the brand-new session it issues records *when* the person authenticated
+ * (`sessions.fresh_auth_at`). What is asked for here is that: this session's
+ * own, under {@link REAUTH_SIGN_IN_MAX_AGE_SECONDS} old. Read, never spent, so
+ * the owner can open the portal more than once in those minutes (each link is
+ * audited).
  *
- * What it inherits from lock one, honestly: for a Google or SSO owner, a live
- * Google or identity-provider session satisfies the sign-in without a prompt
- * (ADR 0010).
+ * ── Its own record, not the vault reset's (review round 2, L7) ──
+ * Round 1 borrowed the vault reset's first lock, which refuses an emailed code
+ * (`MagicAuth`) by design — the reset's second lock is an emailed code, and
+ * counting the first would make them one inbox twice. The portal has no second
+ * lock, and an owner who signs in by emailed code could never open it. So the
+ * session records a fresh authentication by any of
+ * `FRESH_AUTHENTICATION_METHODS` (an emailed code included) under the same
+ * freshness rule, and the reset's own record and rule are untouched — a spent
+ * or exhausted reset attempt no longer closes the portal either. The ten
+ * minutes run from the authentication itself, not from when the session was
+ * written, which a held-back sign-in can delay by five.
+ *
+ * What it inherits, honestly: for a Google or SSO owner, a live Google or
+ * identity-provider session satisfies the sign-in without a prompt (ADR 0010).
  */
 export async function requireFreshSignIn(
   services: ServiceContext,
@@ -205,13 +260,16 @@ export async function requireFreshSignIn(
   file: AuditFile,
   organizationId: string,
 ): Promise<void> {
-  const fresh = await findFreshSignIn(services.db, {
-    userId: principal.user.id,
+  const freshAuthAt = await findSessionFreshAuth(services.db, {
     sessionId: principal.sessionId,
-    signedInSince: new Date(Date.now() - REAUTH_SIGN_IN_MAX_AGE_SECONDS * 1000),
-    maxAttempts: REAUTH_MAX_CODE_ATTEMPTS,
+    userId: principal.user.id,
   });
-  if (fresh !== null) return;
+  if (
+    freshAuthAt !== null &&
+    freshAuthAt.getTime() >= Date.now() - REAUTH_SIGN_IN_MAX_AGE_SECONDS * 1000
+  ) {
+    return;
+  }
   file.record(
     file.audit.error(
       'org.sso.portal_link_created',

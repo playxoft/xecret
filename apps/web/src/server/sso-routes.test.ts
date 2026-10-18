@@ -99,6 +99,9 @@ let caller: Principal;
 
 beforeAll(async () => {
   t = await createTestDatabase();
+  // This database belongs to the test deployment's WorkOS environment, as an
+  // operator records it (migration 0023; docs/self-hosting.md).
+  await t.pg.query(`update workos_home set client_id = $1`, [CLIENT_ID]);
 }, TEST_DATABASE_TIMEOUT_MS);
 
 afterAll(async () => {
@@ -251,25 +254,27 @@ function sessionOf(
 }
 
 /**
- * The owner as signed in again just now: a real session row with a fresh
- * sign-in recorded against it — the vault reset's lock one, which the setup
- * portal asks for (review S2).
+ * The owner as signed in again just now: a real session row recording the
+ * fresh authentication that issued it (`fresh_auth_at`, migration 0023) — what
+ * the setup portal asks for (review S2, round 2's L7).
  */
 async function ownerFreshlySignedIn(
   org: { orgId: string; founder: { id: string; email: string } },
   signedInAt: Date = new Date(),
-): Promise<void> {
+): Promise<string> {
   const sessionId = randomUUID();
   await t.pg.query(
-    `insert into sessions (id, user_id, token_hash, expires_at)
-     values ($1, $2, $3, now() + interval '1 day')`,
-    [sessionId, org.founder.id, new Uint8Array(32).map(() => Math.floor(Math.random() * 256))],
-  );
-  await t.pg.query(
-    `insert into reauthentications (id, user_id, session_id, signed_in_at) values ($1, $2, $3, $4)`,
-    [randomUUID(), org.founder.id, sessionId, signedInAt],
+    `insert into sessions (id, user_id, token_hash, expires_at, fresh_auth_at)
+     values ($1, $2, $3, now() + interval '1 day', $4)`,
+    [
+      sessionId,
+      org.founder.id,
+      new Uint8Array(32).map(() => Math.floor(Math.random() * 256)),
+      signedInAt,
+    ],
   );
   caller = sessionOf(org.founder, sessionId);
+  return sessionId;
 }
 
 async function linkOf(orgId: string) {
@@ -722,6 +727,82 @@ describe('turning SSO on', () => {
     expect(audit).toEqual([
       expect.objectContaining({ action: 'org.sso.enabled', outcome: 'error' }),
     ]);
+  });
+
+  /** Runs `body` with `workos_home` set as asked, restoring the test environment's after. */
+  async function withHome(clientId: string | null, body: () => Promise<void>): Promise<void> {
+    await t.pg.query(`delete from workos_home`);
+    if (clientId !== null) {
+      await t.pg.query(`insert into workos_home (id, client_id) values (true, $1)`, [clientId]);
+    }
+    try {
+      await body();
+    } finally {
+      await t.pg.query(`delete from workos_home`);
+      await t.pg.query(`insert into workos_home (id, client_id) values (true, $1)`, [CLIENT_ID]);
+    }
+  }
+
+  it('writes no link from a deployment whose WorkOS environment this database does not belong to (review round 2)', async () => {
+    // Round 1 refused to act on a foreign link; nothing stopped one being
+    // written. Local development (Staging) clicking Enable on an unlinked
+    // production organisation wrote a permanent Staging link.
+    const org = await seedOrg();
+    caller = sessionOf(org.founder);
+
+    await withHome('client_01PRODUCTIONHOME', async () => {
+      const answer = await enable(org.slug);
+
+      expect(answer.status).toBe(409);
+      expect(errorMessage(answer)).toMatch(/different WorkOS environment/);
+      expect(errorMessage(answer)).toMatch(/nothing was changed/);
+      workosWasAskedNothing();
+      expect((await linkOf(org.orgId)).workos_org_id).toBeNull();
+      expect(audit).toEqual([
+        expect.objectContaining({
+          action: 'org.sso.enabled',
+          outcome: 'error',
+          metadata: { reason: 'conflict' },
+        }),
+      ]);
+    });
+  });
+
+  it('refuses to turn SSO on at all while the database has no WorkOS environment recorded, naming the step', async () => {
+    const org = await seedOrg();
+    caller = sessionOf(org.founder);
+
+    await withHome(null, async () => {
+      const answer = await enable(org.slug);
+
+      expect(answer.status).toBe(409);
+      expect(errorMessage(answer)).toMatch(/self-hosting/);
+      workosWasAskedNothing();
+      expect((await linkOf(org.orgId)).workos_org_id).toBeNull();
+    });
+  });
+
+  it('refuses to switch a policy on, or open the portal, from such a deployment — and still lets one off', async () => {
+    const org = await seedOrg({ workosOrgId: workosOrgId(), jit: true });
+
+    await withHome('client_01PRODUCTIONHOME', async () => {
+      await ownerFreshlySignedIn(org);
+      const portalAnswer = await portal(org.slug);
+      expect(portalAnswer.status).toBe(409);
+      expect(workos.generateLink).not.toHaveBeenCalled();
+
+      caller = sessionOf(org.founder);
+      connectionsAre('active');
+      domainsAre(['example.com', 'verified']);
+      const on = await patch(org.slug, { ssoRequired: true });
+      expect(on.status).toBe(409);
+      expect((await linkOf(org.orgId)).sso_required).toBe(false);
+
+      // Relaxing a policy can never lock anybody out, from anywhere.
+      const off = await patch(org.slug, { jitJoinEnabled: false });
+      expect(off.status).toBe(200);
+      expect((await linkOf(org.orgId)).jit_join_enabled).toBe(false);
+    });
   });
 });
 

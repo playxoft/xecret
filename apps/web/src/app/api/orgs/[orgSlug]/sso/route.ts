@@ -21,6 +21,7 @@ import {
   requireBrowserSession,
   requireSsoAddon,
   requireThisWorkosEnvironment,
+  requireWorkosHome,
   ssoFailureReason,
   ssoProviderFailure,
   ssoResource,
@@ -117,6 +118,11 @@ export const POST = authenticatedRoute<Params>(
     }
 
     requireSsoAddon(scope, file, ['org.sso.enabled']);
+    // Before WorkOS is asked to create anything: a link from an environment
+    // this database does not belong to is never written (review round 2).
+    await requireWorkosHome(services, provider.clientId, file, organization.id, [
+      'org.sso.enabled',
+    ]);
 
     let workosOrgId: string;
     try {
@@ -145,6 +151,18 @@ export const POST = authenticatedRoute<Params>(
       if (!(cause instanceof RepositoryError)) throw cause;
       if (cause.code === 'notFound') {
         throw errors.notFound('organisation deleted during SSO enable');
+      }
+      if (cause.code === 'forbidden') {
+        // `workos_home` changed between the check above and the write — the
+        // setter's own predicate refused it. The WorkOS organisation this
+        // request made is nobody's here; it is left for an operator, logged.
+        record(orgAudit.error('org.sso.enabled', ssoResource(organization.id), 'conflict'));
+        services.log
+          .at('sso')
+          .error('An SSO enable created a WorkOS organisation it then could not link', {
+            orgId: organization.id,
+          });
+        throw errors.ssoNotHomeEnvironment();
       }
       if (cause.code !== 'conflict') throw cause;
       return answerLostRace(services, organization.id, workosOrgId, addon, provider);
@@ -236,6 +254,9 @@ export const PATCH = authenticatedRoute<Params>(
       }
       requireThisWorkosEnvironment(organization, provider.clientId, file, switchingOn);
       requireSsoAddon(scope, file, switchingOn);
+      // A requirement switched on from another environment's deployment could
+      // be one nobody in this database's own environment can ever satisfy.
+      await requireWorkosHome(services, provider.clientId, file, organization.id, switchingOn);
     }
 
     if (patch.ssoRequired === true && organization.workosOrgId !== null) {

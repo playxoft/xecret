@@ -86,6 +86,7 @@ const ACTIONS = [
   'auth.signup',
   'auth.identity_linked',
   'auth.sso_exemption_used',
+  'auth.sign_in_declined',
   'auth.login_failed',
   'auth.reauthenticated',
   'auth.logout',
@@ -731,12 +732,30 @@ export function describeEvent(event: AuditEvent): string {
   if (event.action === 'auth.sso_exemption_used' && typeof m['signInMethod'] === 'string') {
     parts.push(`signed in by ${SIGN_IN_METHOD_WORDS[m['signInMethod']] ?? 'another method'}`);
   }
+  // A sign-in held back for the person to confirm: why it was asked, on the
+  // `auth.login` of one they confirmed and the `auth.sign_in_declined` of one
+  // they did not.
+  if (typeof m['confirmation'] === 'string') {
+    const why = CONFIRMATION_WORDS[m['confirmation']];
+    if (why !== undefined) {
+      parts.push(
+        event.action === 'auth.sign_in_declined' ? `declined — ${why}` : `confirmed — ${why}`,
+      );
+    }
+  }
   if (typeof m['reason'] === 'string' && event.outcome !== 'success') {
     parts.push(m['reason'] === 'removed' ? 'removed from the organisation' : m['reason']);
   }
 
   return parts.join(' · ');
 }
+
+/** Why a sign-in was held back for confirmation, as a phrase. */
+const CONFIRMATION_WORDS: Readonly<Record<string, string>> = {
+  organization: 'it came back through an organisation the sign-in did not ask for',
+  'not-member': 'single sign-on of an organisation the account was not in',
+  'reused-session': 'a sign-in session reused without asking',
+};
 
 /** How the audit log's sign-in methods read in a sentence. */
 const SIGN_IN_METHOD_WORDS: Readonly<Record<string, string>> = {

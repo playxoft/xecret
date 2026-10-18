@@ -1766,4 +1766,25 @@ describe('the scheduled purge', () => {
     expect(await count('retained_vaults where id = $1', [expired!.id])).toBe(0);
     expect(lines.some((line) => line.message.includes('in no organisation'))).toBe(true);
   });
+
+  it('deletes the spent sign-in confirmations whose five minutes are over, and no younger one (review round 2)', async () => {
+    // The ledger that makes a held-back sign-in's cookie single-use; a row
+    // past its cookie's expiry can stop nothing, and used to stay for ever.
+    const who = await account();
+    const spent = async (expiresAt: Date) => {
+      const nonceHash = new Uint8Array(32).map(() => Math.floor(Math.random() * 256));
+      await t.pg.query(
+        `insert into sign_in_confirmations (nonce_hash, user_id, expires_at) values ($1, $2, $3)`,
+        [nonceHash, who.userId, expiresAt],
+      );
+      return nonceHash;
+    };
+    const stale = await spent(new Date(Date.now() - 60_000));
+    const live = await spent(new Date(Date.now() + 4 * 60_000));
+
+    await runScheduledJob(callPurge, ORIGIN, VAULT_PURGE_PATH);
+
+    expect(await count('sign_in_confirmations where nonce_hash = $1', [stale])).toBe(0);
+    expect(await count('sign_in_confirmations where nonce_hash = $1', [live])).toBe(1);
+  });
 });

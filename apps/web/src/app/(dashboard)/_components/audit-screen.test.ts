@@ -44,6 +44,20 @@ describe('describeEvent', () => {
     expect(describeEvent(turnedAway)).toBe('gone@acme.example · removed from the organisation');
   });
 
+  it('says why a held-back sign-in was asked, and whether it was confirmed or declined (review round 2)', () => {
+    expect(describeEvent(event('auth.sign_in_declined', { confirmation: 'organization' }))).toBe(
+      'declined — it came back through an organisation the sign-in did not ask for',
+    );
+    expect(describeEvent(event('auth.login', { confirmation: 'not-member' }))).toBe(
+      'confirmed — single sign-on of an organisation the account was not in',
+    );
+    expect(describeEvent(event('auth.login', { confirmation: 'reused-session' }))).toBe(
+      'confirmed — a sign-in session reused without asking',
+    );
+    // An unknown value says nothing rather than something made up.
+    expect(describeEvent(event('auth.login', { confirmation: 'because' }))).toBe('');
+  });
+
   it('says which way an SSO policy switch moved', () => {
     expect(describeEvent(event('org.sso.required_toggled', { enabled: true }))).toBe('switched on');
     expect(describeEvent(event('org.sso.jit_toggled', { enabled: false }))).toBe('switched off');

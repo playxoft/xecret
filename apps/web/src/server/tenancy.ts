@@ -182,6 +182,25 @@ export function ssoRequirementRefuses(
 }
 
 /**
+ * Whether a credential reaches this organisation only by the owner exemption:
+ * the organisation requires its single sign-on, the credential did not come
+ * through it, and the member is an owner. What the places that *create* a
+ * credential on the strength of it — the sign-in, a CLI approval, an owner's
+ * invitation — file as `auth.sso_exemption_used` (review round 2).
+ */
+export function usesOwnerSsoExemption(
+  organization: Pick<Organization, 'ssoRequired' | 'workosOrgId'>,
+  role: StoredAuthorizationContext['role'],
+  signIn: Pick<CredentialSignIn, 'ssoWorkosOrgId'>,
+): boolean {
+  return (
+    organization.ssoRequired &&
+    role === 'owner' &&
+    (organization.workosOrgId === null || signIn.ssoWorkosOrgId !== organization.workosOrgId)
+  );
+}
+
+/**
  * Stamps the tenancy onto every subsequent log line of this request.
  *
  * Done here rather than at each call site because this is the choke point: a

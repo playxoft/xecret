@@ -11,6 +11,7 @@ import {
   requireFreshSignIn,
   requireSsoAddon,
   requireThisWorkosEnvironment,
+  requireWorkosHome,
   ssoFailureReason,
   ssoProviderFailure,
   ssoResource,
@@ -32,10 +33,11 @@ import { workosProvider } from '@/server/workos';
  *  - for an **owner** (`sso.manage`; review S2 — an admin able to do this is an
  *    admin able to sign in as an owner),
  *  - in a browser session that **signed in again within the last ten minutes**
- *    (`requireFreshSignIn` — the vault reset's lock one, reused, so a stolen
- *    cookie or an unattended laptop is not enough),
- *  - once SSO is on, in this deployment's WorkOS environment, with the add-on
- *    held,
+ *    (`requireFreshSignIn` — the session's own fresh authentication, by any
+ *    method that re-proves who the person is, an emailed code included; a
+ *    stolen cookie or an unattended laptop is not enough),
+ *  - once SSO is on, in this deployment's WorkOS environment — which must be
+ *    the one this database belongs to — with the add-on held,
  *
  * rate limited like a write and audited every time
  * (`org.sso.portal_link_created`) — and the link itself is never logged,
@@ -73,6 +75,11 @@ export const POST = authenticatedRoute<Params>(
       'org.sso.portal_link_created',
     ]);
     requireSsoAddon(scope, file, ['org.sso.portal_link_created']);
+    // The portal is where connections are made: only from the environment
+    // this database belongs to (review round 2).
+    await requireWorkosHome(services, provider.clientId, file, organization.id, [
+      'org.sso.portal_link_created',
+    ]);
     // Last of the gates, because it is the one the person can do something
     // about in the moment: sign in again and come back.
     await requireFreshSignIn(services, principal, file, organization.id);
