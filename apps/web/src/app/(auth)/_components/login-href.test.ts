@@ -102,6 +102,28 @@ describe('loginHref', () => {
     );
   });
 
+  it('carries the warning page’s continue token beside a deep link, and only beside one', () => {
+    const token = 'k1.1790000000.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ';
+    const url = new URL(loginHref({ org: 'acme', continueToken: token }), ORIGIN);
+    expect(url.searchParams.get('org')).toBe('acme');
+    expect(url.searchParams.get('continue')).toBe(token);
+
+    for (const options of [
+      { continueToken: token },
+      { continueToken: token, reauth: true, org: 'acme' },
+      { continueToken: token, signUp: true, org: 'acme' },
+      { continueToken: token, org: 'Not A Slug' },
+      { continueToken: '', org: 'acme' },
+      { continueToken: null, org: 'acme' },
+    ]) {
+      expect(new URL(loginHref(options), ORIGIN).searchParams.has('continue')).toBe(false);
+    }
+  });
+
+  it('never carries an API route as next (review round 2)', () => {
+    expect(readLoginLink(loginHref({ next: '/api/auth/login?org=attacker-co' })).next).toBeNull();
+  });
+
   it('forces a re-authentication, and never pairs one with the sign-up hint', () => {
     expect(
       readLoginLink(loginHref({ reauth: true, signUp: true, next: '/app/settings/security' })),

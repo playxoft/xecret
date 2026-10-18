@@ -70,6 +70,23 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
     ),
   );
 
+  // An owner's invitation into an organisation that requires its single
+  // sign-on, accepted from a session that did not come through it: the owner
+  // exemption, used to get in. Filed as a sign-in that uses it is (review
+  // round 2) — the organisation's own log is where its administrators look.
+  if (accepted.ssoExemptionUsed) {
+    record(
+      audit(accepted.organization.id).success(
+        'auth.sso_exemption_used',
+        { type: 'member', id: accepted.member.id },
+        {
+          source: 'dashboard',
+          ...(actor.signIn.method === null ? {} : { signInMethod: actor.signIn.method }),
+        },
+      ),
+    );
+  }
+
   // The membership now exists, so the key reconciliation can decide what this
   // person is owed.
   //

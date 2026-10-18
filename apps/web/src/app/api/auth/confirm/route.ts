@@ -6,16 +6,32 @@ import {
   SIGN_IN_CONFIRMATION_COOKIE_NAME,
   SIGN_IN_CONFIRMATION_TTL_SECONDS,
 } from '@xecret/core/auth';
+import type { SignInConfirmation } from '@xecret/core/auth';
 import { timingSafeEqual, utf8Encode } from '@xecret/core/crypto';
-import { findUserById, spendSignInConfirmation } from '@xecret/db/repositories';
+import {
+  findOrgByWorkosOrgId,
+  findUserById,
+  listOrganizationsForUser,
+  spendSignInConfirmation,
+} from '@xecret/db/repositories';
 import { safeRedirectPath } from '@/lib/redirect-path';
 import { POST_SIGN_IN_PATH, SIGN_IN_PATH } from '@/lib/session-hint';
 import { publicOrigin } from '@/server/bindings';
+import type { ServiceContext } from '@/server/context';
 import { parseCookies } from '@/server/http';
+import { describeError } from '@/server/logging';
 import { attemptKey, consume } from '@/server/rate-limit';
 import { publicRoute } from '@/server/route';
-import { issueSignIn, signInConfirmationKey, SignInRefusal } from '@/server/sign-in';
+import {
+  auditFor,
+  issueSignIn,
+  signInConfirmationKey,
+  SignInRefusal,
+  writeEvents,
+} from '@/server/sign-in';
 import { refusedSignIn, seeOther } from '@/server/sign-in-responses';
+import { workosProvider } from '@/server/workos';
+import type { WorkosIdentityProvider } from '@/server/workos';
 
 /**
  * The answer to "Continue as …?" — the only way a held-back sign-in becomes a
@@ -40,13 +56,16 @@ import { refusedSignIn, seeOther } from '@/server/sign-in-responses';
  *  5. **Spend the nonce** (`sign_in_confirmations`): a second presentation of
  *     the same cookie — a double click, a replay — finds it spent and is
  *     refused, before anything is issued. Spent for "cancel" too.
- *  6. "Continue": the account still exists, then `issueSignIn` — the same step
- *     8 the callback runs for a sign-in that needed no confirmation, with the
- *     facts the callback sealed. "This isn't me": nothing is issued.
+ *  6. "Continue": the account still exists, then `issueSignIn` — the same
+ *     just-in-time join and session the callback runs for a sign-in that
+ *     needed no confirmation, with the facts the callback sealed, audited as a
+ *     confirmed sign-in. "This isn't me": see {@link declined}.
  *
- * Every answer clears the cookie and is a 303: to `next`, to `/sign-in`, or to
- * `/sign-in?error=expired` for anything that did not check out — which says
- * only that the attempt is over, never which check failed.
+ * Every answer clears the cookie and is a 303: to `next` (never an API route —
+ * `safeRedirectPath` again, at the moment of use), to WorkOS's logout and on to
+ * `/sign-in?error=declined`, or to `/sign-in?error=expired` for anything that
+ * did not check out — which says only that the attempt is over, never which
+ * check failed.
  */
 
 /** A form with two short fields is well under this; anything bigger is not ours. */
@@ -93,19 +112,10 @@ export const POST = publicRoute(async ({ request, services }) => {
     });
     if (!spent) throw new SignInRefusal('expired', 409, 'confirmation already spent');
 
+    const provider = workosProvider(services.env);
+
     if (form?.get('decision') !== 'continue') {
-      // Declined — or anything that did not say "continue", which is the same
-      // answer. Worth a line: one is somebody signing in to the wrong account;
-      // a run of them for one address is somebody being worked on.
-      services.log.at('confirm').warn('A held-back sign-in was declined; nothing was issued', {
-        reason: parked.reason,
-        signInMethod: parked.signInMethod,
-      });
-      services.bindLog({ signInOutcome: 'declined', signInPurpose: parked.purpose });
-      const target = new URLSearchParams();
-      if (next !== POST_SIGN_IN_PATH) target.set('next', next);
-      const query = target.toString();
-      return seeOther(query === '' ? SIGN_IN_PATH : `${SIGN_IN_PATH}?${query}`, cleared);
+      return declined(services, parked, provider, cleared);
     }
 
     const user = await findUserById(services.db, parked.userId);
@@ -113,12 +123,20 @@ export const POST = publicRoute(async ({ request, services }) => {
       throw new SignInRefusal('account-deleted', 403, 'confirmed account no longer exists');
     }
 
+    // Everything that changes an organisation — the just-in-time join — runs
+    // here, after "Continue", never at the callback (review round 2, L6).
     const result = await issueSignIn(services, {
       user,
       outcome: parked.outcome,
       facts: { signInMethod: parked.signInMethod, ssoWorkosOrgId: parked.ssoWorkosOrgId },
       purpose: parked.purpose,
       lockOne: parked.lockOne,
+      freshAuthAt: parked.freshAuthAt,
+      providerSessionId: parked.providerSessionId,
+      workosClientId: provider.clientId,
+      // Filed on the `auth.login` it produces, so a confirmed sign-in is
+      // auditable as one.
+      confirmation: parked.reason,
       presentedSessionToken: cookies.get(SESSION_COOKIE_NAME) ?? null,
     });
 
@@ -128,6 +146,79 @@ export const POST = publicRoute(async ({ request, services }) => {
     return refusedSignIn(services, cause, next, cleared);
   }
 });
+
+/**
+ * "This isn't me" — or anything that did not say "continue", which is the
+ * same answer (review round 2, on what a decline leaves behind):
+ *
+ *  - **Nothing is issued**, and the session this browser already held, if
+ *    any, is untouched: it is the person's own.
+ *  - **Nothing was done to any organisation**: the just-in-time join waits for
+ *    "Continue". What did happen before the question stays — the account and
+ *    its personal organisation, if the sign-in created them (they belong to
+ *    the identity that signed in), and an identity link, audited when it was
+ *    made.
+ *  - **The AuthKit session it came from is ended.** A planted session would
+ *    otherwise answer this person's every next "Sign in" the same way, and the
+ *    only way out would be to wait for it to expire. The browser goes through
+ *    WorkOS's logout URL for it, and on to the sign-in page.
+ *  - **It lands on `/sign-in?error=declined`, without `next`.** The flow was
+ *    not the person's, so neither is its destination.
+ *  - **It is audited**, `auth.sign_in_declined`, with why it was held back: in
+ *    the organisation whose single sign-on it came through when that one is
+ *    here — its administrators are the ones who should see their identity
+ *    provider used for a sign-in somebody refused — and otherwise in the
+ *    account's own. A run of them for one account is somebody being worked
+ *    on.
+ */
+async function declined(
+  services: ServiceContext,
+  parked: SignInConfirmation,
+  provider: WorkosIdentityProvider,
+  cleared: readonly string[],
+): Promise<Response> {
+  services.log.at('confirm').warn('A held-back sign-in was declined; nothing was issued', {
+    reason: parked.reason,
+    signInMethod: parked.signInMethod,
+  });
+  services.bindLog({ signInOutcome: 'declined', signInPurpose: parked.purpose });
+
+  const orgId =
+    (parked.ssoWorkosOrgId === null
+      ? null
+      : (await findOrgByWorkosOrgId(services.db, parked.ssoWorkosOrgId, provider.clientId))?.id) ??
+    (await listOrganizationsForUser(services.db, parked.userId))[0]?.organization.id ??
+    null;
+  if (orgId !== null) {
+    services.waitUntil(
+      writeEvents(services, [
+        auditFor(orgId, { id: parked.userId, email: parked.email }, services).success(
+          'auth.sign_in_declined',
+          { type: 'user', id: parked.userId },
+          { source: 'dashboard', signInMethod: parked.signInMethod, confirmation: parked.reason },
+        ),
+      ]),
+    );
+  }
+
+  const landing = `${SIGN_IN_PATH}?${new URLSearchParams({ error: 'declined' }).toString()}`;
+  if (parked.providerSessionId === null) return seeOther(landing, cleared);
+  let logout: string;
+  try {
+    logout = provider.logoutUrl({
+      sessionId: parked.providerSessionId,
+      returnTo: `${publicOrigin(services.env)}${landing}`,
+    });
+  } catch (cause) {
+    services.log
+      .at('confirm')
+      .error('Could not build the WorkOS logout URL for a declined sign-in; its session stays', {
+        error: describeError(cause),
+      });
+    return seeOther(landing, cleared);
+  }
+  return seeOther(logout, cleared);
+}
 
 /**
  * Same origin for a POST, failing closed — the opposite of `isSameOrigin`,

@@ -2,15 +2,26 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { randomUUID } from 'node:crypto';
 import { WorkOS } from '@workos-inc/node';
 import {
+  deriveLastAccountKey,
   deriveOAuthStateKey,
   deriveSignInConfirmationKey,
+  deriveSsoContinueKey,
+  generateConfirmationNonce,
+  generateSsoContinueBinding,
   generateToken,
   hashToken,
+  LAST_ACCOUNT_COOKIE_NAME,
+  mintSsoContinueToken,
   OAUTH_STATE_COOKIE_NAME,
+  openOAuthState,
   openSignInConfirmation,
+  sealLastAccount,
   sealOAuthState,
+  sealSignInConfirmation,
   SIGN_IN_CONFIRMATION_COOKIE_NAME,
+  SSO_CONTINUE_COOKIE_NAME,
 } from '@xecret/core/auth';
+import type { SignInConfirmation } from '@xecret/core/auth';
 import type { AuditRecord } from '@xecret/core/audit';
 import {
   EnvelopeService,
@@ -84,6 +95,9 @@ vi.mock('./workos', async (importOriginal) => {
       authenticateWithCode: workos.authenticateWithCode,
       createMagicAuth: vi.fn(),
       authenticateWithMagicAuth: vi.fn(),
+      // Built locally by the real SDK, as in production: no call is made.
+      getLogoutUrl: (options: Parameters<WorkOS['userManagement']['getLogoutUrl']>[0]) =>
+        sdk.userManagement.getLogoutUrl(options),
     },
     organizations: { getOrganization: workos.getOrganization, createOrganization: vi.fn() },
     adminPortal: { generateLink: vi.fn() },
@@ -105,6 +119,7 @@ const confirmRoute = await import('@/app/api/auth/confirm/route');
 const sessionRoute = await import('@/app/api/auth/session/route');
 const orgRoute = await import('@/app/api/orgs/[orgSlug]/route');
 const acceptRoute = await import('@/app/api/invitations/accept/route');
+const meRoute = await import('@/app/api/auth/me/route');
 const { confirmationView } = await import('./sign-in-confirmation');
 
 let t: TestDatabase;
@@ -245,6 +260,50 @@ interface Started {
 
 /** What a browser sends when the sign-in page's own button is followed. */
 const FROM_THIS_SITE = { 'sec-fetch-site': 'same-origin' } as const;
+
+/** Every fetch-metadata header a same-origin click on a link sends, and a same-origin referrer. */
+const PERFECT_SAME_ORIGIN_CLICK = {
+  'sec-fetch-site': 'same-origin',
+  'sec-fetch-mode': 'navigate',
+  'sec-fetch-dest': 'document',
+  'sec-fetch-user': '?1',
+  referer: `${ORIGIN}/sign-in`,
+} as const;
+
+/** A `Set-Cookie` value's value, from a raw response, by cookie name. */
+function setCookieValue(response: Response, name: string): string | null {
+  const header = response.headers
+    .getSetCookie()
+    .find((c) => c.startsWith(`${name}=`) && !c.includes('Max-Age=0'));
+  return header === undefined ? null : header.slice(name.length + 1, header.indexOf(';'));
+}
+
+/**
+ * Following an organisation's SSO deep link the only way it is honoured
+ * (review round 2): the login route bounces a bare `?org=` to the warning page
+ * with a binding cookie; the page prints, into its "Continue" link, a token
+ * minted for that binding — exactly as `ssoContinueTokenFor` on the page does,
+ * with the same function and key; the person's click carries both.
+ */
+async function deepLink(
+  slug: string,
+): Promise<{ query: string; headers: Record<string, string>; binding: string }> {
+  const bounced = await login(
+    new Request(`${ORIGIN}/api/auth/login?org=${slug}`, { headers: FROM_THIS_SITE }),
+  );
+  const binding = setCookieValue(bounced, SSO_CONTINUE_COOKIE_NAME);
+  if (binding === null) throw new Error('the login route handed this browser no binding');
+  const token = await mintSsoContinueToken(await deriveSsoContinueKey(COOKIE_PASSWORD), {
+    slug,
+    binding,
+    issuedAt: Math.floor(Date.now() / 1000),
+  });
+  return {
+    query: `?org=${slug}&continue=${encodeURIComponent(token)}`,
+    headers: { ...FROM_THIS_SITE, cookie: `${SSO_CONTINUE_COOKIE_NAME}=${binding}` },
+    binding,
+  };
+}
 
 async function startSignIn(query = '', headers: Record<string, string> = {}): Promise<Started> {
   const response = await login(new Request(`${ORIGIN}/api/auth/login${query}`, { headers }));
@@ -626,13 +685,121 @@ describe('starting a sign-in', () => {
     const orgId = await seedOrg({ workosOrgId });
     const slug = await slugOf(orgId);
 
-    const deep = await startSignIn(`?org=${slug}`, FROM_THIS_SITE);
+    const link = await deepLink(slug);
+    const deep = await startSignIn(link.query, link.headers);
     expect(deep.location.searchParams.get('organization_id')).toBe(workosOrgId);
     expect(deep.location.searchParams.has('provider')).toBe(false);
 
-    const plain = await startSignIn('?org=no-such-org', FROM_THIS_SITE);
+    const none = await deepLink('no-such-org');
+    const plain = await startSignIn(none.query, none.headers);
     expect(plain.location.searchParams.has('organization_id')).toBe(false);
     expect(plain.location.searchParams.get('provider')).toBe('authkit');
+  });
+
+  it('clears the binding once a deep link is followed, so the same link a second time goes back to the page', async () => {
+    const slug = await slugOf(await seedOrg({ workosOrgId: unique('org_01') }));
+    const link = await deepLink(slug);
+
+    const followed = await login(
+      new Request(`${ORIGIN}/api/auth/login${link.query}`, { headers: link.headers }),
+    );
+
+    expect(followed.status).toBe(307);
+    expect(followed.headers.getSetCookie()).toContain(
+      `${SSO_CONTINUE_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`,
+    );
+  });
+
+  it('bounces an org= GET with perfect same-origin fetch metadata but no button token to the warning page (review round 2)', async () => {
+    // The finding: every same-origin signal was arrangeable — the sign-in
+    // confirmation 303ed to the sealed `next`, which could be this very URL.
+    // Fetch metadata says where a request came from, not that a person chose it.
+    const workosOrgId = unique('org_01');
+    const slug = await slugOf(await seedOrg({ workosOrgId }));
+    const keys: string[] = [];
+    env['RL_LOGIN'] = {
+      limit: async ({ key }: { key: string }) => {
+        keys.push(key);
+        return { success: true };
+      },
+    };
+
+    const response = await login(
+      new Request(`${ORIGIN}/api/auth/login?org=${slug}`, { headers: PERFECT_SAME_ORIGIN_CLICK }),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(`/sign-in?org=${slug}`);
+    // No flow was started — no state cookie — and the slug was not looked up.
+    expect(setCookieValue(response, OAUTH_STATE_COOKIE_NAME)).toBeNull();
+    expect(keys).toEqual([]);
+    // Only the binding the warning page's link will be good for.
+    expect(setCookieValue(response, SSO_CONTINUE_COOKIE_NAME)).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  });
+
+  it.each([
+    ['a token minted in another browser — by an attacker loading the page', 'other-binding'],
+    ['a token minted for another organisation', 'other-slug'],
+    ['a token past its five minutes', 'expired'],
+    ['a token altered on the way', 'altered'],
+    ['no binding cookie at all', 'no-cookie'],
+  ] as const)(
+    'bounces an org= GET carrying %s, however same-origin it looks',
+    async (_label, kind) => {
+      const workosOrgId = unique('org_01');
+      const slug = await slugOf(await seedOrg({ workosOrgId }));
+      const link = await deepLink(slug);
+      const key = await deriveSsoContinueKey(COOKIE_PASSWORD);
+      const now = Math.floor(Date.now() / 1000);
+      const token =
+        kind === 'other-binding'
+          ? await mintSsoContinueToken(key, {
+              slug,
+              binding: generateSsoContinueBinding(),
+              issuedAt: now,
+            })
+          : kind === 'other-slug'
+            ? await mintSsoContinueToken(key, {
+                slug: 'somewhere-else',
+                binding: link.binding,
+                issuedAt: now,
+              })
+            : kind === 'expired'
+              ? await mintSsoContinueToken(key, {
+                  slug,
+                  binding: link.binding,
+                  issuedAt: now - 6 * 60,
+                })
+              : kind === 'altered'
+                ? `${(await mintSsoContinueToken(key, { slug, binding: link.binding, issuedAt: now })).slice(0, -2)}AA`
+                : await mintSsoContinueToken(key, { slug, binding: link.binding, issuedAt: now });
+      const headers: Record<string, string> = { ...PERFECT_SAME_ORIGIN_CLICK };
+      if (kind !== 'no-cookie') headers['cookie'] = `${SSO_CONTINUE_COOKIE_NAME}=${link.binding}`;
+
+      const response = await login(
+        new Request(`${ORIGIN}/api/auth/login?org=${slug}&continue=${encodeURIComponent(token)}`, {
+          headers,
+        }),
+      );
+
+      expect(response.status).toBe(303);
+      expect(response.headers.get('location')).toBe(`/sign-in?org=${slug}`);
+      expect(setCookieValue(response, OAUTH_STATE_COOKIE_NAME)).toBeNull();
+    },
+  );
+
+  it('bounces a deep link with a good token that arrives from another site', async () => {
+    const slug = await slugOf(await seedOrg({ workosOrgId: unique('org_01') }));
+    const link = await deepLink(slug);
+
+    const response = await login(
+      new Request(`${ORIGIN}/api/auth/login${link.query}`, {
+        headers: { ...link.headers, 'sec-fetch-site': 'cross-site' },
+      }),
+    );
+
+    expect(response.status).toBe(303);
+    expect(setCookieValue(response, OAUTH_STATE_COOKIE_NAME)).toBeNull();
   });
 
   it.each([
@@ -663,17 +830,23 @@ describe('starting a sign-in', () => {
 
       expect(response.status).toBe(303);
       expect(response.headers.get('location')).toBe(`/sign-in?org=${slug}&next=%2Fapp%2Facme`);
-      // No state cookie, no flow, and not even the slug lookup's rate-limit token.
-      expect(response.headers.getSetCookie()).toEqual([]);
+      // No state cookie, no flow, and not even the slug lookup's rate-limit
+      // token: only the binding the warning page's link will need.
+      expect(response.headers.getSetCookie()).toHaveLength(1);
+      expect(setCookieValue(response, SSO_CONTINUE_COOKIE_NAME)).not.toBeNull();
       expect(keys).toEqual([]);
     },
   );
 
-  it('honours the deep link from a browser that sends only a same-origin referrer', async () => {
+  it('honours the deep link from a browser that sends only a same-origin referrer, with the token', async () => {
     const workosOrgId = unique('org_01');
     const slug = await slugOf(await seedOrg({ workosOrgId }));
+    const link = await deepLink(slug);
 
-    const deep = await startSignIn(`?org=${slug}`, { referer: `${ORIGIN}/sign-in?org=${slug}` });
+    const deep = await startSignIn(link.query, {
+      cookie: link.headers['cookie']!,
+      referer: `${ORIGIN}/sign-in?org=${slug}`,
+    });
 
     expect(deep.status).toBe(307);
     expect(deep.location.searchParams.get('organization_id')).toBe(workosOrgId);
@@ -729,7 +902,8 @@ describe('starting a sign-in', () => {
       },
     };
 
-    const flow = await startSignIn(`?org=${slug}`, FROM_THIS_SITE);
+    const link = await deepLink(slug);
+    const flow = await startSignIn(link.query, link.headers);
 
     expect(flow.status).toBe(307);
     expect(flow.location.searchParams.has('organization_id')).toBe(false);
@@ -802,6 +976,121 @@ describe('next', () => {
     expect(result.status).toBe(303);
     expect(result.location).toBe(next);
     expect(sessionCookieIssued(result)).toBe(true);
+  });
+});
+
+/* ── the confirmation → deep-link redirect chain (review round 2, HIGH) ───── */
+
+describe('a next that names the SSO deep link', () => {
+  // The attack: the attacker links the victim to
+  //   /api/auth/login?next=/api/auth/login?org=attacker-co
+  // The victim's own sign-in is held back (a reused session, say), the victim
+  // truthfully clicks "Continue", and the confirmation 303s to the sealed
+  // `next` — a same-origin, navigate, document request for the attacker's
+  // organisation, which round 1's login route honoured. Refused at three
+  // layers now: when `next` is sealed, when it is used, and by the deep link's
+  // own token.
+  const CHAIN = '/api/auth/login?org=attacker-co';
+
+  it('is not sealed: the login route writes /app into the state instead (layer 1)', async () => {
+    const flow = await startSignIn(`?next=${encodeURIComponent(CHAIN)}`);
+
+    const opened = await openOAuthState(
+      await deriveOAuthStateKey(COOKIE_PASSWORD),
+      flow.cookie,
+      flow.state,
+      new Date(),
+    );
+    expect(opened.ok && opened.value.next).toBe('/app');
+  });
+
+  it.each([
+    ['as typed', CHAIN],
+    ['upper-cased', '/API/auth/login?org=attacker-co'],
+    ['percent-encoded', '/%61pi/auth/login?org=attacker-co'],
+    ['through a climb', '/app/../api/auth/login?org=attacker-co'],
+  ])(
+    'is not followed by the callback, even sealed by a key holder, %s (layer 2)',
+    async (_l, next) => {
+      const key = await deriveOAuthStateKey(COOKIE_PASSWORD);
+      const state = 'S'.repeat(43);
+      const cookie = await sealOAuthState(key, {
+        state,
+        verifier: 'V'.repeat(43),
+        next,
+        purpose: 'sign-in',
+        issuedAt: Math.floor(Date.now() / 1000),
+        organizationId: null,
+      });
+      workosAnswers({ user: workosUser(), authenticationMethod: 'Password' });
+
+      const result = await finishSignIn({ cookie, state });
+
+      expect(sessionCookieIssued(result)).toBe(true);
+      expect(result.location).toBe('/app');
+    },
+  );
+
+  it('is not followed by the confirmation either, even sealed into a parked sign-in (layer 2)', async () => {
+    const who = workosUser();
+    await signIn(who, { authenticationMethod: 'Password' });
+    const [row] = await userRows('workos_user_id', who.id as string);
+    const value: SignInConfirmation = {
+      nonce: generateConfirmationNonce(),
+      userId: row!.id,
+      email: who.email as string,
+      signInMethod: 'password',
+      ssoWorkosOrgId: null,
+      organization: null,
+      purpose: 'sign-in',
+      next: CHAIN,
+      flowIssuedAt: Math.floor(Date.now() / 1000) - 10,
+      freshAuthAt: null,
+      lockOne: null,
+      outcome: 'matched',
+      reason: 'reused-session',
+      providerSessionId: null,
+      joins: false,
+      issuedAt: Math.floor(Date.now() / 1000),
+    };
+    const parked = await sealSignInConfirmation(
+      await deriveSignInConfirmationKey(COOKIE_PASSWORD),
+      value,
+    );
+
+    const continued = await confirm(parked);
+
+    expect(sessionCookieIssued(continued)).toBe(true);
+    expect(continued.location).toBe('/app');
+  });
+
+  it('ends on /app, end to end: park, "Continue", and no request for the attacker’s organisation', async () => {
+    const anHourAgo = Math.floor(Date.now() / 1000) - 3600;
+    const parked = await signIn(
+      workosUser(),
+      { authenticationMethod: 'Password', accessToken: accessTokenAuthenticatedAt(anHourAgo) },
+      { query: `?next=${encodeURIComponent(CHAIN)}`, confirm: false },
+    );
+    expect(parked.location).toBe('/sign-in/confirm');
+
+    const continued = await confirm(parked.parked!);
+
+    expect(continued.location).toBe('/app');
+  });
+
+  it('would not be honoured even if it were followed: the request carries no button token (layer 3)', async () => {
+    // The same request the chain produced, with every same-origin signal a
+    // browser sends on a redirect from the confirmation.
+    const slug = await slugOf(await seedOrg({ workosOrgId: unique('org_01') }));
+    const response = await login(
+      new Request(`${ORIGIN}/api/auth/login?org=${slug}`, {
+        headers: { ...PERFECT_SAME_ORIGIN_CLICK, referer: `${ORIGIN}/sign-in/confirm` },
+      }),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(`/sign-in?org=${slug}`);
+    expect(setCookieValue(response, OAUTH_STATE_COOKIE_NAME)).toBeNull();
   });
 });
 
@@ -1381,18 +1670,40 @@ describe('sso_required on every request', () => {
     expect((await reachOrg(await slugOf(company.personal), { session })).status).toBe(200);
   });
 
+  it('says in /api/auth/me which organisations refuse this session, so the dashboard can say how to get in (review round 2, L9)', async () => {
+    const company = await companyWithMember();
+    const signedIn = await signIn(company.who, { authenticationMethod: 'Password' });
+    await requireSso(company.orgId);
+
+    const response = await meRoute.GET(
+      new Request(`${ORIGIN}/api/auth/me`, {
+        headers: { cookie: `__Host-xecret_session=${sessionTokenOf(signedIn)}`, origin: ORIGIN },
+      }),
+    );
+    const body = (await response.json()) as {
+      organizations: Array<{ id: string; sso: { required: boolean; blocked: boolean } }>;
+    };
+
+    expect(response.status).toBe(200);
+    const byId = new Map(body.organizations.map((o) => [o.id, o.sso]));
+    expect(byId.get(company.orgId)).toEqual({ required: true, blocked: true });
+    expect(byId.get(company.personal)).toEqual({ required: false, blocked: false });
+  });
+
   it('lets a session from the organisation’s own single sign-on through', async () => {
     const company = await companyWithMember();
     await requireSso(company.orgId);
     const slug = await slugOf(company.orgId);
 
+    const link = await deepLink(slug);
     const result = await signIn(
       company.who,
       { authenticationMethod: 'SSO', organizationId: company.workosOrgId },
-      { query: `?org=${slug}`, headers: FROM_THIS_SITE },
+      { query: link.query, headers: link.headers },
     );
 
-    expect(result.parked).toBeNull(); // the flow asked for exactly this organisation
+    // The flow asked for exactly this organisation, and the account is in it.
+    expect(result.parked).toBeNull();
     expect((await reachOrg(slug, { session: sessionTokenOf(result) })).status).toBe(200);
   });
 
@@ -1485,6 +1796,7 @@ describe('sso_required on every request', () => {
         invitedBy: founder,
       });
 
+      audit = [];
       const answer = await acceptWith(signedIn, issued.token);
 
       expect(answer.status, role).toBe(expected);
@@ -1492,6 +1804,12 @@ describe('sso_required on every request', () => {
       const [row] = await userRows('workos_user_id', who.id as string);
       expect(
         (await membershipsOf(row!.id)).some((m) => m.org_id === orgId),
+        role,
+      ).toBe(expected === 200);
+      // The owner got in by the exemption, and the organisation's log says so
+      // (review round 2) — as it does for a sign-in that uses it.
+      expect(
+        audit.some((e) => e.action === 'auth.sso_exemption_used' && e.orgId === orgId),
         role,
       ).toBe(expected === 200);
     }
@@ -1661,22 +1979,108 @@ describe('a sign-in that came back through an organisation the flow did not ask 
       sessionToken: victimSession,
     });
 
-    expect(declined.location).toBe('/sign-in');
+    expect(declined.error).toBeNull();
     expect(sessionCookieIssued(declined)).toBe(false);
     expect((await sessionsFor(victimRow!.id)).every((s) => s.revoked_at === null)).toBe(true);
     expect(warned('declined')).toBe(true);
     expect((await confirm(parked.parked!)).error).toBe('expired');
   });
 
-  it('leaves the expected flow alone: a deep link answered through the organisation it asked for signs in at once', async () => {
+  it('ends the AuthKit session a declined sign-in came from, and lands on the sign-in page without its next (review round 2)', async () => {
+    // A planted AuthKit session would otherwise answer the person's every
+    // next "Sign in" the same way; and the flow was not theirs, so neither is
+    // its destination.
+    const org = await attackersOrg();
+    const parked = await signIn(
+      attacker(),
+      { authenticationMethod: 'SSO', organizationId: org.workosOrgId },
+      { query: '?next=%2Fapp%2Fattacker-chosen', confirm: false },
+    );
+    expect((await parkedValue(parked.parked!)).providerSessionId).toBe('session_01');
+
+    const declined = await confirm(parked.parked!, { decision: 'cancel' });
+
+    const logout = new URL(declined.location);
+    expect(logout.origin).toBe('https://api.workos.com');
+    expect(logout.pathname).toBe('/user_management/sessions/logout');
+    expect(logout.searchParams.get('session_id')).toBe('session_01');
+    expect(logout.searchParams.get('return_to')).toBe(`${ORIGIN}/sign-in?error=declined`);
+    expect(declined.location).not.toContain('attacker-chosen');
+  });
+
+  it('lands straight on the sign-in page when the declined sign-in named no AuthKit session', async () => {
+    const org = await attackersOrg();
+    const now = Math.floor(Date.now() / 1000);
+    const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const parked = await signIn(
+      attacker(),
+      {
+        authenticationMethod: 'SSO',
+        organizationId: org.workosOrgId,
+        accessToken: `${part({ alg: 'RS256' })}.${part({ sub: 'user_01', auth_time: now })}.c2ln`,
+      },
+      { query: '?next=%2Fapp%2Fattacker-chosen', confirm: false },
+    );
+
+    const declined = await confirm(parked.parked!, { decision: 'cancel' });
+
+    expect(declined.location).toBe('/sign-in?error=declined');
+  });
+
+  it('audits a declined sign-in as such, in the organisation whose single sign-on it came through', async () => {
+    const org = await attackersOrg();
+    const who = attacker();
+    const parked = await signIn(
+      who,
+      { authenticationMethod: 'SSO', organizationId: org.workosOrgId },
+      { confirm: false },
+    );
+    audit = [];
+
+    await confirm(parked.parked!, { decision: 'cancel' });
+
+    const [row] = await userRows('workos_user_id', who.id as string);
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'auth.sign_in_declined',
+        orgId: org.orgId,
+        actorId: row!.id,
+        outcome: 'success',
+        metadata: expect.objectContaining({ confirmation: 'organization', signInMethod: 'sso' }),
+      }),
+    ]);
+  });
+
+  it('audits a confirmed sign-in as one, saying why it was held back', async () => {
+    const org = await attackersOrg();
+    const parked = await signIn(
+      attacker(),
+      { authenticationMethod: 'SSO', organizationId: org.workosOrgId },
+      { confirm: false },
+    );
+    audit = [];
+
+    await confirm(parked.parked!);
+
+    const signedIn = audit.filter((e) => e.action === 'auth.signup' || e.action === 'auth.login');
+    expect(signedIn).toHaveLength(1);
+    expect(signedIn[0]!.metadata).toMatchObject({ confirmation: 'organization' });
+  });
+
+  it('leaves the expected flow alone: a member’s deep link answered through the organisation it asked for signs in at once', async () => {
     const workosOrgId = unique('org_01');
-    const slug = await slugOf(await seedOrg({ workosOrgId }));
+    const orgId = await seedOrg({ workosOrgId });
+    const slug = await slugOf(orgId);
     organizationAt(workosOrgId, [['bigcorp.example', 'verified']]);
+    const who = workosUser({ email: `${unique('alice')}@bigcorp.example` });
+    const row = await seedUser({ workosUserId: who.id as string, email: who.email as string });
+    await addMember(orgId, row.id);
+    const link = await deepLink(slug);
 
     const result = await signIn(
-      workosUser({ email: `${unique('alice')}@bigcorp.example` }),
+      who,
       { authenticationMethod: 'SSO', organizationId: workosOrgId },
-      { query: `?org=${slug}`, headers: FROM_THIS_SITE, confirm: false },
+      { query: link.query, headers: link.headers, confirm: false },
     );
 
     expect(result.parked).toBeNull();
@@ -1684,19 +2088,66 @@ describe('a sign-in that came back through an organisation the flow did not ask 
     expect(result.location).toBe('/app');
   });
 
-  it('holds back a deep link answered through a different organisation', async () => {
-    const asked = unique('org_01');
-    const slug = await slugOf(await seedOrg({ workosOrgId: asked }));
+  it('holds back a deep link answered through the organisation it asked for, for an account not in it (review round 2)', async () => {
+    // Defence in depth behind the deep link's token: a sign-in through an
+    // attacker's organisation that arrived some way nobody has found yet is
+    // still never issued at once — the attacker's IdP account is not the
+    // victim's, and the victim's is not in the attacker's organisation.
     const org = await attackersOrg();
+    const link = await deepLink(org.slug);
 
     const result = await signIn(
       attacker(),
       { authenticationMethod: 'SSO', organizationId: org.workosOrgId },
-      { query: `?org=${slug}`, headers: FROM_THIS_SITE, confirm: false },
+      { query: link.query, headers: link.headers, confirm: false },
     );
 
     expect(result.location).toBe('/sign-in/confirm');
     expect(sessionCookieIssued(result)).toBe(false);
+    expect(await parkedValue(result.parked!)).toMatchObject({
+      reason: 'not-member',
+      organization: { slug: org.slug },
+    });
+  });
+
+  it('holds back a deep link answered through a different organisation', async () => {
+    const asked = unique('org_01');
+    const slug = await slugOf(await seedOrg({ workosOrgId: asked }));
+    const org = await attackersOrg();
+    const link = await deepLink(slug);
+
+    const result = await signIn(
+      attacker(),
+      { authenticationMethod: 'SSO', organizationId: org.workosOrgId },
+      { query: link.query, headers: link.headers, confirm: false },
+    );
+
+    expect(result.location).toBe('/sign-in/confirm');
+    expect(sessionCookieIssued(result)).toBe(false);
+  });
+
+  it('does not name, or let anybody join, an organisation linked in another WorkOS environment', async () => {
+    // The sign-in path asks only for links made in this deployment's own
+    // environment: a Staging link over the production database admits nobody.
+    const workosOrgId = unique('org_01');
+    const orgId = await seedOrg({
+      workosOrgId,
+      clientId: 'client_01ANOTHERENVIRONMENT',
+      jitJoinEnabled: true,
+    });
+    organizationAt(workosOrgId, [['attacker.example', 'verified']]);
+    const who = attacker();
+
+    const parked = await signIn(
+      who,
+      { authenticationMethod: 'SSO', organizationId: workosOrgId },
+      { confirm: false },
+    );
+    expect(await parkedValue(parked.parked!)).toMatchObject({ organization: null, joins: false });
+
+    await confirm(parked.parked!);
+    const [row] = await userRows('workos_user_id', who.id as string);
+    expect((await membershipsOf(row!.id)).some((m) => m.org_id === orgId)).toBe(false);
   });
 
   it('holds back a sign-in WorkOS answered from a session it reused without asking, whatever it names', async () => {
@@ -1749,6 +2200,41 @@ describe('a sign-in that came back through an organisation the flow did not ask 
     expect(
       await confirmationView(await deriveSignInConfirmationKey(COOKIE_PASSWORD), 'c1.x.y'),
     ).toBeNull();
+  });
+
+  it('shows a name and an address somebody else chose with every trick in them made visible (review round 2)', async () => {
+    // A direction override that makes reversed text read as a colleague's
+    // company, a zero-width space, a tower of accents: replaced, visibly,
+    // before the page sees them — and an address with a look-alike letter is
+    // flagged.
+    const org = await attackersOrg();
+    const override = String.fromCodePoint(0x202e);
+    const zeroWidth = String.fromCodePoint(0x200b);
+    const accents = String.fromCodePoint(0x301, 0x302, 0x303, 0x304);
+    await t.pg.query(`update organizations set name = $2 where id = $1`, [
+      org.orgId,
+      `${override}ynapmoC${zeroWidth} A${accents}`,
+    ]);
+    const lookalike = workosUser({
+      email: `${String.fromCodePoint(0x430)}lice-${unique('x')}@attacker.example`,
+    });
+    const parked = await signIn(
+      lookalike,
+      { authenticationMethod: 'SSO', organizationId: org.workosOrgId },
+      { confirm: false },
+    );
+
+    const view = await confirmationView(
+      await deriveSignInConfirmationKey(COOKIE_PASSWORD),
+      parked.parked!,
+    );
+
+    const name = view!.organization!.name;
+    expect(name).not.toContain(override);
+    expect(name).not.toContain(zeroWidth);
+    expect(name).toContain(String.fromCodePoint(0xfffd));
+    expect(name).not.toContain(accents);
+    expect(view!.emailHasNonAscii).toBe(true);
   });
 });
 
@@ -1904,6 +2390,61 @@ describe('just-in-time membership', () => {
       status: 'suspended',
     });
     expect(audit.map((e) => e.action)).not.toContain('member.jit_joined');
+  });
+
+  it('joins nobody until the person continues, so "This isn’t me" leaves no trace in the organisation (review round 2, L6)', async () => {
+    const { workosOrgId, orgId } = await ssoOrg();
+    const who = workosUser({ email: `${unique('new')}@bigcorp.example` });
+    const seats = async () =>
+      (
+        await t.pg.query<{ n: number }>(
+          `select count(*)::int as n from org_members where org_id = $1`,
+          [orgId],
+        )
+      ).rows[0]!.n;
+    const before = await seats();
+
+    const parked = await signIn(
+      who,
+      { authenticationMethod: 'SSO', organizationId: workosOrgId },
+      { confirm: false },
+    );
+
+    // Held back — and nothing done to the organisation while it waits.
+    expect(parked.location).toBe('/sign-in/confirm');
+    expect(await parkedValue(parked.parked!)).toMatchObject({ joins: true });
+    expect(await seats()).toBe(before);
+    expect(audit.filter((e) => e.orgId === orgId).map((e) => e.action)).toEqual([]);
+
+    await confirm(parked.parked!, { decision: 'cancel' });
+
+    expect(await seats()).toBe(before);
+    expect(audit.map((e) => e.action)).not.toContain('member.jit_joined');
+    expect(audit.filter((e) => e.orgId === orgId).map((e) => e.action)).toEqual([
+      'auth.sign_in_declined',
+    ]);
+  });
+
+  it('joins on "Continue", under the organisation’s lock, as it would have at once', async () => {
+    const { workosOrgId, orgId } = await ssoOrg();
+    const who = workosUser({ email: `${unique('new')}@bigcorp.example` });
+    const parked = await signIn(
+      who,
+      { authenticationMethod: 'SSO', organizationId: workosOrgId },
+      { confirm: false },
+    );
+    // Switched off while the person reads the page: the join that counts is
+    // decided at "Continue", so it does not happen.
+    await t.pg.query(`update organizations set jit_join_enabled = false where id = $1`, [orgId]);
+
+    const continued = await confirm(parked.parked!);
+
+    expect(sessionCookieIssued(continued)).toBe(true);
+    const [row] = await userRows('workos_user_id', who.id as string);
+    const memberships = await membershipsOf(row!.id);
+    expect(memberships.map((m) => m.org_id)).not.toContain(orgId);
+    // Signed in to a personal organisation instead, made at that moment.
+    expect(memberships).toEqual([expect.objectContaining({ role: 'owner' })]);
   });
 });
 
@@ -2134,6 +2675,126 @@ describe('the session a sign-in issues', () => {
 
     const [row] = await userRows('workos_user_id', who.id as string);
     expect(await reauthRows(row!.id)).toEqual([]);
+    expect(await freshAuthOf(row!.id)).toEqual([null]);
+  });
+
+  async function freshAuthOf(userId: string): Promise<(number | null)[]> {
+    const result = await t.pg.query<{ fresh_auth_at: Date | null }>(
+      `select fresh_auth_at from sessions where user_id = $1 order by created_at`,
+      [userId],
+    );
+    return result.rows.map((r) =>
+      r.fresh_auth_at === null ? null : Math.floor(r.fresh_auth_at.getTime() / 1000),
+    );
+  }
+
+  it('records a fresh sign-in by emailed code for the setup portal, though not as lock one (review round 2, L7)', async () => {
+    // The portal used to borrow lock one, which refuses MagicAuth by design;
+    // an owner who signs in by emailed code could never open it.
+    const who = workosUser();
+    const authenticatedAt = Math.floor(Date.now() / 1000);
+
+    await signIn(
+      who,
+      {
+        authenticationMethod: 'MagicAuth',
+        accessToken: accessTokenAuthenticatedAt(authenticatedAt),
+      },
+      { query: '?reauth=1' },
+    );
+
+    const [row] = await userRows('workos_user_id', who.id as string);
+    expect(await reauthRows(row!.id)).toEqual([]);
+    expect(await freshAuthOf(row!.id)).toEqual([authenticatedAt]);
+  });
+
+  it('records no fresh sign-in for one AuthKit answered from a session it already held, by any method', async () => {
+    const who = workosUser();
+    const anHourAgo = Math.floor(Date.now() / 1000) - 3600;
+
+    await signIn(
+      who,
+      { authenticationMethod: 'MagicAuth', accessToken: accessTokenAuthenticatedAt(anHourAgo) },
+      { query: '?reauth=1' },
+    );
+
+    const [row] = await userRows('workos_user_id', who.id as string);
+    expect(await freshAuthOf(row!.id)).toEqual([null]);
+  });
+
+  it('dates lock one and the fresh sign-in by the authentication, not by when a held-back sign-in was confirmed (review round 2)', async () => {
+    // A sign-in held back for confirmation is issued up to five minutes after
+    // the person authenticated; recorded at "now", the reset's and the
+    // portal's ten minutes quietly became fifteen.
+    const who = workosUser();
+    await signIn(who, { authenticationMethod: 'Password' });
+    const [row] = await userRows('workos_user_id', who.id as string);
+    const now = Math.floor(Date.now() / 1000);
+    const authenticatedAt = now - 240;
+    const parked = await sealSignInConfirmation(
+      await deriveSignInConfirmationKey(COOKIE_PASSWORD),
+      {
+        nonce: generateConfirmationNonce(),
+        userId: row!.id,
+        email: who.email as string,
+        signInMethod: 'password',
+        ssoWorkosOrgId: null,
+        organization: null,
+        purpose: 'reauth',
+        next: '/app',
+        flowIssuedAt: authenticatedAt - 5,
+        freshAuthAt: authenticatedAt,
+        lockOne: 'armed',
+        outcome: 'matched',
+        reason: 'organization',
+        providerSessionId: null,
+        joins: false,
+        issuedAt: now,
+      },
+    );
+
+    const continued = await confirm(parked);
+
+    expect(sessionCookieIssued(continued)).toBe(true);
+    const signedIn = await t.pg.query<{ signed_in_at: Date }>(
+      `select signed_in_at from reauthentications where user_id = $1`,
+      [row!.id],
+    );
+    expect(signedIn.rows.map((r) => Math.floor(r.signed_in_at.getTime() / 1000))).toEqual([
+      authenticatedAt,
+    ]);
+    expect((await freshAuthOf(row!.id)).at(-1)).toBe(authenticatedAt);
+  });
+
+  it('records no lock one for an armed verdict with no date to keep it by — a cookie from the build before', async () => {
+    const who = workosUser();
+    await signIn(who, { authenticationMethod: 'Password' });
+    const [row] = await userRows('workos_user_id', who.id as string);
+    const now = Math.floor(Date.now() / 1000);
+    const parked = await sealSignInConfirmation(
+      await deriveSignInConfirmationKey(COOKIE_PASSWORD),
+      {
+        nonce: generateConfirmationNonce(),
+        userId: row!.id,
+        email: who.email as string,
+        signInMethod: 'password',
+        ssoWorkosOrgId: null,
+        organization: null,
+        purpose: 'reauth',
+        next: '/app',
+        flowIssuedAt: now - 5,
+        freshAuthAt: null,
+        lockOne: 'armed',
+        outcome: 'matched',
+        reason: 'organization',
+        providerSessionId: null,
+        joins: false,
+        issuedAt: now,
+      },
+    );
+
+    expect(sessionCookieIssued(await confirm(parked))).toBe(true);
+    expect(await reauthRows(row!.id)).toEqual([]);
   });
 
   it('issues no session when the re-authentication cannot be recorded — one transaction', async () => {
@@ -2231,14 +2892,175 @@ describe('the session route', () => {
       }),
     );
 
-    expect(response.status).toBe(204);
+    expect(response.status).toBe(200);
     expect(response.headers.getSetCookie()).toEqual([
       '__Host-xecret_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax',
       '__Host-xecret_csrf=; Path=/; Max-Age=0; Secure; SameSite=Lax',
     ]);
+    // A session that recorded no AuthKit session — every one issued before
+    // migration 0023 — signs out exactly as before, with nothing more to do.
+    expect(await response.json()).toEqual({ logoutUrl: null });
     const revoked = (await sessionsFor(row!.id)).filter((s) => s.revoked_at !== null);
     expect(revoked).toHaveLength(1);
     expect(audit.map((e) => e.action)).toContain('auth.logout');
+  });
+
+  it('ends the AuthKit session too: the sign-in records its sid, and sign-out answers WorkOS’s logout URL (review round 2)', async () => {
+    // AuthKit's session used to outlive sign-out, so nearly every return was
+    // answered from it without asking — and held back as a reused session,
+    // teaching people to click "Continue".
+    const signedIn = await signIn(workosUser(), { authenticationMethod: 'Password' });
+    const session = sessionTokenOf(signedIn);
+    const csrf = cookieValue(signedIn, '__Host-xecret_csrf');
+    const stored = await t.pg.query<{ workos_session_id: string | null }>(
+      `select workos_session_id from sessions where token_hash = $1`,
+      [await hashToken(session)],
+    );
+    expect(stored.rows).toEqual([{ workos_session_id: 'session_01' }]);
+
+    const signOut = () =>
+      sessionRoute.DELETE(
+        new Request(`${ORIGIN}/api/auth/session`, {
+          method: 'DELETE',
+          headers: {
+            cookie: `__Host-xecret_session=${session}; __Host-xecret_csrf=${csrf}`,
+            'x-xecret-csrf': csrf,
+          },
+        }),
+      );
+    const response = await signOut();
+
+    expect(response.status).toBe(200);
+    const { logoutUrl } = (await response.json()) as { logoutUrl: string };
+    const url = new URL(logoutUrl);
+    expect(url.origin).toBe('https://api.workos.com');
+    expect(url.pathname).toBe('/user_management/sessions/logout');
+    expect(url.searchParams.get('session_id')).toBe('session_01');
+    expect(url.searchParams.get('return_to')).toBe(`${ORIGIN}/sign-in`);
+
+    // The same session signed out again hands out nothing: it was not this
+    // call that ended it.
+    expect(await (await signOut()).json()).toEqual({ logoutUrl: null });
+  });
+
+  it('records no AuthKit session for a token whose sid is not shaped like one', async () => {
+    const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const now = Math.floor(Date.now() / 1000);
+    const signedIn = await signIn(workosUser(), {
+      authenticationMethod: 'Password',
+      accessToken: `${part({ alg: 'RS256' })}.${part({ sid: 'session_01/../x', auth_time: now })}.c2ln`,
+    });
+    const stored = await t.pg.query<{ workos_session_id: string | null }>(
+      `select workos_session_id from sessions where token_hash = $1`,
+      [await hashToken(sessionTokenOf(signedIn))],
+    );
+    expect(stored.rows).toEqual([{ workos_session_id: null }]);
+  });
+});
+
+/* ── the reused-session confirmation and the last account (review round 2) ── */
+
+describe('a reused session for the account this browser last signed in as', () => {
+  const anHourAgo = () => Math.floor(Date.now() / 1000) - 3600;
+
+  async function lastAccountCookie(userId: string): Promise<string> {
+    return `${LAST_ACCOUNT_COOKIE_NAME}=${await sealLastAccount(
+      await deriveLastAccountKey(COOKIE_PASSWORD),
+      userId,
+    )}`;
+  }
+
+  async function reusedSignIn(user: Record<string, unknown>, cookie: string | null) {
+    const flow = await startSignIn();
+    workosAnswers({
+      user,
+      authenticationMethod: 'Password',
+      accessToken: accessTokenAuthenticatedAt(anHourAgo()),
+    });
+    const query = new URLSearchParams({ state: flow.state, code: 'a-code-from-authkit' });
+    return finished(
+      await callback(
+        new Request(`${ORIGIN}/api/auth/callback?${query.toString()}`, {
+          headers: {
+            cookie: [
+              `${OAUTH_STATE_COOKIE_NAME}=${flow.cookie}`,
+              ...(cookie === null ? [] : [cookie]),
+            ].join('; '),
+          },
+        }),
+      ),
+    );
+  }
+
+  it('is written beside every session a sign-in issues', async () => {
+    const who = workosUser();
+    const result = await signIn(who, { authenticationMethod: 'Password' });
+    const [row] = await userRows('workos_user_id', who.id as string);
+
+    const header = result.cookies.find((c) => c.startsWith(`${LAST_ACCOUNT_COOKIE_NAME}=`));
+    expect(header?.split('; ')).toEqual(
+      expect.arrayContaining(['HttpOnly', 'Secure', 'SameSite=Lax', 'Path=/']),
+    );
+    expect(header).toContain(row!.id);
+  });
+
+  it('signs a returning person straight in, without asking "Is this you?"', async () => {
+    const who = workosUser();
+    await signIn(who, { authenticationMethod: 'Password' });
+    const [row] = await userRows('workos_user_id', who.id as string);
+
+    const result = await reusedSignIn(who, await lastAccountCookie(row!.id));
+
+    expect(result.parked).toBeNull();
+    expect(sessionCookieIssued(result)).toBe(true);
+  });
+
+  it('still asks for any other account — a planted session is always somebody else’s', async () => {
+    const victim = workosUser();
+    await signIn(victim, { authenticationMethod: 'Password' });
+    const [victimRow] = await userRows('workos_user_id', victim.id as string);
+
+    const planted = await reusedSignIn(workosUser(), await lastAccountCookie(victimRow!.id));
+
+    expect(planted.location).toBe('/sign-in/confirm');
+    expect(await parkedValue(planted.parked!)).toMatchObject({ reason: 'reused-session' });
+  });
+
+  it('still asks with no cookie, or one this deployment did not sign', async () => {
+    const who = workosUser();
+    await signIn(who, { authenticationMethod: 'Password' });
+    const [row] = await userRows('workos_user_id', who.id as string);
+    const forged = `${LAST_ACCOUNT_COOKIE_NAME}=a1.${row!.id}.${'A'.repeat(43)}`;
+
+    for (const cookie of [null, forged]) {
+      const result = await reusedSignIn(who, cookie);
+      expect(result.location).toBe('/sign-in/confirm');
+    }
+  });
+
+  it('never skips the organisation question, whatever the cookie says', async () => {
+    const workosOrgId = unique('org_01');
+    await seedOrg({ workosOrgId });
+    organizationAt(workosOrgId, [['example.com', 'verified']]);
+    const who = workosUser();
+    await signIn(who, { authenticationMethod: 'Password' });
+    const [row] = await userRows('workos_user_id', who.id as string);
+
+    const flow = await startSignIn();
+    workosAnswers({ user: who, authenticationMethod: 'SSO', organizationId: workosOrgId });
+    const query = new URLSearchParams({ state: flow.state, code: 'a-code-from-authkit' });
+    const result = finished(
+      await callback(
+        new Request(`${ORIGIN}/api/auth/callback?${query.toString()}`, {
+          headers: {
+            cookie: `${OAUTH_STATE_COOKIE_NAME}=${flow.cookie}; ${await lastAccountCookie(row!.id)}`,
+          },
+        }),
+      ),
+    );
+
+    expect(result.location).toBe('/sign-in/confirm');
+    expect(await parkedValue(result.parked!)).toMatchObject({ reason: 'organization' });
   });
 });
 

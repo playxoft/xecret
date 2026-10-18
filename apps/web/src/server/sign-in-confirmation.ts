@@ -5,7 +5,8 @@ import {
   signInConfirmationCookie,
 } from '@xecret/core/auth';
 import type { OAuthPurpose, SignInConfirmation, SignInConfirmationReason } from '@xecret/core/auth';
-import { findOrgByWorkosOrgId } from '@xecret/db/repositories';
+import { hasNonAsciiCharacters, inertText } from '@/lib/inert-text';
+import { POST_SIGN_IN_PATH } from '@/lib/session-hint';
 import type { Bindings } from './bindings';
 import type { ServiceContext } from './context';
 import { signInConfirmationKey } from './sign-in';
@@ -27,6 +28,14 @@ import type { PreparedSignIn } from './sign-in';
 /** Where a held-back sign-in is confirmed. */
 export const SIGN_IN_CONFIRM_PATH = '/sign-in/confirm';
 
+/**
+ * The longest an address or an organisation name is shown on the page, in
+ * characters. An organisation name is at most 25 when it is typed, and an
+ * address 320 by the standard; these bounds are for what got past either.
+ */
+const SHOWN_EMAIL_MAX = 120;
+const SHOWN_NAME_MAX = 40;
+
 /** Parks a prepared sign-in, answering the `Set-Cookie` value that holds it. */
 export async function parkSignIn(
   services: ServiceContext,
@@ -40,12 +49,10 @@ export async function parkSignIn(
 ): Promise<string> {
   const { prepared } = params;
   // Named only for a single sign-on: that is the sign-in whose organisation is
-  // the claim the person has to judge. Looked up here, where the database is,
-  // so the page needs nothing but the cookie.
-  const linked =
-    prepared.facts.ssoWorkosOrgId === null
-      ? null
-      : await findOrgByWorkosOrgId(services.db, prepared.facts.ssoWorkosOrgId);
+  // the claim the person has to judge. The callback already looked it up, in
+  // this deployment's WorkOS environment only, so the page needs nothing but
+  // the cookie.
+  const linked = prepared.ssoOrganization;
 
   const value: SignInConfirmation = {
     nonce: generateConfirmationNonce(),
@@ -57,29 +64,56 @@ export async function parkSignIn(
     purpose: params.purpose,
     next: params.next,
     flowIssuedAt: params.flowIssuedAt,
+    freshAuthAt: prepared.freshAuthAt,
     lockOne: prepared.lockOne,
     outcome: prepared.outcome,
     reason: params.reason,
+    providerSessionId: prepared.providerSessionId,
+    joins: prepared.joins,
     issuedAt: Math.floor(Date.now() / 1000),
   };
-  return signInConfirmationCookie(
-    await sealSignInConfirmation(await signInConfirmationKey(services.env), value),
-  );
+  const key = await signInConfirmationKey(services.env);
+  let sealed: string;
+  try {
+    sealed = await sealSignInConfirmation(key, value);
+  } catch (cause) {
+    if (!(cause instanceof RangeError)) throw cause;
+    // Longer than a browser keeps a cookie (review round 2): only `next` can
+    // make it so — the longest one, beside a long name in wide characters —
+    // and a sign-in that lands on the dashboard is better than one nobody can
+    // confirm.
+    services.log
+      .at('parkSignIn')
+      .warn('A held-back sign-in was too long for its cookie; its destination was dropped', {
+        nextLength: params.next.length,
+      });
+    sealed = await sealSignInConfirmation(key, { ...value, next: POST_SIGN_IN_PATH });
+  }
+  return signInConfirmationCookie(sealed);
 }
 
 /** What the confirmation page may show, read from the cookie and nothing else. */
 export interface ConfirmationView {
+  /**
+   * The account's address, made inert for display ({@link inertText}): no
+   * direction override, invisible character or tower of accents survives, and
+   * it is cut to a length the page can hold.
+   */
   email: string;
+  /** Whether the address has characters outside printable ASCII — the page says so. */
+  emailHasNonAscii: boolean;
   /** Whether an organisation's identity provider vouched for this sign-in. */
   sso: boolean;
   /**
    * How that organisation names itself here — an owner's choice, so the page
-   * presents it as a claim. `null` for a single sign-on through an
-   * organisation not linked to any here.
+   * presents it as a claim, made inert like the address. `null` for a single
+   * sign-on through an organisation not linked to any here.
    */
   organization: { name: string; slug: string } | null;
   reason: SignInConfirmationReason;
   purpose: OAuthPurpose;
+  /** Whether continuing makes the account a member of that organisation. */
+  joins: boolean;
   /** The form's CSRF token: the nonce, printed into the page that the cookie came to. */
   confirmation: string;
 }
@@ -99,11 +133,20 @@ export async function confirmationView(
   if (!opened.ok) return null;
   const value = opened.value;
   return {
-    email: value.email,
+    email: inertText(value.email, SHOWN_EMAIL_MAX),
+    emailHasNonAscii: hasNonAsciiCharacters(value.email),
     sso: value.ssoWorkosOrgId !== null,
-    organization: value.organization,
+    organization:
+      value.organization === null
+        ? null
+        : {
+            name: inertText(value.organization.name, SHOWN_NAME_MAX),
+            // A slug is lower-case ASCII by the parser's own check.
+            slug: value.organization.slug,
+          },
     reason: value.reason,
     purpose: value.purpose,
+    joins: value.joins,
     confirmation: value.nonce,
   };
 }

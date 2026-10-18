@@ -56,6 +56,42 @@ describe('safeRedirectPath', () => {
     expect(safeRedirectPath(value, '/fallback')).toBe('/fallback');
   });
 
+  it.each([
+    // Review round 2: a same-origin `next` that is an API route turns the
+    // sign-in confirmation's "Continue" into a same-origin GET the route acts
+    // on — `/api/auth/login?org=attacker-co` above all.
+    ['the SSO deep link itself', '/api/auth/login?org=attacker-co'],
+    ['any API route', '/api/orgs/acme'],
+    ['the API root', '/api'],
+    ['the API root with a query', '/api?x=1'],
+    ['upper case', '/API/auth/login?org=attacker-co'],
+    ['mixed case', '/Api/Auth/Login'],
+    ['an encoded letter', '/%61pi/auth/login?org=attacker-co'],
+    ['an encoded slash', '/api%2Fauth%2Flogin'],
+    ['an encoded slash before it', '/%2Fapi/auth/login'],
+    ['double encoding', '/%2561pi/auth/login'],
+    ['an encoded backslash', '/api%5Cauth%5Clogin'],
+    ['a climb into it', '/app/../api/auth/login'],
+    ['an encoded climb into it', '/app/%2e%2e/api/auth/login'],
+    ['a double-encoded climb into it', '/app/%252e%252e/api/auth/login'],
+    ['repeated slashes inside', '/app/..//api/x'],
+    ['an undecodable path', '/api/%zz'],
+  ])('refuses %s under /api/', (_label, value) => {
+    expect(safeRedirectPath(value, '/fallback')).toBe('/fallback');
+  });
+
+  it.each([
+    // Real pages, including ones whose names merely contain "api".
+    ['/app/acme/api/production'],
+    ['/apiary'],
+    ['/docs/api/reference'],
+    ['/cli/authorize?challenge=abc&port=50123'],
+    ['/invite/xit_live_abc'],
+    ['/sign-in?org=acme'],
+  ])('keeps a page that is not an API route: %s', (value) => {
+    expect(safeRedirectPath(value, '/fallback')).toBe(value);
+  });
+
   it('returns a fixed point: whatever it returns, it returns unchanged when given it again', () => {
     for (const value of [
       '/app',

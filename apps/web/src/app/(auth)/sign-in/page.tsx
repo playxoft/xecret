@@ -1,5 +1,14 @@
 import type { Metadata } from 'next';
+import { cookies } from 'next/headers';
 import Link from 'next/link';
+
+import {
+  isWellFormedSsoContinueBinding,
+  mintSsoContinueToken,
+  SSO_CONTINUE_COOKIE_NAME,
+} from '@xecret/core/auth';
+import { workerContext } from '@/server/context';
+import { ssoContinueKey } from '@/server/sign-in';
 
 // From their own modules rather than the `components/ui` barrel: this page is
 // otherwise all server markup, and the barrel would make it depend on every
@@ -55,6 +64,16 @@ export const metadata: Metadata = {
  *    route). Held to the slug pattern before it is printed, and never looked up
  *    here: whether the slug exists, or has SSO, is not this page's to say.
  *
+ *    Its "Continue" link is the only thing the login route will start an
+ *    organisation's single sign-on for (review round 2): it carries a
+ *    five-minute token, an HMAC over the slug, the moment, and the random
+ *    binding cookie the login route handed this browser when it sent it here.
+ *    Minted here, on the server, from a cookie no script and no other site
+ *    can read — so a token is good only in the browser that was shown this
+ *    page. A browser that arrived without a binding (this page typed or
+ *    bookmarked) gets a link without one; the login route then hands it a
+ *    binding and sends it back here, and the second "Continue" goes through.
+ *
  * Read here, on the server. Reading them in the browser with `useSearchParams`
  * would mean shipping a client component, and a Suspense boundary around it,
  * to render what is otherwise static markup.
@@ -66,6 +85,7 @@ export default async function SignInPage({ searchParams }: PageProps<'/sign-in'>
   const ssoOrg = ssoOrgParam(singleParam(params.org));
 
   if (ssoOrg !== null) {
+    const continueToken = await ssoContinueTokenFor(ssoOrg);
     return (
       <AuthCard
         title="Sign in with single sign-on"
@@ -85,7 +105,9 @@ export default async function SignInPage({ searchParams }: PageProps<'/sign-in'>
           </Alert>
 
           <Button variant="primary" size="lg" className="w-full" asChild>
-            <a href={loginHref({ next, org: ssoOrg })}>Continue with single sign-on</a>
+            <a href={loginHref({ next, org: ssoOrg, continueToken })}>
+              Continue with single sign-on
+            </a>
           </Button>
           <Button variant="secondary" size="lg" className="w-full" asChild>
             <a href={authScreenHref('/sign-in', next)}>Sign in another way</a>
@@ -126,4 +148,25 @@ export default async function SignInPage({ searchParams }: PageProps<'/sign-in'>
       </div>
     </AuthCard>
   );
+}
+
+/**
+ * The "Continue" token for `slug`, bound to the binding cookie this browser
+ * holds — or `null` when it holds none (the login route will hand it one) or
+ * the deployment cannot mint one (it cannot sign anybody in either, and the
+ * login route will say so).
+ */
+async function ssoContinueTokenFor(slug: string): Promise<string | null> {
+  const binding = (await cookies()).get(SSO_CONTINUE_COOKIE_NAME)?.value;
+  if (!isWellFormedSsoContinueBinding(binding)) return null;
+  try {
+    const { env } = await workerContext();
+    return await mintSsoContinueToken(await ssoContinueKey(env), {
+      slug,
+      binding,
+      issuedAt: Math.floor(Date.now() / 1000),
+    });
+  } catch {
+    return null;
+  }
 }

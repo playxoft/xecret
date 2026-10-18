@@ -47,6 +47,18 @@ const PROBE_ORIGIN = 'https://redirect-check.invalid';
  *    therefore applies to the output too; `isSafeSamePath` is that one rule,
  *    run twice. The result is a fixed point: passing it back in returns it
  *    unchanged.
+ *
+ * ── And never an API route ──
+ * Same-origin is not the same as harmless. Every redirect to `next` is a
+ * top-level navigation the browser makes as the person, carrying their cookies
+ * and arriving with same-origin fetch metadata — and an `/api/` route answers
+ * a GET by *doing* something. Review round 2 found the one that mattered:
+ * `next=/api/auth/login?org=attacker-co` turned the sign-in confirmation's
+ * truthful "Continue" into a same-origin request for the attacker's single
+ * sign-on, which is exactly the request the login route honoured. Nothing a
+ * person should land on lives under `/api/`, so no `next` may point there.
+ * Checked on the decoded, lower-cased path, with backslashes read as slashes,
+ * so that `/API/…`, `/%61pi/…` and `/api%2F…` are refused too.
  */
 export function safeRedirectPath(value: string | null | undefined, fallback = '/'): string {
   if (typeof value !== 'string' || !isSafeSamePath(value)) return fallback;
@@ -58,9 +70,42 @@ export function safeRedirectPath(value: string | null | undefined, fallback = '/
     return fallback;
   }
   if (url.origin !== PROBE_ORIGIN) return fallback;
+  if (isApiPath(url.pathname)) return fallback;
 
   const normalised = `${url.pathname}${url.search}${url.hash}`;
   return isSafeSamePath(normalised) ? normalised : fallback;
+}
+
+/**
+ * Whether a path, as the server might route it, is under `/api` — decoded until
+ * it stops changing (a handful of rounds at most; anything that will not
+ * settle, or will not decode, counts as one), backslashes read as slashes,
+ * runs of slashes collapsed, dot segments resolved again after decoding, and
+ * lower-cased. Errs towards "yes": the cost of a false positive is a sign-in
+ * that lands on `/app` instead.
+ */
+export function isApiPath(pathname: string): boolean {
+  let decoded = pathname;
+  for (let round = 0; ; round += 1) {
+    let next: string;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      return true;
+    }
+    if (next === decoded) break;
+    if (round === 3) return true;
+    decoded = next;
+  }
+  let resolved: string;
+  try {
+    const flattened = `/${decoded.replace(/\\/g, '/').replace(/^\/+/, '')}`.replace(/\/{2,}/g, '/');
+    resolved = new URL(flattened, PROBE_ORIGIN).pathname;
+  } catch {
+    return true;
+  }
+  const path = resolved.toLowerCase();
+  return path === '/api' || path.startsWith('/api/');
 }
 
 /**

@@ -30,6 +30,19 @@ export const metadata: Metadata = {
  * *claim* it is ("an organisation calling itself …" — its owner chose the name,
  * and anybody can create one), and makes declining as easy as continuing.
  *
+ * ── The address and the name are somebody else's strings ──
+ * An organisation's owner chose its name, and an identity provider chose the
+ * address it asserted. Either could carry a direction override that makes
+ * reversed text read as a colleague's address, an invisible character that
+ * makes one "Acme" a different organisation from another that looks the same, a
+ * tower of combining accents that covers the sentence beside it, or simply be
+ * long enough to push the explanation off the screen (review round 2). So both
+ * arrive here already made inert — `inertText`: every such character replaced
+ * by a visible U+FFFD, cut to length — and are rendered inside `<bdi>`, left to
+ * right, so whatever direction their letters have cannot reorder the sentence
+ * around them. An address with anything outside printable ASCII is also said
+ * to have it, because a look-alike letter needs no special character at all.
+ *
  * The form posts to `POST /api/auth/confirm` with the cookie's nonce as its
  * token — the CSRF check — and that route, not this page, decides. A plain
  * HTML form: it must work without script, and `form-action 'self'` covers it.
@@ -55,12 +68,25 @@ export default async function ConfirmSignInPage() {
   return (
     <AuthCard title="Is this you?" description={<Explanation view={view} />}>
       <div className="flex flex-col gap-5">
+        <div className="border-line bg-canvas-inset rounded-lg border px-4 py-3">
+          <p className="text-fg-subtle text-sm">The account you would be signed in to</p>
+          <p className="text-fg mt-0.5 font-mono text-sm font-medium break-all">
+            <Inert value={view.email} />
+          </p>
+        </div>
+
         <Alert tone="warning" title="Continue only if you just signed in yourself">
           <p>
             If you did not just sign in, or this is not your account, choose{' '}
             <span className="font-medium">This isn’t me</span>. Somebody may be trying to sign you
             in to an account of theirs, so that whatever you store next ends up with them.
           </p>
+          {view.emailHasNonAscii ? (
+            <p className="mt-2">
+              This address contains characters outside the plain Latin alphabet. Check it letter by
+              letter: a look-alike letter can make a different address read like yours.
+            </p>
+          ) : null}
         </Alert>
 
         <form method="post" action="/api/auth/confirm" className="flex flex-col gap-3">
@@ -73,7 +99,10 @@ export default async function ConfirmSignInPage() {
             size="lg"
             className="w-full"
           >
-            Continue as {view.email}
+            {/* Not "Continue as {address}": a button is one line, and a long
+                address cut short there could show a colleague's domain and hide
+                the attacker's. The address is shown whole, above. */}
+            Yes, continue with this account
           </Button>
           <Button
             type="submit"
@@ -91,22 +120,46 @@ export default async function ConfirmSignInPage() {
   );
 }
 
+/**
+ * Somebody else's string — already made inert by `inertText` — isolated, left
+ * to right, so its letters cannot reorder the sentence it sits in.
+ */
+function Inert({ value, className }: { value: string; className?: string }) {
+  return (
+    <bdi dir="ltr" className={className}>
+      {value}
+    </bdi>
+  );
+}
+
 /** The one sentence that says what happened, in the words the attack calls for. */
 function Explanation({ view }: { view: ConfirmationView }) {
-  const account = <span className="text-fg font-medium break-all">{view.email}</span>;
+  const account = <Inert value={view.email} className="text-fg font-medium break-all" />;
 
   if (view.sso) {
-    return view.organization === null ? (
+    if (view.organization === null) {
+      return (
+        <>
+          You were signed in as {account} through the single sign-on of an organisation that is not
+          set up on xecret.
+        </>
+      );
+    }
+    const claim = (
       <>
-        You were signed in as {account} through the single sign-on of an organisation that is not
-        set up on xecret.
+        an organisation calling itself{' '}
+        <span className="text-fg font-medium break-all">
+          “<Inert value={view.organization.name} />”
+        </span>{' '}
+        (<code className="font-mono break-all">{view.organization.slug}</code>)
       </>
-    ) : (
+    );
+    return (
       <>
-        You were signed in as {account} through the single sign-on of an organisation calling itself{' '}
-        <span className="text-fg font-medium">“{view.organization.name}”</span> (
-        <code className="font-mono">{view.organization.slug}</code>). Anybody can create an
-        organisation and give it any name, so the name alone proves nothing.
+        You were signed in as {account} through the single sign-on of {claim}
+        {view.reason === 'not-member' ? ', which this account does not belong to yet' : ''}.{' '}
+        {view.joins ? 'Continuing makes this account a member of it. ' : ''}
+        Anybody can create an organisation and give it any name, so the name alone proves nothing.
       </>
     );
   }

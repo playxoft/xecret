@@ -5,6 +5,7 @@ import type { Bindings } from './bindings';
 import { MissingBindingError } from './bindings';
 import {
   AuthenticationStepRequired,
+  authKitSessionId,
   callbackUrl,
   CONNECTION_PAGE_LIMIT,
   CONNECTION_PAGE_SIZE,
@@ -371,6 +372,65 @@ describe('reading auth_time', () => {
 
   it('reads a well-formed claim', () => {
     expect(lastActiveAuthentication(accessToken({ auth_time: 1_790_000_000 }))).toBe(1_790_000_000);
+  });
+});
+
+describe('reading the AuthKit session (sid) — review round 2', () => {
+  it.each([
+    ['no token', undefined],
+    ['an opaque token', 'at'],
+    ['no sid', accessToken({ sub: 'user_01' })],
+    ['a sid that is not a string', accessToken({ sid: 42 })],
+    ['a sid of the wrong shape', accessToken({ sid: 'sess_01' })],
+    ['a sid with a path in it', accessToken({ sid: 'session_01/../logout' })],
+    ['a sid with a query in it', accessToken({ sid: 'session_01?return_to=evil' })],
+    ['an over-long sid', accessToken({ sid: `session_${'A'.repeat(65)}` })],
+  ])('reads %s as no session', (_name, token) => {
+    expect(authKitSessionId(token)).toBeNull();
+  });
+
+  it('reads a well-formed sid, and carries it on the exchange', async () => {
+    const sid = 'session_01H93ZY4F80QPBEZ1R5B2SHQG8';
+    expect(authKitSessionId(accessToken({ sid }))).toBe(sid);
+
+    const { provider } = stubApi({
+      authenticateWithCode: vi.fn(async () => ({
+        user: user(),
+        accessToken: accessToken({ sid, auth_time: 1_790_000_000 }),
+        refreshToken: 'rt',
+      })),
+    });
+    const exchange = await provider.exchangeCode('code_01', CONTEXT);
+    expect(exchange.providerSessionId).toBe(sid);
+  });
+});
+
+describe('the logout URL — review round 2', () => {
+  function withLogout() {
+    const { api } = stubApi();
+    (api.userManagement as Record<string, unknown>)['getLogoutUrl'] = (
+      options: Parameters<WorkOS['userManagement']['getLogoutUrl']>[0],
+    ) => realSdk.userManagement.getLogoutUrl(options);
+    return new WorkosIdentityProvider(api, CONFIG);
+  }
+
+  it('is WorkOS’s, for the session, returning where it is told', () => {
+    const url = new URL(
+      withLogout().logoutUrl({
+        sessionId: 'session_01H93ZY4F80QPBEZ1R5B2SHQG8',
+        returnTo: 'https://xecret.playxoft.com/sign-in',
+      }),
+    );
+    expect(url.origin).toBe('https://api.workos.com');
+    expect(url.pathname).toBe('/user_management/sessions/logout');
+    expect(url.searchParams.get('session_id')).toBe('session_01H93ZY4F80QPBEZ1R5B2SHQG8');
+    expect(url.searchParams.get('return_to')).toBe('https://xecret.playxoft.com/sign-in');
+  });
+
+  it('is never built for something that is not a session id', () => {
+    expect(() =>
+      withLogout().logoutUrl({ sessionId: 'nope', returnTo: 'https://xecret.playxoft.com/' }),
+    ).toThrow(IdentityVerificationError);
   });
 });
 

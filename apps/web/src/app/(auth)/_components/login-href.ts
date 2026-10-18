@@ -55,12 +55,19 @@ export interface LoginHrefOptions {
   reauth?: boolean;
   /**
    * Start this organisation's single sign-on directly — the SSO deep link.
-   * The login route honours it only from a same-origin navigation, which a
-   * link on one of these pages is; followed from anywhere else, it lands on the
-   * sign-in page's confirmation first. Ignored with `reauth` and with `signUp`,
-   * as the login route ignores it on a re-authentication.
+   * The login route honours it only with {@link continueToken} (review round
+   * 2); without one — or followed from anywhere else — it lands on the sign-in
+   * page's warning first. Ignored with `reauth` and with `signUp`, as the login
+   * route ignores it on a re-authentication.
    */
   org?: string | null | undefined;
+  /**
+   * The warning page's "Continue" token for `org` (`@xecret/core/auth`,
+   * `sso-continue.ts`), minted on the server for this browser. Sent only
+   * beside `org`; a link that is shared or bookmarked should leave it out and
+   * let the login route send the person to the warning page.
+   */
+  continueToken?: string | null | undefined;
 }
 
 /** The `/api/auth/login` link for one way into AuthKit. */
@@ -69,13 +76,17 @@ export function loginHref({
   signUp = false,
   reauth = false,
   org = null,
+  continueToken = null,
 }: LoginHrefOptions = {}): string {
   const query = new URLSearchParams();
   // The login route ignores `hint` on a re-authentication — re-authenticating
   // is a sign-in, never a sign-up — so it is not sent alongside one either.
   if (reauth) query.set('reauth', '1');
   else if (signUp) query.set('hint', 'sign-up');
-  else if (org !== null && isOrgSlug(org)) query.set('org', org);
+  else if (org !== null && isOrgSlug(org)) {
+    query.set('org', org);
+    if (continueToken !== null && continueToken !== '') query.set('continue', continueToken);
+  }
   appendNext(query, next);
   return withQuery(LOGIN_ROUTE, query);
 }

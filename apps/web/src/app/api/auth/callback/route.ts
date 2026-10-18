@@ -1,6 +1,8 @@
 import {
   clearedOAuthStateCookie,
+  LAST_ACCOUNT_COOKIE_NAME,
   OAUTH_STATE_COOKIE_NAME,
+  openLastAccount,
   openOAuthState,
   SESSION_COOKIE_NAME,
 } from '@xecret/core/auth';
@@ -12,6 +14,7 @@ import { publicRoute } from '@/server/route';
 import {
   confirmationReason,
   issueSignIn,
+  lastAccountKey,
   oauthStateKey,
   prepareSignIn,
   SignInRefusal,
@@ -44,12 +47,17 @@ import { workosProvider } from '@/server/workos';
  *     cannot tell whose authentication came back, and an attacker who planted
  *     their own AuthKit session in this browser gets a code for *their*
  *     account against *this* browser's valid state (review S1). A sign-in that
- *     came back through an organisation the flow did not ask for, or from a
- *     session WorkOS reused without asking, is therefore not issued here: it is
- *     parked in a sealed, five-minute, single-use cookie, and the browser goes
- *     to `/sign-in/confirm` to answer "Continue as …?". Only that page's POST
- *     (`/api/auth/confirm`) issues the session.
- *  7. Otherwise, `issueSignIn` — step 8 — and a 303 to `next`.
+ *     came back through an organisation the flow did not ask for, by the
+ *     single sign-on of an organisation the account is not a member of (even
+ *     one the flow asked for — review round 2), or from a session WorkOS
+ *     reused without asking for an account other than the last one on this
+ *     browser, is therefore not issued here: it is parked in a sealed,
+ *     five-minute, single-use cookie, and the browser goes to
+ *     `/sign-in/confirm` to answer "Continue as …?". Only that page's POST
+ *     (`/api/auth/confirm`) issues the session — and nothing that changes an
+ *     organisation (a just-in-time join) happens before it.
+ *  7. Otherwise, `issueSignIn` and a 303 to `next` — never an API route
+ *     (`safeRedirectPath`, checked again here at the moment of use).
  *
  * ── How it answers ──
  * Always with a 303 — to `next`, to the confirmation, or to
@@ -120,7 +128,15 @@ export const GET = publicRoute(async ({ request, services }) => {
       flowIssuedAt: flow.issuedAt,
     });
 
-    const reason = confirmationReason(flow, exchange);
+    const reason = confirmationReason({
+      flow,
+      exchange,
+      prepared,
+      lastAccountUserId: await openLastAccount(
+        await lastAccountKey(services.env),
+        cookies.get(LAST_ACCOUNT_COOKIE_NAME),
+      ),
+    });
     if (reason !== null) {
       // Logged at `info`, with what was asked against what came back: one of
       // these is a person signing in through their company's identity
@@ -130,7 +146,8 @@ export const GET = publicRoute(async ({ request, services }) => {
         .at('callback')
         .info(
           'Held a sign-in back for the person to confirm: it came back through an organisation ' +
-            'this flow did not ask for, or from a session WorkOS reused without asking',
+            'this flow did not ask for, through the single sign-on of one the account is not in, ' +
+            'or from a session WorkOS reused without asking',
           {
             reason,
             askedForOrganization: flow.organizationId !== null,
@@ -154,6 +171,10 @@ export const GET = publicRoute(async ({ request, services }) => {
       facts: prepared.facts,
       purpose: flow.purpose,
       lockOne: prepared.lockOne,
+      freshAuthAt: prepared.freshAuthAt,
+      providerSessionId: prepared.providerSessionId,
+      workosClientId: provider.clientId,
+      confirmation: null,
       presentedSessionToken: cookies.get(SESSION_COOKIE_NAME) ?? null,
     });
 

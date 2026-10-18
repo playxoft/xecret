@@ -1,5 +1,9 @@
 import { GenerateLinkIntent, WorkOS } from '@workos-inc/node';
-import { IdentityVerificationError, workosIdentity } from '@xecret/core/auth';
+import {
+  IdentityVerificationError,
+  WORKOS_SESSION_ID_PATTERN,
+  workosIdentity,
+} from '@xecret/core/auth';
 import { fromBase64Url } from '@xecret/core/crypto';
 import type {
   AuthorizationCodeExchange,
@@ -39,10 +43,11 @@ import { MissingBindingError, publicOrigin } from './bindings';
  * server made with its own secret key — the code exchange, the Magic Auth
  * check — so there is no signature for a client to forge and no audience for
  * one to get wrong. The one token read at all is the access token in the code
- * exchange's own response, for its `auth_time` claim (see
- * {@link lastActiveAuthentication}): it arrived over the same authenticated
- * call as the user it describes, so it is believed exactly as far as that user
- * is, and is otherwise dropped like the rest.
+ * exchange's own response, for two claims: `auth_time` (see
+ * {@link lastActiveAuthentication}) and `sid`, the AuthKit session, so that
+ * signing out of xecret can end it too ({@link authKitSessionId}). It arrived
+ * over the same authenticated call as the user it describes, so it is believed
+ * exactly as far as that user is, and is otherwise dropped like the rest.
  */
 
 /**
@@ -63,6 +68,7 @@ export interface WorkosApi {
     | 'createMagicAuth'
     | 'authenticateWithMagicAuth'
     | 'authenticateWithTotp'
+    | 'getLogoutUrl'
   >;
   multiFactorAuth: Pick<WorkOS['multiFactorAuth'], 'challengeFactor'>;
   organizations: Pick<
@@ -101,7 +107,10 @@ export interface WorkosAuthentication {
   organizationId?: string | undefined;
   authenticationMethod?: string | undefined;
   impersonator?: { email: string; reason: string | null } | undefined;
-  /** Read only for its `auth_time` claim; never stored, logged or passed on. */
+  /**
+   * Read only for its `auth_time` and `sid` claims; never stored, logged or
+   * passed on itself.
+   */
   accessToken?: string | undefined;
 }
 
@@ -516,6 +525,31 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
   }
 
   /**
+   * WorkOS's logout URL for one AuthKit session: the browser follows it, WorkOS
+   * ends that session on its hosted domain, and sends the browser back to
+   * `returnTo` (review round 2). Built locally by the SDK — no call is made —
+   * from a session id this server read out of its own code exchange, never one
+   * a client named.
+   *
+   * `returnTo` must be one of the environment's configured logout redirects in
+   * the WorkOS dashboard, or WorkOS uses its default instead.
+   */
+  logoutUrl(params: { sessionId: string; returnTo: string }): string {
+    if (!WORKOS_SESSION_ID_PATTERN.test(params.sessionId)) {
+      throw new IdentityVerificationError('malformed-session-id');
+    }
+    const url = this.#api.userManagement.getLogoutUrl({
+      sessionId: params.sessionId,
+      returnTo: params.returnTo,
+    });
+    // The browser is sent wherever this is, so it must be a page on the web.
+    if (!URL.canParse(url) || new URL(url).protocol !== 'https:') {
+      throw new IdentityVerificationError('logout-url-not-https');
+    }
+    return url;
+  }
+
+  /**
    * This deployment's WorkOS client id — which WorkOS *environment* it talks
    * to. Recorded beside an organisation's `workos_org_id` when SSO is turned on
    * and compared on every settings call (review S9), because an organisation id
@@ -558,6 +592,7 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
       organizationId: nonEmpty(response.organizationId),
       authenticationMethod: nonEmpty(response.authenticationMethod),
       authenticatedAt: lastActiveAuthentication(response.accessToken),
+      providerSessionId: authKitSessionId(response.accessToken),
       impersonator:
         response.impersonator === undefined ? null : { email: response.impersonator.email },
     };
@@ -605,6 +640,27 @@ const MAX_ACCESS_TOKEN_LENGTH = 8192;
  * sign-in moves it.
  */
 export function lastActiveAuthentication(accessToken: unknown): number | null {
+  const authTime = accessTokenClaims(accessToken)?.['auth_time'];
+  return typeof authTime === 'number' && Number.isSafeInteger(authTime) && authTime > 0
+    ? authTime
+    : null;
+}
+
+/**
+ * The `sid` claim of the same access token — the AuthKit session this sign-in
+ * came from — or `null` when there is none to read, or it is not shaped like a
+ * WorkOS session id (review round 2). Kept on the xecret session so sign-out
+ * can end the AuthKit session too. Decoded, not verified, for the reason
+ * {@link lastActiveAuthentication} gives; and a session id names a session,
+ * it does not authenticate as one.
+ */
+export function authKitSessionId(accessToken: unknown): string | null {
+  const sid = accessTokenClaims(accessToken)?.['sid'];
+  return typeof sid === 'string' && WORKOS_SESSION_ID_PATTERN.test(sid) ? sid : null;
+}
+
+/** The claims of an access token from the code exchange's own response, or `null`. */
+function accessTokenClaims(accessToken: unknown): Record<string, unknown> | null {
   if (typeof accessToken !== 'string' || accessToken.length > MAX_ACCESS_TOKEN_LENGTH) return null;
   const parts = accessToken.split('.');
   if (parts.length !== 3 || parts[1] === undefined) return null;
@@ -614,11 +670,7 @@ export function lastActiveAuthentication(accessToken: unknown): number | null {
   } catch {
     return null;
   }
-  if (typeof claims !== 'object' || claims === null) return null;
-  const authTime = (claims as Record<string, unknown>)['auth_time'];
-  return typeof authTime === 'number' && Number.isSafeInteger(authTime) && authTime > 0
-    ? authTime
-    : null;
+  return typeof claims === 'object' && claims !== null ? (claims as Record<string, unknown>) : null;
 }
 
 function assertCodeShape(code: string, pattern: RegExp): void {
