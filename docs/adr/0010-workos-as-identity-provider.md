@@ -99,9 +99,13 @@ Worker  ──rate limit (IP)
         ──authenticateWithCode(code, code_verifier)    — one authenticated call to WorkOS
         ──refuse: impersonation · unverified email · SSO outside the org's verified domains
         ──rate limit (IP + identity)
-        ──link or create the user, enforce sso_required, JIT-join, provision a personal org
+        ──link or create the user, JIT-join, refuse only if no organisation is usable,
+          provision a personal org
+        ──came back through an organisation the flow did not ask for, or a reused session?
+          → park it (sealed cookie), 303 → /sign-in/confirm; its POST continues below
         ──one transaction: insert sessions row (SHA-256 of a 256-bit opaque token — never the
-          token) and, for a reauth sign-in that counts, its reauthentications row
+          token; how it signed in, for per-request sso_required) and, for a reauth sign-in
+          that counts, its reauthentications row
         ──revoke this browser's previous session of the same account, last
         ──Set-Cookie: __Host-xecret_session; __Host-xecret_csrf
         ──303 → next, re-validated   (WorkOS's access and refresh tokens are discarded, unread)
@@ -125,7 +129,11 @@ own secret key:
   vault-reset path only, when WorkOS answers the emailed code with `mfa_challenge` because the
   account has an authenticator app enrolled.
 
-`GET /api/auth/login` makes no call: the AuthKit URL is built locally.
+`GET /api/auth/login` makes no call: the AuthKit URL is built locally. *(WS-5:)* The
+organisation SSO settings call `createOrganization`, `getOrganization`, `listConnections`
+(every page) and `generateLink` to manage an organisation's WorkOS organisation — never to
+decide who a request is — and the link they make records which WorkOS environment it was made
+in, since an organisation id means nothing in another.
 
 The session model is exactly 0003's: a 256-bit opaque token in `__Host-xecret_session`, only
 its SHA-256 stored, a `__Host-xecret_csrf` double-submit pair on cookie-authenticated
@@ -150,7 +158,8 @@ store lands in their account) is the OAuth `state`, bound to the browser that st
 flow. The binding is `__Host-xecret_oauth_state` (`packages/core/src/auth/oauth-state.ts`):
 
 - **Contents.** A fresh 256-bit `state`, a 256-bit PKCE verifier, the `next` path, the
-  purpose (`sign-in` or `reauth`) and the time it was issued.
+  purpose (`sign-in` or `reauth`), the time it was issued, and *(WS-5)* the WorkOS organisation
+  the flow asked for, or `null` — see *What `state` cannot see* below.
 - **Signed, not encrypted.** `v1.<payload>.<mac>`, HMAC-SHA-256. Nothing in it is secret from
   the browser that holds it, but nothing in it may be changed either — a rewritten `next`, a
   purpose promoted to `reauth`. Signing also means there is no table of pending sign-ins.
@@ -228,29 +237,67 @@ well as adoption and creation.
 *selection* in password and Google sign-ins too, so the id alone does not mean that
 organisation's identity provider vouched for anybody.
 
-- **`sso_required`.** Every organisation the account belongs to that requires SSO must be the
-  one whose SSO this was. An account in two such organisations is refused — the strict reading,
-  because a session is not scoped to an organisation and would carry the other's access
-  without its identity provider's say-so. *(WS-5:)* An organisation's **owners are exempt**, so
-  that a misconfigured identity provider cannot lock the organisation out of itself; an owner
-  can switch the flag off at any time, so the exemption gives an owner's password nothing it
-  lacked.
+- **`sso_required`.** ~~Every organisation the account belongs to that requires SSO must be
+  the one whose SSO this was; an account in two such organisations is refused.~~ *(WS-5,
+  review round 1 — superseded:)* the requirement was checked at sign-in only, which left a
+  session issued before the flag went on, a CLI token minted from one, and a password newcomer
+  accepting an invitation all outside it; and one organisation's flag refused the whole
+  sign-in, locking a contractor out of every other organisation. It is now **enforced per
+  request**, in `resolveOrg`, against how the presenting credential signed in — the session
+  records its method and SSO organisation (migration 0022), and a CLI token inherits the
+  approving session's. A credential that did not come through an organisation's own SSO cannot
+  reach that organisation (403 `sso_required`) and keeps every other; invitation acceptance and
+  CLI approval are held to it too. The sign-in is refused only when **every** organisation of
+  the account would refuse it. An organisation's **owners are exempt**, so that a misconfigured
+  identity provider cannot lock the organisation out of itself. That is a deliberate
+  break-glass and a **trade-off, not a free one**: an owner's password stays a way into the
+  organisation its identity provider does not govern. (The earlier wording here, "gives an
+  owner's password nothing it lacked", was wrong — an owner who must switch the flag off first
+  leaves a record, and one who need not leaves only a sign-in.) Every sign-in that uses the
+  exemption is audited in each exempting organisation as `auth.sso_exemption_used`.
 - **Just-in-time membership.** An SSO sign-in through an organisation's connection makes a
   newcomer a member at `viewer`, under the seat limit, decided under the organisation's row
   lock the way an invitation acceptance is — *(WS-5:)* **only if the organisation opted in**
   (`jit_join_enabled`, off by default). Audited `member.jit_joined`, or `member.jit_denied`
   when there is no seat — in which case the sign-in fails. It never reinstates a suspended
-  membership.
+  membership, and *(review round 1)* never re-admits somebody the organisation **removed**:
+  removal leaves a record (`org_member_removals`) that only an accepted invitation clears, and
+  the refusal is `member.jit_denied` with reason `removed`.
 
 The login route's `?org=<slug>` deep link starts an organisation's SSO directly. The redirect
 has to carry the WorkOS organisation id, so it reveals which slugs have SSO; the lookup is
 therefore rate limited per address (`RL_LOGIN`), and over the limit the parameter is silently
 ignored and the ordinary screen opens — a refusal would be an oracle of its own. It is ignored
 altogether on a `reauth=1` sign-in, which is about this account, not an organisation.
-*(WS-5:)* It is honoured only from a same-origin navigation; from anywhere else it lands on
-`/sign-in?org=<slug>`, which names the organisation and asks the person to confirm. Once an
-organisation can be linked to an identity provider its owner controls, a blind deep link would
-otherwise be a login-CSRF: the victim signed in to the attacker's account.
+*(WS-5:)* It is honoured only from a same-origin navigation (to a document: `Sec-Fetch-Mode`
+and `-Dest` are checked where sent); from anywhere else it lands on `/sign-in?org=<slug>`,
+which names the organisation and asks the person to confirm. Once an organisation can be
+linked to an identity provider its owner controls, a blind deep link would otherwise be a
+login-CSRF: the victim signed in to the attacker's account.
+
+### What `state` cannot see: the planted AuthKit session *(WS-5, review round 1)*
+
+`state` binds the callback to the browser that started the flow; it says nothing about *whose*
+authentication comes back. AuthKit reuses a session it already holds without asking, so an
+attacker who owns an organisation here, wired to an identity provider they control, can plant
+their own AuthKit session in a victim's browser — a hidden navigation to AuthKit's authorize URL
+for their organisation, or their provider's IdP-initiated sign-in through the initiate-login
+URI — and the victim's next plain sign-in is answered as the attacker, against the victim's own
+valid state and PKCE. The deep-link confirmation above does not touch this: the victim never
+followed a deep link.
+
+So the state cookie also seals **which organisation the flow asked for** (`null` for a plain
+sign-in), and the callback **issues no session** when the authentication comes back through a
+different one — any single sign-on on a plain sign-in included — or from an authentication
+WorkOS dates before the flow began (`auth_time`: a reused session). It parks the outcome in a
+second sealed cookie, `__Host-xecret_sign_in_confirm` (`packages/core/src/auth/
+sign-in-confirmation.ts`: its own HKDF label, `HttpOnly`, five minutes, holding the linked
+account and the facts about the sign-in — never the WorkOS identity, which `workosIdentity()`
+mints only from WorkOS's response), and `/sign-in/confirm` asks "Continue as …?", naming the
+organisation as the claim it is. Only a same-origin, CSRF-checked POST from that page issues the
+session, and its nonce is spent once in `sign_in_confirmations`. The cost is one extra question
+for an enterprise user who signs in from the plain button rather than their organisation's link;
+the benefit is that the attack needs the victim to read "Continue as mallory@…" and agree.
 
 ### Every refusal is a page, not a JSON body
 
@@ -450,7 +497,10 @@ nothing added for WorkOS, because the browser only navigates there.
   setter with an owner exemption for a misconfigured identity provider. The callback already
   enforces `sso_required`; nothing can set it yet, which is the safe order. *(Since landed:
   `api.md` → Single sign-on, with the just-in-time opt-in and the deep-link confirmation it
-  needed.)*
+  needed — and after review round 1: SSO administration owners-only (`sso.manage`) with a
+  fresh sign-in in front of the credential-grade portal link, `sso_required` per request, the
+  planted-session confirmation, removed members never re-admitted, and the link recording its
+  WorkOS environment.)*
 - **Importing Firebase users into WorkOS**, and the backfill of `workos_user_id` that follows.
   Two rules are fixed now: an unverified Firebase user is imported without a password hash or
   not at all (otherwise whoever registered an address they do not own keeps a known password);

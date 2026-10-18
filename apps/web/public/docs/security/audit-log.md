@@ -47,6 +47,7 @@ person's name on a write they did not make is worse than useless.
 | `auth.login` | Somebody signed in |
 | `auth.signup` | A sign-in created a new account — recorded instead of `auth.login` for that one sign-in, so "when did this person join" is a filter |
 | `auth.identity_linked` | A sign-in adopted an existing account by its verified email address and linked the sign-in identity to it — the one sign-in that changes which identity an account answers to. Written at the moment the link is made, even if that sign-in is then refused (single sign-on required, or no seat free); a linked sign-in that completes records `auth.login` as well |
+| `auth.sso_exemption_used` | An owner signed in without the organisation's required single sign-on, through the owner exemption — see *Single sign-on* below |
 | `auth.login_failed` | A sign-in was rejected |
 | `auth.logout` | Somebody signed out |
 | `auth.session_revoked` | A session was revoked |
@@ -106,14 +107,17 @@ specific value, which is what curiosity and exfiltration both look like.
 
 | Action | Recorded when |
 |---|---|
-| `org.sso.enabled` | Single sign-on was turned on: the organisation's account at WorkOS was created and linked. Once only |
-| `org.sso.portal_link_created` | An owner or admin was handed a link to the WorkOS setup portal, where the identity provider is connected and domains verified. Every time — whoever opens one decides who can sign in as the organisation's members. The link itself is never recorded |
-| `org.sso.required_toggled` | "Require single sign-on" was switched on or off. `enabled` is the new value. Owners are always exempt from it |
-| `org.sso.jit_toggled` | "Let people join through single sign-on" was switched on or off. `enabled` is the new value. Off, nobody joins by single sign-on alone, and no `member.jit_*` row is written |
+| `org.sso.enabled` | Single sign-on was turned on by an owner: the organisation's account at WorkOS was created and linked. Once only — of two owners enabling it at the same moment, only the one whose request linked it is recorded |
+| `org.sso.portal_link_created` | An owner who had just signed in again was handed a link to the WorkOS setup portal, where the identity provider is connected and domains verified. Every time — whoever opens one decides who can sign in as the organisation's members. The link itself is never recorded |
+| `org.sso.required_toggled` | "Require single sign-on" was switched on (by an owner) or off. `enabled` is the new value. It applies to every request from then on; owners are always exempt from it |
+| `org.sso.jit_toggled` | "Let people join through single sign-on" was switched on (by an owner) or off. `enabled` is the new value. Off, nobody joins by single sign-on alone, and no `member.jit_*` row is written |
+| `auth.sso_exemption_used` | An owner signed in some other way than this organisation's required single sign-on — a password, Google, another organisation's SSO — and was let in by the owner exemption, the break-glass that keeps a broken identity provider from locking the organisation out. Recorded in **every** organisation whose requirement the sign-in bypassed, with `signInMethod` |
 
 A refused attempt at any of these is recorded too: `denied` for somebody without
-the role, `error` for a missing add-on, a precondition (no active connection, SSO
-not on yet) or WorkOS being unreachable.
+the role (an admin, for anything that switches something on), `error` for a
+missing add-on, a precondition (no active connection or verified domain, SSO not
+on yet, a link made in another WorkOS environment, no recent sign-in before the
+setup portal) or WorkOS being unreachable.
 
 ### People and access
 
@@ -122,11 +126,11 @@ not on yet) or WorkOS being unreachable.
 | `member.invited` | An invitation was sent |
 | `member.joined` | It was accepted |
 | `member.jit_joined` | Somebody signing in through an organisation's single sign-on was made a member on the spot, as a `viewer`. Nobody invited them: the organisation's identity provider vouched for an address in a domain the organisation verified, and the organisation had opted in to admitting people that way (`org.sso.jit_toggled`). Carries `signInMethod: sso` |
-| `member.jit_denied` | The same, refused because the organisation had no seat free. Outcome `error`, reason `quotaExceeded`, `limitName` `seats`. The sign-in fails; this is the record of who was turned away |
+| `member.jit_denied` | The same, refused. Outcome `error`, with a reason: `quotaExceeded` (`limitName` `seats`) when the organisation had no seat free — the sign-in fails — or `removed` for somebody the organisation removed and has not invited back, whose identity provider still vouched for them — they are signed in to whatever else they belong to, not back in here. Either way, the record of who was turned away |
 | `invitation.revoked` | It was withdrawn before acceptance |
 | `member.role_changed` | Somebody's role changed |
 | `member.suspended` `member.reinstated` | A membership was switched off, or back on |
-| `member.removed` | Somebody was removed |
+| `member.removed` | Somebody was removed. Their organisation's single sign-on does not bring them back; an invitation does |
 | `member.custom_role_changed` | Somebody was put on a custom role, moved between two, or had theirs taken off — naming the role before and after |
 | `role.created` `role.updated` `role.deleted` | A custom role was defined, edited or deleted, with its whole definition — and, for an edit, the one it replaced and how many members held it. A `role.updated` **error** naming a member is an edit that was saved but whose follow-up for that holder — bringing their environment keys in line — did not finish; the environment's key page shows what they are still owed |
 | `access.granted` `access.revoked` | A grant was created or removed, with the previous and new levels |

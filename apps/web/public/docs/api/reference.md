@@ -222,20 +222,23 @@ anybody more than the role it is based on. See
 ## Single sign-on
 
 SAML and OIDC single sign-on through WorkOS, set up by your IT admin in WorkOS's
-setup portal. Owners and admins only, from a browser session (a CLI token is
-refused). Turning anything **on** needs the single sign-on add-on; reading the
-status and switching a policy off never do. Every route answers with the same
-`sso` status: whether SSO is on, `ssoRequired`, `jitJoinEnabled`, the seat
-limit, whether the add-on is held, and — once on — the connections and domains
-WorkOS reports (`null`, with `providerReachable: false`, if WorkOS cannot be
-reached).
+setup portal. From a browser session only (a CLI token is refused). Owners and
+admins can read the status and switch a policy off; only **owners** can turn SSO
+on, open the setup portal, or switch a policy on — whoever does those decides
+which identity provider vouches for every member. Turning anything **on** also
+needs the single sign-on add-on. Every route answers with the same `sso` status:
+whether SSO is on, `ssoRequired`, `jitJoinEnabled`, the seat limit, whether the
+add-on is held, and — once on — the connections and domains WorkOS reports
+(`null`, with `providerReachable: false`, if WorkOS cannot be reached) and
+`membersOutsideVerifiedDomains`, how many members your identity provider cannot
+sign in.
 
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/orgs/{orgSlug}/sso` | The status. |
-| `POST` | `/orgs/{orgSlug}/sso` | Turns SSO on: creates the organisation's account at WorkOS, with no domains — domains are added and verified in the setup portal. **201** the first time; **200** and nothing created once on. |
-| `POST` | `/orgs/{orgSlug}/sso/portal` | `{ link }` — a WorkOS setup-portal link, valid for a few minutes, that returns to the organisation's settings. **409** before SSO is on. Every link is audited. |
-| `PATCH` | `/orgs/{orgSlug}/sso` | Body `{ ssoRequired?: boolean, jitJoinEnabled?: boolean }`. Requiring SSO needs an active connection (**409** otherwise); owners are always exempt from it, so a misconfigured identity provider cannot lock the organisation out. `jitJoinEnabled` lets anybody your identity provider signs in, at a verified domain, join as a viewer while seats last; off, they need an invitation. |
+| `POST` | `/orgs/{orgSlug}/sso` | Owners. Turns SSO on: creates the organisation's account at WorkOS, with no domains — domains are added and verified in the setup portal. **201** the first time; **200** and nothing created once on. |
+| `POST` | `/orgs/{orgSlug}/sso/portal` | Owners, within ten minutes of signing in again (**403** `reauth_required` otherwise). `{ link }` — a WorkOS setup-portal link, valid for a few minutes, that returns to the organisation's settings. **409** before SSO is on. Every link is audited. |
+| `PATCH` | `/orgs/{orgSlug}/sso` | Body `{ ssoRequired?: boolean, jitJoinEnabled?: boolean }`. Switching either on is for owners; switching off, for owners and admins. Requiring SSO needs an active connection and a verified domain (**409** otherwise), and takes effect **immediately**: from then on, members who did not sign in through your identity provider — and CLI devices approved from such a sign-in — get **403** `sso_required` for this organisation, and keep every other. The response's `nonSsoAccess` says how many sessions and CLI tokens that affected. Owners are always exempt, so a misconfigured identity provider cannot lock the organisation out; every time an owner uses that, the audit log says so. `jitJoinEnabled` lets anybody your identity provider signs in, at a verified domain, join as a viewer while seats last — never somebody you removed; off, they need an invitation. |
 
 ## Tokens
 

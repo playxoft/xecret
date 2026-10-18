@@ -42,6 +42,15 @@ introduced. An unreviewed threat model is worse than none, because it creates fa
 **Core invariant:** the database alone is never sufficient to read a secret. Compromising
 Neon yields ciphertext and wrapped keys — no plaintext.
 
+**Boundary 4 — a customer's identity provider (WS-5).** An organisation with the single
+sign-on add-on can attach an identity provider of its own choosing, through WorkOS. From then
+on that provider — run by the customer, or by whoever controls it — can sign people in as the
+organisation's members, for any address in a domain the organisation verified with WorkOS. It
+sits *outside* the boundary diagram above: xecret never sees its metadata or certificates, and
+believes it only through WorkOS's answer to the code exchange. It is an attacker-selectable
+input for anybody who can create an organisation and buy the add-on, so everything it can
+assert is bounded here (T1's planted-session login CSRF, and T13).
+
 ---
 
 ## 3. Attacker classes
@@ -74,7 +83,44 @@ or comes from a browser · an existing account is adopted only on a **verified**
 an SSO sign-in is believed only for the domains its organisation has verified with WorkOS
 ([ADR 0010](../adr/0010-workos-as-identity-provider.md)).
 
-**Residual risk:** Low. A zero-day in Cloudflare or Next.js remains possible.
+**What `state` and PKCE do not cover: the planted AuthKit session.** They prove the callback
+completes a flow *this browser started*; they cannot prove *whose* authentication comes back.
+AuthKit reuses a session it already holds without asking anything. So an attacker who owns an
+organisation here, wired to an identity provider they control (Boundary 4), can first plant
+*their own* AuthKit session in the victim's browser — a hidden navigation to AuthKit's
+authorize URL with `organization_id=<theirs>`, or their provider's IdP-initiated sign-in
+through the initiate-login URI — and the victim's next plain "Sign in", even one they click
+themselves, is answered with the attacker's identity against the victim's own valid state and
+PKCE. Zero clicks on anything suspicious; the victim lands in the attacker's account, and
+whatever they store next is the attacker's. This was open until review round 1 of WS-5 (S1).
+The defence:
+
+- The login route seals the organisation the flow **asked for** (an `?org=` deep link, or
+  none) into the state cookie.
+- The callback **issues no session** when the authentication comes back through a different
+  organisation — including any single sign-on on a flow that asked for none, and an
+  organisation reported after organisation selection — or from an authentication WorkOS dates
+  before the flow began (a session it reused without asking, read from `auth_time`). It parks
+  the outcome in a sealed, `HttpOnly`, five-minute cookie and sends the browser to
+  `/sign-in/confirm`.
+- That page names the account and presents the organisation as the claim it is ("an
+  organisation calling itself …" — its owner chose the name), and makes declining as easy as
+  continuing. Only its **POST** issues the session: same-origin and failing closed on
+  `Origin`, `SameSite=Lax`, a form token that is the cookie's 256-bit nonce, and the nonce
+  spent once in `sign_in_confirmations` before anything is issued — the same cookie presented
+  twice issues at most once.
+- `?org=` itself is followed only from a same-origin navigation to a document
+  (`Sec-Fetch-Site`, `-Mode`, `-Dest`); anything else goes to `/sign-in?org=` to be confirmed.
+
+What this leaves: a person who reads "Continue as mallory@attacker.example, through an
+organisation calling itself *Your Company*" and continues anyway. The page is written for that
+moment, and it is the one place left where the attack needs the victim's help. Whether WorkOS
+can switch IdP-initiated sign-in off for this environment is to be checked on Staging; with
+this defence it no longer matters for safety, only for how often an enterprise user meets the
+confirmation.
+
+**Residual risk:** Low. A zero-day in Cloudflare or Next.js remains possible; the
+planted-session confirmation can be clicked through by a person who does not read it.
 
 **Known limit of the CSP.** `script-src` carries `'unsafe-inline'`, so the policy does not
 stop an injected inline `<script>` from running — the App Router streams its RSC payload as
@@ -140,6 +186,21 @@ themselves for elevation · **authorization is evaluated per request, never cach
 token** — a downgrade takes effect immediately, including for existing CLI tokens · every
 secret read is audited with actor, environment, IP, and timestamp · production environments
 require an explicit grant and are visually distinct.
+
+**Single sign-on is per request too.** An organisation's `sso_required` is checked on every
+request that reaches it (`resolveOrg`), against how the presenting session — or the browser
+session that approved a CLI token — signed in (`sessions.sso_workos_org_id`, migration 0022).
+Until WS-5's review round 1 it was checked at sign-in only, which left a session issued before
+the flag went on (thirty days), a CLI token minted from one (possibly no expiry at all), and a
+password newcomer accepting an invitation all outside it (S3). Now switching it on takes the
+organisation from every such credential at its next request — and only that organisation; the
+member's others are untouched — and invitation acceptance and CLI approval are held to it as
+well. **Owners are exempt**, as a deliberate break-glass: an identity provider misconfigured
+after the switch would otherwise lock the organisation out of itself with no self-service way
+back. That is a trade-off, not a free one — an owner's password (or Google sign-in) remains a
+way into the organisation its identity provider does not govern, so a stolen owner password is
+worth exactly what it was before SSO — and every sign-in that uses it is audited in each
+exempting organisation as `auth.sso_exemption_used`.
 
 **Residual risk:** Medium. A user with legitimate read access can always exfiltrate what they
 can read. Audit logs make it *detectable*, not preventable. This is inherent to the product.
@@ -490,6 +551,52 @@ exposed for as long as that mailbox's copies exist. Low for a strong passphrase.
 
 ---
 
+### T13 — A customer's identity provider, or whoever can rewire it (WS-5)
+
+| | |
+|---|---|
+| **Goal** | Sign in as an organisation's members — an owner, ideally — by controlling the identity provider that vouches for them |
+| **Impact** | Critical (for that organisation) · **Likelihood** | Low–Medium |
+
+**Threats:** an admin who points the organisation's SSO at an identity provider of their own,
+then signs in as any member — an owner included — through it (an admin-to-owner escalation in
+all but name) · a leaked setup-portal link, which lets whoever opens it change the identity
+provider · somebody removed from the organisation but still in its identity provider, silently
+re-admitted by just-in-time membership · an identity provider asserting addresses in somebody
+else's company · a linked organisation whose `workos_org_id` belongs to a different WorkOS
+environment (local development runs against WorkOS Staging over the production database).
+
+**Mitigations:**
+- **SSO administration is owners-only** (`sso.manage`, review S2): turning SSO on, minting a
+  setup-portal link and switching either policy on. No custom role can carry it — none is
+  based on `owner`, and a custom role only subtracts from its base. Admins keep reading the
+  settings and switching a policy off.
+- **The setup-portal link is treated as a credential.** Minted only for an owner whose
+  session signed in again within the last ten minutes (the vault reset's lock one, reused —
+  with its residual: a live Google or SSO session satisfies it without a prompt), audited every
+  time, never logged or stored, and never placed in the dashboard tab's history (a blocked
+  pop-up gets a link the owner clicks, not a navigation).
+- **Domains are WorkOS's to verify, never ours to declare**: no `domainData` is ever sent, and
+  an SSO sign-in is believed only for an address in a domain WorkOS reports as verified.
+  Requiring SSO needs an active connection *and* a verified domain, and the settings count the
+  members outside the verified domains before the switch.
+- **Just-in-time membership is an explicit opt-in**, admits as `viewer` only, never reinstates
+  a suspended member, and never re-admits a removed one: removal leaves a record
+  (`org_member_removals`, migration 0022) that only an accepted invitation clears, and the
+  refusal is audited as `member.jit_denied` (`removed`).
+- **The link records its WorkOS environment** (`workos_client_id`, review S9); the settings
+  refuse to act on a link made in another, and an enable never adopts one.
+- **The add-on is the blast-radius gate.** An organisation without the single sign-on add-on —
+  set by an operator, never self-served — cannot create a WorkOS organisation, open the portal
+  or switch a policy on, so cannot attach an identity provider at all.
+
+**Residual risk:** Low–Medium. Whoever is an owner controls the identity provider by design,
+and an owner's password stays a way in past it (the break-glass, T3). A compromised customer
+identity provider can sign in as any of that organisation's non-owner members, inside its
+verified domains — that is what attaching one means, and it is bounded to that organisation.
+
+---
+
 ## 4. Risk summary
 
 | ID | Threat | Impact | Likelihood | Residual |
@@ -506,6 +613,7 @@ exposed for as long as that mailbox's copies exist. Low for a strong passphrase.
 | T10 | Root key loss | Existential | Low | Low *if drilled* |
 | T11 | Vault reset by whoever holds the browser or the inbox | High | Low–Med | **Medium** without MFA; recoverable for 7 days |
 | T12 | The emailed escape archive, attacked offline | High | Low–Med | **Medium (accepted)**; Low with a strong passphrase |
+| T13 | A customer's identity provider, or whoever can rewire it | Critical (one org) | Low–Med | Low–Medium |
 
 **Where to spend effort, in order:** T2 (test matrix as a CI gate) · T10 (escrow drills) ·
 T7 (dependency discipline, anomaly detection) · T5 (blast-radius limits, OIDC in v2).
@@ -528,3 +636,4 @@ customer's own systems after legitimate secret delivery.
 | 2026-10-14 | — | P23 built: T11 restated — a reset retains the vault for seven days, recoverable and undeletable, then purged hourly; T12 added — the emailed escape archive as a permanent offline target, the owner's accepted risk, and what it does and does not concede |
 | 2026-10-14 | — | P23, review round 1: owner decision recorded — never reset without the archive silently (production without mail refuses; too large needs an explicit choice); T11 gains the way back from a hostile reset and loses "nobody can delete it"; T12 corrected on locked versus unlocked sessions and brief inbox control, states the retained vault is offline-attackable by any unlocked session and its lockout is abuse control, and adds rotating environment keys and the import's preview and e2ee-only targets |
 | 2026-10-14 | — | P23, review round 2: T11 states that recovery after a hostile reset may wait up to an hour (the attacker can run the retained vault's lockout to its maximum before the victim's reset locks their sessions); a retained vault can no longer be inserted dated in the future; a locked session's reset preflight no longer reveals the archive's counts or size |
+| 2026-10-18 | — | WS-5 (organisation SSO settings), review round 1: Boundary 4 added — a customer-attached identity provider; T1 corrected — `state` and PKCE do not cover the planted-AuthKit-session login CSRF, and the confirmation that does is described; T3 — `sso_required` is enforced per request again, and the owner exemption is recorded as a deliberate break-glass with a cost; T13 added — SSO administration owners-only with a step-up for the credential-grade portal link, JIT never re-admits a removed member, the link records its WorkOS environment, the add-on as the blast-radius gate |
