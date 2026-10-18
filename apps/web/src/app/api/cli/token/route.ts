@@ -79,10 +79,14 @@ export const POST = publicRoute(async ({ request, services }) => {
   });
   if (!membership) throw errors.unauthenticated('membership no longer active');
 
+  // Minted with how the approving browser session signed in: the token acts as
+  // its user, and an organisation's `sso_required` judges it by that session.
   const issued = await createCliToken(services.db, {
     orgId: grant.orgId,
     userId: grant.userId,
     name: grant.deviceName,
+    signInMethod: grant.signInMethod,
+    ssoWorkosOrgId: grant.ssoWorkosOrgId,
   });
 
   // Written directly rather than through the request recorder: `publicRoute`

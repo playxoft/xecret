@@ -22,6 +22,11 @@ import { invitationTokenSchema } from '@/server/schemas/members';
  *
  * The audit record is written into the organisation being joined, as
  * `member.joined` — the counterpart of the `member.invited` the inviter left.
+ *
+ * An organisation that requires its single sign-on is joined only from a
+ * session that came through it (any role but owner): otherwise a newcomer who
+ * signed in with a password — no memberships, so nothing to refuse at sign-in —
+ * could walk in past the requirement. Refused with `sso_required`.
  */
 
 export const POST = authenticatedRoute(async ({ request, principal, services, audit, record }) => {
@@ -34,10 +39,16 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
     throw errors.notFound('malformed invitation token');
   }
 
+  // How this session signed in travels with the acceptance: an organisation
+  // that requires its single sign-on is joined only through it (review S3) —
+  // checked inside the repository's transaction, under the organisation lock,
+  // because this is the one write into an organisation that does not pass
+  // through `resolveOrg`.
   const accepted = await acceptInvitation(services.db, {
     tokenHash: await hashToken(body.token),
     userId: actor.user.id,
     userEmail: actor.user.email,
+    ssoWorkosOrgId: actor.signIn.ssoWorkosOrgId,
   }).catch(mapMembershipError);
 
   record(

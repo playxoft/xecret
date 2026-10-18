@@ -504,6 +504,7 @@ describe('response shapes', () => {
     // No WorkOS organisation and no SSO requirement: the overwhelmingly common
     // shape, and the one every assertion in this file is about.
     workosOrgId: null,
+    workosClientId: null,
     ssoRequired: false,
     jitJoinEnabled: false,
     createdBy: '0198c0de-0000-7000-8000-00000000000a',

@@ -93,6 +93,7 @@ const userPrincipal = {
   vaultUnlockedAt: new Date(),
   lastSeenAt: new Date(),
   vaultAutoLockMinutes: null,
+  signIn: { method: 'password' as const, ssoWorkosOrgId: null as string | null },
   sessionId: uuidv7(),
   user: {
     id: USER_ID,
@@ -162,17 +163,22 @@ beforeEach(() => {
   });
 });
 
-function organization(slug: string) {
+function organization(slug: string, over: Record<string, unknown> = {}) {
   const now = new Date('2026-01-01T10:00:00.000Z');
   return {
     id: ORG_ID,
     name: 'An organisation',
     slug,
     seatLimit: 5,
+    workosOrgId: null,
+    workosClientId: null,
+    ssoRequired: false,
+    jitJoinEnabled: false,
     createdBy: USER_ID,
     createdAt: now,
     updatedAt: now,
     deletedAt: null,
+    ...over,
   };
 }
 
@@ -228,6 +234,75 @@ describe('POST /api/cli/authorize — which organisation may be named', () => {
 
     expect(response.status).toBe(404);
     expect(repository.createCliAuthCode).not.toHaveBeenCalled();
+  });
+
+  it('records how the approving session signed in on the approval, for the token to inherit (review S3)', async () => {
+    repository.findOrganizationBySlugWithEntitlements.mockResolvedValue({
+      organization: organization('acme-corp'),
+      entitlements: null,
+    });
+
+    expect((await route.POST(approve('acme-corp'))).status).toBe(200);
+    expect(repository.createCliAuthCode).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ signInMethod: 'password', ssoWorkosOrgId: null }),
+    );
+  });
+
+  it('refuses to approve a device for an organisation requiring SSO from a session that was not its SSO', async () => {
+    // Review S3 (d): a password session must not mint a CLI token that reaches
+    // an organisation its own requests cannot.
+    repository.findOrganizationBySlugWithEntitlements.mockResolvedValue({
+      organization: organization('acme-corp', {
+        workosOrgId: 'org_01ACME',
+        workosClientId: 'client_01',
+        ssoRequired: true,
+      }),
+      entitlements: null,
+    });
+    repository.loadAuthorizationContext.mockResolvedValue({
+      orgId: ORG_ID,
+      userId: USER_ID,
+      memberId: MEMBER_ID,
+      role: 'developer',
+      status: 'active',
+      grants: [],
+    });
+
+    const response = await route.POST(approve('acme-corp'));
+
+    expect(response.status).toBe(403);
+    expect(await body(response)).toMatchObject({ error: { code: 'sso_required' } });
+    expect(repository.createCliAuthCode).not.toHaveBeenCalled();
+  });
+
+  it('approves from the organisation’s own SSO session, carrying it onto the approval', async () => {
+    repository.findOrganizationBySlugWithEntitlements.mockResolvedValue({
+      organization: organization('acme-corp', {
+        workosOrgId: 'org_01ACME',
+        workosClientId: 'client_01',
+        ssoRequired: true,
+      }),
+      entitlements: null,
+    });
+    repository.loadAuthorizationContext.mockResolvedValue({
+      orgId: ORG_ID,
+      userId: USER_ID,
+      memberId: MEMBER_ID,
+      role: 'developer',
+      status: 'active',
+      grants: [],
+    });
+    actor.authenticate.mockResolvedValue({
+      principal: { ...userPrincipal, signIn: { method: 'sso', ssoWorkosOrgId: 'org_01ACME' } },
+      source: 'cookie',
+    });
+
+    expect((await route.POST(approve('acme-corp'))).status).toBe(200);
+    expect(repository.createCliAuthCode).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ signInMethod: 'sso', ssoWorkosOrgId: 'org_01ACME' }),
+    );
   });
 
   // The shape rules are untouched: a reference is still bounded before it

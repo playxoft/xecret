@@ -50,7 +50,33 @@ export type ApiErrorCode =
    * `isDataPlaneActive` in `@xecret/core/entitlements`.
    */
   | 'plan_limit'
+  /**
+   * The organisation requires its single sign-on, and this credential — a
+   * session, or a CLI token approved from one — did not come through it.
+   *
+   * Its own code for the reason `session_locked` has one: the caller is a
+   * member, is permitted, and can fix it without anybody granting them
+   * anything — by signing in through the organisation's identity provider. The
+   * dashboard offers that sign-in; the CLI says to run `xecret login` again
+   * from a single-sign-on session. Only ever answered to a member: the
+   * organisation and the membership are resolved first, so it confirms
+   * nothing a stranger could not already see.
+   */
+  | 'sso_required'
+  /**
+   * The action needs a fresh sign-in of this session first — a step-up. The
+   * dashboard sends the person through `GET /api/auth/login?reauth=1` and back.
+   */
+  | 'reauth_required'
   | 'internal_error'
+  /**
+   * An upstream provider (WorkOS) answered, and refused the request this
+   * server built — a configuration problem rather than an outage, so "try
+   * again in a minute" would be the wrong advice. The message names the
+   * provider's own error category, which is bounded and stripped to a
+   * log-safe token before it gets here.
+   */
+  | 'upstream_refused'
   | 'unavailable';
 
 const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
@@ -59,6 +85,8 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   unauthenticated: 401,
   forbidden: 403,
   plan_limit: 403,
+  sso_required: 403,
+  reauth_required: 403,
   not_found: 404,
   conflict: 409,
   payload_too_large: 413,
@@ -66,6 +94,7 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   csrf_failed: 403,
   session_locked: 403,
   internal_error: 500,
+  upstream_refused: 502,
   unavailable: 503,
 };
 
@@ -381,6 +410,55 @@ export const errors = {
         'Try again in a minute.',
       { logDetail },
     ),
+
+  /**
+   * WorkOS answered an SSO settings call, and refused it: a 4xx about the
+   * request this server built — the WorkOS organisation deleted in the WorkOS
+   * dashboard, a parameter WorkOS stopped accepting. Not an outage, so the
+   * sentence does not say "try again"; it names WorkOS's own category so that
+   * whoever reads it to support has something to quote.
+   *
+   * `category` is never request data: it comes from `providerFailure` in
+   * `workos.ts`, which strips WorkOS's error code to `[a-z0-9_-]` and 64
+   * characters before it exists — the one value in this file not written here,
+   * and bounded so it can be nothing else.
+   */
+  ssoProviderRefused: (category: string, logDetail: string): ApiError =>
+    new ApiError(
+      'upstream_refused',
+      `WorkOS refused the request (${category.replace(/[^a-z0-9_-]/gi, '').slice(0, 64) || 'rejected'}), ` +
+        'so nothing was changed. This usually means the organisation’s setup at WorkOS needs ' +
+        'attention; contact support with the request id.',
+      { logDetail },
+    ),
+
+  /**
+   * This organisation's single sign-on link was made in a different WorkOS
+   * environment from this deployment's (review S9) — typically an "enable"
+   * clicked in local development, which runs against WorkOS Staging over the
+   * production database. Refused rather than acted on: every WorkOS call made
+   * with it would be about an organisation this environment does not have.
+   */
+  ssoEnvironmentMismatch: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation’s single sign-on was set up in a different WorkOS environment from the ' +
+        'one this deployment uses, so it cannot be managed from here. Contact support to have the ' +
+        'link checked.',
+      { logDetail: 'workos client id mismatch' },
+    ),
+
+  /** See the `sso_required` code above. */
+  ssoRequired: (logDetail?: string): ApiError =>
+    new ApiError(
+      'sso_required',
+      'This organisation requires its single sign-on. Sign in through your company’s identity ' +
+        'provider to use it.',
+      logDetail === undefined ? {} : { logDetail },
+    ),
+
+  /** See the `reauth_required` code above. */
+  reauthRequired: (message: string): ApiError => new ApiError('reauth_required', message),
 
   internal: (logDetail: string): ApiError =>
     new ApiError('internal_error', 'Something went wrong.', { logDetail }),

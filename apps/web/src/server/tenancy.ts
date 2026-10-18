@@ -21,7 +21,7 @@ import type {
   Organization,
   ProjectRecord,
 } from '@xecret/db/repositories';
-import type { Principal } from './actor';
+import type { CredentialSignIn, Principal } from './actor';
 import type { ServiceContext } from './context';
 import { errors } from './errors';
 
@@ -119,6 +119,16 @@ export async function resolveOrg(
   });
   if (!membership) throw errors.notFound('no membership in organisation');
 
+  // After the membership, never before: a stranger is answered `not_found`
+  // like any other, and only a member learns that the organisation wants its
+  // single sign-on. See `ssoRequirementRefuses`.
+  if (ssoRequirementRefuses(organization, membership.role, principal.signIn)) {
+    throw errors.ssoRequired(
+      `organisation requires SSO; this ${principal.kind === 'user' ? 'session' : 'CLI token'} ` +
+        `signed in by ${principal.signIn.method ?? 'an unrecorded method'}`,
+    );
+  }
+
   bindScope(services, { orgId: organization.id, orgSlug: organization.slug });
 
   return {
@@ -130,6 +140,45 @@ export async function resolveOrg(
     membership,
     entitlements,
   };
+}
+
+/**
+ * Whether an organisation's `sso_required` refuses this credential — the
+ * per-request half of the requirement, and the half that counts.
+ *
+ * It used to be checked once, at sign-in, which left three ways round it: a
+ * session issued before the flag went on (thirty days of it), a CLI token
+ * minted from one (whose expiry may be never), and a newcomer who signed in
+ * with a password and then accepted an invitation. So it is checked here, on
+ * every request that reaches the organisation, against how the presenting
+ * credential signed in (`Principal['signIn']`, migration 0022): the moment the
+ * flag is on, every non-SSO credential loses this organisation — and only this
+ * one; the member's other organisations are untouched.
+ *
+ * Refuses unless one of these holds:
+ *
+ *  - The organisation does not require SSO.
+ *  - The member is an **owner** — the deliberate break-glass (a misconfigured
+ *    identity provider must not lock the organisation out of itself), audited
+ *    at each sign-in that uses it (`auth.sso_exemption_used`).
+ *  - The credential came through **this** organisation's single sign-on: its
+ *    recorded WorkOS organisation is this one's `workos_org_id`. A credential
+ *    issued before the method was recorded carries none, and is refused.
+ *
+ * A link made in another WorkOS environment (review S9) can never be satisfied
+ * here — no credential in this environment comes through it — so only owners
+ * reach such an organisation, which is the right outcome for a link nobody here
+ * can sign in through.
+ */
+export function ssoRequirementRefuses(
+  organization: Pick<Organization, 'ssoRequired' | 'workosOrgId'>,
+  role: StoredAuthorizationContext['role'],
+  signIn: Pick<CredentialSignIn, 'ssoWorkosOrgId'>,
+): boolean {
+  if (!organization.ssoRequired) return false;
+  if (role === 'owner') return false;
+  if (organization.workosOrgId === null) return true;
+  return signIn.ssoWorkosOrgId !== organization.workosOrgId;
 }
 
 /**

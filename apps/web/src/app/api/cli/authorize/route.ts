@@ -39,6 +39,13 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  * session (with CSRF and the vault lock gate in front of it) keeps a *person* in the
  * loop for every new device. The default lock gate applies for the same
  * reason: an unattended, locked dashboard must not be able to approve anything.
+ *
+ * ## Single sign-on
+ *
+ * For an organisation that requires its single sign-on, the approving session
+ * must have come through it (owners exempt) — `resolveOrg` refuses any other
+ * with `sso_required`. And the token records how that session signed in, so a
+ * device approved before the requirement went on is held to it all the same.
  */
 
 /**
@@ -107,12 +114,18 @@ export const POST = authenticatedRoute(async ({ request, principal, services, au
     throw cause;
   }
 
+  // How this session signed in rides on the approval and then on the token, so
+  // the device is held to an organisation's `sso_required` exactly as the
+  // session that approved it is (review S3). `resolveOrg` above has already
+  // refused a session that does not satisfy this organisation's.
   const issued = await createCliAuthCode(services.db, {
     userId: principal.user.id,
     orgId,
     deviceName: body.deviceName,
     codeChallenge: body.codeChallenge,
     ipAddress: services.meta.ipAddress,
+    signInMethod: principal.signIn.method,
+    ssoWorkosOrgId: principal.signIn.ssoWorkosOrgId,
   });
 
   // The approval is recorded here, from the browser's network position; the

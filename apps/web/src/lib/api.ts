@@ -60,7 +60,17 @@ export type ApiErrorCode =
    * who plainly does.
    */
   | 'plan_limit'
+  /**
+   * The organisation requires its single sign-on, and this session did not
+   * come through it. Remedied by signing in through the organisation's
+   * identity provider — never by asking an admin for access.
+   */
+  | 'sso_required'
+  /** The action needs this session to sign in again first (a step-up). */
+  | 'reauth_required'
   | 'internal_error'
+  /** An upstream provider answered and refused: a configuration problem, not an outage. */
+  | 'upstream_refused'
   | 'unavailable'
   | 'network_error';
 
@@ -217,7 +227,10 @@ const ERROR_CODES = new Set<string>([
   'csrf_failed',
   'session_locked',
   'plan_limit',
+  'sso_required',
+  'reauth_required',
   'internal_error',
+  'upstream_refused',
   'unavailable',
 ]);
 
