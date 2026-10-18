@@ -1767,9 +1767,12 @@ describe('the scheduled purge', () => {
     expect(lines.some((line) => line.message.includes('in no organisation'))).toBe(true);
   });
 
-  it('deletes the spent sign-in confirmations whose five minutes are over, and no younger one (review round 2)', async () => {
+  it('deletes the spent sign-in confirmations a minute past their five, and no younger one (review rounds 2 and 3)', async () => {
     // The ledger that makes a held-back sign-in's cookie single-use; a row
     // past its cookie's expiry can stop nothing, and used to stay for ever.
+    // Kept a minute past `expires_at`, though: the cookie is still accepted
+    // for up to a second after it, and a replay in that sliver must still
+    // find its row.
     const who = await account();
     const spent = async (expiresAt: Date) => {
       const nonceHash = new Uint8Array(32).map(() => Math.floor(Math.random() * 256));
@@ -1779,12 +1782,16 @@ describe('the scheduled purge', () => {
       );
       return nonceHash;
     };
-    const stale = await spent(new Date(Date.now() - 60_000));
+    const stale = await spent(new Date(Date.now() - 2 * 60_000));
+    const justExpired = await spent(new Date(Date.now() - 1_000));
+    const withinTheMinute = await spent(new Date(Date.now() - 45_000));
     const live = await spent(new Date(Date.now() + 4 * 60_000));
 
     await runScheduledJob(callPurge, ORIGIN, VAULT_PURGE_PATH);
 
     expect(await count('sign_in_confirmations where nonce_hash = $1', [stale])).toBe(0);
+    expect(await count('sign_in_confirmations where nonce_hash = $1', [justExpired])).toBe(1);
+    expect(await count('sign_in_confirmations where nonce_hash = $1', [withinTheMinute])).toBe(1);
     expect(await count('sign_in_confirmations where nonce_hash = $1', [live])).toBe(1);
   });
 });
