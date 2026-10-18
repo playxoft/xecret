@@ -252,6 +252,31 @@ export function isSameOrigin(request: Request, expectedOrigin: string): boolean 
   return origin === expectedOrigin;
 }
 
+/**
+ * Whether a top-level `GET` navigation came from a page on this origin — the
+ * question `isSameOrigin` cannot answer, because a browser sends no `Origin`
+ * on a GET navigation. Fails *closed*, the opposite of `isSameOrigin`: it
+ * guards a link that must not work when followed from elsewhere (the SSO deep
+ * link on `GET /api/auth/login`), not an API a CLI must be able to call.
+ *
+ * `Sec-Fetch-Site` when the browser sends it, which every current one does,
+ * and which a page on another site cannot forge — it is a forbidden header,
+ * set by the browser alone. `same-site` is not enough: a sibling subdomain is
+ * not this application. `none` (typed, bookmarked, opened from another app) is
+ * not either: it is exactly how a link in an email arrives.
+ *
+ * Without the header, a `Referer` on this origin: the site-wide
+ * `strict-origin-when-cross-origin` policy sends the full one on every
+ * same-origin navigation. A request with neither is treated as cross-site.
+ */
+export function isSameOriginNavigation(request: Request, expectedOrigin: string): boolean {
+  const site = request.headers.get('sec-fetch-site');
+  if (site !== null) return site === 'same-origin';
+  const referer = request.headers.get('referer');
+  if (referer === null || !URL.canParse(referer)) return false;
+  return new URL(referer).origin === expectedOrigin;
+}
+
 export function toApiError(cause: unknown): ApiError {
   if (cause instanceof ApiError) return cause;
   // Deliberately does not read `cause.message`: a postgres.js error message can

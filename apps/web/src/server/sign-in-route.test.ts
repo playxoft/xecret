@@ -230,8 +230,11 @@ interface Started {
   state: string;
 }
 
-async function startSignIn(query = ''): Promise<Started> {
-  const response = await login(new Request(`${ORIGIN}/api/auth/login${query}`));
+/** What a browser sends when the sign-in page's own button is followed. */
+const FROM_THIS_SITE = { 'sec-fetch-site': 'same-origin' } as const;
+
+async function startSignIn(query = '', headers: Record<string, string> = {}): Promise<Started> {
+  const response = await login(new Request(`${ORIGIN}/api/auth/login${query}`, { headers }));
   const setCookie = response.headers.getSetCookie()[0] ?? '';
   const location = new URL(response.headers.get('location') ?? 'about:blank');
   return {
@@ -356,24 +359,39 @@ async function seedUser(
 }
 
 async function seedOrg(
-  over: { workosOrgId?: string; ssoRequired?: boolean; seatLimit?: number } = {},
+  over: {
+    workosOrgId?: string;
+    ssoRequired?: boolean;
+    jitJoinEnabled?: boolean;
+    seatLimit?: number;
+  } = {},
 ): Promise<string> {
   const founder = await seedUser();
   const id = randomUUID();
   await t.pg.query(
-    `insert into organizations (id, name, slug, created_by, workos_org_id, sso_required, seat_limit)
-     values ($1, 'BigCorp', $2, $3, $4, $5, $6)`,
+    `insert into organizations
+       (id, name, slug, created_by, workos_org_id, sso_required, jit_join_enabled, seat_limit)
+     values ($1, 'BigCorp', $2, $3, $4, $5, $6, $7)`,
     [
       id,
       `bigcorp-${id.slice(0, 8)}`,
       founder.id,
       over.workosOrgId ?? null,
       over.ssoRequired ?? false,
+      over.jitJoinEnabled ?? false,
       over.seatLimit ?? 5,
     ],
   );
   await addMember(id, founder.id, 'owner');
   return id;
+}
+
+async function slugOf(orgId: string): Promise<string> {
+  const result = await t.pg.query<{ slug: string }>(
+    `select slug::text from organizations where id = $1`,
+    [orgId],
+  );
+  return result.rows[0]!.slug;
 }
 
 async function addMember(orgId: string, userId: string, role = 'developer', status = 'active') {
@@ -440,19 +458,66 @@ describe('starting a sign-in', () => {
   it('deep-links an organisation’s SSO by slug, and falls through for one without', async () => {
     const workosOrgId = unique('org_01');
     const orgId = await seedOrg({ workosOrgId });
-    const slug = (
-      await t.pg.query<{ slug: string }>(`select slug::text from organizations where id = $1`, [
-        orgId,
-      ])
-    ).rows[0]!.slug;
+    const slug = await slugOf(orgId);
 
-    const deep = await startSignIn(`?org=${slug}`);
+    const deep = await startSignIn(`?org=${slug}`, FROM_THIS_SITE);
     expect(deep.location.searchParams.get('organization_id')).toBe(workosOrgId);
     expect(deep.location.searchParams.has('provider')).toBe(false);
 
-    const plain = await startSignIn('?org=no-such-org');
+    const plain = await startSignIn('?org=no-such-org', FROM_THIS_SITE);
     expect(plain.location.searchParams.has('organization_id')).toBe(false);
     expect(plain.location.searchParams.get('provider')).toBe('authkit');
+  });
+
+  it.each([
+    ['a link on another site', { 'sec-fetch-site': 'cross-site' }],
+    ['a sibling subdomain', { 'sec-fetch-site': 'same-site' }],
+    ['an email, a bookmark or a typed address', { 'sec-fetch-site': 'none' }],
+    ['a browser that says nothing', {}],
+    ['a browser whose only clue is another site’s referrer', { referer: 'https://evil.example/x' }],
+  ] as Array<[string, Record<string, string>]>)(
+    'sends an SSO deep link from %s to the sign-in page to be confirmed, minting nothing (login CSRF)',
+    async (_label, headers) => {
+      // PR #114's constraint for WS-5: an organisation an attacker linked to an
+      // identity provider of their own must not be able to sign a victim in to
+      // the attacker's account through a link the victim merely followed.
+      const workosOrgId = unique('org_01');
+      const slug = await slugOf(await seedOrg({ workosOrgId }));
+      const keys: string[] = [];
+      env['RL_LOGIN'] = {
+        limit: async ({ key }: { key: string }) => {
+          keys.push(key);
+          return { success: true };
+        },
+      };
+
+      const response = await login(
+        new Request(`${ORIGIN}/api/auth/login?org=${slug}&next=%2Fapp%2Facme`, { headers }),
+      );
+
+      expect(response.status).toBe(303);
+      expect(response.headers.get('location')).toBe(`/sign-in?org=${slug}&next=%2Fapp%2Facme`);
+      // No state cookie, no flow, and not even the slug lookup's rate-limit token.
+      expect(response.headers.getSetCookie()).toEqual([]);
+      expect(keys).toEqual([]);
+    },
+  );
+
+  it('honours the deep link from a browser that sends only a same-origin referrer', async () => {
+    const workosOrgId = unique('org_01');
+    const slug = await slugOf(await seedOrg({ workosOrgId }));
+
+    const deep = await startSignIn(`?org=${slug}`, { referer: `${ORIGIN}/sign-in?org=${slug}` });
+
+    expect(deep.status).toBe(307);
+    expect(deep.location.searchParams.get('organization_id')).toBe(workosOrgId);
+  });
+
+  it('ignores a malformed org= rather than sending it anywhere', async () => {
+    const flow = await startSignIn('?org=%3Cscript%3E');
+
+    expect(flow.status).toBe(307);
+    expect(flow.location.searchParams.has('organization_id')).toBe(false);
   });
 
   it('sends the browser to the sign-in page’s "unavailable" error rather than signing state with a weak or missing key', async () => {
@@ -474,29 +539,22 @@ describe('starting a sign-in', () => {
     }
   });
 
-  it('ignores org= on a re-authentication', async () => {
+  it('ignores org= on a re-authentication, from wherever it came', async () => {
     const workosOrgId = unique('org_01');
-    const orgId = await seedOrg({ workosOrgId });
-    const slug = (
-      await t.pg.query<{ slug: string }>(`select slug::text from organizations where id = $1`, [
-        orgId,
-      ])
-    ).rows[0]!.slug;
+    const slug = await slugOf(await seedOrg({ workosOrgId }));
 
-    const flow = await startSignIn(`?reauth=1&org=${slug}`);
+    for (const headers of [FROM_THIS_SITE, { 'sec-fetch-site': 'cross-site' }]) {
+      const flow = await startSignIn(`?reauth=1&org=${slug}`, headers);
 
-    expect(flow.location.searchParams.has('organization_id')).toBe(false);
-    expect(flow.location.searchParams.get('provider')).toBe('authkit');
+      expect(flow.status).toBe(307);
+      expect(flow.location.searchParams.has('organization_id')).toBe(false);
+      expect(flow.location.searchParams.get('provider')).toBe('authkit');
+    }
   });
 
   it('stops resolving org= for an address that has looked up too many, silently', async () => {
     const workosOrgId = unique('org_01');
-    const orgId = await seedOrg({ workosOrgId });
-    const slug = (
-      await t.pg.query<{ slug: string }>(`select slug::text from organizations where id = $1`, [
-        orgId,
-      ])
-    ).rows[0]!.slug;
+    const slug = await slugOf(await seedOrg({ workosOrgId }));
     const keys: string[] = [];
     env['RL_LOGIN'] = {
       limit: async ({ key }: { key: string }) => {
@@ -505,7 +563,7 @@ describe('starting a sign-in', () => {
       },
     };
 
-    const flow = await startSignIn(`?org=${slug}`);
+    const flow = await startSignIn(`?org=${slug}`, FROM_THIS_SITE);
 
     expect(flow.status).toBe(307);
     expect(flow.location.searchParams.has('organization_id')).toBe(false);
@@ -1029,15 +1087,96 @@ describe('sso_required', () => {
 
     expect((await signIn(who, { authenticationMethod: 'Password' })).error).toBeNull();
   });
+
+  it('exempts an owner, so a broken identity provider cannot lock the organisation out', async () => {
+    // The break-glass migration 0018 promised: with the IdP misconfigured,
+    // somebody must still be able to sign in and switch the requirement off.
+    const workosOrgId = unique('org_01');
+    const orgId = await seedOrg({ workosOrgId, ssoRequired: true });
+    const who = workosUser();
+    const row = await seedUser({ workosUserId: who.id as string, email: who.email as string });
+    await addMember(orgId, row.id, 'owner');
+
+    const result = await signIn(who, { authenticationMethod: 'Password' });
+
+    expect(result.error).toBeNull();
+    expect(sessionCookieIssued(result)).toBe(true);
+    expect(await sessionsFor(row.id)).toHaveLength(1);
+    // Findable afterwards: the sign-in is audited with its method, and logged.
+    const login = audit.find((e) => e.action === 'auth.login');
+    expect(login?.metadata.signInMethod).toBe('password');
+    expect(
+      lines.some((line) => line.level === 'info' && line.message.includes('owners are exempt')),
+    ).toBe(true);
+  });
+
+  it('does not exempt an admin — only owners', async () => {
+    const workosOrgId = unique('org_01');
+    const orgId = await seedOrg({ workosOrgId, ssoRequired: true });
+    const who = workosUser();
+    const row = await seedUser({ workosUserId: who.id as string, email: who.email as string });
+    await addMember(orgId, row.id, 'admin');
+
+    const result = await signIn(who, { authenticationMethod: 'GoogleOAuth' });
+
+    expect(result.error).toBe('sso-required');
+    expect(await sessionsFor(row.id)).toHaveLength(0);
+  });
+
+  it('still holds an owner of one organisation to another organisation’s requirement', async () => {
+    // The exemption is per organisation: owning your own does not excuse you
+    // from the company organisation you are a developer in.
+    const theirs = await seedOrg({ workosOrgId: unique('org_01'), ssoRequired: true });
+    const own = await seedOrg({ workosOrgId: unique('org_01'), ssoRequired: true });
+    const who = workosUser();
+    const row = await seedUser({ workosUserId: who.id as string, email: who.email as string });
+    await addMember(own, row.id, 'owner');
+    await addMember(theirs, row.id, 'developer');
+
+    const result = await signIn(who, { authenticationMethod: 'Password' });
+
+    expect(result.error).toBe('sso-required');
+  });
 });
 
 describe('just-in-time membership', () => {
-  async function ssoOrg(over: { seatLimit?: number } = {}) {
+  /** An organisation linked to WorkOS that opted in to just-in-time joins, unless told otherwise. */
+  async function ssoOrg(over: { seatLimit?: number; jitJoinEnabled?: boolean } = {}) {
     const workosOrgId = unique('org_01');
-    const orgId = await seedOrg({ workosOrgId, ...over });
+    const orgId = await seedOrg({ workosOrgId, jitJoinEnabled: true, ...over });
     organizationAt(workosOrgId, [['bigcorp.example', 'verified']]);
     return { workosOrgId, orgId };
   }
+
+  it('does not join anybody to an organisation that has not opted in', async () => {
+    // PR #114's constraint for WS-5: a WorkOS link and an IdP connection are
+    // not, on their own, consent to admit everybody that IdP signs in.
+    const { workosOrgId, orgId } = await ssoOrg({ jitJoinEnabled: false });
+    const who = workosUser({ email: `${unique('new')}@bigcorp.example` });
+
+    const result = await signIn(who, { authenticationMethod: 'SSO', organizationId: workosOrgId });
+
+    // Signed in all the same — to a personal organisation of their own.
+    expect(result.error).toBeNull();
+    const [row] = await userRows('workos_user_id', who.id as string);
+    const memberships = await membershipsOf(row!.id);
+    expect(memberships.map((m) => m.org_id)).not.toContain(orgId);
+    expect(memberships).toEqual([expect.objectContaining({ role: 'owner' })]);
+    expect(audit.map((e) => e.action)).not.toContain('member.jit_joined');
+    expect(audit.map((e) => e.action)).not.toContain('member.jit_denied');
+  });
+
+  it('does not refuse a newcomer for want of a seat in an organisation that never offered one', async () => {
+    // A full organisation that has not opted in is not a "no seat" refusal:
+    // there was never an offer to refuse.
+    const { workosOrgId } = await ssoOrg({ jitJoinEnabled: false, seatLimit: 1 });
+    const who = workosUser({ email: `${unique('new')}@bigcorp.example` });
+
+    const result = await signIn(who, { authenticationMethod: 'SSO', organizationId: workosOrgId });
+
+    expect(result.error).toBeNull();
+    expect(audit.map((e) => e.action)).not.toContain('member.jit_denied');
+  });
 
   it('joins a newcomer arriving through the organisation’s SSO as a viewer, with no personal organisation', async () => {
     const { workosOrgId, orgId } = await ssoOrg();

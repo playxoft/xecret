@@ -9,8 +9,9 @@ import { SLUG_MAX_LENGTH, SLUG_PATTERN } from '@xecret/core/validation';
 import { findOrganizationBySlugWithEntitlements } from '@xecret/db/repositories';
 import { safeRedirectPath } from '@/lib/redirect-path';
 import { POST_SIGN_IN_PATH, SIGN_IN_PATH } from '@/lib/session-hint';
-import { MissingBindingError } from '@/server/bindings';
+import { MissingBindingError, publicOrigin } from '@/server/bindings';
 import type { ServiceContext } from '@/server/context';
+import { isSameOriginNavigation } from '@/server/http';
 import { consume, rateLimitKey } from '@/server/rate-limit';
 import { publicRoute } from '@/server/route';
 import { oauthStateKey } from '@/server/sign-in';
@@ -42,6 +43,20 @@ import { workosProvider } from '@/server/workos';
  *    silently ignored rather than refused (a refusal would be its own oracle).
  *    Ignored on a re-authentication, which is about this account, not an
  *    organisation.
+ *
+ *    **Honoured only from a same-origin navigation** — the sign-in page's own
+ *    button. Anything else (a link on another site, an email, a bookmark) is
+ *    sent to `/sign-in?org=<slug>` instead, which names the organisation and
+ *    asks the person to confirm. That is PR #114's constraint for WS-5, and the
+ *    attack is login CSRF: now that an organisation can be linked to WorkOS,
+ *    somebody could link their own, point it at an identity provider they
+ *    control that signs anybody in as *them*, and send a victim to
+ *    `?org=<theirs>`. Followed blind, the victim would land signed in to the
+ *    attacker's account — and whatever they stored next would be the
+ *    attacker's. The confirmation is the moment they can notice the name is not
+ *    their company's. Same-origin is read from `Sec-Fetch-Site`, or, from a
+ *    browser that does not send it, from a `Referer` on this origin (the site's
+ *    referrer policy sends one on every same-origin navigation).
  *  - `reauth=1` — sign in again for the vault reset's first lock. Sends AuthKit
  *    `max_age=0`, which makes AuthKit ask for a password or passkey even when it
  *    holds a session; it does not make Google or a company's identity provider
@@ -61,6 +76,19 @@ export const GET = publicRoute(async ({ request, services }) => {
   const next = safeRedirectPath(url.searchParams.get('next'), POST_SIGN_IN_PATH);
   const purpose: OAuthPurpose = url.searchParams.get('reauth') === '1' ? 'reauth' : 'sign-in';
   const screenHint = url.searchParams.get('hint') === 'sign-up' ? 'sign-up' : undefined;
+  const orgSlug = purpose === 'reauth' ? null : wellFormedSlug(url.searchParams.get('org'));
+
+  // An SSO deep link that did not come from this site's own sign-in page goes
+  // there first, to be confirmed — see `org=` above. Before anything else, so
+  // a cross-site link costs no lookup, no rate-limit token and no cookie.
+  if (orgSlug !== null && !isSameOriginNavigation(request, publicOrigin(services.env))) {
+    const target = new URLSearchParams({ org: orgSlug });
+    if (next !== POST_SIGN_IN_PATH) target.set('next', next);
+    return new Response(null, {
+      status: 303,
+      headers: { location: `${SIGN_IN_PATH}?${target.toString()}`, 'cache-control': 'no-store' },
+    });
+  }
 
   // Resolved before anything else is built, so a misconfigured deployment
   // says so without having touched the database.
@@ -85,8 +113,7 @@ export const GET = publicRoute(async ({ request, services }) => {
     });
   }
 
-  const organizationId =
-    purpose === 'reauth' ? undefined : await ssoOrganization(services, url.searchParams.get('org'));
+  const organizationId = orgSlug === null ? undefined : await ssoOrganization(services, orgSlug);
 
   const { state, verifier } = generateOAuthSecrets();
   const cookie = await sealOAuthState(key, {
@@ -124,9 +151,8 @@ export const GET = publicRoute(async ({ request, services }) => {
  */
 async function ssoOrganization(
   services: ServiceContext,
-  slug: string | null,
+  slug: string,
 ): Promise<string | undefined> {
-  if (slug === null || slug.length > SLUG_MAX_LENGTH || !SLUG_PATTERN.test(slug)) return undefined;
   const allowed = await consume(
     services.env,
     'RL_LOGIN',
@@ -135,4 +161,10 @@ async function ssoOrganization(
   if (!allowed.allowed) return undefined;
   const found = await findOrganizationBySlugWithEntitlements(services.db, slug);
   return found?.organization.workosOrgId ?? undefined;
+}
+
+/** `org=` as a slug, or `null` for anything that is not one — which is then ignored. */
+function wellFormedSlug(value: string | null): string | null {
+  if (value === null || value.length > SLUG_MAX_LENGTH || !SLUG_PATTERN.test(value)) return null;
+  return value;
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { safeRedirectPath } from '@/lib/redirect-path';
 import { POST_SIGN_IN_PATH } from '@/lib/session-hint';
-import { authScreenHref, LOGIN_ROUTE, loginHref } from './login-href';
+import { authScreenHref, LOGIN_ROUTE, loginHref, ssoOrgParam } from './login-href';
 
 /**
  * The query strings that carry `next` from a screen into `GET /api/auth/login`.
@@ -83,6 +83,25 @@ describe('loginHref', () => {
     });
   });
 
+  it('carries an SSO deep link for a slug, and nothing that is not one', () => {
+    const href = loginHref({ org: 'acme-corp', next: '/app/acme-corp' });
+    const url = new URL(href, ORIGIN);
+    expect(url.pathname).toBe(LOGIN_ROUTE);
+    expect(url.searchParams.get('org')).toBe('acme-corp');
+    expect(url.searchParams.get('next')).toBe('/app/acme-corp');
+
+    for (const hostile of ['Acme', 'acme corp', '<script>', '-acme', 'a'.repeat(200)]) {
+      expect(new URL(loginHref({ org: hostile }), ORIGIN).searchParams.has('org')).toBe(false);
+    }
+    // A deep link is about an organisation; a re-authentication and a sign-up are not.
+    expect(new URL(loginHref({ org: 'acme', reauth: true }), ORIGIN).searchParams.has('org')).toBe(
+      false,
+    );
+    expect(new URL(loginHref({ org: 'acme', signUp: true }), ORIGIN).searchParams.has('org')).toBe(
+      false,
+    );
+  });
+
   it('forces a re-authentication, and never pairs one with the sign-up hint', () => {
     expect(
       readLoginLink(loginHref({ reauth: true, signUp: true, next: '/app/settings/security' })),
@@ -92,6 +111,24 @@ describe('loginHref', () => {
       hint: null,
       reauth: '1',
     });
+  });
+});
+
+describe('ssoOrgParam', () => {
+  it('accepts a slug the sign-in page may print, and nothing else', () => {
+    expect(ssoOrgParam('acme')).toBe('acme');
+    expect(ssoOrgParam('acme-2')).toBe('acme-2');
+    for (const hostile of [
+      null,
+      '',
+      'Acme',
+      'acme corp',
+      'acme--corp',
+      '<b>x</b>',
+      'a'.repeat(200),
+    ]) {
+      expect(ssoOrgParam(hostile)).toBeNull();
+    }
   });
 });
 

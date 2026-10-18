@@ -12,6 +12,7 @@ import {
   bearerToken,
   clientIp,
   isSameOrigin,
+  isSameOriginNavigation,
   json,
   parseCookies,
   parseWith,
@@ -368,6 +369,42 @@ describe('origin checking', () => {
   // failure would break them; the CSRF token is what covers browsers.
   it('permits a request with no Origin, which is how non-browser clients behave', () => {
     expect(isSameOrigin(from(null), 'https://xecret.playxoft.com')).toBe(true);
+  });
+});
+
+describe('same-origin navigation', () => {
+  const ORIGIN = 'https://xecret.playxoft.com';
+  const navigation = (headers: Record<string, string>) =>
+    new Request(`${ORIGIN}/api/auth/login?org=acme`, { headers });
+
+  it('trusts the browser’s Sec-Fetch-Site, and only its same-origin', () => {
+    expect(isSameOriginNavigation(navigation({ 'sec-fetch-site': 'same-origin' }), ORIGIN)).toBe(
+      true,
+    );
+    for (const site of ['cross-site', 'same-site', 'none']) {
+      // Even with a same-origin referrer beside it: the header is the browser's
+      // own word, and a referrer is only consulted when it is missing.
+      expect(
+        isSameOriginNavigation(
+          navigation({ 'sec-fetch-site': site, referer: `${ORIGIN}/sign-in` }),
+          ORIGIN,
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it('falls back to a referrer on this origin, and fails closed without one', () => {
+    expect(isSameOriginNavigation(navigation({ referer: `${ORIGIN}/sign-in?x=1` }), ORIGIN)).toBe(
+      true,
+    );
+    expect(
+      isSameOriginNavigation(
+        navigation({ referer: 'https://xecret.playxoft.com.evil.example/' }),
+        ORIGIN,
+      ),
+    ).toBe(false);
+    expect(isSameOriginNavigation(navigation({ referer: 'not a url' }), ORIGIN)).toBe(false);
+    expect(isSameOriginNavigation(navigation({}), ORIGIN)).toBe(false);
   });
 });
 

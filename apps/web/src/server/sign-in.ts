@@ -67,8 +67,11 @@ import type { WorkosIdentityProvider } from './workos';
  *  4. **Link** — `upsertUserFromWorkosIdentity`, at READ COMMITTED (no
  *     transaction is wrapped around it: its lost-race handling re-reads to see
  *     the winner's committed row, which a snapshot isolation level would hide).
- *  5. **Enforce `sso_required`** on every organisation the account belongs to.
- *  6. **Just-in-time join** the organisation whose SSO this was, if any.
+ *  5. **Enforce `sso_required`** on every organisation the account belongs to
+ *     — except one it owns, so a broken identity provider cannot lock an
+ *     organisation out of itself.
+ *  6. **Just-in-time join** the organisation whose SSO this was, if any, and
+ *     only if that organisation opted in to admitting people that way.
  *  7. **Provision a personal organisation** for an account that still has none.
  *  8. **Issue the session**, and for a forced re-authentication, record that it
  *     happened — if the method counts and the provider says the person actually
@@ -239,6 +242,15 @@ export async function completeSignIn(
   // one per sign-in and is refused — the strict reading, because the session
   // this would issue is not scoped to an organisation and would carry the
   // other organisation's access without its identity provider's say-so.
+  //
+  // **Owners are exempt** — the break-glass migration 0018 promised and WS-5
+  // ships with the setter. An identity provider misconfigured after the flag
+  // goes on would otherwise lock the whole organisation out of itself, with no
+  // self-service way back: nobody could sign in to switch it off. Exempting
+  // owners hands an owner's password nothing it lacked — an owner may switch
+  // the flag off at any time — and every owner's sign-in is still
+  // `auth.login` with its method, so a password sign-in by an owner of an
+  // SSO-required organisation is findable. It is logged here as well.
   for (const membership of memberships) {
     const organization = membership.organization;
     if (!organization.ssoRequired) continue;
@@ -249,6 +261,17 @@ export async function completeSignIn(
     ) {
       continue;
     }
+    if (membership.role === 'owner') {
+      log.info(
+        'An owner signed in without their organisation’s required single sign-on; owners are ' +
+          'exempt, so that a broken identity provider cannot lock the organisation out',
+        {
+          orgId: organization.id,
+          signInMethod: signInMethodOf(exchange.authenticationMethod),
+        },
+      );
+      continue;
+    }
     throw new SignInRefusal(
       'sso-required',
       403,
@@ -257,9 +280,23 @@ export async function completeSignIn(
   }
 
   // ── 6. Just-in-time membership ───────────────────────────────────────────
+  // Only for an organisation that opted in (`jit_join_enabled`, off by
+  // default): connecting an identity provider says who an organisation's
+  // people are, and admitting every one of them is a separate decision an
+  // owner or admin takes in the SSO settings (PR #114's constraint for WS-5).
+  // Checked here on the row just found, to skip the transaction for the
+  // organisations that have not; the check that counts is the repository's,
+  // under the row lock, which answers `not-enabled` if it was switched off in
+  // between. Without the opt-in the person simply signs in to whatever else
+  // they belong to — a personal organisation, for a newcomer — and joins this
+  // one the ordinary way, by invitation.
   if (sso && exchange.organizationId !== null) {
     const organization = await findOrgByWorkosOrgId(services.db, exchange.organizationId);
-    if (organization && !memberships.some((m) => m.organization.id === organization.id)) {
+    if (
+      organization &&
+      organization.jitJoinEnabled &&
+      !memberships.some((m) => m.organization.id === organization.id)
+    ) {
       const joined = await joinOrganizationJustInTime(services.db, {
         orgId: organization.id,
         userId: user.id,
@@ -297,6 +334,7 @@ export async function completeSignIn(
         memberships = await listOrganizationsForUser(services.db, user.id);
       }
       // `already-member` is a suspended membership: JIT never reinstates.
+      // `not-enabled` is the opt-in switched off since the row above was read.
     }
   }
 
