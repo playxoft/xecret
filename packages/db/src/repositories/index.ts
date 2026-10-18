@@ -44,6 +44,7 @@ export type { IdentityLinkOutcome, UpsertedUser, User, UserProfilePatch } from '
 export {
   createSession,
   deleteExpiredSessions,
+  deleteSpentSignInConfirmations,
   findSessionByTokenHash,
   listUserSessions,
   lockSessions,
@@ -51,6 +52,7 @@ export {
   revokeAllUserSessions,
   revokeSession,
   sessionLookupQuery,
+  spendSignInConfirmation,
   touchSession,
   userSessionsQuery,
 } from './sessions';
@@ -141,6 +143,7 @@ export type { MintPinPepperParams, PinAttemptOutcome, PinDeviceRecord } from './
 export {
   accountLockQuery,
   accountOrganizationCeiling,
+  countNonSsoAccess,
   countOrganizationsHeldBy,
   findOrganizationById,
   findOrganizationBySlugWithEntitlements,
@@ -148,6 +151,7 @@ export {
   generateUniqueOrgSlug,
   organizationBySlugWithEntitlementsQuery,
   isOrgSlugAvailable,
+  listMemberAddresses,
   listOrganizationsForUser,
   orgSlugCandidate,
   organizationsForUserQuery,
@@ -160,6 +164,7 @@ export {
   updateOrgSsoSettings,
 } from './organizations';
 export type {
+  AccessOutsideSso,
   Environment,
   HeldOrganizations,
   Organization,
@@ -168,6 +173,7 @@ export type {
   OrganizationWithEntitlements,
   OrgSsoSettingsChange,
   OrgSsoSettingsPatch,
+  OrgWorkosLink,
   Project,
   ProvisionedOrganization,
   ProvisionOrganizationParams,
@@ -195,6 +201,7 @@ export {
   toAuthorizationContext,
   updateMemberRole,
   upsertAccessGrant,
+  wasRemovedFrom,
   wouldStrandOrganization,
 } from './membership';
 export type {

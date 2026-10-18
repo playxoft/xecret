@@ -1,4 +1,5 @@
-import { and, asc, desc, eq, isNull, or } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, isNull, ne, or, sql } from 'drizzle-orm';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { CustomRole, OrgRole } from '@xecret/core/authz';
 import { DEFAULT_PLAN, FAIR_USE, PLANS } from '@xecret/core/entitlements';
 import { randomBytes } from '@xecret/core/crypto';
@@ -11,8 +12,9 @@ import {
   slugify,
   truncateName,
 } from '@xecret/core/validation';
-import { users } from '../schema/identity';
+import { sessions, users } from '../schema/identity';
 import { orgKeys } from '../schema/keys';
+import { cliTokens } from '../schema/tokens';
 import { environments, projects } from '../schema/resources';
 import { orgSubscriptions } from '../schema/billing';
 import { customRoles } from '../schema/roles';
@@ -148,19 +150,34 @@ export async function findOrgByWorkosOrgId(
   return row ?? null;
 }
 
+/** What {@link setOrgWorkosOrgId} found, and whether it was the write that linked it. */
+export interface OrgWorkosLink {
+  organization: Organization;
+  /**
+   * `true` when this call wrote the link; `false` when the organisation was
+   * already linked to exactly this WorkOS organisation, in exactly this WorkOS
+   * environment — a retried or concurrent enable, which must answer as "already
+   * on" and must not be audited a second time.
+   */
+  changed: boolean;
+}
+
 /**
  * Records the WorkOS Organization created for this organisation — the lazy link
- * (D7): only an organisation that turns SSO on ever gets one.
+ * (D7): only an organisation that turns SSO on ever gets one — together with
+ * the WorkOS environment (`workosClientId`) it was created in.
  *
- * Set once. The write accepts an unlinked organisation, or one already linked
- * to this same id so that a retried request is idempotent; anything else is
- * refused rather than overwritten:
+ * Set once. The write accepts an unlinked organisation; an organisation already
+ * linked to this same id in this same environment is answered as it stands
+ * (`changed: false`), so that a retried request is idempotent and a concurrent
+ * one can tell it lost; anything else is refused rather than overwritten:
  *
  *  - `notFound` — no such organisation, or it was soft-deleted.
- *  - `conflict` — it is already linked to a *different* WorkOS Organization
- *    (typically two admins enabling SSO at once: the second request created an
- *    orphan at WorkOS, and should delete it rather than re-point this tenant),
- *    or that WorkOS Organization already belongs to another organisation here
+ *  - `conflict` — it is already linked to a *different* WorkOS Organization, or
+ *    to this one through a different WorkOS environment (typically two admins
+ *    enabling SSO at once: the second request created an orphan at WorkOS, and
+ *    should delete it rather than re-point this tenant), or that WorkOS
+ *    Organization already belongs to another organisation here
  *    (`organizations_workos_org_id_unique`).
  *
  * There is deliberately no way to clear or change the link. Re-pointing an
@@ -170,21 +187,23 @@ export async function findOrgByWorkosOrgId(
  * true for good once a flag is on: the link it depends on cannot go away.)
  *
  * The only caller passes an id its own `createOrganization` call returned in
- * the same request — never one a client supplied (PR #100, note 7).
+ * the same request — never one a client supplied (PR #100, note 7) — and the
+ * client id of the deployment that made the call.
  */
 export async function setOrgWorkosOrgId(
   exec: Executor,
   orgId: string,
   workosOrgId: string,
-): Promise<Organization> {
+  workosClientId: string,
+): Promise<OrgWorkosLink> {
   const [row] = await exec
     .update(organizations)
-    .set({ workosOrgId, updatedAt: new Date() })
+    .set({ workosOrgId, workosClientId, updatedAt: new Date() })
     .where(
       and(
         eq(organizations.id, orgId),
         isNull(organizations.deletedAt),
-        or(isNull(organizations.workosOrgId), eq(organizations.workosOrgId, workosOrgId)),
+        isNull(organizations.workosOrgId),
       ),
     )
     .returning()
@@ -198,17 +217,113 @@ export async function setOrgWorkosOrgId(
       throw error;
     });
 
-  if (row) return row;
+  if (row) return { organization: row, changed: true };
 
   // The predicate matched nothing. Say which half of it failed: a missing
-  // organisation and an already-linked one need different answers from the
-  // caller, and only one of them should make it clean up at WorkOS.
+  // organisation, one already linked exactly so, and one linked elsewhere need
+  // three different answers from the caller, and only the last should make it
+  // clean up at WorkOS.
   const current = await findOrganizationById(exec, orgId);
   if (!current) throw new RepositoryError('notFound', 'Organisation not found.');
+  if (current.workosOrgId === workosOrgId && current.workosClientId === workosClientId) {
+    return { organization: current, changed: false };
+  }
   throw new RepositoryError(
     'conflict',
     'This organisation is already linked to a different WorkOS organization.',
   );
+}
+
+/** How many credentials an organisation's `sso_required` holds back, by kind. */
+export interface AccessOutsideSso {
+  /** Live browser sessions of non-owner members not issued by this organisation's SSO. */
+  sessions: number;
+  /** Live CLI tokens for this organisation, of non-owner members, likewise. */
+  cliTokens: number;
+}
+
+/**
+ * Counts the live credentials of an organisation's non-owner members that did
+ * not come through its own single sign-on — the sessions and CLI tokens that
+ * `sso_required` refuses for this organisation from the moment it is on
+ * (`resolveOrg` checks every request). Shown by the settings after the switch,
+ * so the person who flipped it knows how many people are about to be asked to
+ * sign in again.
+ *
+ * Read-only, and not a setter of either SSO flag (the tripwire in
+ * `workos-organizations.test.ts` lists it as such). "Live" is the cheap,
+ * indexed half of the rule — not revoked, not past the absolute expiry; a
+ * session that has idled out still counts until it is cleaned up, so this is an
+ * upper bound. Owners are left out because they are exempt.
+ */
+export async function countNonSsoAccess(
+  exec: Executor,
+  params: { orgId: string; workosOrgId: string | null },
+): Promise<AccessOutsideSso> {
+  const member = and(
+    eq(orgMembers.orgId, params.orgId),
+    eq(orgMembers.status, 'active'),
+    ne(orgMembers.role, 'owner'),
+  );
+  const [sessionRow] = await exec
+    .select({ value: count() })
+    .from(sessions)
+    .innerJoin(orgMembers, and(eq(orgMembers.userId, sessions.userId), member))
+    .where(
+      and(
+        isNull(sessions.revokedAt),
+        gt(sessions.expiresAt, sql`now()`),
+        notThisSso(sessions.ssoWorkosOrgId, params.workosOrgId),
+      ),
+    );
+  const [tokenRow] = await exec
+    .select({ value: count() })
+    .from(cliTokens)
+    .innerJoin(orgMembers, and(eq(orgMembers.userId, cliTokens.userId), member))
+    .where(
+      and(
+        eq(cliTokens.orgId, params.orgId),
+        isNull(cliTokens.revokedAt),
+        or(isNull(cliTokens.expiresAt), gt(cliTokens.expiresAt, sql`now()`)),
+        notThisSso(cliTokens.ssoWorkosOrgId, params.workosOrgId),
+      ),
+    );
+  return { sessions: sessionRow?.value ?? 0, cliTokens: tokenRow?.value ?? 0 };
+}
+
+/** `column` is not `workosOrgId` — NULL included, which `<>` alone would drop. */
+function notThisSso(column: AnyPgColumn, workosOrgId: string | null) {
+  return workosOrgId === null ? sql`true` : or(isNull(column), ne(column, workosOrgId));
+}
+
+/**
+ * The addresses of an organisation's active, non-owner members — what the SSO
+ * settings compare with the verified domains, to warn before `sso_required`
+ * goes on about members whose identity provider sign-in would be refused (an
+ * SSO sign-in is believed only for a verified domain).
+ *
+ * Bounded by the seat ceiling in practice; `limit` is the backstop for a
+ * Worker's memory, and the caller says when it was reached.
+ */
+export async function listMemberAddresses(
+  exec: Executor,
+  orgId: string,
+  limit: number,
+): Promise<string[]> {
+  const rows = await exec
+    .select({ email: users.email })
+    .from(orgMembers)
+    .innerJoin(users, and(eq(users.id, orgMembers.userId), isNull(users.deletedAt)))
+    .where(
+      and(
+        eq(orgMembers.orgId, orgId),
+        eq(orgMembers.status, 'active'),
+        ne(orgMembers.role, 'owner'),
+      ),
+    )
+    .orderBy(asc(orgMembers.createdAt))
+    .limit(limit);
+  return rows.map((row) => row.email);
 }
 
 /** The two SSO policy flags, as the settings route changes them. Absent means "leave it". */
@@ -233,10 +348,14 @@ export interface OrgSsoSettingsChange {
  * opt-in (`jit_join_enabled`).
  *
  * The only writer of either column. The guards that decide *whether* the
- * caller may — owner or admin, a browser session, the SAML add-on, and for
- * `sso_required` an active connection at WorkOS — are the settings route's
+ * caller may — an owner (`sso.manage`) to switch either on, an owner or admin
+ * to switch one off, a browser session, the SAML add-on, this deployment's
+ * WorkOS environment, and for `sso_required` an active connection and a
+ * verified domain at WorkOS — are the settings route's
  * (`app/api/orgs/[orgSlug]/sso/route.ts`), because they need the request and
- * the provider. What this enforces is the one rule that is about the row:
+ * the provider. The route applies them to the state it asks for, not to the
+ * state it read before this lock, so no interleaving can switch something on
+ * past them. What this enforces is the one rule that is about the row:
  *
  *  - **Neither flag can be switched on without the WorkOS link** — `conflict`.
  *    Both are about the organisation's connection, and an organisation with no

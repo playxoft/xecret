@@ -7,6 +7,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   unique,
@@ -56,19 +57,36 @@ export const organizations = pgTable(
      */
     workosOrgId: text('workos_org_id').unique(),
     /**
-     * When true, a member of this organisation may only sign in through its own
-     * SSO connection.
+     * The WorkOS environment — by its client id — that `workos_org_id` was
+     * created in (migration 0022). A WorkOS organisation id means something only
+     * in its own environment, and local development runs against WorkOS
+     * Staging over the production database; the settings routes refuse a link
+     * whose client id is not this deployment's `WORKOS_CLIENT_ID`. Written with
+     * the link, never without it (`organizations_workos_link_client_check`).
+     */
+    workosClientId: text('workos_client_id'),
+    /**
+     * When true, a non-owner member of this organisation reaches it only
+     * through its own single sign-on.
      *
-     * Enforced by the sign-in callback (`server/sign-in.ts`, step 5) and set
-     * only by `updateOrgSsoSettings`, behind the organisation SSO settings route
-     * (owner or admin, the SAML add-on, an active connection to turn it on).
+     * Enforced **on every request**, by the organisation resolution
+     * (`resolveOrg` in `server/tenancy.ts`), against how the presenting session
+     * or CLI token signed in (`sessions.sso_workos_org_id`) — so switching it on
+     * takes effect at once for credentials issued before, and other
+     * organisations the member belongs to are unaffected. The sign-in callback
+     * refuses a sign-in only when it would leave the account no organisation it
+     * could use. Set only by `updateOrgSsoSettings`, behind the organisation SSO
+     * settings route (an owner, the SAML add-on, an active connection and a
+     * verified domain to turn it on).
      *
-     * Enforcement exempts the organisation's **owners**. An identity provider
-     * that is misconfigured after this is switched on would otherwise lock an
+     * Enforcement exempts the organisation's **owners** — a deliberate
+     * break-glass, and a trade-off rather than a free one: an identity provider
+     * misconfigured after this is switched on would otherwise lock the
      * organisation out of its own account with no self-service way back, and
-     * "contact support" is not a recovery story for a secrets manager. An owner
-     * can switch the flag off in any case, so exempting them grants an owner's
-     * password nothing it did not already have.
+     * "contact support" is not a recovery story for a secrets manager. The cost
+     * is that an owner's password (or Google sign-in) stays a way into the
+     * organisation that its identity provider does not govern; every such
+     * sign-in is audited in the organisation as `auth.sso_exemption_used`.
      *
      * Never true without `workos_org_id` (`organizations_sso_flags_need_link_check`).
      */
@@ -100,6 +118,12 @@ export const organizations = pgTable(
     check(
       'organizations_sso_flags_need_link_check',
       sql`(${t.ssoRequired} = false and ${t.jitJoinEnabled} = false) or ${t.workosOrgId} is not null`,
+    ),
+    // A link is always recorded with the environment it was made in. NOT VALID
+    // in the migration, so a pre-release link without one does not block it.
+    check(
+      'organizations_workos_link_client_check',
+      sql`${t.workosOrgId} is null or ${t.workosClientId} is not null`,
     ),
     // Read on every organisation creation, inside the transaction that creates
     // one: `countOrganizationsHeldBy` asks how many live organisations this
@@ -219,6 +243,30 @@ export const orgMembers = pgTable(
       sql`${t.customRoleId} is null or ${t.role} <> 'owner'`,
     ),
   ],
+);
+
+/**
+ * Somebody removed from an organisation (migration 0022).
+ *
+ * Removal deletes the `org_members` row, and this is what is left: the record
+ * the just-in-time join reads before it admits anybody, so that a person
+ * removed here but still in the organisation's identity provider is not
+ * re-admitted by their next single sign-on. Accepting an invitation deletes it.
+ */
+export const orgMemberRemovals = pgTable(
+  'org_member_removals',
+  {
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** Who removed them; `null` when nobody else did (an account deleting itself). */
+    removedBy: uuid('removed_by').references(() => users.id, { onDelete: 'set null' }),
+    removedAt: timestamp('removed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ name: 'org_member_removals_pkey', columns: [t.orgId, t.userId] })],
 );
 
 /**

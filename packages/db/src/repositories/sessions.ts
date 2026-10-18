@@ -1,8 +1,9 @@
 import { and, desc, eq, gt, isNull, lt, ne } from 'drizzle-orm';
 import { hashToken, sessionExpiryFrom } from '@xecret/core/auth';
 import type { SessionRecord } from '@xecret/core/auth';
+import type { SignInMethod } from '@xecret/core/audit';
 import { uuidv7 } from '@xecret/core/ids';
-import { sessions, users } from '../schema/identity';
+import { sessions, signInConfirmations, users } from '../schema/identity';
 import { userKeys } from '../schema/vault';
 import { MAX_PAGE_SIZE } from './shared';
 import type { Executor } from './shared';
@@ -51,6 +52,18 @@ export interface AuthenticatedSession extends SessionRecord {
    * it rides along on the join that is already happening.
    */
   vaultAutoLockMinutes: number | null;
+  /**
+   * How the sign-in that issued this session authenticated, or `null` for a
+   * session issued before migration 0022 recorded it.
+   */
+  signInMethod: SignInMethod | null;
+  /**
+   * The WorkOS organisation whose single sign-on issued this session, or
+   * `null`. What an organisation's `sso_required` is checked against on every
+   * request — see `resolveOrg`. Rides on the lookup join for the reason
+   * `vaultUnlockedAt` does.
+   */
+  ssoWorkosOrgId: string | null;
 }
 
 /**
@@ -73,6 +86,14 @@ export interface CreateSessionParams {
   /** From the edge, not from a client-controlled header. `null` when unknown. */
   ipAddress: string | null;
   userAgent: string | null;
+  /**
+   * How the sign-in authenticated. Omitted means not known, which every reader
+   * treats as "not single sign-on" — the restrictive answer, so leaving it out
+   * can only ever cost access, never grant it.
+   */
+  signInMethod?: SignInMethod | null | undefined;
+  /** The WorkOS organisation whose single sign-on this was. Only beside `sso`. */
+  ssoWorkosOrgId?: string | null | undefined;
 }
 
 /**
@@ -106,6 +127,8 @@ export async function createSession(
     createdAt: now,
     lastSeenAt: record.lastSeenAt,
     expiresAt: record.expiresAt,
+    signInMethod: params.signInMethod ?? null,
+    ssoWorkosOrgId: params.ssoWorkosOrgId ?? null,
   });
 
   return record;
@@ -261,6 +284,44 @@ export async function deleteExpiredSessions(exec: Executor, before: Date): Promi
 }
 
 /**
+ * Spends a sign-in confirmation, once: records the SHA-256 of the nonce its
+ * sealed cookie carried, and answers whether this call was the one that did.
+ *
+ * The primary key is the whole mechanism. Two requests presenting the same
+ * cookie — a double click, a replay — race on one INSERT, and exactly one gets
+ * its row back; the other is refused before anything is issued. Called before
+ * the session is, so a confirmation that then fails for another reason is
+ * spent all the same: the safe way for a one-time value to fail.
+ */
+export async function spendSignInConfirmation(
+  exec: Executor,
+  params: { nonceHash: Uint8Array; userId: string; expiresAt: Date },
+): Promise<boolean> {
+  const rows = await exec
+    .insert(signInConfirmations)
+    .values({ nonceHash: params.nonceHash, userId: params.userId, expiresAt: params.expiresAt })
+    .onConflictDoNothing({ target: signInConfirmations.nonceHash })
+    .returning({ userId: signInConfirmations.userId });
+  return rows.length > 0;
+}
+
+/**
+ * Deletes spent confirmations whose cookies expired before `before`. For a
+ * scheduled worker: such a row can no longer stop anything, because the cookie
+ * it guards is refused on its age first.
+ */
+export async function deleteSpentSignInConfirmations(
+  exec: Executor,
+  before: Date,
+): Promise<number> {
+  const rows = await exec
+    .delete(signInConfirmations)
+    .where(lt(signInConfirmations.expiresAt, before))
+    .returning({ userId: signInConfirmations.userId });
+  return rows.length;
+}
+
+/**
  * @internal Exported so `identity.test.ts` can assert the shape of the SQL — the
  * tenancy and revocation predicates on this query are security controls, and a
  * refactor that drops one should fail a test rather than pass review.
@@ -276,6 +337,8 @@ export function sessionLookupQuery(exec: Executor, tokenHash: Uint8Array, now: D
         revokedAt: sessions.revokedAt,
         vaultUnlockedAt: sessions.vaultUnlockedAt,
         vaultAutoLockMinutes: userKeys.autoLockMinutes,
+        signInMethod: sessions.signInMethod,
+        ssoWorkosOrgId: sessions.ssoWorkosOrgId,
         user: {
           id: users.id,
           email: users.email,

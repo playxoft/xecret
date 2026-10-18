@@ -7,9 +7,9 @@ import { uuidv7 } from '@xecret/core/ids';
 import { accessGrants } from '../schema/access';
 import { users } from '../schema/identity';
 import { environments, projects } from '../schema/resources';
-import { invitations, orgMembers, organizations } from '../schema/tenancy';
+import { invitations, orgMemberRemovals, orgMembers, organizations } from '../schema/tenancy';
 import type { InvitationGrantSeed } from '../schema/tenancy';
-import { addMember } from './membership';
+import { addMember, wasRemovedFrom } from './membership';
 import type { WrittenMemberRecord } from './membership';
 import { MAX_PAGE_SIZE, RepositoryError } from './shared';
 import type { Executor } from './shared';
@@ -88,6 +88,13 @@ export interface AcceptInvitationParams {
   userId: string;
   /** The accepting account's address, compared against the invited one. */
   userEmail: string;
+  /**
+   * The WorkOS organisation whose single sign-on the accepting session came
+   * through, or `null` (migration 0022). An organisation that requires SSO is
+   * joined — at any role but owner — only through its own; omitted reads as
+   * "not single sign-on", which can only refuse, never admit.
+   */
+  ssoWorkosOrgId?: string | null | undefined;
 }
 
 export interface AcceptedInvitation {
@@ -302,6 +309,25 @@ export async function acceptInvitation(
       );
     }
 
+    // The same rule `resolveOrg` applies to every request, applied to the one
+    // write that does not pass through it: without this, a newcomer signed in
+    // with a password (no memberships, so nothing to refuse at sign-in) could
+    // walk into an organisation that requires its single sign-on. Under the
+    // lock, so the flag cannot move between this read and the join. An owner's
+    // invitation is exempt, as owners are everywhere else.
+    if (
+      organization.ssoRequired &&
+      invitation.role !== 'owner' &&
+      (organization.workosOrgId === null ||
+        (params.ssoWorkosOrgId ?? null) !== organization.workosOrgId)
+    ) {
+      throw new RepositoryError(
+        'ssoRequired',
+        'This organisation requires its single sign-on. Sign in through your company’s identity ' +
+          'provider, then accept the invitation again.',
+      );
+    }
+
     await assertSeatAvailable(tx, organization, now);
 
     // `addMember` throws `conflict` when the user already belongs — the
@@ -332,6 +358,17 @@ export async function acceptInvitation(
       .returning(INVITATION_COLUMNS);
     if (!accepted) throw new RepositoryError('conflict', 'This invitation was already accepted.');
 
+    // Invited back, and in: whatever removal kept them out of the just-in-time
+    // join is over. A later removal writes a fresh record.
+    await tx
+      .delete(orgMemberRemovals)
+      .where(
+        and(
+          eq(orgMemberRemovals.orgId, invitation.orgId),
+          eq(orgMemberRemovals.userId, params.userId),
+        ),
+      );
+
     return {
       member,
       invitation: accepted,
@@ -361,6 +398,13 @@ export type JustInTimeJoin =
    * and joins this organisation the ordinary way, by invitation.
    */
   | { outcome: 'not-enabled' }
+  /**
+   * They were removed from this organisation and have not been invited back
+   * (`org_member_removals`). Nothing is written: a removal is a decision an
+   * administrator took about this person, and their identity provider still
+   * vouching for them does not undo it — only an invitation does.
+   */
+  | { outcome: 'removed' }
   /** No seat free. Nothing is written. */
   | { outcome: 'no-seat' };
 
@@ -400,6 +444,12 @@ export async function joinOrganizationJustInTime(
       .where(and(eq(orgMembers.orgId, organization.id), eq(orgMembers.userId, params.userId)))
       .limit(1);
     if (existing) return { outcome: 'already-member' };
+
+    // Before the seat count, like the opt-in: somebody this organisation
+    // removed is not admitted this way whether or not there would be room.
+    if (await wasRemovedFrom(tx, { orgId: organization.id, userId: params.userId })) {
+      return { outcome: 'removed' };
+    }
 
     if (!(await hasFreeSeat(tx, organization, new Date()))) return { outcome: 'no-seat' };
 
@@ -660,6 +710,8 @@ async function lockOrganization(tx: Executor, orgId: string) {
       slug: organizations.slug,
       seatLimit: organizations.seatLimit,
       jitJoinEnabled: organizations.jitJoinEnabled,
+      ssoRequired: organizations.ssoRequired,
+      workosOrgId: organizations.workosOrgId,
     })
     .from(organizations)
     .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))

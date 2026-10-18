@@ -1,5 +1,6 @@
 import { and, eq, gt, isNull, lt } from 'drizzle-orm';
 import { cliAuthCodeExpiryFrom, generateToken, hashToken } from '@xecret/core/auth';
+import type { SignInMethod } from '@xecret/core/audit';
 import type { Bytes } from '@xecret/core/crypto';
 import { uuidv7 } from '@xecret/core/ids';
 import { cliAuthCodes } from '../schema/tokens';
@@ -29,6 +30,13 @@ export interface CreateCliAuthCodeParams {
   /** The approving browser's address, for the incident-review trail. */
   ipAddress: string | null;
   environment?: 'live' | 'test' | undefined;
+  /**
+   * How the approving browser session signed in, carried onto the token the
+   * exchange mints (migration 0022). Omitted reads as "not single sign-on".
+   */
+  signInMethod?: SignInMethod | null | undefined;
+  /** The approving session's single-sign-on organisation, or `null`. */
+  ssoWorkosOrgId?: string | null | undefined;
 }
 
 export interface IssuedCliAuthCode {
@@ -45,6 +53,9 @@ export interface CliAuthCodeGrant {
   orgId: string;
   deviceName: string;
   codeChallenge: string;
+  /** How the approving session signed in — the token is minted with the same. */
+  signInMethod: SignInMethod | null;
+  ssoWorkosOrgId: string | null;
 }
 
 /**
@@ -79,6 +90,8 @@ export async function createCliAuthCode(
       requestedIp: params.ipAddress,
       createdAt: now,
       expiresAt,
+      signInMethod: params.signInMethod ?? null,
+      ssoWorkosOrgId: params.ssoWorkosOrgId ?? null,
     });
   });
 
@@ -121,6 +134,8 @@ export async function consumeCliAuthCode(
       orgId: cliAuthCodes.orgId,
       deviceName: cliAuthCodes.deviceName,
       codeChallenge: cliAuthCodes.codeChallenge,
+      signInMethod: cliAuthCodes.signInMethod,
+      ssoWorkosOrgId: cliAuthCodes.ssoWorkosOrgId,
     });
 
   return row ?? null;

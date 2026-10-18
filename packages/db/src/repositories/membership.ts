@@ -6,7 +6,7 @@ import { accessGrants } from '../schema/access';
 import { customRoles } from '../schema/roles';
 import { users } from '../schema/identity';
 import { environments, projects } from '../schema/resources';
-import { orgMembers, organizations } from '../schema/tenancy';
+import { orgMemberRemovals, orgMembers, organizations } from '../schema/tenancy';
 import { RepositoryError, clampPageSize } from './shared';
 import type { Executor } from './shared';
 
@@ -740,12 +740,19 @@ export interface MemberRef {
  * Their access grants go with them: `access_grants.org_member_id` is
  * `ON DELETE CASCADE`, so no grant can outlive the membership it qualified.
  *
+ * And a removal record stays behind (`org_member_removals`, migration 0022),
+ * in the same transaction: the just-in-time join reads it before admitting
+ * anybody, so a person removed here who is still in the organisation's
+ * identity provider is not silently re-admitted by their next single sign-on.
+ * Only an accepted invitation clears it. `removedBy` names who removed them;
+ * `null` when nobody else did (an account deleting itself).
+ *
  * `guard` as `updateMemberRole` describes; `null` when an account is
  * removing itself.
  */
 export async function removeMember(
   exec: Executor,
-  params: MemberRef,
+  params: MemberRef & { removedBy?: string | null | undefined },
   guard: MemberChangeGuard,
 ): Promise<void> {
   await exec.transaction(async (tx) => {
@@ -755,7 +762,35 @@ export async function removeMember(
     await tx
       .delete(orgMembers)
       .where(and(eq(orgMembers.id, params.memberId), eq(orgMembers.orgId, params.orgId)));
+
+    const removedAt = new Date();
+    const removedBy = params.removedBy ?? null;
+    await tx
+      .insert(orgMemberRemovals)
+      .values({ orgId: params.orgId, userId: member.userId, removedBy, removedAt })
+      .onConflictDoUpdate({
+        target: [orgMemberRemovals.orgId, orgMemberRemovals.userId],
+        set: { removedBy, removedAt },
+      });
   });
+}
+
+/**
+ * Whether `userId` was removed from `orgId` and has not been invited back
+ * since — the question the just-in-time join asks before it admits anybody.
+ */
+export async function wasRemovedFrom(
+  exec: Executor,
+  params: { orgId: string; userId: string },
+): Promise<boolean> {
+  const [row] = await exec
+    .select({ userId: orgMemberRemovals.userId })
+    .from(orgMemberRemovals)
+    .where(
+      and(eq(orgMemberRemovals.orgId, params.orgId), eq(orgMemberRemovals.userId, params.userId)),
+    )
+    .limit(1);
+  return row !== undefined;
 }
 
 /**
