@@ -13,6 +13,16 @@
  *    "moc.elpmaxe@ecila" renders as "alice@example.com"; an organisation
  *    called "Acme" and a ZERO WIDTH SPACE reads as "Acme". (Named here, never
  *    written: this file holds none of the characters it is about.)
+ *  - **Every other default-ignorable code point** — the characters Unicode
+ *    says a renderer should show as nothing, whatever their general category.
+ *    Several are classed as *letters*, so no category test catches them: the
+ *    HANGUL FILLERs (U+3164, U+115F, U+1160, U+FFA0), which render as blank
+ *    space or as nothing. Variation selectors and the combining grapheme joiner
+ *    go too, which would otherwise let one "Acme" be a different string from
+ *    another that looks the same (the price: an emoji written with a variation
+ *    selector shows a replacement after it). And BRAILLE PATTERN BLANK
+ *    (U+2800), a *symbol* that renders as a space but is not default-ignorable,
+ *    named on its own.
  *  - **Control and separator characters** — C0, DEL, C1, and the line and
  *    paragraph separators that break a sentence where nobody typed a break.
  *  - **Unassigned, private-use and lone-surrogate code points**, which render as
@@ -34,8 +44,10 @@
 export const REPLACED = String.fromCodePoint(0xfffd);
 
 // In `u` mode a lone surrogate is a code point of its own, `\p{Cs}`; a pair is
-// one astral character and is left alone.
-const INVISIBLE_OR_UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}]/gu;
+// one astral character and is left alone. `\u2800` is BRAILLE PATTERN BLANK,
+// which is not default-ignorable but renders as a blank all the same.
+const INVISIBLE_OR_UNPRINTABLE =
+  /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800]/gu;
 const WHITESPACE = /[\p{Zs}\t\n\v\f\r]+/gu;
 const MAX_MARKS_PER_CHARACTER = 2;
 

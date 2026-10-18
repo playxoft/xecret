@@ -16,7 +16,7 @@ const at = (...points: number[]) => String.fromCodePoint(...points);
 /** Every code point the cases below plant, none of which may survive. */
 const PLANTED = [
   0x202a, 0x202e, 0x2066, 0x2067, 0x2069, 0x200b, 0x200d, 0xfeff, 0x00ad, 0x0085, 0x0000, 0x2028,
-  0x2029, 0xe000,
+  0x2029, 0xe000, 0x3164, 0x115f, 0x1160, 0xffa0, 0x2800,
 ];
 
 describe('inertText', () => {
@@ -45,6 +45,13 @@ describe('inertText', () => {
     ['a paragraph separator', `Acme${at(0x2029)}Corp`],
     ['a private-use character', `Acme${at(0xe000)}`],
     ['a lone surrogate', `Acme${String.fromCharCode(0xd800)}`],
+    // Review round 3: blanks that Unicode classes as letters or symbols, so
+    // no general-category test catches them.
+    ['a HANGUL FILLER', `Acme${at(0x3164)}`],
+    ['a HANGUL CHOSEONG FILLER', `Ac${at(0x115f)}me`],
+    ['a HANGUL JUNGSEONG FILLER', `Ac${at(0x1160)}me`],
+    ['a HALFWIDTH HANGUL FILLER', `${at(0xffa0)}Acme`],
+    ['a BRAILLE PATTERN BLANK', `Acme${at(0x2800)}Corp`],
   ])('shows %s as a replacement character, never invisibly', (_label, value) => {
     const shown = inertText(value, 80);
     expect(shown).toContain(REPLACED);
