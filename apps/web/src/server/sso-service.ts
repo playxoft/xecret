@@ -193,11 +193,19 @@ export async function requireWorkosHome(
       );
     throw errors.ssoHomeUnrecorded();
   }
+  // Names the remedy as well as the refusal (review round 3): on a self-hosted
+  // database still holding the client id migration 0023 seeded, this line is
+  // the first thing an operator sees, and the fix is theirs to make.
   services.log
     .at('sso')
-    .warn('Refused an SSO change from a WorkOS environment this database does not belong to', {
-      clientId,
-    });
+    .warn(
+      'Refused an SSO change from a WorkOS environment this database does not belong to. If ' +
+        'this deployment is the database’s own — a self-hosted one still holding the client id ' +
+        'migration 0023 seeded — record it once, as the database owner: ' +
+        "UPDATE workos_home SET client_id = '<this deployment’s WORKOS_CLIENT_ID>' " +
+        '(docs/self-hosting.md, “The WorkOS environment, recorded once”)',
+      { clientId, recordedClientId: home },
+    );
   throw errors.ssoNotHomeEnvironment();
 }
 

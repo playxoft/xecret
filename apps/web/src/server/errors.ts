@@ -455,13 +455,23 @@ export const errors = {
    * production database, most likely. Refused before WorkOS is asked anything:
    * a link written from here would be one no sign-in in the database's own
    * environment could ever come through.
+   *
+   * The other way to arrive here is a self-hosted database that still holds the
+   * client id 0023 seeded — Playxoft's — because its operator has not recorded
+   * their own yet (review round 3). "Make this change from that deployment"
+   * was a dead end for them, there being no such deployment, so the message
+   * names the step, and where it is written down, for both cases.
    */
   ssoNotHomeEnvironment: (): ApiError =>
     new ApiError(
       'conflict',
-      'Single sign-on can only be changed from the deployment whose WorkOS environment this ' +
-        'database belongs to, and this one uses a different WorkOS environment — so nothing was ' +
-        'changed. Make this change from that deployment.',
+      'Single sign-on can only be changed from a deployment in the WorkOS environment this ' +
+        'database records (workos_home), and this deployment uses a different WorkOS ' +
+        'environment — so nothing was changed. On a self-hosted deployment, an operator records ' +
+        'its own WORKOS_CLIENT_ID there once, as the database owner: ' +
+        "UPDATE workos_home SET client_id = '<WORKOS_CLIENT_ID>' (the “WorkOS environment” " +
+        'step in docs/self-hosting.md). Otherwise, make this change from the deployment that ' +
+        'database belongs to.',
       { logDetail: 'workos client id is not workos_home' },
     ),
 

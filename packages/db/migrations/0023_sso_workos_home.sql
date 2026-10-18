@@ -23,8 +23,11 @@
 -- the environment whose links it holds. **A self-hosted deployment records its
 -- own** (docs/self-hosting.md, "The WorkOS environment"):
 --   UPDATE workos_home SET client_id = '<your WORKOS_CLIENT_ID>';
--- Until it does, turning SSO on refuses with a message that says so — nothing
--- else in a self-hosted deployment reads this table.
+-- Until it does, the row names Playxoft's environment rather than its own, so
+-- turning SSO on, opening the setup portal and switching a policy on refuse
+-- (409) as from any other environment's deployment — with a message, and a
+-- warning in the log, that name this statement and docs/self-hosting.md.
+-- Nothing else in a self-hosted deployment reads this table.
 --
 -- `id` is a boolean that can only be true: a primary key with one possible
 -- value is a table with at most one row, without a trigger.

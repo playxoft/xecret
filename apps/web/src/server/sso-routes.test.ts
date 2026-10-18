@@ -756,6 +756,21 @@ describe('turning SSO on', () => {
       expect(answer.status).toBe(409);
       expect(errorMessage(answer)).toMatch(/different WorkOS environment/);
       expect(errorMessage(answer)).toMatch(/nothing was changed/);
+      // Review round 3: a self-hosted database still holding the client id
+      // 0023 seeded lands here too, and "make this change from that
+      // deployment" alone was a dead end — so the message, and the log line,
+      // name the operator step and where it is written down.
+      expect(errorMessage(answer)).toMatch(/UPDATE workos_home SET client_id/);
+      expect(errorMessage(answer)).toMatch(/docs\/self-hosting\.md/);
+      const warning = lines.find(
+        (line) => line.level === 'warn' && line.message.includes('Refused an SSO change'),
+      );
+      expect(warning?.message).toMatch(/UPDATE workos_home SET client_id/);
+      expect(warning?.message).toMatch(/docs\/self-hosting\.md/);
+      expect(warning).toMatchObject({
+        clientId: CLIENT_ID,
+        recordedClientId: 'client_01PRODUCTIONHOME',
+      });
       workosWasAskedNothing();
       expect((await linkOf(org.orgId)).workos_org_id).toBeNull();
       expect(audit).toEqual([
