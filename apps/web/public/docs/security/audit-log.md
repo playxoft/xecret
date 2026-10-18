@@ -102,13 +102,26 @@ specific value, which is what curiosity and exfiltration both look like.
 `project.updated` · `project.deleted` · `environment.created` ·
 `environment.updated` · `environment.deleted`
 
+### Single sign-on
+
+| Action | Recorded when |
+|---|---|
+| `org.sso.enabled` | Single sign-on was turned on: the organisation's account at WorkOS was created and linked. Once only |
+| `org.sso.portal_link_created` | An owner or admin was handed a link to the WorkOS setup portal, where the identity provider is connected and domains verified. Every time — whoever opens one decides who can sign in as the organisation's members. The link itself is never recorded |
+| `org.sso.required_toggled` | "Require single sign-on" was switched on or off. `enabled` is the new value. Owners are always exempt from it |
+| `org.sso.jit_toggled` | "Let people join through single sign-on" was switched on or off. `enabled` is the new value. Off, nobody joins by single sign-on alone, and no `member.jit_*` row is written |
+
+A refused attempt at any of these is recorded too: `denied` for somebody without
+the role, `error` for a missing add-on, a precondition (no active connection, SSO
+not on yet) or WorkOS being unreachable.
+
 ### People and access
 
 | Action | Recorded when |
 |---|---|
 | `member.invited` | An invitation was sent |
 | `member.joined` | It was accepted |
-| `member.jit_joined` | Somebody signing in through an organisation's single sign-on was made a member on the spot, as a `viewer`. Nobody invited them: the organisation's identity provider vouched for an address in a domain the organisation verified. Carries `signInMethod: sso` |
+| `member.jit_joined` | Somebody signing in through an organisation's single sign-on was made a member on the spot, as a `viewer`. Nobody invited them: the organisation's identity provider vouched for an address in a domain the organisation verified, and the organisation had opted in to admitting people that way (`org.sso.jit_toggled`). Carries `signInMethod: sso` |
 | `member.jit_denied` | The same, refused because the organisation had no seat free. Outcome `error`, reason `quotaExceeded`, `limitName` `seats`. The sign-in fails; this is the record of who was turned away |
 | `invitation.revoked` | It was withdrawn before acceptance |
 | `member.role_changed` | Somebody's role changed |

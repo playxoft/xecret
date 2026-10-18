@@ -231,18 +231,26 @@ organisation's identity provider vouched for anybody.
 - **`sso_required`.** Every organisation the account belongs to that requires SSO must be the
   one whose SSO this was. An account in two such organisations is refused — the strict reading,
   because a session is not scoped to an organisation and would carry the other's access
-  without its identity provider's say-so.
+  without its identity provider's say-so. *(WS-5:)* An organisation's **owners are exempt**, so
+  that a misconfigured identity provider cannot lock the organisation out of itself; an owner
+  can switch the flag off at any time, so the exemption gives an owner's password nothing it
+  lacked.
 - **Just-in-time membership.** An SSO sign-in through an organisation's connection makes a
   newcomer a member at `viewer`, under the seat limit, decided under the organisation's row
-  lock the way an invitation acceptance is. Audited `member.jit_joined`, or
-  `member.jit_denied` when there is no seat — in which case the sign-in fails. It never
-  reinstates a suspended membership.
+  lock the way an invitation acceptance is — *(WS-5:)* **only if the organisation opted in**
+  (`jit_join_enabled`, off by default). Audited `member.jit_joined`, or `member.jit_denied`
+  when there is no seat — in which case the sign-in fails. It never reinstates a suspended
+  membership.
 
 The login route's `?org=<slug>` deep link starts an organisation's SSO directly. The redirect
 has to carry the WorkOS organisation id, so it reveals which slugs have SSO; the lookup is
 therefore rate limited per address (`RL_LOGIN`), and over the limit the parameter is silently
 ignored and the ordinary screen opens — a refusal would be an oracle of its own. It is ignored
 altogether on a `reauth=1` sign-in, which is about this account, not an organisation.
+*(WS-5:)* It is honoured only from a same-origin navigation; from anywhere else it lands on
+`/sign-in?org=<slug>`, which names the organisation and asks the person to confirm. Once an
+organisation can be linked to an identity provider its owner controls, a blind deep link would
+otherwise be a login-CSRF: the victim signed in to the attacker's account.
 
 ### Every refusal is a page, not a JSON body
 
@@ -440,7 +448,9 @@ nothing added for WorkOS, because the browser only navigates there.
 - **The organisation SSO settings** (WS-5): enabling SSO (creating the WorkOS organisation), the
   Admin Portal link for the customer's IT admin, connection status, and the `sso_required`
   setter with an owner exemption for a misconfigured identity provider. The callback already
-  enforces `sso_required`; nothing can set it yet, which is the safe order.
+  enforces `sso_required`; nothing can set it yet, which is the safe order. *(Since landed:
+  `api.md` → Single sign-on, with the just-in-time opt-in and the deep-link confirmation it
+  needed.)*
 - **Importing Firebase users into WorkOS**, and the backfill of `workos_user_id` that follows.
   Two rules are fixed now: an unverified Firebase user is imported without a password hash or
   not at all (otherwise whoever registered an address they do not own keeps a known password);

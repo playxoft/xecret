@@ -220,7 +220,7 @@ is pinned by a test for that reason.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/auth/login` | Starts a sign-in: writes the signed `__Host-xecret_oauth_state` cookie and answers **307** to AuthKit. Every query parameter is optional and untrusted: `next` (a same-origin path, validated here with `safeRedirectPath` — anything else falls back to `/app`), `hint=sign-up` (open AuthKit on its sign-up screen), `org=<slug>` (an SSO deep link: start that organisation's single sign-on directly — an organisation without SSO, or one that does not exist, falls through to the ordinary screen alike. A slug that has SSO is revealed by the redirect, which has to carry its WorkOS organisation id, so the lookup is rate limited per address — `RL_LOGIN` under a `login_org` key — and over the limit the parameter is silently ignored rather than refused, since a refusal would be an oracle of its own. Ignored altogether with `reauth=1`), `reauth=1` (send AuthKit `max_age=0`, asking it for the credential again even if it holds a session — the vault reset's first lock. The callback checks that it did, through the access token's `auth_time`. WorkOS documents `max_age` only for AuthKit's own sign-in: it does not make Google or an SSO identity provider ask again; see *Re-authentication for the vault reset*). No credential. Nothing is rate limited but the `org=` lookup, the one database read it can make; the callback it leads to is limited. A deployment whose WorkOS configuration is missing answers **303** to `/sign-in?error=unavailable` (carrying `next`), rather than a JSON 503. |
+| `GET` | `/api/auth/login` | Starts a sign-in: writes the signed `__Host-xecret_oauth_state` cookie and answers **307** to AuthKit. Every query parameter is optional and untrusted: `next` (a same-origin path, validated here with `safeRedirectPath` — anything else falls back to `/app`), `hint=sign-up` (open AuthKit on its sign-up screen), `org=<slug>` (an SSO deep link: start that organisation's single sign-on directly — an organisation without SSO, or one that does not exist, falls through to the ordinary screen alike. A slug that has SSO is revealed by the redirect, which has to carry its WorkOS organisation id, so the lookup is rate limited per address — `RL_LOGIN` under a `login_org` key — and over the limit the parameter is silently ignored rather than refused, since a refusal would be an oracle of its own. **Honoured only from a same-origin navigation** — `Sec-Fetch-Site: same-origin`, or, from a browser that sends no such header, a `Referer` on this origin. Anything else (another site's link, an email, a bookmark, `same-site`, `none`) answers **303** to `/sign-in?org=<slug>` (carrying `next`), which names the organisation and asks the person to confirm before its own button starts the deep link: an organisation linked to an identity provider its owner controls could otherwise sign a victim in to the owner's account through a link they merely followed — login CSRF. Nothing is looked up, limited or written on that path. Ignored altogether with `reauth=1`), `reauth=1` (send AuthKit `max_age=0`, asking it for the credential again even if it holds a session — the vault reset's first lock. The callback checks that it did, through the access token's `auth_time`. WorkOS documents `max_age` only for AuthKit's own sign-in: it does not make Google or an SSO identity provider ask again; see *Re-authentication for the vault reset*). No credential. Nothing is rate limited but the `org=` lookup, the one database read it can make; the callback it leads to is limited. A deployment whose WorkOS configuration is missing answers **303** to `/sign-in?error=unavailable` (carrying `next`), rather than a JSON 503. |
 | `GET` | `/api/auth/callback` | Where AuthKit sends the browser back, with `code` and `state`. Exchanges the code with WorkOS once, links or creates the user, and sets the session and CSRF cookies. Always answers **303** — to the cookie's `next` on success, to `/sign-in?error=<code>` on any refusal — and always clears the state cookie. Rate limited: `RL_LOGIN`, on the address and then on address + identity. Order of operations below. |
 | `DELETE` | `/api/auth/session` | Revokes the current session, clears both cookies. Idempotent. CSRF-checked when a session cookie is present. Unchanged by the move to WorkOS; a `POST` here answers **405** — the Firebase ID-token exchange it used to accept is gone. |
 | `GET` | `/api/auth/me` | The signed-in user, their organisations, their role in each — plus an `authority` summary per organisation (effective role, custom role, capabilities, assignable roles, definable bases) that the dashboard draws its controls from, since a custom role can narrow what the stored role alone suggests — and the vault state (`{ configured, unlocked, unlockedUntil, autoLockMinutes }`, where `autoLockMinutes` is already resolved and clamped — the client schedules a timer against it and does not re-implement what "no preference" means). Never carries key material. Exempt from the lock gate. |
@@ -267,10 +267,18 @@ in front of it have passed:
    `auth.login` as well. A deleted account is refused (403), and an address held by an account
    linked to another identity is a **409** that names neither that account nor how it signs in.
 8. `sso_required`: every organisation the account belongs to that requires SSO must be the one
-   whose SSO this sign-in came through (403).
-9. Just-in-time membership: an SSO sign-in through an organisation's connection makes a newcomer
+   whose SSO this sign-in came through (403) — **except one the account owns**. Owners are
+   exempt so that an identity provider misconfigured after the flag goes on cannot lock the
+   organisation out of itself; an owner may switch the flag off anyway, so the exemption gives
+   an owner's password nothing it lacked. The exemption is per organisation, and the sign-in is
+   still `auth.login` with its method.
+9. Just-in-time membership, **only for an organisation that opted in** (`jit_join_enabled`, off by
+   default; see *Single sign-on* below): an SSO sign-in through its connection makes a newcomer
    a `viewer`, under the seat limit — `member.jit_joined`, or `member.jit_denied` and a 403
-   when no seat is free. A suspended membership is never reinstated. Steps 8 and 9 require
+   when no seat is free. The opt-in is read under the organisation's row lock, with the seat
+   count. Without it the person signs in to whatever else they belong to (a personal
+   organisation, for a newcomer) and joins by invitation; nothing is refused or recorded. A
+   suspended membership is never reinstated. Steps 8 and 9 require
    `authenticationMethod === 'SSO'` *and* the organisation id: AuthKit reports an organisation
    after organisation selection in password and Google sign-ins too.
 10. A personal organisation for an account that has none.
@@ -587,6 +595,47 @@ Both routes out of that state now stay open instead of one closing itself immedi
 | `GET` | `/api/orgs/{orgSlug}` | `member.read`, which every active role holds. |
 | `PATCH` | `/api/orgs/{orgSlug}` | The name only, under the same 25-character ceiling as creation. `assertSlugImmutable` refuses a slug change with an explanation rather than ignoring it. Requires `org.update`. Audited as `org.updated`. |
 | `DELETE` | `/api/orgs/{orgSlug}` | Soft delete. Requires `org.delete` — owners only, the one action an admin is denied — a browser session, and `{ "confirm": "<orgSlug>" }`. Everything inside stops resolving at once, for every member, because each read joins back through `organizations` with a `deleted_at is null` filter. Audited as `org.deleted`; an unconfirmed attempt is recorded too. |
+
+### Single sign-on
+
+An organisation's enterprise SSO, through WorkOS: SAML or OIDC connections to the company's own
+identity provider, set up self-serve in WorkOS's Admin Portal. Every route is a **browser session
+only** (a CLI token is refused with 403 before the organisation is resolved), requires
+**`org.update`** (owners and admins, through `can()`, so a custom role that took it away is
+refused too), and every mutation is CSRF-checked and rate limited `RL_MUTATION` by user. Anything
+that switches something **on** — turning SSO on, minting a portal link, either policy — also
+needs the single sign-on add-on (`samlSso`, set by the operator tool): every connection is a paid
+WorkOS connection from the moment it exists. Reading, and switching a policy off, never need it.
+All four answer with the same status under `sso`:
+
+```jsonc
+{
+  "sso": {
+    "enabled": true,              // a WorkOS organisation exists and is linked
+    "ssoRequired": false,
+    "jitJoinEnabled": false,
+    "seatLimit": 5,
+    "addon": { "enabled": true },
+    "connections": [{ "id": "conn_…", "type": "OktaSAML", "state": "active" }],  // null while off
+    "domains": [{ "domain": "acme.example", "state": "verified" }],             // null while off
+    "providerReachable": true     // false: WorkOS did not answer for the two lists
+  }
+}
+```
+
+The WorkOS organisation id is never in a response.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/orgs/{orgSlug}/sso` | The status. While SSO is off it is answered from the row alone; once on, the connections (`sso.listConnections`) and domains (`organizations.getOrganization`) come from WorkOS, and if WorkOS cannot be reached the lists are `null`, `providerReachable` is `false`, and the answer is still a 200. |
+| `POST` | `/api/orgs/{orgSlug}/sso` | Turns SSO on: creates the WorkOS organisation (`createOrganization` with the organisation's name and its id as `externalId`, idempotency-keyed by that id) and links it (`setOrgWorkosOrgId`, set once, never re-pointed). **No domains are sent — never `domainData`, verified or otherwise**: the callback believes an SSO sign-in only for domains WorkOS reports as verified, so domains are added and verified through WorkOS's own flow (the portal, by DNS) and nowhere else. **201** the first time, audited `org.sso.enabled`; **200** with the status and nothing created or recorded when already on. A 409 from WorkOS on the `externalId` (an earlier attempt that never linked) adopts the organisation holding it. If another request linked a different WorkOS organisation first, the one this request created is deleted after the response and the winner's status returned. Without the add-on, **403** `plan_limit` (recorded as an `error`, reason `quotaExceeded`, `addonName: saml`). |
+| `POST` | `/api/orgs/{orgSlug}/sso/portal` | Mints a WorkOS Admin Portal link (`intent: sso`) returning to `/app/{orgSlug}/settings#single-sign-on`, as `{ link }` — an `https:` URL or a 503, never anything else. The link is as good as a credential for its few minutes (whoever opens it decides which identity provider vouches for the organisation's members), so it is never logged or stored, and every one is audited `org.sso.portal_link_created`. **409** before SSO is on. |
+| `PATCH` | `/api/orgs/{orgSlug}/sso` | Body `{ ssoRequired?: boolean, jitJoinEnabled?: boolean }`, at least one, strict (a string or a misspelt field is a **422**). Switching either **on** needs SSO on (**409** otherwise) and the add-on; switching `ssoRequired` on also needs an **active** connection at WorkOS (**409** otherwise — a requirement nobody can meet would leave only owners able to sign in; **503** when WorkOS cannot say). Switching either off is always allowed. Written by `updateOrgSsoSettings` under the organisation's row lock; each switch that moved is audited — `org.sso.required_toggled` / `org.sso.jit_toggled` with `enabled: <new value>` — and one already where it was asked to be records nothing. |
+
+What `sso_required` and the opt-in do at sign-in is steps 8 and 9 of *The callback, in order*.
+Every refusal these routes understood is recorded against the organisation: a role refusal as
+`denied` (a `PATCH` names both switches, since its body is not read first), a missing add-on, a
+precondition or a WorkOS failure (`upstreamUnavailable`) as `error`.
 
 ### Projects
 
@@ -1149,7 +1198,14 @@ that completes records `auth.login` beside it. Each carries `signInMethod`, a cl
 (`password`, `oauth`, `sso`, `magic_auth`, `passkey`, `other`) rather than WorkOS's own
 vocabulary. `member.jit_joined` and `member.jit_denied` record single sign-on admitting a
 newcomer, or turning one away for want of a seat — the second with outcome `error`, reason
-`quotaExceeded` and `limitName: seats`.
+`quotaExceeded` and `limitName: seats`. Neither is written for an organisation that has not
+opted in to just-in-time joins.
+
+An organisation's SSO settings are recorded by `org.sso.enabled` (once: the WorkOS organisation
+created and linked), `org.sso.portal_link_created` (every setup-portal link handed out — the link
+itself never), and `org.sso.required_toggled` / `org.sso.jit_toggled`, each carrying `enabled`,
+the switch's new value. A toggle is recorded only when it moved, so the previous value is the
+opposite one.
 `auth.reauthenticated` records the proof a vault reset spends, and is what shows a reset that
 follows it was not a stolen cookie alone.
 

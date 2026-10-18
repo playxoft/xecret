@@ -219,6 +219,24 @@ anybody more than the role it is based on. See
 | `PATCH` | `/orgs/{orgSlug}/roles/{roleId}` | Any of the fields above. Refused if anybody holding the role is beyond your authority, or holds access grants beyond yours that the change would switch on. A change that changes nothing writes nothing. |
 | `DELETE` | `/orgs/{orgSlug}/roles/{roleId}` | Only a role nobody holds — otherwise **409**: move its members to another role, or to none, first. Never plan-gated. |
 
+## Single sign-on
+
+SAML and OIDC single sign-on through WorkOS, set up by your IT admin in WorkOS's
+setup portal. Owners and admins only, from a browser session (a CLI token is
+refused). Turning anything **on** needs the single sign-on add-on; reading the
+status and switching a policy off never do. Every route answers with the same
+`sso` status: whether SSO is on, `ssoRequired`, `jitJoinEnabled`, the seat
+limit, whether the add-on is held, and — once on — the connections and domains
+WorkOS reports (`null`, with `providerReachable: false`, if WorkOS cannot be
+reached).
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/orgs/{orgSlug}/sso` | The status. |
+| `POST` | `/orgs/{orgSlug}/sso` | Turns SSO on: creates the organisation's account at WorkOS, with no domains — domains are added and verified in the setup portal. **201** the first time; **200** and nothing created once on. |
+| `POST` | `/orgs/{orgSlug}/sso/portal` | `{ link }` — a WorkOS setup-portal link, valid for a few minutes, that returns to the organisation's settings. **409** before SSO is on. Every link is audited. |
+| `PATCH` | `/orgs/{orgSlug}/sso` | Body `{ ssoRequired?: boolean, jitJoinEnabled?: boolean }`. Requiring SSO needs an active connection (**409** otherwise); owners are always exempt from it, so a misconfigured identity provider cannot lock the organisation out. `jitJoinEnabled` lets anybody your identity provider signs in, at a verified domain, join as a viewer while seats last; off, they need an invitation. |
+
 ## Tokens
 
 | Method | Path | Notes |

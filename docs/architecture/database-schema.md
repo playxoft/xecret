@@ -186,11 +186,15 @@ CREATE TABLE organizations (
   slug          citext      NOT NULL UNIQUE,
   seat_limit    integer     NOT NULL DEFAULT 5 CHECK (seat_limit >= 0),
   workos_org_id text        UNIQUE,                  -- 0018; set lazily, on enabling SSO
-  sso_required  boolean     NOT NULL DEFAULT false,  -- 0018; enforced, not yet settable
+  sso_required  boolean     NOT NULL DEFAULT false,  -- 0018; owners exempt
+  jit_join_enabled boolean  NOT NULL DEFAULT false,  -- 0021; the just-in-time opt-in
   created_by    uuid        NOT NULL REFERENCES users(id),
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now(),
-  deleted_at    timestamptz
+  deleted_at    timestamptz,
+  -- 0021: both SSO flags are about the organisation's connection, and there is none unlinked.
+  CONSTRAINT organizations_sso_flags_need_link_check
+    CHECK ((sso_required = false AND jit_join_enabled = false) OR workos_org_id IS NOT NULL)
 );
 
 CREATE TABLE org_members (
@@ -221,16 +225,22 @@ with `findOrgByWorkosOrgId`, which ignores soft-deleted organisations.
 `sso_required` ("members may only sign in through this organisation's SSO connection") is
 **enforced** by the sign-in callback — a sign-in must have come through this organisation's
 own connection (`authenticationMethod` `SSO` *and* this `workos_org_id`), or it is refused —
-but nothing can set it yet: false everywhere. The setter ships with the organisation's SSO
-settings, together with the guards it owes (owner/admin only, and an exemption for when the
-identity provider is misconfigured, without which switching it on can lock an organisation
-out of itself). Enforcement first is the safe order: a flag that claims a bypass is closed
-while it is open is worse than no flag.
+**except for the organisation's owners**, so that an identity provider misconfigured after it
+is switched on cannot lock the organisation out of itself (an owner can switch it off anyway).
+Its one setter is `updateOrgSsoSettings`, behind the SSO settings route (owner or admin, a
+browser session, the single sign-on add-on and an active connection to switch it on).
 
-An SSO sign-in through an organisation's connection also admits a newcomer just in time, as a
-`viewer` `org_members` row with `invited_by` NULL, under the seat limit and the same
-organisation row lock an invitation acceptance takes (`joinOrganizationJustInTime`). It never
-reinstates a suspended membership.
+An SSO sign-in through an organisation's connection admits a newcomer just in time — as a
+`viewer` `org_members` row with `invited_by` NULL — **only if the organisation opted in**
+(`jit_join_enabled`, migration 0021, off by default and set by the same setter). Connecting an
+identity provider says who an organisation's people are; admitting all of them is a second
+decision. The opt-in and the seat limit are both read under the organisation row lock an
+invitation acceptance takes (`joinOrganizationJustInTime`), so switching it off is never raced
+past. It never reinstates a suspended membership.
+
+Neither flag can be true on an organisation without a `workos_org_id`
+(`organizations_sso_flags_need_link_check`); since the link is never cleared, a flag once on
+cannot be stranded.
 
 **Invariant enforced in application code, tested explicitly:** an organisation always has at
 least one `owner` with `status = 'active'`. Removing or demoting the last owner is rejected.
@@ -835,6 +845,8 @@ audit_logs — no FKs by design; references are soft
 0020  retained vaults (retained_vaults, retained_vault_wraps, retained_vault_grants) —
       a reset vault kept seven days; CHECK pins the window, triggers refuse an early
       delete and any rewrite of key material; the application role's grants — additive
+0021  SSO settings: organizations.jit_join_enabled (the just-in-time opt-in, default
+      false) and organizations_sso_flags_need_link_check — additive; no new grant
 ```
 
 Migration 0020 (P23) is additive: three new tables nothing older reads. **Apply it before
