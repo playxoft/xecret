@@ -65,9 +65,27 @@ export interface WorkosApi {
     | 'authenticateWithTotp'
   >;
   multiFactorAuth: Pick<WorkOS['multiFactorAuth'], 'challengeFactor'>;
-  organizations: Pick<WorkOS['organizations'], 'getOrganization' | 'createOrganization'>;
+  organizations: Pick<
+    WorkOS['organizations'],
+    'getOrganization' | 'getOrganizationByExternalId' | 'createOrganization' | 'deleteOrganization'
+  >;
   adminPortal: Pick<WorkOS['adminPortal'], 'generateLink'>;
   sso: Pick<WorkOS['sso'], 'listConnections'>;
+}
+
+/** One of a WorkOS organisation's identity-provider connections, as the settings show it. */
+export interface SsoConnectionSummary {
+  id: string;
+  /** WorkOS's connection type, e.g. `OktaSAML`, `GoogleSAML`, `GenericOIDC`. */
+  type: string;
+  /** `active` is the only state that can sign anybody in. */
+  state: 'draft' | 'active' | 'inactive' | 'validating';
+}
+
+/** One of a WorkOS organisation's domains, and how far its verification has got. */
+export interface SsoDomainSummary {
+  domain: string;
+  state: 'verified' | 'pending' | 'failed';
 }
 
 /** The parts of an authentication response this module reads. Everything else is ignored. */
@@ -339,50 +357,130 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
    * and is only believed for the domains the organisation proved it owns.
    */
   async verifiedDomains(workosOrgId: string): Promise<ReadonlySet<string>> {
+    const domains = await this.domains(workosOrgId);
+    return new Set(
+      domains.filter((entry) => entry.state === 'verified').map((entry) => entry.domain),
+    );
+  }
+
+  /**
+   * Every domain a WorkOS organisation has, lower-cased, with its verification
+   * state — for the SSO settings' status display, and beneath
+   * {@link verifiedDomains}. A state WorkOS adds later reads as `pending`:
+   * not verified, which is the only distinction anything here acts on.
+   */
+  async domains(workosOrgId: string): Promise<SsoDomainSummary[]> {
     try {
       const organization = await this.#api.organizations.getOrganization(workosOrgId);
-      return new Set(
-        organization.domains
-          .filter((entry) => entry.state === 'verified')
-          .map((entry) => entry.domain.toLowerCase()),
-      );
+      return organization.domains.map((entry) => ({
+        domain: entry.domain.toLowerCase(),
+        state:
+          entry.state === 'verified' ? 'verified' : entry.state === 'failed' ? 'failed' : 'pending',
+      }));
     } catch (cause) {
       throw providerFailure(cause);
     }
   }
 
   /**
-   * For the organisation SSO settings (WS-5), which have no caller yet: create
-   * the WorkOS organisation an xecret organisation's SSO will hang off.
+   * Creates the WorkOS organisation an xecret organisation's SSO hangs off,
+   * and answers its id.
+   *
+   * ── Never with domains, and never with domains marked verified ──
+   * The payload is built here, field by field, from a name and the xecret
+   * organisation's id, and it has no `domainData` — the parameter type has no
+   * room for one, and nothing from the caller is spread into the request. That
+   * is PR #114's constraint, and the reason is the sign-in callback's step 3:
+   * an SSO sign-in is believed only for the domains WorkOS reports as
+   * *verified*. WorkOS accepts `domainData` entries already in the `verified`
+   * state from whoever holds the API key, so a domain xecret declared verified
+   * would let that organisation's identity provider assert any address in it —
+   * anybody's account at that company, adopted by the linker. Domains are added
+   * and verified through WorkOS's own flow (the Admin Portal, by DNS) and
+   * nowhere else.
+   *
+   * ── Idempotent ──
+   * Keyed for WorkOS's idempotency by the xecret organisation, so two "enable"
+   * requests racing each other get one WorkOS organisation rather than one each.
+   * Past WorkOS's idempotency window, a retry that finds the `externalId`
+   * already taken (409) adopts the organisation holding it: only this
+   * deployment's secret key can create organisations in this WorkOS
+   * environment, and it gives each the id of the xecret organisation it is for,
+   * so one already carrying that id was made for this one — by an earlier
+   * attempt whose database write never landed.
    */
   async createOrganization(params: { name: string; externalId: string }): Promise<string> {
+    const payload = { name: params.name, externalId: params.externalId };
     try {
-      const created = await this.#api.organizations.createOrganization(params);
+      const created = await this.#api.organizations.createOrganization(payload, {
+        idempotencyKey: `xecret-sso-enable-${params.externalId}`,
+      });
       return created.id;
+    } catch (cause) {
+      if (readNumber(cause, 'status') !== 409) throw providerFailure(cause);
+    }
+
+    try {
+      const existing = await this.#api.organizations.getOrganizationByExternalId(params.externalId);
+      if (existing.externalId !== params.externalId) {
+        throw new IdentityVerificationError('external-id-mismatch');
+      }
+      return existing.id;
     } catch (cause) {
       throw providerFailure(cause);
     }
   }
 
-  /** For WS-5: an Admin Portal link for the organisation's IT admin to configure SSO. */
-  async generatePortalLink(params: { workosOrgId: string; returnUrl: string }): Promise<string> {
+  /**
+   * Deletes a WorkOS organisation — only ever one this request created and then
+   * could not link, because another request linked a different one first
+   * (PR #100, note 7). An orphan left at WorkOS is harmless to sign-in, since
+   * nothing here resolves to it, but it is a tenant nobody owns.
+   */
+  async deleteOrganization(workosOrgId: string): Promise<void> {
     try {
-      const { link } = await this.#api.adminPortal.generateLink({
+      await this.#api.organizations.deleteOrganization(workosOrgId);
+    } catch (cause) {
+      throw providerFailure(cause);
+    }
+  }
+
+  /**
+   * An Admin Portal link for the organisation's IT admin to connect its
+   * identity provider — Okta, Entra ID, Google Workspace, any SAML or OIDC
+   * provider. Short-lived, and as good as a credential while it lasts: whoever
+   * opens it decides which identity provider vouches for this organisation's
+   * members. It is handed to the caller and never logged or stored.
+   */
+  async generatePortalLink(params: { workosOrgId: string; returnUrl: string }): Promise<string> {
+    let link: string;
+    try {
+      ({ link } = await this.#api.adminPortal.generateLink({
         organization: params.workosOrgId,
         intent: GenerateLinkIntent.SSO,
         returnUrl: params.returnUrl,
-      });
-      return link;
+      }));
     } catch (cause) {
       throw providerFailure(cause);
     }
+    // The dashboard opens whatever this is, so it must be a page on the web:
+    // never a `javascript:` URL, a relative path, or nothing at all.
+    if (!URL.canParse(link) || new URL(link).protocol !== 'https:') {
+      throw new IdentityVerificationError('portal-link-not-https');
+    }
+    return link;
   }
 
-  /** For WS-5: the organisation's SSO connections, for a status display. */
-  async listConnections(workosOrgId: string) {
+  /**
+   * The organisation's SSO connections, for the settings' status display and
+   * for the check that `sso_required` has an active connection to require.
+   * Copied field by field: nothing else WorkOS says about a connection leaves
+   * this file.
+   */
+  async listConnections(workosOrgId: string): Promise<SsoConnectionSummary[]> {
     try {
       const { data } = await this.#api.sso.listConnections({ organizationId: workosOrgId });
-      return data.map(({ id, state, type }) => ({ id, state, type }));
+      return data.map(({ id, state, type }) => ({ id, state, type: String(type) }));
     } catch (cause) {
       throw providerFailure(cause);
     }

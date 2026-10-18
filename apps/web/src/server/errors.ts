@@ -367,6 +367,21 @@ export const errors = {
       { logDetail: 'vault changed between archive and reset' },
     ),
 
+  /**
+   * An organisation SSO settings call that needed WorkOS and could not get an
+   * answer from it — unreachable, rate-limited, or refusing this deployment's
+   * key. Nothing was changed. Its own sentence because "temporarily
+   * unavailable" on a settings page reads as the whole product being down,
+   * when what is down is one provider's API.
+   */
+  ssoProviderUnavailable: (logDetail: string): ApiError =>
+    new ApiError(
+      'unavailable',
+      'WorkOS, which runs single sign-on for xecret, could not be reached, so nothing was changed. ' +
+        'Try again in a minute.',
+      { logDetail },
+    ),
+
   internal: (logDetail: string): ApiError =>
     new ApiError('internal_error', 'Something went wrong.', { logDetail }),
 } as const;

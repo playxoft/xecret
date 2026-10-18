@@ -603,6 +603,150 @@ describe('verified domains', () => {
     expect([...domains]).toEqual(['bigcorp.example']);
     expect(calls.getOrganization).toHaveBeenCalledWith('org_01BIGCORP');
   });
+
+  it('reports every domain with its state for the settings, reading an unknown state as pending', async () => {
+    const { provider } = stubApi({
+      getOrganization: vi.fn(async () => ({
+        id: 'org_01BIGCORP',
+        domains: [
+          { domain: 'BigCorp.example', state: 'verified' },
+          { domain: 'failed.example', state: 'failed' },
+          { domain: 'later.example', state: 'legacy_verified' },
+        ],
+      })),
+    });
+
+    expect(await provider.domains('org_01BIGCORP')).toEqual([
+      { domain: 'bigcorp.example', state: 'verified' },
+      { domain: 'failed.example', state: 'failed' },
+      // Not `verified`, so it never counts as one — for the callback either.
+      { domain: 'later.example', state: 'pending' },
+    ]);
+  });
+});
+
+describe('the organisation SSO calls (WS-5)', () => {
+  function ssoStub() {
+    const stub = stubApi();
+    const organizations = (stub.api as unknown as { organizations: Record<string, unknown> })
+      .organizations;
+    const createOrganization = vi.fn(async () => ({ id: 'org_01NEW' }));
+    const getOrganizationByExternalId = vi.fn();
+    const deleteOrganization = vi.fn(async () => undefined);
+    Object.assign(organizations, {
+      createOrganization,
+      getOrganizationByExternalId,
+      deleteOrganization,
+    });
+    const generateLink = vi.fn();
+    const listConnections = vi.fn();
+    Object.assign(stub.api.adminPortal, { generateLink });
+    Object.assign(stub.api.sso, { listConnections });
+    return {
+      provider: stub.provider,
+      createOrganization,
+      getOrganizationByExternalId,
+      deleteOrganization,
+      generateLink,
+      listConnections,
+    };
+  }
+
+  it('creates a WorkOS organisation from a name and the xecret id alone — never domainData', async () => {
+    const { provider, createOrganization } = ssoStub();
+
+    // A caller that reached past the type with extra fields, verified domains
+    // among them, must not get any of them forwarded (PR #114).
+    const id = await provider.createOrganization({
+      name: 'Acme',
+      externalId: 'org-uuid',
+      domainData: [{ domain: 'acme.example', state: 'verified' }],
+    } as never);
+
+    expect(id).toBe('org_01NEW');
+    expect(createOrganization).toHaveBeenCalledWith(
+      { name: 'Acme', externalId: 'org-uuid' },
+      { idempotencyKey: 'xecret-sso-enable-org-uuid' },
+    );
+  });
+
+  it('adopts the organisation holding its externalId on a 409, and only that one', async () => {
+    const { provider, createOrganization, getOrganizationByExternalId } = ssoStub();
+    createOrganization.mockRejectedValue(failure(409));
+    getOrganizationByExternalId.mockResolvedValueOnce({ id: 'org_01EARLIER', externalId: 'mine' });
+
+    expect(await provider.createOrganization({ name: 'Acme', externalId: 'mine' })).toBe(
+      'org_01EARLIER',
+    );
+
+    getOrganizationByExternalId.mockResolvedValueOnce({ id: 'org_01OTHER', externalId: 'theirs' });
+    await expect(
+      provider.createOrganization({ name: 'Acme', externalId: 'mine' }),
+    ).rejects.toBeInstanceOf(IdentityVerificationError);
+  });
+
+  it('sorts a failed creation like any other WorkOS failure, without looking anything up', async () => {
+    const { provider, createOrganization, getOrganizationByExternalId } = ssoStub();
+    createOrganization.mockRejectedValue(failure(503));
+
+    await expect(
+      provider.createOrganization({ name: 'Acme', externalId: 'mine' }),
+    ).rejects.toBeInstanceOf(IdentityProviderUnavailableError);
+    expect(getOrganizationByExternalId).not.toHaveBeenCalled();
+  });
+
+  it('asks for an SSO-intent Admin Portal link and refuses anything that is not https', async () => {
+    const { provider, generateLink } = ssoStub();
+    generateLink.mockResolvedValueOnce({ link: 'https://setup.workos.com/portal/launch?x=1' });
+
+    expect(
+      await provider.generatePortalLink({
+        workosOrgId: 'org_01BIGCORP',
+        returnUrl: 'https://xecret.playxoft.com/app/acme/settings',
+      }),
+    ).toBe('https://setup.workos.com/portal/launch?x=1');
+    expect(generateLink).toHaveBeenCalledWith({
+      organization: 'org_01BIGCORP',
+      intent: 'sso',
+      returnUrl: 'https://xecret.playxoft.com/app/acme/settings',
+    });
+
+    for (const link of ['javascript:alert(1)', 'http://setup.workos.com/', '/portal', '']) {
+      generateLink.mockResolvedValueOnce({ link });
+      await expect(
+        provider.generatePortalLink({ workosOrgId: 'org_01BIGCORP', returnUrl: 'https://x/' }),
+      ).rejects.toBeInstanceOf(IdentityVerificationError);
+    }
+  });
+
+  it('lists connections for the organisation, copying only id, state and type', async () => {
+    const { provider, listConnections } = ssoStub();
+    listConnections.mockResolvedValue({
+      data: [
+        {
+          id: 'conn_01',
+          state: 'active',
+          type: 'OktaSAML',
+          name: 'BigCorp',
+          domains: [{ domain: 'bigcorp.example' }],
+          organizationId: 'org_01BIGCORP',
+        },
+      ],
+    });
+
+    expect(await provider.listConnections('org_01BIGCORP')).toEqual([
+      { id: 'conn_01', state: 'active', type: 'OktaSAML' },
+    ]);
+    expect(listConnections).toHaveBeenCalledWith({ organizationId: 'org_01BIGCORP' });
+  });
+
+  it('deletes an orphaned WorkOS organisation by id', async () => {
+    const { provider, deleteOrganization } = ssoStub();
+
+    await provider.deleteOrganization('org_01ORPHAN');
+
+    expect(deleteOrganization).toHaveBeenCalledWith('org_01ORPHAN');
+  });
 });
 
 describe('construction from the bindings', () => {
