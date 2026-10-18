@@ -492,12 +492,17 @@ function auditIdentityLinked(
  *    question; a person whose browser was used against them gets to say no.
  *  - `'not-member'` — a single sign-on through an organisation the account is
  *    not an active member of, *even when the flow asked for that organisation*
- *    (review round 2). The `?org=` deep link is meant to be followed only from
- *    the warning page, by a person, but a deep link that arrived some other way
- *    — a chain of same-origin redirects, a way round nobody has found yet —
- *    would otherwise be the one sign-in through an attacker's organisation that
- *    issued at once. Somebody signing in to their own company's organisation is
- *    already in it; the first time, joining it is worth one question.
+ *    (review round 2). What it covers is narrower than it looks (review round
+ *    3): an identity signing in through that organisation for the first time,
+ *    or one that is not in it. In the planted-session attack the identity that
+ *    comes back is the *attacker's*, and the attacker's account is a member of
+ *    the attacker's own organisation — so for a deep link to it this never
+ *    fires. What stops a deep link nobody chose is the warning page's
+ *    `continue` token (the login route) and `next` never naming an API route
+ *    (`safePostSignInPath`), not this. It is here for the newcomer: somebody
+ *    signing in to their own company's organisation is already in it, and the
+ *    first time, joining it — or being signed in through an organisation one
+ *    does not belong to — is worth one question.
  *  - `'reused-session'` — WorkOS answered from an authentication that predates
  *    the flow (its `auth_time`, beyond {@link REAUTH_AUTH_TIME_SKEW_SECONDS}):
  *    a session reused without asking anything, which is the planted session's
