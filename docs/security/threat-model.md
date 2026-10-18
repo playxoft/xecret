@@ -92,32 +92,71 @@ authorize URL with `organization_id=<theirs>`, or their provider's IdP-initiated
 through the initiate-login URI — and the victim's next plain "Sign in", even one they click
 themselves, is answered with the attacker's identity against the victim's own valid state and
 PKCE. Zero clicks on anything suspicious; the victim lands in the attacker's account, and
-whatever they store next is the attacker's. This was open until review round 1 of WS-5 (S1).
-The defence:
+whatever they store next is the attacker's. This was open until review round 1 of WS-5 (S1);
+review round 2 found the round-1 defence could be walked round (below) and closed that too.
+The defence, as it now stands:
 
-- The login route seals the organisation the flow **asked for** (an `?org=` deep link, or
-  none) into the state cookie.
-- The callback **issues no session** when the authentication comes back through a different
-  organisation — including any single sign-on on a flow that asked for none, and an
-  organisation reported after organisation selection — or from an authentication WorkOS dates
-  before the flow began (a session it reused without asking, read from `auth_time`). It parks
-  the outcome in a sealed, `HttpOnly`, five-minute cookie and sends the browser to
-  `/sign-in/confirm`.
-- That page names the account and presents the organisation as the claim it is ("an
-  organisation calling itself …" — its owner chose the name), and makes declining as easy as
-  continuing. Only its **POST** issues the session: same-origin and failing closed on
-  `Origin`, `SameSite=Lax`, a form token that is the cookie's 256-bit nonce, and the nonce
-  spent once in `sign_in_confirmations` before anything is issued — the same cookie presented
-  twice issues at most once.
-- `?org=` itself is followed only from a same-origin navigation to a document
-  (`Sec-Fetch-Site`, `-Mode`, `-Dest`); anything else goes to `/sign-in?org=` to be confirmed.
+- **The flow seals what it asked for.** The login route writes the organisation an `?org=`
+  deep link asked for — or none — into the state cookie.
+- **The callback holds back, and issues no session for,** an authentication that comes back
+  (a) through a different organisation — any single sign-on on a flow that asked for none, an
+  IdP-initiated sign-in, an organisation reported after organisation selection; (b) through
+  the single sign-on of an organisation the account is **not already an active member of, even
+  when the flow asked for that organisation** (round 2, defence in depth: the deep link should
+  only ever be followed by a person, but a deep link that arrived some other way must still not
+  issue at once); or (c) from an authentication WorkOS dates before the flow began (a session it
+  reused without asking, read from `auth_time`) **for an account other than the last one this
+  browser signed in as**. The outcome is parked in a sealed, `HttpOnly`, five-minute cookie
+  and the browser goes to `/sign-in/confirm`. **Nothing that changes an organisation runs
+  before the answer** — the just-in-time join waits for "Continue" — so a declined sign-in
+  leaves no trace in one.
+- **The confirmation page** names the account in full, above the buttons, and presents the
+  organisation as the claim it is ("an organisation calling itself …"); both strings are
+  somebody else's, so they arrive made inert — direction overrides, invisible characters and
+  stacked accents replaced by a visible U+FFFD, length-capped, isolated in `<bdi>` — and an
+  address with non-ASCII characters is called out. Only its **POST** issues the session:
+  same-origin and failing closed on `Origin`, `SameSite=Lax`, a form token that is the
+  cookie's 256-bit nonce, and the nonce spent once in `sign_in_confirmations` before anything is
+  issued. "This isn't me" issues nothing, ends the AuthKit session the sign-in came from
+  (WorkOS's logout URL for its `sid`), lands on `/sign-in?error=declined` without the flow's
+  `next`, and is audited `auth.sign_in_declined`; a confirmed one is audited as the ordinary
+  `auth.login` carrying `confirmation`.
+- **`next` can never be an API route** (round 2's HIGH). The confirmation redirects to the
+  sealed `next`, and a `next` of `/api/auth/login?org=attacker-co` turned the victim's
+  truthful "Continue" into a perfectly same-origin, navigate, document request for the
+  attacker's single sign-on — which round 1's fetch-metadata gate honoured. `safeRedirectPath`
+  now refuses any path that decodes (repeatedly, lower-cased, backslashes as slashes, dot
+  segments resolved) to `/api` or under it — when the login route seals it, and again when the
+  callback and the confirmation use it.
+- **`?org=` is honoured only with the warning page's token** (round 2). A request for an
+  organisation's single sign-on with no valid `continue` token — however same-origin it looks
+  — is answered with a 303 to `/sign-in?org=<slug>`, the page that presents the slug as an
+  unproven claim, and a random `HttpOnly`, `__Host-` binding cookie. That page's "Continue"
+  link carries an HMAC (its own HKDF label of the cookie secret) over the slug, the moment and
+  that binding; the login route requires the token to verify against the binding the browser
+  presents, for that slug, under five minutes old, *and* a same-origin navigation to a
+  document. Bound to the binding, a token works only in the browser that was shown the page —
+  one an attacker mints by loading the page themselves names the attacker's binding — and the
+  binding is cleared once followed. Fetch metadata says where a request came from; the token
+  says a person chose it.
+- **Sign-out ends the AuthKit session too** (round 2). Each session records the AuthKit
+  session it came from (the access token's `sid`, `sessions.workos_session_id`), and
+  `DELETE /api/auth/session` answers WorkOS's logout URL for it, which the dashboard follows.
+  Before, AuthKit's session outlived sign-out, nearly every returning person was held back as a
+  reused session, and people learned to click "Continue" without reading — the habit the
+  confirmation cannot survive. With that, and the signed **last-account cookie** (an HMAC over
+  the account id, written at every sign-in) sparing a returning person the reused-session
+  question for their own account only, the confirmation is asked when it means something.
 
-What this leaves: a person who reads "Continue as mallory@attacker.example, through an
-organisation calling itself *Your Company*" and continues anyway. The page is written for that
-moment, and it is the one place left where the attack needs the victim's help. Whether WorkOS
-can switch IdP-initiated sign-in off for this environment is to be checked on Staging; with
-this defence it no longer matters for safety, only for how often an enterprise user meets the
-confirmation.
+What this leaves: a person who reads "an organisation calling itself *Your Company*" beside
+an account they do not recognise and continues anyway; a person who follows a link to
+`/sign-in?org=attacker-co` and clicks "Continue with single sign-on" on a page that says the
+slug proves nothing. Both pages are written for those moments. The last-account cookie spares
+only the reused-session question, and only for the account it names: a person who once
+confirmed a planted sign-in carries that account's cookie, but a planted session through an
+organisation is still asked about every time (reasons a and b do not consult it). Whether
+WorkOS can switch IdP-initiated sign-in off for this environment, and whether its logout
+redirect accepts `/sign-in`, are to be checked on Staging.
 
 **Residual risk:** Low. A zero-day in Cloudflare or Next.js remains possible; the
 planted-session confirmation can be clicked through by a person who does not read it.
@@ -572,20 +611,38 @@ environment (local development runs against WorkOS Staging over the production d
   based on `owner`, and a custom role only subtracts from its base. Admins keep reading the
   settings and switching a policy off.
 - **The setup-portal link is treated as a credential.** Minted only for an owner whose
-  session signed in again within the last ten minutes (the vault reset's lock one, reused —
-  with its residual: a live Google or SSO session satisfies it without a prompt), audited every
-  time, never logged or stored, and never placed in the dashboard tab's history (a blocked
-  pop-up gets a link the owner clicks, not a navigation).
+  session signed in again within the last ten minutes — its own record of a fresh
+  authentication during a `reauth` flow (`sessions.fresh_auth_at`, round 2), by any method that
+  re-proves who the person is, an emailed code included (the vault reset's lock one, which
+  round 1 borrowed, refuses one by design and stranded such owners), dated by WorkOS's
+  `auth_time` rather than by when a held-back sign-in was confirmed, and with lock one's
+  residual: a live Google or SSO session satisfies it without a prompt. Audited every time,
+  never logged or stored, and never placed in the dashboard tab's history (a blocked pop-up
+  gets a link the owner clicks, not a navigation).
 - **Domains are WorkOS's to verify, never ours to declare**: no `domainData` is ever sent, and
   an SSO sign-in is believed only for an address in a domain WorkOS reports as verified.
   Requiring SSO needs an active connection *and* a verified domain, and the settings count the
   members outside the verified domains before the switch.
 - **Just-in-time membership is an explicit opt-in**, admits as `viewer` only, never reinstates
   a suspended member, and never re-admits a removed one: removal leaves a record
-  (`org_member_removals`, migration 0022) that only an accepted invitation clears, and the
-  refusal is audited as `member.jit_denied` (`removed`).
+  (`org_member_removals`, migration 0022), the refusal is audited as `member.jit_denied`
+  (`removed`), and only accepting an invitation sent *after* the removal clears it (round 2).
+  A just-in-time join and a removal both withdraw every invitation still open for the address,
+  under the organisation's lock, so a leftover link — possibly at a higher role — cannot bring a
+  removed person back. The join itself waits for the sign-in confirmation, when there is one.
 - **The link records its WorkOS environment** (`workos_client_id`, review S9); the settings
-  refuse to act on a link made in another, and an enable never adopts one.
+  refuse to act on a link made in another, an enable never adopts one, and the sign-in path
+  resolves only links made in its own environment (no just-in-time join, no name on the
+  confirmation page, through a foreign link). And **no link can be written from an environment
+  the database does not belong to** (round 2): `workos_home` holds the one WorkOS client id the
+  database's links may come from (seeded with production's by migration 0023), and turning SSO
+  on — the only writer of a link, which checks it in the UPDATE's own predicate too — as well
+  as opening the portal and switching a policy on refuse from any other, or while none is
+  recorded. Switching a policy off is allowed from anywhere.
+- **The owner exemption is audited where a credential is made with it**: at sign-in (each
+  exempting organisation), at a CLI device approval by an owner from a non-SSO session, and at
+  an owner's invitation accepted from one (round 2). A credential that already existed when the
+  requirement went on is not re-audited on each request.
 - **The add-on is the blast-radius gate.** An organisation without the single sign-on add-on —
   set by an operator, never self-served — cannot create a WorkOS organisation, open the portal
   or switch a policy on, so cannot attach an identity provider at all.
@@ -637,3 +694,4 @@ customer's own systems after legitimate secret delivery.
 | 2026-10-14 | — | P23, review round 1: owner decision recorded — never reset without the archive silently (production without mail refuses; too large needs an explicit choice); T11 gains the way back from a hostile reset and loses "nobody can delete it"; T12 corrected on locked versus unlocked sessions and brief inbox control, states the retained vault is offline-attackable by any unlocked session and its lockout is abuse control, and adds rotating environment keys and the import's preview and e2ee-only targets |
 | 2026-10-14 | — | P23, review round 2: T11 states that recovery after a hostile reset may wait up to an hour (the attacker can run the retained vault's lockout to its maximum before the victim's reset locks their sessions); a retained vault can no longer be inserted dated in the future; a locked session's reset preflight no longer reveals the archive's counts or size |
 | 2026-10-18 | — | WS-5 (organisation SSO settings), review round 1: Boundary 4 added — a customer-attached identity provider; T1 corrected — `state` and PKCE do not cover the planted-AuthKit-session login CSRF, and the confirmation that does is described; T3 — `sso_required` is enforced per request again, and the owner exemption is recorded as a deliberate break-glass with a cost; T13 added — SSO administration owners-only with a step-up for the credential-grade portal link, JIT never re-admits a removed member, the link records its WorkOS environment, the add-on as the blast-radius gate |
+| 2026-10-18 | — | WS-5, review round 2: T1 restated as it now stands — the confirmation → `next` → `?org=` redirect chain closed (no `next` under `/api/`, the deep link honoured only with the warning page's browser-bound token, an SSO sign-in through an organisation the account is not in always held back), sign-out ends the AuthKit session, the last-account cookie, a decline ends the AuthKit session and is audited, inert display of the address and the organisation name; T13 — the portal's own fresh-sign-in record (emailed codes count; dated by `auth_time`), stale invitations withdrawn at JIT join and removal, `workos_home` so no other environment can write a link, foreign links ignored on the sign-in path, the owner exemption audited at CLI approval and owner invitations |

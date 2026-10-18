@@ -442,12 +442,21 @@ proof is spent and before anything changes, then retains the vault for seven day
 
 ### Logout, and the AuthKit session it leaves behind
 
-`DELETE /api/auth/session` is unchanged: CSRF-checked, revokes the row, clears both cookies.
-It does not end the session AuthKit keeps on WorkOS's own domain, so a returning person may
-pass AuthKit without entering a credential. Accepted for v1 — most OAuth applications behave
-the same way — and the reason the vault reset sends `max_age=0`, with the limits recorded above:
-it is honoured, if at all, by AuthKit, and it does not reach a Google or identity-provider
-session.
+`DELETE /api/auth/session` is CSRF-checked, revokes the row and clears both cookies, as it
+always was. *Amended in WS-5 review round 2 (2026-10-18):* it now also ends the session AuthKit
+keeps on WorkOS's own domain. The code exchange's access token is read for one more claim, `sid`
+— the AuthKit session — which is kept on the session row (`sessions.workos_session_id`,
+migration 0023), and sign-out answers `200 { logoutUrl }` with WorkOS's logout URL for it; the
+dashboard navigates there, and WorkOS returns to `/sign-in`. The original acceptance ("a
+returning person may pass AuthKit without entering a credential — most OAuth applications
+behave the same way") stopped holding once the sign-in confirmation existed: nearly every
+returning person was answered from that AuthKit session, held back as a reused session, and
+asked "Is this you?" — and a question asked on every return is one people stop reading. A
+session with no recorded `sid` (every one issued before 0023) signs out exactly as before.
+"Sign out other devices" and "sign out everywhere" still revoke only xecret sessions; the
+AuthKit sessions on those other browsers end on their own. The vault reset still sends
+`max_age=0`, with the limits recorded above: it is honoured, if at all, by AuthKit, and it does
+not reach a Google or identity-provider session.
 
 A sign-in in a browser that already holds a live session *of the same account* revokes that
 session once the new one is issued — last, after the new session and any reauthentication
@@ -568,8 +577,11 @@ nothing added for WorkOS, because the browser only navigates there.
 ### Revisit when
 - Self-hosters ask for a deployment without WorkOS: a second `IdentityProvider`, with its own
   subject column and linker, is the answer.
-- The AuthKit session outliving our logout bothers anyone: WorkOS's logout URL, with the
-  session id the code exchange currently discards, is the fix.
+- ~~The AuthKit session outliving our logout bothers anyone: WorkOS's logout URL, with the
+  session id the code exchange currently discards, is the fix.~~ Done in WS-5 review round 2:
+  it bothered the sign-in confirmation (see *Logout, and the AuthKit session it leaves behind*).
+  What is left is "sign out everywhere", which still ends only xecret sessions: WorkOS's
+  server-side `revokeSession` per recorded `sid` is the fix when it matters.
 - WorkOS passes `max_age` on to Google and to identity providers, or reports *their*
   authentication time rather than its own: lock one's `auth_time` check would then reach a
   silent Google or SSO sign-in too, closing the residual it leaves today.

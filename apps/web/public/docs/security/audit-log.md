@@ -44,8 +44,9 @@ person's name on a write they did not make is worse than useless.
 
 | Action | Recorded when |
 |---|---|
-| `auth.login` | Somebody signed in |
-| `auth.signup` | A sign-in created a new account — recorded instead of `auth.login` for that one sign-in, so "when did this person join" is a filter |
+| `auth.login` | Somebody signed in. When the sign-in was held back for them to confirm first, `confirmation` says why: `organization` (it came back through an organisation the sign-in did not ask for), `not-member` (through the single sign-on of an organisation the account was not yet in) or `reused-session` (answered from an earlier sign-in at WorkOS, for an account other than the last one on that browser) |
+| `auth.signup` | A sign-in created a new account — recorded instead of `auth.login` for that one sign-in, so "when did this person join" is a filter. Carries `confirmation` the same way |
+| `auth.sign_in_declined` | A sign-in held back for confirmation was declined — "This isn't me" — and nothing was signed in. `confirmation` says why it was held back, `signInMethod` how the person was signed in. Recorded in the organisation whose single sign-on it came through when that organisation is on xecret, otherwise in the account's own. One is somebody choosing the wrong account; a run of them for one account is somebody trying to sign people in to theirs |
 | `auth.identity_linked` | A sign-in adopted an existing account by its verified email address and linked the sign-in identity to it — the one sign-in that changes which identity an account answers to. Written at the moment the link is made, even if that sign-in is then refused (single sign-on required, or no seat free); a linked sign-in that completes records `auth.login` as well |
 | `auth.sso_exemption_used` | An owner signed in without the organisation's required single sign-on, through the owner exemption — see *Single sign-on* below |
 | `auth.login_failed` | A sign-in was rejected |
@@ -111,13 +112,14 @@ specific value, which is what curiosity and exfiltration both look like.
 | `org.sso.portal_link_created` | An owner who had just signed in again was handed a link to the WorkOS setup portal, where the identity provider is connected and domains verified. Every time — whoever opens one decides who can sign in as the organisation's members. The link itself is never recorded |
 | `org.sso.required_toggled` | "Require single sign-on" was switched on (by an owner) or off. `enabled` is the new value. It applies to every request from then on; owners are always exempt from it |
 | `org.sso.jit_toggled` | "Let people join through single sign-on" was switched on (by an owner) or off. `enabled` is the new value. Off, nobody joins by single sign-on alone, and no `member.jit_*` row is written |
-| `auth.sso_exemption_used` | An owner signed in some other way than this organisation's required single sign-on — a password, Google, another organisation's SSO — and was let in by the owner exemption, the break-glass that keeps a broken identity provider from locking the organisation out. Recorded in **every** organisation whose requirement the sign-in bypassed, with `signInMethod` |
+| `auth.sso_exemption_used` | An owner got past this organisation's required single sign-on some other way — a password, Google, another organisation's SSO — through the owner exemption, the break-glass that keeps a broken identity provider from locking the organisation out. Recorded when a credential is made that way: at sign-in, in **every** organisation whose requirement it bypassed; when such an owner approves a CLI device (it reaches the organisation the same way for as long as it lives); and when an owner's invitation is accepted that way. With `signInMethod` |
 
 A refused attempt at any of these is recorded too: `denied` for somebody without
 the role (an admin, for anything that switches something on), `error` for a
 missing add-on, a precondition (no active connection or verified domain, SSO not
-on yet, a link made in another WorkOS environment, no recent sign-in before the
-setup portal) or WorkOS being unreachable.
+on yet, a link made in another WorkOS environment, a deployment whose WorkOS
+environment the database does not belong to, no recent sign-in before the setup
+portal) or WorkOS being unreachable.
 
 ### People and access
 
@@ -125,12 +127,12 @@ setup portal) or WorkOS being unreachable.
 |---|---|
 | `member.invited` | An invitation was sent |
 | `member.joined` | It was accepted |
-| `member.jit_joined` | Somebody signing in through an organisation's single sign-on was made a member on the spot, as a `viewer`. Nobody invited them: the organisation's identity provider vouched for an address in a domain the organisation verified, and the organisation had opted in to admitting people that way (`org.sso.jit_toggled`). Carries `signInMethod: sso` |
+| `member.jit_joined` | Somebody signing in through an organisation's single sign-on was made a member on the spot, as a `viewer`. Nobody invited them: the organisation's identity provider vouched for an address in a domain the organisation verified, and the organisation had opted in to admitting people that way (`org.sso.jit_toggled`). Written only once the person confirmed the sign-in, which a first join by single sign-on always asks them to; any invitation still open for their address is withdrawn. Carries `signInMethod: sso` |
 | `member.jit_denied` | The same, refused. Outcome `error`, with a reason: `quotaExceeded` (`limitName` `seats`) when the organisation had no seat free — the sign-in fails — or `removed` for somebody the organisation removed and has not invited back, whose identity provider still vouched for them — they are signed in to whatever else they belong to, not back in here. Either way, the record of who was turned away |
 | `invitation.revoked` | It was withdrawn before acceptance |
 | `member.role_changed` | Somebody's role changed |
 | `member.suspended` `member.reinstated` | A membership was switched off, or back on |
-| `member.removed` | Somebody was removed. Their organisation's single sign-on does not bring them back; an invitation does |
+| `member.removed` | Somebody was removed. Their organisation's single sign-on does not bring them back, and any invitation still open for them is withdrawn with the removal; a new invitation does |
 | `member.custom_role_changed` | Somebody was put on a custom role, moved between two, or had theirs taken off — naming the role before and after |
 | `role.created` `role.updated` `role.deleted` | A custom role was defined, edited or deleted, with its whole definition — and, for an edit, the one it replaced and how many members held it. A `role.updated` **error** naming a member is an edit that was saved but whose follow-up for that holder — bringing their environment keys in line — did not finish; the environment's key page shows what they are still owed |
 | `access.granted` `access.revoked` | A grant was created or removed, with the previous and new levels |
