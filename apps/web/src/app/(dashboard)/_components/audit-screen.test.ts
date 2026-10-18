@@ -27,6 +27,23 @@ function event(action: string, metadata: Record<string, unknown>): AuditEvent {
 }
 
 describe('describeEvent', () => {
+  it('says how an owner got past their organisation’s single sign-on (review C3)', () => {
+    expect(describeEvent(event('auth.sso_exemption_used', { signInMethod: 'password' }))).toBe(
+      'signed in by password',
+    );
+    expect(describeEvent(event('auth.sso_exemption_used', { signInMethod: 'sso' }))).toBe(
+      'signed in by another organisation’s single sign-on',
+    );
+  });
+
+  it('says a just-in-time join was turned away because the person was removed (review S4)', () => {
+    const turnedAway = {
+      ...event('member.jit_denied', { targetEmail: 'gone@acme.example', reason: 'removed' }),
+      outcome: 'error' as const,
+    };
+    expect(describeEvent(turnedAway)).toBe('gone@acme.example · removed from the organisation');
+  });
+
   it('says which way an SSO policy switch moved', () => {
     expect(describeEvent(event('org.sso.required_toggled', { enabled: true }))).toBe('switched on');
     expect(describeEvent(event('org.sso.jit_toggled', { enabled: false }))).toBe('switched off');

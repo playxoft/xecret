@@ -85,6 +85,7 @@ const ACTIONS = [
   'auth.login',
   'auth.signup',
   'auth.identity_linked',
+  'auth.sso_exemption_used',
   'auth.login_failed',
   'auth.reauthenticated',
   'auth.logout',
@@ -725,7 +726,24 @@ export function describeEvent(event: AuditEvent): string {
   if (typeof m['deviceName'] === 'string') parts.push(m['deviceName']);
   // A setting's new value — `sso_required`, the just-in-time opt-in.
   if (typeof m['enabled'] === 'boolean') parts.push(m['enabled'] ? 'switched on' : 'switched off');
-  if (typeof m['reason'] === 'string' && event.outcome !== 'success') parts.push(m['reason']);
+  // The owner exemption: how the owner signed in instead of the organisation's
+  // identity provider — the one fact the row exists to show.
+  if (event.action === 'auth.sso_exemption_used' && typeof m['signInMethod'] === 'string') {
+    parts.push(`signed in by ${SIGN_IN_METHOD_WORDS[m['signInMethod']] ?? 'another method'}`);
+  }
+  if (typeof m['reason'] === 'string' && event.outcome !== 'success') {
+    parts.push(m['reason'] === 'removed' ? 'removed from the organisation' : m['reason']);
+  }
 
   return parts.join(' · ');
 }
+
+/** How the audit log's sign-in methods read in a sentence. */
+const SIGN_IN_METHOD_WORDS: Readonly<Record<string, string>> = {
+  password: 'password',
+  oauth: 'Google',
+  sso: 'another organisation’s single sign-on',
+  magic_auth: 'emailed code',
+  passkey: 'passkey',
+  other: 'another method',
+};
