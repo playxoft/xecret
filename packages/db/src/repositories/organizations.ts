@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gt, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, exists, gt, isNull, ne, or, sql } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { CustomRole, OrgRole } from '@xecret/core/authz';
 import { DEFAULT_PLAN, FAIR_USE, PLANS } from '@xecret/core/entitlements';
@@ -18,7 +18,7 @@ import { cliTokens } from '../schema/tokens';
 import { environments, projects } from '../schema/resources';
 import { orgSubscriptions } from '../schema/billing';
 import { customRoles } from '../schema/roles';
-import { orgMembers, organizations } from '../schema/tenancy';
+import { orgMembers, organizations, workosHome } from '../schema/tenancy';
 import { addMember, CUSTOM_ROLE_COLUMNS, customRoleJoin, toCustomRole } from './membership';
 import type { WrittenMemberRecord } from './membership';
 import { QuotaExceededError, RepositoryError } from './shared';
@@ -135,19 +135,48 @@ export async function findOrganizationById(
  * organisation does not resolve — an SSO login must not JIT a member into an
  * organisation that has ended, any more than a slug lookup may route to one.
  *
+ * ── Only a link made in the asking deployment's WorkOS environment ──
+ * `workosClientId` is the asking deployment's `WORKOS_CLIENT_ID`, and a link
+ * recorded with any other client id does not resolve (review round 2): a
+ * WorkOS organisation id means something only in the environment that made
+ * it, and a link written from local development against WorkOS Staging over
+ * the production database must not let that Staging organisation's identity
+ * provider just-in-time join anybody into a production organisation, or be
+ * named on the sign-in confirmation as if it were this deployment's.
+ *
  * Served by the index behind `organizations_workos_org_id_unique`.
  */
 export async function findOrgByWorkosOrgId(
   exec: Executor,
   workosOrgId: string,
+  workosClientId: string,
 ): Promise<Organization | null> {
   const [row] = await exec
     .select()
     .from(organizations)
-    .where(and(eq(organizations.workosOrgId, workosOrgId), isNull(organizations.deletedAt)))
+    .where(
+      and(
+        eq(organizations.workosOrgId, workosOrgId),
+        eq(organizations.workosClientId, workosClientId),
+        isNull(organizations.deletedAt),
+      ),
+    )
     .limit(1);
 
   return row ?? null;
+}
+
+/**
+ * The client id of the WorkOS environment this database belongs to
+ * (`workos_home`, migration 0023), or `null` when no operator has recorded one.
+ *
+ * What turning SSO on — the only writer of a link — and switching an SSO
+ * policy on are checked against: both refuse unless the deployment asking is
+ * the one recorded here.
+ */
+export async function findWorkosHome(exec: Executor): Promise<string | null> {
+  const [row] = await exec.select({ clientId: workosHome.clientId }).from(workosHome).limit(1);
+  return row?.clientId ?? null;
 }
 
 /** What {@link setOrgWorkosOrgId} found, and whether it was the write that linked it. */
@@ -180,6 +209,12 @@ export interface OrgWorkosLink {
  *    Organization already belongs to another organisation here
  *    (`organizations_workos_org_id_unique`).
  *
+ *  - `forbidden` — `workosClientId` is not the environment this database
+ *    belongs to (`workos_home`), or none is recorded (review round 2). Checked
+ *    in the UPDATE's own predicate, so no caller that skipped the route's
+ *    check can write a link no sign-in in this database's environment could
+ *    ever come through.
+ *
  * There is deliberately no way to clear or change the link. Re-pointing an
  * organisation's SSO at another WorkOS Organization re-points it at another
  * identity provider, and that is not something one ordinary write should be
@@ -204,6 +239,12 @@ export async function setOrgWorkosOrgId(
         eq(organizations.id, orgId),
         isNull(organizations.deletedAt),
         isNull(organizations.workosOrgId),
+        exists(
+          exec
+            .select({ id: workosHome.id })
+            .from(workosHome)
+            .where(eq(workosHome.clientId, workosClientId)),
+        ),
       ),
     )
     .returning()
@@ -228,6 +269,12 @@ export async function setOrgWorkosOrgId(
   if (current.workosOrgId === workosOrgId && current.workosClientId === workosClientId) {
     return { organization: current, changed: false };
   }
+  if (current.workosOrgId === null && (await findWorkosHome(exec)) !== workosClientId) {
+    throw new RepositoryError(
+      'forbidden',
+      'This database belongs to a different WorkOS environment, so no link is written from this one.',
+    );
+  }
   throw new RepositoryError(
     'conflict',
     'This organisation is already linked to a different WorkOS organization.',
@@ -238,7 +285,12 @@ export async function setOrgWorkosOrgId(
 export interface AccessOutsideSso {
   /** Live browser sessions of non-owner members not issued by this organisation's SSO. */
   sessions: number;
-  /** Live CLI tokens for this organisation, of non-owner members, likewise. */
+  /**
+   * Live CLI tokens of non-owner members, likewise — whichever organisation
+   * the token was approved in: a CLI token acts as its user in every
+   * organisation they belong to, so one approved elsewhere reaches this one
+   * too (and is held back here all the same).
+   */
   cliTokens: number;
 }
 
@@ -281,8 +333,11 @@ export async function countNonSsoAccess(
     .from(cliTokens)
     .innerJoin(orgMembers, and(eq(orgMembers.userId, cliTokens.userId), member))
     .where(
+      // No `cli_tokens.org_id = this organisation`: the token's organisation is
+      // only where it was approved. `resolveOrg` lets a CLI token act as its
+      // user in any organisation they are a member of, so every live token of
+      // a member is a credential this requirement now holds back.
       and(
-        eq(cliTokens.orgId, params.orgId),
         isNull(cliTokens.revokedAt),
         or(isNull(cliTokens.expiresAt), gt(cliTokens.expiresAt, sql`now()`)),
         notThisSso(cliTokens.ssoWorkosOrgId, params.workosOrgId),

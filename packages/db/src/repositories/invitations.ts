@@ -1,4 +1,4 @@
-import { and, count, eq, gt, inArray, isNull, lt } from 'drizzle-orm';
+import { and, count, eq, gt, inArray, isNull, lt, lte } from 'drizzle-orm';
 import { generateToken, hashToken, invitationExpiryFrom, invitationState } from '@xecret/core/auth';
 import { roleDefaultAccessLevel } from '@xecret/core/authz';
 import type { OrgRole } from '@xecret/core/authz';
@@ -9,7 +9,7 @@ import { users } from '../schema/identity';
 import { environments, projects } from '../schema/resources';
 import { invitations, orgMemberRemovals, orgMembers, organizations } from '../schema/tenancy';
 import type { InvitationGrantSeed } from '../schema/tenancy';
-import { addMember, wasRemovedFrom } from './membership';
+import { addMember, revokeOpenInvitationsFor, wasRemovedFrom } from './membership';
 import type { WrittenMemberRecord } from './membership';
 import { MAX_PAGE_SIZE, RepositoryError } from './shared';
 import type { Executor } from './shared';
@@ -108,6 +108,14 @@ export interface AcceptedInvitation {
    * unreachable.
    */
   grants: { granted: number; denied: number } | null;
+  /**
+   * Whether the join went past the organisation's `sso_required` only because
+   * the invitation was to be an owner — the owner exemption, decided under the
+   * organisation's lock with the check it bypassed. The route files
+   * `auth.sso_exemption_used` for it, as a sign-in that uses the exemption is
+   * filed (review round 2).
+   */
+  ssoExemptionUsed: boolean;
 }
 
 /** How full the organisation is, for the members page and the invite check. */
@@ -315,12 +323,11 @@ export async function acceptInvitation(
     // walk into an organisation that requires its single sign-on. Under the
     // lock, so the flag cannot move between this read and the join. An owner's
     // invitation is exempt, as owners are everywhere else.
-    if (
+    const outsideItsSso =
       organization.ssoRequired &&
-      invitation.role !== 'owner' &&
       (organization.workosOrgId === null ||
-        (params.ssoWorkosOrgId ?? null) !== organization.workosOrgId)
-    ) {
+        (params.ssoWorkosOrgId ?? null) !== organization.workosOrgId);
+    if (outsideItsSso && invitation.role !== 'owner') {
       throw new RepositoryError(
         'ssoRequired',
         'This organisation requires its single sign-on. Sign in through your company’s identity ' +
@@ -359,13 +366,26 @@ export async function acceptInvitation(
     if (!accepted) throw new RepositoryError('conflict', 'This invitation was already accepted.');
 
     // Invited back, and in: whatever removal kept them out of the just-in-time
-    // join is over. A later removal writes a fresh record.
+    // join is over — but only a removal this invitation came *after* (review
+    // round 2). An invitation sent before the removal is not somebody deciding
+    // to have them back; it is a leftover, and accepting it must not quietly
+    // re-open the identity-provider door the removal closed. (Removal and the
+    // just-in-time join both revoke open invitations for the address now, so
+    // such a leftover should not be acceptable at all — this holds even for
+    // one that slipped past them.) A later removal writes a fresh record.
+    //
+    // `<=`, not `<`: the two are stamped by the application's clock in
+    // separate transactions, and can share a millisecond. Equal can only mean
+    // "after" — an invitation is never issued to a member (`createInvitation`
+    // refuses one), and the removal withdrew every invitation open when it ran,
+    // under the lock `createInvitation` takes too.
     await tx
       .delete(orgMemberRemovals)
       .where(
         and(
           eq(orgMemberRemovals.orgId, invitation.orgId),
           eq(orgMemberRemovals.userId, params.userId),
+          lte(orgMemberRemovals.removedAt, invitation.createdAt),
         ),
       );
 
@@ -378,6 +398,7 @@ export async function acceptInvitation(
         slug: organization.slug,
       },
       grants,
+      ssoExemptionUsed: outsideItsSso,
     };
   });
 }
@@ -459,6 +480,14 @@ export async function joinOrganizationJustInTime(
       role: params.role,
       invitedBy: null,
     });
+
+    // In now, so any invitation still open for this address is moot — and
+    // dangerous left open (review round 2): it would sit there, possibly at a
+    // higher role than the viewer they joined as, and if they were later
+    // removed, accepting it would bring them back. Revoked under the same lock
+    // `createInvitation` takes, so none can be issued in between.
+    await revokeOpenInvitationsFor(tx, { orgId: organization.id, userId: params.userId });
+
     return { outcome: 'joined', member };
   });
 }

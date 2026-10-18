@@ -94,6 +94,17 @@ export interface CreateSessionParams {
   signInMethod?: SignInMethod | null | undefined;
   /** The WorkOS organisation whose single sign-on this was. Only beside `sso`. */
   ssoWorkosOrgId?: string | null | undefined;
+  /**
+   * The AuthKit session the sign-in came from (the access token's `sid`), so
+   * sign-out can end it too. Omitted: sign-out ends only this session.
+   */
+  workosSessionId?: string | null | undefined;
+  /**
+   * When the person actively authenticated for the re-authentication that
+   * issues this session — what the SSO setup portal's step-up reads. Omitted
+   * for every sign-in that was not one.
+   */
+  freshAuthAt?: Date | null | undefined;
 }
 
 /**
@@ -129,9 +140,41 @@ export async function createSession(
     expiresAt: record.expiresAt,
     signInMethod: params.signInMethod ?? null,
     ssoWorkosOrgId: params.ssoWorkosOrgId ?? null,
+    workosSessionId: params.workosSessionId ?? null,
+    freshAuthAt: params.freshAuthAt ?? null,
   });
 
   return record;
+}
+
+/**
+ * When this session's own sign-in was a fresh authentication — a
+ * re-authentication, by any method that re-proves who the person is — or
+ * `null` (migration 0023). Keyed on the session *and* the user, as
+ * `findFreshSignIn` is, so the answer cannot be about somebody else.
+ *
+ * Revoked and expired sessions answer `null`: the caller is asking about the
+ * session presenting the request, which an authenticated route has already
+ * resolved, and a stale row must not stand in for it.
+ */
+export async function findSessionFreshAuth(
+  exec: Executor,
+  params: { sessionId: string; userId: string },
+  now = new Date(),
+): Promise<Date | null> {
+  const [row] = await exec
+    .select({ freshAuthAt: sessions.freshAuthAt })
+    .from(sessions)
+    .where(
+      and(
+        eq(sessions.id, params.sessionId),
+        eq(sessions.userId, params.userId),
+        isNull(sessions.revokedAt),
+        gt(sessions.expiresAt, now),
+      ),
+    )
+    .limit(1);
+  return row?.freshAuthAt ?? null;
 }
 
 /**
@@ -236,6 +279,29 @@ export async function revokeSession(exec: Executor, sessionId: string): Promise<
     .where(and(eq(sessions.id, sessionId), isNull(sessions.revokedAt)));
 
   return result.count > 0;
+}
+
+/**
+ * Sign-out: revokes one session, as {@link revokeSession} does, and answers
+ * the AuthKit session its sign-in came from (`workos_session_id`, migration
+ * 0023) so the caller can end that too — or `null` when this call revoked
+ * nothing (already revoked) or the session recorded none.
+ *
+ * One statement, so the id comes from the row this call actually revoked: a
+ * second sign-out of the same session answers `revoked: false` and no id, and
+ * cannot hand out a logout URL for a session somebody else already ended.
+ */
+export async function revokeSessionForSignOut(
+  exec: Executor,
+  sessionId: string,
+): Promise<{ revoked: boolean; workosSessionId: string | null }> {
+  const rows = await exec
+    .update(sessions)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(sessions.id, sessionId), isNull(sessions.revokedAt)))
+    .returning({ workosSessionId: sessions.workosSessionId });
+  const [row] = rows;
+  return { revoked: row !== undefined, workosSessionId: row?.workosSessionId ?? null };
 }
 
 /**

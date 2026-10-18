@@ -119,8 +119,10 @@ export const organizations = pgTable(
       'organizations_sso_flags_need_link_check',
       sql`(${t.ssoRequired} = false and ${t.jitJoinEnabled} = false) or ${t.workosOrgId} is not null`,
     ),
-    // A link is always recorded with the environment it was made in. NOT VALID
-    // in the migration, so a pre-release link without one does not block it.
+    // A link is always recorded with the environment it was made in. Added NOT
+    // VALID by 0022 and validated by 0023, after a backfill: Postgres checks a
+    // NOT VALID constraint on every UPDATE, so a violating row could not even
+    // be renamed.
     check(
       'organizations_workos_link_client_check',
       sql`${t.workosOrgId} is null or ${t.workosClientId} is not null`,
@@ -251,7 +253,8 @@ export const orgMembers = pgTable(
  * Removal deletes the `org_members` row, and this is what is left: the record
  * the just-in-time join reads before it admits anybody, so that a person
  * removed here but still in the organisation's identity provider is not
- * re-admitted by their next single sign-on. Accepting an invitation deletes it.
+ * re-admitted by their next single sign-on. Accepting an invitation sent after
+ * the removal deletes it; one sent before it cannot.
  */
 export const orgMemberRemovals = pgTable(
   'org_member_removals',
@@ -267,6 +270,32 @@ export const orgMemberRemovals = pgTable(
     removedAt: timestamp('removed_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ name: 'org_member_removals_pkey', columns: [t.orgId, t.userId] })],
+);
+
+/**
+ * The WorkOS environment this database belongs to: one row, the client id
+ * whose organisation ids `organizations.workos_org_id` may hold (migration
+ * 0023).
+ *
+ * Read, never written, by the application — the role may only SELECT it.
+ * Turning SSO on (the only writer of a link) and switching an SSO policy on
+ * both refuse unless this deployment's `WORKOS_CLIENT_ID` is the one recorded
+ * here, so local development against WorkOS Staging over the production
+ * database cannot write a link no production sign-in can ever come through.
+ * Recording it is an operator's act (docs/self-hosting.md).
+ */
+export const workosHome = pgTable(
+  'workos_home',
+  {
+    /** Always `true`: a primary key with one possible value is a one-row table. */
+    id: boolean('id').primaryKey().default(true),
+    clientId: text('client_id').notNull(),
+    recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('workos_home_single_row_check', sql`${t.id}`),
+    check('workos_home_client_id_check', sql`${t.clientId} ~ '^client_[0-9A-Za-z]+$'`),
+  ],
 );
 
 /**

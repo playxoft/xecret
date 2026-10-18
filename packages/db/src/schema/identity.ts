@@ -125,6 +125,20 @@ export const sessions = pgTable(
      * organisation's `workos_org_id`. Set only beside `sso`.
      */
     ssoWorkosOrgId: text('sso_workos_org_id'),
+    /**
+     * The AuthKit session the issuing sign-in came from — the `sid` claim of
+     * the code exchange's access token — or `NULL` (migration 0023). Sign-out
+     * answers with WorkOS's logout URL for it, so leaving xecret ends the
+     * AuthKit session too and the next sign-in is asked for, not reused.
+     */
+    workosSessionId: text('workos_session_id'),
+    /**
+     * When the person actively authenticated for the re-authentication that
+     * issued this session (WorkOS's `auth_time`, during the flow), by any
+     * method that re-proves who they are; `NULL` for every other session
+     * (migration 0023). What the SSO setup portal's step-up reads.
+     */
+    freshAuthAt: timestamp('fresh_auth_at', { withTimezone: true }),
   },
   (t) => [
     // Hot path: every authenticated request resolves the actor through this.
@@ -137,6 +151,10 @@ export const sessions = pgTable(
     check(
       'sessions_sso_org_needs_sso_check',
       sql`${t.ssoWorkosOrgId} is null or ${t.signInMethod} = 'sso'`,
+    ),
+    check(
+      'sessions_workos_session_id_check',
+      sql`${t.workosSessionId} is null or ${t.workosSessionId} ~ '^session_[0-9A-Za-z]{1,64}$'`,
     ),
   ],
 );

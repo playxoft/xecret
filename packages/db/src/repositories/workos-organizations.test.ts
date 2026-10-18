@@ -23,9 +23,15 @@ import { RepositoryError } from './shared';
 
 let t: TestDatabase;
 let founderId: string;
+/** What migration 0023 recorded in `workos_home`, before this file points it at the test environment. */
+let seededHome: string | null;
 
 beforeAll(async () => {
   t = await createTestDatabase();
+  seededHome = await repositories.findWorkosHome(t.db);
+  // This database belongs to the test deployment's WorkOS environment, as an
+  // operator records it (docs/self-hosting.md).
+  await t.pg.query(`update workos_home set client_id = $1`, [CLIENT_ID]);
   founderId = randomUUID();
   await t.pg.query(`insert into users (id, firebase_uid, email) values ($1, $2, $3)`, [
     founderId,
@@ -73,11 +79,11 @@ describe('findOrgByWorkosOrgId', () => {
     const id = workosOrg();
     const orgId = await seedOrg({ workosOrgId: id });
 
-    expect((await findOrgByWorkosOrgId(t.db, id))?.id).toBe(orgId);
+    expect((await findOrgByWorkosOrgId(t.db, id, CLIENT_ID))?.id).toBe(orgId);
   });
 
   it('resolves nothing for an unknown id', async () => {
-    expect(await findOrgByWorkosOrgId(t.db, workosOrg())).toBeNull();
+    expect(await findOrgByWorkosOrgId(t.db, workosOrg(), CLIENT_ID)).toBeNull();
   });
 
   it('does not resolve a soft-deleted organisation', async () => {
@@ -85,7 +91,35 @@ describe('findOrgByWorkosOrgId', () => {
     const id = workosOrg();
     await seedOrg({ workosOrgId: id, deleted: true });
 
-    expect(await findOrgByWorkosOrgId(t.db, id)).toBeNull();
+    expect(await findOrgByWorkosOrgId(t.db, id, CLIENT_ID)).toBeNull();
+  });
+
+  it('does not resolve a link made in another WorkOS environment (review round 2)', async () => {
+    // The sign-in path asks with its own client id: a Staging link over the
+    // production database must not let a Staging identity provider JIT anybody
+    // into a production organisation, or be named on the confirmation.
+    const id = workosOrg();
+    await seedOrg({ workosOrgId: id });
+
+    expect(await findOrgByWorkosOrgId(t.db, id, 'client_01ANOTHERENVIRONMENT')).toBeNull();
+  });
+});
+
+describe('workos_home (migration 0023)', () => {
+  it('is seeded with the production WorkOS environment, the one this deployment’s links belong to', () => {
+    expect(seededHome).toBe('client_01M36CECX3Z66Q2FYY2FN8WG73');
+  });
+
+  it('holds one row at most, and only a client id', async () => {
+    await expect(
+      t.pg.query(`insert into workos_home (id, client_id) values (true, 'client_01SECOND')`),
+    ).rejects.toMatchObject({ code: '23505' });
+    await expect(
+      t.pg.query(`insert into workos_home (id, client_id) values (false, 'client_01SECOND')`),
+    ).rejects.toMatchObject({ code: '23514' });
+    await expect(
+      t.pg.query(`update workos_home set client_id = 'not a client id'`),
+    ).rejects.toMatchObject({ code: '23514' });
   });
 });
 
@@ -109,7 +143,29 @@ describe('setOrgWorkosOrgId', () => {
     expect(linked.organization.workosClientId).toBe(CLIENT_ID);
     expect(await linkOf(orgId)).toBe(id);
     expect(await clientOf(orgId)).toBe(CLIENT_ID);
-    expect((await findOrgByWorkosOrgId(t.db, id))?.id).toBe(orgId);
+    expect((await findOrgByWorkosOrgId(t.db, id, CLIENT_ID))?.id).toBe(orgId);
+  });
+
+  it('writes no link from an environment this database does not belong to, or with none recorded (review round 2)', async () => {
+    // Local development runs against WorkOS Staging over the production
+    // database; round 1 only refused to *act* on such a link. Now it cannot be
+    // written, whatever the caller checked first.
+    const orgId = await seedOrg();
+
+    await expect(
+      setOrgWorkosOrgId(t.db, orgId, workosOrg(), 'client_01ANOTHERENVIRONMENT'),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+    expect(await linkOf(orgId)).toBeNull();
+
+    await t.pg.query(`delete from workos_home`);
+    try {
+      await expect(setOrgWorkosOrgId(t.db, orgId, workosOrg(), CLIENT_ID)).rejects.toMatchObject({
+        code: 'forbidden',
+      });
+      expect(await linkOf(orgId)).toBeNull();
+    } finally {
+      await t.pg.query(`insert into workos_home (id, client_id) values (true, $1)`, [CLIENT_ID]);
+    }
   });
 
   it('is idempotent for the id it already holds, and says it changed nothing', async () => {
@@ -197,6 +253,13 @@ describe('setOrgWorkosOrgId', () => {
     await expect(
       t.pg.query(`update organizations set workos_org_id = $2 where id = $1`, [orgId, workosOrg()]),
     ).rejects.toMatchObject({ code: '23514' });
+  });
+
+  it('holds that rule as a VALID constraint since migration 0023', async () => {
+    const result = await t.pg.query<{ convalidated: boolean }>(
+      `select convalidated from pg_constraint where conname = 'organizations_workos_link_client_check'`,
+    );
+    expect(result.rows).toEqual([{ convalidated: true }]);
   });
 });
 
@@ -503,6 +566,116 @@ describe('joinOrganizationJustInTime', () => {
       (await joinOrganizationJustInTime(t.db, { orgId, userId, role: 'viewer' })).outcome,
     ).toBe('removed');
   });
+
+  async function emailOf(userId: string): Promise<string> {
+    return (
+      await t.pg.query<{ email: string }>(`select email::text from users where id = $1`, [userId])
+    ).rows[0]!.email;
+  }
+
+  async function openInvitationsFor(orgId: string, email: string) {
+    const result = await t.pg.query<{ id: string }>(
+      `select id from invitations
+        where org_id = $1 and email = $2 and accepted_at is null and revoked_at is null`,
+      [orgId, email],
+    );
+    return result.rows;
+  }
+
+  it('does not let an invitation from before a just-in-time join re-open the door after a removal (review round 2)', async () => {
+    // invite (as an admin, say) → the person joins by SSO instead, as a viewer
+    // → is removed → the old, never-used link is accepted. It used to succeed,
+    // at the invitation's higher role, and clear the removal record.
+    const orgId = await ssoOrg();
+    const userId = await newcomer();
+    const email = await emailOf(userId);
+    const old = await repositories.createInvitation(t.db, {
+      orgId,
+      email,
+      role: 'admin',
+      invitedBy: founderId,
+    });
+
+    expect(
+      (await joinOrganizationJustInTime(t.db, { orgId, userId, role: 'viewer' })).outcome,
+    ).toBe('joined');
+    // Joined some other way: the invitation is moot, and withdrawn.
+    expect(await openInvitationsFor(orgId, email)).toEqual([]);
+
+    await repositories.removeMember(
+      t.db,
+      { orgId, memberId: await memberIdOf(orgId, userId), removedBy: founderId },
+      () => {},
+    );
+
+    await expect(
+      repositories.acceptInvitation(t.db, {
+        tokenHash: await sha256(old.token),
+        userId,
+        userEmail: email,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    expect(await membershipOf(orgId, userId)).toEqual([]);
+    expect(await removalsOf(orgId, userId)).toEqual([{ removed_by: founderId }]);
+    expect(
+      (await joinOrganizationJustInTime(t.db, { orgId, userId, role: 'viewer' })).outcome,
+    ).toBe('removed');
+  });
+
+  it('withdraws every invitation still open for a member’s address when they are removed', async () => {
+    const orgId = await ssoOrg();
+    const userId = await newcomer();
+    const email = await emailOf(userId);
+    await joinOrganizationJustInTime(t.db, { orgId, userId, role: 'viewer' });
+    // A row no route can write any more (an invitation to a current member is
+    // refused) — the leftover the removal must not leave open.
+    await t.pg.query(
+      `insert into invitations (id, org_id, email, role, token_hash, invited_by, expires_at)
+       values ($1, $2, $3, 'admin', $4, $5, now() + interval '1 day')`,
+      [
+        randomUUID(),
+        orgId,
+        email.toUpperCase(),
+        new Uint8Array(32).map(() => Math.floor(Math.random() * 256)),
+        founderId,
+      ],
+    );
+
+    await repositories.removeMember(
+      t.db,
+      { orgId, memberId: await memberIdOf(orgId, userId), removedBy: founderId },
+      () => {},
+    );
+
+    expect(await openInvitationsFor(orgId, email)).toEqual([]);
+  });
+
+  it('clears a removal only for an invitation sent after it, even one that slipped past every revocation', async () => {
+    const orgId = await ssoOrg();
+    const userId = await newcomer();
+    const email = await emailOf(userId);
+    const old = await repositories.createInvitation(t.db, {
+      orgId,
+      email,
+      role: 'developer',
+      invitedBy: founderId,
+    });
+    // A removal record newer than the invitation, with the invitation still
+    // open — what an older build's removal left behind.
+    await t.pg.query(
+      `insert into org_member_removals (org_id, user_id, removed_by, removed_at)
+       values ($1, $2, $3, now() + interval '1 second')`,
+      [orgId, userId, founderId],
+    );
+
+    await repositories.acceptInvitation(t.db, {
+      tokenHash: await sha256(old.token),
+      userId,
+      userEmail: email,
+    });
+
+    expect(await removalsOf(orgId, userId)).toEqual([{ removed_by: founderId }]);
+  });
 });
 
 const sha256 = hashToken;
@@ -636,10 +809,15 @@ describe('countNonSsoAccess', () => {
       signInMethod: 'sso',
       ssoWorkosOrgId: workosOrgId,
     });
+    // Approved in another organisation of theirs: a CLI token acts as its user
+    // in every organisation they belong to, so it reaches this one too (review
+    // round 2, L8) — and is counted.
+    const elsewhere = await seedOrg();
+    await repositories.createCliToken(t.db, { orgId: elsewhere, userId: developer, name: 'ci' });
 
     expect(await repositories.countNonSsoAccess(t.db, { orgId, workosOrgId })).toEqual({
       sessions: 2,
-      cliTokens: 1,
+      cliTokens: 2,
     });
   });
 });
