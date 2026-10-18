@@ -6,7 +6,9 @@
  * component), `GET /api/auth/login` (which writes the value into the signed
  * state cookie the callback later redirects to), and the API client's 401
  * bounce in the browser. A second copy of this logic is a second definition of
- * "safe", and the one that disagrees is the open redirect.
+ * "safe", and the one that disagrees is the open redirect. The stricter rule
+ * for a completed sign-in, {@link safePostSignInPath}, is built on this one
+ * rather than beside it.
  */
 
 /**
@@ -77,35 +79,96 @@ export function safeRedirectPath(value: string | null | undefined, fallback = '/
 }
 
 /**
- * Whether a path, as the server might route it, is under `/api` — decoded until
- * it stops changing (a handful of rounds at most; anything that will not
- * settle, or will not decode, counts as one), backslashes read as slashes,
- * runs of slashes collapsed, dot segments resolved again after decoding, and
- * lower-cased. Errs towards "yes": the cost of a false positive is a sign-in
- * that lands on `/app` instead.
+ * Where a **completed** sign-in may send the browser: {@link safeRedirectPath},
+ * and never one of the sign-in screens themselves ({@link AUTH_SCREEN_PATHS}).
+ *
+ * For the three places a `next` is sealed or followed once somebody has signed
+ * in — the login route that seals it, and the callback and the confirmation
+ * that redirect to it — and nowhere else (review round 3). A sign-in that
+ * finished and then landed on a sign-in screen reads as "one more step", and
+ * the one screen that asks for a click is the SSO warning page:
+ * `next=/sign-in?org=attacker-co` would chain a person's real, successful
+ * sign-in straight onto the attacker's organisation's "Continue", looking like
+ * the second half of what they had just done. `/forgot-password?org=…` is the
+ * same request one hop later — Next's permanent redirect to `/sign-in` carries
+ * the query across. Nobody who has just signed in wants any of these screens,
+ * so each falls back to `fallback`.
+ *
+ * {@link safeRedirectPath} itself still lets `/sign-in?org=` through: the
+ * warning page is a real page that people reach directly — the login route
+ * sends every unconfirmed deep link there, and the sign-in screens link to one
+ * another keeping `next` — and none of that is a completed sign-in's `next`.
+ * Checked the way the `/api` refusal is: decoded until it settles, backslashes
+ * as slashes, dot segments resolved, lower-cased, and each screen's own
+ * sub-paths with it (`/sign-in/confirm` included).
+ */
+export function safePostSignInPath(value: string | null | undefined, fallback: string): string {
+  const path = safeRedirectPath(value, fallback);
+  return isAuthScreenPath(new URL(path, PROBE_ORIGIN).pathname) ? fallback : path;
+}
+
+/**
+ * The sign-in screens: the two pages that start one, and the two paths that
+ * redirect to them (`next.config.ts` — the Firebase-era password-reset links,
+ * still in inboxes).
+ */
+export const AUTH_SCREEN_PATHS = [
+  '/sign-in',
+  '/sign-up',
+  '/forgot-password',
+  '/reset-password',
+] as const;
+
+/**
+ * Whether a path, as the server might route it, is under `/api` — read the
+ * way {@link routedPath} reads it, and counting anything it cannot read as
+ * one. Errs towards "yes": the cost of a false positive is a sign-in that
+ * lands on `/app` instead.
  */
 export function isApiPath(pathname: string): boolean {
+  const path = routedPath(pathname);
+  return path === null || isAtOrUnder(path, '/api');
+}
+
+/**
+ * Whether a path, as the server might route it, is one of
+ * {@link AUTH_SCREEN_PATHS} or under one. Errs towards "yes", as
+ * {@link isApiPath} does, and for the same reason.
+ */
+export function isAuthScreenPath(pathname: string): boolean {
+  const path = routedPath(pathname);
+  return path === null || AUTH_SCREEN_PATHS.some((screen) => isAtOrUnder(path, screen));
+}
+
+/**
+ * A path as the server might route it — decoded until it stops changing (a
+ * handful of rounds at most), backslashes read as slashes, runs of slashes
+ * collapsed, dot segments resolved again after decoding, and lower-cased — or
+ * `null` for one that will not settle or will not decode.
+ */
+function routedPath(pathname: string): string | null {
   let decoded = pathname;
   for (let round = 0; ; round += 1) {
     let next: string;
     try {
       next = decodeURIComponent(decoded);
     } catch {
-      return true;
+      return null;
     }
     if (next === decoded) break;
-    if (round === 3) return true;
+    if (round === 3) return null;
     decoded = next;
   }
-  let resolved: string;
   try {
     const flattened = `/${decoded.replace(/\\/g, '/').replace(/^\/+/, '')}`.replace(/\/{2,}/g, '/');
-    resolved = new URL(flattened, PROBE_ORIGIN).pathname;
+    return new URL(flattened, PROBE_ORIGIN).pathname.toLowerCase();
   } catch {
-    return true;
+    return null;
   }
-  const path = resolved.toLowerCase();
-  return path === '/api' || path.startsWith('/api/');
+}
+
+function isAtOrUnder(path: string, root: string): boolean {
+  return path === root || path.startsWith(`${root}/`);
 }
 
 /**

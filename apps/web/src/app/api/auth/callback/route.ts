@@ -6,7 +6,7 @@ import {
   openOAuthState,
   SESSION_COOKIE_NAME,
 } from '@xecret/core/auth';
-import { safeRedirectPath } from '@/lib/redirect-path';
+import { safePostSignInPath } from '@/lib/redirect-path';
 import { POST_SIGN_IN_PATH } from '@/lib/session-hint';
 import { parseCookies } from '@/server/http';
 import { attemptKey, consume } from '@/server/rate-limit';
@@ -56,8 +56,9 @@ import { workosProvider } from '@/server/workos';
  *     `/sign-in/confirm` to answer "Continue as …?". Only that page's POST
  *     (`/api/auth/confirm`) issues the session — and nothing that changes an
  *     organisation (a just-in-time join) happens before it.
- *  7. Otherwise, `issueSignIn` and a 303 to `next` — never an API route
- *     (`safeRedirectPath`, checked again here at the moment of use).
+ *  7. Otherwise, `issueSignIn` and a 303 to `next` — never an API route, and
+ *     never a sign-in screen (`safePostSignInPath`, checked again here at the
+ *     moment of use).
  *
  * ── How it answers ──
  * Always with a 303 — to `next`, to the confirmation, or to
@@ -101,7 +102,7 @@ export const GET = publicRoute(async ({ request, services }) => {
     // the redirect is the moment an unsafe value would do its damage, so it is
     // held to the same rule at that moment rather than trusted on the strength
     // of an earlier check in a different request.
-    next = safeRedirectPath(flow.next, POST_SIGN_IN_PATH);
+    next = safePostSignInPath(flow.next, POST_SIGN_IN_PATH);
 
     const providerError = url.searchParams.get('error');
     if (providerError !== null) {

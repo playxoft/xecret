@@ -13,7 +13,7 @@ import {
 import type { OAuthPurpose } from '@xecret/core/auth';
 import { SLUG_MAX_LENGTH, SLUG_PATTERN } from '@xecret/core/validation';
 import { findOrganizationBySlugWithEntitlements } from '@xecret/db/repositories';
-import { safeRedirectPath } from '@/lib/redirect-path';
+import { safePostSignInPath } from '@/lib/redirect-path';
 import { POST_SIGN_IN_PATH, SIGN_IN_PATH } from '@/lib/session-hint';
 import { MissingBindingError, publicOrigin } from '@/server/bindings';
 import type { ServiceContext } from '@/server/context';
@@ -39,8 +39,9 @@ import { workosProvider } from '@/server/workos';
  *  - the purpose: an ordinary sign-in, or a forced re-authentication.
  *
  * ── Query parameters, every one optional and every one untrusted ──
- *  - `next` — a same-origin path that is not an API route
- *    (`safeRedirectPath`). Anything else falls back to `/app`.
+ *  - `next` — a same-origin path that is not an API route, nor one of the
+ *    sign-in screens a finished sign-in has no business landing on
+ *    (`safePostSignInPath`). Anything else falls back to `/app`.
  *  - `hint=sign-up` — open AuthKit on its sign-up screen.
  *  - `org=<slug>` — an SSO deep link: start that organisation's single sign-on
  *    directly. An organisation without SSO, or one that does not exist, falls
@@ -99,7 +100,7 @@ import { workosProvider } from '@/server/workos';
  */
 export const GET = publicRoute(async ({ request, services }) => {
   const url = new URL(request.url);
-  const next = safeRedirectPath(url.searchParams.get('next'), POST_SIGN_IN_PATH);
+  const next = safePostSignInPath(url.searchParams.get('next'), POST_SIGN_IN_PATH);
   const purpose: OAuthPurpose = url.searchParams.get('reauth') === '1' ? 'reauth' : 'sign-in';
   const screenHint = url.searchParams.get('hint') === 'sign-up' ? 'sign-up' : undefined;
   const orgSlug = purpose === 'reauth' ? null : wellFormedSlug(url.searchParams.get('org'));

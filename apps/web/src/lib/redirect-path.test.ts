@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { MAX_REDIRECT_PATH_LENGTH, safeRedirectPath } from './redirect-path';
+import { MAX_REDIRECT_PATH_LENGTH, safePostSignInPath, safeRedirectPath } from './redirect-path';
 
 /**
  * `?next=` is attacker-supplied and, since WorkOS, it is also what the sign-in
@@ -156,5 +156,65 @@ describe('safeRedirectPath', () => {
     expect(safeRedirectPath('/a/../../b', '/fallback')).toBe('/b');
     // Characters a browser would escape anyway arrive escaped.
     expect(safeRedirectPath('/app?q=a b', '/fallback')).toBe('/app?q=a%20b');
+  });
+});
+
+/**
+ * Where a completed sign-in may land (review round 3): everything
+ * `safeRedirectPath` refuses, and the sign-in screens too — a finished sign-in
+ * chained onto the SSO warning page reads as the second step of what the person
+ * just did.
+ */
+describe('safePostSignInPath', () => {
+  it.each([
+    ['the SSO warning page', '/sign-in?org=attacker-co'],
+    ['the sign-in page', '/sign-in'],
+    ['the sign-up page', '/sign-up?org=attacker-co'],
+    // Next's permanent redirects to /sign-in carry the query across.
+    ['the old password-reset request page', '/forgot-password?org=attacker-co'],
+    ['the old password-reset link', '/reset-password?mode=resetPassword&org=attacker-co'],
+    ['the confirmation page', '/sign-in/confirm'],
+    ['a trailing slash', '/sign-in/?org=attacker-co'],
+    ['upper case', '/SIGN-IN?org=attacker-co'],
+    ['mixed case', '/Forgot-Password?org=attacker-co'],
+    ['an encoded letter', '/%73ign-in?org=attacker-co'],
+    ['double encoding', '/%2573ign-in?org=attacker-co'],
+    ['an encoded query', '/sign-in%3Forg%3Dattacker-co'],
+    ['a climb into it', '/app/../sign-in?org=attacker-co'],
+    ['an encoded climb into it', '/app/%2e%2e/forgot-password?org=attacker-co'],
+    ['a dot segment', '/./sign-in?org=attacker-co'],
+    ['an encoded slash', '/sign-in%2Fconfirm'],
+  ])('refuses %s', (_label, value) => {
+    expect(safePostSignInPath(value, '/fallback')).toBe('/fallback');
+  });
+
+  it.each([
+    ['an API route', '/api/auth/login?org=attacker-co'],
+    ['a protocol-relative URL', '//evil.example'],
+    ['a dot segment before a double slash', '/.//evil.example'],
+  ])('refuses everything safeRedirectPath refuses: %s', (_label, value) => {
+    expect(safePostSignInPath(value, '/fallback')).toBe('/fallback');
+  });
+
+  it.each([
+    ['/app'],
+    ['/app/acme/sign-in'],
+    ['/sign-inside'],
+    ['/docs/sign-in'],
+    ['/invite/xit_live_abc'],
+    [
+      '/cli/authorize?challenge=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ&port=50123&device=My%20Laptop&state=s1',
+    ],
+  ])('keeps a page that is not a sign-in screen: %s', (value) => {
+    expect(safePostSignInPath(value, '/fallback')).toBe(value);
+  });
+
+  it('leaves safeRedirectPath alone: the warning page is still a page people are sent to', () => {
+    expect(safeRedirectPath('/sign-in?org=acme', '/fallback')).toBe('/sign-in?org=acme');
+  });
+
+  it('answers the fallback for nothing at all', () => {
+    expect(safePostSignInPath(null, '/app')).toBe('/app');
+    expect(safePostSignInPath(undefined, '/app')).toBe('/app');
   });
 });

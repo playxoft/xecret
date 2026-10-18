@@ -1094,6 +1094,132 @@ describe('a next that names the SSO deep link', () => {
   });
 });
 
+/* ── a next that names a sign-in screen (review round 3) ──────────────────── */
+
+describe('a next that names a sign-in screen', () => {
+  // A finished sign-in that lands on the SSO warning page reads as the second
+  // step of what the person just did, and that page's one button is the
+  // attacker's organisation's single sign-on. `/forgot-password` is the same
+  // page one hop later: Next's redirect to /sign-in keeps the query.
+  const SCREENS = [
+    ['the SSO warning page', '/sign-in?org=attacker-co'],
+    ['the old password-reset page', '/forgot-password?org=attacker-co'],
+  ] as const;
+
+  /** A state cookie sealed by a key holder, carrying `next` as given. */
+  async function sealedFlow(next: string): Promise<{ cookie: string; state: string }> {
+    const state = 'S'.repeat(43);
+    const cookie = await sealOAuthState(await deriveOAuthStateKey(COOKIE_PASSWORD), {
+      state,
+      verifier: 'V'.repeat(43),
+      next,
+      purpose: 'sign-in',
+      issuedAt: Math.floor(Date.now() / 1000),
+      organizationId: null,
+    });
+    return { cookie, state };
+  }
+
+  it.each(SCREENS)('is not sealed when it names %s: the state says /app', async (_l, next) => {
+    const flow = await startSignIn(`?next=${encodeURIComponent(next)}`);
+
+    const opened = await openOAuthState(
+      await deriveOAuthStateKey(COOKIE_PASSWORD),
+      flow.cookie,
+      flow.state,
+      new Date(),
+    );
+    expect(opened.ok && opened.value.next).toBe('/app');
+  });
+
+  it.each(SCREENS)('lands on /app after a plain callback, not on %s', async (_l, next) => {
+    const result = await signIn(
+      workosUser(),
+      { authenticationMethod: 'Password' },
+      { query: `?next=${encodeURIComponent(next)}` },
+    );
+
+    expect(result.status).toBe(303);
+    expect(sessionCookieIssued(result)).toBe(true);
+    expect(result.location).toBe('/app');
+  });
+
+  it.each(SCREENS)(
+    'lands on /app after a plain callback, not on %s, even sealed by a key holder',
+    async (_l, next) => {
+      workosAnswers({ user: workosUser(), authenticationMethod: 'Password' });
+
+      const result = await finishSignIn(await sealedFlow(next));
+
+      expect(sessionCookieIssued(result)).toBe(true);
+      expect(result.location).toBe('/app');
+    },
+  );
+
+  it.each(SCREENS)('lands on /app after "Continue", not on %s', async (_l, next) => {
+    const anHourAgo = Math.floor(Date.now() / 1000) - 3600;
+    const parked = await signIn(
+      workosUser(),
+      { authenticationMethod: 'Password', accessToken: accessTokenAuthenticatedAt(anHourAgo) },
+      { query: `?next=${encodeURIComponent(next)}`, confirm: false },
+    );
+    expect(parked.location).toBe('/sign-in/confirm');
+
+    const continued = await confirm(parked.parked!);
+
+    expect(sessionCookieIssued(continued)).toBe(true);
+    expect(continued.location).toBe('/app');
+  });
+
+  it.each(SCREENS)(
+    'lands on /app after "Continue", not on %s, even sealed into a parked sign-in',
+    async (_l, next) => {
+      const who = workosUser();
+      await signIn(who, { authenticationMethod: 'Password' });
+      const [row] = await userRows('workos_user_id', who.id as string);
+      const parked = await sealSignInConfirmation(
+        await deriveSignInConfirmationKey(COOKIE_PASSWORD),
+        {
+          nonce: generateConfirmationNonce(),
+          userId: row!.id,
+          email: who.email as string,
+          signInMethod: 'password',
+          ssoWorkosOrgId: null,
+          organization: null,
+          purpose: 'sign-in',
+          next,
+          flowIssuedAt: Math.floor(Date.now() / 1000) - 10,
+          freshAuthAt: null,
+          lockOne: null,
+          outcome: 'matched',
+          reason: 'reused-session',
+          providerSessionId: null,
+          joins: false,
+          issuedAt: Math.floor(Date.now() / 1000),
+        },
+      );
+
+      const continued = await confirm(parked);
+
+      expect(sessionCookieIssued(continued)).toBe(true);
+      expect(continued.location).toBe('/app');
+    },
+  );
+
+  it('still sends an unconfirmed deep link to the warning page itself', async () => {
+    // The warning page is a page people are sent to — just never a finished
+    // sign-in's destination.
+    const slug = await slugOf(await seedOrg({ workosOrgId: unique('org_01') }));
+
+    const response = await login(
+      new Request(`${ORIGIN}/api/auth/login?org=${slug}`, { headers: FROM_THIS_SITE }),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(`/sign-in?org=${slug}`);
+  });
+});
+
 /* ── the state cookie ─────────────────────────────────────────────────────── */
 
 describe('the request log', () => {

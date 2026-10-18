@@ -14,7 +14,7 @@ import {
   listOrganizationsForUser,
   spendSignInConfirmation,
 } from '@xecret/db/repositories';
-import { safeRedirectPath } from '@/lib/redirect-path';
+import { safePostSignInPath } from '@/lib/redirect-path';
 import { POST_SIGN_IN_PATH, SIGN_IN_PATH } from '@/lib/session-hint';
 import { publicOrigin } from '@/server/bindings';
 import type { ServiceContext } from '@/server/context';
@@ -61,8 +61,9 @@ import type { WorkosIdentityProvider } from '@/server/workos';
  *     needed no confirmation, with the facts the callback sealed, audited as a
  *     confirmed sign-in. "This isn't me": see {@link declined}.
  *
- * Every answer clears the cookie and is a 303: to `next` (never an API route —
- * `safeRedirectPath` again, at the moment of use), to WorkOS's logout and on to
+ * Every answer clears the cookie and is a 303: to `next` (never an API route
+ * and never a sign-in screen — `safePostSignInPath` again, at the moment of
+ * use), to WorkOS's logout and on to
  * `/sign-in?error=declined`, or to `/sign-in?error=expired` for anything that
  * did not check out — which says only that the attempt is over, never which
  * check failed.
@@ -95,7 +96,7 @@ export const POST = publicRoute(async ({ request, services }) => {
     );
     if (!opened.ok) throw new SignInRefusal('expired', 400, `confirmation ${opened.reason}`);
     const parked = opened.value;
-    next = safeRedirectPath(parked.next, POST_SIGN_IN_PATH);
+    next = safePostSignInPath(parked.next, POST_SIGN_IN_PATH);
 
     const form = await readForm(request);
     const token = form?.get('confirmation') ?? null;
