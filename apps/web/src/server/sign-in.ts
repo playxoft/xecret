@@ -1,6 +1,7 @@
 import {
   csrfCookie,
   deriveOAuthStateKey,
+  deriveSignInConfirmationKey,
   generateCsrfToken,
   generateToken,
   hashToken,
@@ -9,7 +10,13 @@ import {
   SESSION_LIFETIME_MS,
   sessionCookie,
 } from '@xecret/core/auth';
-import type { AuthorizationCodeExchange, OAuthPurpose, WorkosIdentity } from '@xecret/core/auth';
+import type {
+  AuthorizationCodeExchange,
+  OAuthPurpose,
+  ParkedLockOne,
+  SignInConfirmationReason,
+  WorkosIdentity,
+} from '@xecret/core/auth';
 import { createAuditBuilder } from '@xecret/core/audit';
 import type { AuditRecord, SignInMethod } from '@xecret/core/audit';
 import {
@@ -49,6 +56,13 @@ import type { WorkosIdentityProvider } from './workos';
  * order of operations is itself the security control, and a handler is where a
  * step gets reordered by somebody who does not know why it was where it was.
  *
+ * Two halves, because a session is not always issued in the request that
+ * prepared it. {@link prepareSignIn} is steps 1–7; {@link issueSignIn} is step
+ * 8. Between them the callback asks {@link confirmationReason} whether the
+ * person must confirm first (the planted-session login CSRF, review S1) — and
+ * if so parks the prepared result in a sealed cookie, and step 8 runs only when
+ * the person answers "Continue" on `/sign-in/confirm`.
+ *
  * The order, and why each step is where it is:
  *
  *  1. **Refuse an impersonated sign-in.** A WorkOS administrator acting as a
@@ -67,20 +81,28 @@ import type { WorkosIdentityProvider } from './workos';
  *  4. **Link** — `upsertUserFromWorkosIdentity`, at READ COMMITTED (no
  *     transaction is wrapped around it: its lost-race handling re-reads to see
  *     the winner's committed row, which a snapshot isolation level would hide).
- *  5. **Enforce `sso_required`** on every organisation the account belongs to
- *     — except one it owns, so a broken identity provider cannot lock an
- *     organisation out of itself.
- *  6. **Just-in-time join** the organisation whose SSO this was, if any, and
- *     only if that organisation opted in to admitting people that way.
+ *  5. **Just-in-time join** the organisation whose SSO this was, if any, and
+ *     only if that organisation opted in to admitting people that way — and
+ *     never somebody it removed.
+ *  6. **`sso_required`, at sign-in.** The requirement is enforced on every
+ *     request (`resolveOrg`), against how the session signed in, so a session
+ *     that does not satisfy one organisation simply cannot reach that one. The
+ *     sign-in itself is refused only when it would leave the account with *no*
+ *     organisation it could use — every one of its memberships requires a
+ *     single sign-on this was not. One organisation's requirement no longer
+ *     locks somebody out of every other (review S6).
  *  7. **Provision a personal organisation** for an account that still has none.
- *  8. **Issue the session**, and for a forced re-authentication, record that it
- *     happened — if the method counts and the provider says the person actually
- *     authenticated during this flow (see {@link armsLockOne}).
+ *  8. **Issue the session** — recording how it signed in, which is what step 6's
+ *     per-request half reads — and for a forced re-authentication, record that
+ *     it happened if the method counts and the provider says the person
+ *     actually authenticated during this flow (see {@link armsLockOne}). Then
+ *     audit the sign-in, and the owner exemption in every organisation it was
+ *     used in.
  *
- * Steps 5 and 6 key on `authenticationMethod === 'SSO'` *and* the organisation
- * id together. AuthKit reports an organisation after organisation *selection*
- * in password and Google sign-ins too, so the id alone does not mean the
- * organisation's identity provider vouched for anybody.
+ * Steps 3, 5 and 6 key on `authenticationMethod === 'SSO'` *and* the
+ * organisation id together. AuthKit reports an organisation after organisation
+ * *selection* in password and Google sign-ins too, so the id alone does not
+ * mean the organisation's identity provider vouched for anybody.
  */
 
 /**
@@ -106,8 +128,31 @@ export class SignInRefusal extends Error {
 /** The role a just-in-time member starts at (§2.3). Never more. */
 export const JIT_DEFAULT_ROLE = 'viewer' as const;
 
-export interface SignInResult {
+/**
+ * How a sign-in authenticated, as the session it issues records it (migration
+ * 0022) — and so as every later request is judged by.
+ */
+export interface SignInFacts {
+  signInMethod: SignInMethod;
+  /**
+   * The WorkOS organisation whose own identity provider vouched for this
+   * sign-in, or `null`. Set only for `SSO` with an organisation — never for an
+   * organisation AuthKit reported after organisation *selection*.
+   */
+  ssoWorkosOrgId: string | null;
+}
+
+/** Steps 1–7 done: everything issuing a session needs, and nothing issued yet. */
+export interface PreparedSignIn {
   user: User;
+  outcome: IdentityLinkOutcome;
+  facts: SignInFacts;
+  /** For a `reauth`, how lock one was judged (see {@link armsLockOne}); `null` otherwise. */
+  lockOne: ParkedLockOne | null;
+}
+
+export interface SignInResult {
+  user: Pick<User, 'id' | 'email'>;
   outcome: IdentityLinkOutcome;
   memberships: OrganizationMembership[];
   /** `Set-Cookie` values for the new session and its CSRF pair. */
@@ -115,12 +160,10 @@ export interface SignInResult {
   sessionId: string;
 }
 
-export interface CompleteSignInParams {
+export interface PrepareSignInParams {
   exchange: AuthorizationCodeExchange<WorkosIdentity>;
   purpose: OAuthPurpose;
   provider: Pick<WorkosIdentityProvider, 'verifiedDomains'>;
-  /** The session cookie this browser presented, if any — replaced by the new one. */
-  presentedSessionToken: string | null;
   /**
    * When this sign-in flow began — the state cookie's `issuedAt`, in seconds
    * since the epoch, which only this server can have written.
@@ -129,17 +172,17 @@ export interface CompleteSignInParams {
 }
 
 /**
- * Steps 1–8 above. Throws {@link SignInRefusal} for every refusal a person is
+ * Steps 1–7 above. Throws {@link SignInRefusal} for every refusal a person is
  * told about, and lets anything else — a programming error, the database —
  * escape to the caller's 500 handling.
  */
-export async function completeSignIn(
+export async function prepareSignIn(
   services: ServiceContext,
-  params: CompleteSignInParams,
-): Promise<SignInResult> {
+  params: PrepareSignInParams,
+): Promise<PreparedSignIn> {
   const { exchange } = params;
   const { identity } = exchange;
-  const log = services.log.at('completeSignIn');
+  const log = services.log.at('prepareSignIn');
 
   // ── 1. Impersonation ─────────────────────────────────────────────────────
   if (exchange.impersonator !== null) {
@@ -154,7 +197,7 @@ export async function completeSignIn(
     throw new SignInRefusal('verify-email', 403, 'email not verified');
   }
 
-  const sso = isSsoSignIn(exchange);
+  const facts = signInFactsOf(exchange);
 
   // ── 3. An SSO sign-in is believed only for its organisation's domains ────
   if (exchange.authenticationMethod === 'SSO') {
@@ -218,9 +261,10 @@ export async function completeSignIn(
 
   // An adoption is audited the moment it is written, not at the end. The
   // linker has already put this WorkOS identity on the account; if the steps
-  // below then refuse the sign-in (sso_required, no seat), the link stays, and
-  // "who could sign in as this account, and since when" must still find it.
-  // An account with no organisation yet has nowhere to file it until step 7.
+  // below then refuse the sign-in (sso_required, no seat) — or the person never
+  // confirms it — the link stays, and "who could sign in as this account, and
+  // since when" must still find it. An account with no organisation yet has
+  // nowhere to file it until step 7.
   let linkAudited = false;
   const auditLink = (orgId: string) => {
     services.waitUntil(
@@ -228,7 +272,7 @@ export async function completeSignIn(
         auditFor(orgId, user, services).success(
           'auth.identity_linked',
           { type: 'user', id: user.id },
-          { source: 'dashboard', signInMethod: signInMethodOf(exchange.authenticationMethod) },
+          { source: 'dashboard', signInMethod: facts.signInMethod },
         ),
       ]),
     );
@@ -236,62 +280,20 @@ export async function completeSignIn(
   };
   if (outcome === 'linked' && memberships[0]) auditLink(memberships[0].organization.id);
 
-  // ── 5. sso_required ──────────────────────────────────────────────────────
-  // Every organisation the account is in that requires SSO must be the one
-  // whose SSO this was. An account in two such organisations can satisfy only
-  // one per sign-in and is refused — the strict reading, because the session
-  // this would issue is not scoped to an organisation and would carry the
-  // other organisation's access without its identity provider's say-so.
-  //
-  // **Owners are exempt** — the break-glass migration 0018 promised and WS-5
-  // ships with the setter. An identity provider misconfigured after the flag
-  // goes on would otherwise lock the whole organisation out of itself, with no
-  // self-service way back: nobody could sign in to switch it off. Exempting
-  // owners hands an owner's password nothing it lacked — an owner may switch
-  // the flag off at any time — and every owner's sign-in is still
-  // `auth.login` with its method, so a password sign-in by an owner of an
-  // SSO-required organisation is findable. It is logged here as well.
-  for (const membership of memberships) {
-    const organization = membership.organization;
-    if (!organization.ssoRequired) continue;
-    if (
-      sso &&
-      organization.workosOrgId !== null &&
-      organization.workosOrgId === exchange.organizationId
-    ) {
-      continue;
-    }
-    if (membership.role === 'owner') {
-      log.info(
-        'An owner signed in without their organisation’s required single sign-on; owners are ' +
-          'exempt, so that a broken identity provider cannot lock the organisation out',
-        {
-          orgId: organization.id,
-          signInMethod: signInMethodOf(exchange.authenticationMethod),
-        },
-      );
-      continue;
-    }
-    throw new SignInRefusal(
-      'sso-required',
-      403,
-      `organisation ${organization.id} requires SSO; this sign-in was ${exchange.authenticationMethod ?? 'unspecified'}`,
-    );
-  }
-
-  // ── 6. Just-in-time membership ───────────────────────────────────────────
+  // ── 5. Just-in-time membership ───────────────────────────────────────────
   // Only for an organisation that opted in (`jit_join_enabled`, off by
   // default): connecting an identity provider says who an organisation's
   // people are, and admitting every one of them is a separate decision an
-  // owner or admin takes in the SSO settings (PR #114's constraint for WS-5).
-  // Checked here on the row just found, to skip the transaction for the
-  // organisations that have not; the check that counts is the repository's,
-  // under the row lock, which answers `not-enabled` if it was switched off in
-  // between. Without the opt-in the person simply signs in to whatever else
-  // they belong to — a personal organisation, for a newcomer — and joins this
-  // one the ordinary way, by invitation.
-  if (sso && exchange.organizationId !== null) {
-    const organization = await findOrgByWorkosOrgId(services.db, exchange.organizationId);
+  // owner takes in the SSO settings (PR #114's constraint for WS-5). Checked
+  // here on the row just found, to skip the transaction for the organisations
+  // that have not; the check that counts is the repository's, under the row
+  // lock, which answers `not-enabled` if it was switched off in between — and
+  // `removed` for somebody the organisation removed (review S4). Without a
+  // join the person simply signs in to whatever else they belong to — a
+  // personal organisation, for a newcomer — and joins this one the ordinary
+  // way, by invitation.
+  if (facts.ssoWorkosOrgId !== null) {
+    const organization = await findOrgByWorkosOrgId(services.db, facts.ssoWorkosOrgId);
     if (
       organization &&
       organization.jitJoinEnabled &&
@@ -321,6 +323,26 @@ export async function completeSignIn(
         throw new SignInRefusal('no-seat', 403, `organisation ${organization.id} has no free seat`);
       }
 
+      if (joined.outcome === 'removed') {
+        // Not a refusal of the sign-in — the person may well belong elsewhere
+        // — but a record, in the organisation that removed them, that its
+        // identity provider is still vouching for somebody it showed the door.
+        services.waitUntil(
+          writeEvents(services, [
+            audit.error('member.jit_denied', { type: 'member', id: null }, 'removed', {
+              targetEmail: user.email,
+              newRole: JIT_DEFAULT_ROLE,
+              signInMethod: 'sso',
+            }),
+          ]),
+        );
+        log.info(
+          'Did not re-admit somebody this organisation removed, though its identity provider ' +
+            'vouched for them; they rejoin only by invitation',
+          { orgId: organization.id },
+        );
+      }
+
       if (joined.outcome === 'joined') {
         services.waitUntil(
           writeEvents(services, [
@@ -338,6 +360,26 @@ export async function completeSignIn(
     }
   }
 
+  // ── 6. sso_required, at sign-in ──────────────────────────────────────────
+  // Every organisation the account is in is either usable by this sign-in or
+  // not, by the same rule `resolveOrg` applies on every request: not requiring
+  // SSO, or this organisation's own SSO, or an owner (the break-glass). One
+  // usable organisation is enough to sign in; the others refuse this session
+  // when it reaches them. Only an account left with nothing usable is turned
+  // away here — the sentence on the sign-in page is kinder than a dashboard
+  // full of refusals.
+  if (
+    memberships.length > 0 &&
+    memberships.every((membership) => refusesThisSignIn(membership, facts))
+  ) {
+    const first = memberships[0]!.organization;
+    throw new SignInRefusal(
+      'sso-required',
+      403,
+      `every organisation of this account requires its SSO (e.g. ${first.id}); this sign-in was ${exchange.authenticationMethod ?? 'unspecified'}`,
+    );
+  }
+
   // ── 7. A personal organisation for an account with none ──────────────────
   // What makes the product usable within a minute of signing up. Under the
   // same ceiling as `POST /api/orgs` — see `provisionOrganization` for why the
@@ -349,7 +391,6 @@ export async function completeSignIn(
       envelope: services.envelope,
       limit: ORGANIZATIONS_PER_ACCOUNT_LIMIT,
     });
-    memberships = await listOrganizationsForUser(services.db, user.id);
 
     services.waitUntil(
       writeEvents(services, [
@@ -362,23 +403,10 @@ export async function completeSignIn(
     if (outcome === 'linked' && !linkAudited) auditLink(created.organization.id);
   }
 
-  // ── 8. The session ───────────────────────────────────────────────────────
-  // The new session and, for a re-authentication, the record that it is one,
-  // in one transaction: either the browser gets a session that carries lock
-  // one, or it gets nothing — never a session that silently does not, which
-  // the reset screen would show as an unexplained "sign in again".
+  // Lock one is judged here, on the exchange, whether or not the session is
+  // issued in this request: a parked re-authentication carries the verdict to
+  // the confirmation, which cannot see the exchange any more.
   const lockOne = params.purpose === 'reauth' ? armsLockOne(exchange, params.flowIssuedAt) : null;
-  const { token, sessionId } = await services.db.transaction(async (tx) => {
-    const issued = await issueSession(services, user.id, tx);
-    // The first of the vault reset's two locks, recorded against the session
-    // this sign-in just issued, so it is the new cookie — and only the new
-    // cookie — that carries it.
-    if (lockOne === 'armed') {
-      await recordFreshSignIn(tx, { userId: user.id, sessionId: issued.sessionId, at: new Date() });
-    }
-    return issued;
-  });
-
   if (lockOne !== null && lockOne !== 'armed') {
     // Signed in, but not in a way that counts. The person is signed in all the
     // same; the reset screen asks them to sign in again. Which way it fell
@@ -391,7 +419,7 @@ export async function completeSignIn(
         ? 'A re-authentication sign-in used a method that does not count as lock one'
         : 'A re-authentication sign-in did not show a fresh authentication, so it is not lock one',
       {
-        signInMethod: signInMethodOf(exchange.authenticationMethod),
+        signInMethod: facts.signInMethod,
         reason: lockOne,
         ...(typeof exchange.authenticatedAt !== 'number'
           ? {}
@@ -399,6 +427,88 @@ export async function completeSignIn(
       },
     );
   }
+
+  return { user, outcome, facts, lockOne };
+}
+
+/**
+ * Whether a sign-in that is about to issue a session must be confirmed by the
+ * person first — and why — or `null` when it may be issued straight away.
+ *
+ * ── The attack this exists for (review S1) ──
+ * `state` and PKCE prove the callback completes a flow this browser started;
+ * they cannot prove *whose* authentication came back, because AuthKit reuses a
+ * session it already holds without asking. An attacker who owns a WorkOS
+ * organisation here, wired to an identity provider they control, can plant
+ * their own AuthKit session in a victim's browser — a hidden navigation to
+ * AuthKit's authorize URL for their organisation, or their provider's
+ * IdP-initiated sign-in through the initiate-login URI — and the victim's next
+ * plain "Sign in" comes back as the attacker, against the victim's valid state.
+ * The victim would land in the attacker's account and store their secrets
+ * there. Two signs give it away, and either one parks the sign-in:
+ *
+ *  - `'organization'` — it came back through an organisation the flow did not
+ *    ask for (the state seals what it asked for: an `?org=` deep link, or
+ *    nothing). That includes every single-sign-on result of a plain sign-in,
+ *    and an organisation reported after organisation selection. A person who
+ *    really did sign in through their company's identity provider answers one
+ *    question; a person whose browser was used against them gets to say no.
+ *  - `'reused-session'` — WorkOS answered from an authentication that predates
+ *    the flow (its `auth_time`, beyond {@link REAUTH_AUTH_TIME_SKEW_SECONDS}):
+ *    a session reused without asking anything, which is the planted session's
+ *    own signature whatever organisation it names. Only where WorkOS says when
+ *    the person authenticated; without that, only the organisation is checked.
+ */
+export function confirmationReason(
+  flow: { organizationId: string | null; issuedAt: number },
+  exchange: Pick<AuthorizationCodeExchange, 'organizationId' | 'authenticatedAt'>,
+): SignInConfirmationReason | null {
+  if (exchange.organizationId !== flow.organizationId) return 'organization';
+  if (
+    typeof exchange.authenticatedAt === 'number' &&
+    Number.isFinite(exchange.authenticatedAt) &&
+    exchange.authenticatedAt < flow.issuedAt - REAUTH_AUTH_TIME_SKEW_SECONDS
+  ) {
+    return 'reused-session';
+  }
+  return null;
+}
+
+export interface IssueSignInParams {
+  user: Pick<User, 'id' | 'email'>;
+  outcome: IdentityLinkOutcome;
+  facts: SignInFacts;
+  purpose: OAuthPurpose;
+  lockOne: ParkedLockOne | null;
+  /** The session cookie this browser presented, if any — replaced by the new one. */
+  presentedSessionToken: string | null;
+}
+
+/**
+ * Step 8: issues the session — from the callback for a sign-in that needed no
+ * confirmation, or from the confirmation's POST for one that did.
+ */
+export async function issueSignIn(
+  services: ServiceContext,
+  params: IssueSignInParams,
+): Promise<SignInResult> {
+  const { user, outcome, facts } = params;
+  const log = services.log.at('issueSignIn');
+
+  // The new session and, for a re-authentication, the record that it is one,
+  // in one transaction: either the browser gets a session that carries lock
+  // one, or it gets nothing — never a session that silently does not, which
+  // the reset screen would show as an unexplained "sign in again".
+  const { token, sessionId } = await services.db.transaction(async (tx) => {
+    const issued = await issueSession(services, user.id, tx, facts);
+    // The first of the vault reset's two locks, recorded against the session
+    // this sign-in just issued, so it is the new cookie — and only the new
+    // cookie — that carries it.
+    if (params.lockOne === 'armed') {
+      await recordFreshSignIn(tx, { userId: user.id, sessionId: issued.sessionId, at: new Date() });
+    }
+    return issued;
+  });
 
   // Last, once the new session has committed: the browser is about to be
   // handed a new session cookie, which overwrites whatever it held. If that
@@ -423,23 +533,45 @@ export async function completeSignIn(
     );
   }
 
+  const memberships = await listOrganizationsForUser(services.db, user.id);
+  const events: AuditRecord[] = [];
   const primary = memberships[0];
   if (primary) {
-    services.waitUntil(
-      writeEvents(services, [
-        auditFor(primary.organization.id, user, services).success(
-          SIGN_IN_ACTIONS[outcome],
-          { type: 'session', id: sessionId },
-          { source: 'dashboard', signInMethod: signInMethodOf(exchange.authenticationMethod) },
-        ),
-      ]),
+    events.push(
+      auditFor(primary.organization.id, user, services).success(
+        SIGN_IN_ACTIONS[outcome],
+        { type: 'session', id: sessionId },
+        { source: 'dashboard', signInMethod: facts.signInMethod },
+      ),
     );
   }
+
+  // ── The owner exemption, filed where it was used (review C3) ──
+  // `auth.login` lands in one organisation; an owner of several that require
+  // SSO bypassed each of their identity providers, and each one's own log is
+  // where its administrators look. So a record per organisation, beside the
+  // log line.
+  for (const membership of memberships) {
+    if (!usesOwnerExemption(membership, facts)) continue;
+    log.info(
+      'An owner signed in without their organisation’s required single sign-on; owners are ' +
+        'exempt, so that a broken identity provider cannot lock the organisation out',
+      { orgId: membership.organization.id, signInMethod: facts.signInMethod },
+    );
+    events.push(
+      auditFor(membership.organization.id, user, services).success(
+        'auth.sso_exemption_used',
+        { type: 'session', id: sessionId },
+        { source: 'dashboard', signInMethod: facts.signInMethod },
+      ),
+    );
+  }
+  if (events.length > 0) services.waitUntil(writeEvents(services, events));
 
   log.debug(`Signed a user in through WorkOS — ${outcome}`, {
     outcome,
     purpose: params.purpose,
-    signInMethod: signInMethodOf(exchange.authenticationMethod),
+    signInMethod: facts.signInMethod,
   });
 
   return { user, outcome, memberships, cookies: sessionCookies(token), sessionId };
@@ -456,9 +588,32 @@ const SIGN_IN_ACTIONS = {
   created: 'auth.signup',
 } as const satisfies Record<IdentityLinkOutcome, AuditRecord['action']>;
 
-/** Whether this sign-in came through the organisation's own identity provider. */
-function isSsoSignIn(exchange: AuthorizationCodeExchange<WorkosIdentity>): boolean {
-  return exchange.authenticationMethod === 'SSO' && exchange.organizationId !== null;
+/** What the session a sign-in issues will record about how it signed in. */
+export function signInFactsOf(
+  exchange: Pick<AuthorizationCodeExchange, 'authenticationMethod' | 'organizationId'>,
+): SignInFacts {
+  const sso = exchange.authenticationMethod === 'SSO' && exchange.organizationId !== null;
+  return {
+    signInMethod: signInMethodOf(exchange.authenticationMethod),
+    ssoWorkosOrgId: sso ? exchange.organizationId : null,
+  };
+}
+
+/** Whether this organisation's `sso_required` would refuse a session signed in so. */
+function refusesThisSignIn(membership: OrganizationMembership, facts: SignInFacts): boolean {
+  const organization = membership.organization;
+  if (!organization.ssoRequired || membership.role === 'owner') return false;
+  return organization.workosOrgId === null || facts.ssoWorkosOrgId !== organization.workosOrgId;
+}
+
+/** Whether a sign-in so reaches this organisation only by the owner exemption. */
+function usesOwnerExemption(membership: OrganizationMembership, facts: SignInFacts): boolean {
+  const organization = membership.organization;
+  return (
+    organization.ssoRequired &&
+    membership.role === 'owner' &&
+    (organization.workosOrgId === null || facts.ssoWorkosOrgId !== organization.workosOrgId)
+  );
 }
 
 /**
@@ -518,6 +673,8 @@ export function countsAsReauthentication(method: string | null): boolean {
 /**
  * How far before the flow began an active authentication may be dated and
  * still count, for the difference between this server's clock and WorkOS's.
+ * The same allowance decides when a sign-in is a reused session that must be
+ * confirmed ({@link confirmationReason}).
  */
 export const REAUTH_AUTH_TIME_SKEW_SECONDS = 30;
 
@@ -551,7 +708,7 @@ export function armsLockOne(
     'authenticationMethod' | 'authenticatedAt'
   >,
   flowIssuedAt: number,
-): 'armed' | 'method' | 'no-auth-time' | 'stale' {
+): ParkedLockOne {
   if (!countsAsReauthentication(exchange.authenticationMethod)) return 'method';
   if (typeof exchange.authenticatedAt !== 'number' || !Number.isFinite(exchange.authenticatedAt)) {
     return 'no-auth-time';
@@ -573,13 +730,17 @@ export function signInMethodOf(method: string | null): SignInMethod {
 
 /**
  * Issues a session for an already-authenticated user. Unchanged from the
- * Firebase sign-in it was lifted out of: a 256-bit opaque token, only its hash
- * stored, the request's address and user agent beside it.
+ * Firebase sign-in it was lifted out of — a 256-bit opaque token, only its hash
+ * stored, the request's address and user agent beside it — and now also how
+ * the sign-in authenticated, which every later request is judged by
+ * (`resolveOrg`). Without `facts` the session records nothing, which reads as
+ * "not single sign-on".
  */
 export async function issueSession(
   services: ServiceContext,
   userId: string,
   exec: Executor = services.db,
+  facts?: SignInFacts,
 ): Promise<{ token: string; sessionId: string }> {
   const { token } = await generateToken('session');
 
@@ -588,6 +749,8 @@ export async function issueSession(
     token,
     ipAddress: services.meta.ipAddress,
     userAgent: services.meta.userAgent,
+    signInMethod: facts?.signInMethod ?? null,
+    ssoWorkosOrgId: facts?.ssoWorkosOrgId ?? null,
   });
 
   return { token, sessionId: session.id };
@@ -657,8 +820,9 @@ export async function writeEvents(services: ServiceContext, events: AuditRecord[
   }
 }
 
-/** The isolate's derived state-cookie key, keyed by the secret it came from. */
+/** The isolate's derived cookie keys, keyed by the secret they came from. */
 let cachedStateKey: { secret: string; key: Promise<CryptoKey> } | undefined;
+let cachedConfirmationKey: { secret: string; key: Promise<CryptoKey> } | undefined;
 
 /**
  * The MAC key for the sign-in state cookie, derived once per isolate.
@@ -682,7 +846,28 @@ export async function oauthStateKey(env: Bindings): Promise<CryptoKey> {
   }
 }
 
+/**
+ * The MAC key for the sign-in confirmation cookie: the same operator secret,
+ * under the confirmation's own HKDF label, so neither cookie can stand in for
+ * the other. Same failure as {@link oauthStateKey}.
+ */
+export async function signInConfirmationKey(env: Bindings): Promise<CryptoKey> {
+  const secret = env.WORKOS_COOKIE_PASSWORD;
+  if (!secret) throw new MissingBindingError('WORKOS_COOKIE_PASSWORD');
+
+  if (cachedConfirmationKey?.secret !== secret) {
+    cachedConfirmationKey = { secret, key: deriveSignInConfirmationKey(secret) };
+  }
+  try {
+    return await cachedConfirmationKey.key;
+  } catch {
+    cachedConfirmationKey = undefined;
+    throw new MissingBindingError('WORKOS_COOKIE_PASSWORD (at least 32 characters)');
+  }
+}
+
 /** Exists for tests. */
 export function resetSignInCachesForTesting(): void {
   cachedStateKey = undefined;
+  cachedConfirmationKey = undefined;
 }

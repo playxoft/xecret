@@ -56,7 +56,14 @@ import { workosProvider } from '@/server/workos';
  *    attacker's. The confirmation is the moment they can notice the name is not
  *    their company's. Same-origin is read from `Sec-Fetch-Site`, or, from a
  *    browser that does not send it, from a `Referer` on this origin (the site's
- *    referrer policy sends one on every same-origin navigation).
+ *    referrer policy sends one on every same-origin navigation) — and it must
+ *    be a navigation to a document (`Sec-Fetch-Mode`/`-Dest`, where sent).
+ *
+ *    That stops a link from *starting* somebody else's SSO; it cannot stop an
+ *    attacker planting their own AuthKit session by sending the browser to
+ *    AuthKit directly, so the organisation this flow asked for is sealed into
+ *    the state, and the callback holds back any sign-in that comes back
+ *    through another for the person to confirm.
  *  - `reauth=1` — sign in again for the vault reset's first lock. Sends AuthKit
  *    `max_age=0`, which makes AuthKit ask for a password or passkey even when it
  *    holds a session; it does not make Google or a company's identity provider
@@ -113,7 +120,8 @@ export const GET = publicRoute(async ({ request, services }) => {
     });
   }
 
-  const organizationId = orgSlug === null ? undefined : await ssoOrganization(services, orgSlug);
+  const organizationId =
+    orgSlug === null ? undefined : await ssoOrganization(services, orgSlug, provider.clientId);
 
   const { state, verifier } = generateOAuthSecrets();
   const cookie = await sealOAuthState(key, {
@@ -122,6 +130,11 @@ export const GET = publicRoute(async ({ request, services }) => {
     next,
     purpose,
     issuedAt: Math.floor(Date.now() / 1000),
+    // What this flow asked for, sealed beside its `state`: the callback holds
+    // back any sign-in that comes back through a different organisation — or
+    // through one when none was asked for — for the person to confirm (the
+    // planted-session login CSRF; see the callback, step 6).
+    organizationId: organizationId ?? null,
   });
 
   const location = provider.authorizationUrl({
@@ -147,11 +160,14 @@ export const GET = publicRoute(async ({ request, services }) => {
 /**
  * The WorkOS organisation an `?org=` slug deep-links to, or `undefined` — also
  * when this address has looked up too many slugs, so that the deep link cannot
- * be walked to list which organisations have SSO.
+ * be walked to list which organisations have SSO, and when the link was made in
+ * a different WorkOS environment from this deployment's (review S9), whose
+ * organisation id AuthKit here would not know.
  */
 async function ssoOrganization(
   services: ServiceContext,
   slug: string,
+  clientId: string,
 ): Promise<string | undefined> {
   const allowed = await consume(
     services.env,
@@ -160,7 +176,8 @@ async function ssoOrganization(
   );
   if (!allowed.allowed) return undefined;
   const found = await findOrganizationBySlugWithEntitlements(services.db, slug);
-  return found?.organization.workosOrgId ?? undefined;
+  if (!found || found.organization.workosClientId !== clientId) return undefined;
+  return found.organization.workosOrgId ?? undefined;
 }
 
 /** `org=` as a slug, or `null` for anything that is not one — which is then ignored. */

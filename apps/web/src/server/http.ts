@@ -268,8 +268,22 @@ export function isSameOrigin(request: Request, expectedOrigin: string): boolean 
  * Without the header, a `Referer` on this origin: the site-wide
  * `strict-origin-when-cross-origin` policy sends the full one on every
  * same-origin navigation. A request with neither is treated as cross-site.
+ *
+ * And it must be a **navigation** to a **document**: `Sec-Fetch-Mode: navigate`
+ * and `Sec-Fetch-Dest: document`, whenever the browser sends them. A
+ * same-origin `fetch()`, an `<img>`, an `<iframe>` or a form posted into one is
+ * not somebody following the sign-in page's link — and a same-origin page that
+ * could be made to issue one (a stored-markup bug, a compromised dependency)
+ * must not be able to start an organisation's SSO behind the person's back.
+ * Checked only when present, so a browser that sends `Sec-Fetch-Site` but not
+ * the other two is judged on the first alone.
  */
 export function isSameOriginNavigation(request: Request, expectedOrigin: string): boolean {
+  const mode = request.headers.get('sec-fetch-mode');
+  if (mode !== null && mode !== 'navigate') return false;
+  const dest = request.headers.get('sec-fetch-dest');
+  if (dest !== null && dest !== 'document') return false;
+
   const site = request.headers.get('sec-fetch-site');
   if (site !== null) return site === 'same-origin';
   const referer = request.headers.get('referer');

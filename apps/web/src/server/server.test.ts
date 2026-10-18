@@ -406,6 +406,48 @@ describe('same-origin navigation', () => {
     expect(isSameOriginNavigation(navigation({ referer: 'not a url' }), ORIGIN)).toBe(false);
     expect(isSameOriginNavigation(navigation({}), ORIGIN)).toBe(false);
   });
+
+  it('requires a navigation to a document whenever the browser says what it is (review S8)', () => {
+    // What a browser sends for the sign-in page's own link.
+    const link = { 'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'navigate' };
+    expect(
+      isSameOriginNavigation(navigation({ ...link, 'sec-fetch-dest': 'document' }), ORIGIN),
+    ).toBe(true);
+
+    // A same-origin fetch, image, frame or form-into-a-frame is not somebody
+    // following that link — whatever `Sec-Fetch-Site` says.
+    for (const [mode, dest] of [
+      ['cors', 'empty'],
+      ['no-cors', 'image'],
+      ['navigate', 'iframe'],
+      ['navigate', 'frame'],
+      ['same-origin', 'document'],
+    ] as const) {
+      expect(
+        isSameOriginNavigation(
+          navigation({
+            'sec-fetch-site': 'same-origin',
+            'sec-fetch-mode': mode,
+            'sec-fetch-dest': dest,
+          }),
+          ORIGIN,
+        ),
+        `${mode} / ${dest}`,
+      ).toBe(false);
+    }
+
+    // Each is checked on its own when it is the only one sent, and the
+    // referrer fallback is held to it too.
+    expect(isSameOriginNavigation(navigation({ ...link, 'sec-fetch-dest': 'image' }), ORIGIN)).toBe(
+      false,
+    );
+    expect(
+      isSameOriginNavigation(
+        navigation({ referer: `${ORIGIN}/sign-in`, 'sec-fetch-mode': 'cors' }),
+        ORIGIN,
+      ),
+    ).toBe(false);
+  });
 });
 
 describe('JSON responses', () => {

@@ -3,9 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { WorkOS } from '@workos-inc/node';
 import {
   deriveOAuthStateKey,
+  deriveSignInConfirmationKey,
   generateToken,
+  hashToken,
   OAUTH_STATE_COOKIE_NAME,
+  openSignInConfirmation,
   sealOAuthState,
+  SIGN_IN_CONFIRMATION_COOKIE_NAME,
 } from '@xecret/core/auth';
 import type { AuditRecord } from '@xecret/core/audit';
 import {
@@ -15,7 +19,12 @@ import {
   parseRootKeyMaterial,
   toBase64Url,
 } from '@xecret/core/crypto';
-import { createSession } from '@xecret/db/repositories';
+import {
+  createCliToken,
+  createInvitation,
+  createSession,
+  removeMember,
+} from '@xecret/db/repositories';
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '@xecret/db/testing';
 import type { TestDatabase } from '@xecret/db/testing';
 import { createLogger } from './logging';
@@ -92,7 +101,11 @@ vi.mock('./workos', async (importOriginal) => {
 
 const { GET: login } = await import('@/app/api/auth/login/route');
 const { GET: callback } = await import('@/app/api/auth/callback/route');
+const confirmRoute = await import('@/app/api/auth/confirm/route');
 const sessionRoute = await import('@/app/api/auth/session/route');
+const orgRoute = await import('@/app/api/orgs/[orgSlug]/route');
+const acceptRoute = await import('@/app/api/invitations/accept/route');
+const { confirmationView } = await import('./sign-in-confirmation');
 
 let t: TestDatabase;
 let envelope: EnvelopeService;
@@ -251,6 +264,31 @@ interface Finished {
   location: string;
   cookies: string[];
   error: string | null;
+  /** The sealed confirmation cookie, when the callback held the sign-in back. */
+  parked: string | null;
+}
+
+function finished(response: Response): Finished {
+  const location = response.headers.get('location') ?? '';
+  const cookies = response.headers.getSetCookie();
+  const parkedCookie = cookies.find(
+    (c) => c.startsWith(`${SIGN_IN_CONFIRMATION_COOKIE_NAME}=`) && !c.includes('Max-Age=0'),
+  );
+  return {
+    status: response.status,
+    location,
+    cookies,
+    error: location.startsWith('/sign-in?')
+      ? new URLSearchParams(location.slice('/sign-in?'.length)).get('error')
+      : null,
+    parked:
+      parkedCookie === undefined
+        ? null
+        : parkedCookie.slice(
+            `${SIGN_IN_CONFIRMATION_COOKIE_NAME}=`.length,
+            parkedCookie.indexOf(';'),
+          ),
+  };
 }
 
 async function finishSignIn(
@@ -271,27 +309,87 @@ async function finishSignIn(
       headers: cookies.length === 0 ? {} : { cookie: cookies.join('; ') },
     }),
   );
-  const location = response.headers.get('location') ?? '';
-  return {
-    status: response.status,
-    location,
-    cookies: response.headers.getSetCookie(),
-    error: location.startsWith('/sign-in?')
-      ? new URLSearchParams(location.slice('/sign-in?'.length)).get('error')
-      : null,
-  };
+  return finished(response);
 }
 
-/** Starts and finishes a sign-in as `user`, the way a browser would. */
+/** What the parked cookie holds — read the way the confirmation page reads it. */
+async function parkedValue(cookie: string) {
+  const opened = await openSignInConfirmation(
+    await deriveSignInConfirmationKey(COOKIE_PASSWORD),
+    cookie,
+    new Date(),
+  );
+  if (!opened.ok) throw new Error(`the parked cookie did not open: ${opened.reason}`);
+  return opened.value;
+}
+
+/**
+ * Answers the confirmation the way the page's form does: a same-origin POST
+ * carrying the cookie and its nonce. Every part is overridable, so a test can
+ * take away exactly one.
+ */
+async function confirm(
+  parked: string,
+  options: {
+    decision?: string;
+    token?: string | null;
+    origin?: string | null;
+    site?: string;
+    sessionToken?: string;
+  } = {},
+): Promise<Finished> {
+  const token = options.token === undefined ? (await parkedValue(parked)).nonce : options.token;
+  const form = new URLSearchParams();
+  if (token !== null) form.set('confirmation', token);
+  form.set('decision', options.decision ?? 'continue');
+  const cookies = [
+    `${SIGN_IN_CONFIRMATION_COOKIE_NAME}=${parked}`,
+    ...(options.sessionToken === undefined
+      ? []
+      : [`__Host-xecret_session=${options.sessionToken}`]),
+  ];
+  const headers: Record<string, string> = {
+    'content-type': 'application/x-www-form-urlencoded',
+    cookie: cookies.join('; '),
+    'sec-fetch-site': options.site ?? 'same-origin',
+  };
+  const origin = options.origin === undefined ? ORIGIN : options.origin;
+  if (origin !== null) headers['origin'] = origin;
+  return finished(
+    await confirmRoute.POST(
+      new Request(`${ORIGIN}/api/auth/confirm`, {
+        method: 'POST',
+        headers,
+        body: form.toString(),
+      }),
+    ),
+  );
+}
+
+/**
+ * Starts and finishes a sign-in as `user`, the way a browser would — answering
+ * the confirmation too, when the callback holds the sign-in back, unless told
+ * not to (`confirm: false`).
+ */
 async function signIn(
   user: Record<string, unknown>,
   extra: Record<string, unknown> = {},
-  options: { query?: string; sessionToken?: string } = {},
+  options: {
+    query?: string;
+    headers?: Record<string, string>;
+    sessionToken?: string;
+    confirm?: boolean;
+  } = {},
 ): Promise<Finished> {
-  const flow = await startSignIn(options.query ?? '');
+  const flow = await startSignIn(options.query ?? '', options.headers ?? {});
   workosAnswers({ user, ...extra });
-  return finishSignIn(
+  const result = await finishSignIn(
     flow,
+    options.sessionToken === undefined ? {} : { sessionToken: options.sessionToken },
+  );
+  if (result.parked === null || options.confirm === false) return result;
+  return confirm(
+    result.parked,
     options.sessionToken === undefined ? {} : { sessionToken: options.sessionToken },
   );
 }
@@ -300,6 +398,71 @@ function sessionCookieIssued(result: Finished): boolean {
   return result.cookies.some(
     (c) => c.startsWith('__Host-xecret_session=') && !c.includes('Max-Age=0'),
   );
+}
+
+/** A `Set-Cookie` value's value, by cookie name. */
+function cookieValue(result: Finished, name: string): string {
+  const header = result.cookies.find((c) => c.startsWith(`${name}=`) && !c.includes('Max-Age=0'));
+  if (header === undefined) throw new Error(`no ${name} cookie was issued`);
+  return header.slice(name.length + 1, header.indexOf(';'));
+}
+
+/** The session token a sign-in issued. */
+function sessionTokenOf(result: Finished): string {
+  return cookieValue(result, '__Host-xecret_session');
+}
+
+/**
+ * Asks `GET /api/orgs/{slug}` with a credential — the real `authenticate` and
+ * `resolveOrg`, so what this answers is what every organisation route answers.
+ * A session is unlocked first: the vault lock is a different gate, in front.
+ */
+async function reachOrg(
+  slug: string,
+  credential: { session?: string; bearer?: string },
+): Promise<{ status: number; code: unknown }> {
+  let headers: Record<string, string>;
+  if (credential.session !== undefined) {
+    await t.pg.query(
+      `update sessions set vault_unlocked_at = now(), last_seen_at = now() where token_hash = $1`,
+      [await hashToken(credential.session)],
+    );
+    headers = { cookie: `__Host-xecret_session=${credential.session}`, origin: ORIGIN };
+  } else {
+    headers = { authorization: `Bearer ${credential.bearer ?? ''}` };
+  }
+  const response = await orgRoute.GET(new Request(`${ORIGIN}/api/orgs/${slug}`, { headers }), {
+    params: Promise.resolve({ orgSlug: slug }),
+  });
+  const body = (await response.json()) as { error?: { code?: unknown } };
+  return { status: response.status, code: body.error?.code };
+}
+
+/** Accepts an invitation with the session a sign-in issued, CSRF pair and all. */
+async function acceptWith(
+  signedIn: Finished,
+  invitation: string,
+): Promise<{ status: number; code: unknown }> {
+  const session = sessionTokenOf(signedIn);
+  const csrf = cookieValue(signedIn, '__Host-xecret_csrf');
+  await t.pg.query(
+    `update sessions set vault_unlocked_at = now(), last_seen_at = now() where token_hash = $1`,
+    [await hashToken(session)],
+  );
+  const response = await acceptRoute.POST(
+    new Request(`${ORIGIN}/api/invitations/accept`, {
+      method: 'POST',
+      headers: {
+        origin: ORIGIN,
+        'content-type': 'application/json',
+        cookie: `__Host-xecret_session=${session}; __Host-xecret_csrf=${csrf}`,
+        'x-xecret-csrf': csrf,
+      },
+      body: JSON.stringify({ token: invitation }),
+    }),
+  );
+  const body = (await response.json()) as { error?: { code?: unknown } };
+  return { status: response.status, code: body.error?.code };
 }
 
 interface UserRow {
@@ -361,6 +524,7 @@ async function seedUser(
 async function seedOrg(
   over: {
     workosOrgId?: string;
+    clientId?: string;
     ssoRequired?: boolean;
     jitJoinEnabled?: boolean;
     seatLimit?: number;
@@ -370,13 +534,15 @@ async function seedOrg(
   const id = randomUUID();
   await t.pg.query(
     `insert into organizations
-       (id, name, slug, created_by, workos_org_id, sso_required, jit_join_enabled, seat_limit)
-     values ($1, 'BigCorp', $2, $3, $4, $5, $6, $7)`,
+       (id, name, slug, created_by, workos_org_id, workos_client_id, sso_required,
+        jit_join_enabled, seat_limit)
+     values ($1, 'BigCorp', $2, $3, $4, $5, $6, $7, $8)`,
     [
       id,
       `bigcorp-${id.slice(0, 8)}`,
       founder.id,
       over.workosOrgId ?? null,
+      over.workosOrgId === undefined ? null : (over.clientId ?? CLIENT_ID),
       over.ssoRequired ?? false,
       over.jitJoinEnabled ?? false,
       over.seatLimit ?? 5,
@@ -612,6 +778,7 @@ describe('next', () => {
       next: '/a/..//evil.example',
       purpose: 'sign-in',
       issuedAt: Math.floor(Date.now() / 1000),
+      organizationId: null,
     });
     workosAnswers({ user: workosUser() });
 
@@ -729,6 +896,7 @@ describe('the state check', () => {
       next: '/app',
       purpose: 'sign-in',
       issuedAt: Math.floor(Date.now() / 1000) - 11 * 60,
+      organizationId: null,
     });
 
     const result = await finishSignIn({ cookie, state });
@@ -1102,12 +1270,43 @@ describe('sso_required', () => {
     expect(result.error).toBeNull();
     expect(sessionCookieIssued(result)).toBe(true);
     expect(await sessionsFor(row.id)).toHaveLength(1);
-    // Findable afterwards: the sign-in is audited with its method, and logged.
+    // Findable afterwards: the sign-in is audited with its method, and logged —
+    // and the exemption itself is filed in the organisation it bypassed.
     const login = audit.find((e) => e.action === 'auth.login');
     expect(login?.metadata.signInMethod).toBe('password');
     expect(
       lines.some((line) => line.level === 'info' && line.message.includes('owners are exempt')),
     ).toBe(true);
+    expect(audit.filter((e) => e.action === 'auth.sso_exemption_used')).toEqual([
+      expect.objectContaining({
+        orgId,
+        actorId: row.id,
+        outcome: 'success',
+        resourceType: 'session',
+        metadata: expect.objectContaining({ signInMethod: 'password' }),
+      }),
+    ]);
+  });
+
+  it('files the owner exemption in every organisation it was used in, and only those (review C3)', async () => {
+    // `auth.login` lands in one organisation; each organisation whose identity
+    // provider the owner bypassed gets its own record.
+    const first = await seedOrg({ workosOrgId: unique('org_01'), ssoRequired: true });
+    const second = await seedOrg({ workosOrgId: unique('org_01'), ssoRequired: true });
+    const relaxed = await seedOrg({ workosOrgId: unique('org_01'), ssoRequired: false });
+    const satisfied = unique('org_01');
+    const viaSso = await seedOrg({ workosOrgId: satisfied, ssoRequired: true });
+    const who = workosUser({ email: `${unique('owner')}@bigcorp.example` });
+    const row = await seedUser({ workosUserId: who.id as string, email: who.email as string });
+    for (const orgId of [first, second, relaxed, viaSso]) await addMember(orgId, row.id, 'owner');
+    organizationAt(satisfied, [['bigcorp.example', 'verified']]);
+
+    await signIn(who, { authenticationMethod: 'SSO', organizationId: satisfied });
+
+    const exempted = audit.filter((e) => e.action === 'auth.sso_exemption_used');
+    expect(exempted.map((e) => e.orgId).sort()).toEqual([first, second].sort());
+    expect(exempted.every((e) => e.metadata.signInMethod === 'sso')).toBe(true);
+    expect(audit.filter((e) => e.action === 'auth.login')).toHaveLength(1);
   });
 
   it('does not exempt an admin — only owners', async () => {
@@ -1123,9 +1322,12 @@ describe('sso_required', () => {
     expect(await sessionsFor(row.id)).toHaveLength(0);
   });
 
-  it('still holds an owner of one organisation to another organisation’s requirement', async () => {
-    // The exemption is per organisation: owning your own does not excuse you
-    // from the company organisation you are a developer in.
+  it('signs in somebody with another organisation to use, and holds the session to the requirement there (review S6)', async () => {
+    // One organisation's requirement used to refuse the whole sign-in, locking
+    // a contractor out of every other organisation they belong to. Now the
+    // sign-in goes ahead and the requiring organisation refuses this session
+    // on each request, while the exemption stays per organisation: owning your
+    // own does not excuse you from the company one you are a developer in.
     const theirs = await seedOrg({ workosOrgId: unique('org_01'), ssoRequired: true });
     const own = await seedOrg({ workosOrgId: unique('org_01'), ssoRequired: true });
     const who = workosUser();
@@ -1135,7 +1337,418 @@ describe('sso_required', () => {
 
     const result = await signIn(who, { authenticationMethod: 'Password' });
 
-    expect(result.error).toBe('sso-required');
+    expect(result.error).toBeNull();
+    const session = sessionTokenOf(result);
+    expect(await reachOrg(await slugOf(theirs), { session })).toEqual({
+      status: 403,
+      code: 'sso_required',
+    });
+    expect((await reachOrg(await slugOf(own), { session })).status).toBe(200);
+  });
+});
+
+/* ── sso_required, on every request (review S3) ───────────────────────────── */
+
+describe('sso_required on every request', () => {
+  async function companyWithMember(role = 'developer') {
+    const workosOrgId = unique('org_01');
+    const orgId = await seedOrg({ workosOrgId });
+    const personal = await seedOrg();
+    const who = workosUser({ email: `${unique('pat')}@bigcorp.example` });
+    const row = await seedUser({ workosUserId: who.id as string, email: who.email as string });
+    await addMember(orgId, row.id, role);
+    await addMember(personal, row.id, 'owner');
+    organizationAt(workosOrgId, [['bigcorp.example', 'verified']]);
+    return { workosOrgId, orgId, personal, who, userId: row.id };
+  }
+
+  async function requireSso(orgId: string) {
+    await t.pg.query(`update organizations set sso_required = true where id = $1`, [orgId]);
+  }
+
+  it('takes the organisation from a session issued before the flag went on, the moment it does', async () => {
+    // The hole: the requirement was checked at sign-in only, so a session
+    // issued the day before kept the organisation for its thirty days.
+    const company = await companyWithMember();
+    const session = sessionTokenOf(await signIn(company.who, { authenticationMethod: 'Password' }));
+    const slug = await slugOf(company.orgId);
+    expect((await reachOrg(slug, { session })).status).toBe(200);
+
+    await requireSso(company.orgId);
+
+    expect(await reachOrg(slug, { session })).toEqual({ status: 403, code: 'sso_required' });
+    // Every other organisation the member is in is untouched.
+    expect((await reachOrg(await slugOf(company.personal), { session })).status).toBe(200);
+  });
+
+  it('lets a session from the organisation’s own single sign-on through', async () => {
+    const company = await companyWithMember();
+    await requireSso(company.orgId);
+    const slug = await slugOf(company.orgId);
+
+    const result = await signIn(
+      company.who,
+      { authenticationMethod: 'SSO', organizationId: company.workosOrgId },
+      { query: `?org=${slug}`, headers: FROM_THIS_SITE },
+    );
+
+    expect(result.parked).toBeNull(); // the flow asked for exactly this organisation
+    expect((await reachOrg(slug, { session: sessionTokenOf(result) })).status).toBe(200);
+  });
+
+  it('refuses a session from another organisation’s single sign-on', async () => {
+    const company = await companyWithMember();
+    const elsewhere = unique('org_01');
+    await seedOrg({ workosOrgId: elsewhere });
+    organizationAt(elsewhere, [['bigcorp.example', 'verified']]);
+    await requireSso(company.orgId);
+
+    const result = await signIn(company.who, {
+      authenticationMethod: 'SSO',
+      organizationId: elsewhere,
+    });
+
+    expect(
+      await reachOrg(await slugOf(company.orgId), { session: sessionTokenOf(result) }),
+    ).toEqual({ status: 403, code: 'sso_required' });
+  });
+
+  it('exempts an owner on every request too', async () => {
+    const company = await companyWithMember('owner');
+    await requireSso(company.orgId);
+
+    const result = await signIn(company.who, { authenticationMethod: 'Password' });
+
+    expect(
+      (await reachOrg(await slugOf(company.orgId), { session: sessionTokenOf(result) })).status,
+    ).toBe(200);
+  });
+
+  it('refuses a CLI token approved from a password session, and keeps one approved from the SSO', async () => {
+    // A CLI token's expiry can be never: checked at sign-in only, one minted
+    // the day before the flag went on was a permanent way round it.
+    const company = await companyWithMember();
+    await requireSso(company.orgId);
+    const slug = await slugOf(company.orgId);
+    const fromPassword = await createCliToken(t.db, {
+      orgId: company.orgId,
+      userId: company.userId,
+      name: 'laptop',
+      signInMethod: 'password',
+    });
+    const fromSso = await createCliToken(t.db, {
+      orgId: company.orgId,
+      userId: company.userId,
+      name: 'laptop (sso)',
+      signInMethod: 'sso',
+      ssoWorkosOrgId: company.workosOrgId,
+    });
+    const minted = await createCliToken(t.db, {
+      orgId: company.orgId,
+      userId: company.userId,
+      name: 'old laptop',
+    });
+
+    expect(await reachOrg(slug, { bearer: fromPassword.token })).toEqual({
+      status: 403,
+      code: 'sso_required',
+    });
+    expect(await reachOrg(slug, { bearer: minted.token })).toEqual({
+      status: 403,
+      code: 'sso_required',
+    });
+    expect((await reachOrg(slug, { bearer: fromSso.token })).status).toBe(200);
+  });
+
+  it('refuses a password newcomer an invitation into an organisation that requires SSO, and admits an owner’s', async () => {
+    // A newcomer has no memberships, so nothing was refused at sign-in; the
+    // invitation was the way round the requirement.
+    const workosOrgId = unique('org_01');
+    const orgId = await seedOrg({ workosOrgId, ssoRequired: true });
+    const founder = (
+      await t.pg.query<{ created_by: string }>(
+        `select created_by from organizations where id = $1`,
+        [orgId],
+      )
+    ).rows[0]!.created_by;
+
+    for (const [role, expected] of [
+      ['developer', 403],
+      ['owner', 200],
+    ] as const) {
+      const who = workosUser({ email: `${unique('newcomer')}@example.com` });
+      const signedIn = await signIn(who, { authenticationMethod: 'Password' });
+      const issued = await createInvitation(t.db, {
+        orgId,
+        email: who.email as string,
+        role,
+        invitedBy: founder,
+      });
+
+      const answer = await acceptWith(signedIn, issued.token);
+
+      expect(answer.status, role).toBe(expected);
+      if (expected === 403) expect(answer.code).toBe('sso_required');
+      const [row] = await userRows('workos_user_id', who.id as string);
+      expect(
+        (await membershipsOf(row!.id)).some((m) => m.org_id === orgId),
+        role,
+      ).toBe(expected === 200);
+    }
+  });
+});
+
+/* ── the planted-session login CSRF (review S1) ───────────────────────────── */
+
+describe('a sign-in that came back through an organisation the flow did not ask for', () => {
+  /** An organisation an attacker set up, wired to an identity provider they control. */
+  async function attackersOrg() {
+    const workosOrgId = unique('org_01');
+    const orgId = await seedOrg({ workosOrgId });
+    await t.pg.query(`update organizations set name = 'Your Company' where id = $1`, [orgId]);
+    organizationAt(workosOrgId, [['attacker.example', 'verified']]);
+    return { workosOrgId, orgId, slug: await slugOf(orgId) };
+  }
+
+  const attacker = () => workosUser({ email: `${unique('mallory')}@attacker.example` });
+
+  it.each([
+    ['the victim’s own click on “Sign in”', FROM_THIS_SITE],
+    ['a link on another site', { 'sec-fetch-site': 'cross-site' }],
+    [
+      'the identity provider’s initiate-login redirect',
+      { 'sec-fetch-site': 'cross-site', referer: 'https://idp.attacker.example/' },
+    ],
+  ] as Array<[string, Record<string, string>]>)(
+    'issues no session for a plain sign-in answered through an organisation’s SSO — from %s',
+    async (_label, headers) => {
+      // The attack: the attacker first planted their own AuthKit session in
+      // the victim's browser. The victim's next plain sign-in — valid state,
+      // valid PKCE — comes back as the attacker.
+      const org = await attackersOrg();
+      const who = attacker();
+
+      const result = await signIn(
+        who,
+        { authenticationMethod: 'SSO', organizationId: org.workosOrgId },
+        { headers, confirm: false },
+      );
+
+      expect(result.status).toBe(303);
+      expect(result.location).toBe('/sign-in/confirm');
+      expect(sessionCookieIssued(result)).toBe(false);
+      expect(result.cookies).toContain(
+        `${OAUTH_STATE_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`,
+      );
+      const [row] = await userRows('workos_user_id', who.id as string);
+      expect(await sessionsFor(row!.id)).toEqual([]);
+      // Parked: sealed, HttpOnly, for five minutes at most.
+      const header = result.cookies.find((c) =>
+        c.startsWith(`${SIGN_IN_CONFIRMATION_COOKIE_NAME}=c1.`),
+      );
+      expect(header?.split('; ')).toEqual(
+        expect.arrayContaining(['HttpOnly', 'Secure', 'SameSite=Lax', 'Max-Age=300']),
+      );
+      expect(await parkedValue(result.parked!)).toMatchObject({
+        userId: row!.id,
+        email: who.email,
+        signInMethod: 'sso',
+        ssoWorkosOrgId: org.workosOrgId,
+        organization: { name: 'Your Company', slug: org.slug },
+        reason: 'organization',
+      });
+      expect(audit.map((e) => e.action)).not.toContain('auth.login');
+    },
+  );
+
+  it('issues the session on the confirmation POST, once — the same cookie a second time issues nothing', async () => {
+    const org = await attackersOrg();
+    const who = attacker();
+    const parked = await signIn(
+      who,
+      { authenticationMethod: 'SSO', organizationId: org.workosOrgId },
+      { query: '?next=%2Fapp%2Fsomewhere', confirm: false },
+    );
+
+    const first = await confirm(parked.parked!);
+    const second = await confirm(parked.parked!);
+
+    expect(first.location).toBe('/app/somewhere');
+    expect(sessionCookieIssued(first)).toBe(true);
+    expect(first.cookies).toContain(
+      `${SIGN_IN_CONFIRMATION_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`,
+    );
+    expect(second.error).toBe('expired');
+    expect(sessionCookieIssued(second)).toBe(false);
+    const [row] = await userRows('workos_user_id', who.id as string);
+    expect(await sessionsFor(row!.id)).toHaveLength(1);
+    // The session it issued is the SSO one, and is recorded as such.
+    const facts = await t.pg.query<{ sign_in_method: string; sso_workos_org_id: string }>(
+      `select sign_in_method, sso_workos_org_id from sessions where user_id = $1`,
+      [row!.id],
+    );
+    expect(facts.rows).toEqual([{ sign_in_method: 'sso', sso_workos_org_id: org.workosOrgId }]);
+    expect(audit.filter((e) => e.action === 'auth.signup')).toHaveLength(1);
+  });
+
+  it('refuses a confirmation more than five minutes old', async () => {
+    const org = await attackersOrg();
+    const parked = await signIn(
+      attacker(),
+      { authenticationMethod: 'SSO', organizationId: org.workosOrgId },
+      { confirm: false },
+    );
+    const token = (await parkedValue(parked.parked!)).nonce;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + 5 * 60_000 + 1_000);
+      const late = await confirm(parked.parked!, { token });
+      expect(late.error).toBe('expired');
+      expect(sessionCookieIssued(late)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['no Origin at all', { origin: null }],
+    ['another site’s Origin', { origin: 'https://evil.example' }],
+    ['a cross-site fetch', { site: 'cross-site' }],
+    ['no token', { token: null }],
+    ['somebody else’s token', { token: 'A'.repeat(43) }],
+  ] as Array<[string, Parameters<typeof confirm>[1]]>)(
+    'refuses a confirmation with %s — the CSRF check — and leaves the cookie unspent',
+    async (_label, options) => {
+      const org = await attackersOrg();
+      const who = attacker();
+      const parked = await signIn(
+        who,
+        { authenticationMethod: 'SSO', organizationId: org.workosOrgId },
+        { confirm: false },
+      );
+
+      const forged = await confirm(parked.parked!, options);
+
+      expect(forged.error).toBe('expired');
+      expect(sessionCookieIssued(forged)).toBe(false);
+      const [row] = await userRows('workos_user_id', who.id as string);
+      expect(await sessionsFor(row!.id)).toEqual([]);
+      // Refused before the nonce was spent: the person's own answer still works.
+      expect(sessionCookieIssued(await confirm(parked.parked!))).toBe(true);
+    },
+  );
+
+  it('issues nothing when the person says it is not them, spends the cookie, and keeps the session they had', async () => {
+    const victim = workosUser();
+    await signIn(victim);
+    const [victimRow] = await userRows('workos_user_id', victim.id as string);
+    const { token: victimSession } = await generateToken('session');
+    await createSession(t.db, {
+      userId: victimRow!.id,
+      token: victimSession,
+      ipAddress: null,
+      userAgent: null,
+    });
+    const org = await attackersOrg();
+    const parked = await signIn(
+      attacker(),
+      { authenticationMethod: 'SSO', organizationId: org.workosOrgId },
+      { confirm: false, sessionToken: victimSession },
+    );
+
+    const declined = await confirm(parked.parked!, {
+      decision: 'cancel',
+      sessionToken: victimSession,
+    });
+
+    expect(declined.location).toBe('/sign-in');
+    expect(sessionCookieIssued(declined)).toBe(false);
+    expect((await sessionsFor(victimRow!.id)).every((s) => s.revoked_at === null)).toBe(true);
+    expect(warned('declined')).toBe(true);
+    expect((await confirm(parked.parked!)).error).toBe('expired');
+  });
+
+  it('leaves the expected flow alone: a deep link answered through the organisation it asked for signs in at once', async () => {
+    const workosOrgId = unique('org_01');
+    const slug = await slugOf(await seedOrg({ workosOrgId }));
+    organizationAt(workosOrgId, [['bigcorp.example', 'verified']]);
+
+    const result = await signIn(
+      workosUser({ email: `${unique('alice')}@bigcorp.example` }),
+      { authenticationMethod: 'SSO', organizationId: workosOrgId },
+      { query: `?org=${slug}`, headers: FROM_THIS_SITE, confirm: false },
+    );
+
+    expect(result.parked).toBeNull();
+    expect(sessionCookieIssued(result)).toBe(true);
+    expect(result.location).toBe('/app');
+  });
+
+  it('holds back a deep link answered through a different organisation', async () => {
+    const asked = unique('org_01');
+    const slug = await slugOf(await seedOrg({ workosOrgId: asked }));
+    const org = await attackersOrg();
+
+    const result = await signIn(
+      attacker(),
+      { authenticationMethod: 'SSO', organizationId: org.workosOrgId },
+      { query: `?org=${slug}`, headers: FROM_THIS_SITE, confirm: false },
+    );
+
+    expect(result.location).toBe('/sign-in/confirm');
+    expect(sessionCookieIssued(result)).toBe(false);
+  });
+
+  it('holds back a sign-in WorkOS answered from a session it reused without asking, whatever it names', async () => {
+    const anHourAgo = Math.floor(Date.now() / 1000) - 3600;
+
+    const result = await signIn(
+      workosUser(),
+      { authenticationMethod: 'Password', accessToken: accessTokenAuthenticatedAt(anHourAgo) },
+      { confirm: false },
+    );
+
+    expect(result.location).toBe('/sign-in/confirm');
+    expect(await parkedValue(result.parked!)).toMatchObject({
+      reason: 'reused-session',
+      signInMethod: 'password',
+      ssoWorkosOrgId: null,
+      organization: null,
+    });
+  });
+
+  it('signs a fresh plain sign-in that named no organisation in at once', async () => {
+    const result = await signIn(
+      workosUser(),
+      { authenticationMethod: 'Password' },
+      { confirm: false },
+    );
+
+    expect(result.parked).toBeNull();
+    expect(sessionCookieIssued(result)).toBe(true);
+  });
+
+  it('shows the organisation as the claim it is, from the cookie alone', async () => {
+    const org = await attackersOrg();
+    const parked = await signIn(
+      attacker(),
+      { authenticationMethod: 'SSO', organizationId: org.workosOrgId },
+      { confirm: false },
+    );
+
+    const view = await confirmationView(
+      await deriveSignInConfirmationKey(COOKIE_PASSWORD),
+      parked.parked!,
+    );
+
+    expect(view).toMatchObject({
+      sso: true,
+      organization: { name: 'Your Company', slug: org.slug },
+      reason: 'organization',
+    });
+    expect(
+      await confirmationView(await deriveSignInConfirmationKey(COOKIE_PASSWORD), 'c1.x.y'),
+    ).toBeNull();
   });
 });
 
@@ -1236,6 +1849,44 @@ describe('just-in-time membership', () => {
     expect(result.error).toBe('no-seat');
     expect((await userRows('id', existing.id))[0]?.workos_user_id).toBe(who.id);
     expect(audit.find((e) => e.action === 'auth.identity_linked')?.orgId).toBe(orgId);
+  });
+
+  it('does not re-admit somebody the organisation removed, and files who was turned away (review S4)', async () => {
+    // Removal deleted the membership and left nothing behind: still in the
+    // identity provider, the person rejoined as a viewer at their next sign-in.
+    const { workosOrgId, orgId } = await ssoOrg();
+    const who = workosUser({ email: `${unique('gone')}@bigcorp.example` });
+    await signIn(who, { authenticationMethod: 'SSO', organizationId: workosOrgId });
+    const [row] = await userRows('workos_user_id', who.id as string);
+    const member = (
+      await t.pg.query<{ id: string }>(
+        `select id from org_members where org_id = $1 and user_id = $2`,
+        [orgId, row!.id],
+      )
+    ).rows[0]!;
+    const founder = (
+      await t.pg.query<{ created_by: string }>(
+        `select created_by from organizations where id = $1`,
+        [orgId],
+      )
+    ).rows[0]!.created_by;
+    await removeMember(t.db, { orgId, memberId: member.id, removedBy: founder }, () => {});
+    audit = [];
+
+    const result = await signIn(who, { authenticationMethod: 'SSO', organizationId: workosOrgId });
+
+    // Signed in — to a personal organisation of their own — and not back in.
+    expect(result.error).toBeNull();
+    const memberships = await membershipsOf(row!.id);
+    expect(memberships.map((m) => m.org_id)).not.toContain(orgId);
+    expect(audit.map((e) => e.action)).not.toContain('member.jit_joined');
+    expect(audit.filter((e) => e.action === 'member.jit_denied')).toEqual([
+      expect.objectContaining({
+        orgId,
+        outcome: 'error',
+        metadata: expect.objectContaining({ reason: 'removed', targetEmail: who.email }),
+      }),
+    ]);
   });
 
   it('never reinstates a suspended member', async () => {

@@ -76,10 +76,11 @@ export default async function SignInPage({ searchParams }: PageProps<'/sign-in'>
 
           <Alert tone="warning" title="Check that this is your organisation">
             <p>
-              This link signs you in with the single sign-on of the organisation{' '}
-              <code className="font-mono font-medium">{ssoOrg}</code>. Continue only if that is your
-              company’s organisation on xecret. If you did not expect this link, sign in the usual
-              way instead.
+              This link signs you in with the single sign-on of an organisation whose address on
+              xecret is <code className="font-mono font-medium">{ssoOrg}</code> — chosen by whoever
+              set it up, so it proves nothing on its own. Continue only if you know that is your
+              company’s organisation. If you did not expect this link, sign in the usual way
+              instead.
             </p>
           </Alert>
 
