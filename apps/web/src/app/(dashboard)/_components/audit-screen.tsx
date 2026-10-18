@@ -89,6 +89,10 @@ const ACTIONS = [
   'auth.reauthenticated',
   'auth.logout',
   'auth.autolock_changed',
+  'org.sso.enabled',
+  'org.sso.portal_link_created',
+  'org.sso.required_toggled',
+  'org.sso.jit_toggled',
 ] as const;
 
 interface Filters {
@@ -719,6 +723,8 @@ export function describeEvent(event: AuditEvent): string {
     );
   }
   if (typeof m['deviceName'] === 'string') parts.push(m['deviceName']);
+  // A setting's new value — `sso_required`, the just-in-time opt-in.
+  if (typeof m['enabled'] === 'boolean') parts.push(m['enabled'] ? 'switched on' : 'switched off');
   if (typeof m['reason'] === 'string' && event.outcome !== 'success') parts.push(m['reason']);
 
   return parts.join(' · ');

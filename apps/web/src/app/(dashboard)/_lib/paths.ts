@@ -141,6 +141,10 @@ export const apiPath = {
   /** The organisation's custom roles. */
   roles: (org: string): string => `${apiPath.org(org)}/roles`,
   role: (org: string, roleId: string): string => `${apiPath.roles(org)}/${segment(roleId)}`,
+  /** The organisation's single sign-on: status, turning it on, and its two policies. */
+  sso: (org: string): string => `${apiPath.org(org)}/sso`,
+  /** `POST` mints a WorkOS Admin Portal link for setting up the identity provider. */
+  ssoPortal: (org: string): string => `${apiPath.sso(org)}/portal`,
   serviceTokens: (org: string): string => `${apiPath.org(org)}/tokens/service`,
   cliTokens: (org: string): string => `${apiPath.org(org)}/tokens/cli`,
   token: (org: string, kind: 'cli' | 'service', tokenId: string): string =>

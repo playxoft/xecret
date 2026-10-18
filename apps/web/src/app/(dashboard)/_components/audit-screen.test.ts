@@ -27,6 +27,13 @@ function event(action: string, metadata: Record<string, unknown>): AuditEvent {
 }
 
 describe('describeEvent', () => {
+  it('says which way an SSO policy switch moved', () => {
+    expect(describeEvent(event('org.sso.required_toggled', { enabled: true }))).toBe('switched on');
+    expect(describeEvent(event('org.sso.jit_toggled', { enabled: false }))).toBe('switched off');
+    // Anything but a boolean says nothing rather than something wrong.
+    expect(describeEvent(event('org.sso.jit_toggled', { enabled: 'true' }))).toBe('');
+  });
+
   it('names the custom role a promotion to owner cleared', () => {
     const line = describeEvent(
       event('member.role_changed', {
