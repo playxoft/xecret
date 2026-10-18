@@ -1,7 +1,9 @@
 # WorkOS environments and the organisation link
 
 What an operator does when an organisation's single sign-on link belongs to the wrong WorkOS
-environment, and the checks that keep it from happening. The design is in
+environment, and the checks that keep it from happening — and (§4) the logout redirect each
+environment needs before the build that ends AuthKit sessions at sign-out is deployed, with the
+checks to make on Staging. The design is in
 `docs/architecture/database-schema.md` (§2, `workos_org_id`, `workos_client_id` and
 `workos_home`) and `docs/security/threat-model.md` (T13).
 
@@ -123,7 +125,38 @@ same statement).
 The organisation is now as if SSO had never been turned on. An owner turns it on again from the
 production deployment, which writes a link in the right environment and files `org.sso.enabled`.
 
-## 4. What still needs a person
+## 4. The logout redirect, in both environments, before deploying
+
+Signing out of xecret also ends the person's AuthKit session: `DELETE /api/auth/session`
+revokes the xecret session, then answers WorkOS's logout URL for the AuthKit session it came
+from, with `return_to=<origin>/sign-in`, and the dashboard sends the browser there. "This isn't
+me" on a held-back sign-in goes the same way, returning to `<origin>/sign-in?error=declined`.
+WorkOS returns the browser only to a logout redirect configured for that environment.
+
+1. **Before deploying the build that does this, add `<origin>/sign-in` as a logout redirect in
+   both WorkOS environments** — Staging (`http://localhost:3030/sign-in`, and every staging
+   deployment's origin) and Production (the production origin). Otherwise every sign-out can
+   land on a WorkOS error page instead of the sign-in page (step 2). Nobody stays signed in to
+   xecret either way — its session is revoked before the browser is sent anywhere — but every
+   person who signs out meets the error. If the environment matches redirects exactly, query
+   string included, add `<origin>/sign-in?error=declined` too.
+2. **Do not count on a fallback.** WorkOS may answer a `return_to` it does not know with an
+   error page rather than its default redirect; which one it does is to be verified live, on
+   Staging, not assumed — so step 1 comes first, not after the first complaint.
+3. **Check on Staging**, with a person, after deploying there:
+   - **The decline path, with only `<origin>/sign-in` allowed.** Configure `/sign-in` alone, get
+     a sign-in held back (single sign-on through `org_test_idp` from the plain "Sign in" button
+     always is), choose "This isn't me", and expect `/sign-in?error=declined` with its sentence.
+     If WorkOS refuses it because of the query string, add the `?error=declined` URL to both
+     environments and record that here.
+   - **Sign-out when the AuthKit session has already ended** — expired, or ended in another tab
+     or from the WorkOS dashboard. The logout URL then names a session WorkOS no longer has;
+     expect the browser on `/sign-in` all the same, not on a WorkOS error page.
+   - **An unconfigured `return_to`.** Remove the redirect for a moment and sign out, to see what
+     WorkOS really does without it (step 2). That is what Production would do if step 1 were
+     missed.
+
+## 5. What still needs a person
 
 - `check:env` does not read the database, so it cannot tell you `workos_home` is unrecorded on a
   self-hosted database; the first owner who turns SSO on is told instead.

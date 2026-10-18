@@ -532,7 +532,10 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
    * a client named.
    *
    * `returnTo` must be one of the environment's configured logout redirects in
-   * the WorkOS dashboard, or WorkOS uses its default instead.
+   * the WorkOS dashboard. What WorkOS does with any other — fall back to its
+   * default, or show an error page — is to be verified live, not assumed
+   * (`docs/operations/workos-environments.md` §4), which is why the redirect is
+   * configured before this is deployed.
    */
   logoutUrl(params: { sessionId: string; returnTo: string }): string {
     if (!WORKOS_SESSION_ID_PATTERN.test(params.sessionId)) {

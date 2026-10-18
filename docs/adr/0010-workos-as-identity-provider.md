@@ -178,7 +178,10 @@ flow. The binding is `__Host-xecret_oauth_state` (`packages/core/src/auth/oauth-
   same `safeRedirectPath` the dashboard uses — which re-checks its own normalised output, so a
   value that only becomes `//host` or carries a `\` after normalising is refused rather than
   passed. The state cookie itself refuses a `next` that starts with `//`. And the callback runs
-  `safeRedirectPath` again on what the cookie says before it redirects. The signature already
+  `safeRedirectPath` again on what the cookie says before it redirects. (Since WS-5's reviews,
+  the login route and the callback — and the sign-in confirmation, which came later — use
+  `safePostSignInPath`: the same check, refusing any API route and any sign-in screen as well;
+  `docs/architecture/api.md` has the rule.) The signature already
   means only this server can write `next`; the repetition is there because one bug in one
   check would otherwise be an open redirect on the sign-in path, which is where a phishing link
   most wants one.

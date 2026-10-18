@@ -192,13 +192,18 @@ AuthKit needs xecret to *start* a sign-in rather than finish one, it sends the
 browser there. A callback xecret did not start itself is refused as expired,
 because there is no state cookie in the browser to match it.
 
-**Sign-out redirect.** Add `<XECRET_PUBLIC_URL>/sign-in` as a logout redirect.
-Signing out of xecret also ends the person's AuthKit session — the dashboard
-follows WorkOS's logout URL for it — and WorkOS sends the browser back only to a
-redirect it knows; otherwise it uses its default. Declining a held-back sign-in
-("This isn't me") ends that sign-in's AuthKit session the same way and returns to
+**Sign-out redirect.** Add `<XECRET_PUBLIC_URL>/sign-in` as a logout redirect,
+in each WorkOS environment you use, **before** deploying. Signing out of xecret
+also ends the person's AuthKit session — the dashboard follows WorkOS's logout
+URL for it — and WorkOS sends the browser back only to a redirect it knows.
+What it does with one it does not know — its default redirect, or an error page
+— is for you to verify on Staging, not to assume; configured first, it never
+matters. Declining a held-back sign-in ("This isn't me") ends that sign-in's
+AuthKit session the same way and returns to
 `<XECRET_PUBLIC_URL>/sign-in?error=declined`, so allow that too if your WorkOS
-environment matches redirects exactly.
+environment matches redirects exactly. The checks worth making on Staging are in
+[WorkOS environments and the organisation link](operations/workos-environments.md),
+§4.
 
 **Authentication methods.** Enable email and password, and Google. In Staging
 WorkOS can use its own demonstration Google credentials; in **Production**,
@@ -237,10 +242,14 @@ UPDATE workos_home SET client_id = '<your Production WORKOS_CLIENT_ID>';
 INSERT INTO workos_home (id, client_id) VALUES (true, '<your Production WORKOS_CLIENT_ID>');
 ```
 
-`check:env` does not read the database, so it cannot tell you this is undone;
-until it is, the first owner to press "Turn on single sign-on" is told that the
-deployment's database has no matching WorkOS environment recorded. Nothing else
-reads the table. To undo a link written from the wrong environment, see
+`check:env` does not read the database, so it cannot tell you this is undone.
+Until it is, the table still names Playxoft's environment, so the first owner to
+press "Turn on single sign-on" is refused (409) as if from another WorkOS
+environment's deployment, with a message — and a warning in the log, beside the
+client id recorded and this deployment's — that names the `UPDATE` above and
+this section. (On a database where the row is missing, the refusal says no
+environment is recorded, and points here too.) Nothing else reads the table.
+To undo a link written from the wrong environment, see
 [WorkOS environments and the organisation link](operations/workos-environments.md).
 
 **Magic Auth.** Enable it, and leave WorkOS's default Magic Auth email on. The

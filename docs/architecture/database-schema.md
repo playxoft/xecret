@@ -132,7 +132,9 @@ parks the outcome in a sealed five-minute cookie carrying a random nonce, and `P
 /api/auth/confirm` inserts that nonce's SHA-256 here before issuing anything — a second use of
 the same cookie collides with the primary key. A row past `expires_at` stops nothing (the cookie
 is refused on its age first) and the hourly scheduled job deletes it
-(`deleteSpentSignInConfirmations`, beside the retained-vault purge).
+(`deleteSpentSignInConfirmations`, beside the retained-vault purge) — once it is a minute past,
+not at the instant: the cookie's age is counted in whole seconds and is accepted for up to a
+second beyond `expires_at`, and a replay in that second must still find its row.
 
 ```sql
 CREATE TABLE reauthentications (                 -- 0019
