@@ -2518,6 +2518,50 @@ describe('just-in-time membership', () => {
     expect(audit.map((e) => e.action)).not.toContain('member.jit_joined');
   });
 
+  it.each([
+    ['through its own deep link', 'not-member', true],
+    ['from the plain sign-in button', 'organization', false],
+  ] as const)(
+    'does not tell a suspended member, signing in %s, that continuing makes them a member (review round 3)',
+    async (_label, reason, deep) => {
+      // Their membership is not an active one, so the sign-in is held back —
+      // rightly — but the join it planned would answer `already-member` and
+      // do nothing, so the page must not promise one.
+      const { workosOrgId, orgId } = await ssoOrg();
+      const who = workosUser({ email: `${unique('sus')}@bigcorp.example` });
+      const row = await seedUser({ workosUserId: who.id as string, email: who.email as string });
+      await addMember(orgId, row.id, 'developer', 'suspended');
+      const link = deep ? await deepLink(await slugOf(orgId)) : null;
+
+      const parked = await signIn(
+        who,
+        { authenticationMethod: 'SSO', organizationId: workosOrgId },
+        {
+          confirm: false,
+          ...(link === null ? {} : { query: link.query, headers: link.headers }),
+        },
+      );
+
+      expect(parked.location).toBe('/sign-in/confirm');
+      expect(await parkedValue(parked.parked!)).toMatchObject({ reason, joins: false });
+      const view = await confirmationView(
+        await deriveSignInConfirmationKey(COOKIE_PASSWORD),
+        parked.parked!,
+      );
+      expect(view).toMatchObject({ reason, joins: false });
+
+      // And "Continue" bears that out: still suspended, nothing joined.
+      const continued = await confirm(parked.parked!);
+      expect(sessionCookieIssued(continued)).toBe(true);
+      expect(await membershipsOf(row.id)).toContainEqual({
+        org_id: orgId,
+        role: 'developer',
+        status: 'suspended',
+      });
+      expect(audit.map((e) => e.action)).not.toContain('member.jit_joined');
+    },
+  );
+
   it('joins nobody until the person continues, so "This isn’t me" leaves no trace in the organisation (review round 2, L6)', async () => {
     const { workosOrgId, orgId } = await ssoOrg();
     const who = workosUser({ email: `${unique('new')}@bigcorp.example` });

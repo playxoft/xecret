@@ -154,11 +154,19 @@ function Explanation({ view }: { view: ConfirmationView }) {
         (<code className="font-mono break-all">{view.organization.slug}</code>)
       </>
     );
+    // "Yet", and the sentence after it, only when continuing really does make
+    // the account a member: not for an organisation that admits nobody this
+    // way, nor for one that removed or suspended this account (review round 3).
+    const notMember =
+      view.reason !== 'not-member'
+        ? ''
+        : view.joins
+          ? ', which this account does not belong to yet'
+          : ', which this account is not an active member of';
     return (
       <>
         You were signed in as {account} through the single sign-on of {claim}
-        {view.reason === 'not-member' ? ', which this account does not belong to yet' : ''}.{' '}
-        {view.joins ? 'Continuing makes this account a member of it. ' : ''}
+        {notMember}. {view.joins ? 'Continuing makes this account a member of it. ' : ''}
         Anybody can create an organisation and give it any name, so the name alone proves nothing.
       </>
     );

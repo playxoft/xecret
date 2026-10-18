@@ -25,6 +25,7 @@ import { createAuditBuilder } from '@xecret/core/audit';
 import type { AuditRecord, SignInMethod } from '@xecret/core/audit';
 import {
   createSession,
+  findMembership,
   findOrgByWorkosOrgId,
   findSessionByTokenHash,
   joinOrganizationJustInTime,
@@ -332,9 +333,15 @@ export async function prepareSignIn(
     ssoOrganization !== null && memberships.some((m) => m.organization.id === ssoOrganization.id);
   const joinCandidate = ssoOrganization !== null && ssoOrganization.jitJoinEnabled && !ssoMember;
   // Whether the join would actually happen, for the confirmation page to say
-  // so: a removed person is a candidate the join will turn away.
+  // so — asked the way the join itself asks, under its lock, at issue. Two
+  // candidates it will turn away: a removed person, and a suspended member
+  // (review round 3). `memberships` lists active ones only, so somebody
+  // suspended here reads as a candidate, and would be told "Continuing makes
+  // this account a member of it" — and then the join answers `already-member`
+  // and nothing happens. Any membership row at all, then, means no join.
   const joins =
     joinCandidate &&
+    (await findMembership(services.db, ssoOrganization.id, user.id)) === null &&
     !(await wasRemovedFrom(services.db, { orgId: ssoOrganization.id, userId: user.id }));
 
   // ── 6. sso_required, at sign-in ──────────────────────────────────────────
