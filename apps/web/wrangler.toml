@@ -1,4 +1,7 @@
 name = "xecret"
+# Pin the Playxoft account: the machine deploying may be signed in to more than
+# one Cloudflare account, and a non-interactive deploy cannot choose between them.
+account_id = "b2586a041a13103148966289d06c10d4"
 # OpenNext's generated handler, wrapped to add the hourly Cron Trigger below
 # (`worker.ts` says how; the retained-vault purge is the job). Build first:
 # `.open-next/worker.js` is what it imports.
