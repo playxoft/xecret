@@ -6,6 +6,8 @@ import { MissingBindingError } from './bindings';
 import {
   AuthenticationStepRequired,
   callbackUrl,
+  CONNECTION_PAGE_LIMIT,
+  CONNECTION_PAGE_SIZE,
   IdentityProviderUnavailableError,
   lastActiveAuthentication,
   MAX_CODE_LENGTH,
@@ -737,7 +739,71 @@ describe('the organisation SSO calls (WS-5)', () => {
     expect(await provider.listConnections('org_01BIGCORP')).toEqual([
       { id: 'conn_01', state: 'active', type: 'OktaSAML' },
     ]);
-    expect(listConnections).toHaveBeenCalledWith({ organizationId: 'org_01BIGCORP' });
+    expect(listConnections).toHaveBeenCalledWith({
+      organizationId: 'org_01BIGCORP',
+      limit: CONNECTION_PAGE_SIZE,
+    });
+  });
+
+  it('follows every page, so a connection past the first ten is not missed (review C7)', async () => {
+    const { provider, listConnections } = ssoStub();
+    listConnections
+      .mockResolvedValueOnce({
+        data: [{ id: 'conn_01', state: 'draft', type: 'OktaSAML' }],
+        listMetadata: { after: 'cursor_1' },
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: 'conn_02', state: 'active', type: 'GenericOIDC' }],
+        listMetadata: { after: null },
+      });
+
+    expect(await provider.listConnections('org_01BIGCORP')).toEqual([
+      { id: 'conn_01', state: 'draft', type: 'OktaSAML' },
+      { id: 'conn_02', state: 'active', type: 'GenericOIDC' },
+    ]);
+    expect(listConnections).toHaveBeenNthCalledWith(2, {
+      organizationId: 'org_01BIGCORP',
+      limit: CONNECTION_PAGE_SIZE,
+      after: 'cursor_1',
+    });
+  });
+
+  it('stops at the page cap, and on a cursor that does not move', async () => {
+    const { provider, listConnections } = ssoStub();
+    listConnections.mockImplementation(async ({ after }: { after?: string }) => ({
+      data: [{ id: `conn_${after ?? 'first'}`, state: 'draft', type: 'OktaSAML' }],
+      listMetadata: { after: `${after ?? ''}x` },
+    }));
+
+    expect(await provider.listConnections('org_01BIGCORP')).toHaveLength(CONNECTION_PAGE_LIMIT);
+    expect(listConnections).toHaveBeenCalledTimes(CONNECTION_PAGE_LIMIT);
+
+    listConnections.mockReset();
+    listConnections.mockResolvedValue({
+      data: [{ id: 'conn_01', state: 'draft', type: 'OktaSAML' }],
+      listMetadata: { after: 'same' },
+    });
+    await provider.listConnections('org_01BIGCORP');
+    expect(listConnections).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads a connection state it does not know as inactive, never as active (review C6)', async () => {
+    const { provider, listConnections } = ssoStub();
+    listConnections.mockResolvedValue({
+      data: [
+        { id: 'conn_01', state: 'suspended', type: 'OktaSAML' },
+        { id: 'conn_02', state: undefined, type: 'OktaSAML' },
+      ],
+    });
+
+    expect((await provider.listConnections('org_01BIGCORP')).map((c) => c.state)).toEqual([
+      'inactive',
+      'inactive',
+    ]);
+  });
+
+  it('says which WorkOS environment it talks to, for the link to record (review S9)', () => {
+    expect(ssoStub().provider.clientId).toBe('client_01TESTCLIENT');
   });
 
   it('deletes an orphaned WorkOS organisation by id', async () => {

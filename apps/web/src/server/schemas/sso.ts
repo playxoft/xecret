@@ -39,7 +39,11 @@ export type SsoSettingsPatch = z.infer<typeof ssoSettingsPatchSchema>;
 export interface SsoStatusPayload {
   /** Whether SSO has been turned on: a WorkOS organisation exists and is linked. */
   enabled: boolean;
-  /** Members must sign in through the organisation's identity provider. Owners are exempt. */
+  /**
+   * Non-owner members reach this organisation only through a session (or CLI
+   * token) from its own identity provider — checked on every request, so it
+   * takes effect at once. Owners are exempt.
+   */
   ssoRequired: boolean;
   /** Somebody the identity provider signs in may join as a viewer, while seats last. */
   jitJoinEnabled: boolean;
@@ -59,10 +63,30 @@ export interface SsoStatusPayload {
   /** The organisation's domains at WorkOS and their verification. `null` as above. */
   domains: SsoDomainSummary[] | null;
   /**
+   * How many active non-owner members have an address outside the verified
+   * domains — people the identity provider cannot sign in (an SSO sign-in is
+   * believed only for a verified domain), so who lose this organisation the
+   * moment single sign-on is required. `null` while the domains are unknown.
+   */
+  membersOutsideVerifiedDomains: number | null;
+  /**
    * `false` when SSO is on but WorkOS did not answer for the two lists above.
    * The rest of this payload is this deployment's own and is always current.
    */
   providerReachable: boolean;
+}
+
+/**
+ * The live credentials `sso_required` now holds back (review S3): sessions and
+ * CLI tokens of non-owner members that did not come through this
+ * organisation's own single sign-on. Each loses this organisation on its next
+ * request — `resolveOrg` checks every one — and keeps every other organisation
+ * its holder belongs to. Returned by the `PATCH` that leaves the requirement
+ * on, for the settings to say how many people will be asked to sign in again.
+ */
+export interface NonSsoAccessPayload {
+  sessions: number;
+  cliTokens: number;
 }
 
 /**
@@ -77,6 +101,7 @@ export function toSsoStatus(
   provider: {
     connections: SsoConnectionSummary[] | null;
     domains: SsoDomainSummary[] | null;
+    membersOutsideVerifiedDomains: number | null;
     reachable: boolean;
   },
 ): SsoStatusPayload {
@@ -89,6 +114,7 @@ export function toSsoStatus(
     addon: { enabled: addonEnabled },
     connections: enabled ? provider.connections : null,
     domains: enabled ? provider.domains : null,
+    membersOutsideVerifiedDomains: enabled ? provider.membersOutsideVerifiedDomains : null,
     providerReachable: enabled ? provider.reachable : true,
   };
 }

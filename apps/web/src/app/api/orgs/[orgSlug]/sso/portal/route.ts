@@ -5,9 +5,12 @@ import { json } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
 import {
-  authorizeSsoSettings,
+  authorizeSsoAdministration,
+  forgetWorkosLists,
   requireBrowserSession,
+  requireFreshSignIn,
   requireSsoAddon,
+  requireThisWorkosEnvironment,
   ssoFailureReason,
   ssoProviderFailure,
   ssoResource,
@@ -21,11 +24,20 @@ import { workosProvider } from '@/server/workos';
  * SAML or OIDC identity provider, and proves the organisation's domains by DNS.
  * xecret never handles the identity provider's metadata or certificates.
  *
- * `POST`, though it changes nothing here, because what it hands out is as good
- * as a credential for a few minutes: whoever opens the link decides which
- * identity provider vouches for this organisation's members. So it is minted
- * only for an owner or admin in a browser session, only once SSO is on and the
- * add-on is held, it is rate limited like a write and audited every time
+ * `POST`, though it changes nothing here, because what it hands out is
+ * **credential-grade** for a few minutes: whoever opens the link decides which
+ * identity provider vouches for this organisation's members — one that can
+ * then sign in as any of them. So it is minted only:
+ *
+ *  - for an **owner** (`sso.manage`; review S2 — an admin able to do this is an
+ *    admin able to sign in as an owner),
+ *  - in a browser session that **signed in again within the last ten minutes**
+ *    (`requireFreshSignIn` — the vault reset's lock one, reused, so a stolen
+ *    cookie or an unattended laptop is not enough),
+ *  - once SSO is on, in this deployment's WorkOS environment, with the add-on
+ *    held,
+ *
+ * rate limited like a write and audited every time
  * (`org.sso.portal_link_created`) — and the link itself is never logged,
  * stored or put in the audit record. `json()` marks the response `no-store`.
  *
@@ -38,6 +50,7 @@ type Params = { orgSlug: string };
 export const POST = authenticatedRoute<Params>(
   async ({ params, principal, services, audit, record }) => {
     requireBrowserSession(principal);
+    if (principal.kind !== 'user') throw errors.forbidden();
     await enforce(services.env, 'RL_MUTATION', rateLimitKey([actorId(principal)]));
 
     const scope = await resolveOrg(principal, params.orgSlug, services);
@@ -46,7 +59,7 @@ export const POST = authenticatedRoute<Params>(
     const file = { audit: orgAudit, record };
     const resource = ssoResource(organization.id);
 
-    authorizeSsoSettings(scope, file, ['org.sso.portal_link_created']);
+    authorizeSsoAdministration(scope, file, ['org.sso.portal_link_created']);
 
     if (organization.workosOrgId === null) {
       record(orgAudit.error('org.sso.portal_link_created', resource, 'invalidInput'));
@@ -55,11 +68,18 @@ export const POST = authenticatedRoute<Params>(
       );
     }
 
+    const provider = workosProvider(services.env);
+    requireThisWorkosEnvironment(organization, provider.clientId, file, [
+      'org.sso.portal_link_created',
+    ]);
     requireSsoAddon(scope, file, ['org.sso.portal_link_created']);
+    // Last of the gates, because it is the one the person can do something
+    // about in the moment: sign in again and come back.
+    await requireFreshSignIn(services, principal, file, organization.id);
 
     let link: string;
     try {
-      link = await workosProvider(services.env).generatePortalLink({
+      link = await provider.generatePortalLink({
         workosOrgId: organization.workosOrgId,
         returnUrl: `${publicOrigin(services.env)}/app/${encodeURIComponent(organization.slug)}/settings#single-sign-on`,
       });
@@ -69,6 +89,9 @@ export const POST = authenticatedRoute<Params>(
     }
 
     record(orgAudit.success('org.sso.portal_link_created', resource));
+    // What the portal is for is changing the connections and domains, so the
+    // settings ask WorkOS afresh once the person is back.
+    forgetWorkosLists(provider.clientId, organization.workosOrgId);
 
     return json({ link });
   },

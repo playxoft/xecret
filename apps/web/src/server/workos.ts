@@ -476,14 +476,53 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
    * for the check that `sso_required` has an active connection to require.
    * Copied field by field: nothing else WorkOS says about a connection leaves
    * this file.
+   *
+   * ── Every page, up to a cap ──
+   * WorkOS lists ten to a page unless asked otherwise, and the first page alone
+   * would let an organisation with an eleventh connection — the only active
+   * one, say — read as having none. So this asks for the largest page WorkOS
+   * serves ({@link CONNECTION_PAGE_SIZE}) and follows the cursor, for at most
+   * {@link CONNECTION_PAGE_LIMIT} pages: an organisation has a handful of
+   * connections, and a cursor that never ends is not a reason for one settings
+   * read to spend a Worker's subrequests. Past the cap the list is what was
+   * read, which can only under-report connections — never invent an active one.
+   *
+   * ── A state WorkOS adds later ──
+   * Reads as `inactive`, as an unknown domain state reads as `pending`: not
+   * active, which is the only distinction anything here acts on — and a value
+   * the dashboard has no label for would otherwise fail its render.
    */
   async listConnections(workosOrgId: string): Promise<SsoConnectionSummary[]> {
+    const connections: SsoConnectionSummary[] = [];
+    let after: string | undefined;
     try {
-      const { data } = await this.#api.sso.listConnections({ organizationId: workosOrgId });
-      return data.map(({ id, state, type }) => ({ id, state, type: String(type) }));
+      for (let page = 0; page < CONNECTION_PAGE_LIMIT; page += 1) {
+        const listed = await this.#api.sso.listConnections({
+          organizationId: workosOrgId,
+          limit: CONNECTION_PAGE_SIZE,
+          ...(after === undefined ? {} : { after }),
+        });
+        for (const { id, state, type } of listed.data) {
+          connections.push({ id, state: connectionState(state), type: String(type) });
+        }
+        const next = listed.listMetadata?.after;
+        if (typeof next !== 'string' || next === '' || next === after) break;
+        after = next;
+      }
     } catch (cause) {
       throw providerFailure(cause);
     }
+    return connections;
+  }
+
+  /**
+   * This deployment's WorkOS client id — which WorkOS *environment* it talks
+   * to. Recorded beside an organisation's `workos_org_id` when SSO is turned on
+   * and compared on every settings call (review S9), because an organisation id
+   * means something only in the environment that made it.
+   */
+  get clientId(): string {
+    return this.#config.clientId;
   }
 
   #toExchange(response: WorkosAuthentication): AuthorizationCodeExchange<WorkosIdentity> {
@@ -523,6 +562,26 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
         response.impersonator === undefined ? null : { email: response.impersonator.email },
     };
   }
+}
+
+/** The largest page WorkOS's list endpoints serve. */
+export const CONNECTION_PAGE_SIZE = 100;
+
+/** How many pages of connections one read follows — 500 connections, at most. */
+export const CONNECTION_PAGE_LIMIT = 5;
+
+const CONNECTION_STATES: ReadonlySet<string> = new Set([
+  'draft',
+  'active',
+  'inactive',
+  'validating',
+]);
+
+/** A connection state as the settings know them; anything else is not active. */
+function connectionState(state: unknown): SsoConnectionSummary['state'] {
+  return typeof state === 'string' && CONNECTION_STATES.has(state)
+    ? (state as SsoConnectionSummary['state'])
+    : 'inactive';
 }
 
 /** Longer than any access token WorkOS issues; anything bigger is not read. */
