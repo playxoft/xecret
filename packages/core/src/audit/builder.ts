@@ -9,6 +9,7 @@ import type {
   AuditEvent,
   AuditMetadata,
   AuditOutcome,
+  SignInConfirmationKind,
   SignInMethod,
 } from './types';
 
@@ -487,6 +488,13 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   if (metadata.signInMethod !== undefined && SIGN_IN_METHODS.has(metadata.signInMethod)) {
     clean.signInMethod = metadata.signInMethod;
   }
+  // The same: a closed set, checked rather than copied.
+  if (
+    metadata.confirmation !== undefined &&
+    SIGN_IN_CONFIRMATION_KINDS.has(metadata.confirmation)
+  ) {
+    clean.confirmation = metadata.confirmation;
+  }
   if (metadata.recoveryCodeCount !== undefined && Number.isFinite(metadata.recoveryCodeCount)) {
     clean.recoveryCodeCount = metadata.recoveryCodeCount;
   }
@@ -501,6 +509,12 @@ const SIGN_IN_METHODS: ReadonlySet<string> = new Set<SignInMethod>([
   'magic_auth',
   'passkey',
   'other',
+]);
+
+const SIGN_IN_CONFIRMATION_KINDS: ReadonlySet<string> = new Set<SignInConfirmationKind>([
+  'organization',
+  'not-member',
+  'reused-session',
 ]);
 
 /** Every action name there is — the only strings an action list may hold. */

@@ -10,6 +10,7 @@ import {
   clearedSignInConfirmationCookie,
   deriveSignInConfirmationKey,
   generateConfirmationNonce,
+  MAX_SEALED_CONFIRMATION_LENGTH,
   openSignInConfirmation,
   SIGN_IN_CONFIRMATION_COOKIE_NAME,
   SIGN_IN_CONFIRMATION_TTL_SECONDS,
@@ -43,9 +44,12 @@ function parked(over: Partial<SignInConfirmation> = {}): SignInConfirmation {
     purpose: 'sign-in',
     next: '/app',
     flowIssuedAt: NOW_SECONDS - 20,
+    freshAuthAt: null,
     lockOne: null,
     outcome: 'matched',
     reason: 'organization',
+    providerSessionId: 'session_01HATTACKERSESSION',
+    joins: false,
     issuedAt: NOW_SECONDS,
     ...over,
   };
@@ -66,6 +70,7 @@ describe('a round trip', () => {
     const value = parked({
       purpose: 'reauth',
       lockOne: 'armed',
+      freshAuthAt: NOW_SECONDS - 15,
       next: '/cli/authorize?port=50123&state=abc',
     });
 
@@ -91,6 +96,51 @@ describe('a round trip', () => {
 
     expect(signInConfirmationCookie(cookie).length).toBeLessThan(4096);
     expect(await openSignInConfirmation(await key(), cookie, NOW)).toEqual({ ok: true, value });
+  });
+
+  it('refuses to seal a value a browser would drop, rather than hand out a cookie nobody can confirm', async () => {
+    // Review round 2: the longest `next` beside a long organisation name in
+    // four-byte characters ran past 4 KB, and a browser drops such a cookie
+    // without a word — the confirmation page then says "expired" for a
+    // sign-in that never had a chance.
+    const value = parked({
+      email: `${'a'.repeat(300)}@example.com`,
+      organization: { name: '\u{1F600}'.repeat(100), slug: 'acme-corp' },
+      next: `/${'a'.repeat(MAX_NEXT_LENGTH - 1)}`,
+    });
+
+    await expect(sealSignInConfirmation(await key(), value)).rejects.toBeInstanceOf(RangeError);
+    // The same value with the default destination fits.
+    const cookie = await sealSignInConfirmation(await key(), { ...value, next: '/app' });
+    expect(cookie.length).toBeLessThanOrEqual(MAX_SEALED_CONFIRMATION_LENGTH);
+    expect(`${SIGN_IN_CONFIRMATION_COOKIE_NAME}=${cookie}`.length).toBeLessThanOrEqual(4096);
+  });
+
+  it('carries why it was held back, whether continuing joins, and the AuthKit session (review round 2)', async () => {
+    const value = parked({
+      reason: 'not-member',
+      joins: true,
+      providerSessionId: 'session_01H93ZY4F80QPBEZ1R5B2SHQG8',
+    });
+    const opened = await openSignInConfirmation(
+      await key(),
+      await sealSignInConfirmation(await key(), value),
+      NOW,
+    );
+    expect(opened).toEqual({ ok: true, value });
+  });
+
+  it('opens a cookie sealed before those fields existed, reading them as absent', async () => {
+    const value = parked();
+    const fields = JSON.parse(
+      utf8Decode(fromBase64Url((await sealSignInConfirmation(await key(), value)).split('.')[1]!)),
+    ) as Record<string, unknown>;
+    const { a: _a, w: _w, j: _j, ...roundOne } = fields;
+
+    expect(await openSignInConfirmation(await key(), await resealed(roundOne), NOW)).toEqual({
+      ok: true,
+      value: { ...value, freshAuthAt: null, providerSessionId: null, joins: false },
+    });
   });
 
   it('mints a fresh 256-bit nonce each time', () => {
@@ -213,6 +263,11 @@ describe('a validly signed payload the confirmation could not act on', () => {
     ['an unknown outcome', { k: 'adopted' }],
     ['an unknown reason', { r: 'because' }],
     ['a non-integer time', { t: 1.5 }],
+    ['a non-integer authentication time', { a: '1700000000' }],
+    ['a fresh authentication on an ordinary sign-in', { a: NOW_SECONDS }],
+    ['an AuthKit session id of the wrong shape', { w: 'session_01../../logout' }],
+    ['an AuthKit session id that is not a string', { w: 12 }],
+    ['a join flag that is not a boolean', { j: 'yes' }],
   ])('refuses %s', async (_label, over) => {
     expect(
       await openSignInConfirmation(await key(), await resealed({ ...base, ...over }), NOW),

@@ -44,6 +44,19 @@ export type AuditAction =
    * time its identity provider was bypassed.
    */
   | 'auth.sso_exemption_used'
+  /**
+   * A sign-in the callback held back for the person to confirm — it came back
+   * through an organisation the flow did not ask for, or one the account does
+   * not belong to, or from a session WorkOS reused without asking — was
+   * declined on the confirmation page: "This isn't me". Nothing was issued.
+   * `confirmation` says why it was held back, and `signInMethod` how WorkOS
+   * signed the person in. Filed in the organisation whose single sign-on it
+   * came through when that organisation is here, otherwise in the account's
+   * own — a run of these for one account is somebody being worked on. (A sign-in
+   * that was confirmed is the ordinary `auth.login` or `auth.signup`, carrying
+   * `confirmation` too.)
+   */
+  | 'auth.sign_in_declined'
   | 'auth.logout'
   | 'auth.login_failed'
   | 'auth.session_revoked'
@@ -660,10 +673,29 @@ export interface AuditMetadata {
    * named that this list does not know, recorded as such rather than guessed at.
    */
   signInMethod?: SignInMethod;
+  /**
+   * Why a sign-in was held back for the person to confirm before any session
+   * was issued — on the `auth.login` / `auth.signup` of one they confirmed, and
+   * on `auth.sign_in_declined` for one they did not. Absent from a sign-in that
+   * needed no confirmation.
+   *
+   *  - `organization` — it came back through an organisation the flow did not
+   *    ask for (the planted-session login CSRF's own signature).
+   *  - `not-member` — through the organisation's single sign-on, for an account
+   *    that was not yet a member of it.
+   *  - `reused-session` — WorkOS answered from an authentication that predates
+   *    the flow, for an account other than the last one on that browser.
+   *
+   * A closed set, checked against itself by the sanitiser.
+   */
+  confirmation?: SignInConfirmationKind;
 }
 
 /** See `AuditMetadata.signInMethod`. */
 export type SignInMethod = 'password' | 'oauth' | 'sso' | 'magic_auth' | 'passkey' | 'other';
+
+/** See `AuditMetadata.confirmation`. */
+export type SignInConfirmationKind = 'organization' | 'not-member' | 'reused-session';
 
 /** A custom role's ceiling as an audit record carries it: two level names. */
 export interface AuditAccessCeiling {
