@@ -3,13 +3,21 @@ import { randomUUID } from 'node:crypto';
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '../testing/pglite';
 import type { TestDatabase } from '../testing/pglite';
 import * as repositories from './index';
-import { findOrgByWorkosOrgId, setOrgWorkosOrgId, updateOrganization } from './organizations';
+import { joinOrganizationJustInTime } from './invitations';
+import {
+  findOrgByWorkosOrgId,
+  setOrgWorkosOrgId,
+  updateOrganization,
+  updateOrgSsoSettings,
+} from './organizations';
 import { RepositoryError } from './shared';
 
 /**
- * The organisation half of WS-1: the lazy `workos_org_id` link and the lookup
- * the sign-in callback resolves WorkOS organisations through — against a real
- * database, because both are about which rows a predicate admits.
+ * The organisation half of WS-1 and WS-5: the lazy `workos_org_id` link, the
+ * lookup the sign-in callback resolves WorkOS organisations through, the two
+ * SSO policy flags and their one setter, and the just-in-time join that reads
+ * the opt-in — against a real database, because all of it is about which rows a
+ * predicate admits and what a lock serialises.
  */
 
 let t: TestDatabase;
@@ -135,28 +143,101 @@ describe('setOrgWorkosOrgId', () => {
   });
 });
 
-describe('sso_required', () => {
-  it('defaults to false on a new organisation', async () => {
-    const orgId = await seedOrg();
-    const result = await t.pg.query<{ sso_required: boolean }>(
-      `select sso_required from organizations where id = $1`,
+describe('sso_required and jit_join_enabled', () => {
+  async function flagsOf(orgId: string) {
+    const result = await t.pg.query<{ sso_required: boolean; jit_join_enabled: boolean }>(
+      `select sso_required, jit_join_enabled from organizations where id = $1`,
       [orgId],
     );
-    expect(result.rows[0]?.sso_required).toBe(false);
+    return result.rows[0];
+  }
+
+  it('both default to false on a new organisation', async () => {
+    const orgId = await seedOrg();
+    expect(await flagsOf(orgId)).toEqual({ sso_required: false, jit_join_enabled: false });
   });
 
-  it('has no setter until the settings surface that owns it ships', () => {
-    // A tripwire, not a formality. The sign-in callback enforces the flag now
-    // (WS-2: `server/sign-in.ts`, tested against rows written directly). What
-    // is still missing is the surface that *sets* it, and the guards that must
-    // come with that surface — owner/admin only, the SAML add-on, and an answer
-    // to "who is exempt when the identity provider is misconfigured", without
-    // which turning the flag on can lock an organisation out of itself. If this
-    // fails, that surface is here (WS-5): make sure those guards are too, then
-    // update this test.
+  it('have exactly one setter, the one the SSO settings route guards', () => {
+    // The tripwire #100 left, now that WS-5 is here. The flag's setter shipped
+    // with the guards its absence was waiting for: owner/admin and a browser
+    // session, the SAML add-on and an active connection before it can be
+    // switched on (`app/api/orgs/[orgSlug]/sso/route.ts`), and a standing
+    // owner exemption in the callback (`server/sign-in.ts`, step 5) so a
+    // misconfigured identity provider cannot lock an organisation out. A
+    // *second* setter would be a way round those guards: if this fails, put
+    // them in front of it too, then update the list.
     // The match is deliberately broad: it may fail loudly on an innocent name,
     // and that is the trade — it can never pass silently on a guilty one.
-    expect(Object.keys(repositories).filter((name) => /sso/i.test(name))).toEqual([]);
+    expect(Object.keys(repositories).filter((name) => /sso/i.test(name))).toEqual([
+      'updateOrgSsoSettings',
+    ]);
+  });
+
+  it('switches either flag on for a linked organisation, and reports what it replaced', async () => {
+    const orgId = await seedOrg({ workosOrgId: workosOrg() });
+
+    const first = await updateOrgSsoSettings(t.db, orgId, { jitJoinEnabled: true });
+    expect(first.previous).toEqual({ ssoRequired: false, jitJoinEnabled: false });
+    expect(first.organization.jitJoinEnabled).toBe(true);
+    expect(first.organization.ssoRequired).toBe(false);
+
+    const second = await updateOrgSsoSettings(t.db, orgId, { ssoRequired: true });
+    expect(second.previous).toEqual({ ssoRequired: false, jitJoinEnabled: true });
+    expect(await flagsOf(orgId)).toEqual({ sso_required: true, jit_join_enabled: true });
+  });
+
+  it('refuses to switch either flag on for an organisation that never enabled SSO', async () => {
+    // Both flags are about the organisation's connection; with no WorkOS link
+    // there is none, and `sso_required` would refuse every member's every
+    // sign-in with nothing able to satisfy it.
+    const orgId = await seedOrg();
+
+    for (const patch of [{ ssoRequired: true }, { jitJoinEnabled: true }]) {
+      await expect(updateOrgSsoSettings(t.db, orgId, patch)).rejects.toMatchObject({
+        code: 'conflict',
+      });
+    }
+    expect(await flagsOf(orgId)).toEqual({ sso_required: false, jit_join_enabled: false });
+  });
+
+  it('always lets a flag be switched off', async () => {
+    const orgId = await seedOrg({ workosOrgId: workosOrg() });
+    await updateOrgSsoSettings(t.db, orgId, { ssoRequired: true, jitJoinEnabled: true });
+
+    const off = await updateOrgSsoSettings(t.db, orgId, { ssoRequired: false });
+
+    expect(off.previous.ssoRequired).toBe(true);
+    expect(await flagsOf(orgId)).toEqual({ sso_required: false, jit_join_enabled: true });
+  });
+
+  it('answers notFound for a soft-deleted or unknown organisation', async () => {
+    const deleted = await seedOrg({ workosOrgId: workosOrg(), deleted: true });
+
+    await expect(updateOrgSsoSettings(t.db, deleted, { ssoRequired: false })).rejects.toMatchObject(
+      { code: 'notFound' },
+    );
+    await expect(
+      updateOrgSsoSettings(t.db, randomUUID(), { ssoRequired: false }),
+    ).rejects.toMatchObject({ code: 'notFound' });
+  });
+
+  it('are held to the WorkOS link by the database too, for any writer that is not the setter', async () => {
+    // `organizations_sso_flags_need_link_check`, migration 0021: what holds for
+    // a psql session or the next caller that forgot.
+    const orgId = await seedOrg();
+
+    for (const column of ['sso_required', 'jit_join_enabled']) {
+      await expect(
+        t.pg.query(`update organizations set ${column} = true where id = $1`, [orgId]),
+      ).rejects.toMatchObject({ code: '23514' });
+    }
+    await expect(
+      t.pg.query(
+        `insert into organizations (id, name, slug, created_by, sso_required)
+         values ($1, 'Acme', $2, $3, true)`,
+        [randomUUID(), `acme-${randomUUID().slice(0, 8)}`, founderId],
+      ),
+    ).rejects.toMatchObject({ code: '23514' });
   });
 
   it('cannot be set through the organisation patch either', async () => {
@@ -170,13 +251,113 @@ describe('sso_required', () => {
     const NoSsoField: [SsoKey] extends [never] ? true : false = true;
     expect(NoSsoField).toBe(true);
 
-    const orgId = await seedOrg();
-    await updateOrganization(t.db, orgId, { name: 'Renamed', ssoRequired: true } as never);
+    const orgId = await seedOrg({ workosOrgId: workosOrg() });
+    await updateOrganization(t.db, orgId, {
+      name: 'Renamed',
+      ssoRequired: true,
+      jitJoinEnabled: true,
+    } as never);
 
-    const result = await t.pg.query<{ name: string; sso_required: boolean }>(
-      `select name, sso_required from organizations where id = $1`,
-      [orgId],
+    const result = await t.pg.query<{
+      name: string;
+      sso_required: boolean;
+      jit_join_enabled: boolean;
+    }>(`select name, sso_required, jit_join_enabled from organizations where id = $1`, [orgId]);
+    expect(result.rows[0]).toEqual({
+      name: 'Renamed',
+      sso_required: false,
+      jit_join_enabled: false,
+    });
+  });
+});
+
+describe('joinOrganizationJustInTime', () => {
+  /** An organisation linked to WorkOS, its founder an owner holding one seat. */
+  async function ssoOrg(over: { jit?: boolean; seatLimit?: number } = {}) {
+    const orgId = await seedOrg({ workosOrgId: workosOrg() });
+    await t.pg.query(
+      `update organizations set jit_join_enabled = $2, seat_limit = $3 where id = $1`,
+      [orgId, over.jit ?? true, over.seatLimit ?? 5],
     );
-    expect(result.rows[0]).toEqual({ name: 'Renamed', sso_required: false });
+    await t.pg.query(
+      `insert into org_members (id, org_id, user_id, role) values ($1, $2, $3, 'owner')`,
+      [randomUUID(), orgId, founderId],
+    );
+    return orgId;
+  }
+
+  async function newcomer() {
+    const id = randomUUID();
+    await t.pg.query(`insert into users (id, firebase_uid, email) values ($1, $2, $3)`, [
+      id,
+      `fb-${id}`,
+      `new-${id.slice(0, 8)}@example.com`,
+    ]);
+    return id;
+  }
+
+  async function membershipOf(orgId: string, userId: string) {
+    const result = await t.pg.query<{ role: string; status: string; invited_by: string | null }>(
+      `select role, status, invited_by from org_members where org_id = $1 and user_id = $2`,
+      [orgId, userId],
+    );
+    return result.rows;
+  }
+
+  it('admits nobody to an organisation that has not opted in, writing nothing', async () => {
+    // PR #114's constraint: linking an organisation to WorkOS must not, by
+    // itself, start admitting everybody its identity provider signs in.
+    const orgId = await ssoOrg({ jit: false });
+    const userId = await newcomer();
+
+    const joined = await joinOrganizationJustInTime(t.db, { orgId, userId, role: 'viewer' });
+
+    expect(joined).toEqual({ outcome: 'not-enabled' });
+    expect(await membershipOf(orgId, userId)).toEqual([]);
+  });
+
+  it('joins a newcomer at the role asked for — viewer — once the organisation opted in', async () => {
+    const orgId = await ssoOrg();
+    const userId = await newcomer();
+
+    const joined = await joinOrganizationJustInTime(t.db, { orgId, userId, role: 'viewer' });
+
+    expect(joined.outcome).toBe('joined');
+    expect(await membershipOf(orgId, userId)).toEqual([
+      { role: 'viewer', status: 'active', invited_by: null },
+    ]);
+  });
+
+  it('refuses for want of a seat, counting open invitations as taken', async () => {
+    const orgId = await ssoOrg({ seatLimit: 2 });
+    await t.pg.query(
+      `insert into invitations (id, org_id, email, role, token_hash, invited_by, expires_at)
+       values ($1, $2, 'invited@example.com', 'developer', $3, $4, now() + interval '1 day')`,
+      [
+        randomUUID(),
+        orgId,
+        new Uint8Array(32).map(() => Math.floor(Math.random() * 256)),
+        founderId,
+      ],
+    );
+    const userId = await newcomer();
+
+    const joined = await joinOrganizationJustInTime(t.db, { orgId, userId, role: 'viewer' });
+
+    expect(joined).toEqual({ outcome: 'no-seat' });
+    expect(await membershipOf(orgId, userId)).toEqual([]);
+  });
+
+  it('reads the opt-in itself, so switching it off stops the next join whatever its caller read', async () => {
+    // The callback checks the flag on the row it found first, to skip the
+    // transaction; this is the check that counts, under the lock.
+    const orgId = await ssoOrg();
+    await updateOrgSsoSettings(t.db, orgId, { jitJoinEnabled: false });
+    const userId = await newcomer();
+
+    const joined = await joinOrganizationJustInTime(t.db, { orgId, userId, role: 'viewer' });
+
+    expect(joined).toEqual({ outcome: 'not-enabled' });
+    expect(await membershipOf(orgId, userId)).toEqual([]);
   });
 });

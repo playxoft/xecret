@@ -505,6 +505,7 @@ describe('response shapes', () => {
     // shape, and the one every assertion in this file is about.
     workosOrgId: null,
     ssoRequired: false,
+    jitJoinEnabled: false,
     createdBy: '0198c0de-0000-7000-8000-00000000000a',
     createdAt: new Date('2026-01-01T10:00:00.000Z'),
     updatedAt: new Date('2026-02-01T10:00:00.000Z'),

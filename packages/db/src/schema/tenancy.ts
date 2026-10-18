@@ -59,20 +59,33 @@ export const organizations = pgTable(
      * When true, a member of this organisation may only sign in through its own
      * SSO connection.
      *
-     * The column ships ahead of its enforcement, and is inert until then: it is
-     * false on every row and nothing in the codebase can set it. The setter
-     * lands in the same change as the check in the sign-in callback (WS-2), and
-     * must not land before it, because the flag without the check is worse than
-     * neither — it tells an administrator that a bypass is closed when it is
-     * open. (`setOrgWorkosOrgId` says the same beside the setter that *does*
-     * exist.)
+     * Enforced by the sign-in callback (`server/sign-in.ts`, step 5) and set
+     * only by `updateOrgSsoSettings`, behind the organisation SSO settings route
+     * (owner or admin, the SAML add-on, an active connection to turn it on).
      *
-     * Enforcement always exempts at least one owner. An identity provider that
-     * is misconfigured after this is switched on would otherwise lock an
+     * Enforcement exempts the organisation's **owners**. An identity provider
+     * that is misconfigured after this is switched on would otherwise lock an
      * organisation out of its own account with no self-service way back, and
-     * "contact support" is not a recovery story for a secrets manager.
+     * "contact support" is not a recovery story for a secrets manager. An owner
+     * can switch the flag off in any case, so exempting them grants an owner's
+     * password nothing it did not already have.
+     *
+     * Never true without `workos_org_id` (`organizations_sso_flags_need_link_check`).
      */
     ssoRequired: boolean('sso_required').notNull().default(false),
+    /**
+     * When true, somebody signing in through this organisation's SSO connection
+     * — for an address in one of its verified domains — is made a member on the
+     * spot, as a `viewer`, while seats last (just-in-time provisioning).
+     *
+     * An explicit opt-in, off by default (migration 0021). Connecting an
+     * identity provider says who the organisation's people *are*; admitting
+     * all of them is a second decision, and an owner or admin takes it here.
+     * Read under the organisation's row lock by `joinOrganizationJustInTime`.
+     *
+     * Never true without `workos_org_id` (`organizations_sso_flags_need_link_check`).
+     */
+    jitJoinEnabled: boolean('jit_join_enabled').notNull().default(false),
     createdBy: uuid('created_by')
       .notNull()
       .references(() => users.id),
@@ -82,6 +95,12 @@ export const organizations = pgTable(
   },
   (t) => [
     check('organizations_seat_limit_check', sql`${t.seatLimit} >= 0`),
+    // Both SSO flags are about the organisation's connection, and an
+    // organisation with no WorkOS link has none — see migration 0021.
+    check(
+      'organizations_sso_flags_need_link_check',
+      sql`(${t.ssoRequired} = false and ${t.jitJoinEnabled} = false) or ${t.workosOrgId} is not null`,
+    ),
     // Read on every organisation creation, inside the transaction that creates
     // one: `countOrganizationsHeldBy` asks how many live organisations this
     // account created and is still in. The column order is the query's —

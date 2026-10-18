@@ -157,6 +157,7 @@ export {
   setOrgWorkosOrgId,
   softDeleteOrganization,
   updateOrganization,
+  updateOrgSsoSettings,
 } from './organizations';
 export type {
   Environment,
@@ -165,6 +166,8 @@ export type {
   OrganizationMembership,
   OrganizationPatch,
   OrganizationWithEntitlements,
+  OrgSsoSettingsChange,
+  OrgSsoSettingsPatch,
   Project,
   ProvisionedOrganization,
   ProvisionOrganizationParams,

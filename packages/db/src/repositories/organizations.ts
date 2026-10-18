@@ -166,15 +166,11 @@ export async function findOrgByWorkosOrgId(
  * There is deliberately no way to clear or change the link. Re-pointing an
  * organisation's SSO at another WorkOS Organization re-points it at another
  * identity provider, and that is not something one ordinary write should be
- * able to do quietly.
+ * able to do quietly. (It is also what keeps `organizations_sso_flags_need_link_check`
+ * true for good once a flag is on: the link it depends on cannot go away.)
  *
- * ── And deliberately no setter for `sso_required` ──
- * The column exists (migration 0018) and the sign-in callback enforces it
- * (`server/sign-in.ts` in the web app), but nothing sets it yet. The setter
- * ships with the organisation's SSO settings surface (WS-5), together with the
- * guards that surface owes it: owner/admin only, the SAML add-on, and a
- * standing exemption for when the identity provider is misconfigured — without
- * which switching the flag on can lock an organisation out of itself.
+ * The only caller passes an id its own `createOrganization` call returned in
+ * the same request — never one a client supplied (PR #100, note 7).
  */
 export async function setOrgWorkosOrgId(
   exec: Executor,
@@ -213,6 +209,91 @@ export async function setOrgWorkosOrgId(
     'conflict',
     'This organisation is already linked to a different WorkOS organization.',
   );
+}
+
+/** The two SSO policy flags, as the settings route changes them. Absent means "leave it". */
+export interface OrgSsoSettingsPatch {
+  ssoRequired?: boolean | undefined;
+  jitJoinEnabled?: boolean | undefined;
+}
+
+/** What {@link updateOrgSsoSettings} wrote, and what it replaced. */
+export interface OrgSsoSettingsChange {
+  organization: Organization;
+  /**
+   * Both flags as they stood under the lock, before the write — so the caller
+   * audits only a flag that actually moved, and says which way it moved,
+   * without a read of its own that a concurrent change could have overtaken.
+   */
+  previous: { ssoRequired: boolean; jitJoinEnabled: boolean };
+}
+
+/**
+ * Sets an organisation's SSO policy: `sso_required`, and the just-in-time
+ * opt-in (`jit_join_enabled`).
+ *
+ * The only writer of either column. The guards that decide *whether* the
+ * caller may — owner or admin, a browser session, the SAML add-on, and for
+ * `sso_required` an active connection at WorkOS — are the settings route's
+ * (`app/api/orgs/[orgSlug]/sso/route.ts`), because they need the request and
+ * the provider. What this enforces is the one rule that is about the row:
+ *
+ *  - **Neither flag can be switched on without the WorkOS link** — `conflict`.
+ *    Both are about the organisation's connection, and an organisation with no
+ *    `workos_org_id` has none; `sso_required` there would refuse every member's
+ *    every sign-in with nothing able to satisfy it. Checked under the row lock,
+ *    and held by `organizations_sso_flags_need_link_check` underneath for any
+ *    writer that is not this one.
+ *  - Switching a flag **off** is always allowed, linked or not: relaxing a
+ *    policy can never lock anybody out.
+ *
+ * Under the organisation's row lock (`FOR UPDATE`), the same lock an
+ * invitation acceptance and a just-in-time join take — so a sign-in that is
+ * deciding whether to admit somebody either sees this change or finishes
+ * before it, never half of it. `notFound` for an organisation that is absent
+ * or soft-deleted.
+ */
+export async function updateOrgSsoSettings(
+  exec: Executor,
+  orgId: string,
+  patch: OrgSsoSettingsPatch,
+): Promise<OrgSsoSettingsChange> {
+  return exec.transaction(async (tx) => {
+    const [current] = await tx
+      .select({
+        workosOrgId: organizations.workosOrgId,
+        ssoRequired: organizations.ssoRequired,
+        jitJoinEnabled: organizations.jitJoinEnabled,
+      })
+      .from(organizations)
+      .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
+      .limit(1)
+      .for('update');
+    if (!current) throw new RepositoryError('notFound', 'Organisation not found.');
+
+    const previous = { ssoRequired: current.ssoRequired, jitJoinEnabled: current.jitJoinEnabled };
+    const turningOn = patch.ssoRequired === true || patch.jitJoinEnabled === true;
+    if (turningOn && current.workosOrgId === null) {
+      throw new RepositoryError(
+        'conflict',
+        'Single sign-on is not set up for this organisation, so its sign-in policy cannot be changed yet.',
+      );
+    }
+
+    const [row] = await tx
+      .update(organizations)
+      .set({
+        ...(patch.ssoRequired === undefined ? {} : { ssoRequired: patch.ssoRequired }),
+        ...(patch.jitJoinEnabled === undefined ? {} : { jitJoinEnabled: patch.jitJoinEnabled }),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
+      .returning();
+    // The row is locked, so it cannot have gone between the read and the write.
+    if (!row) throw new RepositoryError('notFound', 'Organisation not found.');
+
+    return { organization: row, previous };
+  });
 }
 
 /**

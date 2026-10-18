@@ -354,6 +354,13 @@ export type JustInTimeJoin =
    * administrator suspended.
    */
   | { outcome: 'already-member' }
+  /**
+   * The organisation has not opted in to just-in-time membership
+   * (`jit_join_enabled`), or switched it off. Nothing is written, and nothing
+   * is refused either: the person signs in to whatever else they belong to,
+   * and joins this organisation the ordinary way, by invitation.
+   */
+  | { outcome: 'not-enabled' }
   /** No seat free. Nothing is written. */
   | { outcome: 'no-seat' };
 
@@ -363,10 +370,14 @@ export type JustInTimeJoin =
  *
  * The caller has already established *why* this person may join: the sign-in
  * came through this organisation's own identity provider, for an address in a
- * domain the organisation verified. This function decides only *whether there
- * is room*, and it decides it the way an invitation acceptance does — under the
- * organisation's row lock, counting seated members and open invitations
- * together — so two people signing in at once cannot both take the last seat.
+ * domain the organisation verified. This function decides *whether the
+ * organisation admits people that way at all* — its explicit opt-in,
+ * `jit_join_enabled`, off by default (PR #114's constraint for WS-5) — and
+ * *whether there is room*. Both are decided the way an invitation acceptance
+ * decides the seat: under the organisation's row lock, counting seated members
+ * and open invitations together. So two people signing in at once cannot both
+ * take the last seat, and an administrator switching the opt-in off is never
+ * raced past by a sign-in that read it a moment before.
  *
  * Outcomes rather than exceptions, because every one of them is an ordinary
  * answer the callback turns into something a person reads.
@@ -377,6 +388,11 @@ export async function joinOrganizationJustInTime(
 ): Promise<JustInTimeJoin> {
   return exec.transaction(async (tx) => {
     const organization = await lockOrganization(tx, params.orgId);
+
+    // First, before anything else is read: an organisation that has not opted
+    // in admits nobody this way, and whether there would have been a seat is
+    // then nobody's business.
+    if (!organization.jitJoinEnabled) return { outcome: 'not-enabled' };
 
     const [existing] = await tx
       .select({ id: orgMembers.id })
@@ -643,6 +659,7 @@ async function lockOrganization(tx: Executor, orgId: string) {
       name: organizations.name,
       slug: organizations.slug,
       seatLimit: organizations.seatLimit,
+      jitJoinEnabled: organizations.jitJoinEnabled,
     })
     .from(organizations)
     .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
