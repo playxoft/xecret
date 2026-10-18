@@ -472,6 +472,9 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   // and regeneration records were written to carry and never did.
   if (metadata.wrapKind !== undefined) clean.wrapKind = metadata.wrapKind;
   if (metadata.method !== undefined) clean.method = metadata.method;
+  // A boolean or nothing: a value that reached past the type with a cast is
+  // dropped, never coerced, so "on" cannot be read from a truthy string.
+  if (typeof metadata.enabled === 'boolean') clean.enabled = metadata.enabled;
   // Checked against the vocabulary rather than copied: the value is derived
   // from a provider's answer, and a free string here would be a provider-chosen
   // field in the one table this product promises is truthful.

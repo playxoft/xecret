@@ -626,6 +626,7 @@ describe('every declared metadata field survives sanitisation', () => {
       environmentCount: 6,
       operator: 'ops-alice',
       source: 'dashboard',
+      enabled: false,
     });
 
     expect(record.metadata).toEqual({
@@ -671,7 +672,24 @@ describe('every declared metadata field survives sanitisation', () => {
       environmentCount: 6,
       operator: 'ops-alice',
       source: 'dashboard',
+      // `false` is a value, not an absence: switching a policy off is the
+      // change most worth finding later.
+      enabled: false,
     });
+  });
+
+  it('keeps a setting’s new value only when it is a boolean', () => {
+    const on = builderWith().success('org.sso.required_toggled', null, { enabled: true });
+    expect(on.metadata).toEqual({ enabled: true });
+
+    // Reached past the type with a cast: a truthy string is dropped, never
+    // read as "switched on".
+    for (const smuggled of ['true', 1, null]) {
+      const record = builderWith().success('org.sso.jit_toggled', null, {
+        enabled: smuggled as never,
+      });
+      expect(record.metadata).toEqual({});
+    }
   });
 
   it('sanitises the attacker-influenced additions like every other string', () => {

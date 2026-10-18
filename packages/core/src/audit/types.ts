@@ -213,6 +213,35 @@ export type AuditAction =
    * this event is written.
    */
   | 'org.deleted'
+  /**
+   * The organisation turned single sign-on on: xecret created the WorkOS
+   * Organization its identity-provider connections will hang off, and linked
+   * it. Once only — the link is never re-pointed — so this is the origin of the
+   * organisation's SSO history. Nothing about who may sign in changes yet: a
+   * connection still has to be set up, and both policies below start off.
+   */
+  | 'org.sso.enabled'
+  /**
+   * Somebody was handed a WorkOS Admin Portal link for this organisation's
+   * SSO: a short-lived URL that lets whoever opens it connect or change the
+   * organisation's identity provider. Recorded every time, because the person
+   * who configures the identity provider decides who can sign in as this
+   * organisation's members. The link itself is never recorded.
+   */
+  | 'org.sso.portal_link_created'
+  /**
+   * `sso_required` was switched on or off — whether members must sign in
+   * through the organisation's own identity provider (owners always exempt).
+   * `enabled` carries the new value.
+   */
+  | 'org.sso.required_toggled'
+  /**
+   * The just-in-time opt-in was switched on or off — whether somebody the
+   * organisation's identity provider signs in may join as a viewer without an
+   * invitation. `enabled` carries the new value. The admission it governs is
+   * `member.jit_joined`.
+   */
+  | 'org.sso.jit_toggled'
   | 'project.created'
   | 'project.updated'
   | 'project.deleted'
@@ -233,7 +262,9 @@ export type AuditAction =
    * member of it on the spot (just-in-time provisioning), at the default role.
    * Distinct from `member.joined`, which records an invitation accepted: here
    * nobody invited them, and what admitted them was the organisation's identity
-   * provider vouching for an address in a domain the organisation verified.
+   * provider vouching for an address in a domain the organisation verified —
+   * and an owner or admin having opted the organisation in to admitting people
+   * that way (`org.sso.jit_toggled`).
    */
   | 'member.jit_joined'
   /**
@@ -592,6 +623,16 @@ export interface AuditMetadata {
    */
   operator?: string;
   source?: 'dashboard' | 'cli' | 'ci' | 'api';
+  /**
+   * The value an on/off setting holds after the change an event records — an
+   * organisation's `sso_required`, its just-in-time opt-in.
+   *
+   * A boolean and only a boolean: the sanitiser drops anything else rather than
+   * coercing it, so "switched on" can never be read from a string that merely
+   * looks like one. The previous value is the opposite by construction — a
+   * toggle is only recorded when it moved — so it is not stored twice.
+   */
+  enabled?: boolean;
   /**
    * How a person authenticated to the identity provider for a sign-in.
    *
