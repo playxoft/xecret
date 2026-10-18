@@ -33,6 +33,17 @@ export type AuditAction =
    * by finding it.
    */
   | 'auth.identity_linked'
+  /**
+   * An owner of an organisation that requires single sign-on signed in some
+   * other way — a password, Google, another organisation's SSO — and was let
+   * through by the owner exemption, the deliberate break-glass that keeps a
+   * misconfigured identity provider from locking the organisation out of
+   * itself. Filed in **each** organisation whose requirement the sign-in was
+   * exempted from (the `auth.login` beside it lands in only one), with the
+   * method as `signInMethod`, so every such organisation's own log shows each
+   * time its identity provider was bypassed.
+   */
+  | 'auth.sso_exemption_used'
   | 'auth.logout'
   | 'auth.login_failed'
   | 'auth.session_revoked'
@@ -268,9 +279,16 @@ export type AuditAction =
    */
   | 'member.jit_joined'
   /**
-   * The same, refused: the organisation had no seat free. The sign-in fails and
-   * the person is told to ask an administrator; this is the record that lets an
-   * administrator see who was turned away.
+   * The same, refused, for one of two reasons, carried as `reason`:
+   *
+   *  - `quotaExceeded` (`limitName: seats`) — the organisation had no seat
+   *    free. The sign-in fails and the person is told to ask an administrator.
+   *  - `removed` — they were removed from this organisation and have not been
+   *    invited back. Their identity provider still vouching for them does not
+   *    undo a removal; the sign-in carries on to whatever else they belong to.
+   *
+   * Either way this is the record that lets an administrator see who was
+   * turned away.
    */
   | 'member.jit_denied'
   | 'member.removed'

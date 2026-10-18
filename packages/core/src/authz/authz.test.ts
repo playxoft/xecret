@@ -15,9 +15,13 @@ import type { MemberStatus, ResolvedGrant } from './grants';
 import {
   accessLevelAtLeast,
   ACTION_REQUIREMENTS,
+  actionsBeyondBase,
+  actionsForBase,
   canAssignRole,
   compareAccessLevel,
   compareOrgRole,
+  CUSTOM_ROLE_BASE_ROLES,
+  effectiveCapabilities,
   ROLE_ACCESS_DEFAULTS,
   ROLE_CAPABILITIES,
   roleDefaultAccessLevel,
@@ -173,9 +177,11 @@ describe('the role matrix', () => {
     }
   });
 
-  it('permits an admin every action except deleting the organisation', () => {
+  it('permits an admin every action except deleting the organisation and administering its SSO', () => {
     for (const action of ALL_ACTIONS) {
-      expect(permits(member('admin'), action), action).toBe(action !== 'org.delete');
+      expect(permits(member('admin'), action), action).toBe(
+        action !== 'org.delete' && action !== 'sso.manage',
+      );
     }
   });
 
@@ -205,6 +211,7 @@ describe('the role matrix', () => {
     'token.revoke': false,
     'org.update': false,
     'org.delete': false,
+    'sso.manage': false,
   };
 
   const VIEWER_ON_NON_PRODUCTION: Record<Action, boolean> = {
@@ -230,6 +237,7 @@ describe('the role matrix', () => {
     'token.revoke': false,
     'org.update': false,
     'org.delete': false,
+    'sso.manage': false,
   };
 
   it('gives a developer the secrets of a non-production environment and nothing administrative', () => {
@@ -849,6 +857,32 @@ describe('the tables themselves', () => {
   it('never lets a non-owner role delete the organisation', () => {
     for (const role of ROLES) {
       expect(ROLE_CAPABILITIES[role]['org.delete'], role).toBe(role === 'owner');
+    }
+  });
+
+  it('never lets a non-owner role administer single sign-on (review S2)', () => {
+    // Whoever holds it decides which identity provider vouches for every
+    // member — an admin who could rewire it could sign in as an owner.
+    for (const role of ROLES) {
+      expect(ROLE_CAPABILITIES[role]['sso.manage'], role).toBe(role === 'owner');
+    }
+  });
+
+  it('lets no custom role carry SSO administration, whatever its list says', () => {
+    // No custom role is based on `owner`, and a custom role only subtracts
+    // from its base, so listing the action confers nothing on any base there is.
+    for (const baseRole of CUSTOM_ROLE_BASE_ROLES) {
+      for (const role of ROLES) {
+        const capabilities = effectiveCapabilities(role, {
+          id: 'greedy',
+          name: 'Greedy',
+          baseRole,
+          allowedActions: ALL_ACTIONS,
+        });
+        expect(capabilities['sso.manage'], `${role} holding a ${baseRole}-based role`).toBe(false);
+      }
+      expect(actionsForBase(baseRole)).not.toContain('sso.manage');
+      expect(actionsBeyondBase(baseRole, ['sso.manage'])).toEqual(['sso.manage']);
     }
   });
 

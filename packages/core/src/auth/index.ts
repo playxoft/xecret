@@ -87,6 +87,7 @@ export {
   oauthStateCookie,
   openOAuthState,
   sealOAuthState,
+  WORKOS_ORGANIZATION_ID_PATTERN,
 } from './oauth-state';
 export type {
   OAuthPurpose,
@@ -94,6 +95,24 @@ export type {
   OAuthStateRejection,
   OAuthStateResult,
 } from './oauth-state';
+
+export {
+  clearedSignInConfirmationCookie,
+  deriveSignInConfirmationKey,
+  generateConfirmationNonce,
+  openSignInConfirmation,
+  sealSignInConfirmation,
+  SIGN_IN_CONFIRMATION_COOKIE_NAME,
+  SIGN_IN_CONFIRMATION_TTL_SECONDS,
+  signInConfirmationCookie,
+} from './sign-in-confirmation';
+export type {
+  ParkedLockOne,
+  SignInConfirmation,
+  SignInConfirmationReason,
+  SignInConfirmationRejection,
+  SignInConfirmationResult,
+} from './sign-in-confirmation';
 
 export {
   IdentityVerificationError,

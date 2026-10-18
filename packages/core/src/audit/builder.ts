@@ -152,7 +152,13 @@ export type AuditErrorReason =
   | 'keyUnavailable'
   | 'upstreamUnavailable'
   | 'quotaExceeded'
-  | 'timeout';
+  | 'timeout'
+  /**
+   * The person was removed from the organisation and has not been invited
+   * back, so a way in that would otherwise admit them — a just-in-time join —
+   * does not (`member.jit_denied`).
+   */
+  | 'removed';
 
 /**
  * `reason` is set from the outcome, never by the caller, so a denial always
