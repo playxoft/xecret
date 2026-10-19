@@ -6,7 +6,7 @@ import { ORGANIZATION_NAME_MAX_LENGTH } from '@xecret/core/validation';
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { formatAbsoluteTime } from '@/lib/format';
 import { PageHeader } from '@/components/layout';
-import { DeleteOrganizationCard } from '@/components/organizations';
+import { DeleteOrganizationCard, SingleSignOnCard } from '@/components/organizations';
 import { RolesCard } from '@/components/roles/roles-card';
 import {
   Alert,
@@ -117,6 +117,8 @@ export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
           </Card>
 
           <RolesCard orgSlug={orgSlug} organization={membership} />
+
+          <SingleSignOnCard orgSlug={orgSlug} organization={membership} />
 
           {canDelete ? <DeleteOrganizationCard organization={loaded} onDeleted={refresh} /> : null}
         </div>

@@ -4,6 +4,7 @@ import { json } from '@/server/http';
 import { vaultStatus } from '@/server/vault-service';
 import { authenticatedRoute } from '@/server/route';
 import { toAuthorityPayload } from '@/server/schemas/roles';
+import { ssoRequirementRefuses } from '@/server/tenancy';
 
 /**
  * The signed-in identity and the organisations it can act in.
@@ -91,6 +92,24 @@ export const GET = authenticatedRoute(
          * A convenience, like the rest of this response.
          */
         authority: toAuthorityPayload(membership.role, membership.customRole),
+        /**
+         * Whether the organisation requires its single sign-on, and whether
+         * that requirement refuses *this* credential — the same question
+         * `resolveOrg` asks of every request (review round 2, L9). So the
+         * dashboard can say "sign in through its single sign-on" for an
+         * organisation that will answer `sso_required`, rather than discover
+         * it as a failed load, and `xecret whoami` can say which organisations
+         * this device cannot reach. A convenience like the rest: the
+         * requirement is enforced on the request, not here.
+         */
+        sso: {
+          required: membership.organization.ssoRequired,
+          blocked: ssoRequirementRefuses(
+            membership.organization,
+            membership.role,
+            principal.signIn,
+          ),
+        },
       })),
     });
   },

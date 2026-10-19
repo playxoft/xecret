@@ -1,5 +1,9 @@
 import { GenerateLinkIntent, WorkOS } from '@workos-inc/node';
-import { IdentityVerificationError, workosIdentity } from '@xecret/core/auth';
+import {
+  IdentityVerificationError,
+  WORKOS_SESSION_ID_PATTERN,
+  workosIdentity,
+} from '@xecret/core/auth';
 import { fromBase64Url } from '@xecret/core/crypto';
 import type {
   AuthorizationCodeExchange,
@@ -39,10 +43,11 @@ import { MissingBindingError, publicOrigin } from './bindings';
  * server made with its own secret key — the code exchange, the Magic Auth
  * check — so there is no signature for a client to forge and no audience for
  * one to get wrong. The one token read at all is the access token in the code
- * exchange's own response, for its `auth_time` claim (see
- * {@link lastActiveAuthentication}): it arrived over the same authenticated
- * call as the user it describes, so it is believed exactly as far as that user
- * is, and is otherwise dropped like the rest.
+ * exchange's own response, for two claims: `auth_time` (see
+ * {@link lastActiveAuthentication}) and `sid`, the AuthKit session, so that
+ * signing out of xecret can end it too ({@link authKitSessionId}). It arrived
+ * over the same authenticated call as the user it describes, so it is believed
+ * exactly as far as that user is, and is otherwise dropped like the rest.
  */
 
 /**
@@ -63,11 +68,30 @@ export interface WorkosApi {
     | 'createMagicAuth'
     | 'authenticateWithMagicAuth'
     | 'authenticateWithTotp'
+    | 'getLogoutUrl'
   >;
   multiFactorAuth: Pick<WorkOS['multiFactorAuth'], 'challengeFactor'>;
-  organizations: Pick<WorkOS['organizations'], 'getOrganization' | 'createOrganization'>;
+  organizations: Pick<
+    WorkOS['organizations'],
+    'getOrganization' | 'getOrganizationByExternalId' | 'createOrganization' | 'deleteOrganization'
+  >;
   adminPortal: Pick<WorkOS['adminPortal'], 'generateLink'>;
   sso: Pick<WorkOS['sso'], 'listConnections'>;
+}
+
+/** One of a WorkOS organisation's identity-provider connections, as the settings show it. */
+export interface SsoConnectionSummary {
+  id: string;
+  /** WorkOS's connection type, e.g. `OktaSAML`, `GoogleSAML`, `GenericOIDC`. */
+  type: string;
+  /** `active` is the only state that can sign anybody in. */
+  state: 'draft' | 'active' | 'inactive' | 'validating';
+}
+
+/** One of a WorkOS organisation's domains, and how far its verification has got. */
+export interface SsoDomainSummary {
+  domain: string;
+  state: 'verified' | 'pending' | 'failed';
 }
 
 /** The parts of an authentication response this module reads. Everything else is ignored. */
@@ -83,7 +107,10 @@ export interface WorkosAuthentication {
   organizationId?: string | undefined;
   authenticationMethod?: string | undefined;
   impersonator?: { email: string; reason: string | null } | undefined;
-  /** Read only for its `auth_time` claim; never stored, logged or passed on. */
+  /**
+   * Read only for its `auth_time` and `sid` claims; never stored, logged or
+   * passed on itself.
+   */
   accessToken?: string | undefined;
 }
 
@@ -339,53 +366,200 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
    * and is only believed for the domains the organisation proved it owns.
    */
   async verifiedDomains(workosOrgId: string): Promise<ReadonlySet<string>> {
+    const domains = await this.domains(workosOrgId);
+    return new Set(
+      domains.filter((entry) => entry.state === 'verified').map((entry) => entry.domain),
+    );
+  }
+
+  /**
+   * Every domain a WorkOS organisation has, lower-cased, with its verification
+   * state — for the SSO settings' status display, and beneath
+   * {@link verifiedDomains}. A state WorkOS adds later reads as `pending`:
+   * not verified, which is the only distinction anything here acts on.
+   */
+  async domains(workosOrgId: string): Promise<SsoDomainSummary[]> {
     try {
       const organization = await this.#api.organizations.getOrganization(workosOrgId);
-      return new Set(
-        organization.domains
-          .filter((entry) => entry.state === 'verified')
-          .map((entry) => entry.domain.toLowerCase()),
-      );
+      return organization.domains.map((entry) => ({
+        domain: entry.domain.toLowerCase(),
+        state:
+          entry.state === 'verified' ? 'verified' : entry.state === 'failed' ? 'failed' : 'pending',
+      }));
     } catch (cause) {
       throw providerFailure(cause);
     }
   }
 
   /**
-   * For the organisation SSO settings (WS-5), which have no caller yet: create
-   * the WorkOS organisation an xecret organisation's SSO will hang off.
+   * Creates the WorkOS organisation an xecret organisation's SSO hangs off,
+   * and answers its id.
+   *
+   * ── Never with domains, and never with domains marked verified ──
+   * The payload is built here, field by field, from a name and the xecret
+   * organisation's id, and it has no `domainData` — the parameter type has no
+   * room for one, and nothing from the caller is spread into the request. That
+   * is PR #114's constraint, and the reason is the sign-in callback's step 3:
+   * an SSO sign-in is believed only for the domains WorkOS reports as
+   * *verified*. WorkOS accepts `domainData` entries already in the `verified`
+   * state from whoever holds the API key, so a domain xecret declared verified
+   * would let that organisation's identity provider assert any address in it —
+   * anybody's account at that company, adopted by the linker. Domains are added
+   * and verified through WorkOS's own flow (the Admin Portal, by DNS) and
+   * nowhere else.
+   *
+   * ── Idempotent ──
+   * Keyed for WorkOS's idempotency by the xecret organisation, so two "enable"
+   * requests racing each other get one WorkOS organisation rather than one each.
+   * Past WorkOS's idempotency window, a retry that finds the `externalId`
+   * already taken (409) adopts the organisation holding it: only this
+   * deployment's secret key can create organisations in this WorkOS
+   * environment, and it gives each the id of the xecret organisation it is for,
+   * so one already carrying that id was made for this one — by an earlier
+   * attempt whose database write never landed.
    */
   async createOrganization(params: { name: string; externalId: string }): Promise<string> {
+    const payload = { name: params.name, externalId: params.externalId };
     try {
-      const created = await this.#api.organizations.createOrganization(params);
+      const created = await this.#api.organizations.createOrganization(payload, {
+        idempotencyKey: `xecret-sso-enable-${params.externalId}`,
+      });
       return created.id;
+    } catch (cause) {
+      if (readNumber(cause, 'status') !== 409) throw providerFailure(cause);
+    }
+
+    try {
+      const existing = await this.#api.organizations.getOrganizationByExternalId(params.externalId);
+      if (existing.externalId !== params.externalId) {
+        throw new IdentityVerificationError('external-id-mismatch');
+      }
+      return existing.id;
     } catch (cause) {
       throw providerFailure(cause);
     }
   }
 
-  /** For WS-5: an Admin Portal link for the organisation's IT admin to configure SSO. */
-  async generatePortalLink(params: { workosOrgId: string; returnUrl: string }): Promise<string> {
+  /**
+   * Deletes a WorkOS organisation — only ever one this request created and then
+   * could not link, because another request linked a different one first
+   * (PR #100, note 7). An orphan left at WorkOS is harmless to sign-in, since
+   * nothing here resolves to it, but it is a tenant nobody owns.
+   */
+  async deleteOrganization(workosOrgId: string): Promise<void> {
     try {
-      const { link } = await this.#api.adminPortal.generateLink({
+      await this.#api.organizations.deleteOrganization(workosOrgId);
+    } catch (cause) {
+      throw providerFailure(cause);
+    }
+  }
+
+  /**
+   * An Admin Portal link for the organisation's IT admin to connect its
+   * identity provider — Okta, Entra ID, Google Workspace, any SAML or OIDC
+   * provider. Short-lived, and as good as a credential while it lasts: whoever
+   * opens it decides which identity provider vouches for this organisation's
+   * members. It is handed to the caller and never logged or stored.
+   */
+  async generatePortalLink(params: { workosOrgId: string; returnUrl: string }): Promise<string> {
+    let link: string;
+    try {
+      ({ link } = await this.#api.adminPortal.generateLink({
         organization: params.workosOrgId,
         intent: GenerateLinkIntent.SSO,
         returnUrl: params.returnUrl,
-      });
-      return link;
+      }));
     } catch (cause) {
       throw providerFailure(cause);
     }
+    // The dashboard opens whatever this is, so it must be a page on the web:
+    // never a `javascript:` URL, a relative path, or nothing at all.
+    if (!URL.canParse(link) || new URL(link).protocol !== 'https:') {
+      throw new IdentityVerificationError('portal-link-not-https');
+    }
+    return link;
   }
 
-  /** For WS-5: the organisation's SSO connections, for a status display. */
-  async listConnections(workosOrgId: string) {
+  /**
+   * The organisation's SSO connections, for the settings' status display and
+   * for the check that `sso_required` has an active connection to require.
+   * Copied field by field: nothing else WorkOS says about a connection leaves
+   * this file.
+   *
+   * ── Every page, up to a cap ──
+   * WorkOS lists ten to a page unless asked otherwise, and the first page alone
+   * would let an organisation with an eleventh connection — the only active
+   * one, say — read as having none. So this asks for the largest page WorkOS
+   * serves ({@link CONNECTION_PAGE_SIZE}) and follows the cursor, for at most
+   * {@link CONNECTION_PAGE_LIMIT} pages: an organisation has a handful of
+   * connections, and a cursor that never ends is not a reason for one settings
+   * read to spend a Worker's subrequests. Past the cap the list is what was
+   * read, which can only under-report connections — never invent an active one.
+   *
+   * ── A state WorkOS adds later ──
+   * Reads as `inactive`, as an unknown domain state reads as `pending`: not
+   * active, which is the only distinction anything here acts on — and a value
+   * the dashboard has no label for would otherwise fail its render.
+   */
+  async listConnections(workosOrgId: string): Promise<SsoConnectionSummary[]> {
+    const connections: SsoConnectionSummary[] = [];
+    let after: string | undefined;
     try {
-      const { data } = await this.#api.sso.listConnections({ organizationId: workosOrgId });
-      return data.map(({ id, state, type }) => ({ id, state, type }));
+      for (let page = 0; page < CONNECTION_PAGE_LIMIT; page += 1) {
+        const listed = await this.#api.sso.listConnections({
+          organizationId: workosOrgId,
+          limit: CONNECTION_PAGE_SIZE,
+          ...(after === undefined ? {} : { after }),
+        });
+        for (const { id, state, type } of listed.data) {
+          connections.push({ id, state: connectionState(state), type: String(type) });
+        }
+        const next = listed.listMetadata?.after;
+        if (typeof next !== 'string' || next === '' || next === after) break;
+        after = next;
+      }
     } catch (cause) {
       throw providerFailure(cause);
     }
+    return connections;
+  }
+
+  /**
+   * WorkOS's logout URL for one AuthKit session: the browser follows it, WorkOS
+   * ends that session on its hosted domain, and sends the browser back to
+   * `returnTo` (review round 2). Built locally by the SDK — no call is made —
+   * from a session id this server read out of its own code exchange, never one
+   * a client named.
+   *
+   * `returnTo` must be one of the environment's configured logout redirects in
+   * the WorkOS dashboard. What WorkOS does with any other — fall back to its
+   * default, or show an error page — is to be verified live, not assumed
+   * (`docs/operations/workos-environments.md` §4), which is why the redirect is
+   * configured before this is deployed.
+   */
+  logoutUrl(params: { sessionId: string; returnTo: string }): string {
+    if (!WORKOS_SESSION_ID_PATTERN.test(params.sessionId)) {
+      throw new IdentityVerificationError('malformed-session-id');
+    }
+    const url = this.#api.userManagement.getLogoutUrl({
+      sessionId: params.sessionId,
+      returnTo: params.returnTo,
+    });
+    // The browser is sent wherever this is, so it must be a page on the web.
+    if (!URL.canParse(url) || new URL(url).protocol !== 'https:') {
+      throw new IdentityVerificationError('logout-url-not-https');
+    }
+    return url;
+  }
+
+  /**
+   * This deployment's WorkOS client id — which WorkOS *environment* it talks
+   * to. Recorded beside an organisation's `workos_org_id` when SSO is turned on
+   * and compared on every settings call (review S9), because an organisation id
+   * means something only in the environment that made it.
+   */
+  get clientId(): string {
+    return this.#config.clientId;
   }
 
   #toExchange(response: WorkosAuthentication): AuthorizationCodeExchange<WorkosIdentity> {
@@ -421,10 +595,31 @@ export class WorkosIdentityProvider implements IdentityProvider<WorkosIdentity> 
       organizationId: nonEmpty(response.organizationId),
       authenticationMethod: nonEmpty(response.authenticationMethod),
       authenticatedAt: lastActiveAuthentication(response.accessToken),
+      providerSessionId: authKitSessionId(response.accessToken),
       impersonator:
         response.impersonator === undefined ? null : { email: response.impersonator.email },
     };
   }
+}
+
+/** The largest page WorkOS's list endpoints serve. */
+export const CONNECTION_PAGE_SIZE = 100;
+
+/** How many pages of connections one read follows — 500 connections, at most. */
+export const CONNECTION_PAGE_LIMIT = 5;
+
+const CONNECTION_STATES: ReadonlySet<string> = new Set([
+  'draft',
+  'active',
+  'inactive',
+  'validating',
+]);
+
+/** A connection state as the settings know them; anything else is not active. */
+function connectionState(state: unknown): SsoConnectionSummary['state'] {
+  return typeof state === 'string' && CONNECTION_STATES.has(state)
+    ? (state as SsoConnectionSummary['state'])
+    : 'inactive';
 }
 
 /** Longer than any access token WorkOS issues; anything bigger is not read. */
@@ -448,6 +643,27 @@ const MAX_ACCESS_TOKEN_LENGTH = 8192;
  * sign-in moves it.
  */
 export function lastActiveAuthentication(accessToken: unknown): number | null {
+  const authTime = accessTokenClaims(accessToken)?.['auth_time'];
+  return typeof authTime === 'number' && Number.isSafeInteger(authTime) && authTime > 0
+    ? authTime
+    : null;
+}
+
+/**
+ * The `sid` claim of the same access token — the AuthKit session this sign-in
+ * came from — or `null` when there is none to read, or it is not shaped like a
+ * WorkOS session id (review round 2). Kept on the xecret session so sign-out
+ * can end the AuthKit session too. Decoded, not verified, for the reason
+ * {@link lastActiveAuthentication} gives; and a session id names a session,
+ * it does not authenticate as one.
+ */
+export function authKitSessionId(accessToken: unknown): string | null {
+  const sid = accessTokenClaims(accessToken)?.['sid'];
+  return typeof sid === 'string' && WORKOS_SESSION_ID_PATTERN.test(sid) ? sid : null;
+}
+
+/** The claims of an access token from the code exchange's own response, or `null`. */
+function accessTokenClaims(accessToken: unknown): Record<string, unknown> | null {
   if (typeof accessToken !== 'string' || accessToken.length > MAX_ACCESS_TOKEN_LENGTH) return null;
   const parts = accessToken.split('.');
   if (parts.length !== 3 || parts[1] === undefined) return null;
@@ -457,11 +673,7 @@ export function lastActiveAuthentication(accessToken: unknown): number | null {
   } catch {
     return null;
   }
-  if (typeof claims !== 'object' || claims === null) return null;
-  const authTime = (claims as Record<string, unknown>)['auth_time'];
-  return typeof authTime === 'number' && Number.isSafeInteger(authTime) && authTime > 0
-    ? authTime
-    : null;
+  return typeof claims === 'object' && claims !== null ? (claims as Record<string, unknown>) : null;
 }
 
 function assertCodeShape(code: string, pattern: RegExp): void {

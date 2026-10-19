@@ -85,15 +85,56 @@ CREATE TABLE sessions (
   created_at   timestamptz NOT NULL DEFAULT now(),
   last_seen_at timestamptz NOT NULL DEFAULT now(),
   expires_at   timestamptz NOT NULL,
-  revoked_at   timestamptz
+  revoked_at   timestamptz,
+  sign_in_method    text CHECK (sign_in_method IN ('password','oauth','sso','magic_auth','passkey','other')), -- 0022
+  sso_workos_org_id text CHECK (sso_workos_org_id IS NULL OR sign_in_method = 'sso'),                        -- 0022
+  workos_session_id text CHECK (workos_session_id ~ '^session_[0-9A-Za-z]{1,64}$'),                          -- 0023
+  fresh_auth_at     timestamptz                                                                              -- 0023
 );
 CREATE INDEX sessions_lookup_idx ON sessions (token_hash)
   WHERE revoked_at IS NULL;
 CREATE INDEX sessions_user_idx ON sessions (user_id, created_at DESC);
+
+CREATE TABLE sign_in_confirmations (             -- 0022; a spent sign-in confirmation
+  nonce_hash bytea       PRIMARY KEY CHECK (octet_length(nonce_hash) = 32),
+  user_id    uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at timestamptz NOT NULL,
+  spent_at   timestamptz NOT NULL DEFAULT now()
+);
 ```
 
 A database dump yields hashes, not usable sessions. `sessions_user_idx` powers the "active
 devices" list and "sign out everywhere".
+
+`sign_in_method` and `sso_workos_org_id` (migration 0022) record how the sign-in that issued a
+session authenticated, and through which WorkOS organisation's single sign-on. They ride on the
+hot-path lookup, and they are what an organisation's `sso_required` is checked against on every
+request (`resolveOrg`): a non-owner member reaches an organisation that requires SSO only
+through a session whose `sso_workos_org_id` is its `workos_org_id`. A session from before 0022
+has neither, and reads as "not single sign-on". `cli_auth_codes` and `cli_tokens` carry the same
+two columns, copied from the browser session that approved the device.
+
+`workos_session_id` (migration 0023) is the AuthKit session the issuing sign-in came from — the
+`sid` claim of the code exchange's own access token. Sign-out (`DELETE /api/auth/session`)
+answers WorkOS's logout URL for it, so leaving xecret ends AuthKit's session too and the next
+sign-in on that browser is asked for rather than reused without a word. It names a session; it
+does not authenticate as one. NULL for every session from before 0023, which signs out as
+before. `fresh_auth_at` is when the person actively authenticated, during a `reauth` flow, by a
+method that re-proves who they are — an emailed code included — dated by WorkOS's `auth_time`;
+the SSO setup portal's step-up asks for one under ten minutes old. The vault reset's own, stricter
+record stays in `reauthentications`.
+
+`sign_in_confirmations` is the ledger that makes a held-back sign-in single-use. The callback
+does not issue a session for a sign-in that came back through an organisation the flow did not
+ask for (the planted-AuthKit-session login CSRF), through the single sign-on of one the account
+is not in, or from a reused WorkOS session for an account other than the browser's last; it
+parks the outcome in a sealed five-minute cookie carrying a random nonce, and `POST
+/api/auth/confirm` inserts that nonce's SHA-256 here before issuing anything — a second use of
+the same cookie collides with the primary key. A row past `expires_at` stops nothing (the cookie
+is refused on its age first) and the hourly scheduled job deletes it
+(`deleteSpentSignInConfirmations`, beside the retained-vault purge) — once it is a minute past,
+not at the instant: the cookie's age is counted in whole seconds and is accepted for up to a
+second beyond `expires_at`, and a replay in that second must still find its row.
 
 ```sql
 CREATE TABLE reauthentications (                 -- 0019
@@ -186,11 +227,33 @@ CREATE TABLE organizations (
   slug          citext      NOT NULL UNIQUE,
   seat_limit    integer     NOT NULL DEFAULT 5 CHECK (seat_limit >= 0),
   workos_org_id text        UNIQUE,                  -- 0018; set lazily, on enabling SSO
-  sso_required  boolean     NOT NULL DEFAULT false,  -- 0018; enforced, not yet settable
+  workos_client_id text,                             -- 0022; the WorkOS environment of the link
+  sso_required  boolean     NOT NULL DEFAULT false,  -- 0018; per request, owners exempt
+  jit_join_enabled boolean  NOT NULL DEFAULT false,  -- 0021; the just-in-time opt-in
   created_by    uuid        NOT NULL REFERENCES users(id),
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now(),
-  deleted_at    timestamptz
+  deleted_at    timestamptz,
+  -- 0021: both SSO flags are about the organisation's connection, and there is none unlinked.
+  CONSTRAINT organizations_sso_flags_need_link_check
+    CHECK ((sso_required = false AND jit_join_enabled = false) OR workos_org_id IS NOT NULL),
+  -- 0022 (added NOT VALID), validated by 0023: a link always records its environment.
+  CONSTRAINT organizations_workos_link_client_check
+    CHECK (workos_org_id IS NULL OR workos_client_id IS NOT NULL)
+);
+
+CREATE TABLE workos_home (                        -- 0023; one row, SELECT-only for the app
+  id          boolean     PRIMARY KEY DEFAULT true CHECK (id),
+  client_id   text        NOT NULL CHECK (client_id ~ '^client_[0-9A-Za-z]+$'),
+  recorded_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE org_member_removals (                -- 0022
+  org_id     uuid        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id    uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  removed_by uuid        REFERENCES users(id) ON DELETE SET NULL,  -- NULL: nobody else did
+  removed_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (org_id, user_id)
 );
 
 CREATE TABLE org_members (
@@ -216,21 +279,64 @@ is the single most performance-critical index in the schema.
 only when an organisation enables SSO — almost every organisation is a personal one
 provisioned at first login and never needs one — and is set once (`setOrgWorkosOrgId`
 refuses to re-point it). The sign-in callback resolves WorkOS organisations back to tenants
-with `findOrgByWorkosOrgId`, which ignores soft-deleted organisations.
+with `findOrgByWorkosOrgId`, which ignores soft-deleted organisations. `workos_client_id`
+(migration 0022) records which WorkOS **environment** the link was made in: an organisation id
+means something only in its own environment, and local development runs against WorkOS
+Staging over the production database. `setOrgWorkosOrgId` writes the two together and answers
+whether it was the write that linked them (`changed`), so of two concurrent enables only one is
+audited; the settings refuse a link whose client id is not this deployment's, and the sign-in
+path (`findOrgByWorkosOrgId`, which takes the asking deployment's client id) resolves only links
+made in its own environment. `organizations_workos_link_client_check` holds on every row: 0022
+added it `NOT VALID` — which turned out to mean a linked row without a client id could not be
+updated *at all* (Postgres checks a `NOT VALID` constraint on every UPDATE, so a rename, a
+soft-delete, `plan:set` or even switching a policy off failed with a 500) — and 0023 backfilled
+such rows with the production client id and validated it.
 
-`sso_required` ("members may only sign in through this organisation's SSO connection") is
-**enforced** by the sign-in callback — a sign-in must have come through this organisation's
-own connection (`authenticationMethod` `SSO` *and* this `workos_org_id`), or it is refused —
-but nothing can set it yet: false everywhere. The setter ships with the organisation's SSO
-settings, together with the guards it owes (owner/admin only, and an exemption for when the
-identity provider is misconfigured, without which switching it on can lock an organisation
-out of itself). Enforcement first is the safe order: a flag that claims a bypass is closed
-while it is open is worse than no flag.
+`workos_home` (migration 0023) is **the one WorkOS environment this database's links may come
+from** — one row, seeded with the Playxoft production environment's client id; a self-hosted
+deployment records its own (`docs/self-hosting.md`). `setOrgWorkosOrgId` — the only writer of
+a link — checks it in the UPDATE's own predicate and answers `forbidden` for any other client
+id, or while no row exists; the SSO settings check it first, before WorkOS is asked to create
+anything, and for opening the portal and switching a policy on as well. So a deployment
+running against another WorkOS environment can read the settings and switch a policy off, and
+can write nothing that needs its environment. The application role may only `SELECT` it:
+recording the environment is an operator's act. Clearing a link written before this existed
+is in `docs/operations/workos-environments.md`.
 
-An SSO sign-in through an organisation's connection also admits a newcomer just in time, as a
-`viewer` `org_members` row with `invited_by` NULL, under the seat limit and the same
-organisation row lock an invitation acceptance takes (`joinOrganizationJustInTime`). It never
-reinstates a suspended membership.
+`sso_required` ("non-owner members reach this organisation only through its own single
+sign-on") is **enforced on every request**, by `resolveOrg`, against the presenting
+credential's `sso_workos_org_id` (§1, migration 0022) — so it takes effect at once for sessions
+and CLI tokens issued before it went on, and leaves the member's other organisations alone.
+Invitation acceptance checks it under the organisation lock, and the sign-in callback refuses
+a sign-in only when every organisation of the account would refuse it. **Owners are exempt** —
+a deliberate break-glass, so that an identity provider misconfigured after it is switched on
+cannot lock the organisation out of itself; a trade-off, since an owner's password stays a way
+in that the identity provider does not govern, audited as `auth.sso_exemption_used`. Its one
+setter is `updateOrgSsoSettings`, behind the SSO settings route (an owner to switch it on, an
+owner or admin to switch it off, a browser session, the single sign-on add-on, this
+deployment's WorkOS environment, and an active connection and a verified domain to switch it
+on).
+
+An SSO sign-in through an organisation's connection admits a newcomer just in time — as a
+`viewer` `org_members` row with `invited_by` NULL — **only if the organisation opted in**
+(`jit_join_enabled`, migration 0021, off by default and set by the same setter). Connecting an
+identity provider says who an organisation's people are; admitting all of them is a second
+decision. The opt-in and the seat limit are both read under the organisation row lock an
+invitation acceptance takes (`joinOrganizationJustInTime`), so switching it off is never raced
+past. It never reinstates a suspended membership, and never re-admits somebody the
+organisation removed: `removeMember` leaves an `org_member_removals` row in the same
+transaction, `joinOrganizationJustInTime` answers `removed` for it, and only accepting an
+invitation **created after the removal** deletes it (review round 2: an invitation from before
+is a leftover, not a decision to have them back). Both `joinOrganizationJustInTime` and
+`removeMember` also withdraw every invitation still open for the person's address, under the
+organisation lock, so no such leftover stays acceptable. A table of its own rather than a
+"removed" member status, because a status would have to be filtered out of every membership
+read, seat count and owner count in the product, whereas this is read by one query and written
+by one function.
+
+Neither flag can be true on an organisation without a `workos_org_id`
+(`organizations_sso_flags_need_link_check`); since the link is never cleared, a flag once on
+cannot be stranded.
 
 **Invariant enforced in application code, tested explicitly:** an organisation always has at
 least one `owner` with `status = 'active'`. Removing or demoting the last owner is rejected.
@@ -654,9 +760,14 @@ CREATE TABLE cli_tokens (
   expires_at    timestamptz,
   last_used_at  timestamptz,
   last_used_ip  inet,
-  revoked_at    timestamptz
+  revoked_at    timestamptz,
+  sign_in_method    text,                     -- 0022; the approving session's, closed set
+  sso_workos_org_id text                      -- 0022; likewise; only beside 'sso'
 );
 CREATE INDEX cli_tokens_lookup_idx ON cli_tokens (token_hash) WHERE revoked_at IS NULL;
+-- cli_auth_codes (0005) gained the same two columns in 0022: the approval carries them to the
+-- token, so a device approved from a password session is held to `sso_required` as that
+-- session is.
 
 CREATE TABLE service_tokens (
   id             uuid PRIMARY KEY,
@@ -799,6 +910,9 @@ sessions ── reauthentications — at most one per session, also referencing 
   drawn above)
 users ──< retained_vaults ──< retained_vault_wraps, retained_vault_grants — a reset vault
   kept seven days; each grant also references env_data_keys (0020, not drawn above)
+organizations ──< org_member_removals >── users — who was removed, so single sign-on does
+  not re-admit them (0022, not drawn above)
+users ──< sign_in_confirmations — a held-back sign-in, spent once (0022, not drawn above)
 audit_logs — no FKs by design; references are soft
 ```
 
@@ -835,7 +949,37 @@ audit_logs — no FKs by design; references are soft
 0020  retained vaults (retained_vaults, retained_vault_wraps, retained_vault_grants) —
       a reset vault kept seven days; CHECK pins the window, triggers refuse an early
       delete and any rewrite of key material; the application role's grants — additive
+0021  SSO settings: organizations.jit_join_enabled (the just-in-time opt-in, default
+      false) and organizations_sso_flags_need_link_check — additive; no new grant
+0022  SSO, enforced: sessions / cli_auth_codes / cli_tokens .sign_in_method and
+      .sso_workos_org_id (what per-request sso_required reads); organizations
+      .workos_client_id (+ a CHECK added NOT VALID); org_member_removals (JIT never re-admits
+      a removed member); sign_in_confirmations (the held-back sign-in, single-use) —
+      additive; grants for the two new tables
+0023  SSO, review round 2: workos_home (the WorkOS environment the database belongs to,
+      seeded with production's; SELECT-only grant); a backfill of linked-but-clientless
+      organisations and VALIDATE of organizations_workos_link_client_check;
+      sessions.workos_session_id (the AuthKit session, ended at sign-out) and
+      sessions.fresh_auth_at (the setup portal's step-up) — additive
 ```
+
+Migration 0022 (WS-5, review round 1) is additive, and — like 0021 — **must be applied before
+the code that names its columns**: from that build on every `select()` on `sessions`,
+`cli_tokens`, `cli_auth_codes` and `organizations` names them, and fails against a database
+without them. Applying it first is harmless; older code never writes the new columns, and every
+row it writes satisfies the new CHECKs.
+
+Migration 0023 (review round 2) is additive in the same way and the same rule applies — apply
+it before the code. **One hard gate before applying it:** run `SELECT id, slug FROM
+organizations WHERE workos_org_id IS NOT NULL AND workos_client_id IS NULL` and stop if it
+returns a row you cannot vouch for. 0022's claim here was wrong: a `NOT VALID` CHECK does not
+let such a row live quietly as "another environment's" — Postgres checks it on every UPDATE, so
+the row cannot be renamed, soft-deleted, have its plan set or its SSO policies switched off.
+0023 backfills every such row with the **production** client id, which is right only for a link
+production code made (before 0022 nothing else could have). A row that is a Staging link must be
+cleared first, with both flags off, by the remedy in `docs/operations/workos-environments.md`;
+then apply 0023. And `workos_home` arrives seeded with the production client id — on a
+self-hosted database, record your own straight after (`docs/self-hosting.md`).
 
 Migration 0020 (P23) is additive: three new tables nothing older reads. **Apply it before
 deploying the code that uses it** — the deployment-check skill lists it. The reverse order is

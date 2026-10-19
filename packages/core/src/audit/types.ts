@@ -33,6 +33,30 @@ export type AuditAction =
    * by finding it.
    */
   | 'auth.identity_linked'
+  /**
+   * An owner of an organisation that requires single sign-on signed in some
+   * other way — a password, Google, another organisation's SSO — and was let
+   * through by the owner exemption, the deliberate break-glass that keeps a
+   * misconfigured identity provider from locking the organisation out of
+   * itself. Filed in **each** organisation whose requirement the sign-in was
+   * exempted from (the `auth.login` beside it lands in only one), with the
+   * method as `signInMethod`, so every such organisation's own log shows each
+   * time its identity provider was bypassed.
+   */
+  | 'auth.sso_exemption_used'
+  /**
+   * A sign-in the callback held back for the person to confirm — it came back
+   * through an organisation the flow did not ask for, or one the account does
+   * not belong to, or from a session WorkOS reused without asking — was
+   * declined on the confirmation page: "This isn't me". Nothing was issued.
+   * `confirmation` says why it was held back, and `signInMethod` how WorkOS
+   * signed the person in. Filed in the organisation whose single sign-on it
+   * came through when that organisation is here, otherwise in the account's
+   * own — a run of these for one account is somebody being worked on. (A sign-in
+   * that was confirmed is the ordinary `auth.login` or `auth.signup`, carrying
+   * `confirmation` too.)
+   */
+  | 'auth.sign_in_declined'
   | 'auth.logout'
   | 'auth.login_failed'
   | 'auth.session_revoked'
@@ -213,6 +237,35 @@ export type AuditAction =
    * this event is written.
    */
   | 'org.deleted'
+  /**
+   * The organisation turned single sign-on on: xecret created the WorkOS
+   * Organization its identity-provider connections will hang off, and linked
+   * it. Once only — the link is never re-pointed — so this is the origin of the
+   * organisation's SSO history. Nothing about who may sign in changes yet: a
+   * connection still has to be set up, and both policies below start off.
+   */
+  | 'org.sso.enabled'
+  /**
+   * Somebody was handed a WorkOS Admin Portal link for this organisation's
+   * SSO: a short-lived URL that lets whoever opens it connect or change the
+   * organisation's identity provider. Recorded every time, because the person
+   * who configures the identity provider decides who can sign in as this
+   * organisation's members. The link itself is never recorded.
+   */
+  | 'org.sso.portal_link_created'
+  /**
+   * `sso_required` was switched on or off — whether members must sign in
+   * through the organisation's own identity provider (owners always exempt).
+   * `enabled` carries the new value.
+   */
+  | 'org.sso.required_toggled'
+  /**
+   * The just-in-time opt-in was switched on or off — whether somebody the
+   * organisation's identity provider signs in may join as a viewer without an
+   * invitation. `enabled` carries the new value. The admission it governs is
+   * `member.jit_joined`.
+   */
+  | 'org.sso.jit_toggled'
   | 'project.created'
   | 'project.updated'
   | 'project.deleted'
@@ -233,13 +286,22 @@ export type AuditAction =
    * member of it on the spot (just-in-time provisioning), at the default role.
    * Distinct from `member.joined`, which records an invitation accepted: here
    * nobody invited them, and what admitted them was the organisation's identity
-   * provider vouching for an address in a domain the organisation verified.
+   * provider vouching for an address in a domain the organisation verified —
+   * and an owner or admin having opted the organisation in to admitting people
+   * that way (`org.sso.jit_toggled`).
    */
   | 'member.jit_joined'
   /**
-   * The same, refused: the organisation had no seat free. The sign-in fails and
-   * the person is told to ask an administrator; this is the record that lets an
-   * administrator see who was turned away.
+   * The same, refused, for one of two reasons, carried as `reason`:
+   *
+   *  - `quotaExceeded` (`limitName: seats`) — the organisation had no seat
+   *    free. The sign-in fails and the person is told to ask an administrator.
+   *  - `removed` — they were removed from this organisation and have not been
+   *    invited back. Their identity provider still vouching for them does not
+   *    undo a removal; the sign-in carries on to whatever else they belong to.
+   *
+   * Either way this is the record that lets an administrator see who was
+   * turned away.
    */
   | 'member.jit_denied'
   | 'member.removed'
@@ -593,6 +655,16 @@ export interface AuditMetadata {
   operator?: string;
   source?: 'dashboard' | 'cli' | 'ci' | 'api';
   /**
+   * The value an on/off setting holds after the change an event records — an
+   * organisation's `sso_required`, its just-in-time opt-in.
+   *
+   * A boolean and only a boolean: the sanitiser drops anything else rather than
+   * coercing it, so "switched on" can never be read from a string that merely
+   * looks like one. The previous value is the opposite by construction — a
+   * toggle is only recorded when it moved — so it is not stored twice.
+   */
+  enabled?: boolean;
+  /**
    * How a person authenticated to the identity provider for a sign-in.
    *
    * A closed set, coarser than the provider's own vocabulary on purpose: a
@@ -601,10 +673,29 @@ export interface AuditMetadata {
    * named that this list does not know, recorded as such rather than guessed at.
    */
   signInMethod?: SignInMethod;
+  /**
+   * Why a sign-in was held back for the person to confirm before any session
+   * was issued — on the `auth.login` / `auth.signup` of one they confirmed, and
+   * on `auth.sign_in_declined` for one they did not. Absent from a sign-in that
+   * needed no confirmation.
+   *
+   *  - `organization` — it came back through an organisation the flow did not
+   *    ask for (the planted-session login CSRF's own signature).
+   *  - `not-member` — through the organisation's single sign-on, for an account
+   *    that was not yet a member of it.
+   *  - `reused-session` — WorkOS answered from an authentication that predates
+   *    the flow, for an account other than the last one on that browser.
+   *
+   * A closed set, checked against itself by the sanitiser.
+   */
+  confirmation?: SignInConfirmationKind;
 }
 
 /** See `AuditMetadata.signInMethod`. */
 export type SignInMethod = 'password' | 'oauth' | 'sso' | 'magic_auth' | 'passkey' | 'other';
+
+/** See `AuditMetadata.confirmation`. */
+export type SignInConfirmationKind = 'organization' | 'not-member' | 'reused-session';
 
 /** A custom role's ceiling as an audit record carries it: two level names. */
 export interface AuditAccessCeiling {

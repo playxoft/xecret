@@ -192,6 +192,19 @@ AuthKit needs xecret to *start* a sign-in rather than finish one, it sends the
 browser there. A callback xecret did not start itself is refused as expired,
 because there is no state cookie in the browser to match it.
 
+**Sign-out redirect.** Add `<XECRET_PUBLIC_URL>/sign-in` as a logout redirect,
+in each WorkOS environment you use, **before** deploying. Signing out of xecret
+also ends the person's AuthKit session — the dashboard follows WorkOS's logout
+URL for it — and WorkOS sends the browser back only to a redirect it knows.
+What it does with one it does not know — its default redirect, or an error page
+— is for you to verify on Staging, not to assume; configured first, it never
+matters. Declining a held-back sign-in ("This isn't me") ends that sign-in's
+AuthKit session the same way and returns to
+`<XECRET_PUBLIC_URL>/sign-in?error=declined`, so allow that too if your WorkOS
+environment matches redirects exactly. The checks worth making on Staging are in
+[WorkOS environments and the organisation link](operations/workos-environments.md),
+§4.
+
 **Authentication methods.** Enable email and password, and Google. In Staging
 WorkOS can use its own demonstration Google credentials; in **Production**,
 Google sign-in needs your own OAuth client — create it in the Google Cloud
@@ -202,13 +215,42 @@ MFA is a WorkOS setting, and recommended for organisation owners, for the
 reasons under Magic Auth, next. With an authenticator app enrolled, resetting a
 vault also asks for its code.
 
-**Enterprise SSO cannot be configured from xecret yet.** The organisation SSO
-settings — creating the WorkOS organisation for a xecret organisation, the
-Admin Portal link a customer's IT admin uses to set up the connection, and the
-setting that makes SSO required — are not built. The sign-in side is: an SSO
-sign-in is believed only for the domains its WorkOS organisation has verified.
-But a connection made directly in the WorkOS dashboard is not tied to any xecret
-organisation, so nobody is admitted to one through it.
+**Enterprise SSO** is set up per organisation, by its owner, in Organisation
+settings → Single sign-on: turning it on creates the WorkOS organisation, and the
+setup portal is where the customer's IT admin connects their identity provider
+and verifies domains. It needs the organisation's single sign-on add-on
+(`npm run plan:set -- --org <slug> --addon saml --on`), and an SSO sign-in is
+believed only for the domains its WorkOS organisation has verified. A connection
+made directly in the WorkOS dashboard is not tied to any xecret organisation, so
+nobody is admitted to one through it.
+
+**The WorkOS environment, recorded once — a step a self-hosted deployment must
+not skip.** Migration 0023 creates a one-row table, `workos_home`, holding the
+one WorkOS client id whose organisation ids this database's links may hold, and
+**seeds it with the Playxoft production environment's**, because that is the
+database it runs against first. Turning SSO on — and opening the setup portal,
+and switching an SSO policy on — refuses (409, saying why) from any deployment
+whose `WORKOS_CLIENT_ID` is not the one recorded, so that a deployment running
+against another WorkOS environment can never write a link no sign-in in the
+database's own environment could come through. On your database, record your
+**Production** client id, as the database owner (the application role may only
+read the table):
+
+```sql
+UPDATE workos_home SET client_id = '<your Production WORKOS_CLIENT_ID>';
+-- or, if the row was deleted:
+INSERT INTO workos_home (id, client_id) VALUES (true, '<your Production WORKOS_CLIENT_ID>');
+```
+
+`check:env` does not read the database, so it cannot tell you this is undone.
+Until it is, the table still names Playxoft's environment, so the first owner to
+press "Turn on single sign-on" is refused (409) as if from another WorkOS
+environment's deployment, with a message — and a warning in the log, beside the
+client id recorded and this deployment's — that names the `UPDATE` above and
+this section. (On a database where the row is missing, the refusal says no
+environment is recorded, and points here too.) Nothing else reads the table.
+To undo a link written from the wrong environment, see
+[WorkOS environments and the organisation link](operations/workos-environments.md).
 
 **Magic Auth.** Enable it, and leave WorkOS's default Magic Auth email on. The
 vault reset's second check is a one-time code that WorkOS creates and emails,
@@ -216,7 +258,9 @@ and WorkOS refuses to create one at all while Magic Auth is disabled — so with
 it off, nobody on the deployment can reset a vault. Enabling it also offers
 "email me a code" as a way to sign in. That is a sign-in like any other, but it
 never counts as the vault reset's first check, which counts only a password, a
-passkey, Google or SSO sign-in — no other OAuth provider.
+passkey, Google or SSO sign-in — no other OAuth provider. (It does count as the
+fresh sign-in an owner needs before opening the SSO setup portal, which has no
+second, emailed check to collide with.)
 
 Know what the two checks do not stop. The first asks AuthKit to demand the
 credential again (`max_age=0`), which WorkOS documents only for AuthKit's own

@@ -156,10 +156,19 @@ export const ROLE_CAPABILITIES: Record<OrgRole, Record<Action, boolean>> = {
     'token.revoke': true,
     'org.update': true,
     'org.delete': true,
+    'sso.manage': true,
   },
-  // Identical to `owner` but for `org.delete`. Deleting the organisation
-  // destroys every key and every secret in it, so it stays with the role that
-  // cannot be removed while it is the last of its kind.
+  // Identical to `owner` but for `org.delete` and `sso.manage`. Deleting the
+  // organisation destroys every key and every secret in it, so it stays with
+  // the role that cannot be removed while it is the last of its kind.
+  //
+  // `sso.manage` is owner-only for a different reason: it decides which
+  // identity provider vouches for the organisation's members. An admin who
+  // could point the organisation at an identity provider of their own could
+  // then sign in as any member — an owner included, whenever the owner
+  // exemption is not in play — so it would be an admin-to-owner escalation in
+  // all but name. Admins keep reading the settings and switching a policy off
+  // (`org.update`).
   admin: {
     'project.read': true,
     'project.create': true,
@@ -183,6 +192,7 @@ export const ROLE_CAPABILITIES: Record<OrgRole, Record<Action, boolean>> = {
     'token.revoke': true,
     'org.update': true,
     'org.delete': false,
+    'sso.manage': false,
   },
   // A developer's authority is enumerated rather than expressed as "admin minus
   // a few things", so a new action defaults to denied for them.
@@ -222,6 +232,7 @@ export const ROLE_CAPABILITIES: Record<OrgRole, Record<Action, boolean>> = {
     'token.revoke': false,
     'org.update': false,
     'org.delete': false,
+    'sso.manage': false,
   },
   // Every mutation is `false`, not merely gated on access level. Granting a
   // viewer `admin` on one environment is an easy slip in the grants UI; it
@@ -249,6 +260,7 @@ export const ROLE_CAPABILITIES: Record<OrgRole, Record<Action, boolean>> = {
     'token.revoke': false,
     'org.update': false,
     'org.delete': false,
+    'sso.manage': false,
   },
 };
 
@@ -319,6 +331,7 @@ export const ACTION_REQUIREMENTS: Record<Action, ActionRequirement> = {
   'token.revoke': { scope: 'org' },
   'org.update': { scope: 'org' },
   'org.delete': { scope: 'org' },
+  'sso.manage': { scope: 'org' },
 };
 
 /* ── Custom roles ──────────────────────────────────────────────────────────── */

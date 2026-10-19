@@ -49,8 +49,8 @@ deployment is configured, which is not public.
 |---|---|---|
 | `GET` | `/auth/login` | Starts a sign-in: sets a short-lived signed cookie and redirects (**307**) to the identity provider's hosted sign-in page. Optional `?next=` (a path on this site to land on afterwards), `?hint=sign-up`, `?org=<slug>` (start that organisation's single sign-on directly, if it has one). A link, not an API call. |
 | `GET` | `/auth/callback` | Where the identity provider sends the browser back. Checks the flow belongs to this browser, verifies the sign-in with the provider, creates the account on first sign-in, bootstraps a personal organisation, sets the session and CSRF cookies, and redirects (**303**) to `next`. |
-| `DELETE` | `/auth/session` | Signs out. Idempotent. |
-| `GET` | `/auth/me` | You, your organisations, your role in each, and the PIN state. |
+| `DELETE` | `/auth/session` | Signs out. Idempotent. Answers `{ logoutUrl }`: the sign-in provider's logout address for the session you signed in with, which the dashboard opens so that you are signed out there too — or `null` when there is none to end. |
+| `GET` | `/auth/me` | You, your organisations, your role in each — with `sso: { required, blocked }`, whether the organisation requires single sign-on and whether that refuses the credential you are using — and the PIN state. |
 | `GET` `POST` | `/auth/pin` | Read the PIN state; set or change the PIN. Changing requires the current one. |
 | `POST` | `/auth/pin/unlock` | Body `{ pin }`. Unlocks this session for 8 hours. |
 | `POST` | `/auth/pin/lock` | Locks this session, or all of them with `{ everywhere: true }`. Does not sign you out. |
@@ -218,6 +218,27 @@ anybody more than the role it is based on. See
 | `POST` | `/orgs/{orgSlug}/roles` | Body `{ name, baseRole: admin\|developer\|viewer, allowedActions, accessCeiling?: { nonProduction, production } \| null }`. Names are unique per organisation as a reader sees them — two names that differ only in case, letter width, spacing or lookalike letters are one name (**409**) — and may not be, or imitate, a built-in role's. Invisible characters, and Latin letters mixed with Cyrillic or Greek ones, are refused (**422**), as is a list naming an action the base cannot perform. |
 | `PATCH` | `/orgs/{orgSlug}/roles/{roleId}` | Any of the fields above. Refused if anybody holding the role is beyond your authority, or holds access grants beyond yours that the change would switch on. A change that changes nothing writes nothing. |
 | `DELETE` | `/orgs/{orgSlug}/roles/{roleId}` | Only a role nobody holds — otherwise **409**: move its members to another role, or to none, first. Never plan-gated. |
+
+## Single sign-on
+
+SAML and OIDC single sign-on through WorkOS, set up by your IT admin in WorkOS's
+setup portal. From a browser session only (a CLI token is refused). Owners and
+admins can read the status and switch a policy off; only **owners** can turn SSO
+on, open the setup portal, or switch a policy on — whoever does those decides
+which identity provider vouches for every member. Turning anything **on** also
+needs the single sign-on add-on. Every route answers with the same `sso` status:
+whether SSO is on, `ssoRequired`, `jitJoinEnabled`, the seat limit, whether the
+add-on is held, and — once on — the connections and domains WorkOS reports
+(`null`, with `providerReachable: false`, if WorkOS cannot be reached) and
+`membersOutsideVerifiedDomains`, how many members your identity provider cannot
+sign in.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/orgs/{orgSlug}/sso` | The status. |
+| `POST` | `/orgs/{orgSlug}/sso` | Owners. Turns SSO on: creates the organisation's account at WorkOS, with no domains — domains are added and verified in the setup portal. **201** the first time; **200** and nothing created once on. |
+| `POST` | `/orgs/{orgSlug}/sso/portal` | Owners, within ten minutes of signing in again (**403** `reauth_required` otherwise) — by password, passkey, Google, single sign-on or an emailed code. `{ link }` — a WorkOS setup-portal link, valid for a few minutes, that returns to the organisation's settings. **409** before SSO is on. Every link is audited. |
+| `PATCH` | `/orgs/{orgSlug}/sso` | Body `{ ssoRequired?: boolean, jitJoinEnabled?: boolean }`. Switching either on is for owners; switching off, for owners and admins. Requiring SSO needs an active connection and a verified domain (**409** otherwise), and takes effect **immediately**: from then on, members who did not sign in through your identity provider — and CLI devices approved from such a sign-in — get **403** `sso_required` for this organisation, and keep every other. The response's `nonSsoAccess` says how many sessions and CLI tokens that affected. Members who get `sso_required` sign in again through the organisation's single sign-on (the dashboard offers the link; the CLI says to run `xecret login` through it). Owners are always exempt, so a misconfigured identity provider cannot lock the organisation out; every time an owner signs in, approves a CLI device or accepts an invitation that way, the audit log says so. `jitJoinEnabled` lets anybody your identity provider signs in, at a verified domain, join as a viewer while seats last — never somebody you removed; off, they need an invitation. |
 
 ## Tokens
 

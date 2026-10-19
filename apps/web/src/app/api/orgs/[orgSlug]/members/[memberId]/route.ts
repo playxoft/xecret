@@ -302,18 +302,25 @@ export const DELETE = authenticatedRoute<Params>(
     // member promoted to owner between this route's read and the write is an
     // owner the caller may not remove.
     const lockedAs: { member: MemberRecord | null } = { member: null };
-    await removeMember(services.db, { orgId, memberId: target.id }, ({ member }) => {
-      lockedAs.member = member;
-      auditingDenials(
-        (decision) =>
-          record(
-            audit(orgId).denied('member.removed', resource, decision, {
-              targetEmail: target.user.email,
-            }),
-          ),
-        () => assertRoleAuthority(membership, member.role),
-      );
-    }).catch(mapMembershipError);
+    // `removedBy` leaves the removal on record (`org_member_removals`), so the
+    // organisation's identity provider cannot quietly re-admit them through a
+    // just-in-time join (review S4); an invitation is the way back.
+    await removeMember(
+      services.db,
+      { orgId, memberId: target.id, removedBy: actor.user.id },
+      ({ member }) => {
+        lockedAs.member = member;
+        auditingDenials(
+          (decision) =>
+            record(
+              audit(orgId).denied('member.removed', resource, decision, {
+                targetEmail: target.user.email,
+              }),
+            ),
+          () => assertRoleAuthority(membership, member.role),
+        );
+      },
+    ).catch(mapMembershipError);
     const removed = lockedAs.member ?? target;
 
     // After the removal, not before: the reconciliation reads the membership to

@@ -83,6 +83,12 @@ func (e *Error) Hint() string {
 		// Cannot happen for a bearer credential; kept because a wrong hint is
 		// worse than a defensive one.
 		return "Unlock your session in the dashboard, then retry."
+	case "sso_required":
+		// The organisation requires its single sign-on, and this device was
+		// approved from a browser session that did not come through it. Nobody
+		// needs to grant anything: approve the device again from an SSO sign-in.
+		return "This organisation requires single sign-on. Run 'xecret login' again and, in the " +
+			"browser, sign in through your organisation's single sign-on before approving this device."
 	case "forbidden":
 		return "Ask an organisation admin to review your access."
 	case "not_found":

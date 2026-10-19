@@ -1,5 +1,14 @@
 import type { Metadata } from 'next';
+import { cookies } from 'next/headers';
 import Link from 'next/link';
+
+import {
+  isWellFormedSsoContinueBinding,
+  mintSsoContinueToken,
+  SSO_CONTINUE_COOKIE_NAME,
+} from '@xecret/core/auth';
+import { workerContext } from '@/server/context';
+import { ssoContinueKey } from '@/server/sign-in';
 
 // From their own modules rather than the `components/ui` barrel: this page is
 // otherwise all server markup, and the barrel would make it depend on every
@@ -10,7 +19,7 @@ import { safeRedirectPath } from '@/lib/redirect-path';
 import { POST_SIGN_IN_PATH } from '@/lib/session-hint';
 import { signInErrorMessage } from '@/lib/sign-in-errors';
 import { AuthCard } from '../_components/auth-card';
-import { authScreenHref, loginHref, singleParam } from '../_components/login-href';
+import { authScreenHref, loginHref, singleParam, ssoOrgParam } from '../_components/login-href';
 
 export const metadata: Metadata = {
   title: 'Sign in',
@@ -38,7 +47,7 @@ export const metadata: Metadata = {
  * sign-in nobody started.
  *
  * ── What is read from the URL ──
- * Both parameters are attacker-suppliable, because anybody can link here:
+ * Every parameter is attacker-suppliable, because anybody can link here:
  *  - `next` goes through `safeRedirectPath` — the same function the login route
  *    and the API client's 401 bounce call — before it is written into a link.
  *    A rejected value becomes `/app`, never an error: whoever followed a bad
@@ -46,6 +55,24 @@ export const metadata: Metadata = {
  *  - `error` is only ever a key into the table in `lib/sign-in-errors.ts`. An
  *    unknown code renders nothing at all, so the parameter cannot put text of
  *    its choosing on this page.
+ *  - `org` is an SSO deep link that arrived from somewhere other than this
+ *    site — the login route sends those here rather than straight to the
+ *    organisation's identity provider. The page names the organisation and asks
+ *    the person to confirm it is theirs before continuing, because a link from
+ *    elsewhere could be somebody else's organisation, wired to an identity
+ *    provider that signs the visitor in as *them* (login CSRF; see the login
+ *    route). Held to the slug pattern before it is printed, and never looked up
+ *    here: whether the slug exists, or has SSO, is not this page's to say.
+ *
+ *    Its "Continue" link is the only thing the login route will start an
+ *    organisation's single sign-on for (review round 2): it carries a
+ *    five-minute token, an HMAC over the slug, the moment, and the random
+ *    binding cookie the login route handed this browser when it sent it here.
+ *    Minted here, on the server, from a cookie no script and no other site
+ *    can read — so a token is good only in the browser that was shown this
+ *    page. A browser that arrived without a binding (this page typed or
+ *    bookmarked) gets a link without one; the login route then hands it a
+ *    binding and sends it back here, and the second "Continue" goes through.
  *
  * Read here, on the server. Reading them in the browser with `useSearchParams`
  * would mean shipping a client component, and a Suspense boundary around it,
@@ -55,6 +82,40 @@ export default async function SignInPage({ searchParams }: PageProps<'/sign-in'>
   const params = await searchParams;
   const next = safeRedirectPath(singleParam(params.next), POST_SIGN_IN_PATH);
   const error = signInErrorMessage(singleParam(params.error));
+  const ssoOrg = ssoOrgParam(singleParam(params.org));
+
+  if (ssoOrg !== null) {
+    const continueToken = await ssoContinueTokenFor(ssoOrg);
+    return (
+      <AuthCard
+        title="Sign in with single sign-on"
+        description="You followed a link to sign in through an organisation’s identity provider."
+      >
+        <div className="flex flex-col gap-5">
+          {error !== null ? <Alert tone="danger">{error}</Alert> : null}
+
+          <Alert tone="warning" title="Check that this is your organisation">
+            <p>
+              This link signs you in with the single sign-on of an organisation whose address on
+              xecret is <code className="font-mono font-medium">{ssoOrg}</code> — chosen by whoever
+              set it up, so it proves nothing on its own. Continue only if you know that is your
+              company’s organisation. If you did not expect this link, sign in the usual way
+              instead.
+            </p>
+          </Alert>
+
+          <Button variant="primary" size="lg" className="w-full" asChild>
+            <a href={loginHref({ next, org: ssoOrg, continueToken })}>
+              Continue with single sign-on
+            </a>
+          </Button>
+          <Button variant="secondary" size="lg" className="w-full" asChild>
+            <a href={authScreenHref('/sign-in', next)}>Sign in another way</a>
+          </Button>
+        </div>
+      </AuthCard>
+    );
+  }
 
   return (
     <AuthCard
@@ -87,4 +148,25 @@ export default async function SignInPage({ searchParams }: PageProps<'/sign-in'>
       </div>
     </AuthCard>
   );
+}
+
+/**
+ * The "Continue" token for `slug`, bound to the binding cookie this browser
+ * holds — or `null` when it holds none (the login route will hand it one) or
+ * the deployment cannot mint one (it cannot sign anybody in either, and the
+ * login route will say so).
+ */
+async function ssoContinueTokenFor(slug: string): Promise<string | null> {
+  const binding = (await cookies()).get(SSO_CONTINUE_COOKIE_NAME)?.value;
+  if (!isWellFormedSsoContinueBinding(binding)) return null;
+  try {
+    const { env } = await workerContext();
+    return await mintSsoContinueToken(await ssoContinueKey(env), {
+      slug,
+      binding,
+      issuedAt: Math.floor(Date.now() / 1000),
+    });
+  } catch {
+    return null;
+  }
 }

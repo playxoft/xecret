@@ -30,8 +30,12 @@ export const ACTION_LABELS: Readonly<Record<Action, string>> = {
   'audit.read': 'Read the audit log',
   'token.create': 'Create service tokens',
   'token.revoke': 'Revoke service tokens',
-  'org.update': 'Rename the organisation',
+  'org.update': 'Rename the organisation, and view or relax its single sign-on',
   'org.delete': 'Delete the organisation',
+  // Owners only, and offered on no custom role — none is based on `owner`, so
+  // `actionsForBase` never lists it. Labelled all the same, for the reason the
+  // header gives.
+  'sso.manage': 'Turn on single sign-on, set up its identity provider and require it',
 };
 
 /**
@@ -58,5 +62,5 @@ export const ACTION_GROUPS: readonly { label: string; actions: readonly Action[]
     actions: ['member.read', 'member.invite', 'member.update', 'member.remove'],
   },
   { label: 'Service tokens', actions: ['token.create', 'token.revoke'] },
-  { label: 'Organisation', actions: ['audit.read', 'org.update', 'org.delete'] },
+  { label: 'Organisation', actions: ['audit.read', 'org.update', 'org.delete', 'sso.manage'] },
 ];

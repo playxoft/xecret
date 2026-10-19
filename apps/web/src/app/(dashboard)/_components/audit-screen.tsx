@@ -85,10 +85,16 @@ const ACTIONS = [
   'auth.login',
   'auth.signup',
   'auth.identity_linked',
+  'auth.sso_exemption_used',
+  'auth.sign_in_declined',
   'auth.login_failed',
   'auth.reauthenticated',
   'auth.logout',
   'auth.autolock_changed',
+  'org.sso.enabled',
+  'org.sso.portal_link_created',
+  'org.sso.required_toggled',
+  'org.sso.jit_toggled',
 ] as const;
 
 interface Filters {
@@ -719,7 +725,44 @@ export function describeEvent(event: AuditEvent): string {
     );
   }
   if (typeof m['deviceName'] === 'string') parts.push(m['deviceName']);
-  if (typeof m['reason'] === 'string' && event.outcome !== 'success') parts.push(m['reason']);
+  // A setting's new value — `sso_required`, the just-in-time opt-in.
+  if (typeof m['enabled'] === 'boolean') parts.push(m['enabled'] ? 'switched on' : 'switched off');
+  // The owner exemption: how the owner signed in instead of the organisation's
+  // identity provider — the one fact the row exists to show.
+  if (event.action === 'auth.sso_exemption_used' && typeof m['signInMethod'] === 'string') {
+    parts.push(`signed in by ${SIGN_IN_METHOD_WORDS[m['signInMethod']] ?? 'another method'}`);
+  }
+  // A sign-in held back for the person to confirm: why it was asked, on the
+  // `auth.login` of one they confirmed and the `auth.sign_in_declined` of one
+  // they did not.
+  if (typeof m['confirmation'] === 'string') {
+    const why = CONFIRMATION_WORDS[m['confirmation']];
+    if (why !== undefined) {
+      parts.push(
+        event.action === 'auth.sign_in_declined' ? `declined — ${why}` : `confirmed — ${why}`,
+      );
+    }
+  }
+  if (typeof m['reason'] === 'string' && event.outcome !== 'success') {
+    parts.push(m['reason'] === 'removed' ? 'removed from the organisation' : m['reason']);
+  }
 
   return parts.join(' · ');
 }
+
+/** Why a sign-in was held back for confirmation, as a phrase. */
+const CONFIRMATION_WORDS: Readonly<Record<string, string>> = {
+  organization: 'it came back through an organisation the sign-in did not ask for',
+  'not-member': 'single sign-on of an organisation the account was not in',
+  'reused-session': 'a sign-in session reused without asking',
+};
+
+/** How the audit log's sign-in methods read in a sentence. */
+const SIGN_IN_METHOD_WORDS: Readonly<Record<string, string>> = {
+  password: 'password',
+  oauth: 'Google',
+  sso: 'another organisation’s single sign-on',
+  magic_auth: 'emailed code',
+  passkey: 'passkey',
+  other: 'another method',
+};

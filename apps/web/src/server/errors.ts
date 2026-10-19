@@ -50,7 +50,33 @@ export type ApiErrorCode =
    * `isDataPlaneActive` in `@xecret/core/entitlements`.
    */
   | 'plan_limit'
+  /**
+   * The organisation requires its single sign-on, and this credential — a
+   * session, or a CLI token approved from one — did not come through it.
+   *
+   * Its own code for the reason `session_locked` has one: the caller is a
+   * member, is permitted, and can fix it without anybody granting them
+   * anything — by signing in through the organisation's identity provider. The
+   * dashboard offers that sign-in; the CLI says to run `xecret login` again
+   * from a single-sign-on session. Only ever answered to a member: the
+   * organisation and the membership are resolved first, so it confirms
+   * nothing a stranger could not already see.
+   */
+  | 'sso_required'
+  /**
+   * The action needs a fresh sign-in of this session first — a step-up. The
+   * dashboard sends the person through `GET /api/auth/login?reauth=1` and back.
+   */
+  | 'reauth_required'
   | 'internal_error'
+  /**
+   * An upstream provider (WorkOS) answered, and refused the request this
+   * server built — a configuration problem rather than an outage, so "try
+   * again in a minute" would be the wrong advice. The message names the
+   * provider's own error category, which is bounded and stripped to a
+   * log-safe token before it gets here.
+   */
+  | 'upstream_refused'
   | 'unavailable';
 
 const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
@@ -59,6 +85,8 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   unauthenticated: 401,
   forbidden: 403,
   plan_limit: 403,
+  sso_required: 403,
+  reauth_required: 403,
   not_found: 404,
   conflict: 409,
   payload_too_large: 413,
@@ -66,6 +94,7 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   csrf_failed: 403,
   session_locked: 403,
   internal_error: 500,
+  upstream_refused: 502,
   unavailable: 503,
 };
 
@@ -366,6 +395,110 @@ export const errors = {
         'need to sign in again and get a new code.',
       { logDetail: 'vault changed between archive and reset' },
     ),
+
+  /**
+   * An organisation SSO settings call that needed WorkOS and could not get an
+   * answer from it — unreachable, rate-limited, or refusing this deployment's
+   * key. Nothing was changed. Its own sentence because "temporarily
+   * unavailable" on a settings page reads as the whole product being down,
+   * when what is down is one provider's API.
+   */
+  ssoProviderUnavailable: (logDetail: string): ApiError =>
+    new ApiError(
+      'unavailable',
+      'WorkOS, which runs single sign-on for xecret, could not be reached, so nothing was changed. ' +
+        'Try again in a minute.',
+      { logDetail },
+    ),
+
+  /**
+   * WorkOS answered an SSO settings call, and refused it: a 4xx about the
+   * request this server built — the WorkOS organisation deleted in the WorkOS
+   * dashboard, a parameter WorkOS stopped accepting. Not an outage, so the
+   * sentence does not say "try again"; it names WorkOS's own category so that
+   * whoever reads it to support has something to quote.
+   *
+   * `category` is never request data: it comes from `providerFailure` in
+   * `workos.ts`, which strips WorkOS's error code to `[a-z0-9_-]` and 64
+   * characters before it exists — the one value in this file not written here,
+   * and bounded so it can be nothing else.
+   */
+  ssoProviderRefused: (category: string, logDetail: string): ApiError =>
+    new ApiError(
+      'upstream_refused',
+      `WorkOS refused the request (${category.replace(/[^a-z0-9_-]/gi, '').slice(0, 64) || 'rejected'}), ` +
+        'so nothing was changed. This usually means the organisation’s setup at WorkOS needs ' +
+        'attention; contact support with the request id.',
+      { logDetail },
+    ),
+
+  /**
+   * This organisation's single sign-on link was made in a different WorkOS
+   * environment from this deployment's (review S9) — typically an "enable"
+   * clicked in local development, which runs against WorkOS Staging over the
+   * production database. Refused rather than acted on: every WorkOS call made
+   * with it would be about an organisation this environment does not have.
+   */
+  ssoEnvironmentMismatch: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation’s single sign-on was set up in a different WorkOS environment from the ' +
+        'one this deployment uses, so it cannot be managed from here. Contact support to have the ' +
+        'link checked.',
+      { logDetail: 'workos client id mismatch' },
+    ),
+
+  /**
+   * Turning SSO on, or switching a policy on, from a deployment whose WorkOS
+   * environment is not the one this database belongs to (`workos_home`,
+   * migration 0023) — local development against WorkOS Staging over the
+   * production database, most likely. Refused before WorkOS is asked anything:
+   * a link written from here would be one no sign-in in the database's own
+   * environment could ever come through.
+   *
+   * The other way to arrive here is a self-hosted database that still holds the
+   * client id 0023 seeded — Playxoft's — because its operator has not recorded
+   * their own yet (review round 3). "Make this change from that deployment"
+   * was a dead end for them, there being no such deployment, so the message
+   * names the step, and where it is written down, for both cases.
+   */
+  ssoNotHomeEnvironment: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'Single sign-on can only be changed from a deployment in the WorkOS environment this ' +
+        'database records (workos_home), and this deployment uses a different WorkOS ' +
+        'environment — so nothing was changed. On a self-hosted deployment, an operator records ' +
+        'its own WORKOS_CLIENT_ID there once, as the database owner: ' +
+        "UPDATE workos_home SET client_id = '<WORKOS_CLIENT_ID>' (the “WorkOS environment” " +
+        'step in docs/self-hosting.md). Otherwise, make this change from the deployment that ' +
+        'database belongs to.',
+      { logDetail: 'workos client id is not workos_home' },
+    ),
+
+  /**
+   * The same, for a database with no WorkOS environment recorded at all — a
+   * self-hosted deployment that has not done the one-time operator step.
+   */
+  ssoHomeUnrecorded: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'Single sign-on cannot be turned on yet: this deployment’s database has no WorkOS ' +
+        'environment recorded. An operator records it once (the “WorkOS environment” step in ' +
+        'docs/self-hosting.md), and then it can.',
+      { logDetail: 'workos_home is empty' },
+    ),
+
+  /** See the `sso_required` code above. */
+  ssoRequired: (logDetail?: string): ApiError =>
+    new ApiError(
+      'sso_required',
+      'This organisation requires its single sign-on. Sign in through your company’s identity ' +
+        'provider to use it.',
+      logDetail === undefined ? {} : { logDetail },
+    ),
+
+  /** See the `reauth_required` code above. */
+  reauthRequired: (message: string): ApiError => new ApiError('reauth_required', message),
 
   internal: (logDetail: string): ApiError =>
     new ApiError('internal_error', 'Something went wrong.', { logDetail }),

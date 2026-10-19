@@ -35,7 +35,17 @@ export type Action =
   | 'token.create'
   | 'token.revoke'
   | 'org.update'
-  | 'org.delete';
+  | 'org.delete'
+  /**
+   * Administering the organisation's single sign-on: turning it on, minting a
+   * setup-portal link, switching a sign-in policy on. Whoever holds it decides
+   * which identity provider vouches for the organisation's members — an
+   * identity provider that can then sign anybody in as any of them, owners
+   * included — so it is held by owners alone, and no custom role can carry it
+   * (none is based on `owner`). Reading the settings and switching a policy
+   * *off* stay with `org.update`.
+   */
+  | 'sso.manage';
 
 /**
  * Who is acting.

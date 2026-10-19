@@ -60,7 +60,17 @@ export type ApiErrorCode =
    * who plainly does.
    */
   | 'plan_limit'
+  /**
+   * The organisation requires its single sign-on, and this session did not
+   * come through it. Remedied by signing in through the organisation's
+   * identity provider — never by asking an admin for access.
+   */
+  | 'sso_required'
+  /** The action needs this session to sign in again first (a step-up). */
+  | 'reauth_required'
   | 'internal_error'
+  /** An upstream provider answered and refused: a configuration problem, not an outage. */
+  | 'upstream_refused'
   | 'unavailable'
   | 'network_error';
 
@@ -217,7 +227,10 @@ const ERROR_CODES = new Set<string>([
   'csrf_failed',
   'session_locked',
   'plan_limit',
+  'sso_required',
+  'reauth_required',
   'internal_error',
+  'upstream_refused',
   'unavailable',
 ]);
 
@@ -387,16 +400,32 @@ export const api = {
 } as const;
 
 /**
- * Ends the xecret session.
+ * Ends the xecret session, and answers where the browser should go next.
  *
- * Signing out of the product means revoking *our* session, and nothing else.
- * The identity provider's tokens were discarded at the sign-in callback, so
- * there is nothing of WorkOS's in this browser to revoke. (AuthKit's own
- * session on its hosted domain survives this — a returning person may not be
- * asked for a password again — which ADR 0010 records as accepted for now.)
+ * The server revokes *our* session, and — when the session recorded the
+ * AuthKit session it came from — hands back WorkOS's logout URL for that one
+ * (review round 2). Following it ends AuthKit's own session on its hosted
+ * domain, so the next sign-in on this browser is asked for rather than reused
+ * without a word; WorkOS then sends the browser on to `/sign-in`. Without one —
+ * a session issued before it was recorded — the answer is the sign-in page
+ * itself, as it always was.
  */
-export function endSession(): Promise<void> {
-  return api.delete<void>('/auth/session', undefined, { redirectOnUnauthenticated: false });
+export async function endSession(): Promise<string> {
+  const answer = await api.delete<{ logoutUrl?: unknown } | undefined>('/auth/session', undefined, {
+    redirectOnUnauthenticated: false,
+  });
+  return signOutDestination(answer?.logoutUrl);
+}
+
+/**
+ * Where to send the browser after signing out: WorkOS's logout URL when the
+ * server answered one that is plainly a page on the web — `https:` and
+ * nothing else, so a value that is not one is never navigated to — and the
+ * sign-in page otherwise.
+ */
+export function signOutDestination(logoutUrl: unknown): string {
+  if (typeof logoutUrl !== 'string' || !URL.canParse(logoutUrl)) return SIGN_IN_PATH;
+  return new URL(logoutUrl).protocol === 'https:' ? logoutUrl : SIGN_IN_PATH;
 }
 
 /**

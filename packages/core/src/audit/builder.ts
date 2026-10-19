@@ -9,6 +9,7 @@ import type {
   AuditEvent,
   AuditMetadata,
   AuditOutcome,
+  SignInConfirmationKind,
   SignInMethod,
 } from './types';
 
@@ -152,7 +153,13 @@ export type AuditErrorReason =
   | 'keyUnavailable'
   | 'upstreamUnavailable'
   | 'quotaExceeded'
-  | 'timeout';
+  | 'timeout'
+  /**
+   * The person was removed from the organisation and has not been invited
+   * back, so a way in that would otherwise admit them — a just-in-time join —
+   * does not (`member.jit_denied`).
+   */
+  | 'removed';
 
 /**
  * `reason` is set from the outcome, never by the caller, so a denial always
@@ -472,11 +479,21 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   // and regeneration records were written to carry and never did.
   if (metadata.wrapKind !== undefined) clean.wrapKind = metadata.wrapKind;
   if (metadata.method !== undefined) clean.method = metadata.method;
+  // A boolean or nothing: a value that reached past the type with a cast is
+  // dropped, never coerced, so "on" cannot be read from a truthy string.
+  if (typeof metadata.enabled === 'boolean') clean.enabled = metadata.enabled;
   // Checked against the vocabulary rather than copied: the value is derived
   // from a provider's answer, and a free string here would be a provider-chosen
   // field in the one table this product promises is truthful.
   if (metadata.signInMethod !== undefined && SIGN_IN_METHODS.has(metadata.signInMethod)) {
     clean.signInMethod = metadata.signInMethod;
+  }
+  // The same: a closed set, checked rather than copied.
+  if (
+    metadata.confirmation !== undefined &&
+    SIGN_IN_CONFIRMATION_KINDS.has(metadata.confirmation)
+  ) {
+    clean.confirmation = metadata.confirmation;
   }
   if (metadata.recoveryCodeCount !== undefined && Number.isFinite(metadata.recoveryCodeCount)) {
     clean.recoveryCodeCount = metadata.recoveryCodeCount;
@@ -492,6 +509,12 @@ const SIGN_IN_METHODS: ReadonlySet<string> = new Set<SignInMethod>([
   'magic_auth',
   'passkey',
   'other',
+]);
+
+const SIGN_IN_CONFIRMATION_KINDS: ReadonlySet<string> = new Set<SignInConfirmationKind>([
+  'organization',
+  'not-member',
+  'reused-session',
 ]);
 
 /** Every action name there is — the only strings an action list may hold. */

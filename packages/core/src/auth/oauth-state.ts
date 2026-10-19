@@ -24,8 +24,22 @@ import { PKCE_VERIFIER_PATTERN } from './pkce';
  *
  * It also carries what the callback must not take from the query string: where
  * to go afterwards (`next`, validated before it was ever written here), the PKCE
- * verifier for the code exchange, and whether this sign-in was a forced
- * re-authentication.
+ * verifier for the code exchange, whether this sign-in was a forced
+ * re-authentication, and **which WorkOS organisation the flow asked for**, if
+ * any.
+ *
+ * ── What `state` does not cover ──
+ * `state` proves the callback is completing a flow *this browser started*. It
+ * says nothing about *whose* authentication comes back. AuthKit reuses a
+ * session it already holds without asking, so an attacker who first plants
+ * their own AuthKit session in the victim's browser — by sending it to
+ * AuthKit's authorize URL for an organisation whose identity provider they
+ * control, or through that provider's IdP-initiated sign-in — gets the victim's
+ * next ordinary "Sign in" answered with the attacker's identity, against the
+ * victim's own valid state and PKCE. `organizationId` is what lets the callback
+ * notice: a flow that asked for no organisation (or a different one) coming back
+ * through an organisation's single sign-on is parked behind a confirmation the
+ * person must answer (`server/sign-in.ts`, `sign-in-confirmation.ts`).
  *
  * ── Why signed, and why not encrypted ──
  * Signed so that nothing in it can be changed in transit — a `next` rewritten to
@@ -101,7 +115,19 @@ export interface OAuthState {
   purpose: OAuthPurpose;
   /** Seconds since the epoch. */
   issuedAt: number;
+  /**
+   * The WorkOS organisation this flow asked AuthKit for — an SSO deep link —
+   * or `null` for an ordinary sign-in. Compared by the callback with the
+   * organisation the authentication actually came back through; see the
+   * module header for why that comparison exists. A cookie written before this
+   * field existed reads as `null`, which is the strict answer: any organisation
+   * coming back is then one the flow did not ask for.
+   */
+  organizationId: string | null;
 }
+
+/** The shape of a WorkOS organisation id: `org_` and an alphanumeric (ULID) tail. */
+export const WORKOS_ORGANIZATION_ID_PATTERN = /^org_[0-9A-Za-z]+$/;
 
 export type OAuthStateRejection =
   /** No cookie at all — a callback this browser never started, or one already used. */
@@ -132,6 +158,19 @@ export function generateOAuthSecrets(): { state: string; verifier: string } {
  * key.
  */
 export async function deriveOAuthStateKey(secret: string): Promise<CryptoKey> {
+  return deriveCookieKey(secret, KEY_LABEL);
+}
+
+/**
+ * An HMAC key for one signed cookie, derived from the operator secret under a
+ * label naming that cookie. Two labels give two keys that cannot vouch for
+ * each other's cookies — the property the header above promised for "a second
+ * cookie later", which the sign-in confirmation (`sign-in-confirmation.ts`) is.
+ *
+ * @internal Exported for that module; anything else wanting a key derives it
+ * through a function that fixes its own label.
+ */
+export async function deriveCookieKey(secret: string, label: string): Promise<CryptoKey> {
   if (typeof secret !== 'string' || secret.length < MIN_STATE_SECRET_LENGTH) {
     throw new RangeError(
       `The state-cookie secret must be at least ${MIN_STATE_SECRET_LENGTH} characters.`,
@@ -142,7 +181,7 @@ export async function deriveOAuthStateKey(secret: string): Promise<CryptoKey> {
     'deriveKey',
   ]);
   return crypto.subtle.deriveKey(
-    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: utf8Encode(KEY_LABEL) },
+    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: utf8Encode(label) },
     material,
     { name: 'HMAC', hash: 'SHA-256', length: 256 },
     false,
@@ -160,6 +199,7 @@ export async function sealOAuthState(key: CryptoKey, value: OAuthState): Promise
         n: value.next,
         p: value.purpose,
         t: value.issuedAt,
+        o: value.organizationId,
       }),
     ),
   );
@@ -265,6 +305,27 @@ export function clearedOAuthStateCookie(): string {
 const STATE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 /**
+ * The shape the login route validated `next` to before sealing it: one leading
+ * slash and never two (`//host` is protocol-relative), no backslash, no control
+ * character. A key holder could mint anything, so a sealed cookie is not taken
+ * at its word even here; the callback checks `next` once more before using it.
+ *
+ * @internal Shared with the sign-in confirmation cookie, which carries the same
+ * `next` on to the moment the session is issued.
+ */
+export function isSealableNext(n: unknown): n is string {
+  return (
+    typeof n === 'string' &&
+    n.length > 0 &&
+    n.length <= MAX_NEXT_LENGTH &&
+    n.startsWith('/') &&
+    !n.startsWith('//') &&
+    // eslint-disable-next-line no-control-regex -- control characters are the subject of the check.
+    !/[\u0000-\u001f\u007f\\]/.test(n)
+  );
+}
+
+/**
  * Reads the payload back into an `OAuthState`, or `null`.
  *
  * Runs only on a payload whose MAC verified, so this is not a defence against an
@@ -283,27 +344,23 @@ function parsePayload(payload: string): OAuthState | null {
   if (typeof parsed !== 'object' || parsed === null) return null;
 
   const record = parsed as Record<string, unknown>;
-  const { s, v, n, p, t } = record;
+  const { s, v, n, p, t, o } = record;
 
   if (typeof s !== 'string' || !STATE_PATTERN.test(s)) return null;
   if (typeof v !== 'string' || !PKCE_VERIFIER_PATTERN.test(v)) return null;
-  // The shape the login route validated before sealing it: one leading slash
-  // and never two (`//host` is protocol-relative), no backslash, no control
-  // character. A key holder could mint anything, so the cookie is not taken at
-  // its word even here; the callback checks `next` once more before using it.
-  if (
-    typeof n !== 'string' ||
-    n.length === 0 ||
-    n.length > MAX_NEXT_LENGTH ||
-    !n.startsWith('/') ||
-    n.startsWith('//') ||
-    // eslint-disable-next-line no-control-regex -- control characters are the subject of the check.
-    /[\u0000-\u001f\u007f\\]/.test(n)
-  ) {
-    return null;
-  }
+  if (!isSealableNext(n)) return null;
   if (p !== 'sign-in' && p !== 'reauth') return null;
   if (typeof t !== 'number' || !Number.isSafeInteger(t)) return null;
+  // Absent on a cookie sealed before the field existed, and read as `null` —
+  // the strict reading. Present, it is `null` or an organisation id, nothing
+  // else.
+  let organizationId: string | null = null;
+  if (o !== undefined && o !== null) {
+    if (typeof o !== 'string' || o.length > 64 || !WORKOS_ORGANIZATION_ID_PATTERN.test(o)) {
+      return null;
+    }
+    organizationId = o;
+  }
 
-  return { state: s, verifier: v, next: n, purpose: p, issuedAt: t };
+  return { state: s, verifier: v, next: n, purpose: p, issuedAt: t, organizationId };
 }

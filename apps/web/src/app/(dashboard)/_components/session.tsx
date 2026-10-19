@@ -63,6 +63,14 @@ export interface SessionOrganization {
   role: OrgRole;
   /** What the viewer may *do* here — what controls ask. */
   authority: SessionAuthority;
+  /**
+   * Whether the organisation requires its single sign-on, and whether that
+   * refuses this session — which then gets `sso_required` from every request
+   * there, and a screen saying how to sign in through it (`sso-required.ts`).
+   * Optional only for the fixtures that predate it; `/api/auth/me` always sends
+   * it.
+   */
+  sso?: { required: boolean; blocked: boolean };
 }
 
 /**

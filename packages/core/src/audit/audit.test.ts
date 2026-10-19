@@ -626,6 +626,7 @@ describe('every declared metadata field survives sanitisation', () => {
       environmentCount: 6,
       operator: 'ops-alice',
       source: 'dashboard',
+      enabled: false,
     });
 
     expect(record.metadata).toEqual({
@@ -671,7 +672,46 @@ describe('every declared metadata field survives sanitisation', () => {
       environmentCount: 6,
       operator: 'ops-alice',
       source: 'dashboard',
+      // `false` is a value, not an absence: switching a policy off is the
+      // change most worth finding later.
+      enabled: false,
     });
+  });
+
+  it('keeps why a sign-in was held back only when it is one of the known reasons', () => {
+    for (const confirmation of ['organization', 'not-member', 'reused-session'] as const) {
+      const record = builderWith().success('auth.login', null, {
+        signInMethod: 'sso',
+        confirmation,
+      });
+      expect(record.metadata).toEqual({ signInMethod: 'sso', confirmation });
+    }
+    const declined = builderWith().success('auth.sign_in_declined', null, {
+      confirmation: 'organization',
+    });
+    expect(declined.metadata).toEqual({ confirmation: 'organization' });
+
+    // A provider- or attacker-chosen string reached past the type: dropped.
+    for (const smuggled of ['because', 'organization\n', 1]) {
+      const record = builderWith().success('auth.login', null, {
+        confirmation: smuggled as never,
+      });
+      expect(record.metadata).toEqual({});
+    }
+  });
+
+  it('keeps a setting’s new value only when it is a boolean', () => {
+    const on = builderWith().success('org.sso.required_toggled', null, { enabled: true });
+    expect(on.metadata).toEqual({ enabled: true });
+
+    // Reached past the type with a cast: a truthy string is dropped, never
+    // read as "switched on".
+    for (const smuggled of ['true', 1, null]) {
+      const record = builderWith().success('org.sso.jit_toggled', null, {
+        enabled: smuggled as never,
+      });
+      expect(record.metadata).toEqual({});
+    }
   });
 
   it('sanitises the attacker-influenced additions like every other string', () => {
