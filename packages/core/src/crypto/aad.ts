@@ -291,6 +291,33 @@ export function cliHandoffAad(params: { codeChallenge: string; handoffPublicKey:
 }
 
 /**
+ * Binds a personal override (P19 §2) to the organisation, the environment, the
+ * person it belongs to, and the name it overrides.
+ *
+ * A sealed box to the owner's *own* X25519 public key, never to the
+ * environment's key: a teammate holding the EDK must not be able to open
+ * somebody's local override, and an EDK rotation must not have to touch one.
+ * The four components are exactly the row's unique key, so an override moved to
+ * another person, another environment or another name fails to open rather than
+ * applying somewhere it was not written for. `name` is a component because
+ * secret names are `[A-Za-z_][A-Za-z0-9_]*`, which the component pattern
+ * already admits.
+ */
+export function overrideValueAad(params: {
+  orgId: string;
+  environmentId: string;
+  userId: string;
+  name: string;
+}): string {
+  assertUuid(params.orgId, 'orgId');
+  assertUuid(params.environmentId, 'environmentId');
+  assertUuid(params.userId, 'userId');
+  assertComponent(params.name, 'name');
+
+  return `${AAD_PREFIX_V2}.override-value|${params.orgId}|${params.environmentId}|${params.userId}|${params.name}`;
+}
+
+/**
  * Whether a string is a well-formed v2 AAD.
  *
  * Used by the HKDF layer, where a sealed box passes its AAD as the `info`

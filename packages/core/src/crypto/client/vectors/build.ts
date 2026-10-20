@@ -25,7 +25,14 @@
  */
 
 import { x25519 } from '@noble/curves/ed25519.js';
-import { edkGrantAad, ehkGrantAad, secretNoteAad, secretValueAad, userKeyWrapAad } from '../../aad';
+import {
+  edkGrantAad,
+  ehkGrantAad,
+  overrideValueAad,
+  secretNoteAad,
+  secretValueAad,
+  userKeyWrapAad,
+} from '../../aad';
 import { MAX_SECRET_VALUE_BYTES } from '../../secrets';
 import type { Bytes } from '../../types';
 import { toBase64Url } from '../../encoding';
@@ -128,6 +135,18 @@ const CODE_BYTES = {
   padded: '000007d3d6ce2ba14cde1eb44d1a5f59',
   /** Chosen to contain both `0` and `1`, so the I/L/O aliasing is exercised. */
   typed: '070bef76a0da01c38d8bfb877a70a261',
+} as const;
+
+/**
+ * The randomness behind the two personal-override vectors (spec §2.2 type 13).
+ * Separate from `EPHEMERAL` and `IV` so adding these changed no existing vector.
+ */
+const OVERRIDE_RANDOMNESS = {
+  ephemeral: [
+    '7d8a68697dce38554fce9770697f0ee5f029eddcf2f9ed6540291d5336812dbd',
+    'a1f7cedcf9305e997c5b570bbe03a8ec45d4e26560bc4bfc77a98ba82457643a',
+  ],
+  iv: ['28172a2094a5513230b4e91f', '24568a5750393ca41d33bc4b'],
 } as const;
 
 const INVITE_SEED = '519eeaf678a951999be2bb90f3766ef2';
@@ -886,6 +905,70 @@ async function blobParseVectors(): Promise<Vector[]> {
   ];
 }
 
+/**
+ * Personal overrides: a value sealed to its owner's own public key, bound to the
+ * organisation, the environment, the owner and the name. One ASCII value, and
+ * one whose NFC form differs from its bytes as typed — the same normalisation
+ * rule as a secret value, checked in both implementations.
+ */
+async function overrideValueVectors(): Promise<Vector[]> {
+  const ownerPrivateKey = fromHex(KEY.memberPrivate);
+  const ownerPublicKey = encryptionPublicKey(ownerPrivateKey);
+
+  const cases = [
+    {
+      id: 'override-value/ascii',
+      description: "A developer's local DATABASE_URL, sealed to their own key.",
+      name: 'DATABASE_URL',
+      plaintext: 'postgres://dev:dev@localhost:5432/app',
+    },
+    {
+      id: 'override-value/nfc',
+      description:
+        'A decomposed value: NFC-normalised before it is sealed, exactly as a secret is.',
+      name: 'GREETING',
+      plaintext: DECOMPOSED_VALUE,
+    },
+  ];
+
+  const vectors: Vector[] = [];
+  for (const [index, testCase] of cases.entries()) {
+    const aad = overrideValueAad({
+      orgId: ID.org,
+      environmentId: ID.environment,
+      userId: ID.member,
+      name: testCase.name,
+    });
+    const plaintext = normalizedUtf8(testCase.plaintext);
+    const blob = await sealToPublicKeyWithRandomness({
+      recipientPublicKey: ownerPublicKey,
+      plaintext,
+      aad,
+      ephemeralPrivateKey: fromHex(OVERRIDE_RANDOMNESS.ephemeral[index]!),
+      iv: fromHex(OVERRIDE_RANDOMNESS.iv[index]!),
+    });
+
+    vectors.push({
+      id: testCase.id,
+      kind: 'override-value',
+      description: testCase.description,
+      input: {
+        orgId: ID.org,
+        environmentId: ID.environment,
+        userId: ID.member,
+        name: testCase.name,
+        ownerPrivateKeyHex: KEY.memberPrivate,
+        ownerPublicKeyHex: toHex(ownerPublicKey),
+        ephemeralPrivateKeyHex: OVERRIDE_RANDOMNESS.ephemeral[index]!,
+        ivHex: OVERRIDE_RANDOMNESS.iv[index]!,
+        plaintext: testCase.plaintext,
+      },
+      expected: { aad, plaintextHex: toHex(plaintext), blob },
+    });
+  }
+  return vectors;
+}
+
 /* ──────────────────────────────── assembly ──────────────────────────────── */
 
 /** Builds every vector, in file order. Deterministic: the inputs are pinned. */
@@ -915,6 +998,7 @@ export async function buildVectors(): Promise<Vector[]> {
     ...(await valueHmacVectors()),
     ...(await recoveryCodeVectors()),
     ...(await blobParseVectors()),
+    ...(await overrideValueVectors()),
   ];
 }
 

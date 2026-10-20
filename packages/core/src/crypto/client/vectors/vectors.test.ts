@@ -8,6 +8,8 @@ import { deriveKey } from '../hkdf';
 import { nobleArgon2idProvider } from '../kdf';
 import type { Argon2idParams } from '../kdf';
 import { encryptionPublicKey, signingPublicKey } from '../keypair';
+import { openOverrideValue } from '../override';
+import { overrideValueAad } from '../../aad';
 import {
   deriveRecoveryKey,
   encodeRecoveryCode,
@@ -71,7 +73,7 @@ describe('the vector file', () => {
     expect(file.generator).toMatch(/^packages\/core\/scripts\/generate-vectors\.ts@/);
   });
 
-  it('covers all nine kinds', () => {
+  it('covers all ten kinds', () => {
     expect(new Set(vectors.map((vector) => vector.kind))).toEqual(
       new Set([
         'argon2id',
@@ -83,6 +85,7 @@ describe('the vector file', () => {
         'value-hmac',
         'recovery-code',
         'blob-parse',
+        'override-value',
       ]),
     );
   });
@@ -228,6 +231,44 @@ describe('sealed-box vectors', () => {
 
     expect(versions).toContain(1);
     expect(versions).toContain(2);
+  });
+});
+
+describe('override-value vectors', () => {
+  it.each(of('override-value'))('$id', async (vector) => {
+    const context = {
+      orgId: vector.input['orgId'] as string,
+      environmentId: vector.input['environmentId'] as string,
+      userId: vector.input['userId'] as string,
+      name: vector.input['name'] as string,
+    };
+    const aad = overrideValueAad(context);
+    expect(aad).toBe(vector.expected['aad']);
+
+    const ownerPrivateKey = bytes(vector, 'ownerPrivateKeyHex');
+    expect(toHex(encryptionPublicKey(ownerPrivateKey))).toBe(hex(vector, 'ownerPublicKeyHex'));
+
+    const plaintext = normalizedUtf8(vector.input['plaintext'] as string);
+    expect(toHex(plaintext)).toBe(hex(vector, 'plaintextHex', 'expected'));
+
+    const blob = await sealToPublicKeyWithRandomness({
+      recipientPublicKey: bytes(vector, 'ownerPublicKeyHex'),
+      plaintext,
+      aad,
+      ephemeralPrivateKey: bytes(vector, 'ephemeralPrivateKeyHex'),
+      iv: bytes(vector, 'ivHex'),
+    });
+    expect(blob).toBe(vector.expected['blob']);
+
+    // The public entry point opens it, and returns the NFC form.
+    expect(await openOverrideValue({ ownerPrivateKey, context, blob })).toBe(
+      (vector.input['plaintext'] as string).normalize('NFC'),
+    );
+
+    // Moved to another name, or another person, it opens for nobody.
+    await expect(
+      openOverrideValue({ ownerPrivateKey, context: { ...context, name: 'OTHER' }, blob }),
+    ).rejects.toBeInstanceOf(DecryptionError);
   });
 });
 
