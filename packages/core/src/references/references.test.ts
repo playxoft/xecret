@@ -501,6 +501,29 @@ describe('planResolution', () => {
     expect(plan.visited.map((node) => node.name).sort()).toEqual(['DB_HOST', 'REGION', 'URL']);
   });
 
+  it('carries a referenced context’s chain to the root, past the layer that answered', () => {
+    // `shared` takes DB_HOST from its parent `mid`, which itself has a parent.
+    // The client walks `shared`'s whole chain to repeat the lookup, so `top`
+    // must travel too, even though it contributes nothing.
+    const g = graph(
+      env('top', null, { OTHER: value('o') }),
+      env('mid', 'top', { DB_HOST: value('db') }),
+      env('shared', 'mid', {}),
+      env('app', null, { URL: template('${shared.DB_HOST}', { shared: 'shared' }) }),
+    );
+
+    const plan = planResolution(g, 'app');
+    expect([...plan.contexts].sort()).toEqual(['mid', 'shared', 'top']);
+    expect([...(plan.referenced.get('mid') ?? [])]).toEqual(['DB_HOST']);
+    expect(plan.referenced.has('top')).toBe(false);
+
+    // And what was carried is enough: the subgraph of the plan resolves.
+    const carried = new Map(
+      [...g].filter(([key]) => key === 'app' || plan.contexts.has(key) || plan.chain.includes(key)),
+    );
+    expect(resolveEnvironment(carried, 'app').get('URL')).toBe('db');
+  });
+
   it('carries nothing extra for an environment that needs nothing', () => {
     const plan = planResolution(graph(env('e', null, { A: value('a') })), 'e');
     expect(plan.chain).toEqual([]);

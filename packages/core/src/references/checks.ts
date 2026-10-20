@@ -176,10 +176,12 @@ export function planResolution<S extends GraphSecret>(
 
   for (const node of visited) {
     if (inChain.has(node.definedIn) && inChain.has(node.contextId)) continue;
-    contexts.add(node.contextId);
+    // The context's whole chain, to the root — not only as far as the layer that
+    // defined the secret. A client repeats the lookup by walking the chain, and
+    // `inheritanceChain` refuses a chain with a missing link however far below it
+    // the answer was found.
     for (const environment of inheritanceChain(graph, node.contextId)) {
       contexts.add(environment.id);
-      if (environment.id === node.definedIn) break;
     }
     const names = referenced.get(node.definedIn) ?? new Set<string>();
     names.add(node.name);
