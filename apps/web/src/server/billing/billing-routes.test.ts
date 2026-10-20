@@ -697,6 +697,42 @@ describe('a request asked twice is one request', () => {
     ).toEqual({ url: 'https://pay.example/retry' });
   });
 
+  it('a plan change Dodo did not answer in time says it may have gone through, and keeps its key', async () => {
+    const { slug } = await seedOrg(SUBSCRIBED);
+    dodo.changePlan.mockRejectedValue(new DodoApiError('timeout', null));
+    const key = randomUUID();
+    const body = { plan: 'team', interval: 'yearly' };
+
+    const first = await callWithKey(changeRoute.POST, slug, '/change', body, key);
+    expect(first.status).toBe(503);
+    const said = JSON.stringify(first.body);
+    expect(said).toContain('may have gone through');
+    expect(said).not.toContain('nothing was changed or charged');
+
+    // Asked again with the same key: told it is in flight, never sent twice.
+    dodo.changePlan.mockResolvedValue(undefined);
+    const again = await callWithKey(changeRoute.POST, slug, '/change', body, key);
+    expect(again.status).toBe(409);
+    expect(dodo.changePlan).toHaveBeenCalledTimes(1);
+  });
+
+  it('a checkout Dodo did not answer in time claims nothing, and keeps its key too', async () => {
+    const { slug } = await seedOrg();
+    dodo.createCheckoutSession.mockRejectedValue(new DodoApiError('network', null));
+    const key = randomUUID();
+    const body = { plan: 'team', interval: 'monthly' };
+
+    const first = await callWithKey(checkoutRoute.POST, slug, '/checkout', body, key);
+    expect(first.status).toBe(503);
+    const said = JSON.stringify(first.body);
+    expect(said).toContain('may or may not have been created');
+    expect(said).not.toContain('nothing was changed or charged');
+
+    const again = await callWithKey(checkoutRoute.POST, slug, '/checkout', body, key);
+    expect(again.status).toBe(409);
+    expect(dodo.createCheckoutSession).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses a new checkout while a paid one is still being applied', async () => {
     // The payment linked the subscription; its `active` has not arrived yet.
     const { slug } = await seedOrg({

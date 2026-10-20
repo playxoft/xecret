@@ -26,7 +26,7 @@ import type { SubscriptionRecord } from '@xecret/db/repositories';
 import type { Principal } from '../actor';
 import { publicOrigin } from '../bindings';
 import type { ServiceContext } from '../context';
-import { errors } from '../errors';
+import { errors, OutcomeUnknownError } from '../errors';
 import type { ApiError } from '../errors';
 import { describeError } from '../logging';
 import type { BillingStatusPayload, BillingWarning } from '../schemas/billing';
@@ -163,11 +163,14 @@ function checkoutNonce(): string {
 /**
  * Runs an owner's money-moving request at most once per idempotency key.
  *
- * The billing screen sends a fresh key with every checkout and plan change it
- * starts. The first request with a key runs; a repeat — a double click, a
+ * The billing screen sends one key per decision — the plan and period chosen —
+ * kept for every retry of that choice and replaced when the choice changes or
+ * succeeds. The first request with a key runs; a repeat — a double click, a
  * browser retrying a request whose answer it never saw — is answered with the
  * first one's result, and never reaches Dodo a second time. A request that
- * failed lets go of its key, so trying again with it works. No key: the
+ * failed lets go of its key, so trying again with it works — unless Dodo may
+ * have carried it out (no answer in time: `OutcomeUnknownError`), when the key
+ * stays claimed and a retry with it is told it is in flight. No key: the
  * request simply runs (a caller that wants no protection gets none).
  */
 async function onceForKey<T extends Record<string, unknown>>(
@@ -190,6 +193,9 @@ async function onceForKey<T extends Record<string, unknown>>(
   try {
     result = await run();
   } catch (cause) {
+    // Dodo may have done it: the key stays claimed, so asking again with it
+    // is answered "in flight" and never reaches Dodo a second time.
+    if (cause instanceof OutcomeUnknownError) throw cause;
     await releaseBillingRequest(services.db, {
       orgId: request.orgId,
       kind: request.kind,
@@ -206,8 +212,27 @@ async function onceForKey<T extends Record<string, unknown>>(
   return { result, replayed: false };
 }
 
-/** Turns a Dodo failure into the API's answer, with a log line saying which call. */
-function providerFailure(services: ServiceContext, cause: unknown, doing: string): ApiError {
+/**
+ * Whether a failed call may still have been carried out by Dodo: no answer in
+ * time, a connection that broke, or a gateway timing out in front of it. Any
+ * other failure is an answer — Dodo said no, or was down — and nothing was done.
+ */
+function outcomeUnknown(cause: DodoApiError): boolean {
+  return cause.category === 'timeout' || cause.category === 'network' || cause.status === 504;
+}
+
+/**
+ * Turns a Dodo failure into the API's answer, with a log line saying which
+ * call. `moving` names a call that moves money — a checkout or a plan change
+ * — whose failure may leave it done at Dodo: that is said, not "nothing was
+ * charged", and the request's key is kept (`onceForKey`).
+ */
+function providerFailure(
+  services: ServiceContext,
+  cause: unknown,
+  doing: string,
+  moving?: 'checkout' | 'change',
+): ApiError {
   const log = services.log.at('billing');
   if (cause instanceof DodoApiError) {
     log.warn(`Dodo did not complete ${doing}`, {
@@ -216,12 +241,17 @@ function providerFailure(services: ServiceContext, cause: unknown, doing: string
       code: cause.detail,
     });
     if (cause.category === 'conflict') return errors.billingChangePending();
+    if (moving !== undefined && outcomeUnknown(cause)) {
+      return errors.billingOutcomeUnknown(moving, `dodo ${cause.category} while ${doing}`);
+    }
     return cause.retryable
       ? errors.billingProviderUnavailable(`dodo ${cause.category} while ${doing}`)
       : errors.billingProviderRefused(`dodo ${cause.category} while ${doing}`);
   }
   log.error(`Calling Dodo failed unexpectedly while ${doing}`, { error: describeError(cause) });
-  return errors.billingProviderUnavailable(`unexpected failure while ${doing}`);
+  return moving !== undefined
+    ? errors.billingOutcomeUnknown(moving, `unexpected failure while ${doing}`)
+    : errors.billingProviderUnavailable(`unexpected failure while ${doing}`);
 }
 
 const billingPage = (services: ServiceContext, slug: string) =>
@@ -403,7 +433,7 @@ export async function startCheckout(
           regionLock: lockHolds ? { country: row.billingCountry!, currency: row.currency! } : null,
         });
       } catch (cause) {
-        throw providerFailure(services, cause, 'creating a checkout');
+        throw providerFailure(services, cause, 'creating a checkout', 'checkout');
       }
 
       // A link we send a browser to: https and nothing else.
@@ -559,7 +589,7 @@ export async function requestPlanChange(
       try {
         await billingProvider(config).changePlan(planned.subscriptionId, planned.change);
       } catch (cause) {
-        throw providerFailure(services, cause, 'changing a plan');
+        throw providerFailure(services, cause, 'changing a plan', 'change');
       }
       return { effective: planned.effective, seats: planned.seats, previous: planned.previous };
     },

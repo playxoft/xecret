@@ -188,6 +188,14 @@ export class ApiError extends Error {
 }
 
 /**
+ * A payment-provider call whose outcome is not known — it may have gone
+ * through. Answered like any `unavailable`; the billing service keeps the
+ * request's idempotency key claimed rather than letting it go, so a retry
+ * with the same key is told it is in flight instead of reaching Dodo again.
+ */
+export class OutcomeUnknownError extends ApiError {}
+
+/**
  * Constructors for the errors routes actually raise.
  *
  * Fixed messages, defined in one place. A handler that composes its own message
@@ -595,6 +603,25 @@ export const errors = {
       'A plan change is already waiting to take effect at the end of this billing period. ' +
         'Nothing new was changed.',
       { logDetail: 'dodo pending plan change' },
+    ),
+
+  /**
+   * Dodo did not answer a checkout or a plan change in time, or the
+   * connection broke: the request may have reached it and gone through, so
+   * this answer claims nothing about what was charged. The request's
+   * idempotency key is kept, so asking again with it cannot reach Dodo twice.
+   */
+  billingOutcomeUnknown: (what: 'checkout' | 'change', logDetail: string): ApiError =>
+    new OutcomeUnknownError(
+      'unavailable',
+      what === 'checkout'
+        ? 'Our payment provider did not answer in time, so this checkout may or may not have ' +
+            'been created. A checkout charges only once it is completed — reload the billing ' +
+            'page in a minute and choose the plan again.'
+        : 'Our payment provider did not answer in time, so this plan change may have gone ' +
+            'through — and, for a move up, been charged. Reload the billing page in a few ' +
+            'minutes before asking again: a change that went through shows there.',
+      { logDetail },
     ),
 
   /** Dodo could not be reached, or answered with an outage. Nothing was changed or charged. */
