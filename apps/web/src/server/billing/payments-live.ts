@@ -1,5 +1,6 @@
+import { getCloudflareContext } from '@opennextjs/cloudflare';
 import { connection } from 'next/server';
-import { workerContext } from '../context';
+import { withProcessFallbacks } from '../bindings';
 import { takesLivePayments } from './config';
 
 /**
@@ -18,6 +19,15 @@ import { takesLivePayments } from './config';
  * network call; the price is microseconds at the edge, against a legal page
  * that could otherwise tell a paying customer they are not being charged.
  *
+ * ── What this module may import ──
+ * The adapter's context, the pure binding helpers and the pure billing
+ * configuration — nothing else. `workerContext()` in `../context` reads the
+ * same bindings, but that module builds the per-request services and imports
+ * the database driver and the envelope crypto to do it: imported from here, it
+ * put drizzle and postgres into the chunks of six marketing pages that never
+ * open a connection. The precedence between a binding and a process variable
+ * is still decided once, by `withProcessFallbacks`, which both use.
+ *
  * Wherever the configuration cannot be read (a half-configured deployment,
  * whose billing routes answer 503 anyway) the answer is `false`. The one throw
  * let through is `connection()`'s own during a prerender — Next's signal that
@@ -26,8 +36,8 @@ import { takesLivePayments } from './config';
 export async function takesPayments(): Promise<boolean> {
   await connection();
   try {
-    const { env } = await workerContext();
-    return takesLivePayments(env);
+    const { env } = await getCloudflareContext({ async: true });
+    return takesLivePayments(withProcessFallbacks(env, process.env));
   } catch {
     return false;
   }

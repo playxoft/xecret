@@ -238,8 +238,20 @@ describe('the honesty rules this page is built on', () => {
       readFileSync(join(import.meta.dirname, '../../server/billing/payments-live.ts'), 'utf8'),
     );
     expect(helper).toMatch(
-      /await connection\(\);[\s\S]*takesLivePayments\(env\)[\s\S]*return false/,
+      /await connection\(\);[\s\S]*takesLivePayments\([\s\S]*env[\s\S]*\)[\s\S]*return false/,
     );
+    // Nothing that opens a database: `../context` builds the request services
+    // and brings drizzle and postgres into every marketing page's chunk.
+    const imports = [...helper.matchAll(/^import[^;]*from '([^']+)';/gm)].map((match) => match[1]);
+    expect(imports).toEqual(['@opennextjs/cloudflare', 'next/server', '../bindings', './config']);
+    const config = withoutComments(
+      readFileSync(join(import.meta.dirname, '../../server/billing/config.ts'), 'utf8'),
+    );
+    expect(
+      [...config.matchAll(/^import (type )?[^;]*from '([^']+)';/gm)]
+        .filter((match) => match[1] === undefined)
+        .map((match) => match[2]),
+    ).toEqual(['../bindings']);
     expect(code).toContain('pricingDescription(currency, await takesPayments())');
     expect(code).toContain('const paymentsLive = await takesPayments();');
     // The FAQ and its structured data are the same list, so Google is never
