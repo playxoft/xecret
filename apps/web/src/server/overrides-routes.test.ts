@@ -209,7 +209,15 @@ describe('setting a personal override', () => {
 
   it('refuses a malformed value and a name that is not a variable name', async () => {
     const { org } = await setup();
-    expect((await put(org, 'DATABASE_URL', 'xk2.x25519.notagcmblobbutlongenoughtopasstheminimumlengthcheck0000000000000')).status).toBe(422);
+    expect(
+      (
+        await put(
+          org,
+          'DATABASE_URL',
+          'xk2.x25519.notagcmblobbutlongenoughtopasstheminimumlengthcheck0000000000000',
+        )
+      ).status,
+    ).toBe(422);
     expect((await put(org, '1BAD')).status).toBeGreaterThanOrEqual(400);
   });
 

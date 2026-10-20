@@ -72,7 +72,11 @@ describe('personal override values', () => {
       aad,
     });
     await expect(
-      openOverrideValue({ ownerPrivateKey: owner.privateKey, context: CONTEXT, blob: sealedToOwner }),
+      openOverrideValue({
+        ownerPrivateKey: owner.privateKey,
+        context: CONTEXT,
+        blob: sealedToOwner,
+      }),
     ).rejects.toThrow();
 
     const underAnotherKey = formatGcmBlob(
