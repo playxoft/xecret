@@ -961,7 +961,19 @@ audit_logs — no FKs by design; references are soft
       organisations and VALIDATE of organizations_workos_link_client_check;
       sessions.workos_session_id (the AuthKit session, ended at sign-out) and
       sessions.fresh_auth_at (the setup portal's step-up) — additive
+0024  payments through Dodo (P12): org_subscriptions.current_period_start, .dodo_product_id,
+      .dodo_event_at (the ordering guard for webhook snapshots), .renewal_amount_minor;
+      billing_checkouts and billing_license_keys (insert-only grants — a checkout that
+      happened, a licence issued, never the key), billing_seat_syncs (seat counts owed to
+      Dodo), billing_reminders (the email deduplication, by primary key) — additive
 ```
+
+Migration 0024 (P12) is additive and **must be applied before the code that reads it**: from that
+build on every whole-row `select()` on `org_subscriptions` names the four new columns — the
+billing screen and its routes, the webhook, the billing jobs, and the check that refuses to
+delete an organisation (or an account's last organisation) Dodo still bills. Resolving an
+organisation on a request reads only `entitlementColumns` and is unaffected. Applying it first is
+harmless; older code never reads or writes any of it. `docs/operations/billing.md` §5.
 
 Migration 0022 (WS-5, review round 1) is additive, and — like 0021 — **must be applied before
 the code that names its columns**: from that build on every `select()` on `sessions`,

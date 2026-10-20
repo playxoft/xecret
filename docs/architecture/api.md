@@ -756,6 +756,34 @@ Every refusal these routes understood is recorded against the organisation: a ro
 `denied` (a `PATCH` names both switches, since its body is not read first), a missing add-on, a
 precondition or a WorkOS failure (`upstreamUnavailable`) as `error`.
 
+### Billing (P12)
+
+Payments through Dodo Payments, the merchant of record. Operations guide:
+`docs/operations/billing.md`. Every route below is a **browser session only** — a bearer token
+may not spend money — and needs **`billing.manage`**, which **only owners hold** and no custom
+role can carry (an admin is refused by capability, and the attempt filed as `denied`). The
+mutations are CSRF-checked and rate limited `RL_MUTATION` by user. On a deployment without the
+`DODO_*` variables payments are off: `GET` says `enabled: false` and the rest answer **409**;
+half-configured, every one answers **503**.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/orgs/{orgSlug}/billing` | `{ billing }` — plan, status, interval, seats billed against seats in use (pending invitations, which are not billed), the plan's billing floor, renewal date and amount, currency, region lock, this period's secret fetches against the allowance and the overage rate, ceilings within 80%, and which of `checkout`, `changePlan` and `portal` will work. From our own rows only — never a call to Dodo. |
+| `POST` | `/api/orgs/{orgSlug}/billing/checkout` | `{ plan: "pro"\|"team", interval: "monthly"\|"yearly" }` and **nothing else** (strict; a seat count, price or currency is a 422). Answers `{ url }`, a Dodo hosted checkout to send the browser to. Seats are counted from the membership (floored at the plan minimum); the currency follows the billing country Dodo records, pinned while the region lock holds. **409** for an organisation that already has a subscription (a second would charge twice) or whose plan support set by hand. Audited as `billing.checkout_started`. **The return from checkout grants nothing.** |
+| `GET` | `/api/orgs/{orgSlug}/billing/change?plan=&interval=` | `{ preview: { effective: "now"\|"renewal", seats, charge } }` — Dodo's own proration for a move up; a move down charges nothing now and is answered without asking Dodo. |
+| `POST` | `/api/orgs/{orgSlug}/billing/change` | `{ plan, interval }`. Asks Dodo to move the subscription: up (a higher plan, or monthly to yearly) at once and prorated; down at the end of the period already paid for. A change whose charge fails is not applied. Answers `{ requested: true, effective }`; the plan changes when Dodo's webhook says so. **400** for the current plan, **409** with no subscription or a change already pending. Audited as `billing.plan_change_requested`. |
+| `POST` | `/api/orgs/{orgSlug}/billing/portal` | `{ link }` — a session in Dodo's customer portal (card, invoices, cancelling). Never logged, stored or audited itself; audited as `billing.portal_opened`. **409** with no billing account yet. |
+| `POST` | `/api/billing/webhook` | Dodo only. **No session and no CSRF check — the credential is the signature**, and the route says why in its header. Standard Webhooks: HMAC-SHA256 over `webhook-id.webhook-timestamp.body` with `DODO_WEBHOOK_SECRET`, verified by the `standardwebhooks` library before the body is read; a timestamp more than five minutes old or ahead is refused; the `webhook-id` is claimed in `billing_webhook_events` (its primary key) in the same transaction as the change, so a delivery applies at most once. **401** unsigned, forged or stale; **400** signed but unreadable; **503** billing off or half-configured, or an event that is ours but cannot be placed yet (unclaimed, so Dodo retries); **200** otherwise, unknown event types included. |
+
+Dodo failures on the owner routes are a **503** ("could not be reached … nothing was changed or
+charged") when a retry could succeed, a **502** `upstream_refused` when Dodo refused the
+request. Neither carries anything from Dodo's answer.
+
+Membership changes — an invitation accepted, a just-in-time join, a member removed, an account
+deleted — push the new seat count to Dodo after their own transaction commits (charged on add,
+credited on remove). Suspending a member changes nothing billed. Deleting an organisation
+Dodo still bills is refused (**409**) until its subscription is cancelled.
+
 ### Projects
 
 | Method | Path |
@@ -1322,6 +1350,15 @@ removed and has not invited back. Neither is written for an organisation that ha
 to just-in-time joins. `auth.sso_exemption_used` is written in **each** organisation that
 requires single sign-on whose requirement a sign-in reached only through the owner exemption,
 with the method as `signInMethod` — the break-glass, made findable where it was used.
+
+Billing is recorded by `plan.changed` for every change to what an organisation may do — by
+the payment webhook (actor `Dodo webhook`), the hourly job (`billing job`) or the operator tool
+(which adds `operator`) — and by the `billing.*` events: an owner's `checkout_started`,
+`plan_change_requested` and `portal_opened`; `seats_synced`, `payment_failed`, `refunded`,
+`dispute_opened` and `usage_reported`; and the alerts `region_mismatch`,
+`duplicate_subscription` and `drift_detected` (`driftFields` names what differs). None carries
+an amount, a card detail, a customer id or any Dodo identifier; the fields are counts and closed
+vocabularies (`billingInterval`, `subscriptionStatus`, ISO `currency`, a dotted `billingEvent`).
 
 An organisation's SSO settings are recorded by `org.sso.enabled` (once: the WorkOS organisation
 created and linked), `org.sso.portal_link_created` (every setup-portal link handed out — the link
