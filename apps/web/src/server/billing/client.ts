@@ -24,8 +24,9 @@ import type { DodoSubscription } from './payloads';
  * ── What leaves ──
  * The API key, in the `Authorization` header and nowhere else. The owner's
  * email address and name at checkout, because Dodo is the merchant of record
- * and an invoice needs a buyer. Our organisation id, as metadata, so a webhook
- * can be traced back. No member list, no secret, nothing from a vault.
+ * and an invoice needs a buyer. Our organisation id and the checkout's random
+ * nonce, as metadata, so a webhook can be traced back to a checkout this server
+ * created. No member list, no secret, nothing from a vault.
  *
  * ── What is never logged ──
  * A response body. Dodo's objects carry customer names, addresses and card
@@ -94,11 +95,25 @@ export interface UsageEvent {
 export interface CheckoutRequest {
   productId: string;
   quantity: number;
-  /** The buyer, by email — or the customer Dodo already has for this organisation. */
+  /**
+   * The customer Dodo already has **for this organisation**, or the buyer by
+   * email — in which case Dodo is told to create a new customer however many
+   * it already has for that address (`always_create_new_customer`). Without
+   * that, Dodo reuses the customer an email already has, so one person owning
+   * two organisations would make them one customer: one customer portal, with
+   * both organisations' invoices and cards in it, opened from either.
+   */
   customer: { customerId: string } | { email: string; name: string | null };
   returnUrl: string;
   /** Our organisation id. Dodo signs it back to us in every webhook. */
   orgId: string;
+  /**
+   * The random nonce recorded with this checkout (`billing_checkouts.nonce`).
+   * Dodo copies checkout metadata onto the payment and the subscription it
+   * produces, and a subscription is attached to an organisation by metadata
+   * only when it carries the nonce of an open checkout of that organisation.
+   */
+  nonce: string;
   /**
    * The purchasing-power region lock: while it holds, checkout is pinned to the
    * country and currency the organisation was first billed in, and the buyer
@@ -112,10 +127,25 @@ export interface PlanChange {
   productId: string;
   quantity: number;
   /**
-   * `difference_immediately` for seat changes (charge the difference on add,
-   * credit on remove), `prorated_immediately` for an upgrade.
+   * How Dodo bills the change, as its docs define the modes
+   * (https://docs.dodopayments.com/developer-resources/subscription-upgrade-downgrade):
+   *
+   *  - `prorated_immediately_keep_cycle` for seat changes: "charges the price
+   *    difference between the new and old plan for the time left in the
+   *    current cycle", quantity included, and "keeps `next_billing_date`". A
+   *    seat removed leaves a negative difference, held as credit on the
+   *    subscription and applied to its renewals — not refunded to the card.
+   *  - `prorated_immediately` for an upgrade: credits the unused part of the
+   *    current cycle and charges a full cycle of the new plan, the cycle
+   *    restarting that day.
+   *
+   * Not `difference_immediately`, which the seat sync used first: it charges
+   * the whole price difference and **resets the billing cycle to the day of
+   * the change** — every member added would have restarted the subscription's
+   * period (and moved its renewal date), which is not what the pricing page
+   * or the seat email describes.
    */
-  proration: 'difference_immediately' | 'prorated_immediately';
+  proration: 'prorated_immediately_keep_cycle' | 'prorated_immediately';
   /** A downgrade waits for the period the customer already paid for. */
   effectiveAt: 'immediately' | 'next_billing_date';
   /**
@@ -151,8 +181,48 @@ export interface BillingProvider {
 
 type Fetch = (input: string, init: RequestInit) => Promise<Response>;
 
-/** Dodo's metadata key for our organisation id. Under its 40-character limit. */
+/**
+ * Dodo's metadata keys for our organisation id and the checkout's nonce. Keys
+ * are at most 40 characters and values 500; up to 50 pairs an object
+ * (https://docs.dodopayments.com/api-reference/metadata).
+ */
 export const ORG_METADATA_KEY = 'xecret_org_id';
+export const CHECKOUT_NONCE_METADATA_KEY = 'xecret_checkout';
+
+/**
+ * `POST /checkouts`, as far as this server sends it.
+ * https://docs.dodopayments.com/api-reference/checkout-sessions/create
+ */
+interface DodoCheckoutRequest {
+  product_cart: { product_id: string; quantity: number }[];
+  /** `{ customer_id }` attaches an existing customer; `{ email, name? }` describes a new one. */
+  customer: { customer_id: string } | { email: string; name?: string };
+  /** "Set to true if a new customer object should be created." */
+  always_create_new_customer?: boolean;
+  return_url: string;
+  metadata: Record<string, string>;
+  billing_address?: { country: string };
+  billing_currency?: string;
+  feature_flags: { allow_currency_selection: boolean; allow_customer_editing_country?: boolean };
+}
+
+/**
+ * `POST /subscriptions/{id}/change-plan` (and `…/preview`), as far as this
+ * server sends it. Without `cancel_scheduled_change_plan`, Dodo answers 409
+ * while another change is scheduled for the period end — which is what a seat
+ * push must wait for rather than override (`seats.ts`).
+ * https://docs.dodopayments.com/api-reference/subscriptions/change-plan
+ */
+interface DodoChangePlanRequest {
+  product_id: string;
+  /** "Must be at least 1." */
+  quantity: number;
+  proration_billing_mode: PlanChange['proration'];
+  /** `immediately` (Dodo's default) or `next_billing_date`, which schedules the change. */
+  effective_at: PlanChange['effectiveAt'];
+  /** `prevent_change` keeps the current plan until payment succeeds; `apply_change` is Dodo's default. */
+  on_payment_failure: PlanChange['onPaymentFailure'];
+}
 
 export class DodoClient implements BillingProvider {
   constructor(
@@ -164,7 +234,8 @@ export class DodoClient implements BillingProvider {
   async createCheckoutSession(
     request: CheckoutRequest,
   ): Promise<{ sessionId: string; url: string }> {
-    const body = {
+    const byEmail = !('customerId' in request.customer);
+    const body: DodoCheckoutRequest = {
       product_cart: [{ product_id: request.productId, quantity: request.quantity }],
       customer:
         'customerId' in request.customer
@@ -173,8 +244,13 @@ export class DodoClient implements BillingProvider {
               email: request.customer.email,
               ...(request.customer.name ? { name: request.customer.name } : {}),
             },
+      // A customer per organisation, never per email address: see `CheckoutRequest.customer`.
+      ...(byEmail ? { always_create_new_customer: true } : {}),
       return_url: request.returnUrl,
-      metadata: { [ORG_METADATA_KEY]: request.orgId },
+      metadata: {
+        [ORG_METADATA_KEY]: request.orgId,
+        [CHECKOUT_NONCE_METADATA_KEY]: request.nonce,
+      },
       ...(request.regionLock
         ? {
             billing_address: { country: request.regionLock.country },
@@ -313,7 +389,7 @@ export class DodoClient implements BillingProvider {
   }
 }
 
-function planChangeBody(change: PlanChange) {
+function planChangeBody(change: PlanChange): DodoChangePlanRequest {
   return {
     product_id: change.productId,
     quantity: change.quantity,

@@ -31,7 +31,13 @@ vi.mock('../mail', async (importOriginal) => ({
   mailerFrom: () => ({ send: async (message: MailMessage) => void mail.sent.push(message) }),
 }));
 
-const { runHourlyBillingJob, CANCELLATION_GRACE_MS, CARD_CHECK_HOUR_UTC } = await import('./jobs');
+const {
+  runHourlyBillingJob,
+  CANCELLATION_GRACE_MS,
+  CARD_CHECK_HOUR_UTC,
+  HOLD_LIMIT_MS,
+  TRIAL_GRACE_MS,
+} = await import('./jobs');
 const { reconcileSubscriptions, driftBetween } = await import('./reconcile');
 const { DodoApiError } = await import('./client');
 const { billingSetup } = await import('./config');
@@ -233,9 +239,11 @@ describe('runHourlyBillingJob', () => {
       [owed],
     );
     const waiting = await seedOrg({ seats: 3 }, 5);
+    // Three failures: not due again until eight minutes after the last.
     await t.pg.query(
-      `insert into billing_seat_syncs (org_id, attempts, last_attempt_at) values ($1, 3, $2)`,
-      [waiting, new Date(NOW.getTime() - 60_000)],
+      `insert into billing_seat_syncs (org_id, attempts, last_attempt_at, not_before)
+       values ($1, 3, $2, $3)`,
+      [waiting, new Date(NOW.getTime() - 60_000), new Date(NOW.getTime() + 7 * 60_000)],
     );
 
     await runHourlyBillingJob(services(), NOW);
@@ -301,6 +309,110 @@ describe('runHourlyBillingJob', () => {
   });
 });
 
+describe('runHourlyBillingJob, round 1', () => {
+  it('ends a subscription on hold for fourteen days — to Free, with an alert and an email', async () => {
+    const held = await seedOrg({
+      status: 'on_hold',
+      on_hold_since: new Date(NOW.getTime() - HOLD_LIMIT_MS - 60_000),
+      limit_overrides: JSON.stringify({ projects: 2000 }),
+    });
+    const recent = await seedOrg({
+      status: 'on_hold',
+      on_hold_since: new Date(NOW.getTime() - 3 * DAY),
+    });
+
+    const report = await runHourlyBillingJob(services(), NOW);
+
+    expect(report.ended).toBeGreaterThanOrEqual(1);
+    expect(await findSubscription(t.db, held)).toMatchObject({
+      plan: 'free',
+      status: 'active',
+      seats: 1,
+      onHoldSince: null,
+      limitOverrides: null,
+      // Kept, so a payment Dodo collects later still finds it.
+      dodoSubscriptionId: `sub_${held.slice(0, 12).replaceAll('-', '')}`,
+    });
+    expect((await findSubscription(t.db, recent))?.plan).toBe('team');
+    expect(
+      lines.some((line) => line.level === 'error' && /on hold for \d+ days/.test(line.message)),
+    ).toBe(true);
+    expect(subjects()).toContain('Acme has moved to the Free plan');
+    const unpaid = mail.sent.find((message) => /moved to the Free plan/.test(message.subject))!;
+    expect(unpaid.text).toContain('Your builds are unaffected');
+
+    // The next run finds nothing more to do, and sends nothing again.
+    mail.sent = [];
+    await runHourlyBillingJob(services(), new Date(NOW.getTime() + 3_600_000));
+    expect(subjects().filter((subject) => /Free plan/.test(subject))).toEqual([]);
+  });
+
+  it('asks Dodo what a trial became when no webhook moved it on', async () => {
+    const orgId = await seedOrg({
+      status: 'trialing',
+      trial_ends_at: new Date(NOW.getTime() - TRIAL_GRACE_MS - 60_000),
+    });
+    const subscriptionId = `sub_${orgId.slice(0, 12).replaceAll('-', '')}`;
+    dodo.getSubscription.mockImplementation(async (id: string) => ({
+      subscription_id: id,
+      status: 'active',
+      product_id: 'pdt_team_m',
+      quantity: 3,
+      currency: 'USD',
+      customer: { customer_id: `cus_${orgId.slice(0, 12).replaceAll('-', '')}` },
+      billing: { country: 'US' },
+      metadata: {},
+      next_billing_date: new Date(NOW.getTime() + 30 * DAY).toISOString(),
+      previous_billing_date: new Date(NOW.getTime() - DAY).toISOString(),
+      cancel_at_next_billing_date: false,
+      trial_period_days: 14,
+      created_at: new Date(NOW.getTime() - 16 * DAY).toISOString(),
+      recurring_pre_tax_amount: 5700,
+      addons: [],
+    }));
+
+    await runHourlyBillingJob(services(), NOW);
+
+    expect(dodo.getSubscription).toHaveBeenCalledWith(subscriptionId);
+    expect((await findSubscription(t.db, orgId))?.status).toBe('active');
+  });
+
+  it('retries only the debts that are due, oldest first, so stuck ones cannot starve a new one', async () => {
+    // Fifty stuck debts, each waiting out a long backoff, queued before a new one.
+    const stuck: string[] = [];
+    for (let index = 0; index < 50; index += 1) {
+      const orgId = randomUUID();
+      stuck.push(orgId);
+      await t.pg.query(
+        `insert into users (id, workos_user_id, email, email_verified) values ($1, $2, $3, true)`,
+        [
+          orgId,
+          `user_01${orgId.replaceAll('-', '').slice(0, 20)}`,
+          `s-${orgId.slice(0, 8)}@example.com`,
+        ],
+      );
+      await t.pg.query(
+        `insert into organizations (id, name, slug, created_by) values ($1, 'Stuck', $2, $1)`,
+        [orgId, `stuck-${orgId.slice(0, 8)}`],
+      );
+      await t.pg.query(
+        `insert into billing_seat_syncs (org_id, queued_at, attempts, not_before)
+         values ($1, $2, 9, $3)`,
+        [orgId, new Date(NOW.getTime() - DAY), new Date(NOW.getTime() + DAY)],
+      );
+    }
+    const fresh = await seedOrg({ seats: 3 }, 4);
+    await t.pg.query(`insert into billing_seat_syncs (org_id) values ($1)`, [fresh]);
+
+    await runHourlyBillingJob(services(), NOW);
+
+    expect(dodo.changePlan.mock.calls.map((call) => call[0] as string)).toContain(
+      `sub_${fresh.slice(0, 12).replaceAll('-', '')}`,
+    );
+    expect((await findSubscription(t.db, fresh))?.seats).toBe(4);
+  });
+});
+
 describe('the nightly reconciler', () => {
   const config = (() => {
     const setup = billingSetup(BILLING_ENV as never);
@@ -332,19 +444,20 @@ describe('the nightly reconciler', () => {
   it('names each field that disagrees', async () => {
     const orgId = await seedOrg({});
     const row = (await findSubscription(t.db, orgId))!;
-    expect(driftBetween(row, snapshotFor(), config, false)).toEqual([]);
+    expect(driftBetween(row, snapshotFor(), config, false, 3)).toEqual([]);
     expect(
       driftBetween(
         row,
         snapshotFor({ quantity: 7, status: 'on_hold', product_id: 'pdt_pro_m' }),
         config,
         false,
+        3,
       ),
     ).toEqual(['product', 'plan', 'status', 'seats']);
     // A queued seat push explains a seat difference.
-    expect(driftBetween(row, snapshotFor({ quantity: 7 }), config, true)).toEqual([]);
+    expect(driftBetween(row, snapshotFor({ quantity: 7 }), config, true, 3)).toEqual([]);
     expect(
-      driftBetween(row, snapshotFor({ cancel_at_next_billing_date: true }), config, false),
+      driftBetween(row, snapshotFor({ cancel_at_next_billing_date: true }), config, false, 3),
     ).toEqual(['cancelAtPeriodEnd']);
   });
 
@@ -369,6 +482,50 @@ describe('the nightly reconciler', () => {
       lines.some((line) => line.level === 'error' && /nothing was corrected/.test(line.message)),
     ).toBe(true);
     expect(dodo.changePlan).not.toHaveBeenCalled();
+  });
+
+  it('compares Dodo’s quantity with the membership, not only with our row', async () => {
+    const row = (await findSubscription(t.db, await seedOrg({}, 3)))!;
+    // Our row and Dodo agree on three, but five people hold a seat: a push
+    // that never landed, and whose debt is gone.
+    expect(driftBetween(row, snapshotFor({ quantity: 3 }), config, false, 5)).toEqual(['seats']);
+    // Below Team's minimum, three is still what is owed.
+    expect(driftBetween(row, snapshotFor({ quantity: 3 }), config, false, 2)).toEqual([]);
+  });
+
+  it('flags a membership Dodo no longer bills for, end to end — and corrects nothing', async () => {
+    const orgId = await seedOrg({ seats: 3 }, 3);
+    // Two more join outside anything that would queue a push.
+    for (let index = 0; index < 2; index += 1) {
+      const id = randomUUID();
+      await t.pg.query(
+        `insert into users (id, workos_user_id, email, email_verified) values ($1, $2, $3, true)`,
+        [id, `user_01${id.replaceAll('-', '').slice(0, 20)}`, `x-${id.slice(0, 8)}@example.com`],
+      );
+      await t.pg.query(
+        `insert into org_members (id, org_id, user_id, role) values ($1, $2, $3, 'viewer')`,
+        [randomUUID(), orgId, id],
+      );
+    }
+    dodo.getSubscription.mockImplementation(async () => snapshotFor({ quantity: 3 }));
+
+    await reconcileSubscriptions(services());
+
+    const audit = await t.pg.query<{ metadata: Record<string, unknown> }>(
+      `select metadata from audit_logs where org_id = $1 and action = 'billing.drift_detected'`,
+      [orgId],
+    );
+    expect(audit.rows[0]?.metadata).toMatchObject({ driftFields: ['seats'] });
+    expect(dodo.changePlan).not.toHaveBeenCalled();
+  });
+
+  it('leaves out a row recorded under the other Dodo mode', async () => {
+    const orgId = await seedOrg({ dodo_mode: 'live_mode' });
+    dodo.getSubscription.mockImplementation(async () => snapshotFor());
+    await reconcileSubscriptions(services());
+    expect(dodo.getSubscription).not.toHaveBeenCalledWith(
+      `sub_${orgId.slice(0, 12).replaceAll('-', '')}`,
+    );
   });
 
   it('reports a subscription Dodo no longer has, and skips one it could not ask about', async () => {

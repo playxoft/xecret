@@ -6,8 +6,10 @@ import {
   billingSetup,
   catalogEntryFor,
   DODO_BASE_URL,
+  isWebhookSecret,
   productFor,
   REQUIRED_BILLING_VARIABLES,
+  takesLivePayments,
 } from './config';
 
 /**
@@ -125,5 +127,32 @@ describe('billingSetup', () => {
   it('carries the SAML add-on when one is named', () => {
     const setup = billingSetup(env({ ...COMPLETE, DODO_ADDON_SAML: ' adn_saml ' }));
     expect(setup.state === 'enabled' && setup.config.samlAddonId).toBe('adn_saml');
+  });
+
+  it('refuses a webhook secret that is not whsec_ and base64 — every delivery would fail 401', () => {
+    for (const bad of [
+      'example-not-a-real-key',
+      'whsec_',
+      'whsec_not base64!',
+      `whsec_${btoa('short')}`,
+      `whsec_${btoa('example-not-a-real-key-32-bytes!').slice(1)}`,
+    ]) {
+      expect(() => billingSetup(env({ ...COMPLETE, DODO_WEBHOOK_SECRET: bad })), bad).toThrow(
+        /DODO_WEBHOOK_SECRET \(not whsec_ followed by base64\)/,
+      );
+      expect(isWebhookSecret(bad), bad).toBe(false);
+    }
+    expect(isWebhookSecret(WEBHOOK_SECRET)).toBe(true);
+  });
+});
+
+describe('takesLivePayments', () => {
+  it('is true only for a complete configuration in live mode', () => {
+    expect(takesLivePayments(env({ ...COMPLETE, DODO_ENVIRONMENT: 'live_mode' }))).toBe(true);
+    // A staging rehearsal in test mode never tells the public that paying works.
+    expect(takesLivePayments(env(COMPLETE))).toBe(false);
+    expect(takesLivePayments(env())).toBe(false);
+    // Half-configured: false, never a throw on a public page.
+    expect(takesLivePayments(env({ DODO_API_KEY: 'x' }))).toBe(false);
   });
 });

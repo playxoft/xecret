@@ -1,6 +1,7 @@
 import type { AuditBuilder, AuditMetadata } from '@xecret/core/audit';
 import type { Transaction } from '@xecret/db/repositories';
 import {
+  consumeCheckout,
   createFreeSubscription,
   lockSubscription,
   writeSubscriptionState,
@@ -11,6 +12,7 @@ import { subscriptionResource } from '../audit';
 import type { HandlerOutcome } from '../effects';
 import type { DodoSubscription } from '../payloads';
 import { decideSnapshot } from '../snapshot';
+import { paymentFailedOccasion } from '../reminders';
 
 /**
  * Every `subscription.*` event: apply the snapshot it carries.
@@ -20,6 +22,13 @@ import { decideSnapshot } from '../snapshot';
  * what must happen once that transaction has committed — the emails and the
  * alerts. See `snapshot.ts` for the rules, and `webhook.ts` for the claim that
  * makes a delivery apply at most once.
+ *
+ * ── Attaching a new subscription spends its checkout ──
+ * A subscription the row does not follow yet attaches only through the open
+ * checkout it came from (`checkout`, found by the nonce in its metadata or the
+ * session its payment named). Applying it spends that checkout in the same
+ * transaction, so no second subscription — and no subscription an operator
+ * later took the organisation off — can attach through it again.
  */
 export async function applySubscriptionSnapshot(
   tx: Transaction,
@@ -31,21 +40,25 @@ export async function applySubscriptionSnapshot(
     snapshot: DodoSubscription;
     config: BillingConfig;
     audit: AuditBuilder;
-    webhookId: string;
+    /** The delivery's id; `null` when a job fetched the snapshot from Dodo itself. */
+    webhookId: string | null;
+    /** The open checkout this subscription came from, when placement found one. */
+    checkout: { sessionId: string } | { nonce: string } | null;
   },
 ): Promise<HandlerOutcome> {
   const { orgId, eventType, snapshot, audit } = input;
   const outcome: HandlerOutcome = { audit: [], effects: [] };
   const resource = subscriptionResource(orgId);
 
-  let row = await lockSubscription(tx, orgId);
-  if (row === null) {
+  let locked = await lockSubscription(tx, orgId);
+  if (locked === null) {
     // Every organisation has a row by migration and by provisioning; one that
     // somehow does not gets the Free row it would have had.
     await createFreeSubscription(tx, orgId);
-    row = await lockSubscription(tx, orgId);
-    if (row === null) throw new Error('subscription row missing after insert');
+    locked = await lockSubscription(tx, orgId);
+    if (locked === null) throw new Error('subscription row missing after insert');
   }
+  const row = locked;
 
   const decision = decideSnapshot({
     row,
@@ -54,7 +67,28 @@ export async function applySubscriptionSnapshot(
     eventAt: input.eventAt,
     now: input.now,
     samlAddonId: input.config.samlAddonId,
+    mode: input.config.mode,
+    webhookId: input.webhookId,
+    attachable: input.checkout !== null,
   });
+
+  const unverified = (): HandlerOutcome => {
+    outcome.audit.push(
+      audit.error('billing.duplicate_subscription', resource, 'conflict', {
+        billingEvent: eventType,
+        plan: row.plan,
+      }),
+    );
+    outcome.effects.push({
+      kind: 'alert',
+      message:
+        'A live Dodo subscription names this organisation but did not come from an open ' +
+        'checkout of its own — it was not attached. Somebody may have bought through a link ' +
+        'with our metadata typed in: refund or cancel it in Dodo',
+      fields: { orgId, eventType },
+    });
+    return outcome;
+  };
 
   if (decision.kind === 'ignore') {
     switch (decision.reason) {
@@ -78,6 +112,18 @@ export async function applySubscriptionSnapshot(
           fields: { orgId, eventType, reason: decision.reason },
         });
         break;
+      case 'unverified-checkout':
+        return unverified();
+      case 'other-mode':
+        outcome.effects.push({
+          kind: 'alert',
+          message:
+            `A ${input.config.mode} Dodo event arrived for an organisation whose subscription ` +
+            'was recorded in the other Dodo mode — it was not applied. Clear the old mode’s ' +
+            'rows (docs/operations/billing.md, "Test mode") before taking payments in this one',
+          fields: { orgId, eventType },
+        });
+        break;
       case 'unknown-product':
         outcome.audit.push(
           audit.error('billing.drift_detected', resource, 'invalidInput', {
@@ -97,11 +143,25 @@ export async function applySubscriptionSnapshot(
       case 'stale':
       case 'other-subscription':
       case 'already-free':
+      case 'not-reactivating':
         // Nothing to do, and nothing worth an alert: a reordered delivery or a
         // subscription that never mattered to this organisation's access.
         break;
     }
     return outcome;
+  }
+
+  // A subscription the row did not follow attaches by spending its checkout,
+  // or not at all.
+  if (row.dodoSubscriptionId !== snapshot.subscription_id) {
+    const spent =
+      input.checkout !== null &&
+      (await consumeCheckout(tx, {
+        orgId,
+        subscriptionId: snapshot.subscription_id,
+        by: input.checkout,
+      }));
+    if (!spent) return unverified();
   }
 
   await writeSubscriptionState(tx, orgId, decision.patch, decision.seats);
@@ -143,43 +203,21 @@ export async function applySubscriptionSnapshot(
   }
 
   // A payment going wrong: the owners hear about it at once (and then at most
-  // daily — see `sendBillingReminder`).
+  // once a UTC day — see `paymentFailedOccasion`).
   const failing = (status: string) => status === 'past_due' || status === 'on_hold';
   if (failing(change.status) && !failing(change.previousStatus)) {
     outcome.effects.push({
       kind: 'mail',
       orgId,
-      occasion: `${snapshot.subscription_id}:${input.eventAt.toISOString().slice(0, 10)}`,
-      reminder: { kind: 'payment_failed', plan: change.plan },
-    });
-  }
-
-  // The seat count moved on a subscription that was already paid for: the
-  // owners are told the new count and the new charge.
-  if (
-    !decision.activated &&
-    !decision.ended &&
-    change.seats !== change.previousSeats &&
-    change.interval !== null
-  ) {
-    outcome.effects.push({
-      kind: 'mail',
-      orgId,
-      occasion: input.webhookId,
-      reminder: {
-        kind: 'seats_changed',
-        seats: change.seats,
-        previousSeats: change.previousSeats,
-        interval: change.interval,
-        amountMinor: snapshot.recurring_pre_tax_amount,
-        currency: snapshot.currency,
-      },
+      occasion: paymentFailedOccasion(input.now),
+      reminder: { kind: 'payment_failed', plan: change.plan, firstPayment: false },
     });
   }
 
   // The checkout's quantity was counted when the owner clicked; people may have
   // joined or left before the payment landed. The seat sync pushes the count
-  // as it is now, and does nothing when it already matches.
+  // as it is now, does nothing when it already matches, and is what tells the
+  // owners when the bill moves.
   if (decision.activated) outcome.effects.push({ kind: 'seat-sync', orgId });
 
   if (decision.ended && row.addonSaml) {

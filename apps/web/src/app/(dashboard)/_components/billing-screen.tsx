@@ -152,7 +152,9 @@ function BillingDetails({
         <Alert tone="danger" title="Your builds are unaffected.">
           <p>
             Your card was declined. Every secret, every <code>xecret run</code> and every CI job
-            keeps working; update the card from the customer portal to keep the plan.
+            keeps working; update the card from the customer portal to keep the plan. A subscription
+            still unpaid after 14 days on hold ends, and the organisation moves to Free — nothing is
+            deleted.
           </p>
           {billing.actions.portal ? (
             <div className="mt-3">
@@ -446,15 +448,27 @@ function ChoosePlan({
   } | null>(null);
 
   const same = billing.plan === plan && billing.interval === interval;
+  // One key per decision: kept for a retry of the same choice — so a double
+  // click, or a retry after an answer that never arrived, is one checkout or
+  // one change at Dodo — and replaced when the choice changes or succeeds.
+  const [decisionKey, setDecisionKey] = useState(() => crypto.randomUUID());
+  const choose =
+    <T,>(set: (value: T) => void) =>
+    (value: T) => {
+      set(value);
+      setPreview(null);
+      setDecisionKey(crypto.randomUUID());
+    };
 
   async function subscribe() {
     setBusy(true);
     setError(null);
     try {
-      const { url } = await api.post<{ url: string }>(apiPath.billingCheckout(orgSlug), {
-        plan,
-        interval,
-      });
+      const { url } = await api.post<{ url: string }>(
+        apiPath.billingCheckout(orgSlug),
+        { plan, interval },
+        { idempotencyKey: decisionKey },
+      );
       window.location.assign(url);
     } catch (cause) {
       setError(cause);
@@ -484,6 +498,7 @@ function ChoosePlan({
       const answer = await api.post<{ effective: 'now' | 'renewal' }>(
         apiPath.billingChange(orgSlug),
         { plan, interval },
+        { idempotencyKey: decisionKey },
       );
       toast({
         variant: 'success',
@@ -493,6 +508,7 @@ function ChoosePlan({
             : 'Plan change scheduled for the end of this billing period',
       });
       setPreview(null);
+      setDecisionKey(crypto.randomUUID());
       onChanged();
     } catch (cause) {
       setError(cause);
@@ -520,10 +536,7 @@ function ChoosePlan({
               { value: 'team', label: 'Team' },
             ]}
             value={plan}
-            onChange={(value) => {
-              setPlan(value);
-              setPreview(null);
-            }}
+            onChange={choose(setPlan)}
           />
           <Segmented
             label="Billing period"
@@ -532,10 +545,7 @@ function ChoosePlan({
               { value: 'yearly', label: 'Yearly' },
             ]}
             value={interval}
-            onChange={(value) => {
-              setBillingInterval(value);
-              setPreview(null);
-            }}
+            onChange={choose(setBillingInterval)}
           />
         </div>
 
@@ -555,7 +565,7 @@ function ChoosePlan({
               {preview.effective === 'now'
                 ? `This takes effect now, for ${count(preview.seats)} seats${
                     preview.charge
-                      ? `, and charges ${preview.charge} today for the rest of this period`
+                      ? `, and charges ${preview.charge} today: the unused part of this period is credited, and a new period on the new plan starts today`
                       : ''
                   }.`
                 : `This takes effect at the end of the period you have already paid for, for ${count(

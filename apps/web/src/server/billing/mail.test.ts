@@ -21,7 +21,7 @@ type Example<K extends BillingReminder['kind']> = BillingReminder & { kind: K };
 const EXAMPLES: { [K in BillingReminder['kind']]: Example<K> } = {
   trial_ending_3d: { kind: 'trial_ending_3d', plan: 'team', trialEndsAt: new Date('2026-11-03') },
   trial_ending_1d: { kind: 'trial_ending_1d', plan: 'team', trialEndsAt: new Date('2026-11-03') },
-  payment_failed: { kind: 'payment_failed', plan: 'team' },
+  payment_failed: { kind: 'payment_failed', plan: 'team', firstPayment: false },
   card_expiring: {
     kind: 'card_expiring',
     expiresAfter: new Date('2026-11-30'),
@@ -45,6 +45,7 @@ const EXAMPLES: { [K in BillingReminder['kind']]: Example<K> } = {
   usage_80: { kind: 'usage_80', used: 800_000, included: 1_000_000 },
   usage_100: { kind: 'usage_100', used: 1_000_000, included: 1_000_000 },
   invoice_available: { kind: 'invoice_available' },
+  plan_ended_unpaid: { kind: 'plan_ended_unpaid', plan: 'team', days: 14 },
 };
 
 describe('billingMail', () => {
@@ -58,6 +59,7 @@ describe('billingMail', () => {
       'card_expiring',
       'trial_ending_3d',
       'trial_ending_1d',
+      'plan_ended_unpaid',
     ] as const) {
       const mail = billingMail(EXAMPLES[kind], CONTEXT);
       expect(mail.text, kind).toContain(BUILDS_UNAFFECTED);
@@ -111,12 +113,45 @@ describe('billingMail', () => {
       }
     }
   });
+
+  it('never calls a plan that was never bought a subscription', () => {
+    const first = billingMail({ ...EXAMPLES.payment_failed, firstPayment: true }, CONTEXT);
+    expect(first.text).not.toMatch(/subscription/i);
+    expect(first.text).toContain('nothing was bought and nothing was charged');
+    expect(billingMail(EXAMPLES.payment_failed, CONTEXT).text).toContain(
+      'Team subscription was declined',
+    );
+  });
+
+  it('says what a trial’s end does — the card is charged, and an unpaid one holds for 14 days', () => {
+    const mail = billingMail(EXAMPLES.trial_ending_3d, CONTEXT);
+    expect(mail.text).toContain('the card on file is charged for the first billing period');
+    expect(mail.text).toContain('put on hold');
+    expect(mail.text).toContain('14 days');
+    // Not the old promise that it simply moves to Free when the trial ends.
+    expect(mail.text).not.toMatch(/If the trial ends without one, the organisation moves to Free/);
+  });
+
+  it('says how a seat change is billed as Dodo bills it: the rest of the period, and credit kept', () => {
+    const mail = billingMail(EXAMPLES.seats_changed, CONTEXT);
+    expect(mail.text).toContain('difference for the rest of the current period');
+    expect(mail.text).toContain('credit on the subscription');
+    const withoutAmount = billingMail(
+      { kind: 'seats_changed', seats: 6, previousSeats: 5, interval: 'yearly' },
+      CONTEXT,
+    );
+    expect(withoutAmount.text).not.toMatch(/before tax/);
+  });
 });
 
 describe('money', () => {
   it('formats the smallest unit by the currency’s own decimals', () => {
     expect(formatMinor(14400, 'USD')).toBe('$144.00');
+    // JPY has no minor unit, and Dodo's amounts are in the smallest unit there
+    // is (https://docs.dodopayments.com/integrations/datafast): 15,800 is yen.
     expect(formatMinor(15800, 'JPY')).toBe('¥15,800');
+    // A three-decimal currency is divided by a thousand.
+    expect(formatMinor(12345, 'KWD')).toMatch(/^KWD\s12\.345$/);
     expect(formatMinor(449900, 'INR')).toBe('₹4,499.00');
     expect(formatMinor(null, 'USD')).toBeNull();
     expect(formatMinor(100, 'usd')).toBeNull();

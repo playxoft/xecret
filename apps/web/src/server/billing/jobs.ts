@@ -3,20 +3,26 @@ import {
   appendAuditEvents,
   currentUsage,
   entitlementsFromRow,
+  listDueSeatSyncs,
   listEndedCancellations,
+  listLapsedTrials,
+  listLongHolds,
   listProviderSubscriptions,
-  listSeatSyncs,
   lockSubscription,
+  pruneBillingRequests,
   pruneReminders,
   writeSubscriptionState,
 } from '@xecret/db/repositories';
-import type { SubscriptionRecord } from '@xecret/db/repositories';
+import type { ProviderSubscriptionPatch, SubscriptionRecord } from '@xecret/db/repositories';
 import type { ServiceContext } from '../context';
 import { describeError } from '../logging';
 import { subscriptionResource, systemAudit } from './audit';
-import { billingProvider } from './client';
+import { billingProvider, DodoApiError } from './client';
 import { billingSetup } from './config';
 import type { BillingConfig } from './config';
+import { runBillingEffects } from './effects';
+import type { HandlerOutcome } from './effects';
+import { applySubscriptionSnapshot } from './handlers/subscription';
 import { sendBillingReminder } from './reminders';
 import { syncSeats } from './seats';
 import { flushUsageToDodo } from './usage';
@@ -26,7 +32,7 @@ import type { UsageReport } from './usage';
  * The hourly billing job (P12), run by the Worker's Cron Trigger beside the
  * retained-vault purge (`worker.ts`, `server/scheduled.ts`).
  *
- * Four steps, each independent of the others — one failing is logged and the
+ * Its steps are independent of each other — one failing is logged and the
  * rest still run:
  *
  *  1. **Ended cancellations.** A subscription cancelled with its period still
@@ -36,19 +42,36 @@ import type { UsageReport } from './usage';
  *     own event lands first. The organisation returns to Free, nothing deleted.
  *     If a later Dodo event says the subscription lives on after all, the
  *     webhook re-applies it.
- *  2. **Seat-sync debts**, retried with backoff and pushed as the count is now.
- *  3. **The overage report** (`flushUsageToDodo`).
- *  4. **The billing reminders** that come from a date rather than an event:
+ *  2. **Long holds.** A subscription on hold for {@link HOLD_LIMIT_MS} — a
+ *     card that never paid, a trial that ended with no card — ends here, to
+ *     Free, with an alert for a human and an email to the owners. Without it,
+ *     a subscription Dodo keeps on hold would keep its plan for ever. Nothing
+ *     is deleted, and the subscription itself is left to Dodo: if it is paid
+ *     after all, its `active` snapshot gives the plan back.
+ *  3. **Stale trials.** A row still `trialing` hours after its trial ended has
+ *     missed whatever Dodo sent at the conversion. Dodo is asked what the
+ *     subscription is now, and that snapshot is applied as a webhook's would
+ *     be.
+ *  4. **Seat-sync debts** that are due, pushed as the count is now.
+ *  5. **The overage report** (`flushUsageToDodo`).
+ *  6. **The billing reminders** that come from a date rather than an event:
  *     trials ending, yearly renewals, usage at 80% and 100% of the allowance,
  *     and — once a day — cards about to expire.
  *
- * Nothing here ever touches the data path, and nothing here corrects a
- * difference between our rows and Dodo's: that is the nightly reconciler's to
- * *report* (`reconcile.ts`), never to fix.
+ * Nothing here ever touches the data path. Only steps 1–3 change a row, and
+ * each only what its own date already decided; every other difference between
+ * our rows and Dodo's is the nightly reconciler's to *report* (`reconcile.ts`),
+ * never to fix.
  */
 
 /** How long after a cancelled period's end the job waits for Dodo's own event. */
 export const CANCELLATION_GRACE_MS = 2 * 60 * 60 * 1000;
+
+/** How long a subscription may stay on hold before it is ended here. */
+export const HOLD_LIMIT_MS = 14 * 24 * 60 * 60 * 1000;
+
+/** How long after a trial's end a row still `trialing` is asked about. */
+export const TRIAL_GRACE_MS = 2 * 60 * 60 * 1000;
 
 /** The UTC hour the card-expiry check runs in — once a day, one Dodo call per paying customer. */
 export const CARD_CHECK_HOUR_UTC = 9;
@@ -84,7 +107,13 @@ export async function runHourlyBillingJob(
   };
 
   await step('ended-cancellations', async () => {
-    report.ended = await endLapsedCancellations(services, now);
+    report.ended += await endLapsedCancellations(services, now);
+  });
+  await step('long-holds', async () => {
+    report.ended += await endLongHolds(services, now);
+  });
+  await step('stale-trials', async () => {
+    await refreshLapsedTrials(services, setup.config, now);
   });
   await step('seat-syncs', async () => {
     report.seatSyncs = await retrySeatSyncs(services, now);
@@ -98,6 +127,8 @@ export async function runHourlyBillingJob(
   await step('prune', async () => {
     // A reminder's occasion is long past after a year; the row only stops a repeat.
     await pruneReminders(services.db, new Date(now.getTime() - 400 * DAY_MS));
+    // An idempotency key only has to outlive a browser's retries.
+    await pruneBillingRequests(services.db, new Date(now.getTime() - DAY_MS));
   });
 
   log.info('Ran the hourly billing job', {
@@ -109,6 +140,28 @@ export async function runHourlyBillingJob(
   });
   return report;
 }
+
+/**
+ * The row of a subscription that ended here: Free, nothing deleted, and every
+ * provider column that only meant something while it was paid cleared —
+ * support's limit overrides included, which were granted on the plan that
+ * ended. The subscription id stays, so Dodo's later events still find it.
+ */
+const ENDED_HERE: ProviderSubscriptionPatch = {
+  plan: 'free',
+  billingInterval: null,
+  status: 'active',
+  cancelAtPeriodEnd: false,
+  currentPeriodStart: null,
+  currentPeriodEnd: null,
+  trialEndsAt: null,
+  dodoProductId: null,
+  renewalAmountMinor: null,
+  meteredFrom: null,
+  onHoldSince: null,
+  dodoScheduledChangeAt: null,
+  limitOverrides: null,
+};
 
 /** Step 1. */
 async function endLapsedCancellations(services: ServiceContext, now: Date): Promise<number> {
@@ -129,22 +182,10 @@ async function endLapsedCancellations(services: ServiceContext, now: Date): Prom
       ) {
         return false;
       }
-      await writeSubscriptionState(
-        tx,
-        row.orgId,
-        {
-          plan: 'free',
-          billingInterval: null,
-          status: 'active',
-          cancelAtPeriodEnd: false,
-          currentPeriodStart: null,
-          currentPeriodEnd: null,
-          trialEndsAt: null,
-          dodoProductId: null,
-          renewalAmountMinor: null,
-        },
-        { billed: 1, enforced: FREE_SEAT_LIMIT },
-      );
+      await writeSubscriptionState(tx, row.orgId, ENDED_HERE, {
+        billed: 1,
+        enforced: FREE_SEAT_LIMIT,
+      });
       await appendAuditEvents(tx, [
         systemAudit(services, row.orgId, 'billing job').success(
           'plan.changed',
@@ -167,33 +208,129 @@ async function endLapsedCancellations(services: ServiceContext, now: Date): Prom
   return ended;
 }
 
+/** Step 2. */
+async function endLongHolds(services: ServiceContext, now: Date): Promise<number> {
+  const cutoff = new Date(now.getTime() - HOLD_LIMIT_MS);
+  let ended = 0;
+  for (const candidate of await listLongHolds(services.db, { since: cutoff, limit: 100 })) {
+    const endedRow = await services.db.transaction(async (tx) => {
+      const row = await lockSubscription(tx, candidate.orgId);
+      if (
+        row === null ||
+        row.plan === 'free' ||
+        row.status !== 'on_hold' ||
+        row.onHoldSince === null ||
+        row.onHoldSince > cutoff
+      ) {
+        return null;
+      }
+      await writeSubscriptionState(tx, row.orgId, ENDED_HERE, {
+        billed: 1,
+        enforced: FREE_SEAT_LIMIT,
+      });
+      await appendAuditEvents(tx, [
+        systemAudit(services, row.orgId, 'billing job').success(
+          'plan.changed',
+          subscriptionResource(row.orgId),
+          {
+            plan: 'free',
+            previousPlan: row.plan,
+            subscriptionStatus: 'active',
+            previousSubscriptionStatus: row.status,
+            seatCount: 1,
+            previousSeatCount: row.seats,
+            reason: 'subscription on hold for 14 days without a payment',
+          },
+        ),
+      ]);
+      return row;
+    });
+    if (endedRow === null) continue;
+    ended += 1;
+    const days = Math.floor((now.getTime() - endedRow.onHoldSince!.getTime()) / DAY_MS);
+    await runBillingEffects(services, [
+      {
+        kind: 'alert',
+        message:
+          `A subscription was on hold for ${days} days and has been ended here: the organisation ` +
+          'is on Free. Dodo still has the subscription — cancel it there, or leave it if the ' +
+          'customer is about to pay (its next active event gives the plan back)',
+        fields: { orgId: endedRow.orgId, previousPlan: endedRow.plan },
+      },
+      {
+        kind: 'mail',
+        orgId: endedRow.orgId,
+        occasion: `${endedRow.dodoSubscriptionId ?? 'none'}:${endedRow.onHoldSince!.toISOString()}`,
+        reminder: { kind: 'plan_ended_unpaid', plan: endedRow.plan, days },
+      },
+    ]);
+  }
+  return ended;
+}
+
+/** Step 3. */
+async function refreshLapsedTrials(
+  services: ServiceContext,
+  config: BillingConfig,
+  now: Date,
+): Promise<void> {
+  const log = services.log.at('refreshLapsedTrials');
+  const provider = billingProvider(config);
+  const rows = await listLapsedTrials(services.db, {
+    endedBefore: new Date(now.getTime() - TRIAL_GRACE_MS),
+    limit: 50,
+  });
+  for (const row of rows) {
+    if (row.dodoSubscriptionId === null) continue;
+    if (row.dodoMode !== null && row.dodoMode !== config.mode) continue;
+    try {
+      const snapshot = await provider.getSubscription(row.dodoSubscriptionId);
+      if (snapshot.subscription_id !== row.dodoSubscriptionId) continue;
+      const outcome = await services.db.transaction(async (tx) => {
+        const applied: HandlerOutcome = await applySubscriptionSnapshot(tx, {
+          orgId: row.orgId,
+          eventType: 'subscription.refreshed',
+          // Dodo's answer now is the newest thing known about it.
+          eventAt: now,
+          now,
+          snapshot,
+          config,
+          audit: systemAudit(services, row.orgId, 'billing job'),
+          webhookId: null,
+          checkout: null,
+        });
+        if (applied.audit.length > 0) await appendAuditEvents(tx, applied.audit);
+        return applied;
+      });
+      if (outcome.effects.length > 0) await runBillingEffects(services, outcome.effects);
+    } catch (cause) {
+      log.warn('Could not ask Dodo what a lapsed trial became; the next run asks again', {
+        orgId: row.orgId,
+        ...(cause instanceof DodoApiError
+          ? { category: cause.category }
+          : { error: describeError(cause) }),
+      });
+    }
+  }
+}
+
 /**
- * Step 2. A debt is retried at once the first time, then after 2, 4, 8 …
- * minutes, capped at a day, and raised for a human after six failures.
+ * Step 4. Only debts that are due: past their backoff (2, 4, 8 … minutes,
+ * capped at a day), not waiting for a scheduled plan change, not held by a
+ * push in flight, and not given up on — so stuck debts wait outside the list
+ * and cannot crowd out a newer one. A debt that fails too often is given up
+ * on, and raised once, by `syncSeats`.
  */
 async function retrySeatSyncs(services: ServiceContext, now: Date): Promise<number> {
   let attempted = 0;
-  for (const debt of await listSeatSyncs(services.db, 50)) {
-    if (debt.attempts > 0 && debt.lastAttemptAt !== null) {
-      const waitMs = Math.min(2 ** debt.attempts * 60_000, DAY_MS);
-      if (debt.lastAttemptAt.getTime() + waitMs > now.getTime()) continue;
-    }
+  for (const debt of await listDueSeatSyncs(services.db, now, 50)) {
     attempted += 1;
-    const outcome = await syncSeats(services, debt.orgId);
-    if (outcome === 'failed' && debt.attempts + 1 === 6) {
-      services.log
-        .at('retrySeatSyncs')
-        .error(
-          'A seat change has failed to reach Dodo six times; the organisation is billed for a ' +
-            'seat count its membership no longer has. Check the subscription in Dodo',
-          { orgId: debt.orgId, lastError: debt.lastError },
-        );
-    }
+    await syncSeats(services, debt.orgId);
   }
   return attempted;
 }
 
-/** Step 4. */
+/** Step 6. */
 async function sendDueReminders(
   services: ServiceContext,
   config: BillingConfig,
@@ -218,6 +355,8 @@ async function sendDueReminders(
     after = page[page.length - 1]!.orgId;
 
     for (const row of page) {
+      // A row of the other Dodo mode is not this deployment's to remind about.
+      if (row.dodoMode !== null && row.dodoMode !== config.mode) continue;
       try {
         // Trials ending: three days out, then one.
         if (row.status === 'trialing' && row.trialEndsAt !== null) {
@@ -253,7 +392,8 @@ async function sendDueReminders(
               plan: row.plan,
               renewsAt: row.currentPeriodEnd,
               amountMinor: row.renewalAmountMinor,
-              currency: row.currency,
+              // The amount is in the currency Dodo reported it in.
+              currency: row.dodoCurrency ?? row.currency,
             });
           }
         }

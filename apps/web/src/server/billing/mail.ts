@@ -26,7 +26,15 @@ export const BUILDS_UNAFFECTED =
 
 export type BillingReminder =
   | { kind: 'trial_ending_3d' | 'trial_ending_1d'; plan: string; trialEndsAt: Date }
-  | { kind: 'payment_failed'; plan: string }
+  | {
+      kind: 'payment_failed';
+      plan: string;
+      /**
+       * The payment was for a plan not yet held — a first checkout's — so
+       * there is no subscription to speak of, and nothing of the plan is lost.
+       */
+      firstPayment: boolean;
+    }
   | { kind: 'card_expiring'; expiresAfter: Date; renewsAt: Date | null }
   | {
       kind: 'renewal_upcoming';
@@ -40,11 +48,13 @@ export type BillingReminder =
       seats: number;
       previousSeats: number;
       interval: 'monthly' | 'yearly';
-      amountMinor: number | null;
-      currency: string | null;
+      /** The new recurring charge, when known — Dodo's next snapshot is what knows it. */
+      amountMinor?: number | null;
+      currency?: string | null;
     }
   | { kind: 'usage_80' | 'usage_100'; used: number; included: number }
-  | { kind: 'invoice_available' };
+  | { kind: 'invoice_available' }
+  | { kind: 'plan_ended_unpaid'; plan: string; days: number };
 
 /** Every kind the database accepts has a template — the type and the CHECK agree. */
 const KINDS: Readonly<Record<BillingReminderKind, true>> = {
@@ -57,6 +67,7 @@ const KINDS: Readonly<Record<BillingReminderKind, true>> = {
   usage_80: true,
   usage_100: true,
   invoice_available: true,
+  plan_ended_unpaid: true,
 };
 export const REMINDER_KINDS = Object.keys(KINDS) as BillingReminderKind[];
 
@@ -79,25 +90,59 @@ function compose(reminder: BillingReminder, organization: string): Composed {
         subject: `Your ${planName(reminder.plan)} trial for ${organization} ends ${when}`,
         lines: [
           `The ${planName(reminder.plan)} trial for ${organization} ends ${when}, on ` +
-            `${formatDay(reminder.trialEndsAt)}.`,
-          'To keep the plan, make sure a payment method is on file — you can check from the ' +
-            'billing page. If the trial ends without one, the organisation moves to Free and ' +
-            'nothing is deleted.',
+            `${formatDay(reminder.trialEndsAt)}. When it does, the card on file is charged for ` +
+            'the first billing period.',
+          // What actually happens, in order: Dodo puts a subscription whose
+          // first charge fails on hold; the plan keeps working while it is;
+          // and after fourteen days on hold the hourly job moves the
+          // organisation to Free (`jobs.ts`, HOLD_LIMIT_MS).
+          'If there is no card on file, or the charge does not go through, the subscription is ' +
+            'put on hold: the plan keeps working for 14 days while you add a card from the ' +
+            'billing page, and after that the organisation moves to Free. Nothing is deleted ' +
+            'either way.',
           BUILDS_UNAFFECTED,
         ],
         action: 'Open billing',
       };
     }
     case 'payment_failed':
+      return reminder.firstPayment
+        ? {
+            subject: `A payment for ${organization} didn't go through`,
+            lines: [
+              `The payment for ${organization}'s new ${planName(reminder.plan)} plan was ` +
+                `declined, so nothing was bought and nothing was charged. ${organization} stays ` +
+                'on the plan it has now.',
+              BUILDS_UNAFFECTED,
+              'To try again, choose the plan from the billing page.',
+            ],
+            action: 'Open billing',
+          }
+        : {
+            subject: `A payment for ${organization} didn't go through`,
+            lines: [
+              `A payment for ${organization}'s ${planName(reminder.plan)} subscription was ` +
+                'declined.',
+              BUILDS_UNAFFECTED,
+              'Our payment provider will try again over the next few days. To fix it now, ' +
+                'update the card from the billing page — "Manage billing" opens the customer ' +
+                'portal. A subscription still unpaid after 14 days on hold ends, and the ' +
+                'organisation moves to Free; nothing is deleted.',
+            ],
+            action: 'Update the card',
+          };
+    case 'plan_ended_unpaid':
       return {
-        subject: `A payment for ${organization} didn't go through`,
+        subject: `${organization} has moved to the Free plan`,
         lines: [
-          `A payment for ${organization}'s ${planName(reminder.plan)} subscription was declined.`,
+          `${organization}'s ${planName(reminder.plan)} subscription has been on hold for ` +
+            `${count(reminder.days)} days without a successful payment, so the organisation is ` +
+            'now on Free. Nothing was deleted: every secret is still there and still readable.',
           BUILDS_UNAFFECTED,
-          'Our payment provider will try again over the next few days. To fix it now, update the ' +
-            'card from the billing page — "Manage billing" opens the customer portal.',
+          `To return to ${planName(reminder.plan)}, update the card from the billing page — ` +
+            '"Manage billing" opens the customer portal — or choose a plan again.',
         ],
-        action: 'Update the card',
+        action: 'Open billing',
       };
     case 'card_expiring':
       return {
@@ -128,7 +173,7 @@ function compose(reminder: BillingReminder, organization: string): Composed {
       };
     }
     case 'seats_changed': {
-      const amount = formatMinor(reminder.amountMinor, reminder.currency);
+      const amount = formatMinor(reminder.amountMinor ?? null, reminder.currency ?? null);
       const period = reminder.interval === 'yearly' ? 'yearly' : 'monthly';
       return {
         subject: `${organization} is now billed for ${count(reminder.seats)} seats`,
@@ -136,8 +181,13 @@ function compose(reminder: BillingReminder, organization: string): Composed {
           `${organization}'s membership changed, so it is now billed for ${count(reminder.seats)} ` +
             `seats (it was ${count(reminder.previousSeats)}).` +
             (amount ? ` The ${period} charge is now ${amount} before tax.` : ''),
-          'Adding a member charges the difference for the rest of the period; removing one ' +
-            'credits it. A pending invitation is not billed until it is accepted.',
+          // Dodo's `prorated_immediately_keep_cycle`, the mode the seat sync
+          // uses: the difference for the time left in the period, the period
+          // itself unchanged; a negative difference is held as credit on the
+          // subscription and applied to its renewals, not refunded to the card.
+          'Adding a member charges the difference for the rest of the current period; removing ' +
+            'one leaves the difference as credit on the subscription, used against its next ' +
+            'renewals. A pending invitation is not billed until it is accepted.',
         ],
         action: 'Review billing',
       };

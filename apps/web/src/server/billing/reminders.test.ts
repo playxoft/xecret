@@ -26,7 +26,7 @@ vi.mock('../mail', async (importOriginal) => ({
       : null,
 }));
 
-const { sendBillingReminder, PAYMENT_FAILED_THROTTLE_MS } = await import('./reminders');
+const { sendBillingReminder } = await import('./reminders');
 
 let t: TestDatabase;
 const log = createLogger({
@@ -115,28 +115,38 @@ describe('sendBillingReminder', () => {
     expect(sent.messages).toHaveLength(2);
   });
 
-  it('throttles payment failures to one email a day, whatever the occasion', async () => {
+  it('sends one payment-failure email a day, whatever the occasion', async () => {
     const { orgId } = await seedOrg();
-    const reminder = { kind: 'payment_failed' as const, plan: 'team' };
+    const reminder = { kind: 'payment_failed' as const, plan: 'team', firstPayment: false };
 
     expect(await sendBillingReminder(services(), { orgId, occasion: 'pay_a', reminder })).toBe(
       'sent',
     );
-    // Dodo's next retry is a new payment, a new occasion — and still throttled.
+    // Dodo's next retry is a new payment, a new occasion — and still today's.
     expect(await sendBillingReminder(services(), { orgId, occasion: 'pay_b', reminder })).toBe(
-      'throttled',
+      'duplicate',
     );
     expect(sent.messages).toHaveLength(1);
 
-    // A day later the throttle has passed.
-    await t.pg.query(
-      `update billing_reminders set sent_at = now() - make_interval(secs => $2)
-        where org_id = $1 and kind = 'payment_failed'`,
-      [orgId, PAYMENT_FAILED_THROTTLE_MS / 1000 + 60],
-    );
+    // Tomorrow is a new day.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(Date.now() + 24 * 60 * 60 * 1000));
     expect(await sendBillingReminder(services(), { orgId, occasion: 'pay_c', reminder })).toBe(
       'sent',
     );
+  });
+
+  it('claims a payment failure before sending, so two arriving together send one email', async () => {
+    const { orgId } = await seedOrg();
+    const reminder = { kind: 'payment_failed' as const, plan: 'team', firstPayment: false };
+    // Two failures delivered at once — a dunning retry and a webhook replay.
+    // A read-then-claim throttle let both read "none sent today" and send.
+    const outcomes = await Promise.all([
+      sendBillingReminder(services(), { orgId, occasion: 'pay_1', reminder }),
+      sendBillingReminder(services(), { orgId, occasion: 'pay_2', reminder }),
+    ]);
+    expect([...outcomes].sort()).toEqual(['duplicate', 'sent']);
+    expect(sent.messages).toHaveLength(1);
   });
 
   it('claims the reminder before sending, so a provider outage costs one email, never repeats it', async () => {

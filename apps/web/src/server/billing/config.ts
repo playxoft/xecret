@@ -36,6 +36,14 @@ export const DODO_BASE_URL: Readonly<Record<DodoMode, string>> = Object.freeze({
   live_mode: 'https://live.dodopayments.com',
 });
 
+/**
+ * How long a checkout stays open: its nonce can attach the subscription it
+ * produces for this long, and no longer. An assumption, not a Dodo figure — a
+ * card checkout completes in minutes; a week covers a slow bank and a
+ * delivery Dodo retried for a day.
+ */
+export const CHECKOUT_OPEN_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** The plans checkout sells. Free is never bought; Enterprise is a contract. */
 export const PURCHASABLE_PLANS = ['pro', 'team'] as const satisfies readonly PlanId[];
 export type PurchasablePlan = (typeof PURCHASABLE_PLANS)[number];
@@ -111,6 +119,25 @@ function present(value: string | undefined): value is string {
 }
 
 /**
+ * Whether a value is a Standard Webhooks signing secret as Dodo issues one:
+ * `whsec_` and then base64 of at least sixteen bytes. The library that
+ * verifies deliveries strips the prefix and base64-decodes the rest
+ * (`standardwebhooks`' `Webhook` constructor), so anything else either throws
+ * on the first delivery or — worse — decodes to a key nobody signs with, and
+ * every delivery is refused 401 while the setup looks complete.
+ */
+export function isWebhookSecret(value: string): boolean {
+  if (!value.startsWith('whsec_')) return false;
+  const encoded = value.slice('whsec_'.length);
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || encoded.length % 4 !== 0) return false;
+  try {
+    return atob(encoded).length >= 16;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Whether this deployment takes payments, and with what. Throws
  * {@link BillingMisconfiguredError} on a half-configuration.
  *
@@ -130,6 +157,10 @@ export function billingSetup(env: Bindings): BillingSetup {
   const mode = env.DODO_ENVIRONMENT?.trim();
   if (mode !== 'test_mode' && mode !== 'live_mode') {
     problems.push('DODO_ENVIRONMENT (not test_mode or live_mode)');
+  }
+
+  if (!isWebhookSecret((env.DODO_WEBHOOK_SECRET as string).trim())) {
+    problems.push('DODO_WEBHOOK_SECRET (not whsec_ followed by base64)');
   }
 
   const meterEventName = env.DODO_METER_SECRET_FETCH?.trim() ?? '';
@@ -169,6 +200,24 @@ export function billingSetup(env: Bindings): BillingSetup {
       samlAddonId,
     }),
   };
+}
+
+/**
+ * Whether this deployment takes **real** payments: billing fully configured,
+ * against Dodo's live mode. What public copy keys on — the pricing page, the
+ * terms, the about and FAQ pages — so a deployment running Dodo's test mode (a
+ * staging rehearsal) never tells the public that paying works, and one that
+ * takes no payments never says "pay at checkout". Never throws: a
+ * half-configured deployment answers `false`, and its billing routes answer
+ * 503 anyway.
+ */
+export function takesLivePayments(env: Bindings): boolean {
+  try {
+    const setup = billingSetup(env);
+    return setup.state === 'enabled' && setup.config.mode === 'live_mode';
+  } catch {
+    return false;
+  }
 }
 
 /** The product that sells `plan` at `interval`. Every pair has one when billing is on. */

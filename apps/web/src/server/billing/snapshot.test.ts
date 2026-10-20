@@ -33,6 +33,13 @@ function row(over: Partial<SubscriptionRecord> = {}): SubscriptionRecord {
     dodoProductId: null,
     dodoEventAt: null,
     renewalAmountMinor: null,
+    meteredFrom: null,
+    dodoMode: null,
+    dodoEventId: null,
+    onHoldSince: null,
+    dodoScheduledChangeAt: null,
+    dodoCurrency: null,
+    dodoBillingCountry: null,
     addonSaml: false,
     addonDirectorySync: false,
     limitOverrides: null,
@@ -66,15 +73,27 @@ function snapshot(over: Partial<DodoSubscription> = {}): DodoSubscription {
 const decide = (
   current: SubscriptionRecord,
   incoming: DodoSubscription,
-  over: { entry?: CatalogEntry | null; eventAt?: Date; samlAddonId?: string | null } = {},
+  over: {
+    entry?: CatalogEntry | null;
+    eventAt?: Date;
+    samlAddonId?: string | null;
+    webhookId?: string | null;
+    mode?: 'test_mode' | 'live_mode';
+    attachable?: boolean;
+    now?: Date;
+  } = {},
 ) =>
   decideSnapshot({
     row: current,
     snapshot: incoming,
     entry: over.entry === undefined ? TEAM_MONTHLY : over.entry,
     eventAt: over.eventAt ?? NOW,
-    now: NOW,
+    now: over.now ?? NOW,
     samlAddonId: over.samlAddonId ?? null,
+    mode: over.mode ?? 'test_mode',
+    webhookId: over.webhookId === undefined ? 'msg_default' : over.webhookId,
+    // A subscription the row does not follow yet is, here, one from its own checkout.
+    attachable: over.attachable ?? true,
   });
 
 const following = row({
@@ -186,6 +205,132 @@ describe('decideSnapshot', () => {
     expect(decision.kind === 'apply' && decision.patch.trialEndsAt!.getTime()).toBeLessThan(
       NOW.getTime(),
     );
+  });
+
+  it('orders two snapshots stamped alike by webhook id — whichever arrives first, the same one wins', () => {
+    const at = new Date(NOW.getTime() - 1000);
+    const applied = (webhookId: string, quantity: number) =>
+      row({ ...following, dodoEventAt: at, dodoEventId: webhookId, seats: quantity });
+    // msg_b after msg_a: applied.
+    expect(
+      decide(applied('msg_a', 4), snapshot({ quantity: 5 }), { eventAt: at, webhookId: 'msg_b' })
+        .kind,
+    ).toBe('apply');
+    // msg_a after msg_b: stale — the row stays as msg_b left it.
+    expect(
+      decide(applied('msg_b', 5), snapshot({ quantity: 4 }), { eventAt: at, webhookId: 'msg_a' }),
+    ).toEqual({ kind: 'ignore', reason: 'stale' });
+  });
+
+  it('never writes a row recorded under the other Dodo mode', () => {
+    const testRow = row({ ...following, dodoMode: 'test_mode' });
+    expect(decide(testRow, snapshot(), { mode: 'live_mode' })).toEqual({
+      kind: 'ignore',
+      reason: 'other-mode',
+    });
+    const decision = decide(testRow, snapshot(), { mode: 'test_mode' });
+    expect(decision.kind === 'apply' && decision.patch.dodoMode).toBe('test_mode');
+  });
+
+  it('attaches a new subscription to a Free row only from its own open checkout', () => {
+    expect(decide(row(), snapshot(), { attachable: false })).toEqual({
+      kind: 'ignore',
+      reason: 'unverified-checkout',
+    });
+    expect(decide(row(), snapshot(), { attachable: true }).kind).toBe('apply');
+  });
+
+  it('gives a plan back to the subscription a row left only when Dodo says it is active again', () => {
+    const endedHere = row({
+      dodoSubscriptionId: 'sub_1',
+      dodoEventAt: new Date(NOW.getTime() - DAY),
+    });
+    expect(decide(endedHere, snapshot({ status: 'on_hold' }))).toEqual({
+      kind: 'ignore',
+      reason: 'not-reactivating',
+    });
+    const back = decide(endedHere, snapshot({ status: 'active' }));
+    expect(back.kind === 'apply' && back.patch.plan).toBe('team');
+    // A linked first checkout (no snapshot applied yet) is not a return.
+    const linked = row({ dodoSubscriptionId: 'sub_1', dodoEventAt: null });
+    expect(decide(linked, snapshot({ status: 'on_hold' })).kind).toBe('apply');
+  });
+
+  it('meters from the activation, or from a trial’s end — and keeps it across renewals', () => {
+    const start = new Date(NOW.getTime() - DAY);
+    const activated = decide(row(), snapshot({ previous_billing_date: start.toISOString() }));
+    expect(activated.kind === 'apply' && activated.patch.meteredFrom?.getTime()).toBe(
+      start.getTime(),
+    );
+
+    const created = new Date(NOW.getTime() - 2 * DAY);
+    const trial = decide(
+      row(),
+      snapshot({ trial_period_days: 14, created_at: created.toISOString() }),
+    );
+    expect(trial.kind === 'apply' && trial.patch.meteredFrom?.getTime()).toBe(
+      created.getTime() + 14 * DAY,
+    );
+
+    const meteredFrom = new Date(NOW.getTime() - 40 * DAY);
+    const renewal = decide(row({ ...following, meteredFrom }), snapshot());
+    expect(renewal.kind === 'apply' && renewal.patch.meteredFrom?.getTime()).toBe(
+      meteredFrom.getTime(),
+    );
+  });
+
+  it('records when a subscription went on hold, keeps it while it stays there, and clears it after', () => {
+    const held = decide(following, snapshot({ status: 'on_hold' }));
+    expect(held.kind === 'apply' && held.patch.onHoldSince?.getTime()).toBe(NOW.getTime());
+
+    const since = new Date(NOW.getTime() - 5 * DAY);
+    const still = decide(
+      row({ ...following, status: 'on_hold', onHoldSince: since }),
+      snapshot({ status: 'on_hold' }),
+    );
+    expect(still.kind === 'apply' && still.patch.onHoldSince?.getTime()).toBe(since.getTime());
+
+    const paid = decide(row({ ...following, status: 'on_hold', onHoldSince: since }), snapshot());
+    expect(paid.kind === 'apply' && paid.patch.onHoldSince).toBeNull();
+  });
+
+  it('records a plan change Dodo has scheduled, and its absence', () => {
+    const at = new Date(NOW.getTime() + 20 * DAY).toISOString();
+    const scheduled = decide(following, snapshot({ scheduled_change: { effective_at: at } }));
+    expect(scheduled.kind === 'apply' && scheduled.patch.dodoScheduledChangeAt?.toISOString()).toBe(
+      at,
+    );
+    const none = decide(following, snapshot({ scheduled_change: null }));
+    expect(none.kind === 'apply' && none.patch.dodoScheduledChangeAt).toBeNull();
+  });
+
+  it('drops support’s limit overrides with the plan they were granted on', () => {
+    const ended = decide(
+      row({ ...following, limitOverrides: { projects: 2000 } }),
+      snapshot({ status: 'expired' }),
+    );
+    expect(ended.kind === 'apply' && ended.patch).toMatchObject({
+      plan: 'free',
+      limitOverrides: null,
+      meteredFrom: null,
+    });
+  });
+
+  it('raises a region disagreement once, when Dodo’s report changes — not on every snapshot', () => {
+    const locked = row({ ...following, dodoCurrency: 'USD', dodoBillingCountry: 'US' });
+    const first = decide(locked, snapshot({ currency: 'INR', billing: { country: 'IN' } }));
+    expect(first.kind === 'apply' && first.regionMismatch).toBe(true);
+    // The renewal amount is kept with Dodo's own currency, whatever the lock kept.
+    expect(first.kind === 'apply' && first.patch).toMatchObject({
+      dodoCurrency: 'INR',
+      dodoBillingCountry: 'IN',
+    });
+
+    const again = decide(
+      row({ ...locked, dodoCurrency: 'INR', dodoBillingCountry: 'IN' }),
+      snapshot({ currency: 'INR', billing: { country: 'IN' } }),
+    );
+    expect(again.kind === 'apply' && again.regionMismatch).toBe(false);
   });
 
   it('switches the SAML add-on on only for a positive quantity of the configured add-on', () => {

@@ -1,14 +1,17 @@
-import { and, asc, count, eq, gt, isNotNull, isNull, lt, ne, sql } from 'drizzle-orm';
+import { and, asc, count, eq, gt, isNotNull, isNull, lt, lte, ne, or, sql } from 'drizzle-orm';
+import { FETCHES_PER_METERED_UNIT, PLANS, resolvePlanId } from '@xecret/core/entitlements';
 import type { BillingInterval, PlanId } from '@xecret/core/entitlements';
 import {
   billingCheckouts,
   billingLicenseKeys,
   billingReminders,
+  billingRequests,
   billingSeatSyncs,
   orgSubscriptions,
   orgUsageCounters,
 } from '../schema/billing';
-import type { BillingReminderKind } from '../schema/billing';
+import type { BillingReminderKind, BillingRequestKind } from '../schema/billing';
+import { planIdEnum } from '../schema/enums';
 import { users } from '../schema/identity';
 import { projects } from '../schema/resources';
 import { invitations, orgMembers, organizations } from '../schema/tenancy';
@@ -92,6 +95,24 @@ export async function findOrgIdByDodoCustomer(
   return rows.length === 1 ? (rows[0]?.orgId ?? null) : null;
 }
 
+/**
+ * How many organisations hold this provider customer — one, for every
+ * customer a checkout of ours created since checkouts force a customer per
+ * organisation. The customer portal is opened only for a customer held by
+ * exactly one, so one organisation's owner can never land in the portal that
+ * pays for another's.
+ */
+export async function countOrgsWithDodoCustomer(
+  exec: Executor,
+  dodoCustomerId: string,
+): Promise<number> {
+  const [row] = await exec
+    .select({ value: count() })
+    .from(orgSubscriptions)
+    .where(eq(orgSubscriptions.dodoCustomerId, dodoCustomerId));
+  return row?.value ?? 0;
+}
+
 /** Whether a live organisation has this id. Metadata names one; this checks it is real. */
 export async function liveOrganizationExists(exec: Executor, orgId: string): Promise<boolean> {
   const [row] = await exec
@@ -115,6 +136,67 @@ export async function findBillingOrganization(
   return row ?? null;
 }
 
+/** The provider's columns, beside the ones the operator tool writes too. */
+export interface ProviderSubscriptionPatch extends SubscriptionPatch {
+  currentPeriodStart?: Date | null;
+  dodoProductId?: string | null;
+  dodoEventAt?: Date | null;
+  renewalAmountMinor?: number | null;
+  meteredFrom?: Date | null;
+  dodoMode?: 'test_mode' | 'live_mode' | null;
+  dodoEventId?: string | null;
+  onHoldSince?: Date | null;
+  dodoScheduledChangeAt?: Date | null;
+  dodoCurrency?: string | null;
+  dodoBillingCountry?: string | null;
+}
+
+/**
+ * Takes an organisation off the provider subscription it followed — what the
+ * operator tool does when it sets a plan by hand over one Dodo bills
+ * (`plan:set --over-dodo`).
+ *
+ * Clears the provider ids and every column that only means something beside
+ * them, so the row reads afterwards as exactly what it now is: an operator's
+ * grant (a paid plan with no subscription), or Free. Nothing else — the plan,
+ * seats and add-ons are the caller's to write in the same transaction.
+ *
+ * Returns the ids it cleared, for the operator's own record of the run: the
+ * subscription is still live at Dodo until somebody cancels it there, and this
+ * is the only place that says which one it was. `null` when the row followed
+ * none.
+ */
+export async function detachFromProvider(
+  tx: Transaction,
+  orgId: string,
+): Promise<{ dodoSubscriptionId: string | null; dodoCustomerId: string | null } | null> {
+  const row = await lockSubscription(tx, orgId);
+  if (row === null) return null;
+  if (row.dodoSubscriptionId === null && row.dodoCustomerId === null) return null;
+  await tx
+    .update(orgSubscriptions)
+    .set({
+      dodoSubscriptionId: null,
+      dodoCustomerId: null,
+      dodoProductId: null,
+      dodoEventAt: null,
+      dodoEventId: null,
+      dodoMode: null,
+      dodoScheduledChangeAt: null,
+      dodoCurrency: null,
+      dodoBillingCountry: null,
+      renewalAmountMinor: null,
+      meteredFrom: null,
+      onHoldSince: null,
+      cancelAtPeriodEnd: false,
+      updatedAt: new Date(),
+    })
+    .where(eq(orgSubscriptions.orgId, orgId));
+  // A seat debt for a subscription nobody follows any more is owed to nobody.
+  await tx.delete(billingSeatSyncs).where(eq(billingSeatSyncs.orgId, orgId));
+  return { dodoSubscriptionId: row.dodoSubscriptionId, dodoCustomerId: row.dodoCustomerId };
+}
+
 /**
  * Writes a subscription change and, when given, the seat pair with it — in the
  * caller's transaction, so an invoice figure and an access ceiling can never be
@@ -127,12 +209,7 @@ export async function findBillingOrganization(
 export async function writeSubscriptionState(
   tx: Transaction,
   orgId: string,
-  patch: SubscriptionPatch & {
-    currentPeriodStart?: Date | null;
-    dodoProductId?: string | null;
-    dodoEventAt?: Date | null;
-    renewalAmountMinor?: number | null;
-  },
+  patch: ProviderSubscriptionPatch,
   seats?: { billed: number; enforced: number },
 ): Promise<SubscriptionRecord | null> {
   const now = new Date();
@@ -240,11 +317,61 @@ export async function listEndedCancellations(
     .limit(limit);
 }
 
+/**
+ * Provider subscriptions on hold since before `since` — the ones the hourly
+ * job ends, so an unpaid subscription cannot keep its plan for ever.
+ */
+export async function listLongHolds(
+  exec: Executor,
+  options: { since: Date; limit: number },
+): Promise<SubscriptionRecord[]> {
+  return exec
+    .select()
+    .from(orgSubscriptions)
+    .where(
+      and(
+        eq(orgSubscriptions.status, 'on_hold'),
+        ne(orgSubscriptions.plan, 'free'),
+        isNotNull(orgSubscriptions.dodoSubscriptionId),
+        lte(orgSubscriptions.onHoldSince, options.since),
+      ),
+    )
+    .orderBy(asc(orgSubscriptions.onHoldSince))
+    .limit(options.limit);
+}
+
+/**
+ * Provider subscriptions still marked `trialing` although their trial ended
+ * before `endedBefore` — a status no webhook moved on. The hourly job asks
+ * Dodo what they became.
+ */
+export async function listLapsedTrials(
+  exec: Executor,
+  options: { endedBefore: Date; limit: number },
+): Promise<SubscriptionRecord[]> {
+  return exec
+    .select()
+    .from(orgSubscriptions)
+    .where(
+      and(
+        eq(orgSubscriptions.status, 'trialing'),
+        ne(orgSubscriptions.plan, 'free'),
+        isNotNull(orgSubscriptions.dodoSubscriptionId),
+        lt(orgSubscriptions.trialEndsAt, options.endedBefore),
+      ),
+    )
+    .orderBy(asc(orgSubscriptions.trialEndsAt))
+    .limit(options.limit);
+}
+
 /* ── checkouts ─────────────────────────────────────────────────────────────── */
 
 export type CheckoutRecord = typeof billingCheckouts.$inferSelect;
 
-/** Records a hosted checkout the server just created. Insert-only by grant. */
+/**
+ * Records a hosted checkout the server just created, with the nonce it put in
+ * the checkout's metadata. Insert-only by grant, but for a consumption.
+ */
 export async function recordCheckout(
   exec: Executor,
   checkout: {
@@ -254,9 +381,15 @@ export async function recordCheckout(
     billingInterval: BillingInterval;
     quantity: number;
     createdBy: string | null;
+    nonce: string;
   },
 ): Promise<void> {
-  await exec.insert(billingCheckouts).values(checkout).onConflictDoNothing();
+  // The same session recorded twice is one checkout; the same nonce on two is
+  // a broken random source, and must fail loudly rather than bind either.
+  await exec
+    .insert(billingCheckouts)
+    .values(checkout)
+    .onConflictDoNothing({ target: billingCheckouts.sessionId });
 }
 
 export async function findCheckout(
@@ -271,63 +404,295 @@ export async function findCheckout(
   return row ?? null;
 }
 
+/**
+ * The organisation's open checkout carrying this nonce, if there is one —
+ * what makes a subscription's metadata trustworthy enough to attach it.
+ *
+ * Open: created since `openSince`, not yet consumed by any subscription, and
+ * the organisation still live. A nonce from another organisation's checkout,
+ * one already spent, or one nobody minted answers `null`.
+ */
+export async function findOpenCheckout(
+  exec: Executor,
+  query: { orgId: string; nonce: string; openSince: Date },
+): Promise<CheckoutRecord | null> {
+  const [row] = await exec
+    .select({ checkout: billingCheckouts })
+    .from(billingCheckouts)
+    .innerJoin(
+      organizations,
+      and(eq(organizations.id, billingCheckouts.orgId), isNull(organizations.deletedAt)),
+    )
+    .where(
+      and(
+        eq(billingCheckouts.orgId, query.orgId),
+        eq(billingCheckouts.nonce, query.nonce),
+        isNull(billingCheckouts.subscriptionId),
+        gt(billingCheckouts.createdAt, query.openSince),
+      ),
+    )
+    .limit(1);
+  return row?.checkout ?? null;
+}
+
+/**
+ * Spends a checkout on the subscription it produced — by its session id (a
+ * payment names it) or its nonce (a subscription's metadata carries it).
+ * Answers false when there was nothing open to spend: never minted, another
+ * organisation's, or already spent on a subscription. A spent checkout attaches
+ * nothing more, so a subscription taken off an organisation by hand cannot
+ * come back through the checkout that first brought it.
+ */
+export async function consumeCheckout(
+  exec: Executor,
+  consumption: {
+    orgId: string;
+    subscriptionId: string;
+    by: { sessionId: string } | { nonce: string };
+  },
+): Promise<boolean> {
+  const key =
+    'sessionId' in consumption.by
+      ? eq(billingCheckouts.sessionId, consumption.by.sessionId)
+      : eq(billingCheckouts.nonce, consumption.by.nonce);
+  const spent = await exec
+    .update(billingCheckouts)
+    .set({ subscriptionId: consumption.subscriptionId, consumedAt: new Date() })
+    .where(
+      and(
+        key,
+        eq(billingCheckouts.orgId, consumption.orgId),
+        isNull(billingCheckouts.subscriptionId),
+      ),
+    )
+    .returning({ sessionId: billingCheckouts.sessionId });
+  return spent.length > 0;
+}
+
 /* ── seat-sync debts ───────────────────────────────────────────────────────── */
 
 export type SeatSyncRecord = typeof billingSeatSyncs.$inferSelect;
 
+/** Failures before a debt is given up on and raised for a human. */
+export const SEAT_SYNC_MAX_ATTEMPTS = 10;
+
 /**
- * Records that the organisation's seat count is owed to the provider, before
- * the push is attempted. A second queue for an organisation already owed is a
- * no-op that keeps the original `queued_at`.
+ * Records that the organisation's seat count changed and is owed to the
+ * provider: a new debt, or a new generation of an existing one — which also
+ * makes it due again at once, since a new count is a new chance for the push.
+ *
+ * Unconditional; membership changes use {@link queueBilledSeatSync}.
  */
 export async function queueSeatSync(exec: Executor, orgId: string): Promise<void> {
-  // The application's clock, not the database's: `completeSeatSync` compares
-  // this with the moment a push began, which the application stamped too.
+  await exec
+    .insert(billingSeatSyncs)
+    .values({ orgId, queuedAt: new Date() })
+    .onConflictDoUpdate({
+      target: billingSeatSyncs.orgId,
+      set: {
+        generation: sql`${billingSeatSyncs.generation} + 1`,
+        attempts: 0,
+        notBefore: null,
+        deadLetteredAt: null,
+      },
+    });
+}
+
+/**
+ * {@link queueSeatSync}, but only for an organisation the provider bills seats
+ * on — the call every membership change makes **inside its own transaction**,
+ * so the debt commits with the membership or not at all. A push that never
+ * starts (an isolate gone before `waitUntil` ran) still leaves the debt for the
+ * hourly job. A Free organisation, or an operator's grant, writes nothing.
+ */
+export async function queueBilledSeatSync(exec: Executor, orgId: string): Promise<void> {
+  await exec.execute(sql`
+    insert into ${billingSeatSyncs} (org_id, queued_at)
+    select ${orgSubscriptions.orgId}, ${new Date().toISOString()}::timestamptz
+      from ${orgSubscriptions}
+     where ${orgSubscriptions.orgId} = ${orgId}
+       and ${orgSubscriptions.plan} <> 'free'
+       and ${orgSubscriptions.dodoSubscriptionId} is not null
+    on conflict (org_id) do update
+      set generation = ${billingSeatSyncs.generation} + 1,
+          attempts = 0,
+          not_before = null,
+          dead_lettered_at = null
+  `);
+}
+
+/**
+ * Makes sure a debt exists before a push claims it, without touching one that
+ * does — a retry must not reset the backoff it is being retried under.
+ */
+export async function ensureSeatSync(exec: Executor, orgId: string): Promise<void> {
   await exec.insert(billingSeatSyncs).values({ orgId, queuedAt: new Date() }).onConflictDoNothing();
 }
 
-/** The debts, oldest first. */
-export async function listSeatSyncs(exec: Executor, limit: number): Promise<SeatSyncRecord[]> {
-  return exec.select().from(billingSeatSyncs).orderBy(asc(billingSeatSyncs.queuedAt)).limit(limit);
+/**
+ * Takes the one push allowed in flight for an organisation, for `leaseMs`.
+ * Answers the generation it was taken under, or `null` when another push holds
+ * it (or there is no debt). The lease outlives an isolate that dies holding
+ * it by at most `leaseMs`.
+ */
+export async function claimSeatSync(
+  exec: Executor,
+  orgId: string,
+  leaseMs: number,
+): Promise<number | null> {
+  const now = new Date();
+  const [row] = await exec
+    .update(billingSeatSyncs)
+    .set({ claimedUntil: new Date(now.getTime() + leaseMs) })
+    .where(
+      and(
+        eq(billingSeatSyncs.orgId, orgId),
+        or(isNull(billingSeatSyncs.claimedUntil), lte(billingSeatSyncs.claimedUntil, now)),
+      ),
+    )
+    .returning({ generation: billingSeatSyncs.generation });
+  return row?.generation ?? null;
+}
+
+/** The debt's current generation, or `null` when there is none. */
+export async function seatSyncGeneration(exec: Executor, orgId: string): Promise<number | null> {
+  const [row] = await exec
+    .select({ generation: billingSeatSyncs.generation })
+    .from(billingSeatSyncs)
+    .where(eq(billingSeatSyncs.orgId, orgId))
+    .limit(1);
+  return row?.generation ?? null;
 }
 
 /**
- * Pays a debt — only if it was queued no later than `pushedAt`.
- *
- * A membership change that queued a fresh debt while this push was in flight
- * re-queues nothing (the row already existed), so the push that started first
- * must not delete the row that the later change is relying on. Comparing
- * `queued_at` is not enough on its own for that — the later change did not
- * write — which is why the push re-counts after it lands (see `syncSeats`).
- * This guard is the second line: a debt is only ever cleared by a push that
- * began after it was queued.
+ * Pays a debt — only if no membership change has bumped it since the push
+ * counted under `generation`. Answers whether it was paid; `false` means a
+ * change landed mid-push, and the pusher must count again.
  */
 export async function completeSeatSync(
   exec: Executor,
   orgId: string,
-  pushedAt: Date,
-): Promise<void> {
-  await exec
+  generation: number,
+): Promise<boolean> {
+  const paid = await exec
     .delete(billingSeatSyncs)
-    .where(
-      and(eq(billingSeatSyncs.orgId, orgId), sql`${billingSeatSyncs.queuedAt} <= ${pushedAt}`),
-    );
+    .where(and(eq(billingSeatSyncs.orgId, orgId), eq(billingSeatSyncs.generation, generation)))
+    .returning({ orgId: billingSeatSyncs.orgId });
+  return paid.length > 0;
 }
 
-/** Records a failed push. `category` is a short token, never a provider message. */
-export async function failSeatSync(exec: Executor, orgId: string, category: string): Promise<void> {
-  const now = new Date();
+/** Forgets any debt: the organisation is not billed for seats, so nothing is owed. */
+export async function clearSeatSync(exec: Executor, orgId: string): Promise<void> {
+  await exec.delete(billingSeatSyncs).where(eq(billingSeatSyncs.orgId, orgId));
+}
+
+/** Lets go of the lease without paying the debt. */
+export async function releaseSeatSync(exec: Executor, orgId: string): Promise<void> {
   await exec
+    .update(billingSeatSyncs)
+    .set({ claimedUntil: null })
+    .where(eq(billingSeatSyncs.orgId, orgId));
+}
+
+/**
+ * Records a failed push and lets go of the lease. The debt is next due after
+ * 2, 4, 8 … minutes, capped at a day. `category` is a short token, never a
+ * provider message. Answers the attempts so far.
+ */
+export async function failSeatSync(
+  exec: Executor,
+  orgId: string,
+  category: string,
+): Promise<number> {
+  const now = new Date();
+  const [row] = await exec
     .insert(billingSeatSyncs)
-    .values({ orgId, attempts: 1, lastAttemptAt: now, lastError: category.slice(0, 64) })
+    .values({
+      orgId,
+      attempts: 1,
+      lastAttemptAt: now,
+      lastError: category.slice(0, 64),
+      notBefore: new Date(now.getTime() + 2 * 60_000),
+    })
     .onConflictDoUpdate({
       target: billingSeatSyncs.orgId,
       set: {
         attempts: sql`${billingSeatSyncs.attempts} + 1`,
         lastAttemptAt: now,
         lastError: category.slice(0, 64),
+        claimedUntil: null,
+        notBefore: sql`${now.toISOString()}::timestamptz + least(
+          interval '1 minute' * power(2, ${billingSeatSyncs.attempts} + 1),
+          interval '1 day'
+        )`,
       },
+    })
+    .returning({ attempts: billingSeatSyncs.attempts });
+  return row?.attempts ?? 1;
+}
+
+/**
+ * Puts a debt off until `until` without counting a failure — a push that
+ * would collide with a plan change Dodo has scheduled waits for it to land.
+ * Lets go of the lease.
+ */
+export async function deferSeatSync(
+  exec: Executor,
+  orgId: string,
+  until: Date,
+  reason: string,
+): Promise<void> {
+  await exec
+    .insert(billingSeatSyncs)
+    .values({ orgId, notBefore: until, lastError: reason.slice(0, 64) })
+    .onConflictDoUpdate({
+      target: billingSeatSyncs.orgId,
+      set: { notBefore: until, lastError: reason.slice(0, 64), claimedUntil: null },
     });
+}
+
+/**
+ * Gives up on a debt that has failed {@link SEAT_SYNC_MAX_ATTEMPTS} times.
+ * Answers true only the first time, so the alert that follows is raised once.
+ * The debt stays — the reconciler still reports the organisation — and the next
+ * membership change makes it due again.
+ */
+export async function deadLetterSeatSync(exec: Executor, orgId: string): Promise<boolean> {
+  const marked = await exec
+    .update(billingSeatSyncs)
+    .set({ deadLetteredAt: new Date(), claimedUntil: null })
+    .where(and(eq(billingSeatSyncs.orgId, orgId), isNull(billingSeatSyncs.deadLetteredAt)))
+    .returning({ orgId: billingSeatSyncs.orgId });
+  return marked.length > 0;
+}
+
+/**
+ * The debts due now, oldest first: not waiting out a backoff or a scheduled
+ * change, not held by a push in flight, not given up on. A stuck debt waits
+ * outside this list, so it cannot crowd out a newer one.
+ */
+export async function listDueSeatSyncs(
+  exec: Executor,
+  now: Date,
+  limit: number,
+): Promise<SeatSyncRecord[]> {
+  return exec
+    .select()
+    .from(billingSeatSyncs)
+    .where(
+      and(
+        isNull(billingSeatSyncs.deadLetteredAt),
+        or(isNull(billingSeatSyncs.notBefore), lte(billingSeatSyncs.notBefore, now)),
+        or(isNull(billingSeatSyncs.claimedUntil), lte(billingSeatSyncs.claimedUntil, now)),
+      ),
+    )
+    .orderBy(asc(billingSeatSyncs.queuedAt))
+    .limit(limit);
+}
+
+/** Every debt, oldest first — dead-lettered ones included. */
+export async function listSeatSyncs(exec: Executor, limit: number): Promise<SeatSyncRecord[]> {
+  return exec.select().from(billingSeatSyncs).orderBy(asc(billingSeatSyncs.queuedAt)).limit(limit);
 }
 
 /* ── usage ─────────────────────────────────────────────────────────────────── */
@@ -358,24 +723,60 @@ end)`;
  * memory (`apps/web/src/server/billing/usage.ts`) and hands batches here from
  * `waitUntil`, after the response has gone. Additive inside the statement, so
  * two isolates flushing at once both land.
+ *
+ * ── Each count lands in the period it was **counted** in ──
+ * `countedAt` is the second the fetches were made, not the moment of the
+ * flush, and the period is decided against it: the paid period that covered
+ * that second; the period before the current one, when a renewal moved the
+ * row on between the fetch and its flush (the latest counter row that began by
+ * then); or the calendar month, in UTC, when no paid period covered it. So a
+ * fetch made on Free in the last seconds before an upgrade is never counted
+ * into the paid period that follows, nor a fetch at the end of one period into
+ * the next. Rows that land in the same period are summed first — one
+ * statement cannot update a row twice.
  */
 export async function addFetchCounts(
   exec: Executor,
-  counts: readonly { orgId: string; fetches: number }[],
+  counts: readonly { orgId: string; fetches: number; countedAt?: Date | undefined }[],
 ): Promise<void> {
   const rows = counts.filter((entry) => Number.isSafeInteger(entry.fetches) && entry.fetches > 0);
   if (rows.length === 0) return;
 
+  const fallback = new Date().toISOString();
   const values = sql.join(
-    rows.map((entry) => sql`(${entry.orgId}::uuid, ${entry.fetches}::bigint)`),
+    rows.map((entry) => {
+      const at =
+        entry.countedAt !== undefined && !Number.isNaN(entry.countedAt.getTime())
+          ? entry.countedAt.toISOString()
+          : fallback;
+      return sql`(${entry.orgId}::uuid, ${at}::timestamptz, ${entry.fetches}::bigint)`;
+    }),
     sql`, `,
   );
 
+  const start = orgSubscriptions.currentPeriodStart;
+  const end = orgSubscriptions.currentPeriodEnd;
   await exec.execute(sql`
     insert into ${orgUsageCounters} (org_id, period_start, secret_fetches)
-    select counted.org_id, ${USAGE_PERIOD_START}, counted.fetches
-      from (values ${values}) as counted(org_id, fetches)
-      join ${orgSubscriptions} on ${orgSubscriptions.orgId} = counted.org_id
+    select placed.org_id, placed.period_start, sum(placed.fetches)::bigint
+      from (
+        select counted.org_id,
+               (case
+                  when ${start} is not null and ${start} <= counted.at and ${end} > counted.at
+                    then ${start}
+                  when ${start} is not null and ${start} > counted.at
+                    then coalesce(
+                      (select max(earlier.period_start) from ${orgUsageCounters} as earlier
+                        where earlier.org_id = counted.org_id
+                          and earlier.period_start <= counted.at),
+                      date_trunc('month', counted.at at time zone 'UTC') at time zone 'UTC')
+                  else date_trunc('month', counted.at at time zone 'UTC') at time zone 'UTC'
+                end) as period_start,
+               counted.fetches
+          from (values ${values}) as counted(org_id, at, fetches)
+          join ${orgSubscriptions} on ${orgSubscriptions.orgId} = counted.org_id
+      ) as placed
+     group by placed.org_id, placed.period_start
     on conflict (org_id, period_start) do update
       set secret_fetches = ${orgUsageCounters.secretFetches} + excluded.secret_fetches,
           updated_at = now()
@@ -424,18 +825,47 @@ export interface MeterableUsage {
 }
 
 /**
- * Usage rows written recently, on subscriptions the provider bills — the flush's
- * work list. What is *owed* is decided by the caller from the resolved plan
- * (overrides included); this only finds the candidates.
+ * The fewest fetches each stored plan includes, as SQL — the plan's own
+ * allowance, which a support override can only raise. A floor, so a row below
+ * it can owe nothing whatever its overrides say.
+ */
+function includedFetchesFloor() {
+  const cases = planIdEnum.enumValues.map(
+    (plan) =>
+      sql`when ${plan} then ${PLANS[resolvePlanId(plan)].limits.includedFetchesPerMonth}::bigint`,
+  );
+  return sql`(case ${orgSubscriptions.plan}::text ${sql.join(cases, sql` `)} else 0::bigint end)`;
+}
+
+/**
+ * Usage rows that may owe the provider something — the overage report's work
+ * list, one page of it, in primary-key order so a run can page past any number.
+ * What is *owed* is decided by the caller from the resolved plan (overrides
+ * included); this narrows to the rows where the answer can be more than zero:
  *
- * Trials are left out: a trial is free, and an overage charge during one would
- * be the first payment the customer ever made to us, for something the trial
- * was supposed to let them try.
+ *  - **On a subscription the provider bills**, in this deployment's Dodo mode.
+ *  - **In a period the subscription paid for** (`metered_from`): a period that
+ *    began before the subscription's activation, or before its trial ended, is
+ *    never metered — fetches made on Free, or during a trial, are not billed by
+ *    the subscription that came after them. Rows of a subscription still on
+ *    trial are left out for the same reason.
+ *  - **Past another whole unit**: at least the plan's own allowance plus one
+ *    unit beyond what was already reported. A row that cannot owe is never
+ *    listed, so it can never crowd out one that does.
  */
 export async function listMeterableUsage(
   exec: Executor,
-  options: { since: Date; limit: number },
+  options: {
+    since: Date;
+    limit: number;
+    /** The deployment's Dodo mode; rows recorded under the other one are left out. */
+    mode: 'test_mode' | 'live_mode';
+    /** The last row of the previous page. */
+    after?: { orgId: string; periodStart: Date } | undefined;
+  },
 ): Promise<MeterableUsage[]> {
+  const unit = FETCHES_PER_METERED_UNIT;
+  const after = options.after;
   const rows = await exec
     .select({ usage: orgUsageCounters, subscription: orgSubscriptions })
     .from(orgUsageCounters)
@@ -447,10 +877,17 @@ export async function listMeterableUsage(
         ne(orgSubscriptions.status, 'trialing'),
         isNotNull(orgSubscriptions.dodoCustomerId),
         isNotNull(orgSubscriptions.dodoSubscriptionId),
-        gt(orgUsageCounters.secretFetches, 0),
+        or(isNull(orgSubscriptions.dodoMode), eq(orgSubscriptions.dodoMode, options.mode)),
+        isNotNull(orgSubscriptions.meteredFrom),
+        sql`${orgUsageCounters.periodStart} >= ${orgSubscriptions.meteredFrom}`,
+        sql`(${orgSubscriptions.trialEndsAt} is null or ${orgUsageCounters.periodStart} >= ${orgSubscriptions.trialEndsAt})`,
+        sql`${orgUsageCounters.secretFetches} >= ${includedFetchesFloor()} + (${orgUsageCounters.meteredUnitsSent} + 1) * ${unit}::bigint`,
+        after === undefined
+          ? undefined
+          : sql`(${orgUsageCounters.orgId}, ${orgUsageCounters.periodStart}) > (${after.orgId}::uuid, ${after.periodStart.toISOString()}::timestamptz)`,
       ),
     )
-    .orderBy(asc(orgUsageCounters.updatedAt))
+    .orderBy(asc(orgUsageCounters.orgId), asc(orgUsageCounters.periodStart))
     .limit(options.limit);
 
   return rows.map((row) => ({
@@ -538,6 +975,103 @@ export async function reminderSentSince(
 /** Housekeeping: forgets reminders sent before `before`. */
 export async function pruneReminders(exec: Executor, before: Date): Promise<void> {
   await exec.delete(billingReminders).where(lt(billingReminders.sentAt, before));
+}
+
+/* ── idempotent owner requests ─────────────────────────────────────────────── */
+
+export type BillingRequestClaim =
+  /** First use of the key: go ahead, then `completeBillingRequest`. */
+  | { state: 'claimed' }
+  /** The key was used for this same request, which finished: its answer. */
+  | { state: 'replay'; result: Record<string, unknown> }
+  /** The key was used for this same request, which has not finished yet. */
+  | { state: 'in-flight' }
+  /** The key was used for a different request. */
+  | { state: 'mismatch' };
+
+/**
+ * Claims an idempotency key for an owner's checkout or plan change. The
+ * primary key is the deduplication: two requests with one key cannot both
+ * claim it, and the second is told what became of the first.
+ */
+export async function claimBillingRequest(
+  exec: Executor,
+  request: { orgId: string; kind: BillingRequestKind; key: string; fingerprint: string },
+): Promise<BillingRequestClaim> {
+  const inserted = await exec
+    .insert(billingRequests)
+    .values({
+      orgId: request.orgId,
+      kind: request.kind,
+      idempotencyKey: request.key,
+      fingerprint: request.fingerprint,
+    })
+    .onConflictDoNothing()
+    .returning({ key: billingRequests.idempotencyKey });
+  if (inserted.length > 0) return { state: 'claimed' };
+
+  const [existing] = await exec
+    .select({ fingerprint: billingRequests.fingerprint, result: billingRequests.result })
+    .from(billingRequests)
+    .where(
+      and(
+        eq(billingRequests.orgId, request.orgId),
+        eq(billingRequests.kind, request.kind),
+        eq(billingRequests.idempotencyKey, request.key),
+      ),
+    )
+    .limit(1);
+  // Gone between the two statements (a failure released it): treat as in flight
+  // rather than claim it twice in one call; the caller's retry claims it.
+  if (!existing) return { state: 'in-flight' };
+  if (existing.fingerprint !== request.fingerprint) return { state: 'mismatch' };
+  return existing.result === null
+    ? { state: 'in-flight' }
+    : { state: 'replay', result: existing.result };
+}
+
+/** Stores the answer a claimed request produced, for any replay of its key. */
+export async function completeBillingRequest(
+  exec: Executor,
+  request: {
+    orgId: string;
+    kind: BillingRequestKind;
+    key: string;
+    result: Record<string, unknown>;
+  },
+): Promise<void> {
+  await exec
+    .update(billingRequests)
+    .set({ result: request.result })
+    .where(
+      and(
+        eq(billingRequests.orgId, request.orgId),
+        eq(billingRequests.kind, request.kind),
+        eq(billingRequests.idempotencyKey, request.key),
+      ),
+    );
+}
+
+/** Lets go of a claim whose request failed, so the same key can try again. */
+export async function releaseBillingRequest(
+  exec: Executor,
+  request: { orgId: string; kind: BillingRequestKind; key: string },
+): Promise<void> {
+  await exec
+    .delete(billingRequests)
+    .where(
+      and(
+        eq(billingRequests.orgId, request.orgId),
+        eq(billingRequests.kind, request.kind),
+        eq(billingRequests.idempotencyKey, request.key),
+        isNull(billingRequests.result),
+      ),
+    );
+}
+
+/** Housekeeping: forgets idempotency keys used before `before`. */
+export async function pruneBillingRequests(exec: Executor, before: Date): Promise<void> {
+  await exec.delete(billingRequests).where(lt(billingRequests.createdAt, before));
 }
 
 /* ── licence keys ──────────────────────────────────────────────────────────── */

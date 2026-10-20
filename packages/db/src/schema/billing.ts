@@ -10,6 +10,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 import type { PlanId, StoredPlanId } from '@xecret/core/entitlements';
@@ -132,6 +133,40 @@ export const orgSubscriptions = pgTable(
     renewalAmountMinor: bigint('renewal_amount_minor', { mode: 'number' }),
 
     /**
+     * The first moment this subscription's usage may be billed (migration
+     * 0025): its activation, or its trial's end when it had one. The overage
+     * report meters only counter rows whose period starts at or after it, so
+     * fetches made on Free or during a trial are never billed by the
+     * subscription that followed them. `null` meters nothing.
+     */
+    meteredFrom: timestamp('metered_from', { withTimezone: true }),
+    /**
+     * Which Dodo the row's provider ids belong to (migration 0025). An event
+     * from the other mode is never applied to it, and no job calls Dodo for
+     * it from a deployment of the other mode. `null`: no mode recorded yet.
+     */
+    dodoMode: text('dodo_mode').$type<'test_mode' | 'live_mode'>(),
+    /**
+     * The webhook id of the last snapshot applied (migration 0025) — the
+     * tie-break when two snapshots carry the same provider timestamp.
+     */
+    dodoEventId: text('dodo_event_id'),
+    /** When the subscription last went on hold (migration 0025); `null` when it is not. */
+    onHoldSince: timestamp('on_hold_since', { withTimezone: true }),
+    /**
+     * When a plan change Dodo has scheduled takes effect (migration 0025) — a
+     * downgrade waiting for the period end. A seat push waits for it too.
+     */
+    dodoScheduledChangeAt: timestamp('dodo_scheduled_change_at', { withTimezone: true }),
+    /**
+     * The currency and billing country Dodo last reported (migration 0025),
+     * whatever the region lock kept in `currency` and `billing_country`.
+     * `renewal_amount_minor` is in this currency.
+     */
+    dodoCurrency: text('dodo_currency'),
+    dodoBillingCountry: text('dodo_billing_country'),
+
+    /**
      * Separately purchased, never bundled into a plan.
      *
      * Each of these costs a real $125/month WorkOS connection. They are
@@ -175,6 +210,22 @@ export const orgSubscriptions = pgTable(
     check(
       'org_subscriptions_renewal_amount_check',
       sql`${t.renewalAmountMinor} is null or ${t.renewalAmountMinor} >= 0`,
+    ),
+    check(
+      'org_subscriptions_dodo_mode_check',
+      sql`${t.dodoMode} is null or ${t.dodoMode} in ('test_mode', 'live_mode')`,
+    ),
+    check(
+      'org_subscriptions_dodo_event_id_check',
+      sql`${t.dodoEventId} is null or length(${t.dodoEventId}) between 1 and 255`,
+    ),
+    check(
+      'org_subscriptions_dodo_currency_check',
+      sql`${t.dodoCurrency} is null or ${t.dodoCurrency} ~ '^[A-Z]{3}$'`,
+    ),
+    check(
+      'org_subscriptions_dodo_country_check',
+      sql`${t.dodoBillingCountry} is null or ${t.dodoBillingCountry} ~ '^[A-Z]{2}$'`,
     ),
     // The reconciler sweeps every subscription whose period has ended, and the
     // dunning job sweeps by status. Both read this index rather than the table.
@@ -281,7 +332,12 @@ export const billingWebhookEvents = pgTable(
  * The way back from a payment to the organisation that started it: payment
  * events carry the checkout session id, and this row — written by our own
  * server call that minted the session — says whose it was. Insert-only by
- * grant.
+ * grant, but for the two columns a consumption sets (migration 0025).
+ *
+ * `nonce` is the binding (migration 0025): random, minted per checkout, sent to
+ * Dodo as metadata. A subscription is attached to an organisation by metadata
+ * only when it carries the nonce of an open checkout of that organisation, so a
+ * purchase made anywhere but our own checkout attaches to nothing.
  */
 export const billingCheckouts = pgTable(
   'billing_checkouts',
@@ -295,21 +351,41 @@ export const billingCheckouts = pgTable(
     quantity: integer('quantity').notNull(),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    nonce: text('nonce'),
+    /** The subscription this checkout produced, once one did (migration 0025). */
+    subscriptionId: text('subscription_id'),
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
   },
   (t) => [
     check('billing_checkouts_quantity_check', sql`${t.quantity} >= 1`),
     check('billing_checkouts_plan_check', sql`${t.plan} <> 'free'`),
     check('billing_checkouts_session_id_check', sql`length(${t.sessionId}) between 1 and 255`),
+    check(
+      'billing_checkouts_nonce_check',
+      sql`${t.nonce} is null or length(${t.nonce}) between 16 and 128`,
+    ),
+    check(
+      'billing_checkouts_subscription_id_check',
+      sql`${t.subscriptionId} is null or length(${t.subscriptionId}) between 1 and 255`,
+    ),
     index('billing_checkouts_org_idx').on(t.orgId, t.createdAt),
+    uniqueIndex('billing_checkouts_nonce_unique')
+      .on(t.nonce)
+      .where(sql`${t.nonce} is not null`),
   ],
 );
 
 /**
  * Seat changes still owed to the payment provider (migration 0024).
  *
- * Written before the push, so a push that fails or dies with the isolate
- * leaves a debt the hourly job collects. Holds no count on purpose: the job
- * pushes the count as it is *then*.
+ * Written inside the membership change's own transaction, so a push that
+ * fails, dies with the isolate, or never starts leaves a debt the hourly job
+ * collects. Holds no count on purpose: a push sends the count as it is *then*.
+ *
+ * Migration 0025 adds the serialisation: `generation` is bumped by every
+ * membership change and a push clears the debt only under the generation it
+ * counted, `claimed_until` is the one push in flight, `not_before` is when the
+ * debt is next due, and `dead_lettered_at` is a debt given up on and raised.
  */
 export const billingSeatSyncs = pgTable(
   'billing_seat_syncs',
@@ -322,6 +398,10 @@ export const billingSeatSyncs = pgTable(
     lastAttemptAt: timestamp('last_attempt_at', { withTimezone: true }),
     /** A category, e.g. `upstream_5xx`, never a provider message. */
     lastError: text('last_error'),
+    generation: bigint('generation', { mode: 'number' }).notNull().default(1),
+    claimedUntil: timestamp('claimed_until', { withTimezone: true }),
+    notBefore: timestamp('not_before', { withTimezone: true }),
+    deadLetteredAt: timestamp('dead_lettered_at', { withTimezone: true }),
   },
   (t) => [
     check('billing_seat_syncs_attempts_check', sql`${t.attempts} >= 0`),
@@ -329,10 +409,14 @@ export const billingSeatSyncs = pgTable(
       'billing_seat_syncs_last_error_check',
       sql`${t.lastError} is null or length(${t.lastError}) <= 64`,
     ),
+    check('billing_seat_syncs_generation_check', sql`${t.generation} >= 1`),
   ],
 );
 
-/** The billing emails, by kind. The database refuses any other (migration 0024). */
+/**
+ * The billing emails, by kind. The database refuses any other (migration
+ * 0024; `plan_ended_unpaid` from 0025).
+ */
 export const BILLING_REMINDER_KINDS = [
   'trial_ending_3d',
   'trial_ending_1d',
@@ -343,6 +427,7 @@ export const BILLING_REMINDER_KINDS = [
   'usage_80',
   'usage_100',
   'invoice_available',
+  'plan_ended_unpaid',
 ] as const;
 
 export type BillingReminderKind = (typeof BILLING_REMINDER_KINDS)[number];
@@ -370,6 +455,38 @@ export const billingReminders = pgTable(
     ),
     check('billing_reminders_occasion_check', sql`length(${t.occasion}) between 1 and 128`),
     index('billing_reminders_sent_idx').on(t.sentAt),
+  ],
+);
+
+/** What an idempotency key in `billing_requests` was used for. */
+export const BILLING_REQUEST_KINDS = ['checkout', 'change'] as const;
+export type BillingRequestKind = (typeof BILLING_REQUEST_KINDS)[number];
+
+/**
+ * An owner's checkout or plan change, by the idempotency key the billing
+ * screen sent (migration 0025). The primary key is the deduplication: a second
+ * request with the key gets the first one's `result` instead of a second
+ * checkout or a second change at Dodo. `fingerprint` is what was asked for, so
+ * a key reused for a different request is refused. Pruned after a day.
+ */
+export const billingRequests = pgTable(
+  'billing_requests',
+  {
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull().$type<BillingRequestKind>(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    fingerprint: text('fingerprint').notNull(),
+    result: jsonb('result').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ name: 'billing_requests_pkey', columns: [t.orgId, t.kind, t.idempotencyKey] }),
+    check('billing_requests_kind_check', sql`${t.kind} in ('checkout', 'change')`),
+    check('billing_requests_key_check', sql`${t.idempotencyKey} ~ '^[A-Za-z0-9_-]{16,128}$'`),
+    check('billing_requests_fingerprint_check', sql`length(${t.fingerprint}) between 1 and 64`),
+    index('billing_requests_created_idx').on(t.createdAt),
   ],
 );
 

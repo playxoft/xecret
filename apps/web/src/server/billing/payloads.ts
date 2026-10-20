@@ -63,6 +63,13 @@ export const dodoSubscriptionSchema = z.object({
   expires_at: optionalNullable(isoDate),
   cancelled_at: optionalNullable(isoDate),
   payment_method_id: optionalNullable(id),
+  /**
+   * A plan change waiting for its date — a downgrade scheduled for the period
+   * end (`effective_at: next_billing_date`). Null when none is. Dodo refuses
+   * any other change-plan while one is, so a seat push waits for it.
+   * https://docs.dodopayments.com/api-reference/subscriptions/get-subscriptions
+   */
+  scheduled_change: optionalNullable(z.object({ effective_at: isoDate })),
 });
 export type DodoSubscription = z.infer<typeof dodoSubscriptionSchema>;
 

@@ -169,13 +169,39 @@ async function seedOrg(members = 3): Promise<{ orgId: string; ownerId: string }>
       [randomUUID(), orgId, await seedUser()],
     );
   }
+  // The checkout an owner started, whose nonce a subscription's metadata carries.
+  await openCheckout(orgId, ownerId);
   return { orgId, ownerId };
+}
+
+/** The latest open checkout's nonce, per organisation — what our checkout put in the metadata. */
+const nonces = new Map<string, string>();
+
+async function openCheckout(
+  orgId: string,
+  ownerId: string | null = null,
+  sessionId = `cks_${uniq()}`,
+): Promise<{ nonce: string; sessionId: string }> {
+  const nonce = `nonce${uniq()}${uniq()}`;
+  await recordCheckout(t.db, {
+    sessionId,
+    orgId,
+    plan: 'team',
+    billingInterval: 'monthly',
+    quantity: 3,
+    createdBy: ownerId,
+    nonce,
+  });
+  nonces.set(orgId, nonce);
+  return { nonce, sessionId };
 }
 
 interface SubscriptionFixture {
   subscriptionId: string;
   customerId: string;
   orgId: string | null;
+  /** The checkout nonce in the metadata: the org's open checkout's by default; `null` for none. */
+  nonce?: string | null;
   status?: string;
   product?: string;
   quantity?: number;
@@ -205,7 +231,15 @@ function subscriptionData(fixture: SubscriptionFixture) {
       name: 'Owner Person',
     },
     billing: { country: fixture.country ?? 'US', city: 'Springfield', street: '742 Evergreen' },
-    metadata: fixture.orgId === null ? {} : { xecret_org_id: fixture.orgId },
+    metadata:
+      fixture.orgId === null
+        ? {}
+        : {
+            xecret_org_id: fixture.orgId,
+            ...(fixture.nonce === null
+              ? {}
+              : { xecret_checkout: fixture.nonce ?? nonces.get(fixture.orgId) ?? 'none' }),
+          },
     next_billing_date: (fixture.periodEnd ?? new Date(now + 30 * DAY)).toISOString(),
     previous_billing_date: (fixture.periodStart ?? new Date(now - DAY)).toISOString(),
     cancel_at_next_billing_date: fixture.cancelAtNext ?? false,
@@ -538,7 +572,7 @@ describe('a delivery applies at most once', () => {
     expect(lines.filter((line) => /refunded a payment/.test(line.message))).toHaveLength(1);
   });
 
-  it('a duplicate of a seat change sends one email, not three', async () => {
+  it('a duplicate of a seat change sends no email at all — the seat sync that pushed it tells the owners', async () => {
     const { orgId, subscriptionId, customerId } = await activeTeam({ quantity: 3 });
     mail.sent = [];
     const delivery = {
@@ -549,9 +583,8 @@ describe('a delivery applies at most once', () => {
     await deliver(delivery);
     await deliver(delivery);
     await deliver(delivery);
-    expect(mail.sent.filter((message) => /billed for 4 seats/.test(message.subject))).toHaveLength(
-      1,
-    );
+    expect(mail.sent.filter((message) => /billed for/.test(message.subject))).toEqual([]);
+    expect((await rowOf(orgId)).seats).toBe(4);
   });
 });
 
@@ -677,7 +710,7 @@ describe('the subscription lifecycle', () => {
     // Team bills from three: two members are billed as three, credited the difference.
     expect(dodo.changePlan).toHaveBeenCalledWith(
       expect.stringMatching(/^sub_/),
-      expect.objectContaining({ quantity: 3, proration: 'difference_immediately' }),
+      expect.objectContaining({ quantity: 3, proration: 'prorated_immediately_keep_cycle' }),
     );
     expect((await rowOf(orgId)).seats).toBe(3);
   });
@@ -753,7 +786,7 @@ describe('the subscription lifecycle', () => {
     expect(ended!.metadata).toMatchObject({ previousPlan: 'team', reason: 'subscription ended' });
   });
 
-  it('a plan change moves plan and seats, and tells the owners the new charge', async () => {
+  it('a plan change moves plan and seats', async () => {
     const { orgId, subscriptionId, customerId } = await activeTeam({ quantity: 3 });
     mail.sent = [];
     await deliver({
@@ -768,7 +801,6 @@ describe('the subscription lifecycle', () => {
     });
     const row = await rowOf(orgId);
     expect(row).toMatchObject({ plan: 'team', billingInterval: 'yearly', seats: 5 });
-    expect(mail.sent.map((message) => message.subject)).toContain('Acme is now billed for 5 seats');
   });
 
   it('turns the SAML add-on on when the subscription carries it, and never off', async () => {
@@ -808,6 +840,8 @@ describe('what is never applied', () => {
   it('a second live subscription is not applied, and a human is told', async () => {
     const { orgId } = await activeTeam({ quantity: 3 });
     const before = await rowOf(orgId);
+    // A second checkout, opened in another tab before the first was paid.
+    await openCheckout(orgId);
     const answer = await deliver({
       type: 'subscription.active',
       data: subscriptionData({
@@ -883,6 +917,158 @@ describe('what is never applied', () => {
   });
 });
 
+describe('a subscription attaches only through a checkout this server created', () => {
+  it('a signed subscription naming a real organisation, with no nonce, attaches to nothing', async () => {
+    const { orgId } = await seedOrg();
+    const id = `msg_${uniq()}`;
+    const answer = await deliver({
+      id,
+      type: 'subscription.active',
+      data: subscriptionData({
+        subscriptionId: `sub_${uniq()}`,
+        customerId: `cus_${uniq()}`,
+        orgId,
+        nonce: null,
+      }),
+    });
+    // Claimed — Dodo has nothing to retry — and attached to nothing.
+    expect(answer.status).toBe(200);
+    expect(await claims(id)).toBe(1);
+    expect(await rowOf(orgId)).toMatchObject({ plan: 'free', dodoSubscriptionId: null });
+    expect(
+      lines.some((line) => line.level === 'error' && /attached to nothing/.test(line.message)),
+    ).toBe(true);
+  });
+
+  it('nor with a nonce nobody minted, or another organisation’s', async () => {
+    const { orgId } = await seedOrg();
+    const other = await seedOrg();
+    for (const nonce of [`nonce${uniq()}${uniq()}`, nonces.get(other.orgId)!]) {
+      const answer = await deliver({
+        type: 'subscription.active',
+        data: subscriptionData({
+          subscriptionId: `sub_${uniq()}`,
+          customerId: `cus_${uniq()}`,
+          orgId,
+          nonce,
+        }),
+      });
+      expect(answer.status).toBe(200);
+      expect((await rowOf(orgId)).plan).toBe('free');
+    }
+    expect((await rowOf(other.orgId)).plan).toBe('free');
+  });
+
+  it('a payment naming a real organisation with no nonce links nothing', async () => {
+    const { orgId } = await seedOrg();
+    await deliver({
+      type: 'payment.succeeded',
+      data: {
+        payment_id: `pay_${uniq()}`,
+        subscription_id: `sub_${uniq()}`,
+        customer: { customer_id: `cus_${uniq()}` },
+        billing: { country: 'US' },
+        currency: 'USD',
+        metadata: { xecret_org_id: orgId },
+      },
+    });
+    expect(await rowOf(orgId)).toMatchObject({ plan: 'free', dodoSubscriptionId: null });
+  });
+
+  it('spends the checkout: a second subscription carrying the same nonce attaches to nothing', async () => {
+    const { orgId, subscriptionId } = await activeTeam();
+    await deliver({
+      type: 'subscription.expired',
+      data: subscriptionData({
+        subscriptionId,
+        customerId: `cus_${uniq()}`,
+        orgId,
+        status: 'expired',
+      }),
+    });
+    expect((await rowOf(orgId)).plan).toBe('free');
+
+    // A new subscription replaying the first checkout's nonce.
+    await deliver({
+      type: 'subscription.active',
+      data: subscriptionData({
+        subscriptionId: `sub_${uniq()}`,
+        customerId: `cus_${uniq()}`,
+        orgId,
+      }),
+    });
+    expect((await rowOf(orgId)).plan).toBe('free');
+  });
+});
+
+describe('an operator’s grant, against a checkout payment', () => {
+  it('links nothing, raises it, and the subscription that follows is still not applied', async () => {
+    // The owner started a checkout; support then set the plan by hand; the
+    // checkout's payment lands afterwards.
+    const { orgId, ownerId } = await seedOrg();
+    const { sessionId } = await openCheckout(orgId, ownerId);
+    await t.pg.query(
+      `update org_subscriptions set plan = 'enterprise', billing_interval = 'yearly', seats = 25 where org_id = $1`,
+      [orgId],
+    );
+    const subscriptionId = `sub_${uniq()}`;
+    const customerId = `cus_${uniq()}`;
+
+    const payment = await deliver({
+      type: 'payment.succeeded',
+      data: {
+        payment_id: `pay_${uniq()}`,
+        subscription_id: subscriptionId,
+        checkout_session_id: sessionId,
+        customer: { customer_id: customerId },
+        billing: { country: 'US' },
+        currency: 'USD',
+      },
+    });
+    expect(payment.status).toBe(200);
+    expect(await rowOf(orgId)).toMatchObject({
+      plan: 'enterprise',
+      seats: 25,
+      dodoSubscriptionId: null,
+      dodoCustomerId: null,
+    });
+    expect(
+      lines.some((line) => line.level === 'error' && /operator set by hand/.test(line.message)),
+    ).toBe(true);
+
+    await deliver({
+      type: 'subscription.active',
+      data: subscriptionData({ subscriptionId, customerId, orgId }),
+    });
+    expect(await rowOf(orgId)).toMatchObject({
+      plan: 'enterprise',
+      seats: 25,
+      dodoSubscriptionId: null,
+    });
+  });
+});
+
+describe('the Dodo mode', () => {
+  it('records the mode a subscription was made in', async () => {
+    const { orgId } = await activeTeam();
+    expect((await rowOf(orgId)).dodoMode).toBe('test_mode');
+  });
+
+  it('refuses a live-mode event for a row recorded in test mode, and says so', async () => {
+    const { orgId, subscriptionId, customerId } = await activeTeam();
+    env = { ...env, DODO_ENVIRONMENT: 'live_mode' };
+    const answer = await deliver({
+      type: 'subscription.on_hold',
+      data: subscriptionData({ subscriptionId, customerId, orgId, status: 'on_hold' }),
+    });
+    expect(answer.status).toBe(200);
+    expect((await rowOf(orgId)).status).toBe('active');
+    expect(
+      lines.some((line) => line.level === 'error' && /other Dodo mode/.test(line.message)),
+    ).toBe(true);
+  });
+});
+
 /* ── placement of a first checkout ────────────────────────────────────────── */
 
 describe('a first checkout', () => {
@@ -890,15 +1076,7 @@ describe('a first checkout', () => {
     const { orgId, ownerId } = await seedOrg();
     const subscriptionId = `sub_${uniq()}`;
     const customerId = `cus_${uniq()}`;
-    const sessionId = `cks_${uniq()}`;
-    await recordCheckout(t.db, {
-      sessionId,
-      orgId,
-      plan: 'team',
-      billingInterval: 'monthly',
-      quantity: 3,
-      createdBy: ownerId,
-    });
+    const { sessionId } = await openCheckout(orgId, ownerId);
 
     const active = {
       id: `msg_${uniq()}`,

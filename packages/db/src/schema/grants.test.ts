@@ -128,6 +128,16 @@ describe('the application role', () => {
     );
   });
 
+  it('may update exactly the consumption columns of a checkout (migration 0025)', async () => {
+    const result = await t.pg.query<{ column_name: string }>(
+      `select column_name from information_schema.column_privileges
+        where grantee = $1 and table_name = 'billing_checkouts' and privilege_type = 'UPDATE'
+        order by column_name`,
+      [ROLE],
+    );
+    expect(result.rows.map((row) => row.column_name)).toEqual(['consumed_at', 'subscription_id']);
+  });
+
   it('may update exactly the bookkeeping columns of a retained vault', async () => {
     const result = await t.pg.query<{ column_name: string }>(
       `select column_name from information_schema.column_privileges

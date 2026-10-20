@@ -12,7 +12,13 @@
 export const OVERAGE_RATE_TEXT =
   '$0.01 per 1,000 secret fetches past the allowance ($1 per 100,000)';
 
-/** Decimal places a currency's smallest unit has — 0 for yen, 2 for most. */
+/**
+ * Decimal places a currency's smallest unit has — 0 for yen, 3 for the dinars,
+ * 2 for most. Dodo reports every amount in the smallest unit there is: "cents
+ * for USD", and for a zero-decimal currency such as JPY "already in major
+ * units" (https://docs.dodopayments.com/integrations/datafast) — which is what
+ * ISO 4217's digits, as `Intl` knows them, say too.
+ */
 function fractionDigits(currency: string): number {
   try {
     return (

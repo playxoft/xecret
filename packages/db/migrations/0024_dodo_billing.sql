@@ -2,7 +2,7 @@
 -- the billing jobs keep beside them.
 --
 -- ── Read this before running it ──
--- Additive only. Four columns on `org_subscriptions`, all nullable, and five new
+-- Additive only. Four columns on `org_subscriptions`, all nullable, and four new
 -- tables. Nothing existing changes shape and no row is rewritten, so applying
 -- this ahead of the build that uses it is harmless: the previous release never
 -- reads or writes any of it.

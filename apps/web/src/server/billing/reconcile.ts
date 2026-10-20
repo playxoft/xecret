@@ -1,9 +1,10 @@
 import type { BillingDriftField } from '@xecret/core/audit';
-import { resolvePlanId } from '@xecret/core/entitlements';
+import { providerSeats, resolvePlanId } from '@xecret/core/entitlements';
 import {
   appendAuditEvents,
   listProviderSubscriptions,
   listSeatSyncs,
+  seatedMemberCount,
 } from '@xecret/db/repositories';
 import type { SubscriptionRecord } from '@xecret/db/repositories';
 import type { ServiceContext } from '../context';
@@ -25,9 +26,19 @@ import type { DodoSubscription } from './payloads';
  * thing worth finding (01-billing §P12). The webhook is how state changes;
  * this is how we find out it did not.
  *
+ * **Seats are compared with the membership, not only with our row.** What Dodo
+ * should bill is `providerSeats(plan, seated members)` — the count the seat
+ * sync pushes — so a membership change whose push never reached Dodo, and
+ * whose debt was lost or given up on, is drift even when our `seats` column
+ * agrees with Dodo's quantity. Our row disagreeing with Dodo is drift too.
+ *
  * Two differences are expected and not reported: seats with a seat-sync debt
- * still queued (the hourly job is already pushing them), and a period end
- * within a day of Dodo's (renewals land minutes apart from the date they name).
+ * still being retried (the hourly job is already pushing them — a debt given
+ * up on is reported), and a period end within a day of Dodo's (renewals land
+ * minutes apart from the date they name).
+ *
+ * Rows recorded under the other Dodo mode are not compared: this deployment's
+ * key cannot see them, and they would all read as missing.
  */
 
 /** How far apart the two period ends may be before it is drift. */
@@ -47,6 +58,8 @@ export function driftBetween(
   dodo: DodoSubscription,
   config: BillingConfig,
   seatSyncPending: boolean,
+  /** Members holding a seat now — what the bill should follow. */
+  seatedMembers: number,
 ): BillingDriftField[] {
   const drift: BillingDriftField[] = [];
   const entry = catalogEntryFor(config, dodo.product_id);
@@ -70,7 +83,11 @@ export function driftBetween(
   };
   if (!(expected[dodo.status] ?? []).includes(row.status)) drift.push('status');
 
-  if (!seatSyncPending && dodo.quantity !== row.seats) drift.push('seats');
+  // What the membership says Dodo should bill, on the plan Dodo has.
+  const owed = providerSeats(entry?.plan ?? resolvePlanId(row.plan), seatedMembers).billed;
+  if (!seatSyncPending && (dodo.quantity !== owed || dodo.quantity !== row.seats)) {
+    drift.push('seats');
+  }
 
   const dodoEnd = new Date(dodo.next_billing_date).getTime();
   if (
@@ -104,7 +121,13 @@ export async function reconcileSubscriptions(services: ServiceContext): Promise<
   const provider = billingProvider(config);
   const log = services.log.at('reconcileSubscriptions');
 
-  const pending = new Set((await listSeatSyncs(services.db, 10_000)).map((debt) => debt.orgId));
+  // Debts still being retried explain a seat difference; one given up on
+  // explains nothing, and is reported like any other.
+  const pending = new Set(
+    (await listSeatSyncs(services.db, 10_000))
+      .filter((debt) => debt.deadLetteredAt === null)
+      .map((debt) => debt.orgId),
+  );
 
   let after: string | undefined;
   while (report.checked < MAX_PER_RUN) {
@@ -114,12 +137,14 @@ export async function reconcileSubscriptions(services: ServiceContext): Promise<
 
     for (const row of page) {
       if (row.dodoSubscriptionId === null) continue;
+      if (row.dodoMode !== null && row.dodoMode !== config.mode) continue;
       report.checked += 1;
 
       let drift: BillingDriftField[];
       try {
         const dodo = await provider.getSubscription(row.dodoSubscriptionId);
-        drift = driftBetween(row, dodo, config, pending.has(row.orgId));
+        const seated = await seatedMemberCount(services.db, row.orgId);
+        drift = driftBetween(row, dodo, config, pending.has(row.orgId), seated);
       } catch (cause) {
         if (cause instanceof DodoApiError && cause.category === 'not_found') {
           drift = ['missing'];

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { Webhook } from 'standardwebhooks';
 import type { AuditRecord } from '@xecret/core/audit';
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '@xecret/db/testing';
 import type { TestDatabase } from '@xecret/db/testing';
@@ -7,7 +8,7 @@ import { findCheckout, findSubscription } from '@xecret/db/repositories';
 import type { Principal } from '../actor';
 import { createLogger } from '../logging';
 import type { LogEntry, RequestLog } from '../logging';
-import type { BillingProvider } from './client';
+import type { BillingProvider, CheckoutRequest } from './client';
 
 /**
  * The owner-facing billing routes, end to end against a real database, with
@@ -62,7 +63,8 @@ const statusRoute = await import('@/app/api/orgs/[orgSlug]/billing/route');
 const checkoutRoute = await import('@/app/api/orgs/[orgSlug]/billing/checkout/route');
 const changeRoute = await import('@/app/api/orgs/[orgSlug]/billing/change/route');
 const portalRoute = await import('@/app/api/orgs/[orgSlug]/billing/portal/route');
-const { DodoApiError } = await import('./client');
+const webhookRoute = await import('@/app/api/billing/webhook/route');
+const { DodoApiError, DodoClient } = await import('./client');
 
 let t: TestDatabase;
 let lines: LogEntry[] = [];
@@ -191,14 +193,12 @@ async function seedOrg(
     `insert into organizations (id, name, slug, created_by) values ($1, 'Acme', $2, $3)`,
     [orgId, slug, owner.id],
   );
-  // A subscription id is unique across organisations; each fixture gets its own.
-  const row =
-    typeof subscription['dodo_subscription_id'] === 'string'
-      ? {
-          ...subscription,
-          dodo_subscription_id: `${subscription['dodo_subscription_id']}-${orgId.slice(0, 8)}`,
-        }
-      : subscription;
+  // A subscription id is unique across organisations, and a customer is one
+  // organisation's alone: each fixture gets its own of both.
+  const row = { ...subscription };
+  for (const column of ['dodo_subscription_id', 'dodo_customer_id'] as const) {
+    if (typeof row[column] === 'string') row[column] = `${row[column]}-${orgId.slice(0, 8)}`;
+  }
   const columns = ['org_id', ...Object.keys(row)];
   const values = [orgId, ...Object.values(row)];
   await t.pg.query(
@@ -340,9 +340,13 @@ describe('checkout', () => {
       customer: { email: owner.email, name: 'Owner' },
       returnUrl: `${ORIGIN}/app/${slug}/settings/billing?checkout=returned`,
       orgId,
+      // 128 random bits, base64url: what binds the subscription to this checkout.
+      nonce: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
       regionLock: null,
     });
+    const sentNonce = (dodo.createCheckoutSession.mock.calls[0]![0] as { nonce: string }).nonce;
     expect(await findCheckout(t.db, 'cks_example0001')).toMatchObject({
+      nonce: sentNonce,
       orgId,
       plan: 'pro',
       billingInterval: 'yearly',
@@ -384,7 +388,7 @@ describe('checkout', () => {
   });
 
   it('pins a region-locked organisation to its country and currency', async () => {
-    const { slug } = await seedOrg({
+    const { orgId, slug } = await seedOrg({
       region_locked_until: new Date(Date.now() + 100 * 86_400_000),
       billing_country: 'IN',
       currency: 'INR',
@@ -396,7 +400,7 @@ describe('checkout', () => {
     });
     await checkout(slug, { plan: 'team', interval: 'yearly' });
     expect(dodo.createCheckoutSession.mock.calls[0]![0]).toMatchObject({
-      customer: { customerId: 'cus_returning0001' },
+      customer: { customerId: `cus_returning0001-${orgId.slice(0, 8)}` },
       regionLock: { country: 'IN', currency: 'INR' },
     });
   });
@@ -547,7 +551,7 @@ describe('changing plan', () => {
 
 describe('the customer portal', () => {
   it('hands an owner a link, back to the billing screen, and never records the link', async () => {
-    const { slug } = await seedOrg(SUBSCRIBED);
+    const { orgId, slug } = await seedOrg(SUBSCRIBED);
     const link = 'https://customer.dodopayments.com/session/example-not-a-real-key';
     dodo.createPortalSession.mockResolvedValue({ link });
 
@@ -556,7 +560,7 @@ describe('the customer portal', () => {
     expect(answer.status).toBe(200);
     expect(answer.body).toEqual({ link });
     expect(dodo.createPortalSession).toHaveBeenCalledWith(
-      'cus_example0001',
+      `cus_example0001-${orgId.slice(0, 8)}`,
       `${ORIGIN}/app/${slug}/settings/billing`,
     );
     expect(audit.some((record) => record.action === 'billing.portal_opened')).toBe(true);
@@ -568,6 +572,283 @@ describe('the customer portal', () => {
     const { slug } = await seedOrg();
     expect((await call(portalRoute.POST, 'POST', slug, '/portal')).status).toBe(409);
     expect(dodo.createPortalSession).not.toHaveBeenCalled();
+  });
+});
+
+/* ── round 1 ──────────────────────────────────────────────────────────────── */
+
+/** A request with an `Idempotency-Key`, as the billing screen sends one. */
+async function callWithKey(
+  handler: typeof checkoutRoute.POST,
+  slug: string,
+  path: string,
+  body: unknown,
+  key: string,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const response = await handler(
+    new Request(`${ORIGIN}/api/orgs/${slug}/billing${path}`, {
+      method: 'POST',
+      headers: { origin: ORIGIN, 'content-type': 'application/json', 'idempotency-key': key },
+      body: JSON.stringify(body),
+    }),
+    { params: Promise.resolve({ orgSlug: slug }) },
+  );
+  await Promise.allSettled(deferred);
+  const text = await response.text();
+  return { status: response.status, body: text === '' ? {} : JSON.parse(text) };
+}
+
+describe('a request asked twice is one request', () => {
+  it('a checkout repeated with its key returns the same checkout — one session at Dodo, one record', async () => {
+    const { slug } = await seedOrg();
+    dodo.createCheckoutSession.mockResolvedValue({
+      sessionId: `cks_${randomUUID()}`,
+      url: 'https://pay.example/once',
+    });
+    const key = randomUUID();
+    const first = await callWithKey(
+      checkoutRoute.POST,
+      slug,
+      '/checkout',
+      { plan: 'team', interval: 'monthly' },
+      key,
+    );
+    const second = await callWithKey(
+      checkoutRoute.POST,
+      slug,
+      '/checkout',
+      { plan: 'team', interval: 'monthly' },
+      key,
+    );
+    expect(first).toEqual({ status: 200, body: { url: 'https://pay.example/once' } });
+    expect(second).toEqual(first);
+    expect(dodo.createCheckoutSession).toHaveBeenCalledTimes(1);
+    expect(audit.filter((record) => record.action === 'billing.checkout_started')).toHaveLength(1);
+
+    // The same key for a different request is refused, not answered with the wrong one.
+    const other = await callWithKey(
+      checkoutRoute.POST,
+      slug,
+      '/checkout',
+      { plan: 'pro', interval: 'yearly' },
+      key,
+    );
+    expect(other.status).toBe(400);
+  });
+
+  it('a plan change repeated with its key reaches Dodo once', async () => {
+    const { slug } = await seedOrg(SUBSCRIBED);
+    dodo.changePlan.mockResolvedValue(undefined);
+    const key = randomUUID();
+    const body = { plan: 'team', interval: 'yearly' };
+    const first = await callWithKey(changeRoute.POST, slug, '/change', body, key);
+    const second = await callWithKey(changeRoute.POST, slug, '/change', body, key);
+    expect(first.body).toEqual({ requested: true, effective: 'now' });
+    expect(second.body).toEqual(first.body);
+    expect(dodo.changePlan).toHaveBeenCalledTimes(1);
+  });
+
+  it('a request that failed gives its key back, so trying again works', async () => {
+    const { slug } = await seedOrg();
+    const key = randomUUID();
+    dodo.createCheckoutSession.mockRejectedValueOnce(new DodoApiError('upstream_5xx', 503));
+    expect(
+      (
+        await callWithKey(
+          checkoutRoute.POST,
+          slug,
+          '/checkout',
+          { plan: 'team', interval: 'monthly' },
+          key,
+        )
+      ).status,
+    ).toBe(503);
+    dodo.createCheckoutSession.mockResolvedValue({
+      sessionId: `cks_${randomUUID()}`,
+      url: 'https://pay.example/retry',
+    });
+    expect(
+      (
+        await callWithKey(
+          checkoutRoute.POST,
+          slug,
+          '/checkout',
+          { plan: 'team', interval: 'monthly' },
+          key,
+        )
+      ).body,
+    ).toEqual({ url: 'https://pay.example/retry' });
+  });
+
+  it('refuses a new checkout while a paid one is still being applied', async () => {
+    // The payment linked the subscription; its `active` has not arrived yet.
+    const { slug } = await seedOrg({
+      dodo_subscription_id: 'sub_linked0001',
+      dodo_customer_id: 'cus_linked0001',
+    });
+    const answer = await checkout(slug, { plan: 'team', interval: 'monthly' });
+    expect(answer.status).toBe(409);
+    expect(JSON.stringify(answer.body)).toContain('would charge twice');
+    expect(dodo.createCheckoutSession).not.toHaveBeenCalled();
+    expect((await call(statusRoute.GET, 'GET', slug)).body['billing']).toMatchObject({
+      actions: { checkout: false },
+    });
+  });
+});
+
+describe('the change preview', () => {
+  it('is rate limited — each one is a call to Dodo', async () => {
+    const { slug } = await seedOrg(SUBSCRIBED);
+    env = { ...env, RL_MUTATION: { limit: async () => ({ success: false }) } };
+    const preview = await call(changeRoute.GET, 'GET', slug, '/change?plan=team&interval=yearly');
+    expect(preview.status).toBe(429);
+    expect(dodo.previewPlanChange).not.toHaveBeenCalled();
+  });
+});
+
+describe('the customer portal, round 1', () => {
+  it('is opened only for a customer this organisation alone holds', async () => {
+    // A row from before checkouts forced a customer per organisation.
+    const shared = `cus_shared${randomUUID().slice(0, 8)}`;
+    const { orgId, slug, owner } = await seedOrg(SUBSCRIBED);
+    const other = await seedOrg(SUBSCRIBED);
+    for (const id of [orgId, other.orgId]) {
+      await t.pg.query(`update org_subscriptions set dodo_customer_id = $2 where org_id = $1`, [
+        id,
+        shared,
+      ]);
+    }
+    caller = sessionOf(owner);
+    const answer = await call(portalRoute.POST, 'POST', slug, '/portal');
+    expect(answer.status).toBe(409);
+    expect(dodo.createPortalSession).not.toHaveBeenCalled();
+    expect(
+      lines.some((line) => line.level === 'error' && /held by another/.test(line.message)),
+    ).toBe(true);
+  });
+
+  it('is refused for a subscription from the other Dodo mode', async () => {
+    const { slug } = await seedOrg({ ...SUBSCRIBED, dodo_mode: 'live_mode' });
+    expect((await call(portalRoute.POST, 'POST', slug, '/portal')).status).toBe(409);
+    expect(dodo.createPortalSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('one owner, two organisations', () => {
+  const SECRET = BILLING_ENV.DODO_WEBHOOK_SECRET;
+
+  /**
+   * Dodo, at the fetch boundary, as its docs describe customers: a checkout
+   * given an email reuses the customer that email already has — unless it is
+   * told `always_create_new_customer`.
+   */
+  function fakeDodo() {
+    const byEmail = new Map<string, string>();
+    const sessions = new Map<string, { customerId: string }>();
+    const flags: unknown[] = [];
+    let next = 0;
+    const fetcher = async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string) as {
+        customer: { customer_id?: string; email?: string };
+        always_create_new_customer?: boolean;
+      };
+      flags.push(body.always_create_new_customer);
+      let customerId: string;
+      if (body.customer.customer_id) {
+        customerId = body.customer.customer_id;
+      } else if (body.always_create_new_customer === true || !byEmail.has(body.customer.email!)) {
+        next += 1;
+        customerId = `cus_fake${String(next).padStart(8, '0')}`;
+        byEmail.set(body.customer.email!, customerId);
+      } else {
+        customerId = byEmail.get(body.customer.email!)!;
+      }
+      next += 1;
+      const sessionId = `cks_fake${String(next).padStart(8, '0')}`;
+      sessions.set(sessionId, { customerId });
+      return new Response(
+        JSON.stringify({
+          session_id: sessionId,
+          checkout_url: `https://checkout.example/${sessionId}`,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+    return { fetcher, sessions, flags };
+  }
+
+  it('gets a Dodo customer per organisation — never one portal over both', async () => {
+    const fake = fakeDodo();
+    dodo.createCheckoutSession.mockImplementation((request: unknown) =>
+      new DodoClient(
+        'https://test.dodopayments.com',
+        'dodo-example-not-a-real-key',
+        fake.fetcher,
+      ).createCheckoutSession(request as CheckoutRequest),
+    );
+    dodo.changePlan.mockResolvedValue(undefined);
+
+    const first = await seedOrg();
+    const owner = first.owner;
+    // A second organisation, owned by the same person.
+    const secondId = randomUUID();
+    const secondSlug = `acme-${secondId.slice(0, 8)}`;
+    await t.pg.query(
+      `insert into organizations (id, name, slug, created_by) values ($1, 'Acme Two', $2, $3)`,
+      [secondId, secondSlug, owner.id],
+    );
+    await t.pg.query(`insert into org_subscriptions (org_id) values ($1)`, [secondId]);
+    await addMember(secondId, owner.id, 'owner');
+    caller = sessionOf(owner);
+
+    const paid: { orgId: string; sessionId: string }[] = [];
+    for (const [orgId, slug] of [
+      [first.orgId, first.slug],
+      [secondId, secondSlug],
+    ] as const) {
+      expect((await checkout(slug, { plan: 'team', interval: 'monthly' })).status).toBe(200);
+      const sessionId = [...fake.sessions.keys()].at(-1)!;
+      paid.push({ orgId, sessionId });
+    }
+    // Every checkout by email asked Dodo for a customer of its own.
+    expect(fake.flags).toEqual([true, true]);
+
+    // Each checkout's first payment links its subscription and its customer.
+    for (const { orgId, sessionId } of paid) {
+      const id = `msg_${randomUUID().replaceAll('-', '')}`;
+      const body = JSON.stringify({
+        type: 'payment.succeeded',
+        timestamp: new Date().toISOString(),
+        data: {
+          payment_id: `pay_${randomUUID().slice(0, 12)}`,
+          subscription_id: `sub_${orgId.slice(0, 12)}`,
+          checkout_session_id: sessionId,
+          customer: { customer_id: fake.sessions.get(sessionId)!.customerId },
+          billing: { country: 'US' },
+          currency: 'USD',
+        },
+      });
+      const at = new Date();
+      const answer = await webhookRoute.POST(
+        new Request(`${ORIGIN}/api/billing/webhook`, {
+          method: 'POST',
+          headers: {
+            'webhook-id': id,
+            'webhook-timestamp': String(Math.floor(at.getTime() / 1000)),
+            'webhook-signature': new Webhook(SECRET).sign(id, at, body),
+          },
+          body,
+        }),
+      );
+      expect(answer.status).toBe(200);
+    }
+    await Promise.allSettled(deferred);
+
+    const one = (await findSubscription(t.db, first.orgId))!.dodoCustomerId;
+    const two = (await findSubscription(t.db, secondId))!.dodoCustomerId;
+    expect(one).not.toBeNull();
+    expect(two).not.toBeNull();
+    expect(one).not.toBe(two);
   });
 });
 

@@ -1,14 +1,17 @@
 import type { AuditBuilder } from '@xecret/core/audit';
 import type { Transaction } from '@xecret/db/repositories';
 import {
+  consumeCheckout,
   findOrgIdByDodoSubscription,
   lockSubscription,
   recordLicenseKey,
   writeSubscriptionState,
 } from '@xecret/db/repositories';
 import { subscriptionResource } from '../audit';
+import type { DodoMode } from '../config';
 import type { HandlerOutcome } from '../effects';
 import type { DodoDispute, DodoLicenseKey, DodoPayment, DodoRefund } from '../payloads';
+import { paymentFailedOccasion } from '../reminders';
 
 /**
  * Payments, refunds, disputes and licence keys.
@@ -27,11 +30,16 @@ import type { DodoDispute, DodoLicenseKey, DodoPayment, DodoRefund } from '../pa
  * ── Linking a first checkout ──
  * The payment of a checkout this server created carries the checkout's
  * session id, which `billing_checkouts` maps to the organisation that started
- * it. When the row follows no subscription yet — or is on Free — that payment
- * is what tells it which subscription id is now its own, so the
+ * it (or the checkout's nonce, in its metadata). When the row is **on Free**,
+ * that payment is what tells it which subscription id is now its own, so the
  * `subscription.active` beside it can be placed even if Dodo did not copy our
- * metadata onto the subscription. Linking grants nothing: the plan changes
- * only when the snapshot arrives.
+ * metadata onto the subscription. Linking spends the checkout and grants
+ * nothing: the plan changes only when the snapshot arrives.
+ *
+ * Never on a paid row. One on a paid plan with no subscription is an
+ * operator's grant — an Enterprise contract, a hand-made trial — and a payment
+ * linking a subscription to it would hand the next snapshot of that
+ * subscription the contract to overwrite. It is reported instead.
  *
  * ── The purchasing-power guardrail ──
  * Billing country and card-issuing country disagreeing (pricing-plan §4) is
@@ -45,8 +53,12 @@ export async function applyPaymentEvent(
     orgId: string;
     eventType: 'payment.succeeded' | 'payment.failed';
     payment: DodoPayment;
-    /** Whether the payment was traced to this organisation through our own checkout or metadata. */
-    placedByCheckout: boolean;
+    /** The open checkout of this organisation's the payment came from, when placement found one. */
+    checkout: { sessionId: string } | { nonce: string } | null;
+    /** The plan that checkout was for, when known — what a failed first payment was buying. */
+    checkoutPlan: string | null;
+    mode: DodoMode;
+    now: Date;
     audit: AuditBuilder;
   },
 ): Promise<HandlerOutcome> {
@@ -56,7 +68,23 @@ export async function applyPaymentEvent(
   const row = await lockSubscription(tx, orgId);
   if (row === null) return outcome;
 
+  if (row.dodoMode !== null && row.dodoMode !== input.mode) {
+    outcome.effects.push({
+      kind: 'alert',
+      message:
+        `A ${input.mode} Dodo payment arrived for an organisation whose subscription was ` +
+        'recorded in the other Dodo mode — nothing was linked or sent. Clear the old mode’s ' +
+        'rows (docs/operations/billing.md, "Test mode")',
+      fields: { orgId, eventType: input.eventType },
+    });
+    return outcome;
+  }
+
   if (input.eventType === 'payment.failed') {
+    // The first payment of a checkout, on an organisation that holds no plan
+    // from it: nothing was bought, and there is no subscription to speak of.
+    const firstPayment = row.plan === 'free';
+    const plan = firstPayment ? (input.checkoutPlan ?? row.plan) : row.plan;
     outcome.audit.push(
       audit.success('billing.payment_failed', resource, {
         billingEvent: input.eventType,
@@ -66,8 +94,8 @@ export async function applyPaymentEvent(
     outcome.effects.push({
       kind: 'mail',
       orgId,
-      occasion: payment.payment_id,
-      reminder: { kind: 'payment_failed', plan: row.plan },
+      occasion: paymentFailedOccasion(input.now),
+      reminder: { kind: 'payment_failed', plan, firstPayment },
     });
     return outcome;
   }
@@ -75,29 +103,60 @@ export async function applyPaymentEvent(
   // payment.succeeded
   const subscriptionId = payment.subscription_id ?? null;
   if (
-    input.placedByCheckout &&
+    input.checkout !== null &&
     subscriptionId !== null &&
-    row.dodoSubscriptionId !== subscriptionId &&
-    (row.dodoSubscriptionId === null || row.plan === 'free')
+    row.dodoSubscriptionId !== subscriptionId
   ) {
-    // Never steal a subscription another organisation already follows.
-    const holder = await findOrgIdByDodoSubscription(tx, subscriptionId);
-    if (holder === null) {
-      await writeSubscriptionState(tx, orgId, {
-        dodoSubscriptionId: subscriptionId,
-        dodoCustomerId: payment.customer.customer_id,
-        // The snapshot that follows is the first of this subscription's
-        // history; nothing older than it can be stale yet.
-        dodoEventAt: null,
-      });
-    } else if (holder !== orgId) {
+    if (row.plan !== 'free') {
+      // An operator's grant, or a second subscription beside the one the row
+      // follows: nothing is linked, and a human decides.
       outcome.effects.push({
         kind: 'alert',
         message:
-          'A payment from one organisation’s checkout names a subscription another ' +
-          'organisation already follows — not linked. Check both in Dodo',
-        fields: { orgId, otherOrgId: holder },
+          row.dodoSubscriptionId === null
+            ? 'A checkout payment arrived for an organisation whose plan an operator set by hand ' +
+              '— its subscription was not linked, and will not be applied. Refund or cancel it ' +
+              'in Dodo, or move the organisation onto it deliberately'
+            : 'A checkout payment arrived for an organisation that already follows another ' +
+              'subscription — not linked. The customer may be paying twice: check both in Dodo',
+        fields: {
+          orgId,
+          reason: row.dodoSubscriptionId === null ? 'operator-managed' : 'duplicate',
+        },
       });
+    } else {
+      // Never steal a subscription another organisation already follows.
+      const holder = await findOrgIdByDodoSubscription(tx, subscriptionId);
+      if (holder !== null && holder !== orgId) {
+        outcome.effects.push({
+          kind: 'alert',
+          message:
+            'A payment from one organisation’s checkout names a subscription another ' +
+            'organisation already follows — not linked. Check both in Dodo',
+          fields: { orgId, otherOrgId: holder },
+        });
+      } else if (holder === null) {
+        const spent = await consumeCheckout(tx, { orgId, subscriptionId, by: input.checkout });
+        if (spent) {
+          await writeSubscriptionState(tx, orgId, {
+            dodoSubscriptionId: subscriptionId,
+            dodoCustomerId: payment.customer.customer_id,
+            dodoMode: input.mode,
+            // The snapshot that follows is the first of this subscription's
+            // history; nothing older than it can be stale yet.
+            dodoEventAt: null,
+            dodoEventId: null,
+          });
+        } else {
+          outcome.effects.push({
+            kind: 'alert',
+            message:
+              'A checkout payment arrived whose checkout was already spent on another ' +
+              'subscription — not linked. The customer may be paying twice: check Dodo',
+            fields: { orgId },
+          });
+        }
+      }
     }
   }
 

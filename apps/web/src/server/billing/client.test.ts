@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DodoApiError, DodoClient, ORG_METADATA_KEY } from './client';
+import { CHECKOUT_NONCE_METADATA_KEY, DodoApiError, DodoClient, ORG_METADATA_KEY } from './client';
 
 /**
  * The Dodo client against a stubbed `fetch` — never the real API. What is
@@ -59,7 +59,7 @@ const SUBSCRIPTION = {
 };
 
 describe('createCheckoutSession', () => {
-  it('sends the product, the seats, our org id and the PPP flags — and nothing from the browser', async () => {
+  it('sends the product, the seats, our org id, the checkout nonce and the PPP flags — and nothing from the browser', async () => {
     const fetcher = stub(ok({ session_id: 'cks_1', checkout_url: 'https://checkout.dodo/cks_1' }));
     const client = new DodoClient(BASE, KEY, fetcher);
 
@@ -69,6 +69,7 @@ describe('createCheckoutSession', () => {
       customer: { email: 'owner@example.com', name: 'Owner' },
       returnUrl: 'https://xecret.playxoft.com/app/acme/settings/billing?status=returned',
       orgId: 'org-uuid',
+      nonce: 'nonce-0123456789abcdef',
       regionLock: null,
     });
 
@@ -80,8 +81,14 @@ describe('createCheckoutSession', () => {
     expect(sentBody(fetcher)).toEqual({
       product_cart: [{ product_id: 'pdt_team_y', quantity: 3 }],
       customer: { email: 'owner@example.com', name: 'Owner' },
+      // A customer of this organisation's own, however many Dodo already has
+      // for the address — never the one another organisation of theirs uses.
+      always_create_new_customer: true,
       return_url: 'https://xecret.playxoft.com/app/acme/settings/billing?status=returned',
-      metadata: { [ORG_METADATA_KEY]: 'org-uuid' },
+      metadata: {
+        [ORG_METADATA_KEY]: 'org-uuid',
+        [CHECKOUT_NONCE_METADATA_KEY]: 'nonce-0123456789abcdef',
+      },
       feature_flags: { allow_currency_selection: false },
     });
   });
@@ -94,6 +101,7 @@ describe('createCheckoutSession', () => {
       customer: { customerId: 'cus_existing0001' },
       returnUrl: 'https://x/r',
       orgId: 'org-uuid',
+      nonce: 'nonce-0123456789abcdef',
       regionLock: { country: 'IN', currency: 'INR' },
     });
     expect(sentBody(fetcher)).toMatchObject({
@@ -102,6 +110,8 @@ describe('createCheckoutSession', () => {
       billing_currency: 'INR',
       feature_flags: { allow_currency_selection: false, allow_customer_editing_country: false },
     });
+    // The organisation's own customer is attached; no new one is asked for.
+    expect(sentBody(fetcher)).not.toHaveProperty('always_create_new_customer');
   });
 });
 
@@ -111,7 +121,7 @@ describe('changePlan and previewPlanChange', () => {
     await new DodoClient(BASE, KEY, fetcher).changePlan('sub_123', {
       productId: 'pdt_team_m',
       quantity: 6,
-      proration: 'difference_immediately',
+      proration: 'prorated_immediately_keep_cycle',
       effectiveAt: 'immediately',
       onPaymentFailure: 'apply_change',
     });
@@ -119,7 +129,7 @@ describe('changePlan and previewPlanChange', () => {
     expect(sentBody(fetcher)).toEqual({
       product_id: 'pdt_team_m',
       quantity: 6,
-      proration_billing_mode: 'difference_immediately',
+      proration_billing_mode: 'prorated_immediately_keep_cycle',
       effective_at: 'immediately',
       on_payment_failure: 'apply_change',
     });
@@ -260,7 +270,7 @@ describe('failures', () => {
       .changePlan('sub_123', {
         productId: 'p',
         quantity: 1,
-        proration: 'difference_immediately',
+        proration: 'prorated_immediately_keep_cycle',
         effectiveAt: 'immediately',
         onPaymentFailure: 'apply_change',
       })

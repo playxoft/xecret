@@ -6,14 +6,28 @@ import type { TestDatabase } from '../testing/pglite';
 import {
   addFetchCounts,
   billingCounts,
+  claimBillingRequest,
   claimReminder,
+  claimSeatSync,
+  clearSeatSync,
+  completeBillingRequest,
   completeSeatSync,
+  consumeCheckout,
+  countOrgsWithDodoCustomer,
   currentUsage,
+  deadLetterSeatSync,
+  deferSeatSync,
+  detachFromProvider,
+  ensureSeatSync,
   failSeatSync,
   findCheckout,
+  findOpenCheckout,
   findOrgIdByDodoCustomer,
   findOrgIdByDodoSubscription,
+  listDueSeatSyncs,
   listEndedCancellations,
+  listLapsedTrials,
+  listLongHolds,
   listMeterableUsage,
   listOwnerRecipients,
   listProviderSubscriptions,
@@ -21,13 +35,18 @@ import {
   liveOrganizationExists,
   lockSubscription,
   markMeteredUnitsSent,
+  pruneBillingRequests,
   queueSeatSync,
   recordCheckout,
   recordLicenseKey,
+  releaseBillingRequest,
+  releaseSeatSync,
   reminderSentSince,
   seatedMemberCount,
+  seatSyncGeneration,
   writeSubscriptionState,
 } from './billing';
+import { addMember as addOrgMember, removeMember } from './membership';
 
 /**
  * Migration 0024 and the payment repositories (P12), against a real database —
@@ -76,6 +95,10 @@ async function seedOrg(
     periodStart?: Date | null;
     periodEnd?: Date | null;
     cancelAtPeriodEnd?: boolean;
+    meteredFrom?: Date | null;
+    trialEndsAt?: Date | null;
+    mode?: string | null;
+    onHoldSince?: Date | null;
   } = {},
 ): Promise<Seeded> {
   const ownerId = await seedUser();
@@ -88,8 +111,9 @@ async function seedOrg(
   await t.pg.query(
     `insert into org_subscriptions
        (org_id, plan, billing_interval, status, dodo_customer_id, dodo_subscription_id,
-        current_period_start, current_period_end, cancel_at_period_end)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        current_period_start, current_period_end, cancel_at_period_end, metered_from,
+        trial_ends_at, dodo_mode, on_hold_since)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
     [
       orgId,
       plan,
@@ -104,10 +128,44 @@ async function seedOrg(
       subscription.periodStart ?? null,
       subscription.periodEnd ?? null,
       subscription.cancelAtPeriodEnd ?? false,
+      subscription.meteredFrom ?? null,
+      subscription.trialEndsAt ?? null,
+      subscription.mode ?? null,
+      subscription.onHoldSince ?? null,
     ],
   );
   await addMember(orgId, ownerId, 'owner');
   return { orgId, ownerId };
+}
+
+async function debtOf(orgId: string) {
+  return (await listSeatSyncs(t.db, 10_000)).find((row) => row.orgId === orgId) ?? null;
+}
+
+/** Fetches a usage row directly, for a period this test chose. */
+async function seedUsage(
+  orgId: string,
+  periodStart: Date,
+  fetches: number,
+  unitsSent = 0,
+): Promise<void> {
+  await t.pg.query(
+    `insert into org_usage_counters (org_id, period_start, secret_fetches, metered_units_sent)
+     values ($1, $2, $3, $4)`,
+    [orgId, periodStart, fetches, unitsSent],
+  );
+}
+
+async function usageRows(orgId: string): Promise<{ period: string; fetches: number }[]> {
+  const result = await t.pg.query<{ period_start: Date; secret_fetches: string }>(
+    `select period_start, secret_fetches from org_usage_counters where org_id = $1
+      order by period_start`,
+    [orgId],
+  );
+  return result.rows.map((row) => ({
+    period: new Date(row.period_start).toISOString(),
+    fetches: Number(row.secret_fetches),
+  }));
 }
 
 async function addMember(
@@ -195,6 +253,53 @@ describe('migration 0024', () => {
     expect(names).toContain('license_key_id');
     expect(names).not.toContain('key');
     expect(names.some((name) => name === 'license_key' || name === 'key_value')).toBe(false);
+  });
+});
+
+describe('migration 0025', () => {
+  it('adds the provider bookkeeping columns to org_subscriptions, nullable', async () => {
+    const result = await t.pg.query<{ column_name: string; is_nullable: string }>(
+      `select column_name, is_nullable from information_schema.columns
+        where table_name = 'org_subscriptions'
+          and column_name in ('metered_from', 'dodo_mode', 'dodo_event_id', 'on_hold_since',
+                              'dodo_scheduled_change_at', 'dodo_currency', 'dodo_billing_country')
+        order by column_name`,
+    );
+    expect(result.rows.map((row) => row.column_name)).toEqual([
+      'dodo_billing_country',
+      'dodo_currency',
+      'dodo_event_id',
+      'dodo_mode',
+      'dodo_scheduled_change_at',
+      'metered_from',
+      'on_hold_since',
+    ]);
+    expect(result.rows.every((row) => row.is_nullable === 'YES')).toBe(true);
+  });
+
+  it('refuses a Dodo mode that is not one', async () => {
+    const { orgId } = await seedOrg();
+    await expect(
+      t.pg.query(`update org_subscriptions set dodo_mode = 'sandbox' where org_id = $1`, [orgId]),
+    ).rejects.toThrow(/org_subscriptions_dodo_mode_check/);
+  });
+
+  it('accepts the unpaid-ending reminder, and still nothing it does not define', async () => {
+    const { orgId } = await seedOrg();
+    expect(await claimReminder(t.db, { orgId, kind: 'plan_ended_unpaid', occasion: 'x' })).toBe(
+      true,
+    );
+  });
+
+  it('refuses an idempotency key that is not one', async () => {
+    const { orgId } = await seedOrg();
+    await expect(
+      t.pg.query(
+        `insert into billing_requests (org_id, kind, idempotency_key, fingerprint)
+         values ($1, 'checkout', 'short', 'team:yearly')`,
+        [orgId],
+      ),
+    ).rejects.toThrow(/billing_requests_key_check/);
   });
 });
 
@@ -303,26 +408,137 @@ describe('listOwnerRecipients', () => {
 });
 
 describe('the seat-sync debt', () => {
-  it('is queued once, retried with a count, and paid only by a push that began after it', async () => {
+  it('is one row per organisation, and every queue is a new generation', async () => {
     const { orgId } = await seedOrg({ plan: 'team' });
-    const beforeQueue = new Date(Date.now() - 60_000);
-
     await queueSeatSync(t.db, orgId);
     await queueSeatSync(t.db, orgId);
-    let debts = (await listSeatSyncs(t.db, 100)).filter((row) => row.orgId === orgId);
+    const debts = (await listSeatSyncs(t.db, 10_000)).filter((row) => row.orgId === orgId);
     expect(debts).toHaveLength(1);
+    expect(debts[0]!.generation).toBe(2);
+  });
 
-    await failSeatSync(t.db, orgId, 'upstream_5xx');
-    await failSeatSync(t.db, orgId, 'upstream_timeout');
-    debts = (await listSeatSyncs(t.db, 100)).filter((row) => row.orgId === orgId);
-    expect(debts[0]).toMatchObject({ attempts: 2, lastError: 'upstream_timeout' });
+  it('is paid only under the generation the push counted — a change mid-push survives it', async () => {
+    const { orgId } = await seedOrg({ plan: 'team' });
+    await queueSeatSync(t.db, orgId);
+    const counted = await claimSeatSync(t.db, orgId, 60_000);
+    expect(counted).toBe(1);
 
-    // A push that started before the debt was queued does not clear it.
-    await completeSeatSync(t.db, orgId, beforeQueue);
-    expect((await listSeatSyncs(t.db, 100)).some((row) => row.orgId === orgId)).toBe(true);
+    // A member joins while the push is at Dodo.
+    await queueSeatSync(t.db, orgId);
+    expect(await completeSeatSync(t.db, orgId, counted!)).toBe(false);
+    expect(await debtOf(orgId)).not.toBeNull();
 
-    await completeSeatSync(t.db, orgId, new Date(Date.now() + 1000));
-    expect((await listSeatSyncs(t.db, 100)).some((row) => row.orgId === orgId)).toBe(false);
+    expect(await completeSeatSync(t.db, orgId, (await seatSyncGeneration(t.db, orgId))!)).toBe(
+      true,
+    );
+    expect(await debtOf(orgId)).toBeNull();
+  });
+
+  it('allows one push in flight per organisation, until the lease is released or runs out', async () => {
+    const { orgId } = await seedOrg({ plan: 'team' });
+    await ensureSeatSync(t.db, orgId);
+    expect(await claimSeatSync(t.db, orgId, 60_000)).not.toBeNull();
+    expect(await claimSeatSync(t.db, orgId, 60_000)).toBeNull();
+    await releaseSeatSync(t.db, orgId);
+    expect(await claimSeatSync(t.db, orgId, -1)).not.toBeNull(); // a lease already over
+    expect(await claimSeatSync(t.db, orgId, 60_000)).not.toBeNull();
+    // No debt, nothing to claim.
+    expect(await claimSeatSync(t.db, (await seedOrg()).orgId, 60_000)).toBeNull();
+  });
+
+  it('backs off after each failure, and a retry never resets the backoff', async () => {
+    const { orgId } = await seedOrg({ plan: 'team' });
+    await ensureSeatSync(t.db, orgId);
+    expect(await failSeatSync(t.db, orgId, 'upstream_5xx')).toBe(1);
+    expect(await failSeatSync(t.db, orgId, 'timeout')).toBe(2);
+    await ensureSeatSync(t.db, orgId);
+
+    const debt = await debtOf(orgId);
+    expect(debt).toMatchObject({ attempts: 2, lastError: 'timeout', claimedUntil: null });
+    // Two failures: four minutes.
+    const wait = debt!.notBefore!.getTime() - debt!.lastAttemptAt!.getTime();
+    expect(wait).toBeGreaterThanOrEqual(4 * 60_000 - 1000);
+    expect(wait).toBeLessThanOrEqual(4 * 60_000 + 1000);
+  });
+
+  it('lists only what is due — so stuck debts cannot starve a new one', async () => {
+    const now = new Date();
+    const backingOff = (await seedOrg({ plan: 'team' })).orgId;
+    const deferred = (await seedOrg({ plan: 'team' })).orgId;
+    const claimed = (await seedOrg({ plan: 'team' })).orgId;
+    const dead = (await seedOrg({ plan: 'team' })).orgId;
+    const fresh = (await seedOrg({ plan: 'team' })).orgId;
+    for (const orgId of [backingOff, deferred, claimed, dead]) await ensureSeatSync(t.db, orgId);
+    await failSeatSync(t.db, backingOff, 'upstream_5xx');
+    await deferSeatSync(t.db, deferred, new Date(now.getTime() + 60 * 60_000), 'scheduled_change');
+    await claimSeatSync(t.db, claimed, 60_000);
+    expect(await deadLetterSeatSync(t.db, dead)).toBe(true);
+    expect(await deadLetterSeatSync(t.db, dead)).toBe(false); // raised once
+    await ensureSeatSync(t.db, fresh);
+
+    const due = new Set((await listDueSeatSyncs(t.db, now, 10_000)).map((row) => row.orgId));
+    expect(due.has(fresh)).toBe(true);
+    for (const orgId of [backingOff, deferred, claimed, dead]) expect(due.has(orgId)).toBe(false);
+
+    // A new membership change makes even a dead-lettered debt due again.
+    await queueSeatSync(t.db, dead);
+    expect(
+      (await listDueSeatSyncs(t.db, new Date(), 10_000)).some((row) => row.orgId === dead),
+    ).toBe(true);
+  });
+
+  it('commits with the membership change itself, for an organisation Dodo bills — and only then', async () => {
+    const billed = await seedOrg({ plan: 'team', dodoSubscription: `sub_${uniq()}` });
+    const free = await seedOrg();
+    const manual = await seedOrg({ plan: 'enterprise', interval: 'yearly' });
+
+    for (const org of [billed, free, manual]) {
+      // Seeded first: PGlite runs one transaction at a time, so a fixture query
+      // from inside one would wait on it for ever.
+      const userId = await seedUser();
+      await t.db.transaction(async (tx) => {
+        await addOrgMember(tx, {
+          orgId: org.orgId,
+          userId,
+          role: 'developer',
+          invitedBy: org.ownerId,
+        });
+      });
+    }
+    expect(await debtOf(billed.orgId)).not.toBeNull();
+    expect(await debtOf(free.orgId)).toBeNull();
+    expect(await debtOf(manual.orgId)).toBeNull();
+
+    // A membership change that rolls back leaves no debt behind.
+    const other = await seedOrg({ plan: 'team', dodoSubscription: `sub_${uniq()}` });
+    const joiner = await seedUser();
+    await expect(
+      t.db.transaction(async (tx) => {
+        await addOrgMember(tx, {
+          orgId: other.orgId,
+          userId: joiner,
+          role: 'developer',
+          invitedBy: other.ownerId,
+        });
+        throw new Error('rolled back');
+      }),
+    ).rejects.toThrow('rolled back');
+    expect(await debtOf(other.orgId)).toBeNull();
+  });
+
+  it('is written by a removal too, under its own transaction', async () => {
+    const billed = await seedOrg({ plan: 'team', dodoSubscription: `sub_${uniq()}` });
+    const userId = await seedUser();
+    const member = await addOrgMember(t.db, {
+      orgId: billed.orgId,
+      userId,
+      role: 'developer',
+      invitedBy: billed.ownerId,
+    });
+    await clearSeatSync(t.db, billed.orgId);
+
+    await removeMember(t.db, { orgId: billed.orgId, memberId: member.id }, null);
+    expect(await debtOf(billed.orgId)).not.toBeNull();
   });
 });
 
@@ -395,27 +611,38 @@ describe('the usage counter', () => {
     expect(Number(result.rows[0]!.metered_units_sent)).toBe(10);
   });
 
+  /** Past Team's allowance by a few units, so a row the meter may list. */
+  const OVER_TEAM = 1_000_000 + 5_000;
+
   it('meters only subscriptions the provider bills, and never a trial', async () => {
-    const billed = await seedOrg({
+    const periodStart = new Date(Date.now() - 5 * DAY);
+    const billing = {
       plan: 'team',
+      periodStart,
+      periodEnd: new Date(Date.now() + 25 * DAY),
+      meteredFrom: periodStart,
+    };
+    const billed = await seedOrg({
+      ...billing,
       customer: `cus_${uniq()}`,
       dodoSubscription: `sub_${uniq()}`,
     });
     const trial = await seedOrg({
-      plan: 'team',
+      ...billing,
       status: 'trialing',
       customer: `cus_${uniq()}`,
       dodoSubscription: `sub_${uniq()}`,
     });
-    const manual = await seedOrg({ plan: 'team' });
+    const manual = await seedOrg(billing);
     const free = await seedOrg();
     for (const { orgId } of [billed, trial, manual, free]) {
-      await addFetchCounts(t.db, [{ orgId, fetches: 5 }]);
+      await addFetchCounts(t.db, [{ orgId, fetches: OVER_TEAM }]);
     }
 
     const work = await listMeterableUsage(t.db, {
       since: new Date(Date.now() - DAY),
       limit: 1000,
+      mode: 'test_mode',
     });
     const orgIds = new Set(work.map((row) => row.orgId));
     expect(orgIds.has(billed.orgId)).toBe(true);
@@ -423,9 +650,265 @@ describe('the usage counter', () => {
     expect(orgIds.has(manual.orgId)).toBe(false);
     expect(orgIds.has(free.orgId)).toBe(false);
   });
+
+  it('never meters a period from before the subscription — Free usage, then an upgrade', async () => {
+    // Heavy use on Free in the calendar month, then a Team checkout on the 10th.
+    const now = Date.now();
+    const freeMonth = new Date(Date.UTC(2026, 8, 1));
+    const activated = new Date(Date.UTC(2026, 8, 10));
+    const { orgId } = await seedOrg({
+      plan: 'team',
+      customer: `cus_${uniq()}`,
+      dodoSubscription: `sub_${uniq()}`,
+      periodStart: activated,
+      periodEnd: new Date(now + 20 * DAY),
+      meteredFrom: activated,
+    });
+    await seedUsage(orgId, freeMonth, 50 * OVER_TEAM);
+    await seedUsage(orgId, activated, OVER_TEAM);
+
+    const work = (
+      await listMeterableUsage(t.db, { since: new Date(0), limit: 1000, mode: 'test_mode' })
+    ).filter((row) => row.orgId === orgId);
+    expect(work.map((row) => row.periodStart.toISOString())).toEqual([activated.toISOString()]);
+  });
+
+  it('never meters a trial’s period once the trial converts', async () => {
+    const created = new Date(Date.UTC(2026, 8, 1));
+    const trialEnd = new Date(Date.UTC(2026, 8, 15));
+    const { orgId } = await seedOrg({
+      plan: 'team',
+      customer: `cus_${uniq()}`,
+      dodoSubscription: `sub_${uniq()}`,
+      periodStart: trialEnd,
+      periodEnd: new Date(Date.now() + 20 * DAY),
+      trialEndsAt: trialEnd,
+      meteredFrom: trialEnd,
+    });
+    await seedUsage(orgId, created, 40 * OVER_TEAM); // the trial's period
+    await seedUsage(orgId, trialEnd, OVER_TEAM);
+
+    const work = (
+      await listMeterableUsage(t.db, { since: new Date(0), limit: 1000, mode: 'test_mode' })
+    ).filter((row) => row.orgId === orgId);
+    expect(work.map((row) => row.periodStart.toISOString())).toEqual([trialEnd.toISOString()]);
+  });
+
+  it('meters nothing for a subscription with no metered-from recorded', async () => {
+    const { orgId } = await seedOrg({
+      plan: 'team',
+      customer: `cus_${uniq()}`,
+      dodoSubscription: `sub_${uniq()}`,
+    });
+    await seedUsage(orgId, new Date(Date.UTC(2026, 8, 1)), 9 * OVER_TEAM);
+    const work = await listMeterableUsage(t.db, {
+      since: new Date(0),
+      limit: 1000,
+      mode: 'test_mode',
+    });
+    expect(work.some((row) => row.orgId === orgId)).toBe(false);
+  });
+
+  it('leaves out a row from the other Dodo mode', async () => {
+    const start = new Date(Date.UTC(2026, 8, 1));
+    const { orgId } = await seedOrg({
+      plan: 'team',
+      customer: `cus_${uniq()}`,
+      dodoSubscription: `sub_${uniq()}`,
+      meteredFrom: start,
+      mode: 'test_mode',
+    });
+    await seedUsage(orgId, start, OVER_TEAM);
+    const live = await listMeterableUsage(t.db, {
+      since: new Date(0),
+      limit: 1000,
+      mode: 'live_mode',
+    });
+    expect(live.some((row) => row.orgId === orgId)).toBe(false);
+    const test = await listMeterableUsage(t.db, {
+      since: new Date(0),
+      limit: 1000,
+      mode: 'test_mode',
+    });
+    expect(test.some((row) => row.orgId === orgId)).toBe(true);
+  });
+
+  it('lists only rows that can owe another unit, and pages past any number of them', async () => {
+    const start = new Date(Date.UTC(2026, 7, 1));
+    const subscription = (meteredFrom: Date) => ({
+      plan: 'pro',
+      customer: `cus_${uniq()}`,
+      dodoSubscription: `sub_${uniq()}`,
+      meteredFrom,
+    });
+    // Within Pro's allowance, and past it but with every unit already reported.
+    const within = await seedOrg(subscription(start));
+    await seedUsage(within.orgId, start, 150_000);
+    const reported = await seedOrg(subscription(start));
+    await seedUsage(reported.orgId, start, 200_000 + 3_500, 3);
+    // Twelve that each owe something.
+    const owing: string[] = [];
+    for (let index = 0; index < 12; index += 1) {
+      const { orgId } = await seedOrg(subscription(start));
+      await seedUsage(orgId, start, 200_000 + 2_000);
+      owing.push(orgId);
+    }
+
+    const seen: string[] = [];
+    let after: { orgId: string; periodStart: Date } | undefined;
+    for (;;) {
+      const page = await listMeterableUsage(t.db, {
+        since: new Date(0),
+        limit: 5,
+        mode: 'test_mode',
+        after,
+      });
+      seen.push(...page.map((row) => row.orgId));
+      if (page.length < 5) break;
+      const last = page[page.length - 1]!;
+      after = { orgId: last.orgId, periodStart: last.periodStart };
+    }
+    for (const orgId of owing) expect(seen).toContain(orgId);
+    expect(seen).not.toContain(within.orgId);
+    expect(seen).not.toContain(reported.orgId);
+    expect(new Set(seen).size).toBe(seen.length); // no row twice
+  });
+
+  it('puts a fetch in the period it was counted in, not the one it was flushed into', async () => {
+    const now = Date.now();
+    const previous = new Date(now - 30 * DAY);
+    const renewed = new Date(now - 60_000);
+    const { orgId } = await seedOrg({
+      plan: 'team',
+      dodoSubscription: `sub_${uniq()}`,
+      periodStart: previous,
+      periodEnd: renewed,
+    });
+    await addFetchCounts(t.db, [{ orgId, fetches: 2, countedAt: new Date(now - 2 * DAY) }]);
+
+    // The renewal webhook lands; then the last fetches of the old period are flushed.
+    await t.pg.query(
+      `update org_subscriptions set current_period_start = $2, current_period_end = $3 where org_id = $1`,
+      [orgId, renewed, new Date(now + 30 * DAY)],
+    );
+    await addFetchCounts(t.db, [
+      { orgId, fetches: 3, countedAt: new Date(renewed.getTime() - 5_000) },
+      { orgId, fetches: 4, countedAt: new Date(renewed.getTime() + 5_000) },
+    ]);
+
+    expect(await usageRows(orgId)).toEqual([
+      { period: previous.toISOString(), fetches: 5 },
+      { period: renewed.toISOString(), fetches: 4 },
+    ]);
+  });
+
+  it('counts a fetch made on Free just before an upgrade into the Free month', async () => {
+    const now = Date.now();
+    const activated = new Date(now - 60_000);
+    const { orgId } = await seedOrg({
+      plan: 'team',
+      dodoSubscription: `sub_${uniq()}`,
+      periodStart: activated,
+      periodEnd: new Date(now + 30 * DAY),
+    });
+    const before = new Date(activated.getTime() - 10_000);
+    await addFetchCounts(t.db, [{ orgId, fetches: 7, countedAt: before }]);
+    const month = new Date(Date.UTC(before.getUTCFullYear(), before.getUTCMonth(), 1));
+    expect(await usageRows(orgId)).toEqual([{ period: month.toISOString(), fetches: 7 }]);
+  });
+});
+
+describe('detachFromProvider (plan:set over a Dodo subscription)', () => {
+  it('clears every provider id and leaves the row reading as an operator’s grant', async () => {
+    const subscriptionId = `sub_${uniq()}`;
+    const customerId = `cus_${uniq()}`;
+    const { orgId } = await seedOrg({
+      plan: 'team',
+      customer: customerId,
+      dodoSubscription: subscriptionId,
+      meteredFrom: new Date(),
+      mode: 'live_mode',
+    });
+    await ensureSeatSync(t.db, orgId);
+
+    const detached = await t.db.transaction(async (tx) => {
+      const ids = await detachFromProvider(tx, orgId);
+      await writeSubscriptionState(tx, orgId, { plan: 'enterprise', billingInterval: 'yearly' });
+      return ids;
+    });
+    // The run's own record of which subscription it was, to cancel at Dodo.
+    expect(detached).toEqual({ dodoSubscriptionId: subscriptionId, dodoCustomerId: customerId });
+
+    const row = await t.db.transaction((tx) => lockSubscription(tx, orgId));
+    expect(row).toMatchObject({
+      plan: 'enterprise',
+      dodoSubscriptionId: null,
+      dodoCustomerId: null,
+      dodoProductId: null,
+      dodoMode: null,
+      meteredFrom: null,
+    });
+    // Managed by support now — a paid plan with no subscription — and found by
+    // nothing that looks for the provider's ids.
+    expect(row!.plan !== 'free' && row!.dodoSubscriptionId === null).toBe(true);
+    expect(await findOrgIdByDodoSubscription(t.db, subscriptionId)).toBeNull();
+    expect(await countOrgsWithDodoCustomer(t.db, customerId)).toBe(0);
+    expect(await debtOf(orgId)).toBeNull();
+    expect(
+      (await listProviderSubscriptions(t.db, { limit: 10_000 })).some((r) => r.orgId === orgId),
+    ).toBe(false);
+  });
+
+  it('answers null for a row that followed no subscription', async () => {
+    const { orgId } = await seedOrg({ plan: 'enterprise', interval: 'yearly' });
+    expect(await t.db.transaction((tx) => detachFromProvider(tx, orgId))).toBeNull();
+  });
 });
 
 describe('subscription sweeps', () => {
+  it('finds subscriptions on hold since before a cut-off, and stale trials', async () => {
+    const now = Date.now();
+    const long = await seedOrg({
+      plan: 'team',
+      status: 'on_hold',
+      dodoSubscription: `sub_${uniq()}`,
+      onHoldSince: new Date(now - 15 * DAY),
+    });
+    const recent = await seedOrg({
+      plan: 'team',
+      status: 'on_hold',
+      dodoSubscription: `sub_${uniq()}`,
+      onHoldSince: new Date(now - 2 * DAY),
+    });
+    const holds = new Set(
+      (await listLongHolds(t.db, { since: new Date(now - 14 * DAY), limit: 1000 })).map(
+        (row) => row.orgId,
+      ),
+    );
+    expect(holds.has(long.orgId)).toBe(true);
+    expect(holds.has(recent.orgId)).toBe(false);
+
+    const lapsed = await seedOrg({
+      plan: 'team',
+      status: 'trialing',
+      dodoSubscription: `sub_${uniq()}`,
+      trialEndsAt: new Date(now - 5 * 60 * 60_000),
+    });
+    const running = await seedOrg({
+      plan: 'team',
+      status: 'trialing',
+      dodoSubscription: `sub_${uniq()}`,
+      trialEndsAt: new Date(now + DAY),
+    });
+    const trials = new Set(
+      (await listLapsedTrials(t.db, { endedBefore: new Date(now - 60 * 60_000), limit: 1000 })).map(
+        (row) => row.orgId,
+      ),
+    );
+    expect(trials.has(lapsed.orgId)).toBe(true);
+    expect(trials.has(running.orgId)).toBe(false);
+  });
+
   it('finds cancellations whose paid period is over, by the database clock', async () => {
     const ended = await seedOrg({
       plan: 'team',
@@ -473,10 +956,100 @@ describe('ledgers', () => {
       billingInterval: 'yearly' as const,
       quantity: 3,
       createdBy: ownerId,
+      nonce: `nonce_${uniq()}`,
     };
     await recordCheckout(t.db, checkout);
     await recordCheckout(t.db, { ...checkout, quantity: 9 });
     expect(await findCheckout(t.db, sessionId)).toMatchObject({ orgId, quantity: 3 });
+  });
+
+  it('opens a checkout to its own organisation’s nonce only, and spends it once', async () => {
+    const { orgId, ownerId } = await seedOrg();
+    const other = await seedOrg();
+    const nonce = `nonce_${uniq()}`;
+    const sessionId = `cks_${uniq()}`;
+    await recordCheckout(t.db, {
+      sessionId,
+      orgId,
+      plan: 'team',
+      billingInterval: 'monthly',
+      quantity: 3,
+      createdBy: ownerId,
+      nonce,
+    });
+    const openSince = new Date(Date.now() - DAY);
+
+    expect(await findOpenCheckout(t.db, { orgId, nonce, openSince })).toMatchObject({ sessionId });
+    // Another organisation's id beside this nonce, or a nonce nobody minted: nothing.
+    expect(await findOpenCheckout(t.db, { orgId: other.orgId, nonce, openSince })).toBeNull();
+    expect(await findOpenCheckout(t.db, { orgId, nonce: `nonce_${uniq()}`, openSince })).toBeNull();
+    // Too old to be open.
+    expect(
+      await findOpenCheckout(t.db, { orgId, nonce, openSince: new Date(Date.now() + 1000) }),
+    ).toBeNull();
+
+    expect(
+      await consumeCheckout(t.db, { orgId: other.orgId, subscriptionId: 'sub_x', by: { nonce } }),
+    ).toBe(false);
+    expect(await consumeCheckout(t.db, { orgId, subscriptionId: 'sub_a', by: { nonce } })).toBe(
+      true,
+    );
+    // Spent: neither another subscription nor the same one again.
+    expect(await consumeCheckout(t.db, { orgId, subscriptionId: 'sub_b', by: { sessionId } })).toBe(
+      false,
+    );
+    expect(await consumeCheckout(t.db, { orgId, subscriptionId: 'sub_a', by: { nonce } })).toBe(
+      false,
+    );
+    expect(await findOpenCheckout(t.db, { orgId, nonce, openSince })).toBeNull();
+    expect(await findCheckout(t.db, sessionId)).toMatchObject({ subscriptionId: 'sub_a' });
+  });
+
+  it('refuses a nonce minted twice', async () => {
+    const { orgId, ownerId } = await seedOrg();
+    const nonce = `nonce_${uniq()}`;
+    const base = {
+      orgId,
+      plan: 'team' as const,
+      billingInterval: 'monthly' as const,
+      quantity: 3,
+      createdBy: ownerId,
+      nonce,
+    };
+    await recordCheckout(t.db, { ...base, sessionId: `cks_${uniq()}` });
+    await expect(recordCheckout(t.db, { ...base, sessionId: `cks_${uniq()}` })).rejects.toThrow();
+  });
+
+  it('answers a repeated idempotency key with the first answer, and refuses it for another request', async () => {
+    const { orgId } = await seedOrg();
+    const key = randomUUID();
+    const request = { orgId, kind: 'checkout' as const, key, fingerprint: 'team:yearly' };
+
+    expect(await claimBillingRequest(t.db, request)).toEqual({ state: 'claimed' });
+    expect(await claimBillingRequest(t.db, request)).toEqual({ state: 'in-flight' });
+    await completeBillingRequest(t.db, { ...request, result: { url: 'https://pay.example/1' } });
+    expect(await claimBillingRequest(t.db, request)).toEqual({
+      state: 'replay',
+      result: { url: 'https://pay.example/1' },
+    });
+    expect(await claimBillingRequest(t.db, { ...request, fingerprint: 'pro:monthly' })).toEqual({
+      state: 'mismatch',
+    });
+    // The same key for the other kind is a separate request.
+    expect(await claimBillingRequest(t.db, { ...request, kind: 'change' })).toEqual({
+      state: 'claimed',
+    });
+
+    // A failed request lets go of its key; a finished one keeps its answer.
+    await releaseBillingRequest(t.db, { orgId, kind: 'change', key });
+    expect(await claimBillingRequest(t.db, { ...request, kind: 'change' })).toEqual({
+      state: 'claimed',
+    });
+    await releaseBillingRequest(t.db, { orgId, kind: 'checkout', key });
+    expect((await claimBillingRequest(t.db, request)).state).toBe('replay');
+
+    await pruneBillingRequests(t.db, new Date(Date.now() + 1000));
+    expect(await claimBillingRequest(t.db, request)).toEqual({ state: 'claimed' });
   });
 
   it('sends a reminder once per occasion', async () => {

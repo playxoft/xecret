@@ -2,6 +2,7 @@ import { actorId } from '@/server/actor';
 import { subscriptionResource } from '@/server/billing/audit';
 import {
   authorizeBilling,
+  idempotencyKeyOf,
   previewPlanChange,
   requestPlanChange,
   requireBillingSession,
@@ -26,8 +27,12 @@ import { resolveOrg } from '@/server/tenancy';
  * **Neither grants anything.** The plan changes when Dodo's
  * `subscription.plan_changed` arrives and the webhook applies it.
  *
- * Session-only, owners only (`billing.manage`); the move is rate limited like
- * a write and audited (`billing.plan_change_requested`).
+ * Session-only, owners only (`billing.manage`). Both are rate limited — the
+ * preview too, because each one is a call to Dodo on the owner's behalf, and
+ * an unthrottled one is a way to spend this deployment's Dodo rate limit from
+ * a browser tab. The move is audited (`billing.plan_change_requested`), and
+ * takes an `Idempotency-Key`: a repeat with the same key is answered as the
+ * first was and never reaches Dodo again.
  */
 
 type Params = { orgSlug: string };
@@ -35,6 +40,13 @@ type Params = { orgSlug: string };
 export const GET = authenticatedRoute<Params>(
   async ({ request, params, principal, services, audit, record }) => {
     requireBillingSession(principal);
+    // Its own bucket key, so previewing while deciding never spends the
+    // writes this owner's next click needs.
+    await enforce(
+      services.env,
+      'RL_MUTATION',
+      rateLimitKey(['billing-preview', actorId(principal)]),
+    );
     const scope = await resolveOrg(principal, params.orgSlug, services);
     authorizeBilling(scope, { audit: audit(scope.organization.id), record }, []);
 
@@ -56,7 +68,8 @@ export const POST = authenticatedRoute<Params>(
     authorizeBilling(scope, { audit: orgAudit, record }, ['billing.plan_change_requested']);
 
     const selection = await parseJsonBody(request, billingSelectionSchema);
-    const planned = await requestPlanChange(services, scope, selection);
+    const planned = await requestPlanChange(services, scope, selection, idempotencyKeyOf(request));
+    if (planned.replayed) return json({ requested: true, effective: planned.effective });
 
     record(
       orgAudit.success(

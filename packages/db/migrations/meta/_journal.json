@@ -176,6 +176,13 @@
       "when": 1788100000000,
       "tag": "0024_dodo_billing",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1788200000000,
+      "tag": "0025_dodo_billing_hardening",
+      "breakpoints": true
     }
   ]
 }

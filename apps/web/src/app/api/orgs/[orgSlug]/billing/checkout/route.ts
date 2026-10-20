@@ -1,6 +1,11 @@
 import { actorId } from '@/server/actor';
 import { subscriptionResource } from '@/server/billing/audit';
-import { authorizeBilling, requireBillingSession, startCheckout } from '@/server/billing/service';
+import {
+  authorizeBilling,
+  idempotencyKeyOf,
+  requireBillingSession,
+  startCheckout,
+} from '@/server/billing/service';
 import { json, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
 import { authenticatedRoute } from '@/server/route';
@@ -23,8 +28,12 @@ import { resolveOrg } from '@/server/tenancy';
  * Session-only (a bearer token may not start a purchase), owners only
  * (`billing.manage`), rate limited like a write, and audited
  * (`billing.checkout_started`). Refused for an organisation that already has a
- * subscription — a second one would charge twice — and for one whose plan
- * support set by hand.
+ * subscription — a second one would charge twice — for one whose paid checkout
+ * is still being applied, and for one whose plan support set by hand.
+ *
+ * `Idempotency-Key` (the billing screen sends a fresh one per click): a repeat
+ * with the same key gets the first checkout back, not a second one, and is not
+ * audited twice.
  */
 
 type Params = { orgSlug: string };
@@ -39,7 +48,14 @@ export const POST = authenticatedRoute<Params>(
     authorizeBilling(scope, { audit: orgAudit, record }, ['billing.checkout_started']);
 
     const selection = await parseJsonBody(request, billingSelectionSchema);
-    const { url, seats } = await startCheckout(services, scope, user, selection);
+    const { url, seats, replayed } = await startCheckout(
+      services,
+      scope,
+      user,
+      selection,
+      idempotencyKeyOf(request),
+    );
+    if (replayed) return json({ url });
 
     record(
       orgAudit.success('billing.checkout_started', subscriptionResource(scope.organization.id), {

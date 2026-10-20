@@ -10,11 +10,16 @@ import {
   WARN_AT,
 } from '@xecret/core/entitlements';
 import type { BillingInterval } from '@xecret/core/entitlements';
+import { toBase64Url } from '@xecret/core/crypto';
 import {
   billingCounts,
+  claimBillingRequest,
+  completeBillingRequest,
+  countOrgsWithDodoCustomer,
   currentUsage,
   findSubscription,
   recordCheckout,
+  releaseBillingRequest,
   seatedMemberCount,
 } from '@xecret/db/repositories';
 import type { SubscriptionRecord } from '@xecret/db/repositories';
@@ -83,6 +88,23 @@ export function authorizeBilling(
   );
 }
 
+/** The shape `billing_requests` accepts: what `crypto.randomUUID()` produces, and similar. */
+const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,128}$/;
+
+/**
+ * The request's `Idempotency-Key`, or `null` when it sent none. A key of the
+ * wrong shape is refused rather than ignored: a client that sent one meant to
+ * be protected by it.
+ */
+export function idempotencyKeyOf(request: Request): string | null {
+  const key = request.headers.get('idempotency-key');
+  if (key === null || key === '') return null;
+  if (!IDEMPOTENCY_KEY.test(key)) {
+    throw errors.badRequest('Idempotency-Key must be 16 to 128 letters, digits, - or _.');
+  }
+  return key;
+}
+
 /** Billing on, or the 409 that says this installation takes no payments. */
 export function requireBillingConfig(services: ServiceContext): BillingConfig {
   const setup = billingSetup(services.env);
@@ -108,6 +130,72 @@ function hasLiveSubscription(row: SubscriptionRecord): boolean {
 /** A paid plan nobody bought through checkout: an operator's grant or an Enterprise contract. */
 function managedBySupport(row: SubscriptionRecord): boolean {
   return row.dodoSubscriptionId === null && row.plan !== 'free';
+}
+
+/**
+ * A checkout that has been paid — its payment linked the subscription to the
+ * row — whose subscription has not been applied yet. A second checkout now
+ * would be a second subscription. (A row on Free that *ended* a subscription
+ * keeps its id too, but an applied snapshot left `dodo_event_at` behind.)
+ */
+function awaitingActivation(row: SubscriptionRecord): boolean {
+  return row.plan === 'free' && row.dodoSubscriptionId !== null && row.dodoEventAt === null;
+}
+
+/** Whether the row's Dodo ids belong to the mode this deployment talks to. */
+function sameMode(row: SubscriptionRecord, config: BillingConfig): boolean {
+  return row.dodoMode === null || row.dodoMode === config.mode;
+}
+
+/** A fresh checkout nonce: 128 random bits, base64url. */
+function checkoutNonce(): string {
+  return toBase64Url(crypto.getRandomValues(new Uint8Array(16)));
+}
+
+/**
+ * Runs an owner's money-moving request at most once per idempotency key.
+ *
+ * The billing screen sends a fresh key with every checkout and plan change it
+ * starts. The first request with a key runs; a repeat — a double click, a
+ * browser retrying a request whose answer it never saw — is answered with the
+ * first one's result, and never reaches Dodo a second time. A request that
+ * failed lets go of its key, so trying again with it works. No key: the
+ * request simply runs (a caller that wants no protection gets none).
+ */
+async function onceForKey<T extends Record<string, unknown>>(
+  services: ServiceContext,
+  request: { orgId: string; kind: 'checkout' | 'change'; key: string | null; fingerprint: string },
+  run: () => Promise<T>,
+): Promise<{ result: T; replayed: boolean }> {
+  if (request.key === null) return { result: await run(), replayed: false };
+  const claim = await claimBillingRequest(services.db, {
+    orgId: request.orgId,
+    kind: request.kind,
+    key: request.key,
+    fingerprint: request.fingerprint,
+  });
+  if (claim.state === 'replay') return { result: claim.result as T, replayed: true };
+  if (claim.state === 'in-flight') throw errors.billingRequestInFlight();
+  if (claim.state === 'mismatch') throw errors.billingIdempotencyMismatch();
+
+  let result: T;
+  try {
+    result = await run();
+  } catch (cause) {
+    await releaseBillingRequest(services.db, {
+      orgId: request.orgId,
+      kind: request.kind,
+      key: request.key,
+    });
+    throw cause;
+  }
+  await completeBillingRequest(services.db, {
+    orgId: request.orgId,
+    kind: request.kind,
+    key: request.key,
+    result,
+  });
+  return { result, replayed: false };
 }
 
 /** Turns a Dodo failure into the API's answer, with a log line saying which call. */
@@ -181,6 +269,7 @@ export async function billingStatus(
   const lockHolds = row.regionLockedUntil !== null && row.regionLockedUntil > now;
   const enabled = setup.state === 'enabled';
   const live = hasLiveSubscription(row);
+  const ours = setup.state === 'enabled' && sameMode(row, setup.config);
 
   return {
     enabled,
@@ -199,7 +288,9 @@ export async function billingStatus(
     renewsAt: row.currentPeriodEnd?.toISOString() ?? null,
     cancelAtPeriodEnd: row.cancelAtPeriodEnd,
     trialEndsAt: row.trialEndsAt?.toISOString() ?? null,
-    renewalAmount: formatMinor(row.renewalAmountMinor, row.currency),
+    // In Dodo's own currency for the figure: the region lock can keep another
+    // in `currency` while Dodo bills in the one it reported.
+    renewalAmount: formatMinor(row.renewalAmountMinor, row.dodoCurrency ?? row.currency),
     regionLock: lockHolds
       ? {
           until: row.regionLockedUntil!.toISOString(),
@@ -217,9 +308,9 @@ export async function billingStatus(
     warnings,
     addons: { saml: row.addonSaml },
     actions: {
-      checkout: enabled && !live && !managedBySupport(row),
-      changePlan: enabled && live,
-      portal: enabled && row.dodoCustomerId !== null,
+      checkout: enabled && !live && !managedBySupport(row) && !awaitingActivation(row),
+      changePlan: enabled && live && ours,
+      portal: enabled && ours && row.dodoCustomerId !== null,
     },
   };
 }
@@ -234,64 +325,91 @@ export const USAGE_WARN_AT = WARN_AT;
  * subscribed. Returns the URL to send the browser to.
  *
  * Refused for an organisation that already has a subscription (a second
- * checkout would charge twice — the plan is changed instead) and for one whose
- * plan support set by hand. The checkout is recorded before its URL is handed
- * out, so the payment that comes back can be placed even if Dodo does not copy
- * our metadata onto the subscription.
+ * checkout would charge twice — the plan is changed instead), for one whose
+ * paid checkout is still being applied, and for one whose plan support set by
+ * hand. The checkout is recorded — with the random nonce its metadata carries —
+ * before its URL is handed out, so the payment and the subscription that come
+ * back can be placed, and nothing that did not come from this checkout can be.
+ *
+ * A repeat of the same request (the same `idempotencyKey`) is answered with
+ * the first one's checkout instead of a second one; `replayed` says so.
  */
 export async function startCheckout(
   services: ServiceContext,
   scope: OrgScope,
   principal: Extract<Principal, { kind: 'user' }>,
   selection: { plan: PurchasablePlan; interval: BillingInterval },
-): Promise<{ url: string; seats: number }> {
+  idempotencyKey: string | null = null,
+): Promise<{ url: string; seats: number; replayed: boolean }> {
   const config = requireBillingConfig(services);
   const orgId = scope.organization.id;
-  const row = await subscriptionOf(services, orgId);
 
-  if (hasLiveSubscription(row)) throw errors.billingAlreadySubscribed();
-  if (managedBySupport(row)) throw errors.billingManagedBySupport();
-
-  const seats = providerSeats(selection.plan, await seatedMemberCount(services.db, orgId)).billed;
-  const now = new Date();
-  const lockHolds =
-    row.regionLockedUntil !== null &&
-    row.regionLockedUntil > now &&
-    row.billingCountry !== null &&
-    row.currency !== null;
-
-  let session: { sessionId: string; url: string };
-  try {
-    session = await billingProvider(config).createCheckoutSession({
-      productId: productFor(config, selection.plan, selection.interval),
-      quantity: seats,
-      customer:
-        row.dodoCustomerId !== null
-          ? { customerId: row.dodoCustomerId }
-          : { email: principal.user.email, name: principal.user.displayName },
-      returnUrl: `${billingPage(services, scope.organization.slug)}?checkout=returned`,
+  const { result, replayed } = await onceForKey(
+    services,
+    {
       orgId,
-      regionLock: lockHolds ? { country: row.billingCountry!, currency: row.currency! } : null,
-    });
-  } catch (cause) {
-    throw providerFailure(services, cause, 'creating a checkout');
-  }
+      kind: 'checkout',
+      key: idempotencyKey,
+      fingerprint: `${selection.plan}:${selection.interval}`,
+    },
+    async () => {
+      const row = await subscriptionOf(services, orgId);
+      if (hasLiveSubscription(row)) throw errors.billingAlreadySubscribed();
+      if (managedBySupport(row)) throw errors.billingManagedBySupport();
+      if (awaitingActivation(row)) throw errors.billingCheckoutPending();
 
-  // A link we send a browser to: https and nothing else.
-  if (!URL.canParse(session.url) || new URL(session.url).protocol !== 'https:') {
-    throw errors.billingProviderRefused('dodo checkout url was not https');
-  }
+      const seats = providerSeats(
+        selection.plan,
+        await seatedMemberCount(services.db, orgId),
+      ).billed;
+      const now = new Date();
+      const lockHolds =
+        row.regionLockedUntil !== null &&
+        row.regionLockedUntil > now &&
+        row.billingCountry !== null &&
+        row.currency !== null;
+      const nonce = checkoutNonce();
 
-  await recordCheckout(services.db, {
-    sessionId: session.sessionId,
-    orgId,
-    plan: selection.plan,
-    billingInterval: selection.interval,
-    quantity: seats,
-    createdBy: principal.user.id,
-  });
+      let session: { sessionId: string; url: string };
+      try {
+        session = await billingProvider(config).createCheckoutSession({
+          productId: productFor(config, selection.plan, selection.interval),
+          quantity: seats,
+          // The organisation's own customer, when it has one in this Dodo mode
+          // — only ever created by a checkout of its own, never shared with
+          // another organisation. Otherwise a new one, whatever Dodo already
+          // has for the address.
+          customer:
+            row.dodoCustomerId !== null && sameMode(row, config)
+              ? { customerId: row.dodoCustomerId }
+              : { email: principal.user.email, name: principal.user.displayName },
+          returnUrl: `${billingPage(services, scope.organization.slug)}?checkout=returned`,
+          orgId,
+          nonce,
+          regionLock: lockHolds ? { country: row.billingCountry!, currency: row.currency! } : null,
+        });
+      } catch (cause) {
+        throw providerFailure(services, cause, 'creating a checkout');
+      }
 
-  return { url: session.url, seats };
+      // A link we send a browser to: https and nothing else.
+      if (!URL.canParse(session.url) || new URL(session.url).protocol !== 'https:') {
+        throw errors.billingProviderRefused('dodo checkout url was not https');
+      }
+
+      await recordCheckout(services.db, {
+        sessionId: session.sessionId,
+        orgId,
+        plan: selection.plan,
+        billingInterval: selection.interval,
+        quantity: seats,
+        createdBy: principal.user.id,
+        nonce,
+      });
+      return { url: session.url, seats };
+    },
+  );
+  return { url: result.url, seats: result.seats, replayed };
 }
 
 /* ── plan change ───────────────────────────────────────────────────────────── */
@@ -308,12 +426,13 @@ export interface PlannedChange {
 /**
  * What moving to `selection` would ask Dodo for.
  *
- * Moving up — a higher plan, or monthly to yearly — takes effect at once,
- * prorated for the rest of the period. Moving down waits for the end of the
- * period already paid for (pricing FAQ, "Can I move between plans?"), and
- * nothing is deleted when it lands. Either way the seats are counted, and
- * floored at the new plan's minimum; and a change whose charge fails is not
- * applied.
+ * Moving up — a higher plan, or monthly to yearly — takes effect at once:
+ * Dodo's `prorated_immediately` credits the unused part of the current period
+ * and charges a full period of the new plan, which starts that day. Moving
+ * down waits for the end of the period already paid for (pricing FAQ, "Can I
+ * move between plans?"), and nothing is deleted when it lands. Either way the
+ * seats are counted, and floored at the new plan's minimum; and a change whose
+ * charge fails is not applied.
  */
 async function planChange(
   services: ServiceContext,
@@ -327,6 +446,7 @@ async function planChange(
   if (!hasLiveSubscription(row) || row.dodoSubscriptionId === null) {
     throw errors.billingNoSubscription();
   }
+  if (!sameMode(row, config)) throw errors.billingOtherMode();
 
   const current = resolvePlanId(row.plan);
   if (current === selection.plan && row.billingInterval === selection.interval) {
@@ -390,23 +510,47 @@ export async function previewPlanChange(
   };
 }
 
+/** What a plan change request answered, as a replay of its key answers it too. */
+export interface RequestedChange {
+  effective: 'now' | 'renewal';
+  seats: number;
+  previous: { plan: string; interval: BillingInterval | null };
+}
+
 /**
  * Asks Dodo to move the subscription. **Grants nothing**: the plan changes
  * when Dodo's `subscription.plan_changed` arrives and the webhook applies it.
+ *
+ * A repeat of the same request (the same `idempotencyKey`) is answered with
+ * the first one's answer and never reaches Dodo again — an upgrade asked twice
+ * is one proration, not two.
  */
 export async function requestPlanChange(
   services: ServiceContext,
   scope: OrgScope,
   selection: { plan: PurchasablePlan; interval: BillingInterval },
-): Promise<PlannedChange> {
+  idempotencyKey: string | null = null,
+): Promise<RequestedChange & { replayed: boolean }> {
   const config = requireBillingConfig(services);
-  const planned = await planChange(services, scope, config, selection);
-  try {
-    await billingProvider(config).changePlan(planned.subscriptionId, planned.change);
-  } catch (cause) {
-    throw providerFailure(services, cause, 'changing a plan');
-  }
-  return planned;
+  const { result, replayed } = await onceForKey(
+    services,
+    {
+      orgId: scope.organization.id,
+      kind: 'change',
+      key: idempotencyKey,
+      fingerprint: `${selection.plan}:${selection.interval}`,
+    },
+    async () => {
+      const planned = await planChange(services, scope, config, selection);
+      try {
+        await billingProvider(config).changePlan(planned.subscriptionId, planned.change);
+      } catch (cause) {
+        throw providerFailure(services, cause, 'changing a plan');
+      }
+      return { effective: planned.effective, seats: planned.seats, previous: planned.previous };
+    },
+  );
+  return { ...result, replayed };
 }
 
 /* ── the customer portal ───────────────────────────────────────────────────── */
@@ -420,6 +564,21 @@ export async function openPortal(services: ServiceContext, scope: OrgScope): Pro
   const config = requireBillingConfig(services);
   const row = await subscriptionOf(services, scope.organization.id);
   if (row.dodoCustomerId === null) throw errors.billingNoSubscription();
+  if (!sameMode(row, config)) throw errors.billingOtherMode();
+  // The portal shows a customer's every card and invoice. Opened only for a
+  // customer this organisation alone holds: one shared with another
+  // organisation — possible only for rows from before checkouts forced a
+  // customer per organisation — is refused, and raised for a human to split.
+  if ((await countOrgsWithDodoCustomer(services.db, row.dodoCustomerId)) !== 1) {
+    services.log
+      .at('billing')
+      .error(
+        'An organisation’s Dodo customer is held by another organisation too; its customer ' +
+          'portal was not opened. Give each organisation its own customer in Dodo',
+        { orgId: scope.organization.id },
+      );
+    throw errors.billingSharedCustomer();
+  }
 
   let link: string;
   try {

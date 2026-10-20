@@ -3,10 +3,17 @@ import { randomUUID } from 'node:crypto';
 import { UNCAPPED_SEAT_LIMIT } from '@xecret/core/entitlements';
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '@xecret/db/testing';
 import type { TestDatabase } from '@xecret/db/testing';
-import { findSubscription, listSeatSyncs } from '@xecret/db/repositories';
+import {
+  addMember as addOrgMember,
+  findSubscription,
+  listDueSeatSyncs,
+  listSeatSyncs,
+  SEAT_SYNC_MAX_ATTEMPTS,
+} from '@xecret/db/repositories';
 import type { Bindings } from '../bindings';
 import { createLogger } from '../logging';
 import type { LogEntry } from '../logging';
+import type { MailMessage } from '../mail';
 
 /**
  * Seat sync: the membership changes, the bill follows — after the commit,
@@ -18,6 +25,14 @@ const dodo = vi.hoisted(() => ({ changePlan: vi.fn() }));
 vi.mock('./client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./client')>()),
   billingProvider: () => dodo,
+}));
+const mail = vi.hoisted(() => ({ sent: [] as MailMessage[] }));
+vi.mock('../mail', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../mail')>()),
+  mailerFrom: (env: Bindings) =>
+    env.ZEPTOMAIL_TOKEN
+      ? { send: async (message: MailMessage) => void mail.sent.push(message) }
+      : null,
 }));
 
 const { assertNotStillBilled, syncSeats } = await import('./seats');
@@ -71,6 +86,7 @@ beforeEach(() => {
   dodo.changePlan.mockReset();
   dodo.changePlan.mockResolvedValue(undefined);
   lines = [];
+  mail.sent = [];
 });
 
 async function seedUser(): Promise<string> {
@@ -146,7 +162,7 @@ describe('syncSeats', () => {
     expect(dodo.changePlan).toHaveBeenCalledWith(`sub_${orgId.slice(0, 12)}`, {
       productId: 'pdt_team_m',
       quantity: 4,
-      proration: 'difference_immediately',
+      proration: 'prorated_immediately_keep_cycle',
       effectiveAt: 'immediately',
       onPaymentFailure: 'apply_change',
     });
@@ -256,6 +272,141 @@ describe('syncSeats', () => {
     dodo.changePlan.mockRejectedValue(new DodoApiError('invalid', 422, 'BAD'));
     await syncSeats(services(), orgId);
     expect(JSON.stringify(lines)).not.toContain('cus_example0001');
+  });
+});
+
+describe('the seat debt and the push, round 1', () => {
+  /** A member joining the way the product does it: through the repository, in a transaction. */
+  async function join(orgId: string): Promise<void> {
+    const userId = await seedUser();
+    await t.db.transaction(async (tx) => {
+      await addOrgMember(tx, { orgId, userId, role: 'developer', invitedBy: null });
+    });
+  }
+
+  it('owes the seat from the membership’s own commit — even if no push ever runs', async () => {
+    const orgId = await billedOrg(3, 3);
+    // The join commits; the isolate is gone before `waitUntil` could push.
+    await join(orgId);
+    expect((await listSeatSyncs(t.db, 1000)).some((debt) => debt.orgId === orgId)).toBe(true);
+
+    // The hourly job finds the debt and pushes the count as it is.
+    expect(await syncSeats(services(), orgId)).toBe('synced');
+    expect(
+      dodo.changePlan.mock.calls.map((call) => (call[1] as { quantity: number }).quantity),
+    ).toEqual([4]);
+    expect((await listSeatSyncs(t.db, 1000)).some((debt) => debt.orgId === orgId)).toBe(false);
+  });
+
+  it('converges on the membership when two pushes race — the sixth member’s push never lands last', async () => {
+    const orgId = await billedOrg(5, 5);
+    // The sixth joins and its push goes to Dodo — slowly.
+    await join(orgId);
+    let release!: () => void;
+    const slow = new Promise<void>((resolve) => (release = resolve));
+    let first = true;
+    /** The quantities in the order Dodo *applied* them — the last one is what it bills. */
+    const landed: number[] = [];
+    dodo.changePlan.mockImplementation(async (_id: string, change: { quantity: number }) => {
+      if (first) {
+        first = false;
+        await slow;
+      }
+      landed.push(change.quantity);
+    });
+    const pushSix = syncSeats(services(), orgId);
+    await vi.waitFor(() => expect(dodo.changePlan).toHaveBeenCalledTimes(1));
+
+    // The seventh joins while it is in flight; its push finds the first one
+    // holding the organisation and leaves the work to it.
+    await join(orgId);
+    expect(await syncSeats(services(), orgId)).toBe('busy');
+
+    release();
+    expect(await pushSix).toBe('synced');
+    // The last quantity Dodo applied is the membership's — never the stale six.
+    expect(landed).toEqual([6, 7]);
+    expect((await findSubscription(t.db, orgId))?.seats).toBe(7);
+    expect((await listSeatSyncs(t.db, 1000)).some((debt) => debt.orgId === orgId)).toBe(false);
+  });
+
+  it('waits for a plan change Dodo has scheduled instead of colliding with it', async () => {
+    const effective = new Date(Date.now() + 10 * 86_400_000);
+    const orgId = await billedOrg(3, 4, { dodo_scheduled_change_at: effective });
+    expect(await syncSeats(services(), orgId)).toBe('deferred');
+    expect(dodo.changePlan).not.toHaveBeenCalled();
+    const debt = (await listSeatSyncs(t.db, 1000)).find((row) => row.orgId === orgId);
+    expect(debt?.notBefore?.getTime()).toBeGreaterThan(effective.getTime());
+    expect(debt?.attempts).toBe(0);
+  });
+
+  it('waits, too, when Dodo answers 409 for a change it has scheduled that we had not heard of', async () => {
+    const orgId = await billedOrg(3, 4);
+    dodo.changePlan.mockRejectedValue(new DodoApiError('conflict', 409));
+    expect(await syncSeats(services(), orgId)).toBe('deferred');
+    const debt = (await listSeatSyncs(t.db, 1000)).find((row) => row.orgId === orgId);
+    expect(debt).toMatchObject({ attempts: 0, lastError: 'scheduled_change' });
+    expect(debt?.notBefore?.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('gives up after the cap, raises it once, and stops crowding the retry list', async () => {
+    const orgId = await billedOrg(3, 4);
+    await t.pg.query(`insert into billing_seat_syncs (org_id, attempts) values ($1, $2)`, [
+      orgId,
+      SEAT_SYNC_MAX_ATTEMPTS - 1,
+    ]);
+    dodo.changePlan.mockRejectedValue(new DodoApiError('upstream_5xx', 503));
+    expect(await syncSeats(services(), orgId)).toBe('failed');
+    const alerts = () =>
+      lines.filter((line) => line.level === 'error' && /no longer retried/.test(line.message));
+    expect(alerts()).toHaveLength(1);
+    const debt = (await listSeatSyncs(t.db, 1000)).find((row) => row.orgId === orgId);
+    expect(debt?.deadLetteredAt).not.toBeNull();
+    expect(
+      (await listDueSeatSyncs(t.db, new Date(Date.now() + 2 * 86_400_000), 1000)).some(
+        (row) => row.orgId === orgId,
+      ),
+    ).toBe(false);
+
+    // Tried again by hand: no second alert.
+    await syncSeats(services(), orgId);
+    expect(alerts()).toHaveLength(1);
+  });
+
+  it('tells the owners the new seat count once the push lands, once', async () => {
+    const orgId = await billedOrg(3, 4);
+    const mailEnv = {
+      ...BILLING_ENV,
+      ZEPTOMAIL_TOKEN: 'token',
+      ZEPTOMAIL_FROM_ADDRESS: 'no-reply@example.com',
+    };
+    expect(await syncSeats(services(mailEnv), orgId)).toBe('synced');
+    expect(mail.sent.map((message) => message.subject)).toEqual(['Acme is now billed for 4 seats']);
+    expect(mail.sent[0]!.text).toContain('it was 3');
+
+    // Nothing moved: nothing pushed, nothing sent.
+    expect(await syncSeats(services(mailEnv), orgId)).toBe('in-sync');
+    expect(mail.sent).toHaveLength(1);
+  });
+
+  it('sends no email when the push failed', async () => {
+    const orgId = await billedOrg(3, 4);
+    dodo.changePlan.mockRejectedValue(new DodoApiError('upstream_5xx', 503));
+    await syncSeats(
+      services({
+        ...BILLING_ENV,
+        ZEPTOMAIL_TOKEN: 'token',
+        ZEPTOMAIL_FROM_ADDRESS: 'n@example.com',
+      }),
+      orgId,
+    );
+    expect(mail.sent).toEqual([]);
+  });
+
+  it('never pushes for a row recorded under the other Dodo mode', async () => {
+    const orgId = await billedOrg(3, 4, { dodo_mode: 'live_mode' });
+    expect(await syncSeats(services(), orgId)).toBe('not-billed');
+    expect(dodo.changePlan).not.toHaveBeenCalled();
   });
 });
 

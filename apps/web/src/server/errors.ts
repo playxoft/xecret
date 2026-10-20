@@ -533,6 +533,61 @@ export const errors = {
   billingSamePlan: (): ApiError =>
     new ApiError('bad_request', 'This organisation is already on that plan and billing period.'),
 
+  /**
+   * A checkout was paid and its subscription is still being applied: a second
+   * checkout now would be a second subscription.
+   */
+  billingCheckoutPending: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'A payment for this organisation went through and its plan is still being applied. Give ' +
+        'it a minute and reload — starting another checkout now would charge twice. Nothing was ' +
+        'charged.',
+      { logDetail: 'linked subscription not yet active' },
+    ),
+
+  /**
+   * The organisation's subscription belongs to the other Dodo mode (a test
+   * subscription on a live deployment, or the reverse), so this deployment
+   * cannot act on it.
+   */
+  billingOtherMode: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation’s subscription was made in a different payment environment from the ' +
+        'one this installation uses, so it cannot be changed from here. Contact support with ' +
+        'the request id. Nothing was changed or charged.',
+      { logDetail: 'subscription from the other dodo mode' },
+    ),
+
+  /** The organisation's payment customer is held by another organisation too. */
+  billingSharedCustomer: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation’s billing account is shared with another organisation, so its payment ' +
+        'portal cannot be opened from here without showing the other one’s invoices. Contact ' +
+        'support with the request id and we will separate them.',
+      { logDetail: 'dodo customer held by more than one organisation' },
+    ),
+
+  /** The same idempotency key, still being answered. */
+  billingRequestInFlight: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'That request is already being handled. Wait a moment and reload the billing page — ' +
+        'nothing will be charged twice.',
+      { logDetail: 'idempotency key in flight' },
+    ),
+
+  /** An idempotency key reused for a different request. */
+  billingIdempotencyMismatch: (): ApiError =>
+    new ApiError(
+      'bad_request',
+      'This request reuses the idempotency key of a different request. Nothing was changed or ' +
+        'charged.',
+      { logDetail: 'idempotency key reused for another request' },
+    ),
+
   /** Dodo refused because an earlier change is still waiting to take effect. */
   billingChangePending: (): ApiError =>
     new ApiError(

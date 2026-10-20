@@ -7,6 +7,7 @@ import { customRoles } from '../schema/roles';
 import { users } from '../schema/identity';
 import { environments, projects } from '../schema/resources';
 import { invitations, orgMemberRemovals, orgMembers, organizations } from '../schema/tenancy';
+import { queueBilledSeatSync } from './billing';
 import { RepositoryError, clampPageSize } from './shared';
 import type { Executor } from './shared';
 
@@ -608,6 +609,12 @@ export async function addMember(
     throw new RepositoryError('conflict', 'That user is already a member of this organisation.');
   }
 
+  // A seat was taken. On a subscription the payment provider bills, the new
+  // count is owed to it — recorded here, in the caller's transaction, so the
+  // debt commits with the membership whether or not the push after the commit
+  // ever runs (P12 seat sync). Nothing is written for any other organisation.
+  await queueBilledSeatSync(exec, params.orgId);
+
   return row;
 }
 
@@ -780,6 +787,10 @@ export async function removeMember(
     // than they held. Withdrawn here, under the organisation lock
     // `lockForChange` took; the way back is a fresh invitation.
     await revokeOpenInvitationsFor(tx, { orgId: params.orgId, userId: member.userId });
+
+    // A seat was freed: the seat-sync debt commits with the removal, as
+    // `addMember` explains.
+    await queueBilledSeatSync(tx, params.orgId);
   });
 }
 

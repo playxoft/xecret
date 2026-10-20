@@ -116,6 +116,7 @@ const billedTeam = () =>
     dodo_product_id: 'pdt_team_m',
     current_period_start: PERIOD_START,
     current_period_end: new Date(Date.now() + 27 * 86_400_000),
+    metered_from: PERIOD_START,
   });
 
 async function setFetches(orgId: string, fetches: number, unitsSent = 0) {
@@ -140,55 +141,74 @@ const sentEvents = (): UsageEvent[] =>
   dodo.ingestUsage.mock.calls.flatMap((call) => call[0] as UsageEvent[]);
 
 describe('countSecretFetch', () => {
+  /** Lets the flush timer a count armed run out, and waits for what it wrote. */
+  async function afterInterval(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(usage.FLUSH_INTERVAL_MS);
+    await Promise.allSettled(deferred);
+  }
+
   it('writes nothing on the fetch itself, and flushes from waitUntil', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
     const orgId = await seedOrg();
     const before = t.statements.length;
     usage.countSecretFetch(services(), orgId);
     // Nothing was awaited and nothing was sent: the flush is only queued.
     expect(t.statements.length).toBe(before);
     expect(deferred).toHaveLength(1);
-    await Promise.all(deferred);
+    await afterInterval();
     expect((await currentUsage(t.db, orgId)).secretFetches).toBe(1);
   });
 
-  it('accumulates between flushes and loses nothing it was told', async () => {
+  it('flushes a quiet isolate within the interval, without waiting for another fetch', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
     const orgId = await seedOrg();
     const ctx = services();
-    usage.countSecretFetch(ctx, orgId); // the isolate's first: flushed at once
-    for (let index = 0; index < 20; index += 1) usage.countSecretFetch(ctx, orgId);
-    // Twenty more inside the interval and under the threshold: held.
+    for (let index = 0; index < 3; index += 1) usage.countSecretFetch(ctx, orgId);
+    // No fetch follows — the isolate goes quiet. The first count's own
+    // waitUntil holds the timer that writes them.
+    await vi.advanceTimersByTimeAsync(usage.FLUSH_INTERVAL_MS - 1000);
+    expect((await currentUsage(t.db, orgId)).secretFetches).toBe(0);
+    await afterInterval();
+    expect((await currentUsage(t.db, orgId)).secretFetches).toBe(3);
+  });
+
+  it('accumulates between flushes and loses nothing it was told', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    const orgId = await seedOrg();
+    const ctx = services();
+    for (let index = 0; index < 21; index += 1) usage.countSecretFetch(ctx, orgId);
+    // One timer for all of them, under the threshold: held until it fires.
     expect(deferred).toHaveLength(1);
-    await Promise.all(deferred);
-    await usage.flushFetchCounts(ctx);
+    await afterInterval();
     expect((await currentUsage(t.db, orgId)).secretFetches).toBe(21);
   });
 
   it('flushes once enough fetches are waiting, without waiting for the interval', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
     const orgId = await seedOrg();
     const ctx = services();
-    usage.countSecretFetch(ctx, orgId);
-    await Promise.all(deferred);
-    deferred = [];
     for (let index = 0; index < usage.FLUSH_AT_COUNT; index += 1)
       usage.countSecretFetch(ctx, orgId);
-    expect(deferred).toHaveLength(1);
-    await Promise.all(deferred);
-    expect((await currentUsage(t.db, orgId)).secretFetches).toBe(1 + usage.FLUSH_AT_COUNT);
+    // The timer the first one armed, and the flush the fiftieth triggered.
+    expect(deferred).toHaveLength(2);
+    await Promise.all([deferred[1]]);
+    expect((await currentUsage(t.db, orgId)).secretFetches).toBe(usage.FLUSH_AT_COUNT);
   });
 
   it('drops a batch whose write failed rather than risk counting it twice — and never throws', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
     const orgId = await seedOrg();
     const broken = services({
       db: { execute: () => Promise.reject(new Error('connection reset')) },
     });
     expect(() => usage.countSecretFetch(broken, orgId)).not.toThrow();
-    await Promise.allSettled(deferred);
+    await afterInterval();
     expect(lines.some((line) => line.level === 'warn' && /dropped/.test(line.message))).toBe(true);
 
     // The next flush starts from nothing: the failed batch is not resent.
     usage.countSecretFetch(services(), orgId);
     await usage.flushFetchCounts(services());
-    await Promise.allSettled(deferred);
+    await afterInterval();
     expect((await currentUsage(t.db, orgId)).secretFetches).toBe(1);
   });
 });
@@ -260,6 +280,44 @@ describe('flushUsageToDodo', () => {
     await setFetches(orgId, 1_200_000);
     await usage.flushUsageToDodo(services());
     expect(sentEvents()).toEqual([]);
+  });
+
+  it('never bills what was fetched before the subscription — Free usage, then an upgrade', async () => {
+    // A heavy month on Free, then a Team checkout three days ago.
+    const orgId = await billedTeam();
+    const freeMonth = new Date(PERIOD_START.getTime() - 20 * 86_400_000);
+    await t.pg.query(
+      `insert into org_usage_counters (org_id, period_start, secret_fetches) values ($1, $2, $3)`,
+      [orgId, freeMonth, 9_000_000],
+    );
+    await setFetches(orgId, 1_000_500); // the paid period: no whole unit over yet
+
+    const report = await usage.flushUsageToDodo(services());
+    expect(report.units).toBe(0);
+    expect(sentEvents()).toEqual([]);
+  });
+
+  it('never bills a trial’s usage once it converts', async () => {
+    const trialEnd = PERIOD_START;
+    const orgId = await seedOrg({
+      plan: 'team',
+      billing_interval: 'monthly',
+      status: 'active',
+      seats: 3,
+      dodo_customer_id: `cus_${randomUUID().replaceAll('-', '').slice(0, 12)}`,
+      dodo_subscription_id: `sub_${randomUUID().replaceAll('-', '').slice(0, 12)}`,
+      dodo_product_id: 'pdt_team_m',
+      current_period_start: trialEnd,
+      current_period_end: new Date(Date.now() + 27 * 86_400_000),
+      trial_ends_at: trialEnd,
+      metered_from: trialEnd,
+    });
+    await t.pg.query(
+      `insert into org_usage_counters (org_id, period_start, secret_fetches) values ($1, $2, $3)`,
+      [orgId, new Date(trialEnd.getTime() - 14 * 86_400_000), 5_000_000],
+    );
+    await usage.flushUsageToDodo(services());
+    expect(sentEvents().filter((event) => event.eventId.startsWith(orgId))).toEqual([]);
   });
 
   it('never meters a trial, Free, an operator’s grant, or a deployment with payments off', async () => {

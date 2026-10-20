@@ -4,6 +4,7 @@ import {
   appendAuditEvents,
   claimWebhookEvent,
   findCheckout,
+  findOpenCheckout,
   findOrgIdByDodoCustomer,
   findOrgIdByDodoSubscription,
   liveOrganizationExists,
@@ -12,9 +13,9 @@ import type { Executor } from '@xecret/db/repositories';
 import type { ServiceContext } from '../context';
 import { errors } from '../errors';
 import { json, readRawBody } from '../http';
-import { catalogEntryFor, billingSetup } from './config';
+import { catalogEntryFor, billingSetup, CHECKOUT_OPEN_MS } from './config';
 import type { BillingConfig } from './config';
-import { ORG_METADATA_KEY } from './client';
+import { CHECKOUT_NONCE_METADATA_KEY, ORG_METADATA_KEY } from './client';
 import { systemAudit } from './audit';
 import { noOutcome, runBillingEffects } from './effects';
 import type { HandlerOutcome } from './effects';
@@ -52,8 +53,13 @@ import {
  *     be replayed later; a replay inside the window is stopped by step 5.
  *  4. **Where it goes**: the organisation, from our own records — the
  *     subscription id we stored, the checkout session we created — or from
- *     the organisation id we put in the metadata, which Dodo signs back to us.
- *     Never from anything a browser sent.
+ *     the metadata our checkout put on it, which Dodo signs back to us: the
+ *     organisation id **and the checkout's nonce**, which must match an open
+ *     checkout of that organisation in `billing_checkouts`. Metadata alone is
+ *     not enough — anybody can buy one of our products through a link with
+ *     an organisation id typed into its metadata, and Dodo would sign that
+ *     too. Such an event is claimed, attached to nothing, and raised. Never
+ *     from anything a browser sent.
  *  5. **The claim**: `INSERT` into `billing_webhook_events`, whose primary key
  *     is `webhook-id`. A delivery already claimed answers 200 at once and
  *     changes nothing. This is a real unique constraint, not a SELECT before
@@ -80,10 +86,23 @@ export const MAX_WEBHOOK_BODY_BYTES = 256 * 1024;
 /** `webhook-id` as Standard Webhooks shapes it (`msg_…`), bounded before it reaches a primary key. */
 const WEBHOOK_ID = /^[A-Za-z0-9_.:-]{1,255}$/;
 
+/** An open checkout of the organisation's, by what the event named it with. */
+type CheckoutRef = { sessionId: string } | { nonce: string };
+
 type Placement =
-  | { orgId: string; placedByCheckout: boolean }
-  /** Not placed; `retry` when the event is ours and a later delivery could place it. */
-  | { orgId: null; retry: boolean };
+  | {
+      orgId: string;
+      /** The open checkout the event came from — `null` when placed by our stored subscription id or customer. */
+      checkout: CheckoutRef | null;
+      /** What that checkout was buying. */
+      checkoutPlan: string | null;
+    }
+  /**
+   * Not placed; `retry` when the event is ours and a later delivery could
+   * place it; `foreign` when its metadata named one of our organisations
+   * without a checkout of that organisation's to back it.
+   */
+  | { orgId: null; retry: boolean; foreign?: boolean };
 
 export async function receiveDodoWebhook(
   services: ServiceContext,
@@ -152,10 +171,10 @@ export async function receiveDodoWebhook(
     throw errors.badRequest('Unrecognised webhook payload.');
   }
 
-  const placement =
+  const placement: Placement =
     prepared === 'unhandled'
       ? { orgId: null, retry: false }
-      : await place(services.db, prepared, config);
+      : await place(services.db, prepared, config, now);
 
   // An event for one of our subscriptions that cannot be placed *yet*: the
   // `subscription.active` of a checkout whose first payment — the event that
@@ -182,6 +201,17 @@ export async function receiveDodoWebhook(
       placement.orgId === null ? null : systemAudit(services, placement.orgId, 'Dodo webhook');
     let outcome: HandlerOutcome = noOutcome();
 
+    if (placement.orgId === null && placement.foreign === true) {
+      outcome.effects.push({
+        kind: 'alert',
+        message:
+          `A signed ${eventType} names one of our organisations in its metadata but carries no ` +
+          'nonce of an open checkout of that organisation — attached to nothing. A purchase ' +
+          'outside our checkout (a payment link with metadata typed in): refund or cancel it in Dodo',
+        fields: { webhookId, eventType },
+      });
+    }
+
     if (prepared !== 'unhandled') {
       switch (prepared.family) {
         case 'subscription':
@@ -195,6 +225,7 @@ export async function receiveDodoWebhook(
               config,
               audit,
               webhookId,
+              checkout: placement.checkout,
             });
           }
           break;
@@ -204,7 +235,10 @@ export async function receiveDodoWebhook(
               orgId: placement.orgId,
               eventType: prepared.type,
               payment: prepared.payment,
-              placedByCheckout: placement.placedByCheckout,
+              checkout: placement.checkout,
+              checkoutPlan: placement.checkoutPlan,
+              mode: config.mode,
+              now,
               audit,
             });
           }
@@ -310,49 +344,85 @@ function prepare(type: string, data: unknown): Prepared | 'unhandled' | 'malform
 /* ── placement: which organisation, from our own records ─────────────────── */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const NONCE = /^[A-Za-z0-9_-]{16,128}$/;
 
-/** The organisation id we put in the metadata, if it names a live organisation. */
+/**
+ * The organisation our checkout's metadata names — only with the nonce of an
+ * open checkout of that same organisation beside it. `foreign` when metadata
+ * names a live organisation of ours without one: somebody else's purchase
+ * wearing our organisation id.
+ */
 async function fromMetadata(
   exec: Executor,
   metadata: Record<string, unknown> | null | undefined,
-): Promise<string | null> {
+  now: Date,
+): Promise<{ orgId: string; nonce: string; plan: string } | { foreign: boolean }> {
   const value = metadata?.[ORG_METADATA_KEY];
-  if (typeof value !== 'string' || !UUID.test(value)) return null;
-  return (await liveOrganizationExists(exec, value)) ? value.toLowerCase() : null;
+  if (typeof value !== 'string' || !UUID.test(value)) return { foreign: false };
+  const orgId = value.toLowerCase();
+  if (!(await liveOrganizationExists(exec, orgId))) return { foreign: false };
+
+  const nonce = metadata?.[CHECKOUT_NONCE_METADATA_KEY];
+  if (typeof nonce !== 'string' || !NONCE.test(nonce)) return { foreign: true };
+  const checkout = await findOpenCheckout(exec, {
+    orgId,
+    nonce,
+    openSince: new Date(now.getTime() - CHECKOUT_OPEN_MS),
+  });
+  return checkout === null ? { foreign: true } : { orgId, nonce, plan: checkout.plan };
 }
 
 async function place(
   exec: Executor,
   prepared: Prepared,
   config: BillingConfig,
+  now: Date,
 ): Promise<Placement> {
   switch (prepared.family) {
     case 'subscription': {
       const { subscription } = prepared;
       const byId = await findOrgIdByDodoSubscription(exec, subscription.subscription_id);
-      if (byId) return { orgId: byId, placedByCheckout: false };
-      const byMetadata = await fromMetadata(exec, subscription.metadata);
-      if (byMetadata) return { orgId: byMetadata, placedByCheckout: true };
-      // Not placed. Ours (a product we sell) is worth retrying for; anything
-      // else — a self-host licence subscription — never belonged to an
-      // organisation and is claimed and left alone.
+      if (byId) return { orgId: byId, checkout: null, checkoutPlan: null };
+      const byMetadata = await fromMetadata(exec, subscription.metadata, now);
+      if ('orgId' in byMetadata) {
+        return {
+          orgId: byMetadata.orgId,
+          checkout: { nonce: byMetadata.nonce },
+          checkoutPlan: byMetadata.plan,
+        };
+      }
+      if (byMetadata.foreign) return { orgId: null, retry: false, foreign: true };
+      // Not placed. Ours (a product we sell) is worth retrying for — its first
+      // payment may yet link it; anything else — a self-host licence
+      // subscription — never belonged to an organisation and is claimed and
+      // left alone.
       return { orgId: null, retry: catalogEntryFor(config, subscription.product_id) !== null };
     }
     case 'payment': {
       const { payment } = prepared;
       if (payment.subscription_id) {
         const byId = await findOrgIdByDodoSubscription(exec, payment.subscription_id);
-        if (byId) return { orgId: byId, placedByCheckout: false };
+        if (byId) return { orgId: byId, checkout: null, checkoutPlan: null };
       }
       if (payment.checkout_session_id) {
         const checkout = await findCheckout(exec, payment.checkout_session_id);
         if (checkout && (await liveOrganizationExists(exec, checkout.orgId))) {
-          return { orgId: checkout.orgId, placedByCheckout: true };
+          return {
+            orgId: checkout.orgId,
+            checkout: { sessionId: checkout.sessionId },
+            checkoutPlan: checkout.plan,
+          };
         }
       }
-      const byMetadata = await fromMetadata(exec, payment.metadata);
-      if (byMetadata) return { orgId: byMetadata, placedByCheckout: true };
-      return { orgId: null, retry: false };
+      const byMetadata = await fromMetadata(exec, payment.metadata, now);
+      if ('orgId' in byMetadata) {
+        return {
+          orgId: byMetadata.orgId,
+          checkout: { nonce: byMetadata.nonce },
+          checkoutPlan: byMetadata.plan,
+        };
+      }
+      return { orgId: null, retry: false, foreign: byMetadata.foreign };
     }
     case 'refund':
     case 'dispute':
@@ -362,7 +432,7 @@ async function place(
       // in somebody else's audit log.
       if (prepared.family === 'refund' && prepared.refund.customer) {
         const orgId = await findOrgIdByDodoCustomer(exec, prepared.refund.customer.customer_id);
-        if (orgId) return { orgId, placedByCheckout: false };
+        if (orgId) return { orgId, checkout: null, checkoutPlan: null };
       }
       return { orgId: null, retry: false };
   }

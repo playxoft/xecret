@@ -2,7 +2,6 @@ import {
   claimReminder,
   findBillingOrganization,
   listOwnerRecipients,
-  reminderSentSince,
 } from '@xecret/db/repositories';
 import type { Database } from '@xecret/db';
 import { publicOrigin } from '../bindings';
@@ -25,10 +24,14 @@ import type { BillingReminder } from './mail';
  * dashboard banner and Dodo's own retries behind it — while five copies of it
  * is the mail bomb a reminder system must never become.
  *
- * ── Throttled, by kind ──
+ * ── Payment failures: once a day, by the same key ──
  * Payment failures repeat on Dodo's dunning schedule, and each retry is a new
- * payment with an occasion of its own. One email per organisation per
- * {@link PAYMENT_FAILED_THROTTLE_MS} is the most anybody needs to be told.
+ * payment. One email per organisation per UTC day is the most anybody needs to
+ * be told — and it is enforced the same way as every other reminder, by the
+ * primary key: the occasion of a payment failure is the day
+ * ({@link paymentFailedOccasion}), whatever the caller named. A
+ * read-then-claim throttle let two failures arriving together both read "none
+ * sent today" and both send.
  *
  * ── Degrades to nothing but the dashboard ──
  * A deployment with no mail provider sends nothing and claims nothing; the
@@ -37,9 +40,12 @@ import type { BillingReminder } from './mail';
  * all suspended or deleted is told nothing either — there is nobody to tell.
  */
 
-export const PAYMENT_FAILED_THROTTLE_MS = 20 * 60 * 60 * 1000;
+/** The occasion every payment-failure email of a UTC day shares: at most one a day. */
+export function paymentFailedOccasion(now: Date): string {
+  return `day:${now.toISOString().slice(0, 10)}`;
+}
 
-export type ReminderOutcome = 'sent' | 'duplicate' | 'throttled' | 'no-mailer' | 'no-recipients';
+export type ReminderOutcome = 'sent' | 'duplicate' | 'no-mailer' | 'no-recipients';
 
 export interface ReminderServices {
   env: Bindings;
@@ -51,7 +57,9 @@ export async function sendBillingReminder(
   services: ReminderServices,
   params: { orgId: string; occasion: string; reminder: BillingReminder },
 ): Promise<ReminderOutcome> {
-  const { orgId, occasion, reminder } = params;
+  const { orgId, reminder } = params;
+  const occasion =
+    reminder.kind === 'payment_failed' ? paymentFailedOccasion(new Date()) : params.occasion;
   const log = services.log.at('sendBillingReminder');
 
   const mailer = mailerFrom(services.env);
@@ -61,18 +69,6 @@ export async function sendBillingReminder(
   if (organization === null) return 'no-recipients';
   const recipients = await listOwnerRecipients(services.db, orgId);
   if (recipients.length === 0) return 'no-recipients';
-
-  if (
-    reminder.kind === 'payment_failed' &&
-    (await reminderSentSince(
-      services.db,
-      orgId,
-      'payment_failed',
-      new Date(Date.now() - PAYMENT_FAILED_THROTTLE_MS),
-    ))
-  ) {
-    return 'throttled';
-  }
 
   if (!(await claimReminder(services.db, { orgId, kind: reminder.kind, occasion }))) {
     return 'duplicate';
