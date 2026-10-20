@@ -18,6 +18,7 @@ import {
   environmentPatchSchema,
   toEnvironment,
 } from '@/server/schemas/resources';
+import { assertEnvironmentRemovable, parentSlugOf } from '@/server/references-service';
 import { authorize, resolveEnvironmentPath } from '@/server/tenancy';
 
 /**
@@ -45,7 +46,8 @@ export const GET = authenticatedRoute<Params>(async ({ params, principal, servic
   // decrypted?" stays answerable by grep.
   const secretCount = await countSecrets(services.db, scope.organization.id, scope.environment.id);
 
-  return json({ environment: { ...toEnvironment(scope.environment), secretCount } });
+  const parentSlug = await parentSlugOf(services, scope.organization.id, scope.environment);
+  return json({ environment: { ...toEnvironment(scope.environment, parentSlug), secretCount } });
 });
 
 export const PATCH = authenticatedRoute<Params>(
@@ -130,7 +132,12 @@ export const PATCH = authenticatedRoute<Params>(
       }),
     );
 
-    return json({ environment: toEnvironment(environment) });
+    return json({
+      environment: toEnvironment(
+        environment,
+        await parentSlugOf(services, scope.organization.id, environment),
+      ),
+    });
   },
 );
 
@@ -185,6 +192,10 @@ export const DELETE = authenticatedRoute<Params>(
         'This is a production environment. Repeat the request with {"confirm": "<environment slug>"} to delete it.',
       );
     }
+
+    // P19 §1: an environment another inherits from, or that a template elsewhere
+    // points into, would take somebody else's deploy down with it.
+    await assertEnvironmentRemovable(scope, services);
 
     const environment = await softDeleteEnvironment(services.db, orgId, scope.environment.id).catch(
       rethrowVanished,

@@ -19,6 +19,7 @@ import {
 } from '@xecret/core/validation';
 import type { SecretValueType } from '@xecret/core/validation';
 import type { AuditMetadata } from '@xecret/core/audit';
+import type { DeclaredReference } from '@xecret/core/references';
 import type { Action } from '@xecret/core/authz';
 import {
   RepositoryError,
@@ -163,6 +164,12 @@ export interface ExistingSecret {
   valueHmac: Uint8Array | null;
   /** The type currently declared on the row, so a write can inherit it. */
   valueType?: string | undefined;
+  /**
+   * What the current version declared it refers to (P19 §1), when it is a
+   * template. A client write whose declaration differs is a change even when the
+   * value's HMAC is not — see `prepareClientWrite`.
+   */
+  declaredReferences?: DeclaredReference[] | null | undefined;
 }
 
 export interface SecretWrite {
@@ -320,6 +327,15 @@ export async function applySecretWrites(
   // must not touch the key hierarchy at all.
   if (batch.writes.length === 0) return [];
 
+  // Nor for a batch that would write a template, which this mode cannot hold —
+  // refused before the key hierarchy is touched (and again in `prepareWrite`,
+  // which a restore reaches without this function).
+  if (batch.writes.some((write) => resolveValueType(write) === 'template')) {
+    throw errors.conflict(
+      'e2ee_required: templates and references need an end-to-end encrypted environment.',
+    );
+  }
+
   return withEnvironmentKey(scope, services, async (key) => {
     const prepared: PreparedWrite[] = [];
 
@@ -444,6 +460,12 @@ export interface ClientSecretWrite {
   expectedVersion: number;
   value: ClientSecretValue;
   valueType?: string | undefined;
+  /**
+   * A template's declared references, already resolved and checked by
+   * `prepareTemplateDeclaration` (P19 §1); `null` or absent for a value that is
+   * not a template. Stored on the version beside the ciphertext.
+   */
+  declaredReferences?: DeclaredReference[] | null | undefined;
   existing?: ExistingSecret | undefined;
 }
 
@@ -574,6 +596,7 @@ interface PreparedClientWrite {
   value: ClientSecretValue;
   /** `undefined` leaves the stored note alone; `null` clears it. */
   encNote: Uint8Array | null | undefined;
+  declaredReferences: DeclaredReference[] | null;
 }
 
 /**
@@ -625,8 +648,16 @@ function prepareClientWrite(activeKeyId: string, write: ClientSecretWrite): Prep
 
   const existing = write.existing;
   const valueHmac = fromBase64Url(write.value.valueHmac);
+  const declaredReferences = write.declaredReferences ?? null;
 
-  if (existing && existing.valueHmac !== null) {
+  // A template's declaration lives on the version, so a write that changes it —
+  // the same text now a template, or a reference that resolves somewhere new — is
+  // a new version even when the value's HMAC matches. Short-circuiting would
+  // leave a template whose current version declares nothing, or the wrong thing.
+  const sameDeclaration =
+    JSON.stringify(declaredReferences) === JSON.stringify(existing?.declaredReferences ?? null);
+
+  if (existing && existing.valueHmac !== null && sameDeclaration) {
     // The same comparison the server path makes, on the same column, with the
     // same `timingSafeEqual` — the attacker chooses the plaintext, and a
     // byte-at-a-time timing signal on a stored tag is a real if narrow oracle.
@@ -642,6 +673,7 @@ function prepareClientWrite(activeKeyId: string, write: ClientSecretWrite): Prep
         retypes,
         value: write.value,
         encNote,
+        declaredReferences,
       };
     }
   }
@@ -677,6 +709,7 @@ function prepareClientWrite(activeKeyId: string, write: ClientSecretWrite): Prep
     retypes,
     value: write.value,
     encNote,
+    declaredReferences,
   };
 }
 
@@ -721,6 +754,7 @@ async function commitClientWrites(
             valueType: write.valueType,
             payload,
             valueHmac: fromBase64Url(write.value.valueHmac),
+            declaredReferences: write.declaredReferences,
             writer,
           });
           continue;
@@ -732,6 +766,7 @@ async function commitClientWrites(
             secretId: write.secretId,
             payload,
             valueHmac: fromBase64Url(write.value.valueHmac),
+            declaredReferences: write.declaredReferences,
             writer,
           });
 
@@ -1026,6 +1061,16 @@ async function prepareWrite(
   // The dashboard checks the same thing as you type, using the same module. That
   // copy is for the person; this one is the rule.
   const valueType = resolveValueType(write);
+
+  // A template's references are resolved by a client holding every key involved
+  // (P19 §1), which a server-envelope environment's readers do not. Refused here,
+  // at the choke point every server-mode write passes, rather than in each route.
+  if (valueType === 'template') {
+    throw errors.conflict(
+      'e2ee_required: templates and references need an end-to-end encrypted environment.',
+    );
+  }
+
   const shape = checkSecretValue(write.value, valueType);
   if (!shape.valid) {
     // The message comes from `checkSecretValue`, which builds it from fixed

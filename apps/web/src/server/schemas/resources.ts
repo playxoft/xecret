@@ -365,6 +365,15 @@ export const environmentPatchSchema = z
  * way every HTTP API ignores one, so a cache-busting `?_=…` cannot fail a
  * request. Unknown *body* fields are still rejected — a body is a contract.
  */
+/**
+ * `PUT …/environments/{env}/parent` (P19 §1): the slug of the environment to
+ * inherit from, in the same project, or `null` to inherit from nothing.
+ */
+export const environmentParentSchema = z.strictObject(
+  { parent: z.nullable(environmentSlugSchema) },
+  UNEXPECTED_FIELD,
+);
+
 export const pageQuerySchema = z.object({
   page: z._default(
     z.pipe(z.coerce.number(), z.int().check(z.gte(1, 'Pages are numbered from 1.'))),
@@ -579,8 +588,45 @@ export interface EnvironmentPayload {
    */
   encryptionMode: string;
   sortOrder: number;
+  /**
+   * The slug of the environment this one inherits from (P19 §1), or `null`.
+   * A slug, like everything else in this payload, and always one of the same
+   * project's environments.
+   */
+  parent: string | null;
+  /** Whether `xecret pull` and `export` are refused here (P19 §9). */
+  plaintextExport: 'allowed' | 'disabled';
+  /**
+   * The read-alert setting as stored (P19 §7) — `null` is "the default" — and
+   * what it comes to: on for production, off elsewhere, unless set.
+   */
+  readAlerts: boolean | null;
+  readAlertsActive: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Whether new-location read alerts apply to an environment — its setting, else its class. */
+export function readAlertsActive(
+  environment: Pick<EnvironmentRecord, 'readAlerts' | 'isProduction'>,
+): boolean {
+  return environment.readAlerts ?? environment.isProduction;
+}
+
+/**
+ * Serialises a project's environments together, so each one's parent can be
+ * named by slug from the same listing rather than by a lookup per row.
+ */
+export function toEnvironments(environments: readonly EnvironmentRecord[]): EnvironmentPayload[] {
+  const slugs = new Map(environments.map((environment) => [environment.id, environment.slug]));
+  return environments.map((environment) =>
+    toEnvironment(
+      environment,
+      environment.parentEnvironmentId === null
+        ? null
+        : (slugs.get(environment.parentEnvironmentId) ?? null),
+    ),
+  );
 }
 
 /**
@@ -621,13 +667,25 @@ export function toProjectListItem(project: ProjectListItem): ProjectListPayload 
   return { ...toProject(project), environmentCount: project.environmentCount };
 }
 
-export function toEnvironment(environment: EnvironmentRecord): EnvironmentPayload {
+/**
+ * One environment. `parentSlug` is the caller's to supply, because the row holds
+ * the parent's id and this payload speaks slugs: `toEnvironments` for a listing,
+ * `parentSlugOf` for a single environment.
+ */
+export function toEnvironment(
+  environment: EnvironmentRecord,
+  parentSlug: string | null,
+): EnvironmentPayload {
   return {
     name: environment.name,
     slug: environment.slug,
     isProduction: environment.isProduction,
     encryptionMode: environment.encryptionMode,
     sortOrder: environment.sortOrder,
+    parent: environment.parentEnvironmentId === null ? null : parentSlug,
+    plaintextExport: environment.plaintextExportDisabled ? 'disabled' : 'allowed',
+    readAlerts: environment.readAlerts,
+    readAlertsActive: readAlertsActive(environment),
     createdAt: environment.createdAt.toISOString(),
     updatedAt: environment.updatedAt.toISOString(),
   };

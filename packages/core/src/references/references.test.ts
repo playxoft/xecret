@@ -101,6 +101,17 @@ describe('parseTemplate', () => {
     expect(parseTemplate('')).toEqual([]);
   });
 
+  it('takes the environment grammar for an environment and the project grammar for a project', () => {
+    // Environment slugs may hold an underscore; project slugs may not.
+    expect(parseTemplate('${review_app.KEY}')).toEqual([
+      { kind: 'reference', reference: { environment: 'review_app', name: 'KEY' } },
+    ]);
+    expect(parseTemplate('${core.eu_west.KEY}')).toEqual([
+      { kind: 'reference', reference: { project: 'core', environment: 'eu_west', name: 'KEY' } },
+    ]);
+    expect(() => parseTemplate('${my_project.prod.KEY}')).toThrow(TemplateSyntaxError);
+  });
+
   it.each([
     ['an unterminated reference', 'a ${KEY'],
     ['an empty reference', '${}'],
@@ -223,10 +234,10 @@ describe('inheritance', () => {
     ).toBe('inheritanceTooDeep');
   });
 
-  it('refuses a parent the graph does not hold', () => {
-    expect(resolutionError(() => inheritanceChain(graph(env('a', 'gone', {})), 'a')).kind).toBe(
-      'missingEnvironment',
-    );
+  it('refuses a parent the graph does not hold, and names it', () => {
+    const error = resolutionError(() => inheritanceChain(graph(env('a', 'gone', {})), 'a'));
+    expect(error.kind).toBe('missingEnvironment');
+    expect(error.missingEnvironmentId).toBe('gone');
   });
 
   it('sorts the view by code unit, not by locale', () => {
@@ -365,7 +376,9 @@ describe('references', () => {
 
   it('refuses a reference into an environment the graph does not hold', () => {
     const g = graph(env('e', null, { A: template('${gone.K}', { gone: 'gone' }) }));
-    expect(resolutionError(() => checkEnvironment(g, 'e')).kind).toBe('missingEnvironment');
+    const error = resolutionError(() => checkEnvironment(g, 'e'));
+    expect(error.kind).toBe('missingEnvironment');
+    expect(error.missingEnvironmentId).toBe('gone');
   });
 
   it('refuses a template whose text holds a reference it did not declare', () => {

@@ -1,11 +1,22 @@
-import { loadEnvironmentSecrets } from '@xecret/db/repositories';
+import type { DeclaredReference } from '@xecret/core/references';
+import {
+  findActiveGrantsForPrincipal,
+  loadEnvironmentSecrets,
+  loadSecretsForEnvironments,
+  toBytes,
+} from '@xecret/db/repositories';
+import type { SecretMaterial } from '@xecret/db/repositories';
 import type { Principal } from './actor';
 import type { ServiceContext } from './context';
-import { environmentKeyState } from './env-keys-service';
+import { environmentKeyState, grantRecipient } from './env-keys-service';
 import { errors } from './errors';
+import { mayActOn, planPull } from './references-service';
+import type { ReferencedRead } from './references-service';
+import { encodePublicKey } from './schemas/env-keys';
 import { toClientSecret } from './schemas/secrets';
 import type { ClientSecretPayload } from './schemas/secrets';
 import type { EnvironmentKeysPayload } from './schemas/env-keys';
+import { decodeBlob } from './schemas/vault';
 import type { EnvironmentScope } from './tenancy';
 
 /**
@@ -77,11 +88,115 @@ export interface ClientEnvironmentBundle {
   secrets: ClientSecretPayload[];
 }
 
+/**
+ * A bundle that carries more than its own environment (P19 §1) — version 2.
+ *
+ * Everything version 1 carries, unchanged, for the environment being read:
+ * `keys` opens `secrets`. Beside them, `layers`: every ancestor (with all of its
+ * secrets) and every environment a template reaches into (with only the secrets
+ * it reaches), each with the caller's own grant for that environment and the
+ * parent it inherits from. A layer that contributes no secret — an ancestor of a
+ * referenced environment that sets nothing the reference needs — carries no keys,
+ * and is there only so a client can walk the same chain the server walked.
+ *
+ * Every ciphertext is still bound by its AAD to the row and the environment that
+ * hold it, and opens only under that environment's key. Nothing is re-encrypted
+ * and nothing moves: a layer is ciphertext the caller could have pulled directly,
+ * delivered together so the resolution happens on one consistent read.
+ *
+ * Secrets that are templates say so (`template`) and carry the references their
+ * writer declared, which a client checks the decrypted text against before it
+ * resolves anything.
+ */
+export interface ResolvedEnvironmentBundle extends Omit<
+  ClientEnvironmentBundle,
+  'bundleVersion' | 'secrets'
+> {
+  bundleVersion: 2;
+  environment: {
+    id: string;
+    projectSlug: string;
+    slug: string;
+    parentEnvironmentId: string | null;
+  };
+  secrets: ResolvableSecretPayload[];
+  layers: BundleLayer[];
+}
+
+export interface BundleLayer {
+  environmentId: string;
+  projectSlug: string;
+  environmentSlug: string;
+  parentEnvironmentId: string | null;
+  /** `null` for a layer that contributes no secret and needs no key. */
+  keys: LayerKeys | null;
+  secrets: ResolvableSecretPayload[];
+}
+
+/** The part of `GET …/keys` that opens a layer: the active key and the caller's grant. */
+export interface LayerKeys {
+  encryptionMode: 'e2ee';
+  environmentId: string;
+  activeEdk: { id: string; version: number };
+  myGrant: EnvironmentKeysPayload['myGrant'];
+}
+
+export interface ResolvableSecretPayload extends ClientSecretPayload {
+  template?: true;
+  references?: DeclaredReference[];
+}
+
+/** What a resolved pull read beyond the environment itself — for the audit trail. */
+export interface LayerRead {
+  environmentId: string;
+  projectId: string;
+  projectSlug: string;
+  environmentSlug: string;
+  secretCount: number;
+  kind: 'inherited' | 'referenced';
+}
+
+export interface BundleResult {
+  bundle: ClientEnvironmentBundle | ResolvedEnvironmentBundle;
+  /** Empty for a version 1 bundle. */
+  layerReads: LayerRead[];
+  referencedReads: ReferencedRead[];
+}
+
+function sortByName<T extends { name: string }>(items: T[]): T[] {
+  return items.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+function toResolvable(material: SecretMaterial): ResolvableSecretPayload {
+  const payload: ResolvableSecretPayload = toClientSecret(material);
+  if (material.valueType === 'template') {
+    payload.template = true;
+    payload.references = material.declaredReferences ?? [];
+  }
+  return payload;
+}
+
+/**
+ * Whether reading this environment involves more than its own ciphertext — a
+ * parent, or a template. Decided from rows the pull has already read, so an
+ * environment that uses neither feature pays nothing for either.
+ */
+export function needsResolution(
+  scope: EnvironmentScope,
+  materials: readonly SecretMaterial[],
+): boolean {
+  return (
+    scope.environment.parentEnvironmentId !== null ||
+    materials.some((material) => material.valueType === 'template')
+  );
+}
+
 export async function clientEnvironmentBundle(
   scope: EnvironmentScope,
   services: ServiceContext,
   principal: Principal,
-): Promise<ClientEnvironmentBundle> {
+  options: { resolved: boolean } = { resolved: false },
+): Promise<BundleResult> {
   const keys = await environmentKeyState(scope, services, principal);
 
   if (keys.myGrant === null) {
@@ -107,17 +222,138 @@ export async function clientEnvironmentBundle(
     scope.environment.id,
   );
 
+  if (!needsResolution(scope, materials)) {
+    return {
+      bundle: {
+        bundle: true,
+        bundleVersion: 1,
+        encryptionMode: 'e2ee',
+        keys,
+        // Sorted by name, matching the order the dashboard renders and the order
+        // the server-mode path returns — by code unit, not `localeCompare`, so the
+        // output does not depend on a server locale. It also makes an exported
+        // file produce a one-line diff when a secret is added rather than a
+        // reshuffle.
+        secrets: sortByName(materials.map(toClientSecret)),
+      },
+      layerReads: [],
+      referencedReads: [],
+    };
+  }
+
+  // ── A client that cannot resolve is refused, never handed a partial view ──
+  // A version 1 client reads `keys` and `secrets` and ignores anything else, so
+  // it would inject a template's literal `${…}` text, and none of the inherited
+  // values, into a process — which then starts and fails somewhere far from the
+  // cause. A client that can resolve says so (`?bundle=2`); one that does not is
+  // told what to upgrade, before anything else is read.
+  if (!options.resolved) {
+    throw errors.conflict(
+      'resolution_unsupported: this environment inherits from another or holds a template, and ' +
+        'this client cannot resolve them. Upgrade the xecret CLI, then run the command again.',
+    );
+  }
+
+  const { plan, environments, referencedReads } = await planPull(scope, services);
+
+  // ── Every environment that contributes a secret is one the caller may read ──
+  // Asked of the caller's own membership, through the same `can()` as a direct
+  // pull of that environment. A service token is pinned to one environment, and
+  // `can()` refuses it every other one — the write-time rule exists so a CI
+  // credential never meets this refusal.
+  const contributing = [...plan.chain, ...plan.referenced.keys()];
+  for (const id of new Set(contributing)) {
+    const record = environments.get(id);
+    if (record === undefined || !mayActOn(scope, principal, record, 'secret.read')) {
+      throw errors.forbidden(
+        principal.kind === 'serviceToken'
+          ? 'This environment resolves values from another environment, and a service token can read only its own.'
+          : 'This environment inherits from, or refers to, an environment you cannot read.',
+      );
+    }
+  }
+
+  const extra = await loadSecretsForEnvironments(services.db, scope.organization.id, contributing);
+  const recipient = grantRecipient(principal);
+  const grants = await findActiveGrantsForPrincipal(services.db, {
+    orgId: scope.organization.id,
+    environmentIds: contributing,
+    recipientKind: recipient.kind,
+    recipientId: recipient.id,
+  });
+
+  const inChain = new Set(plan.chain);
+  const layerIds = [...new Set([...plan.chain, ...plan.referenced.keys(), ...plan.contexts])];
+  const layers: BundleLayer[] = [];
+  const layerReads: LayerRead[] = [];
+
+  for (const id of layerIds) {
+    const record = environments.get(id)!;
+    const wanted = inChain.has(id) ? null : (plan.referenced.get(id) ?? new Set<string>());
+    const secrets = sortByName(
+      extra
+        .filter((material) => material.environmentId === id)
+        .filter((material) => wanted === null || wanted.has(material.name))
+        .map(toResolvable),
+    );
+
+    let layerKeys: LayerKeys | null = null;
+    if (secrets.length > 0) {
+      const held = grants.get(id);
+      if (held === undefined || held.grant === null) {
+        throw errors.conflict(
+          `no_key_grant: you have access to ${record.projectSlug}/${record.slug}, which this ` +
+            'environment reads from, but nobody has shared its key with you yet.',
+        );
+      }
+      layerKeys = {
+        encryptionMode: 'e2ee',
+        environmentId: id,
+        activeEdk: held.activeKey,
+        myGrant: {
+          recipientPublicKey: encodePublicKey(toBytes(held.grant.recipientPublicKey)),
+          edkSealed: decodeBlob(toBytes(held.grant.edkSealed)),
+          ehkSealed: decodeBlob(toBytes(held.grant.ehkSealed)),
+          signature: decodeBlob(toBytes(held.grant.signature)),
+          signedByUserId: held.grant.signedByUserId,
+        },
+      };
+      layerReads.push({
+        environmentId: id,
+        projectId: record.projectId,
+        projectSlug: record.projectSlug,
+        environmentSlug: record.slug,
+        secretCount: secrets.length,
+        kind: inChain.has(id) ? 'inherited' : 'referenced',
+      });
+    }
+
+    layers.push({
+      environmentId: id,
+      projectSlug: record.projectSlug,
+      environmentSlug: record.slug,
+      parentEnvironmentId: record.parentEnvironmentId,
+      keys: layerKeys,
+      secrets,
+    });
+  }
+
   return {
-    bundle: true,
-    bundleVersion: 1,
-    encryptionMode: 'e2ee',
-    keys,
-    // Sorted by name, matching the order the dashboard renders and the order the
-    // server-mode path returns — by code unit, not `localeCompare`, so the output
-    // does not depend on a server locale. It also makes an exported file produce
-    // a one-line diff when a secret is added rather than a reshuffle.
-    secrets: materials
-      .map(toClientSecret)
-      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+    bundle: {
+      bundle: true,
+      bundleVersion: 2,
+      encryptionMode: 'e2ee',
+      keys,
+      environment: {
+        id: scope.environment.id,
+        projectSlug: scope.project.slug,
+        slug: scope.environment.slug,
+        parentEnvironmentId: scope.environment.parentEnvironmentId,
+      },
+      secrets: sortByName(materials.map(toResolvable)),
+      layers,
+    },
+    layerReads,
+    referencedReads,
   };
 }

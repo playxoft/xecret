@@ -21,6 +21,8 @@ import {
   secretWriter,
 } from '@/server/secrets-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
+import type { Principal } from '@/server/actor';
+import { planRefusal, prepareTemplateDeclaration } from '@/server/template-writes';
 
 /**
  * An environment's secrets: the masked listing, and creation.
@@ -139,7 +141,22 @@ export const POST = authenticatedRoute<Params>(
     // branches meet again at a `SecretWriteResult` — so everything after this
     // point (the audit record, the response) is written once rather than twice.
     const written = e2ee
-      ? await createClientSecret(scope, services, writer, request)
+      ? await createClientSecret(scope, services, writer, request, principal, (name, id) =>
+          planRefusal(
+            record,
+            audit(scope.organization.id),
+            'secret.created',
+            {
+              type: 'secret',
+              id,
+              projectId: scope.project.id,
+              environmentId: scope.environment.id,
+            },
+            'secretReferencing',
+            scope.entitlements.plan,
+            { secretName: name },
+          ),
+        )
       : await createServerSecret(scope, services, writer, request);
 
     // The name, never the value. `AuditMetadata` makes the second half of that
@@ -219,10 +236,23 @@ async function createClientSecret(
   services: ServiceContext,
   writer: SecretWriterRef,
   request: Request,
+  principal: Principal,
+  refusal: (name: string, id: string) => () => void,
 ): Promise<CreatedSecret> {
   const body = await parseJsonBody(request, createClientSecretBody);
 
+  // P19 §1: a template's declaration, resolved and checked before anything is
+  // stored — or `null` for a value that is not one.
+  const declaredReferences = await prepareTemplateDeclaration(scope, services, principal, {
+    name: body.name,
+    secretId: body.id,
+    effectiveType: body.valueType,
+    requested: body.references,
+    refused: refusal(body.name, body.id),
+  });
+
   const result = await writeClientSecretValue(scope, services, {
+    declaredReferences,
     writer,
     name: body.name,
     // The client's uuid, not one minted here. It is an AAD component, so the

@@ -104,6 +104,12 @@ export class ResolutionError extends Error {
     readonly kind: ResolutionErrorKind,
     message: string,
     readonly path: readonly string[] = [],
+    /**
+     * For `missingEnvironment`: the environment the graph did not hold. A
+     * caller building the graph lazily loads it and tries again; one holding
+     * the whole graph reports it.
+     */
+    readonly missingEnvironmentId: string | null = null,
   ) {
     super(message);
     this.name = 'ResolutionError';
@@ -150,6 +156,7 @@ export function inheritanceChain<S extends GraphSecret>(
         'missingEnvironment',
         'An environment in this inheritance chain is not available.',
         [current],
+        current,
       );
     }
 
@@ -289,6 +296,7 @@ function walk<S extends GraphSecret>(
           'missingEnvironment',
           `The reference ${referenceKey(reference)} in ${name} names an environment that is not available.`,
           [...next, nodeKey(reference.environmentId, reference.name)],
+          reference.environmentId,
         );
       }
       height = Math.max(

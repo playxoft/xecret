@@ -75,6 +75,11 @@ const repositories = vi.hoisted(() => ({
   createServiceToken: vi.fn(),
   listServiceTokens: vi.fn(),
   removeAccessGrant: vi.fn(),
+  // P19 §1: the reference graph, consulted before a project is deleted and when
+  // an environment payload names its parent. Nothing here inherits or refers.
+  loadEnvironmentsOfProjects: vi.fn(),
+  loadEnvironmentsByIds: vi.fn(),
+  findProjectsReferencingEnvironments: vi.fn(),
 }));
 
 vi.mock('./context', () => context);
@@ -476,6 +481,9 @@ beforeEach(() => {
     }),
   );
   repositories.softDeleteProject.mockResolvedValue(project);
+  repositories.loadEnvironmentsOfProjects.mockResolvedValue([]);
+  repositories.loadEnvironmentsByIds.mockResolvedValue([]);
+  repositories.findProjectsReferencingEnvironments.mockResolvedValue([]);
   repositories.createInvitation.mockImplementation(
     async (_db: unknown, params: { email: string; role: Role }) => ({
       token: 'invitation-token',

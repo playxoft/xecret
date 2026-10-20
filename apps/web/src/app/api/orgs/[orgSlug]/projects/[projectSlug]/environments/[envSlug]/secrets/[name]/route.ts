@@ -23,6 +23,8 @@ import {
   secretWriter,
 } from '@/server/secrets-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
+import { assertRemovalKeepsReferences } from '@/server/references-service';
+import { planRefusal, prepareTemplateDeclaration } from '@/server/template-writes';
 
 /**
  * One secret: reveal, new version, delete.
@@ -186,12 +188,37 @@ export const PATCH = authenticatedRoute<Params>(
       version: current.version,
       valueHmac: current.valueHmac,
       valueType: current.valueType,
+      declaredReferences: current.declaredReferences,
     };
 
     const written = e2ee
       ? await (async () => {
           const body = await parseJsonBody(request, updateClientSecretBody);
+          // P19 §1. The type after this write is the requested one, else the
+          // stored one — so a template rewritten by a client that sends no type
+          // is still a template, and still has to declare its references.
+          const declaredReferences = await prepareTemplateDeclaration(scope, services, principal, {
+            name: current.name,
+            secretId: current.secretId,
+            effectiveType: body.valueType ?? current.valueType,
+            requested: body.references,
+            refused: planRefusal(
+              record,
+              audit(scope.organization.id),
+              'secret.updated',
+              {
+                type: 'secret',
+                id: current.secretId,
+                projectId: scope.project.id,
+                environmentId: scope.environment.id,
+              },
+              'secretReferencing',
+              scope.entitlements.plan,
+              { secretName: current.name },
+            ),
+          });
           const result = await writeClientSecretValue(scope, services, {
+            declaredReferences,
             writer,
             name: current.name,
             // An append, so the stored id is the one the ciphertext names —
@@ -307,6 +334,37 @@ export const PUT = authenticatedRoute<Params>(
       );
     }
 
+    // ── Templates (P19 §1) ──
+    // Becoming a template, or stopping being one, changes what the stored value
+    // *means* — its `${…}` turn into references, or back into text — and the
+    // declaration that goes with a template lives on a version. So it is a value
+    // change, made by writing the value, never by a label on this route.
+    const stored = await findSecretByName(
+      services.db,
+      scope.organization.id,
+      scope.environment.id,
+      name,
+    );
+    if (!stored) throw errors.notFound('no live secret with that name in environment');
+    const wasTemplate = stored.valueType === 'template';
+    if (body.valueType !== undefined && (body.valueType === 'template') !== wasTemplate) {
+      throw errors.conflict(
+        wasTemplate
+          ? `${name} is a template. To make it plain text, write its value again with the new type.`
+          : `To make ${name} a template, write its value again with the type template, so its references are declared.`,
+      );
+    }
+    if (renamed) {
+      if (wasTemplate) {
+        throw errors.conflict(
+          'A template cannot be renamed, because what its unqualified references resolve to depends on ' +
+            'where it sits. Create it under the new name and delete this one.',
+        );
+      }
+      // Renaming takes the old name out of every view that saw it.
+      await assertRemovalKeepsReferences(scope, services, name);
+    }
+
     const updated = await updateSecretMetadata(services.db, {
       orgId: scope.organization.id,
       environmentId: scope.environment.id,
@@ -383,6 +441,10 @@ export const DELETE = authenticatedRoute<Params>(
       name,
     );
     if (!current) throw errors.notFound('no live secret with that name in environment');
+
+    // P19 §1: a deletion that would leave a template somewhere referring to
+    // nothing is refused here, rather than discovered by the next `xecret run`.
+    await assertRemovalKeepsReferences(scope, services, current.name);
 
     await softDeleteSecret(services.db, scope.organization.id, current.secretId);
 

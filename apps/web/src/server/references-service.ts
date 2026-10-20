@@ -1,0 +1,677 @@
+import { can } from '@xecret/core/authz';
+import type { Action } from '@xecret/core/authz';
+import {
+  affectedContexts,
+  checkContexts,
+  descendantsOf,
+  lookupInView,
+  planResolution,
+  referenceKey,
+  ResolutionError,
+  withParent,
+  withSecret,
+} from '@xecret/core/references';
+import type {
+  DeclaredReference,
+  GraphEnvironment,
+  GraphSecret,
+  ReferenceGraph,
+  ResolutionPlan,
+  SecretReference,
+} from '@xecret/core/references';
+import {
+  countUsableServiceTokens,
+  findEnvironmentsBySlugs,
+  findProjectsReferencingEnvironments,
+  listChildEnvironments,
+  loadEnvironmentsByIds,
+  loadEnvironmentsOfProjects,
+  loadSecretGraphMetadata,
+} from '@xecret/db/repositories';
+import type { Executor, GraphEnvironmentRecord, GraphSecretRecord } from '@xecret/db/repositories';
+import type { Principal } from './actor';
+import type { ServiceContext } from './context';
+import { errors } from './errors';
+import { toGrantContext } from './tenancy';
+import type { EnvironmentScope } from './tenancy';
+
+/**
+ * Secret references and environment inheritance, on the server (P19 §1).
+ *
+ * ── What the server can do here, and what it cannot ──
+ * It cannot read a template — the value is ciphertext — so it cannot resolve
+ * one. What it holds is the *declared* graph: every template's references, as
+ * its writer stated them in plaintext beside the ciphertext, and every
+ * environment's parent. Over that graph it does three things, all with the one
+ * traversal in `@xecret/core/references` that the clients also run:
+ *
+ *  1. **Refuses, before anything is stored**, a write that would leave any view
+ *     with a loop, a chain past the depth limit, or a reference nothing in its
+ *     view resolves — a template written, a secret deleted or renamed, an
+ *     environment re-parented or deleted. "A cycle discovered during `xecret run`
+ *     is an outage; a cycle refused at write is a validation error."
+ *  2. **Works out what a pull must carry** beyond the environment itself: its
+ *     ancestors whole, and from anywhere else exactly the secrets a template
+ *     reaches — nothing more.
+ *  3. **Authorises every one of those reads** against the caller's own access,
+ *     so a reference is never a way to read an environment you cannot read
+ *     directly. A developer with write access to staging who points a template
+ *     at production writes nothing (the write is refused) and, had it been
+ *     stored some other way, would read nothing (the pull is refused). The
+ *     cryptography agrees independently: without a grant on production, nobody's
+ *     client could open production's ciphertext whatever the server sent.
+ *
+ * ── Service tokens ──
+ * A token is pinned to one environment and can read no other (threat T5) — so it
+ * can resolve `${KEY}` within its own environment and nothing else. Rather than
+ * let that surface as a failed CI run, the configurations that would need more
+ * are refused at write time: an environment with a usable service token may not
+ * be given a parent or a template referring outside itself, and an environment
+ * that has either may not be given a service token (`assertTokenReach`).
+ */
+
+/** The graph's view of one secret: what the traversal needs, plus what messages name. */
+export interface ServerGraphSecret extends GraphSecret {
+  readonly name: string;
+  readonly valueType: string;
+  readonly version: number;
+}
+
+/** How many times a lazy graph may grow before the walk is abandoned as malformed. */
+const MAX_GRAPH_EXPANSIONS = 24;
+
+/**
+ * Builds the reference graph from the database, as much of it as a question
+ * needs, and grows it when a walk reaches an environment it has not loaded.
+ *
+ * An environment is in `graph` only once its secrets are loaded too, because an
+ * environment present with an empty secret map would read as a layer that sets
+ * nothing — a view with names silently missing, which is the one wrong answer
+ * this must never give.
+ */
+class GraphLoader {
+  readonly records = new Map<string, GraphEnvironmentRecord>();
+  readonly graph = new Map<string, GraphEnvironment<ServerGraphSecret>>();
+  readonly #projects = new Set<string>();
+
+  constructor(
+    private readonly exec: Executor,
+    private readonly orgId: string,
+  ) {}
+
+  /** Every environment of these projects, with their secrets. */
+  async loadProjects(projectIds: readonly string[]): Promise<void> {
+    const fresh = [...new Set(projectIds)].filter((id) => !this.#projects.has(id));
+    if (fresh.length === 0) return;
+    for (const id of fresh) this.#projects.add(id);
+
+    const rows = await loadEnvironmentsOfProjects(this.exec, this.orgId, fresh);
+    for (const row of rows) this.records.set(row.id, row);
+    await this.loadSecrets(rows.map((row) => row.id));
+  }
+
+  /** The named environments' secrets, for environments whose rows are already known. */
+  async loadSecrets(environmentIds: readonly string[]): Promise<void> {
+    const fresh = environmentIds.filter((id) => !this.graph.has(id) && this.records.has(id));
+    if (fresh.length === 0) return;
+
+    const metadata = await loadSecretGraphMetadata(this.exec, this.orgId, fresh);
+    const byEnvironment = new Map<string, Map<string, ServerGraphSecret>>();
+    for (const id of fresh) byEnvironment.set(id, new Map());
+    for (const row of metadata)
+      byEnvironment.get(row.environmentId)?.set(row.name, toGraphSecret(row));
+
+    for (const id of fresh) {
+      const record = this.records.get(id)!;
+      this.graph.set(id, {
+        id,
+        parentId: record.parentEnvironmentId,
+        secrets: byEnvironment.get(id) ?? new Map(),
+      });
+    }
+  }
+
+  /**
+   * Makes one environment available — its row, and its secrets — answering
+   * `false` when it is not a live environment of this organisation.
+   *
+   * Loads its whole project's rows (cheap, and its chain is inside that
+   * project), and the secrets of the environment alone: a chain walk asks for
+   * each ancestor in turn, so loading only what was asked keeps a pull from
+   * reading every environment of a large project.
+   */
+  async ensure(environmentId: string): Promise<boolean> {
+    if (this.graph.has(environmentId)) return true;
+    if (!this.records.has(environmentId)) {
+      const [row] = await loadEnvironmentsByIds(this.exec, this.orgId, [environmentId]);
+      if (row === undefined) return false;
+      const rows = await loadEnvironmentsOfProjects(this.exec, this.orgId, [row.projectId]);
+      for (const each of rows) this.records.set(each.id, each);
+    }
+    await this.loadSecrets([environmentId]);
+    return this.graph.has(environmentId);
+  }
+
+  /**
+   * Runs `question` against the graph, loading whatever environment it turns out
+   * to need and asking again. A genuinely absent environment — deleted, or not
+   * this organisation's — is re-thrown as the `missingEnvironment` it is.
+   */
+  async ask<T>(question: (graph: ReferenceGraph<ServerGraphSecret>) => T): Promise<T> {
+    const tried = new Set<string>();
+    for (let expansion = 0; expansion <= MAX_GRAPH_EXPANSIONS; expansion += 1) {
+      try {
+        return question(this.graph);
+      } catch (cause) {
+        if (!(cause instanceof ResolutionError) || cause.kind !== 'missingEnvironment') throw cause;
+        const missing = cause.missingEnvironmentId;
+        if (missing === null || tried.has(missing)) throw cause;
+        tried.add(missing);
+        if (!(await this.ensure(missing))) throw cause;
+      }
+    }
+    throw new ResolutionError('tooDeep', 'This reference graph is too large to resolve.');
+  }
+}
+
+function toGraphSecret(row: GraphSecretRecord): ServerGraphSecret {
+  const template = row.valueType === 'template';
+  return {
+    id: row.secretId,
+    name: row.name,
+    valueType: row.valueType,
+    version: row.version,
+    template,
+    references: template ? (row.declaredReferences ?? []) : [],
+  };
+}
+
+/* ── authorising a read of another environment ───────────────────────────── */
+
+/**
+ * Whether the caller may perform `action` on another environment of the same
+ * organisation — the same `can()` every request goes through, asked of the
+ * caller's own membership against that environment's row.
+ */
+export function mayActOn(
+  scope: EnvironmentScope,
+  principal: Principal,
+  target: Pick<GraphEnvironmentRecord, 'id' | 'projectId' | 'isProduction'>,
+  action: Action,
+): boolean {
+  return can(
+    scope.actor,
+    action,
+    {
+      kind: 'environment',
+      orgId: scope.organization.id,
+      projectId: target.projectId,
+      environmentId: target.id,
+    },
+    {
+      membership: scope.membership ? toGrantContext(scope.membership) : undefined,
+      serviceToken:
+        principal.kind === 'serviceToken' ? { accessLevel: principal.accessLevel } : undefined,
+      isProduction: target.isProduction,
+    },
+  ).allowed;
+}
+
+/** The slug of an environment's parent, for a payload that speaks slugs. */
+export async function parentSlugOf(
+  services: ServiceContext,
+  orgId: string,
+  environment: { parentEnvironmentId: string | null },
+): Promise<string | null> {
+  const parentId = environment.parentEnvironmentId ?? null;
+  if (parentId === null) return null;
+  const [parent] = await loadEnvironmentsByIds(services.db, orgId, [parentId]);
+  return parent?.slug ?? null;
+}
+
+/* ── declaring references ────────────────────────────────────────────────── */
+
+/**
+ * Turns the references a client parsed out of a template into what is stored:
+ * each with the environment its slugs name, resolved inside this organisation.
+ *
+ * Refused, field by field, when a reference names an environment that does not
+ * exist, is not end-to-end encrypted, or **is one the writer may not read** — and
+ * those three are deliberately one message, so a template cannot be used to
+ * learn which environments exist beyond the writer's reach.
+ */
+export async function declareReferences(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+  principal: Principal,
+  parsed: readonly SecretReference[],
+): Promise<DeclaredReference[]> {
+  if (parsed.length === 0) return [];
+
+  const pairs = new Map<string, { projectSlug: string; environmentSlug: string }>();
+  for (const reference of parsed) {
+    if (reference.environment === undefined) continue;
+    const projectSlug = reference.project ?? scope.project.slug;
+    pairs.set(`${projectSlug}/${reference.environment}`, {
+      projectSlug,
+      environmentSlug: reference.environment,
+    });
+  }
+
+  const found = await findEnvironmentsBySlugs(services.db, scope.organization.id, [
+    ...pairs.values(),
+  ]);
+  const bySlug = new Map(found.map((row) => [`${row.projectSlug}/${row.slug}`, row]));
+
+  const problems: { field: string; message: string }[] = [];
+  const declared: DeclaredReference[] = [];
+
+  for (const reference of parsed) {
+    if (reference.environment === undefined) {
+      declared.push({ name: reference.name, environmentId: null });
+      continue;
+    }
+
+    const projectSlug = reference.project ?? scope.project.slug;
+    const target = bySlug.get(`${projectSlug}/${reference.environment}`);
+    if (
+      target === undefined ||
+      target.encryptionMode !== 'e2ee' ||
+      !mayActOn(scope, principal, target, 'secret.read')
+    ) {
+      problems.push({
+        field: 'references',
+        message: `\${${referenceKey(reference)}} names an environment that does not exist, or that you cannot read.`,
+      });
+      continue;
+    }
+
+    declared.push({
+      ...(reference.project === undefined ? {} : { project: reference.project }),
+      environment: reference.environment,
+      name: reference.name,
+      environmentId: target.id,
+    });
+  }
+
+  if (problems.length > 0) throw errors.validation(problems);
+  return declared;
+}
+
+/** Whether a declaration reaches outside the environment that holds it. */
+export function reachesOutside(
+  environmentId: string,
+  references: readonly DeclaredReference[],
+): boolean {
+  return references.some(
+    (reference) => reference.environmentId !== null && reference.environmentId !== environmentId,
+  );
+}
+
+/* ── write-time checks ───────────────────────────────────────────────────── */
+
+/**
+ * Loads the part of the graph a change to `environmentId` can affect: its whole
+ * project (which holds its chain and its descendants), and every project with a
+ * template that points into it or into a descendant. References out of those
+ * projects are loaded lazily, by `ask`, as the walk reaches them.
+ */
+async function graphAround(
+  exec: Executor,
+  orgId: string,
+  projectId: string,
+  environmentId: string,
+): Promise<GraphLoader> {
+  const loader = new GraphLoader(exec, orgId);
+  await loader.loadProjects([projectId]);
+
+  const reached = [environmentId, ...descendantsOf(loader.graph, environmentId)];
+  const inbound = await findProjectsReferencingEnvironments(exec, orgId, reached);
+  await loader.loadProjects(inbound);
+  return loader;
+}
+
+/** A refusal at write time, naming what the walk found. Never a value — there is none. */
+function refusal(cause: unknown, field: string): never {
+  if (cause instanceof ResolutionError) {
+    throw errors.validation([{ field, message: cause.message }]);
+  }
+  throw cause;
+}
+
+/**
+ * Refuses a template write that would leave any view it reaches unresolvable,
+ * looping, or too deep — checked against the graph *as it would be* after the
+ * write, in every context that can see the template: the environment itself,
+ * everything that inherits from it, and everything that reads into either.
+ */
+export async function assertTemplateWrite(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+  write: { name: string; secretId: string; references: readonly DeclaredReference[] },
+): Promise<void> {
+  const loader = await graphAround(
+    services.db,
+    scope.organization.id,
+    scope.project.id,
+    scope.environment.id,
+  );
+
+  try {
+    await loader.ask((graph) => {
+      const proposed = withSecret(graph, scope.environment.id, write.name, {
+        id: write.secretId,
+        name: write.name,
+        valueType: 'template',
+        version: 0,
+        template: true,
+        references: write.references,
+      });
+      checkContexts(proposed, affectedContexts(proposed, scope.environment.id));
+    });
+  } catch (cause) {
+    refusal(cause, 'references');
+  }
+}
+
+/**
+ * Refuses removing `name` from this environment — a deletion, or a rename away
+ * from it — when a template anywhere would then reference something no view
+ * resolves.
+ *
+ * Cheap for the overwhelming majority of deletions: an environment no template
+ * can see costs the project's rows and nothing more, because nothing in the
+ * graph is a template and no project points into it.
+ */
+export async function assertRemovalKeepsReferences(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+  name: string,
+): Promise<void> {
+  const loader = await graphAround(
+    services.db,
+    scope.organization.id,
+    scope.project.id,
+    scope.environment.id,
+  );
+  if (!graphHasTemplates(loader.graph)) return;
+
+  try {
+    await loader.ask((graph) => {
+      const without = withSecret(graph, scope.environment.id, name, null);
+      checkContexts(without, affectedContexts(graph, scope.environment.id));
+    });
+  } catch (cause) {
+    if (cause instanceof ResolutionError) {
+      throw errors.conflict(
+        `${name} cannot be removed while a template depends on it: ${cause.message} ` +
+          'Change or delete the template first.',
+      );
+    }
+    throw cause;
+  }
+}
+
+function graphHasTemplates(graph: ReferenceGraph<ServerGraphSecret>): boolean {
+  for (const environment of graph.values()) {
+    for (const secret of environment.secrets.values()) if (secret.template) return true;
+  }
+  return false;
+}
+
+/**
+ * Refuses deleting an environment that another inherits from, or that a
+ * template elsewhere points into. Both would turn a deletion into somebody
+ * else's broken deploy.
+ */
+export async function assertEnvironmentRemovable(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+): Promise<void> {
+  const children = await listChildEnvironments(
+    services.db,
+    scope.organization.id,
+    scope.environment.id,
+  );
+  if (children.length > 0) {
+    throw errors.conflict(
+      `${children.map((child) => child.slug).join(', ')} inherit${children.length === 1 ? 's' : ''} ` +
+        'from this environment. Give them another parent, or none, before deleting it.',
+    );
+  }
+
+  const inbound = await findProjectsReferencingEnvironments(services.db, scope.organization.id, [
+    scope.environment.id,
+  ]);
+  if (inbound.length > 0) {
+    throw errors.conflict(
+      'A template in another environment refers to this one. Change or delete it before deleting this environment.',
+    );
+  }
+}
+
+/**
+ * Refuses deleting a project whose environments a template in another project
+ * refers to.
+ */
+export async function assertProjectRemovable(
+  services: ServiceContext,
+  orgId: string,
+  projectId: string,
+): Promise<void> {
+  const environments = await loadEnvironmentsOfProjects(services.db, orgId, [projectId]);
+  const inbound = await findProjectsReferencingEnvironments(
+    services.db,
+    orgId,
+    environments.map((environment) => environment.id),
+  );
+  if (inbound.some((id) => id !== projectId)) {
+    throw errors.conflict(
+      'A template in another project refers to an environment of this one. Change or delete it before deleting this project.',
+    );
+  }
+}
+
+/**
+ * Checks a new parent for an environment, or clearing it: same project, both
+ * end-to-end encrypted, no loop, no chain past the limit, and no view anywhere
+ * left unresolvable by what the environment stops or starts inheriting.
+ */
+export async function assertParentChange(
+  scope: EnvironmentScope,
+  exec: Executor,
+  parentId: string | null,
+): Promise<void> {
+  const loader = await graphAround(
+    exec,
+    scope.organization.id,
+    scope.project.id,
+    scope.environment.id,
+  );
+
+  try {
+    await loader.ask((graph) => {
+      const proposed = withParent(graph, scope.environment.id, parentId);
+      checkContexts(proposed, affectedContexts(proposed, scope.environment.id));
+    });
+  } catch (cause) {
+    refusal(cause, 'parent');
+  }
+}
+
+/** The environment's parent, found in its own project, or a refusal. */
+export async function findParentCandidate(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+  slug: string,
+): Promise<GraphEnvironmentRecord> {
+  const rows = await loadEnvironmentsOfProjects(services.db, scope.organization.id, [
+    scope.project.id,
+  ]);
+  const parent = rows.find((row) => row.slug === slug);
+  if (parent === undefined) {
+    throw errors.validation([
+      { field: 'parent', message: 'No environment with that slug in this project.' },
+    ]);
+  }
+  if (parent.id === scope.environment.id) {
+    throw errors.validation([
+      { field: 'parent', message: 'An environment cannot inherit from itself.' },
+    ]);
+  }
+  if (parent.encryptionMode !== 'e2ee') {
+    throw errors.validation([
+      {
+        field: 'parent',
+        message: 'Only end-to-end encrypted environments can be inherited from.',
+      },
+    ]);
+  }
+  return parent;
+}
+
+/**
+ * The service-token half of the rule in this file's header: refuses giving an
+ * environment CI reads from something a pinned token cannot resolve.
+ */
+export async function assertTokenReach(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+  what: 'parent' | 'reference',
+): Promise<void> {
+  const tokens = await countUsableServiceTokens(services.db, scope.organization.id, [
+    scope.environment.id,
+  ]);
+  if (tokens === 0) return;
+
+  throw errors.conflict(
+    `This environment has ${tokens} active service token${tokens === 1 ? '' : 's'}, and a service ` +
+      `token can read only its own environment — so it could not resolve ${
+        what === 'parent' ? 'inherited values' : 'a reference to another environment'
+      }. Revoke the token${tokens === 1 ? '' : 's'} first, or keep CI on an environment that ` +
+      'stands alone.',
+  );
+}
+
+/**
+ * Whether a new service token may be pinned to this environment: refused when
+ * the environment inherits, or holds a template reaching outside itself.
+ */
+export async function assertTokenCanResolve(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+): Promise<void> {
+  if (scope.environment.parentEnvironmentId !== null) {
+    throw errors.conflict(
+      'This environment inherits from another, and a service token can read only its own ' +
+        'environment, so it could not resolve inherited values. Mint the token on an environment ' +
+        'that stands alone.',
+    );
+  }
+
+  const metadata = await loadSecretGraphMetadata(services.db, scope.organization.id, [
+    scope.environment.id,
+  ]);
+  const outside = metadata.some(
+    (row) =>
+      row.valueType === 'template' &&
+      reachesOutside(scope.environment.id, row.declaredReferences ?? []),
+  );
+  if (outside) {
+    throw errors.conflict(
+      'A template in this environment refers to another environment, which a service token ' +
+        'pinned here could not read. Mint the token on an environment that stands alone.',
+    );
+  }
+}
+
+/* ── the pull ────────────────────────────────────────────────────────────── */
+
+/** One secret a pull must carry from outside the environment, and who led there. */
+export interface ReferencedRead {
+  environmentId: string;
+  projectId: string | null;
+  secretId: string;
+  name: string;
+  /** The template whose reference reached it. */
+  referringSecretName: string;
+}
+
+export interface PullPlan {
+  plan: ResolutionPlan;
+  /** Every environment the plan touches, by id. */
+  environments: ReadonlyMap<string, GraphEnvironmentRecord>;
+  /** Secrets reached by a reference from outside the chain, for the audit trail. */
+  referencedReads: ReferencedRead[];
+}
+
+/**
+ * Plans the pull of an environment that inherits or holds a template: what to
+ * carry, and from where.
+ *
+ * Loads lazily — the environment's chain first, then whatever a template
+ * reaches — so a pull reads the environments it needs and no others. A loop or a
+ * dangling reference found here is a state the write-time checks exist to
+ * prevent; it is refused rather than half-resolved.
+ */
+export async function planPull(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+): Promise<PullPlan> {
+  const loader = new GraphLoader(services.db, scope.organization.id);
+  await loader.ensure(scope.environment.id);
+
+  // The chain is inside the project whose rows `ensure` just read, so its
+  // secrets can be loaded in one statement rather than one ancestor at a time
+  // as the walk reaches each.
+  const chain: string[] = [];
+  for (
+    let id = loader.records.get(scope.environment.id)?.parentEnvironmentId ?? null;
+    id !== null && chain.length <= MAX_GRAPH_EXPANSIONS && !chain.includes(id);
+    id = loader.records.get(id)?.parentEnvironmentId ?? null
+  ) {
+    chain.push(id);
+  }
+  await loader.loadSecrets(chain);
+
+  let planned: ResolutionPlan;
+  try {
+    planned = await loader.ask((graph) => planResolution(graph, scope.environment.id));
+  } catch (cause) {
+    if (cause instanceof ResolutionError) {
+      throw errors.conflict(
+        `resolution_failed: this environment's references cannot be resolved — ${cause.message}`,
+      );
+    }
+    throw cause;
+  }
+
+  const inChain = new Set([scope.environment.id, ...planned.chain]);
+  const referencedReads: ReferencedRead[] = [];
+  const seen = new Set<string>();
+
+  // For the audit trail: every secret a reference reached from outside the
+  // chain, with the template that reached it.
+  for (const node of planned.visited) {
+    const environment = loader.graph.get(node.definedIn);
+    const secret = environment?.secrets.get(node.name);
+    if (secret === undefined || !secret.template) continue;
+    for (const reference of secret.references) {
+      const context = reference.environmentId ?? node.contextId;
+      const target = lookupInView(loader.graph, context, reference.name);
+      if (target === undefined || inChain.has(target.environment.id)) continue;
+      const key = `${target.environment.id}:${target.secret.id}:${node.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      referencedReads.push({
+        environmentId: target.environment.id,
+        projectId: loader.records.get(target.environment.id)?.projectId ?? null,
+        secretId: target.secret.id,
+        name: reference.name,
+        referringSecretName: node.name,
+      });
+    }
+  }
+
+  return { plan: planned, environments: loader.records, referencedReads };
+}

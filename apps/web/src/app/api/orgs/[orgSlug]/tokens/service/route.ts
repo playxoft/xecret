@@ -7,6 +7,7 @@ import {
 import { json, parseJsonBody } from '@/server/http';
 import { requireMembership, requireSessionPrincipal } from '@/server/members-service';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
+import { assertTokenCanResolve } from '@/server/references-service';
 import { authenticatedRoute } from '@/server/route';
 import {
   assertKeypairMatchesMode,
@@ -143,6 +144,13 @@ export const POST = authenticatedRoute<Params>(
     // Both directions, in one place, with the reasoning: see
     // `assertKeypairMatchesMode`.
     assertKeypairMatchesMode(body.publicKey, environmentScope.environment.encryptionMode);
+
+    // P19 §1: a token is pinned to one environment, so it could not resolve an
+    // inherited layer or a reference into another environment. Refused here, at
+    // minting, rather than at the CI run that would discover it.
+    if (environmentScope.environment.encryptionMode === 'e2ee') {
+      await assertTokenCanResolve(environmentScope, services);
+    }
 
     const issued = await createServiceToken(services.db, {
       orgId,

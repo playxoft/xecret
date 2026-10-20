@@ -299,6 +299,18 @@ async function importClientEntries(context: {
   );
   const current = new Map(existing.map((secret) => [secret.name, secret]));
 
+  // P19 §1: an import carries values and no declarations, so it cannot rewrite a
+  // template — the entry would store a template with no references declared, or
+  // silently turn one into text. Refused by name, so the person can set it on its
+  // own.
+  const template = body.entries.find((entry) => current.get(entry.name)?.valueType === 'template');
+  if (template !== undefined) {
+    throw errors.conflict(
+      `"${template.name}" is a template. An import cannot rewrite one; set it on its own so its ` +
+        'references are declared, or leave it out of the file.',
+    );
+  }
+
   const writes: ClientSecretWrite[] = body.entries.map((entry) => {
     const target = current.get(entry.name);
 

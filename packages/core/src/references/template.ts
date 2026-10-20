@@ -1,5 +1,5 @@
 import { SECRET_NAME_MAX_LENGTH, SECRET_NAME_PATTERN } from '../validation/secret-name';
-import { SLUG_MAX_LENGTH, SLUG_PATTERN } from '../validation/slug';
+import { ENVIRONMENT_SLUG_PATTERN, SLUG_MAX_LENGTH, SLUG_PATTERN } from '../validation/slug';
 
 /**
  * The reference syntax: one secret's value pointing at another (P19 §1).
@@ -143,13 +143,24 @@ function parseReferenceBody(body: string, offset: number): SecretReference {
   const name = parts[parts.length - 1] ?? '';
   if (name.length > SECRET_NAME_MAX_LENGTH || !SECRET_NAME_PATTERN.test(name)) throw invalid();
 
+  // The last slug is an environment's, which may hold an underscore; one before
+  // it is a project's, which may not. Neither may hold a dot, which is what keeps
+  // the split unambiguous.
   const slugs = parts.slice(0, -1);
-  for (const slug of slugs) {
-    if (slug.length > SLUG_MAX_LENGTH || !SLUG_PATTERN.test(slug)) throw invalid();
+  const environment = slugs[slugs.length - 1];
+  const project = slugs.length === 2 ? slugs[0] : undefined;
+  if (
+    environment !== undefined &&
+    (environment.length > SLUG_MAX_LENGTH || !ENVIRONMENT_SLUG_PATTERN.test(environment))
+  ) {
+    throw invalid();
+  }
+  if (project !== undefined && (project.length > SLUG_MAX_LENGTH || !SLUG_PATTERN.test(project))) {
+    throw invalid();
   }
 
-  if (slugs.length === 2) return { project: slugs[0], environment: slugs[1], name };
-  if (slugs.length === 1) return { environment: slugs[0], name };
+  if (project !== undefined) return { project, environment, name };
+  if (environment !== undefined) return { environment, name };
   return { name };
 }
 

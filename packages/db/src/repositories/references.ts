@@ -247,6 +247,24 @@ export async function countUsableServiceTokens(
 }
 
 /**
+ * Locks every environment row of a project for the rest of the transaction.
+ *
+ * Two parent changes checked and written concurrently — staging onto review
+ * while review goes onto staging — would each pass a check that could not see
+ * the other, and commit a loop between them. Taking this lock before the check
+ * serialises re-parenting within a project, so the second check sees the first
+ * write. Re-parenting is rare and the project's rows are few, so the cost is
+ * nothing anybody waits on.
+ */
+export async function lockProjectEnvironments(exec: Executor, projectId: string): Promise<void> {
+  await exec
+    .select({ id: environments.id })
+    .from(environments)
+    .where(eq(environments.projectId, projectId))
+    .for('update');
+}
+
+/**
  * Sets or clears an environment's parent.
  *
  * The composite foreign key keeps the parent in the same project and the CHECK

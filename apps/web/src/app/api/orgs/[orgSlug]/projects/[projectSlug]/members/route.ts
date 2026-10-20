@@ -3,7 +3,7 @@ import { json } from '@/server/http';
 import { effectiveAccess } from '@/server/members-service';
 import { authenticatedRoute } from '@/server/route';
 import { toMember } from '@/server/schemas/members';
-import { toEnvironment } from '@/server/schemas/resources';
+import { toEnvironments } from '@/server/schemas/resources';
 import { authorize, resolveProjectPath } from '@/server/tenancy';
 
 /**
@@ -77,7 +77,7 @@ export const GET = authenticatedRoute<Params>(async ({ params, principal, servic
 
   return json({
     project: { name: scope.project.name, slug: scope.project.slug },
-    environments: environments.map(toEnvironment),
+    environments: toEnvironments(environments),
     hasMore: page.hasMore,
     members: page.members.map((member) => {
       const held = grantsByMember.get(member.id) ?? [];

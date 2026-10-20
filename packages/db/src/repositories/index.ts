@@ -463,6 +463,7 @@ export {
   loadEnvironmentsByIds,
   loadEnvironmentsOfProjects,
   loadSecretGraphMetadata,
+  lockProjectEnvironments,
   setEnvironmentParent,
 } from './references';
 export type { GraphEnvironmentRecord, GraphSecretRecord } from './references';

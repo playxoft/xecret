@@ -1,7 +1,7 @@
 import { json, parseQuery } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
 import { clientEnvironmentBundle } from '@/server/env-bundle';
-import { documentQuery } from '@/server/schemas/secrets';
+import { documentQuery, pullQuery } from '@/server/schemas/secrets';
 import {
   auditSource,
   authorizeSecretAction,
@@ -85,10 +85,17 @@ export const GET = authenticatedRoute<Params>(
     // told their request succeeded when it did not. Formatting moves to the
     // client with the decryption, because they are the same act.
     if (scope.environment.encryptionMode === 'e2ee') {
-      const bundle = await clientEnvironmentBundle(scope, services, principal);
+      const { bundle: requested } = parseQuery(request, pullQuery);
+      const { bundle, layerReads, referencedReads } = await clientEnvironmentBundle(
+        scope,
+        services,
+        principal,
+        { resolved: requested === '2' },
+      );
 
+      const builder = audit(scope.organization.id);
       record(
-        audit(scope.organization.id).success(
+        builder.success(
           'secret.read',
           {
             type: 'environment',
@@ -102,6 +109,47 @@ export const GET = authenticatedRoute<Params>(
             environmentSlug: scope.environment.slug,
             source: auditSource(principal),
           },
+        ),
+        // ── The reads a resolved pull made beyond this environment (P19 §1) ──
+        // Filed against the environment that was read, with the one being pulled
+        // as context — so production's own log shows a read that a template in
+        // staging caused, rather than staging's log alone recording it.
+        ...layerReads.map((layer) =>
+          builder.success(
+            'secret.read',
+            {
+              type: 'environment',
+              id: layer.environmentId,
+              projectId: layer.projectId,
+              environmentId: layer.environmentId,
+            },
+            {
+              secretCount: layer.secretCount,
+              projectSlug: layer.projectSlug,
+              environmentSlug: layer.environmentSlug,
+              contextEnvironmentSlug: scope.environment.slug,
+              reason: layer.kind,
+              source: auditSource(principal),
+            },
+          ),
+        ),
+        ...referencedReads.map((read) =>
+          builder.success(
+            'secret.read',
+            {
+              type: 'secret',
+              id: read.secretId,
+              projectId: read.projectId,
+              environmentId: read.environmentId,
+            },
+            {
+              secretName: read.name,
+              referringSecretName: read.referringSecretName,
+              contextEnvironmentSlug: scope.environment.slug,
+              reason: 'referenced',
+              source: auditSource(principal),
+            },
+          ),
         ),
       );
 

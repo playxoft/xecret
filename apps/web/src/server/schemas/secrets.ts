@@ -5,12 +5,15 @@ import { toBytes } from '@xecret/db/repositories';
 import type { SecretMaterial } from '@xecret/db/repositories';
 import { uuidField } from './ids';
 import { decodeBlob } from './vault';
+import { MAX_REFERENCES_PER_SECRET } from '@xecret/core/references';
 import {
   DEFAULT_SECRET_VALUE_TYPE,
   SECRET_NAME_MAX_LENGTH,
   SECRET_NAME_PATTERN,
   SECRET_VALUE_TYPES,
+  environmentSlugSchema,
   secretNameSchema,
+  slugReferenceSchema,
 } from '@xecret/core/validation';
 import { MAX_REQUEST_BODY_BYTES } from '@/server/http';
 import { errors } from '@/server/errors';
@@ -216,12 +219,49 @@ const expectedVersionSchema = z
   .int()
   .check(z.gte(1, 'A version is at least 1.'), z.lte(2_147_483_647));
 
+/**
+ * One reference a template declares (P19 §1), exactly as the client parsed it
+ * out of the text: `{ name }` for `${KEY}`, `{ environment, name }` for
+ * `${env.KEY}`, `{ project, environment, name }` for `${project.env.KEY}`.
+ *
+ * Plaintext by necessity and by design: the server cannot read the template, so
+ * this declaration is the only thing it can check for a loop, a dangling target,
+ * or a reach into an environment the writer may not read. Names and slugs are
+ * plaintext already (ADR 0009, trade-off 1).
+ */
+const referenceSchema = z
+  .strictObject({
+    project: z.optional(slugReferenceSchema),
+    environment: z.optional(environmentSlugSchema),
+    name: z.string().check(z.maxLength(SECRET_NAME_MAX_LENGTH), z.regex(SECRET_NAME_PATTERN)),
+  })
+  .check(
+    z.refine(
+      (reference) => reference.project === undefined || reference.environment !== undefined,
+      'A reference that names a project names an environment too.',
+    ),
+  );
+
+/** A template's declaration: at most the references one template may hold. */
+const referencesSchema = z.optional(
+  z
+    .array(referenceSchema)
+    .check(
+      z.maxLength(
+        MAX_REFERENCES_PER_SECRET,
+        `A template may hold at most ${MAX_REFERENCES_PER_SECRET} references.`,
+      ),
+    ),
+);
+
 export const createClientSecretBody = z.object({
   id: secretIdSchema,
   name: secretNameSchema,
   value: clientValueSchema,
   encNote: encNoteSchema,
   valueType: z._default(valueTypeSchema, DEFAULT_SECRET_VALUE_TYPE),
+  /** Required for a template, refused for anything else. See `prepareTemplateDeclaration`. */
+  references: referencesSchema,
 });
 
 /**
@@ -241,6 +281,7 @@ export const updateClientSecretBody = z.object({
   expectedVersion: expectedVersionSchema,
   encNote: encNoteSchema,
   valueType: z.optional(valueTypeSchema),
+  references: referencesSchema,
 });
 
 /**
@@ -274,6 +315,8 @@ export const restoreClientSecretBody = z.object({
   expectedVersion: expectedVersionSchema,
   value: clientValueSchema,
   encNote: encNoteSchema,
+  /** For a template: the restored text's references, re-parsed by the client. */
+  references: referencesSchema,
 });
 
 /**
@@ -437,6 +480,20 @@ export const exportFormatSchema = z.enum(['env', 'json', 'yaml', 'shell', 'docke
  */
 export const documentQuery = z.object({
   format: z._default(exportFormatSchema, 'env'),
+});
+
+/**
+ * What an end-to-end encrypted pull may ask for (P19 §1).
+ *
+ * `bundle=2` is a client saying it can resolve inheritance and references. An
+ * environment that uses either is refused to a client that does not say so —
+ * see `clientEnvironmentBundle` — rather than served a view that silently lacks
+ * them. `format` is accepted and ignored here, because the CLI sends it on every
+ * pull and the e2ee bundle is JSON whatever it says.
+ */
+export const pullQuery = z.object({
+  format: z.optional(exportFormatSchema),
+  bundle: z.optional(z.enum(['1', '2'])),
 });
 
 export const importBody = z.object({
