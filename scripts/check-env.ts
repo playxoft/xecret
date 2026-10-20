@@ -26,6 +26,7 @@
 
 import { parseRootKeyMaterial } from '../packages/core/src/crypto/key-provider.ts';
 import { MIN_STATE_SECRET_LENGTH } from '../packages/core/src/auth/oauth-state.ts';
+import { BillingMisconfiguredError, billingSetup } from '../apps/web/src/server/billing/config.ts';
 
 interface Result {
   name: string;
@@ -325,6 +326,73 @@ function checkLogging(): void {
 }
 
 /**
+ * Payments through Dodo (P12), which are optional — and all or nothing.
+ *
+ * None of the variables: billing is off, which is right for a self-hoster and
+ * for this deployment until Dodo is set up, so it is reported rather than
+ * failed. Some of them: the deployment answers 503 on every billing route and
+ * on the webhook, so it fails here first. Validated by the same function the
+ * Worker uses, so a value that passes here cannot fail there for a reason this
+ * script did not consider.
+ *
+ * No network call. Whether the key belongs to the mode is something only Dodo
+ * can answer, and the first real webhook delivery (Dodo shows them on the
+ * endpoint page) is the check that does.
+ */
+function checkBilling(): void {
+  try {
+    const setup = billingSetup(process.env as never);
+    if (setup.state === 'disabled') {
+      check(
+        'DODO_API_KEY',
+        true,
+        'not set — payments are off; plans are whatever `npm run plan:set` writes',
+      );
+      return;
+    }
+    const { config } = setup;
+    check('DODO_ENVIRONMENT', true, config.mode);
+    // Lengths and shapes only: the key and the secret are never printed.
+    check(
+      'DODO_API_KEY',
+      config.apiKey.length >= 16,
+      config.apiKey.length >= 16 ? 'set' : 'suspiciously short',
+    );
+    check(
+      'DODO_WEBHOOK_SECRET',
+      config.webhookSecret.startsWith('whsec_'),
+      config.webhookSecret.startsWith('whsec_')
+        ? 'set'
+        : 'not a Standard Webhooks secret — expected `whsec_…`, from the endpoint’s Overview tab',
+    );
+    // Product ids are not credentials, and seeing them is how an operator
+    // notices a live id in a test-mode deployment.
+    for (const entry of config.catalog) {
+      check(
+        `DODO_PRODUCT_${entry.plan.toUpperCase()}_${entry.interval.toUpperCase()}`,
+        true,
+        entry.productId,
+      );
+    }
+    check('DODO_METER_SECRET_FETCH', true, `event name "${config.meterEventName}"`);
+    check(
+      'DODO_ADDON_SAML',
+      true,
+      config.samlAddonId ??
+        'not set — the SAML add-on is granted by hand (`plan:set --addon saml`)',
+    );
+  } catch (cause) {
+    if (cause instanceof BillingMisconfiguredError) {
+      for (const problem of cause.problems) {
+        check(problem.split(' ')[0] ?? 'DODO_*', false, `half-configured: ${problem}`);
+      }
+      return;
+    }
+    throw cause;
+  }
+}
+
+/**
  * Asks WorkOS whether the API key and the client id in this shell belong to the
  * same WorkOS environment — the pairing a key's format cannot tell you.
  *
@@ -409,6 +477,7 @@ async function main(): Promise<void> {
   if (!process.argv.includes('--offline')) await checkWorkosPairing();
   checkEmail();
   checkLogging();
+  checkBilling();
 
   const width = Math.max(...results.map((r) => r.name.length));
   const failed = results.filter((r) => !r.ok).length;
