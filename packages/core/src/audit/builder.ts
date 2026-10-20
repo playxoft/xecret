@@ -9,6 +9,8 @@ import type {
   AuditEvent,
   AuditMetadata,
   AuditOutcome,
+  AuditSubscriptionStatus,
+  BillingDriftField,
   SignInConfirmationKind,
   SignInMethod,
 } from './types';
@@ -78,7 +80,9 @@ export type AuditResourceType =
   | 'token'
   | 'session'
   | 'key'
-  | 'user';
+  | 'user'
+  /** An organisation's subscription with the payment provider (P12). */
+  | 'subscription';
 
 /**
  * What an event is about.
@@ -224,6 +228,7 @@ const LIMITS = {
   addonName: 64,
   limitName: 64,
   operator: 128,
+  billingEvent: 64,
   actorLabel: 320,
   userAgent: 512,
   requestId: 128,
@@ -499,8 +504,95 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
     clean.recoveryCodeCount = metadata.recoveryCodeCount;
   }
 
+  // ── Payments (P12) ──
+  // Every one a count or a closed vocabulary. The provider's payloads are full
+  // of identifiers and amounts that must never reach this table, so nothing
+  // here is a free string: a value that is not one of the expected shapes is
+  // dropped, never cleaned into one.
+  if (metadata.previousSeatCount !== undefined && Number.isFinite(metadata.previousSeatCount)) {
+    clean.previousSeatCount = metadata.previousSeatCount;
+  }
+  if (metadata.unitCount !== undefined && Number.isFinite(metadata.unitCount)) {
+    clean.unitCount = metadata.unitCount;
+  }
+  if (metadata.billingInterval !== undefined && BILLING_INTERVALS.has(metadata.billingInterval)) {
+    clean.billingInterval = metadata.billingInterval;
+  }
+  if (
+    metadata.previousBillingInterval !== undefined &&
+    BILLING_INTERVALS.has(metadata.previousBillingInterval)
+  ) {
+    clean.previousBillingInterval = metadata.previousBillingInterval;
+  }
+  if (
+    metadata.subscriptionStatus !== undefined &&
+    SUBSCRIPTION_STATUSES.has(metadata.subscriptionStatus)
+  ) {
+    clean.subscriptionStatus = metadata.subscriptionStatus;
+  }
+  if (
+    metadata.previousSubscriptionStatus !== undefined &&
+    SUBSCRIPTION_STATUSES.has(metadata.previousSubscriptionStatus)
+  ) {
+    clean.previousSubscriptionStatus = metadata.previousSubscriptionStatus;
+  }
+  if (typeof metadata.currency === 'string' && CURRENCY.test(metadata.currency)) {
+    clean.currency = metadata.currency;
+  }
+  if (
+    typeof metadata.billingEvent === 'string' &&
+    metadata.billingEvent.length <= LIMITS.billingEvent &&
+    BILLING_EVENT.test(metadata.billingEvent)
+  ) {
+    clean.billingEvent = metadata.billingEvent;
+  }
+  if (metadata.driftFields !== undefined) {
+    // Typed as unknown on the way in: the type says a list of field names, and
+    // what this defends is a caller that reached past it with a cast.
+    const listed: unknown = metadata.driftFields;
+    if (Array.isArray(listed)) {
+      clean.driftFields = [
+        ...new Set(
+          (listed as readonly unknown[]).filter(
+            (field): field is BillingDriftField =>
+              typeof field === 'string' && DRIFT_FIELDS.has(field),
+          ),
+        ),
+      ];
+    }
+  }
+
   return clean;
 }
+
+const BILLING_INTERVALS: ReadonlySet<string> = new Set(['monthly', 'yearly']);
+
+const SUBSCRIPTION_STATUSES: ReadonlySet<string> = new Set<AuditSubscriptionStatus>([
+  'active',
+  'trialing',
+  'past_due',
+  'on_hold',
+  'cancelled',
+  'expired',
+]);
+
+const DRIFT_FIELDS: ReadonlySet<string> = new Set<BillingDriftField>([
+  'plan',
+  'interval',
+  'status',
+  'seats',
+  'periodEnd',
+  'cancelAtPeriodEnd',
+  'product',
+  'addon',
+  'missing',
+]);
+
+/** ISO-4217: three capital letters, and nothing that could be an amount. */
+const CURRENCY = /^[A-Z]{3}$/;
+
+/** A provider event name: `subscription.renewed`, `payment.failed`. */
+const BILLING_EVENT = /^[a-z_]+\.[a-z_]+$/;
 
 const SIGN_IN_METHODS: ReadonlySet<string> = new Set<SignInMethod>([
   'password',
