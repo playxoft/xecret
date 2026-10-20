@@ -91,12 +91,12 @@ export const GET = authenticatedRoute<Params>(
     // told their request succeeded when it did not. Formatting moves to the
     // client with the decryption, because they are the same act.
     if (scope.environment.encryptionMode === 'e2ee') {
-      const { bundle: requested } = parseQuery(request, pullQuery);
+      const { bundle: requested, layers } = parseQuery(request, pullQuery);
       const { bundle, layerReads, referencedReads } = await clientEnvironmentBundle(
         scope,
         services,
         principal,
-        { resolved: requested === '2' },
+        { resolved: requested === '2', ownOnly: layers === 'none' },
       );
 
       const builder = audit(scope.organization.id);

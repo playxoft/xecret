@@ -558,10 +558,17 @@ export const documentQuery = z.object({
  * see `clientEnvironmentBundle` — rather than served a view that silently lacks
  * them. `format` is accepted and ignored here, because the CLI sends it on every
  * pull and the e2ee bundle is JSON whatever it says.
+ *
+ * `layers=none` is a client saying it reads only this environment's own values
+ * and resolves nothing — the dashboard, which shows, compares and exports the
+ * values an environment holds, never what a process would see. It is served the
+ * version 2 shape with no layers: templates marked, inheritance named, and no
+ * other environment read, authorised or audited.
  */
 export const pullQuery = z.object({
   format: z.optional(exportFormatSchema),
   bundle: z.optional(z.enum(['1', '2'])),
+  layers: z.optional(z.enum(['none'])),
 });
 
 export const importBody = z.object({

@@ -200,11 +200,30 @@ export function needsResolution(
   );
 }
 
+/**
+ * How much a pull asks for beyond the environment itself.
+ *
+ *  - `resolved: false` — a version 1 client. Refused for an environment that
+ *    needs resolution, because it would inject a template's literal text.
+ *  - `resolved: true` — a client that resolves (`?bundle=2`): every layer the
+ *    resolution needs, each authorised and audited where it was read.
+ *  - `ownOnly: true` — a client that reads this environment's own values and
+ *    resolves nothing (`?bundle=2&layers=none`, the dashboard). The version 2
+ *    shape with `layers: []`. Nothing beyond the environment is read, so nothing
+ *    beyond it is authorised or audited: a reader who may see staging but not
+ *    the environment a staging template reaches into can still see staging's own
+ *    values, which is exactly what a direct read of staging has always allowed.
+ */
+export interface BundleOptions {
+  resolved: boolean;
+  ownOnly?: boolean;
+}
+
 export async function clientEnvironmentBundle(
   scope: EnvironmentScope,
   services: ServiceContext,
   principal: Principal,
-  options: { resolved: boolean } = { resolved: false },
+  options: BundleOptions = { resolved: false },
 ): Promise<BundleResult> {
   const keys = await environmentKeyState(scope, services, principal);
 
@@ -257,11 +276,37 @@ export async function clientEnvironmentBundle(
   // values, into a process — which then starts and fails somewhere far from the
   // cause. A client that can resolve says so (`?bundle=2`); one that does not is
   // told what to upgrade, before anything else is read.
-  if (!options.resolved) {
+  if (!options.resolved && options.ownOnly !== true) {
     throw errors.conflict(
       'resolution_unsupported: this environment inherits from another or holds a template, and ' +
         'this client cannot resolve them. Upgrade the xecret CLI, then run the command again.',
     );
+  }
+
+  const ownBundle = (layers: BundleLayer[]): ResolvedEnvironmentBundle => ({
+    bundle: true,
+    bundleVersion: 2,
+    encryptionMode: 'e2ee',
+    keys,
+    environment: {
+      id: scope.environment.id,
+      projectSlug: scope.project.slug,
+      slug: scope.environment.slug,
+      parentEnvironmentId: scope.environment.parentEnvironmentId,
+    },
+    secrets: sortByName(materials.map(toResolvable)),
+    layers,
+    // The environment being read decides, never a layer: a parent's policy
+    // governs exports of the parent, and inheriting its values does not make
+    // this environment's own setting any less its own.
+    policy: { plaintextExport: plaintextExportOf(scope.environment) },
+  });
+
+  // ── Own values only: the graph is not walked ──
+  // No plan, no layer, no other environment's grant — so none of the statements
+  // below, and no `secret.read` filed anywhere but here.
+  if (options.ownOnly === true) {
+    return { bundle: ownBundle([]), layerReads: [], referencedReads: [] };
   }
 
   const { plan, environments, referencedReads } = await planPull(scope, services);
@@ -348,26 +393,5 @@ export async function clientEnvironmentBundle(
     });
   }
 
-  return {
-    bundle: {
-      bundle: true,
-      bundleVersion: 2,
-      encryptionMode: 'e2ee',
-      keys,
-      environment: {
-        id: scope.environment.id,
-        projectSlug: scope.project.slug,
-        slug: scope.environment.slug,
-        parentEnvironmentId: scope.environment.parentEnvironmentId,
-      },
-      secrets: sortByName(materials.map(toResolvable)),
-      layers,
-      // The environment being read decides, never a layer: a parent's policy
-      // governs exports of the parent, and inheriting its values does not make
-      // this environment's own setting any less its own.
-      policy: { plaintextExport: plaintextExportOf(scope.environment) },
-    },
-    layerReads,
-    referencedReads,
-  };
+  return { bundle: ownBundle(layers), layerReads, referencedReads };
 }

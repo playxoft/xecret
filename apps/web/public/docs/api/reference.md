@@ -201,7 +201,8 @@ a read of the environment itself.
 | Method | Path | Notes |
 |---|---|---|
 | `PUT` | `…/environments/{envSlug}/parent` | Body `{ parent: envSlug \| null }`. Inherit from another environment of the project, or stop. Setting one needs Pro and read access to the parent; refused for a loop, a chain past five, an environment a service token is pinned to, or a change that would leave a template unresolvable. |
-| `GET` | `…/pull?bundle=2` | What a client that resolves inheritance and templates asks for. An environment that uses either answers **409** `resolution_unsupported` to a client that does not ask. |
+| `GET` | `…/pull?bundle=2` | What a client that resolves inheritance and templates asks for. An environment that uses either answers **409** `resolution_unsupported` to a client that does not ask. Every environment the resolution reads must be one you can read. |
+| `GET` | `…/pull?bundle=2&layers=none` | The environment's own values only — templates marked, nothing resolved, no other environment read. What the dashboard asks for. Needs read access to this environment alone. |
 | `GET` | `…/environments/{envSlug}/overrides` | Your own [personal overrides](../features/overrides.md): `{ overrides: [{ name, ciphertext, updatedAt }], canSet, upgradeTo }`. A person's credential only — a service token gets **403**. |
 | `PUT` `DELETE` | `…/overrides/{name}` | Body `{ ciphertext }` (an `xk2.gcm.` blob under your override key). Setting needs Pro; removing never does. |
 | `POST` | `…/environments/{target}/promote` | Body `{ source, writes, removals?, dryRun }`. [Promotion](../features/promotion-and-restore.md#promotion), atomic. `writes` are client-encrypted entries for the target, of names the source holds. |

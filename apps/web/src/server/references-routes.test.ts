@@ -386,6 +386,12 @@ function pull(org: Org, env: string, resolved = true) {
   return call(pullRoute.GET, 'GET', path, params);
 }
 
+/** The dashboard's read: this environment's own values, nothing resolved. */
+function pullOwn(org: Org, env: string) {
+  const { path, params } = envPath(org, env, '/pull?bundle=2&layers=none');
+  return call(pullRoute.GET, 'GET', path, params);
+}
+
 function createTemplate(
   org: Org,
   env: Env,
@@ -605,6 +611,83 @@ describe('pulling an environment whose template reaches elsewhere', () => {
     expect(answer.status).toBe(200);
     expect(answer.body.bundleVersion).toBe(2);
     expect(answer.body.layers).toEqual([]);
+  });
+});
+
+describe('pulling only an environment’s own values (layers=none)', () => {
+  // Team, where production is deny-by-default for a developer: staging inherits
+  // from production and holds a template reaching into it, and the developer may
+  // read staging only. A resolved pull is refused them; their own view is not.
+  async function walledOff() {
+    const org = await seedOrg('team');
+    const project = await seedProject(org);
+    const production = await seedEnv(org, project, 'production', { production: true });
+    const staging = await seedEnv(org, project, 'staging', { parentId: production.id });
+    const developer = await seedUser();
+    await addMember(org.orgId, developer.id, 'developer');
+    await grantTo(staging, { memberUserId: developer.id }, org.owner.id);
+    await seedSecret(org, production, 'DB_PASSWORD');
+    await seedSecret(org, staging, 'HOST');
+    await seedSecret(org, staging, 'URL', [
+      { environment: 'production', name: 'DB_PASSWORD', environmentId: production.id },
+    ]);
+    caller = sessionOf(developer);
+    return { org, production, staging };
+  }
+
+  it('serves the version 2 shape with no layers to a reader who cannot read beyond it', async () => {
+    const { org, production, staging } = await walledOff();
+    expect((await pull(org, 'staging')).status).toBe(403);
+    audit.length = 0;
+
+    const answer = await pullOwn(org, 'staging');
+    expect(answer.status).toBe(200);
+    expect(answer.body.bundleVersion).toBe(2);
+    expect(answer.body.layers).toEqual([]);
+    expect(answer.body.environment).toMatchObject({
+      slug: 'staging',
+      parentEnvironmentId: production.id,
+    });
+    expect(answer.body.secrets!.map((secret) => secret.name)).toEqual(['HOST', 'URL']);
+    expect(answer.body.secrets!.find((secret) => secret.name === 'URL')).toMatchObject({
+      template: true,
+      references: [{ environment: 'production', name: 'DB_PASSWORD' }],
+    });
+
+    // One read, filed here: nothing beyond staging was delivered, so nothing
+    // beyond it is recorded as read.
+    const reads = audit.filter((record) => record.action === 'secret.read');
+    expect(reads.map((record) => [record.environmentId, record.metadata.reason ?? null])).toEqual([
+      [staging.id, null],
+    ]);
+  });
+
+  it('walks none of the graph', async () => {
+    const { org } = await walledOff();
+    t.reset();
+    await pullOwn(org, 'staging');
+    const statements = t.statements.map((statement) => statement.sql);
+    expect(statements.some((sql) => sql.includes('declared_references" @>'))).toBe(false);
+    expect(
+      statements.filter((sql) => sql.includes('"environments"."parent_environment_id" in')),
+    ).toEqual([]);
+    expect(statements.some((sql) => /"secrets"\."environment_id" in \(/.test(sql))).toBe(false);
+    expect(
+      statements.some((sql) => sql.includes('"env_key_grants"') && sql.includes(' in (')),
+    ).toBe(false);
+  });
+
+  it('is still the version 1 bundle for an environment that needs no resolution', async () => {
+    const org = await seedOrg('pro');
+    const project = await seedProject(org);
+    const env = await seedEnv(org, project, 'development');
+    await grantTo(env, { memberUserId: org.owner.id }, org.owner.id);
+    await seedSecret(org, env, 'PLAIN');
+    caller = sessionOf(org.owner);
+
+    const answer = await pullOwn(org, 'development');
+    expect(answer.status).toBe(200);
+    expect(answer.body.bundleVersion).toBe(1);
   });
 });
 
