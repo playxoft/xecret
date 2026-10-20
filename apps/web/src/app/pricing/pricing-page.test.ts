@@ -219,11 +219,54 @@ describe('the prices that are written down', () => {
 });
 
 describe('the honesty rules this page is built on', () => {
-  it('still says that nothing is billed yet', () => {
-    // Removed in the phase that connects a payment provider, and in no other.
-    // Until then it is simply true, and it is what lets the page publish real
-    // prices months before it can charge them.
-    expect(SOURCE).toContain('nothing is billed');
+  it('says that nothing is billed wherever nothing is', () => {
+    // The phase that connected a payment provider (P12) made the sentence
+    // conditional rather than deleting it: a self-hosted deployment, and this
+    // one before Dodo is configured, still bill nothing, and still say so. It
+    // is what lets the page publish real prices before it can charge them.
+    const code = withoutComments(SOURCE);
+    expect(code).toContain('nothing is billed');
+    expect(code).toContain('no card is taken in pre-alpha');
+  });
+
+  it('asks the deployment whether it takes payments, and the page and its metadata both ask', () => {
+    const code = withoutComments(SOURCE);
+    const ask = code.slice(code.indexOf('async function takesPayments('));
+    // Enabled only when every Dodo variable is set; anything else — a test, a
+    // half-configured deployment — is "not billing".
+    expect(ask.slice(0, ask.indexOf('\n}\n'))).toMatch(
+      /billingSetup\(env\)\.state === 'enabled'[\s\S]*catch[\s\S]*return false/,
+    );
+    expect(code).toContain('pricingDescription(currency, await takesPayments())');
+    expect(code).toContain('const paymentsLive = await takesPayments();');
+    // The FAQ and its structured data are the same list, so Google is never
+    // told an answer the page no longer gives.
+    expect(code).toContain('faqSchema(faq)');
+    expect(code).toContain('<Faq items={faq}');
+    expect(code).not.toContain('faqSchema(FAQ)');
+  });
+
+  it('gives every answer that mentions pre-alpha billing a live counterpart that does not', () => {
+    const entries = SOURCE.slice(locate('const FAQ: readonly PricingFaqItem[] = ['));
+    const list = entries.slice(0, entries.indexOf('\n];\n'));
+    const blocks = list.split(/\n {2}\{\n/).slice(1);
+    let conditional = 0;
+    for (const block of blocks) {
+      const [before, live] = block.split('whenPaymentsLive:');
+      if (
+        /no plan is billed|neither is billed|no card|billing system connected/.test(before ?? '')
+      ) {
+        expect(
+          live,
+          `an answer about pre-alpha billing has no live counterpart:\n${block}`,
+        ).toBeDefined();
+      }
+      if (live !== undefined) {
+        conditional += 1;
+        expect(live).not.toMatch(/pre-alpha|not billed|no plan is billed|nothing is billed/);
+      }
+    }
+    expect(conditional).toBe(3);
   });
 
   it('marks unbuilt capabilities rather than omitting or claiming them', () => {
