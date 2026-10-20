@@ -14,6 +14,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import type { PlanId, StoredPlanId } from '@xecret/core/entitlements';
 import { billingIntervalEnum, planIdEnum, subscriptionStatusEnum } from './enums';
+import { users } from './identity';
 import { organizations } from './tenancy';
 
 /**
@@ -91,6 +92,12 @@ export const orgSubscriptions = pgTable(
     regionLockedUntil: timestamp('region_locked_until', { withTimezone: true }),
 
     currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }),
+    /**
+     * Start of the paid period — the provider's `previous_billing_date`
+     * (migration 0024). The usage counter is keyed by it, so the meter's
+     * period and the invoice's period are the same period.
+     */
+    currentPeriodStart: timestamp('current_period_start', { withTimezone: true }),
     trialEndsAt: timestamp('trial_ends_at', { withTimezone: true }),
 
     cancelAtPeriodEnd: boolean('cancel_at_period_end').notNull().default(false),
@@ -107,6 +114,22 @@ export const orgSubscriptions = pgTable(
 
     dodoCustomerId: text('dodo_customer_id'),
     dodoSubscriptionId: text('dodo_subscription_id').unique(),
+    /**
+     * The product the subscription is on (migration 0024). A seat change names
+     * the product the customer holds, never one re-derived from a catalog that
+     * may have moved since they bought it.
+     */
+    dodoProductId: text('dodo_product_id'),
+    /**
+     * The provider timestamp of the last subscription snapshot applied. Older
+     * snapshots are stale and skipped: webhooks arrive out of order.
+     */
+    dodoEventAt: timestamp('dodo_event_at', { withTimezone: true }),
+    /**
+     * What the next renewal charges before tax, in the currency's smallest
+     * unit. Quoted by the renewal notice; never read for access.
+     */
+    renewalAmountMinor: bigint('renewal_amount_minor', { mode: 'number' }),
 
     /**
      * Separately purchased, never bundled into a plan.
@@ -149,9 +172,16 @@ export const orgSubscriptions = pgTable(
       'org_subscriptions_country_check',
       sql`${t.billingCountry} is null or ${t.billingCountry} ~ '^[A-Z]{2}$'`,
     ),
+    check(
+      'org_subscriptions_renewal_amount_check',
+      sql`${t.renewalAmountMinor} is null or ${t.renewalAmountMinor} >= 0`,
+    ),
     // The reconciler sweeps every subscription whose period has ended, and the
     // dunning job sweeps by status. Both read this index rather than the table.
     index('org_subscriptions_status_period_idx').on(t.status, t.currentPeriodEnd),
+    index('org_subscriptions_dodo_customer_idx')
+      .on(t.dodoCustomerId)
+      .where(sql`${t.dodoCustomerId} is not null`),
   ],
 );
 
@@ -242,6 +272,130 @@ export const billingWebhookEvents = pgTable(
     // The retention sweep deletes by age; nothing else scans this table.
     index('billing_webhook_events_received_idx').on(t.receivedAt),
     index('billing_webhook_events_org_idx').on(t.orgId),
+  ],
+);
+
+/**
+ * Every hosted checkout an owner was sent to (migration 0024).
+ *
+ * The way back from a payment to the organisation that started it: payment
+ * events carry the checkout session id, and this row — written by our own
+ * server call that minted the session — says whose it was. Insert-only by
+ * grant.
+ */
+export const billingCheckouts = pgTable(
+  'billing_checkouts',
+  {
+    sessionId: text('session_id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    plan: planIdEnum('plan').notNull().$type<PlanId>(),
+    billingInterval: billingIntervalEnum('billing_interval').notNull(),
+    quantity: integer('quantity').notNull(),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('billing_checkouts_quantity_check', sql`${t.quantity} >= 1`),
+    check('billing_checkouts_plan_check', sql`${t.plan} <> 'free'`),
+    check('billing_checkouts_session_id_check', sql`length(${t.sessionId}) between 1 and 255`),
+    index('billing_checkouts_org_idx').on(t.orgId, t.createdAt),
+  ],
+);
+
+/**
+ * Seat changes still owed to the payment provider (migration 0024).
+ *
+ * Written before the push, so a push that fails or dies with the isolate
+ * leaves a debt the hourly job collects. Holds no count on purpose: the job
+ * pushes the count as it is *then*.
+ */
+export const billingSeatSyncs = pgTable(
+  'billing_seat_syncs',
+  {
+    orgId: uuid('org_id')
+      .primaryKey()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    queuedAt: timestamp('queued_at', { withTimezone: true }).notNull().defaultNow(),
+    attempts: integer('attempts').notNull().default(0),
+    lastAttemptAt: timestamp('last_attempt_at', { withTimezone: true }),
+    /** A category, e.g. `upstream_5xx`, never a provider message. */
+    lastError: text('last_error'),
+  },
+  (t) => [
+    check('billing_seat_syncs_attempts_check', sql`${t.attempts} >= 0`),
+    check(
+      'billing_seat_syncs_last_error_check',
+      sql`${t.lastError} is null or length(${t.lastError}) <= 64`,
+    ),
+  ],
+);
+
+/** The billing emails, by kind. The database refuses any other (migration 0024). */
+export const BILLING_REMINDER_KINDS = [
+  'trial_ending_3d',
+  'trial_ending_1d',
+  'payment_failed',
+  'card_expiring',
+  'renewal_upcoming',
+  'seats_changed',
+  'usage_80',
+  'usage_100',
+  'invoice_available',
+] as const;
+
+export type BillingReminderKind = (typeof BILLING_REMINDER_KINDS)[number];
+
+/**
+ * Which billing emails have gone out (migration 0024). The primary key is the
+ * deduplication: a reminder is sent only by whoever won the insert.
+ */
+export const billingReminders = pgTable(
+  'billing_reminders',
+  {
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull().$type<BillingReminderKind>(),
+    /** What is being reminded about: a trial end date, a period, a payment. */
+    occasion: text('occasion').notNull(),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ name: 'billing_reminders_pkey', columns: [t.orgId, t.kind, t.occasion] }),
+    check(
+      'billing_reminders_kind_check',
+      sql.raw(`"kind" IN (${BILLING_REMINDER_KINDS.map((kind) => `'${kind}'`).join(', ')})`),
+    ),
+    check('billing_reminders_occasion_check', sql`length(${t.occasion}) between 1 and 128`),
+    index('billing_reminders_sent_idx').on(t.sentAt),
+  ],
+);
+
+/**
+ * Self-host licence keys the provider issued, stored against the order
+ * (migration 0024). **The key itself is never stored** — the provider emails
+ * it to the buyer; this is the record that it exists.
+ */
+export const billingLicenseKeys = pgTable(
+  'billing_license_keys',
+  {
+    licenseKeyId: text('license_key_id').primaryKey(),
+    productId: text('product_id').notNull(),
+    dodoCustomerId: text('dodo_customer_id'),
+    dodoSubscriptionId: text('dodo_subscription_id'),
+    dodoPaymentId: text('dodo_payment_id'),
+    activationsLimit: integer('activations_limit'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    issuedAt: timestamp('issued_at', { withTimezone: true }),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      'billing_license_keys_activations_check',
+      sql`${t.activationsLimit} is null or ${t.activationsLimit} >= 0`,
+    ),
   ],
 );
 

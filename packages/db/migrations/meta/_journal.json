@@ -169,6 +169,13 @@
       "when": 1788000000000,
       "tag": "0023_sso_workos_home",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1788100000000,
+      "tag": "0024_dodo_billing",
+      "breakpoints": true
     }
   ]
 }
