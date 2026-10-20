@@ -1,6 +1,7 @@
 import { uuidv7 } from '../ids';
 import { ACTION_REQUIREMENTS } from '../authz/roles';
 import type { AccessLevel, Action, Decision } from '../authz/types';
+import { WEBHOOK_EVENT_TYPES } from '../webhooks/events';
 import { sanitizeMetadataString } from './redaction';
 import type {
   ActorType,
@@ -78,7 +79,11 @@ export type AuditResourceType =
   | 'token'
   | 'session'
   | 'key'
-  | 'user';
+  | 'user'
+  /** A webhook endpoint (P19 §5). */
+  | 'webhook'
+  /** A personal override (P19 §2). Its id is the override row's. */
+  | 'override';
 
 /**
  * What an event is about.
@@ -224,6 +229,8 @@ const LIMITS = {
   addonName: 64,
   limitName: 64,
   operator: 128,
+  restoredTo: 40,
+  endpointHost: 253,
   actorLabel: 320,
   userAgent: 512,
   requestId: 128,
@@ -499,8 +506,71 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
     clean.recoveryCodeCount = metadata.recoveryCodeCount;
   }
 
+  // P19. Slugs and names are as attacker-influenced as any other; `null` on a
+  // parent is a statement ("inherits from nothing") and is kept as one.
+  if (metadata.parentEnvironmentSlug !== undefined) {
+    clean.parentEnvironmentSlug =
+      metadata.parentEnvironmentSlug === null
+        ? null
+        : sanitizeMetadataString(metadata.parentEnvironmentSlug, LIMITS.slug);
+  }
+  if (metadata.previousParentEnvironmentSlug !== undefined) {
+    clean.previousParentEnvironmentSlug =
+      metadata.previousParentEnvironmentSlug === null
+        ? null
+        : sanitizeMetadataString(metadata.previousParentEnvironmentSlug, LIMITS.slug);
+  }
+  if (metadata.contextEnvironmentSlug !== undefined) {
+    clean.contextEnvironmentSlug = sanitizeMetadataString(
+      metadata.contextEnvironmentSlug,
+      LIMITS.slug,
+    );
+  }
+  if (metadata.referringSecretName !== undefined) {
+    clean.referringSecretName = sanitizeMetadataString(
+      metadata.referringSecretName,
+      LIMITS.secretName,
+    );
+  }
+  if (metadata.sourceEnvironmentSlug !== undefined) {
+    clean.sourceEnvironmentSlug = sanitizeMetadataString(
+      metadata.sourceEnvironmentSlug,
+      LIMITS.slug,
+    );
+  }
+  for (const field of ['createdCount', 'updatedCount', 'deletedCount'] as const) {
+    const value = metadata[field];
+    if (value !== undefined && Number.isFinite(value)) clean[field] = value;
+  }
+  // A timestamp, re-rendered from what it parses as rather than copied: a free
+  // string here would be a free-text field in disguise.
+  if (metadata.restoredTo !== undefined) {
+    const parsed = Date.parse(metadata.restoredTo);
+    if (!Number.isNaN(parsed)) {
+      clean.restoredTo = sanitizeMetadataString(new Date(parsed).toISOString(), LIMITS.restoredTo);
+    }
+  }
+  if (metadata.endpointHost !== undefined) {
+    clean.endpointHost = sanitizeMetadataString(metadata.endpointHost, LIMITS.endpointHost);
+  }
+  if (metadata.eventTypes !== undefined) {
+    clean.eventTypes = [...new Set(metadata.eventTypes.filter((type) => WEBHOOK_EVENTS.has(type)))];
+  }
+  if (metadata.policyName !== undefined && POLICY_NAMES.has(metadata.policyName)) {
+    clean.policyName = metadata.policyName;
+  }
+
   return clean;
 }
+
+const WEBHOOK_EVENTS: ReadonlySet<string> = new Set<string>(WEBHOOK_EVENT_TYPES);
+
+const POLICY_NAMES: ReadonlySet<string> = new Set<NonNullable<AuditMetadata['policyName']>>([
+  'tokens',
+  'secrets',
+  'plaintextExport',
+  'readAlerts',
+]);
 
 const SIGN_IN_METHODS: ReadonlySet<string> = new Set<SignInMethod>([
   'password',
