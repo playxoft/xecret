@@ -161,7 +161,7 @@ event that caused it.
 | `billing.refunded` `billing.dispute_opened` | Money moved back, or a chargeback was opened. Access is unchanged by either |
 | `billing.usage_reported` | Metered secret fetches past the allowance were reported, with `unitCount` (a unit is a thousand fetches) |
 | `billing.region_mismatch` | The payment provider reported a billing country or currency other than the one the organisation is priced in, or a card from another country. Outcome `error`; nothing changed |
-| `billing.duplicate_subscription` | A subscription was not applied: a second one beside the one the organisation has, one bought over a plan set by hand, or one that did not come from a checkout of this organisation's. Outcome `error` |
+| `billing.duplicate_subscription` | A subscription or a checkout payment was not applied: a second one beside the one the organisation has (or is still waiting to activate), one bought over a plan set by hand, or one that did not come from a checkout of this organisation's. Outcome `error` |
 | `billing.drift_detected` | The nightly comparison found our record and the payment provider's disagreeing — `driftFields` names what (`seats` includes the membership no longer matching what is billed). Nothing is corrected automatically |
 
 ### Credentials

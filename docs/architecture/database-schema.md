@@ -977,6 +977,13 @@ audit_logs — no FKs by design; references are soft
       counted, retried only when due); the plan_ended_unpaid reminder; billing_requests
       (idempotency keys for checkout and plan change) — additive, one backfill of
       metered_from
+0026  P12, review round 2: org_usage_counters.included_fetches — the allowance a usage
+      month opened with (the plan's includedFetchesPerMonth with any support raise),
+      raised and never lowered while the month is current; the overage meter bills a
+      month against it alone, so a later downgrade or a cleared override never
+      re-bills it, and a month without one is never billed. (A yearly plan's counter
+      rows are months of its year, from the billing anniversary — no schema change.)
+      — additive, one backfill from each organisation's current plan
 ```
 
 Migration 0024 (P12) is additive and **must be applied before the code that reads it**: from that
@@ -987,7 +994,8 @@ organisation on a request reads only `entitlementColumns` and is unaffected. App
 harmless; older code never reads or writes any of it. `docs/operations/billing.md` §5.
 Migration 0025 follows the same rule, and adds the membership changes to what needs it: from
 that build `addMember` and `removeMember` write the seat-sync debt in their own transaction,
-naming `billing_seat_syncs.generation`.
+naming `billing_seat_syncs.generation`. Migration 0026 too: from that build the usage flush
+writes `org_usage_counters.included_fetches` and the meter reads it.
 
 Migration 0022 (WS-5, review round 1) is additive, and — like 0021 — **must be applied before
 the code that names its columns**: from that build on every `select()` on `sessions`,
