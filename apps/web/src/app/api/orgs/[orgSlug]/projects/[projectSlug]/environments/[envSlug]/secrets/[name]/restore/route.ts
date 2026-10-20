@@ -16,8 +16,9 @@ import {
   secretWriter,
   writeClientSecretValue,
 } from '@/server/secrets-service';
+import type { ProtectionCrossing } from '@/server/references-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
-import { planRefusal, prepareTemplateDeclaration } from '@/server/template-writes';
+import { crossingRecords, planRefusal, prepareTemplateDeclaration } from '@/server/template-writes';
 
 /**
  * Restores an earlier value as a new current version.
@@ -104,6 +105,7 @@ export const POST = authenticatedRoute<Params>(
     // text are declared again — re-parsed by the client from the version it
     // decrypted, and checked against the graph as it stands today, which may no
     // longer be the graph that version was written into.
+    const crossings: ProtectionCrossing[] = [];
     const declaredReferences =
       clientBody === null
         ? null
@@ -112,6 +114,9 @@ export const POST = authenticatedRoute<Params>(
             secretId: current.secretId,
             effectiveType: current.valueType,
             requested: clientBody.references,
+            previous: current.declaredReferences,
+            confirmCrossesProtection: clientBody.confirmCrossesProtection,
+            onCrossing: (found) => crossings.push(...found),
             refused: planRefusal(
               record,
               audit(scope.organization.id),
@@ -180,6 +185,11 @@ export const POST = authenticatedRoute<Params>(
               ? `restored-from-v${previous.version}-unchanged`
               : `restored-from-v${previous.version}`,
         },
+      ),
+      ...crossingRecords(
+        audit(scope.organization.id),
+        scope,
+        crossings.map((crossing) => ({ secretName: result.name, crossing })),
       ),
     );
 

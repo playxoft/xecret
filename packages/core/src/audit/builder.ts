@@ -546,6 +546,9 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
       LIMITS.slug,
     );
   }
+  if (metadata.sourceProjectSlug !== undefined) {
+    clean.sourceProjectSlug = sanitizeMetadataString(metadata.sourceProjectSlug, LIMITS.slug);
+  }
   for (const field of ['createdCount', 'updatedCount', 'deletedCount'] as const) {
     const value = metadata[field];
     if (value !== undefined && Number.isFinite(value)) clean[field] = value;

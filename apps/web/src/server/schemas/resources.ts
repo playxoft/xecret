@@ -368,9 +368,17 @@ export const environmentPatchSchema = z
 /**
  * `PUT …/environments/{env}/parent` (P19 §1): the slug of the environment to
  * inherit from, in the same project, or `null` to inherit from nothing.
+ *
+ * `confirmCrossesProtection` is the caller saying it knows that a production
+ * environment is being made to inherit from one that is not — see
+ * `ProtectionCrossing` in `references-service.ts`. Only `true` means anything;
+ * a request that needs it and lacks it is answered 409 `link_crosses_protection:`.
  */
 export const environmentParentSchema = z.strictObject(
-  { parent: z.nullable(environmentSlugSchema) },
+  {
+    parent: z.nullable(environmentSlugSchema),
+    confirmCrossesProtection: z.optional(z.boolean()),
+  },
   UNEXPECTED_FIELD,
 );
 

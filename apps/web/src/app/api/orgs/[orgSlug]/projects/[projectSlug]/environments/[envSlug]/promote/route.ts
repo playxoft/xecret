@@ -14,6 +14,7 @@ import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { enforceSecretPolicy, secretPolicyRefusal } from '@/server/policies-service';
 import { assertEnvironmentChanges } from '@/server/references-service';
+import type { ProtectionCrossing } from '@/server/references-service';
 import { authenticatedRoute } from '@/server/route';
 import { promoteClientBody } from '@/server/schemas/secrets';
 import {
@@ -22,7 +23,7 @@ import {
   enforceSecretRateLimit,
   secretWriter,
 } from '@/server/secrets-service';
-import { planRefusal } from '@/server/template-writes';
+import { crossingRecords, planRefusal } from '@/server/template-writes';
 import { authorize, resolveEnvironment, resolveEnvironmentPath } from '@/server/tenancy';
 
 /**
@@ -168,7 +169,10 @@ export const POST = authenticatedRoute<Params>(
       return { secretId: secret.secretId, name };
     });
 
+    const crossings: { secretName: string; crossing: ProtectionCrossing }[] = [];
     const writes = await toChangeWrites(target, services, principal, body.writes, {
+      confirmCrossesProtection: body.confirmCrossesProtection,
+      crossings,
       existing: (name) => {
         const current = targetSecrets.get(name);
         return current === undefined
@@ -234,6 +238,7 @@ export const POST = authenticatedRoute<Params>(
           sourceEnvironmentSlug: source.environment.slug,
           source: auditSource(principal),
         }),
+        ...crossingRecords(builder, target, crossings),
       );
       emitEnvironmentChange(
         services,

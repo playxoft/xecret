@@ -12,6 +12,7 @@ import type { SecretValueType } from '@xecret/core/validation';
 import type { SecretPolicy } from '@xecret/core/policy';
 import { isApiError } from '@/lib/api';
 import type { SecretIo } from '@/components/envkeys';
+import { protectionCrossingWarning } from '@/components/environments/protection-crossing';
 import { withoutReasonPrefix } from '@/components/plans/plan-copy';
 import {
   policyProblem,
@@ -136,6 +137,15 @@ export interface Draft {
    * Cleared when the row is edited again.
    */
   failedIn?: Readonly<Record<string, string>> | undefined;
+  /**
+   * The last save was refused because this row's template would make a
+   * production environment read from one that is not, and the row now shows
+   * the server's warning (`protection-crossing.ts`). Saving again sends the
+   * confirmation, for this environment's write only — the one the warning was
+   * about. Dropped the moment the row is edited, because the warning described
+   * the row as it was.
+   */
+  confirmCrossing?: true | undefined;
   /** From the last save attempt; cleared as soon as the row is edited again. */
   error: DraftError | null;
 }
@@ -188,9 +198,18 @@ export interface PendingEdit {
   name?: string | undefined;
   /** A staged note, on the same terms. An empty string clears the stored note. */
   note?: string | undefined;
+  /**
+   * As on a `Draft`: the server warned that this template would make production
+   * read from an environment that is not, and the next save confirms it. Every
+   * edit rebuilds the entry field by field, which drops this with the warning.
+   */
+  confirmCrossing?: true | undefined;
   /** From the last save attempt. */
   error: string | null;
 }
+
+/** What a refused save says beneath the server's warning, so the next save is a choice. */
+export const CONFIRM_CROSSING_HINT = 'Save again to make the link anyway.';
 
 /** What one row of a draft is seeded with — by the add button, or by a paste. */
 export interface DraftSeed {
@@ -825,7 +844,13 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
         if (value.length === 0) delete extraValues[slug];
         else extraValues[slug] = value;
         // The last attempt's failure described the values as they were then.
-        return { ...draft, extraValues, error: null, failedIn: undefined };
+        return {
+          ...draft,
+          extraValues,
+          error: null,
+          failedIn: undefined,
+          confirmCrossing: undefined,
+        };
       }),
     );
   }, []);
@@ -836,7 +861,7 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
         draft.id === id
           ? // The stale error is dropped on any edit: leaving "already exists"
             // under a name the user has since changed is worse than no message.
-            { ...draft, ...patch, error: null, failedIn: undefined }
+            { ...draft, ...patch, error: null, failedIn: undefined, confirmCrossing: undefined }
           : draft,
       ),
     );
@@ -1211,16 +1236,28 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
           // view is a deliberate "not here, yet".
           let herePending = draft.value.length > 0;
           let hereProblem: DraftError | null = null;
+          /** The server's crossing warning was just shown here; the next save confirms. */
+          let crossingWarned = false;
 
           if (herePending) {
             try {
-              await io.create({ ...shared, value: draft.value });
+              await io.create({
+                ...shared,
+                value: draft.value,
+                ...(draft.confirmCrossing === true ? { confirmCrossesProtection: true } : {}),
+              });
               claimed.add(name);
               outcome.created += 1;
               outcome.wrote = true;
               herePending = false;
             } catch (cause) {
-              hereProblem = describeWriteFailure(cause);
+              const warning = protectionCrossingWarning(cause);
+              if (warning !== null && draft.confirmCrossing !== true) {
+                hereProblem = { field: 'value', message: `${warning} ${CONFIRM_CROSSING_HINT}` };
+                crossingWarned = true;
+              } else {
+                hereProblem = describeWriteFailure(cause);
+              }
               if (isRateLimited(cause)) rateLimited = true;
             }
           }
@@ -1330,6 +1367,9 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
             value: hereProblem === null && !herePending ? '' : draft.value,
             extraValues: survivingValues,
             ...(Object.keys(failedIn).length === 0 ? {} : { failedIn }),
+            // Kept only when the warning was shown by this save: a confirmed
+            // save that failed for some other reason starts the question over.
+            confirmCrossing: crossingWarned ? true : undefined,
             error:
               offscreenMessage === null
                 ? hereProblem
@@ -1481,6 +1521,7 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
               const result = await io.update(target, {
                 value: written,
                 ...(edit.valueType === undefined ? {} : { valueType: edit.valueType }),
+                ...(edit.confirmCrossing === true ? { confirmCrossesProtection: true } : {}),
               });
               changed = changed || result.secret.status !== 'unchanged';
             }
@@ -1509,7 +1550,15 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
             // The whole edit survives, including a value the PATCH may already
             // have applied — retrying it is answered `unchanged`, which is
             // cheaper than a row silently losing half of what it staged.
-            survivingEdits.set(name, { ...edit, error: describeWriteFailure(cause).message });
+            const warning = protectionCrossingWarning(cause);
+            const warned = warning !== null && edit.confirmCrossing !== true;
+            survivingEdits.set(name, {
+              ...edit,
+              error: warned
+                ? `${warning} ${CONFIRM_CROSSING_HINT}`
+                : describeWriteFailure(cause).message,
+              confirmCrossing: warned ? true : undefined,
+            });
             outcome.failed += 1;
             if (isRateLimited(cause)) rateLimited = true;
             // The value write goes first, so a metadata failure lands on a row

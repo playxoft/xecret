@@ -1228,3 +1228,153 @@ describe('setting a parent', () => {
     expect(audit[0]).toMatchObject({ action: 'environment.parent_changed', outcome: 'denied' });
   });
 });
+
+/* ── links that cross production's protection ─────────────────────────────── */
+
+describe('a production environment linked to one that is not (review round 1, M3)', () => {
+  // A developer may write staging but not production; production inheriting
+  // from staging, or a production template reading staging, makes that
+  // developer able to change what production reads. Not refused — confirmed.
+  async function productionAndStaging() {
+    const org = await seedOrg('pro');
+    const project = await seedProject(org);
+    const production = await seedEnv(org, project, 'production', { production: true });
+    const staging = await seedEnv(org, project, 'staging');
+    const developer = await seedUser();
+    await addMember(org.orgId, developer.id, 'developer');
+    await seedSecret(org, staging, 'DB_HOST');
+    caller = sessionOf(org.owner);
+    return { org, project, production, staging, developer };
+  }
+
+  function setParentConfirmed(org: Org, env: string, parent: string, confirm: boolean) {
+    const { path, params } = envPath(org, env, '/parent');
+    return call(parentRoute.PUT, 'PUT', path, params, {
+      parent,
+      ...(confirm ? { confirmCrossesProtection: true } : {}),
+    });
+  }
+
+  it('refuses an unconfirmed parent, naming who could then change production', async () => {
+    const { org, developer } = await productionAndStaging();
+
+    const answer = await setParentConfirmed(org, 'production', 'staging', false);
+    expect(answer.status).toBe(409);
+    const message = errorMessage(answer);
+    expect(message).toMatch(
+      /^link_crosses_protection: This would make the production environment api\/production inherit values from api\/staging, which is not production/,
+    );
+    // The writers of the source, by address.
+    expect(message).toContain(developer.email);
+    expect(message).toContain(org.owner.email);
+    expect(message).toContain('confirmCrossesProtection');
+
+    const stored = await t.pg.query<{ parent_environment_id: string | null }>(
+      `select parent_environment_id from environments where slug = 'production' and project_id in (select id from projects where org_id = $1)`,
+      [org.orgId],
+    );
+    expect(stored.rows[0]!.parent_environment_id).toBeNull();
+    expect(audit.some((record) => record.action === 'environment.link_crosses_protection')).toBe(
+      false,
+    );
+  });
+
+  it('sets a confirmed parent, and files the crossing as its own record', async () => {
+    const { org, production } = await productionAndStaging();
+
+    const answer = await setParentConfirmed(org, 'production', 'staging', true);
+    expect(answer.status).toBe(200);
+    expect(answer.body.environment?.parent).toBe('staging');
+    expect(audit.map((record) => record.action)).toEqual([
+      'environment.parent_changed',
+      'environment.link_crosses_protection',
+    ]);
+    expect(audit[1]).toMatchObject({
+      outcome: 'success',
+      environmentId: production.id,
+      metadata: {
+        environmentSlug: 'production',
+        sourceProjectSlug: 'api',
+        sourceEnvironmentSlug: 'staging',
+        reason: 'inherited',
+      },
+    });
+  });
+
+  it('asks nothing of a staging that inherits from production, or production from production', async () => {
+    const { org, project } = await productionAndStaging();
+    await seedEnv(org, project, 'production-eu', { production: true });
+
+    expect((await setParent(org, 'staging', 'production')).status).toBe(200);
+    expect((await setParent(org, 'production-eu', 'production')).status).toBe(200);
+    expect(audit.some((record) => record.action === 'environment.link_crosses_protection')).toBe(
+      false,
+    );
+  });
+
+  it('refuses an unconfirmed production template reading staging, and stores a confirmed one', async () => {
+    const { org, production } = await productionAndStaging();
+    const declaration = [{ environment: 'staging', name: 'DB_HOST' }];
+
+    const refused = await createTemplate(org, production, 'URL', declaration);
+    expect(refused.status).toBe(409);
+    expect(errorMessage(refused)).toMatch(/^link_crosses_protection: .*api\/staging/);
+    const none = await t.pg.query(
+      `select 1 from secrets where environment_id = $1 and name = 'URL'`,
+      [production.id],
+    );
+    expect(none.rows).toHaveLength(0);
+
+    audit = [];
+    const { path, params } = envPath(org, production.slug, '/secrets');
+    const confirmed = await call(secretsRoute.POST, 'POST', path, params, {
+      id: randomUUID(),
+      name: 'URL',
+      valueType: 'template',
+      value: {
+        ciphertext: blob('URL'),
+        clientAlgorithm: 'xk2.gcm',
+        envDataKeyId: production.keyId,
+        valueHmac: HMAC,
+      },
+      references: declaration,
+      confirmCrossesProtection: true,
+    });
+    expect(confirmed.status).toBe(201);
+    expect(
+      audit.find((record) => record.action === 'environment.link_crosses_protection'),
+    ).toMatchObject({
+      environmentId: production.id,
+      metadata: { secretName: 'URL', sourceEnvironmentSlug: 'staging', reason: 'referenced' },
+    });
+  });
+
+  it('does not ask again when a template is re-saved with the reference it already declared', async () => {
+    const { org, production, staging } = await productionAndStaging();
+    await seedSecret(org, production, 'URL', [
+      { environment: 'staging', name: 'DB_HOST', environmentId: staging.id },
+    ]);
+
+    const { path, params } = envPath(org, production.slug, '/secrets/URL');
+    const answer = await call(
+      secretRoute.PATCH,
+      'PATCH',
+      path,
+      { ...params, name: 'URL' },
+      {
+        value: {
+          ciphertext: blob('URL2'),
+          clientAlgorithm: 'xk2.gcm',
+          envDataKeyId: production.keyId,
+          valueHmac: OTHER_HMAC,
+        },
+        expectedVersion: 2,
+        references: [{ environment: 'staging', name: 'DB_HOST' }],
+      },
+    );
+    expect(answer.status).toBe(200);
+    expect(audit.some((record) => record.action === 'environment.link_crosses_protection')).toBe(
+      false,
+    );
+  });
+});

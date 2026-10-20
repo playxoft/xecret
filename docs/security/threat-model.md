@@ -692,6 +692,16 @@ webhooks — and three policies. What each could have become, and what stops it:
   secret travels only as the one secret named, never its environment. A service token, pinned
   to one environment, is kept out of the situation entirely (no parent or outward reference on
   a pinned environment, and no token minted on one).
+- **A link as a write path onto production** (T3, review round 1). Reading is held to `can()`;
+  *writing* through a link is not a read at all. A production environment that inherits from
+  staging, or holds a template reading `${staging.DB_HOST}`, takes its values from wherever
+  staging's writers put them — so a developer who may change staging but not production changes
+  what production runs, without production's grants or deny-by-default being asked. Not refused
+  (a shared base of non-secret defaults is a real design), but never silent: a production
+  environment newly linked to one that is not production needs `confirmCrossesProtection`, the
+  refusal that asks names the source's writers (people and write tokens), and a confirmed link
+  files `environment.link_crosses_protection` against production. Only the link being made is
+  asked about — the direct parent or a reference the write adds.
 - **A server that rewrites a reference** (T7). The declaration is plaintext the server could
   edit, so the client compares the decrypted template text against it and refuses a mismatch;
   every value is still bound by its AAD to its own row and environment, so a server cannot

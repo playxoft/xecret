@@ -258,6 +258,44 @@ func TestWritesDeclareReferencesOnlyForATemplate(t *testing.T) {
 	}
 }
 
+// Review round 1, M3: the confirmation that a production template may read from
+// an environment that is not production travels only when asked for.
+func TestWritesCarryTheProtectionCrossingConfirmationOnlyWhenAsked(t *testing.T) {
+	value := ClientValue{Ciphertext: "xk2.gcm.AAAA", ClientAlgorithm: "xk2.gcm"}
+	for _, confirm := range []bool{false, true} {
+		var options []WriteOption
+		if confirm {
+			options = append(options, ConfirmCrossesProtection())
+		}
+		for name, write := range map[string]func(*Client) error{
+			"create": func(c *Client) error {
+				_, err := c.CreateClientSecret(context.Background(), "acme", "web", "prod",
+					"018f3b2c-9c1a-7c3d-8e4f-1a1b2c3d4e53", "URL", value, "template", nil,
+					[]ReferenceDeclaration{{Environment: "staging", Name: "DB_HOST"}}, options...)
+				return err
+			},
+			"update": func(c *Client) error {
+				_, err := c.UpdateClientSecret(context.Background(), "acme", "web", "prod", "URL", value, 2, "",
+					[]ReferenceDeclaration{{Environment: "staging", Name: "DB_HOST"}}, options...)
+				return err
+			},
+		} {
+			var body map[string]any
+			server := recordingServer(t, `{"secret":{"name":"URL","version":2,"status":"changed"}}`, &body)
+			if err := write(New(server.URL, "xct_live_abc", "test-agent")); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			got, has := body["confirmCrossesProtection"]
+			if confirm && got != true {
+				t.Errorf("%s: confirmCrossesProtection = %v, want true", name, got)
+			}
+			if !confirm && has {
+				t.Errorf("%s: an unconfirmed write sent confirmCrossesProtection = %v", name, got)
+			}
+		}
+	}
+}
+
 func TestOverrideEndpoints(t *testing.T) {
 	type request struct{ method, path, body string }
 	var seen []request

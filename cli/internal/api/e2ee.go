@@ -432,6 +432,24 @@ func withReferences(body map[string]any, references []ReferenceDeclaration) {
 	}
 }
 
+// WriteOption adjusts a client-encrypted write's body.
+type WriteOption func(body map[string]any)
+
+// ConfirmCrossesProtection says the caller knows a production template is
+// being made to read from an environment that is not production. Without it
+// the server refuses such a write with 409 `link_crosses_protection:`, naming
+// who could then change production's values; it is sent only when the person
+// asked for it (`--confirm-link`), never as a retry this client decides on.
+func ConfirmCrossesProtection() WriteOption {
+	return func(body map[string]any) { body["confirmCrossesProtection"] = true }
+}
+
+func applyOptions(body map[string]any, options []WriteOption) {
+	for _, option := range options {
+		option(body)
+	}
+}
+
 // CreateClientSecret writes a pre-encrypted secret.
 //
 // The id is minted here rather than by the server, and that is not a
@@ -447,6 +465,7 @@ func (c *Client) CreateClientSecret(
 	valueType string,
 	encNote *string,
 	references []ReferenceDeclaration,
+	options ...WriteOption,
 ) (*WriteResult, error) {
 	body := map[string]any{"id": id, "name": name, "value": value}
 	if valueType != "" {
@@ -456,6 +475,7 @@ func (c *Client) CreateClientSecret(
 		body["encNote"] = *encNote
 	}
 	withReferences(body, references)
+	applyOptions(body, options)
 
 	var response struct {
 		Secret WriteResult `json:"secret"`
@@ -485,12 +505,14 @@ func (c *Client) UpdateClientSecret(
 	expectedVersion int,
 	valueType string,
 	references []ReferenceDeclaration,
+	options ...WriteOption,
 ) (*WriteResult, error) {
 	body := map[string]any{"value": value, "expectedVersion": expectedVersion}
 	if valueType != "" {
 		body["valueType"] = valueType
 	}
 	withReferences(body, references)
+	applyOptions(body, options)
 
 	var response struct {
 		Secret WriteResult `json:"secret"`

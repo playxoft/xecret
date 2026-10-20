@@ -100,7 +100,7 @@ var completionTree = []completionCommand{
 			{Name: "get", Description: "Show metadata, or reveal a value with --plain",
 				Flags: scoped("--json", "--plain", "--version")},
 			{Name: "set", Description: "Write a value as a new version",
-				Flags: scoped("--type", "--note", "--from-file", "--generate")},
+				Flags: scoped("--type", "--note", "--from-file", "--generate", "--confirm-link")},
 			{Name: "annotate", Description: "Change name, note or type without a new version",
 				Flags: scoped("--note", "--type", "--rename")},
 			{Name: "versions", Description: "Version history, metadata only", Flags: scoped("--json")},

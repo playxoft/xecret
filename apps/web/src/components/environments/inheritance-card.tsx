@@ -32,6 +32,7 @@ import {
   useToast,
 } from '@/components/ui';
 import { childrenOf, environmentName, inheritanceChain, parentOptions } from './inheritance';
+import { protectionCrossingWarning } from './protection-crossing';
 
 /**
  * What this environment inherits from (P19 §1, `secretReferencing`).
@@ -85,6 +86,12 @@ export function InheritanceCard({
   const [choice, setChoice] = useState<string>('');
   const [confirming, setConfirming] = useState<'set' | 'clear' | null>(null);
   const [error, setError] = useState<unknown>(null);
+  /**
+   * A production environment about to inherit from one that is not: the
+   * server's warning, naming who could then change production's values, and
+   * the parent the person chose. See `protection-crossing.ts`.
+   */
+  const [crossing, setCrossing] = useState<{ next: string; warning: string } | null>(null);
 
   const environments = project.data?.environments ?? [];
   const parent = environment.parent ?? null;
@@ -100,12 +107,12 @@ export function InheritanceCard({
   const chosen = options.find((option) => option.slug === choice) ?? null;
   const plan = cheapestPlanWithFeature('secretReferencing');
 
-  async function change(next: string | null) {
+  async function change(next: string | null, confirmCrossesProtection = false) {
     setError(null);
     try {
       await api.put<EnvironmentChangeResponse>(
         apiPath.environmentParent(orgSlug, projectSlug, environment.slug),
-        { parent: next },
+        { parent: next, ...(confirmCrossesProtection ? { confirmCrossesProtection: true } : {}) },
       );
       toast({
         variant: 'success',
@@ -119,9 +126,17 @@ export function InheritanceCard({
             : 'From its next read, every key it does not hold itself comes from there.',
       });
       setChoice('');
+      setCrossing(null);
       onChanged();
       void project.reload();
     } catch (cause) {
+      // Production inheriting from an environment that is not: asked again, in
+      // the server's words, before anything is changed.
+      const warning = protectionCrossingWarning(cause);
+      if (warning !== null && next !== null && !confirmCrossesProtection) {
+        setCrossing({ next, warning });
+        return;
+      }
       // Kept on the card rather than thrown back into the dialog: a plan
       // refusal is rendered with its upgrade target by `ChangeError`, which the
       // confirmation's own one-line error slot cannot do.
@@ -309,6 +324,19 @@ export function InheritanceCard({
           onConfirm={() => change(confirming === 'clear' ? null : choice)}
         />
       )}
+
+      {/* The second question, asked only when the server says the link crosses
+          production's protection — with its sentence, which names the people
+          who could then change production's values. */}
+      <ConfirmDialog
+        open={crossing !== null}
+        onOpenChange={(open) => (open ? undefined : setCrossing(null))}
+        title={`${environment.name} would inherit from an environment that is not production`}
+        description={crossing?.warning ?? ''}
+        confirmLabel="Inherit anyway"
+        confirmVariant="danger"
+        onConfirm={() => (crossing === null ? undefined : change(crossing.next, true))}
+      />
     </Card>
   );
 }

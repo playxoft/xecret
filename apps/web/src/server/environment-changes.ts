@@ -9,6 +9,7 @@ import type {
   ExistingSecret,
   SecretWriteResult,
 } from './secrets-service';
+import type { ProtectionCrossing } from './references-service';
 import { prepareTemplateDeclaration } from './template-writes';
 import type { EnvironmentScope } from './tenancy';
 
@@ -67,6 +68,10 @@ export async function toChangeWrites(
     typeOf: (entry: ChangeEntry) => string;
     /** Records the plan refusal when a template needs `secretReferencing`. */
     refused: (entry: ChangeEntry) => () => void;
+    /** The body's `confirmCrossesProtection` — see `prepareTemplateDeclaration`. */
+    confirmCrossesProtection?: boolean | undefined;
+    /** Collects the crossings a confirmed batch makes, for the audit trail. */
+    crossings?: { secretName: string; crossing: ProtectionCrossing }[] | undefined;
   },
 ): Promise<ClientSecretWrite[]> {
   const writes: ClientSecretWrite[] = [];
@@ -80,6 +85,10 @@ export async function toChangeWrites(
       requested: entry.references,
       refused: options.refused(entry),
       batched: true,
+      previous: existing?.declaredReferences ?? null,
+      confirmCrossesProtection: options.confirmCrossesProtection,
+      onCrossing: (found) =>
+        options.crossings?.push(...found.map((crossing) => ({ secretName: entry.name, crossing }))),
     });
     writes.push({
       name: entry.name,

@@ -232,7 +232,7 @@ value is a working credential, not an archive entry.
 ### `xecret secrets set`
 
 ```bash
-xecret secrets set NAME [--type TYPE] [--note TEXT] [--from-file PATH] [--generate[=BYTES]]
+xecret secrets set NAME [--type TYPE] [--note TEXT] [--from-file PATH] [--generate[=BYTES]] [--confirm-link]
 ```
 
 Reads the value from stdin, or prompts for it with the input hidden. **Never
@@ -262,6 +262,7 @@ xecret secrets set PORT --type int --note "the container listens here"
 | `--note TEXT` | A note shown beside the secret in the dashboard. |
 | `--from-file PATH` | Take the file's bytes as the value, verbatim — trailing newline included. A pipe's final newline is the shell's framing and is stripped; a file's is part of the file, and a PEM key ends in one. Limited to 64 KB, the server's ceiling on one secret. |
 | `--generate[=BYTES]` | Mint a random value with the OS entropy source and write it without ever printing it. 32 bytes by default, rendered as 43 url-safe characters. Use `--generate=48` — with the `=` — to choose a length. |
+| `--confirm-link` | Confirm a production template that newly reads from an environment that is not production. Without it such a write is refused, naming who could then change what production reads — see [references](../features/references.md#production-reading-from-elsewhere). |
 
 Writing the same value again is a no-op rather than a new version.
 

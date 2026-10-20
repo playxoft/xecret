@@ -24,7 +24,8 @@ import { resolveEnvironmentPath } from '@/server/tenancy';
 import type { Principal } from '@/server/actor';
 import { emitSecretChanges } from '@/server/change-events';
 import { enforceSecretPolicy, secretPolicyRefusal } from '@/server/policies-service';
-import { planRefusal, prepareTemplateDeclaration } from '@/server/template-writes';
+import type { ProtectionCrossing } from '@/server/references-service';
+import { crossingRecords, planRefusal, prepareTemplateDeclaration } from '@/server/template-writes';
 
 /**
  * An environment's secrets: the masked listing, and creation.
@@ -196,6 +197,14 @@ export const POST = authenticatedRoute<Params>(
           source: auditSource(principal),
         },
       ),
+      ...crossingRecords(
+        audit(scope.organization.id),
+        scope,
+        (written.crossings ?? []).map((crossing) => ({
+          secretName: written.result.name,
+          crossing,
+        })),
+      ),
     );
 
     // P19 §5 — after the response, never in its way.
@@ -224,6 +233,8 @@ interface CreatedSecret {
   note: string | null;
   encNote: string | null;
   valueType: string;
+  /** Production template links to non-production environments the person confirmed. */
+  crossings?: readonly ProtectionCrossing[] | undefined;
 }
 
 async function createServerSecret(
@@ -284,12 +295,15 @@ async function createClientSecret(
 
   // P19 §1: a template's declaration, resolved and checked before anything is
   // stored — or `null` for a value that is not one.
+  const crossings: ProtectionCrossing[] = [];
   const declaredReferences = await prepareTemplateDeclaration(scope, services, principal, {
     name: body.name,
     secretId: body.id,
     effectiveType: body.valueType,
     requested: body.references,
     refused: refusal(body.name, body.id),
+    confirmCrossesProtection: body.confirmCrossesProtection,
+    onCrossing: (found) => crossings.push(...found),
   });
 
   const result = await writeClientSecretValue(scope, services, {
@@ -312,5 +326,11 @@ async function createClientSecret(
     valueType: body.valueType,
   });
 
-  return { result, note: null, encNote: body.encNote ?? null, valueType: body.valueType };
+  return {
+    result,
+    note: null,
+    encNote: body.encNote ?? null,
+    valueType: body.valueType,
+    crossings,
+  };
 }

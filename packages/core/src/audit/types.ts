@@ -283,6 +283,20 @@ export type AuditAction =
    */
   | 'environment.parent_changed'
   /**
+   * A production environment was linked to one that is not production — made
+   * to inherit from it, or given a template that reads from it — and the person
+   * confirmed it (P19 §1, review round 1). Filed beside the parent change or the
+   * secret write that made the link, against the production environment, with
+   * `sourceProjectSlug` / `sourceEnvironmentSlug` naming the other one and
+   * `reason` saying `inherited` or `referenced`.
+   *
+   * Its own event because such a link is a write path onto production for
+   * everybody who can write the source, and "since when could staging's writers
+   * change what production reads?" should be one filter, not a reading of every
+   * parent change and template write for the classes of both ends.
+   */
+  | 'environment.link_crosses_protection'
+  /**
    * Values were promoted from one environment into another (P19 §3), as one
    * atomic write. `sourceEnvironmentSlug` names where they came from;
    * `createdCount`, `updatedCount` and `deletedCount` say how much moved. Every
@@ -773,8 +787,13 @@ export interface AuditMetadata {
    */
   contextEnvironmentSlug?: string;
   referringSecretName?: string;
-  /** Where a promotion's values came from (P19 §3). */
+  /**
+   * Where a promotion's values came from (P19 §3), or the non-production end of
+   * an `environment.link_crosses_protection`.
+   */
   sourceEnvironmentSlug?: string;
+  /** The project of `sourceEnvironmentSlug`, where it can be another one (a reference). */
+  sourceProjectSlug?: string;
   /** How many secrets a promotion or a restore created, rewrote and deleted. Counts, never names. */
   createdCount?: number;
   updatedCount?: number;

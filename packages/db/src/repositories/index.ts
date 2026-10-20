@@ -464,6 +464,7 @@ export {
   listChildEnvironments,
   loadEnvironmentsByIds,
   loadEnvironmentsOfProjects,
+  listUserEmails,
   loadSecretGraphMetadata,
   lockProjectEnvironments,
   setEnvironmentParent,

@@ -19,6 +19,12 @@ switching it off, never needs a plan.
 No policy ever blocks a read. A build that worked yesterday reads its secrets
 today, whatever was decided in between.
 
+One more guard rail sits beside the policies, though it is not one you switch
+on: production reading values from an environment that is not production — by
+inheriting from it, or through a template — must be confirmed, because it lets
+the source's writers change what production reads. See
+[Production reading from elsewhere](references.md#production-reading-from-elsewhere).
+
 ## Token policy
 
 *Organisation settings → Token policy*, owners and admins, Pro and above.

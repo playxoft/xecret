@@ -76,6 +76,33 @@ base          DB_HOST=db.internal   LOG_LEVEL=info
 The chain is at most five parents deep, a loop is refused, and setting a parent
 needs read access to it. Clearing a parent is always allowed, on any plan.
 
+## Production reading from elsewhere {#production-reading-from-elsewhere}
+
+Linking a **production** environment to one that is **not** — making it
+inherit from staging, or giving it a template that reads `${staging.DB_HOST}` —
+is allowed, and asked about. The reason is a trust consequence that is easy to
+miss: the link is a write path onto production for everybody who can change the
+source. A developer who may edit staging but not production changes what
+production reads the moment production inherits staging's value — without
+production's grants, its deny-by-default for developers, or anybody with
+production access being asked.
+
+So such a link is never made silently:
+
+- The first attempt is refused with a warning that names the source and **who
+  can write it** — the people, and any write service tokens pinned to it.
+- The dashboard shows that warning and asks again (*Inherit anyway*, or saving
+  the template a second time); the CLI takes `--confirm-link`; the API takes
+  `confirmCrossesProtection: true`.
+- A confirmed link is recorded as its own `environment.link_crosses_protection`
+  audit event, against production, naming the source.
+
+Only the link being made is asked about. Re-saving a template with a reference
+it already had, a production environment inheriting from another production
+one, and staging reading from production ask nothing. If you want production's
+values to come only from places production's own rules govern, keep the
+production environments' parents and references production too.
+
 ## Resolution happens on your machine
 
 Every value stays encrypted under its own environment's key. `xecret run` and

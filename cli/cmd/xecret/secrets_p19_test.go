@@ -330,3 +330,45 @@ func TestTheRetryHintIsOnlyForAWriteRace(t *testing.T) {
 		}
 	}
 }
+
+// ── A production template reading from elsewhere (review round 1, M3) ──
+
+func noPolicy() map[string]any {
+	return map[string]any{"enabled": false, "scope": "all", "namePattern": nil,
+		"minValueEntropyBits": nil, "entropyAppliesTo": []string{}, "forbiddenSubstrings": []string{}}
+}
+
+// The server refuses an unconfirmed link with its own sentence; the CLI adds how
+// to confirm, and sends the confirmation only under --confirm-link.
+func TestSecretsSetConfirmsALinkThatCrossesProductionsProtection(t *testing.T) {
+	// Built by hand rather than with writeWorld, whose write route answers 201.
+	w := newWorld(t, e2ee.RecipientMember)
+	fake := newFakeAPI(t)
+	loggedIn(t, w, fake)
+	fake.reply(http.MethodGet, "/keys", http.StatusOK, w.keyState(true))
+	fake.reply(http.MethodGet, "/secrets", http.StatusOK,
+		map[string]any{"data": []api.SecretListItem{}, "nextCursor": nil})
+	withPolicy(fake, noPolicy())
+	fake.refuse(http.MethodPost, "/secrets", http.StatusConflict, "conflict",
+		"link_crosses_protection: This would make the production environment web/dev read values "+
+			"through a template from web/staging, which is not production.")
+
+	err := set(t, "URL", "--type", "template", "--from-file", valueFile(t, "https://${staging.HOST}/"))
+	if err == nil || !strings.Contains(err.Error(), "--confirm-link") ||
+		!strings.Contains(err.Error(), "web/staging") {
+		t.Fatalf("err = %v, want the server's sentence and the flag that confirms it", err)
+	}
+	if _, sent := onlyBody(t, fake.sent(http.MethodPost, "/secrets"))["confirmCrossesProtection"]; sent {
+		t.Error("an unconfirmed write sent the confirmation")
+	}
+
+	_, fake = writeWorld(t, true)
+	withPolicy(fake, noPolicy())
+	if err := set(t, "URL", "--type", "template", "--confirm-link",
+		"--from-file", valueFile(t, "https://${staging.HOST}/")); err != nil {
+		t.Fatalf("a confirmed write: %v", err)
+	}
+	if got := onlyBody(t, fake.sent(http.MethodPost, "/secrets"))["confirmCrossesProtection"]; got != true {
+		t.Errorf("confirmCrossesProtection = %v, want true", got)
+	}
+}

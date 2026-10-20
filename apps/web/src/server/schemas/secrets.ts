@@ -242,6 +242,16 @@ const referenceSchema = z
     ),
   );
 
+/**
+ * The writer saying it knows a production template is being made to read from an
+ * environment that is not production (review round 1, M3) — see
+ * `ProtectionCrossing` in `references-service.ts`. Without it such a write is
+ * answered 409 `link_crosses_protection:`, naming who could then change
+ * production's values; with it the write lands and files
+ * `environment.link_crosses_protection`.
+ */
+const confirmCrossesProtectionSchema = z.optional(z.boolean());
+
 /** A template's declaration: at most the references one template may hold. */
 const referencesSchema = z.optional(
   z
@@ -262,6 +272,7 @@ export const createClientSecretBody = z.object({
   valueType: z._default(valueTypeSchema, DEFAULT_SECRET_VALUE_TYPE),
   /** Required for a template, refused for anything else. See `prepareTemplateDeclaration`. */
   references: referencesSchema,
+  confirmCrossesProtection: confirmCrossesProtectionSchema,
 });
 
 /**
@@ -282,6 +293,7 @@ export const updateClientSecretBody = z.object({
   encNote: encNoteSchema,
   valueType: z.optional(valueTypeSchema),
   references: referencesSchema,
+  confirmCrossesProtection: confirmCrossesProtectionSchema,
 });
 
 /**
@@ -317,6 +329,7 @@ export const restoreClientSecretBody = z.object({
   encNote: encNoteSchema,
   /** For a template: the restored text's references, re-parsed by the client. */
   references: referencesSchema,
+  confirmCrossesProtection: confirmCrossesProtectionSchema,
 });
 
 /**
@@ -436,6 +449,7 @@ export const promoteClientBody = z.strictObject({
     [],
   ),
   dryRun: z.boolean(),
+  confirmCrossesProtection: confirmCrossesProtectionSchema,
 });
 
 export type PromoteClientBody = z.infer<typeof promoteClientBody>;
@@ -453,6 +467,7 @@ export const restorePointBody = z.strictObject({
   at: z.iso.datetime({ offset: true }),
   writes: changeEntriesSchema,
   dryRun: z.boolean(),
+  confirmCrossesProtection: confirmCrossesProtectionSchema,
 });
 
 export type RestorePointBody = z.infer<typeof restorePointBody>;

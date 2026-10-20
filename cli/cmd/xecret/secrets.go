@@ -32,7 +32,7 @@ var secretNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 const secretsUsage = `Usage:
   xecret secrets list     [--json]
   xecret secrets get      <NAME> [--version N] [--plain] [--json]
-  xecret secrets set      <NAME> [--type TYPE] [--note TEXT] [--from-file PATH] [--generate[=BYTES]]
+  xecret secrets set      <NAME> [--type TYPE] [--note TEXT] [--from-file PATH] [--generate[=BYTES]] [--confirm-link]
   xecret secrets annotate <NAME> [--note TEXT] [--type TYPE] [--rename NEW]
   xecret secrets versions <NAME> [--json]
   xecret secrets restore  <NAME> --version N
@@ -312,6 +312,8 @@ func secretsSet(args []string) error {
 	fromFile := flags.String("from-file", "", "read the value from a file instead of stdin")
 	var generate optionalInt
 	flags.Var(&generate, "generate", "generate a random value; --generate=BYTES sets the length (default 32)")
+	confirmLink := flags.Bool("confirm-link", false,
+		"confirm a production template reading from an environment that is not production")
 	projectFlag, envFlag := scopedFlags(flags)
 	positional, err := parseFlags(flags, args)
 	if err != nil {
@@ -378,8 +380,13 @@ func secretsSet(args []string) error {
 		if err := checkSecretPolicy(ctx, client, resolved, keys.IsProduction, name, value); err != nil {
 			return err
 		}
+		var options []api.WriteOption
+		if *confirmLink {
+			options = append(options, api.ConfirmCrossesProtection())
+		}
 		appended, result, err = writeClientSecret(
-			ctx, a, client, material, resolved, name, value, *valueType, *note)
+			ctx, a, client, material, resolved, name, value, *valueType, *note, options...)
+		err = withCrossingHint(err)
 	} else {
 		// Create, and on "already exists" append a version instead. Two calls in
 		// the worst case, but the create path stays the same one the dashboard
@@ -918,6 +925,7 @@ func writeClientSecret(
 	material *envkeys.Material,
 	resolved scope,
 	name, value, valueType, note string,
+	options ...api.WriteOption,
 ) (appended bool, result *api.WriteResult, err error) {
 	existing, err := client.Secrets(ctx, resolved.Org, resolved.Project, resolved.Environment)
 	if err != nil {
@@ -949,7 +957,8 @@ func writeClientSecret(
 			return false, nil, encryptErr
 		}
 		result, err = client.UpdateClientSecret(
-			ctx, resolved.Org, resolved.Project, resolved.Environment, name, sealed, nextVersion, valueType, declared)
+			ctx, resolved.Org, resolved.Project, resolved.Environment, name, sealed, nextVersion, valueType, declared,
+			options...)
 		return true, result, withWriteConflictHint(err)
 	}
 
@@ -975,8 +984,22 @@ func writeClientSecret(
 	}
 
 	result, err = client.CreateClientSecret(
-		ctx, resolved.Org, resolved.Project, resolved.Environment, id, name, sealed, valueType, encNote, declared)
+		ctx, resolved.Org, resolved.Project, resolved.Environment, id, name, sealed, valueType, encNote, declared,
+		options...)
 	return false, result, err
+}
+
+// withCrossingHint adds the flag that answers a `link_crosses_protection:`
+// refusal — a production template made to read from an environment that is
+// not production. The server's sentence already names the environments and
+// who could then change production's values; what this adds is how to say
+// "yes, I mean it" from here.
+func withCrossingHint(err error) error {
+	if apiErr, ok := api.AsError(err); ok && apiErr.Status == 409 &&
+		strings.HasPrefix(apiErr.Message, "link_crosses_protection:") {
+		return fmt.Errorf("%w — run the command again with --confirm-link to make the link anyway", err)
+	}
+	return err
 }
 
 // templateValueType is the declared type whose values are read for references.

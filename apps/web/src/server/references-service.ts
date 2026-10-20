@@ -24,8 +24,10 @@ import {
   findEnvironmentsBySlugs,
   findProjectsReferencingEnvironments,
   listChildEnvironments,
+  listUserEmails,
   loadEnvironmentsByIds,
   loadEnvironmentsOfProjects,
+  loadOrganizationAuthorizationContexts,
   loadSecretGraphMetadata,
 } from '@xecret/db/repositories';
 import type { Executor, GraphEnvironmentRecord, GraphSecretRecord } from '@xecret/db/repositories';
@@ -306,6 +308,163 @@ export function reachesOutside(
   return references.some(
     (reference) => reference.environmentId !== null && reference.environmentId !== environmentId,
   );
+}
+
+/* ── links that cross production's protection ─────────────────────────────── */
+
+/**
+ * A link that would make a production environment read values from one that is
+ * not production (review round 1, M3).
+ *
+ * ── Why it is confirmed rather than refused ──
+ * Inheriting from, or referring into, an environment is a statement that its
+ * values may flow here. When *here* is production and the source is not, that
+ * flow is a write path onto production for everybody who can write the source:
+ * a developer who may change staging's `DB_HOST` but not production's changes
+ * what production reads the moment production inherits it — without
+ * production's grants, production's deny-by-default, or anybody with production
+ * access being asked. That is sometimes exactly the design (a shared base of
+ * non-secret defaults), so it is not refused. It is made deliberate: the request
+ * has to say it knows (`confirmCrossesProtection: true`), the refusal that asks
+ * names who would be able to write production's values through the link, and a
+ * confirmed link files its own `environment.link_crosses_protection`.
+ *
+ * Only the link being made is asked about — a parent, or a reference the write
+ * adds. A template re-saved with the reference it already declared is not asked
+ * again; a production environment that inherits from another production one is
+ * not asked at all, whatever that one inherits from, because that link was asked
+ * about when it was made.
+ */
+export interface ProtectionCrossing {
+  source: GraphEnvironmentRecord;
+  via: 'parent' | 'reference';
+}
+
+/**
+ * The references in `declared` that cross production's protection and are new —
+ * not already declared by `previous`, the version the write replaces. No query
+ * for a write that is not into production.
+ */
+export async function referenceCrossings(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+  declared: readonly DeclaredReference[],
+  previous: readonly DeclaredReference[] | null,
+): Promise<ProtectionCrossing[]> {
+  if (!scope.environment.isProduction) return [];
+  const already = new Set((previous ?? []).map((reference) => reference.environmentId));
+  const targets = [
+    ...new Set(
+      declared
+        .map((reference) => reference.environmentId)
+        .filter(
+          (id): id is string => id !== null && id !== scope.environment.id && !already.has(id),
+        ),
+    ),
+  ];
+  if (targets.length === 0) return [];
+  const records = await loadEnvironmentsByIds(services.db, scope.organization.id, targets);
+  return records
+    .filter((record) => !record.isProduction)
+    .map((source) => ({ source, via: 'reference' as const }));
+}
+
+/** Whether making `parent` this environment's parent crosses production's protection. */
+export function parentCrossing(
+  scope: EnvironmentScope,
+  parent: GraphEnvironmentRecord,
+): ProtectionCrossing[] {
+  return scope.environment.isProduction && !parent.isProduction
+    ? [{ source: parent, via: 'parent' }]
+    : [];
+}
+
+/** How many named people a crossing refusal lists before it says "and N others". */
+const NAMED_WRITERS = 5;
+
+/**
+ * The refusal an unconfirmed crossing gets: a 409 naming the production
+ * environment, the source, and who can write the source — so the person
+ * confirming knows whom they are letting change production's values.
+ *
+ * Every name in it is one the caller may see: the source is an environment they
+ * may read (the parent route and `declareReferences` both require it), and the
+ * people are members of their own organisation.
+ */
+export async function crossingRefusal(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+  crossings: readonly ProtectionCrossing[],
+): Promise<never> {
+  const here = `${scope.project.slug}/${scope.environment.slug}`;
+  const parts: string[] = [];
+  for (const { source } of crossings) {
+    parts.push(
+      `${source.projectSlug}/${source.slug} (${await describeWriters(scope, services, source)})`,
+    );
+  }
+  const how = crossings.some((crossing) => crossing.via === 'parent')
+    ? 'inherit values from'
+    : 'read values through a template from';
+  const sources = crossings.map(({ source }) => `${source.projectSlug}/${source.slug}`).join(', ');
+  const one = crossings.length === 1;
+
+  throw errors.conflict(
+    `link_crosses_protection: This would make the production environment ${here} ${how} ` +
+      `${sources}, which ${one ? 'is' : 'are'} not production. Anyone who can change ` +
+      `${one ? 'its' : 'their'} secrets — ${parts.join('; ')} — would change what ${here} reads, ` +
+      `without ${here}'s own access rules being asked. Confirm the link ` +
+      '(confirmCrossesProtection: true) to make it anyway.',
+  );
+}
+
+/**
+ * Who may change secrets in `source`, as a phrase: up to five people by address,
+ * how many more, and how many write tokens are pinned to it. Asked with the same
+ * `can()` every write goes through, of every active member's own context.
+ */
+async function describeWriters(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+  source: GraphEnvironmentRecord,
+): Promise<string> {
+  const contexts = await loadOrganizationAuthorizationContexts(services.db, {
+    orgId: scope.organization.id,
+    projectId: source.projectId,
+  });
+  const writers = contexts
+    .filter(
+      (context) =>
+        can(
+          { kind: 'user', userId: context.userId, orgId: scope.organization.id },
+          'secret.update',
+          {
+            kind: 'environment',
+            orgId: scope.organization.id,
+            projectId: source.projectId,
+            environmentId: source.id,
+          },
+          { membership: toGrantContext(context), isProduction: source.isProduction },
+        ).allowed,
+    )
+    .map((context) => context.userId);
+  const named = await listUserEmails(services.db, writers.slice(0, NAMED_WRITERS));
+  const tokens = await countUsableServiceTokens(
+    services.db,
+    scope.organization.id,
+    [source.id],
+    'write',
+  );
+
+  const people =
+    writers.length === 0
+      ? 'nobody at present'
+      : writers.length > named.length
+        ? `${named.join(', ')} and ${writers.length - named.length} other${writers.length - named.length === 1 ? '' : 's'}`
+        : named.join(', ');
+  return tokens === 0
+    ? people
+    : `${people}, and ${tokens} write service token${tokens === 1 ? '' : 's'}`;
 }
 
 /* ── write-time checks ───────────────────────────────────────────────────── */

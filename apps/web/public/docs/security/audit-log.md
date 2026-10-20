@@ -113,6 +113,7 @@ therefore shows a read of production that a template in staging caused.
 | Action | Recorded when |
 |---|---|
 | `environment.parent_changed` | An environment started or stopped inheriting from another, naming both parents |
+| `environment.link_crosses_protection` | A person confirmed a [production environment reading from one that is not](../features/references.md#production-reading-from-elsewhere) — by inheriting from it (reason `inherited`) or through a template (reason `referenced`, naming the secret). Filed against production, naming the source; the inheritance change or the secret write is recorded beside it |
 | `environment.promoted` | A [promotion](../features/promotion-and-restore.md#promotion) landed, with counts and the source; each secret it wrote has its own `secret.created`, `secret.updated` or `secret.deleted`, with reason `promoted` |
 | `environment.restored` | A [point-in-time restore](../features/promotion-and-restore.md#point-in-time-restore) landed, with the instant and counts, and per-secret records with reason `restored`. Its preview is a `secret.read` with reason `restore-preview` |
 | `environment.policy_changed` | An environment's plaintext-export or read-alert switch changed |

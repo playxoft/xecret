@@ -1,6 +1,7 @@
 import { and, asc, count, desc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import type { DeclaredReference } from '@xecret/core/references';
+import { users } from '../schema/identity';
 import { environments, projects } from '../schema/resources';
 import { secrets, secretVersions } from '../schema/secrets';
 import { serviceTokens } from '../schema/tokens';
@@ -241,6 +242,8 @@ export async function countUsableServiceTokens(
   exec: Executor,
   orgId: string,
   environmentIds: readonly string[],
+  /** Count only tokens of this access level — `write`, for "who can change it". */
+  accessLevel?: 'read' | 'write',
 ): Promise<number> {
   if (environmentIds.length === 0) return 0;
   const [row] = await exec
@@ -252,9 +255,31 @@ export async function countUsableServiceTokens(
         inArray(serviceTokens.environmentId, [...environmentIds]),
         isNull(serviceTokens.revokedAt),
         or(isNull(serviceTokens.expiresAt), gt(serviceTokens.expiresAt, sql`now()`)),
+        accessLevel === undefined ? undefined : eq(serviceTokens.accessLevel, accessLevel),
       ),
     );
   return row?.total ?? 0;
+}
+
+/**
+ * The email addresses of these users, in the order asked — for a message that
+ * has to name people, such as who can write to an environment production would
+ * start reading from. Deleted users are left out.
+ */
+export async function listUserEmails(
+  exec: Executor,
+  userIds: readonly string[],
+): Promise<string[]> {
+  if (userIds.length === 0) return [];
+  const rows = await exec
+    .select({ id: users.id, email: users.email })
+    .from(users)
+    .where(and(inArray(users.id, [...userIds]), isNull(users.deletedAt)));
+  const byId = new Map(rows.map((row) => [row.id, row.email]));
+  return userIds.flatMap((id) => {
+    const email = byId.get(id);
+    return email === undefined ? [] : [email];
+  });
 }
 
 /**

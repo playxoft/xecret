@@ -13,9 +13,12 @@ import { errors } from './errors';
 import {
   assertTemplateWrite,
   assertTokenReach,
+  crossingRefusal,
   declareReferences,
   reachesOutside,
+  referenceCrossings,
 } from './references-service';
+import type { ProtectionCrossing } from './references-service';
 import type { EnvironmentScope } from './tenancy';
 
 /**
@@ -56,6 +59,22 @@ export async function prepareTemplateDeclaration(
      * of a secret the same batch creates.
      */
     batched?: boolean | undefined;
+    /**
+     * What the version this write replaces declared, so a reference already
+     * there is not asked about again. Absent for a create.
+     */
+    previous?: readonly DeclaredReference[] | null | undefined;
+    /**
+     * The request's `confirmCrossesProtection` — that it knows a production
+     * template is being made to read from an environment that is not production.
+     * Without it such a write is refused 409 `link_crosses_protection:`.
+     */
+    confirmCrossesProtection?: boolean | undefined;
+    /**
+     * Told the crossings a confirmed write makes, so the route can file
+     * `environment.link_crosses_protection` once the write has landed.
+     */
+    onCrossing?: ((crossings: readonly ProtectionCrossing[]) => void) | undefined;
   },
 ): Promise<DeclaredReference[] | null> {
   if (params.effectiveType !== 'template') {
@@ -93,6 +112,16 @@ export async function prepareTemplateDeclaration(
   if (reachesOutside(scope.environment.id, declared)) {
     await assertTokenReach(scope, services, 'reference');
   }
+
+  // A production template newly reading from an environment that is not:
+  // confirmed, or refused naming who could then change production's values.
+  const crossings = await referenceCrossings(scope, services, declared, params.previous ?? null);
+  if (crossings.length > 0) {
+    if (params.confirmCrossesProtection !== true) {
+      await crossingRefusal(scope, services, crossings);
+    }
+    params.onCrossing?.(crossings);
+  }
   if (params.batched === true) return declared;
   await assertTemplateWrite(scope, services, {
     name: params.name,
@@ -100,6 +129,37 @@ export async function prepareTemplateDeclaration(
     references: declared,
   });
   return declared;
+}
+
+/**
+ * The `environment.link_crosses_protection` records of a confirmed template
+ * write — one per environment it newly reads from — filed against the
+ * production environment the template is in, naming the template.
+ */
+export function crossingRecords(
+  builder: AuditBuilder,
+  scope: EnvironmentScope,
+  crossings: readonly { secretName: string; crossing: ProtectionCrossing }[],
+): AuditRecord[] {
+  return crossings.map(({ secretName, crossing }) =>
+    builder.success(
+      'environment.link_crosses_protection',
+      {
+        type: 'environment',
+        id: scope.environment.id,
+        projectId: scope.project.id,
+        environmentId: scope.environment.id,
+      },
+      {
+        projectSlug: scope.project.slug,
+        environmentSlug: scope.environment.slug,
+        sourceProjectSlug: crossing.source.projectSlug,
+        sourceEnvironmentSlug: crossing.source.slug,
+        secretName,
+        reason: 'referenced',
+      },
+    ),
+  );
 }
 
 /**

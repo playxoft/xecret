@@ -27,7 +27,8 @@ import { emitSecretChanges } from '@/server/change-events';
 import { enforceSecretPolicy, secretPolicyRefusal } from '@/server/policies-service';
 import { noteEnvironmentRead } from '@/server/read-alerts';
 import { assertRemovalKeepsReferences } from '@/server/references-service';
-import { planRefusal, prepareTemplateDeclaration } from '@/server/template-writes';
+import type { ProtectionCrossing } from '@/server/references-service';
+import { crossingRecords, planRefusal, prepareTemplateDeclaration } from '@/server/template-writes';
 
 /**
  * One secret: reveal, new version, delete.
@@ -202,11 +203,16 @@ export const PATCH = authenticatedRoute<Params>(
           // P19 §1. The type after this write is the requested one, else the
           // stored one — so a template rewritten by a client that sends no type
           // is still a template, and still has to declare its references.
+          const crossings: ProtectionCrossing[] = [];
           const declaredReferences = await prepareTemplateDeclaration(scope, services, principal, {
             name: current.name,
             secretId: current.secretId,
             effectiveType: body.valueType ?? current.valueType,
             requested: body.references,
+            // Only a reference this write adds is asked about again.
+            previous: current.declaredReferences,
+            confirmCrossesProtection: body.confirmCrossesProtection,
+            onCrossing: (found) => crossings.push(...found),
             refused: planRefusal(
               record,
               audit(scope.organization.id),
@@ -240,7 +246,7 @@ export const PATCH = authenticatedRoute<Params>(
             ...(body.valueType === undefined ? {} : { valueType: body.valueType }),
             existing,
           });
-          return { result, valueType: body.valueType };
+          return { result, valueType: body.valueType, crossings };
         })()
       : await (async () => {
           const body = await parseJsonBody(request, updateSecretBody);
@@ -268,7 +274,7 @@ export const PATCH = authenticatedRoute<Params>(
             ...(body.valueType === undefined ? {} : { valueType: body.valueType }),
             existing,
           });
-          return { result, valueType: body.valueType };
+          return { result, valueType: body.valueType, crossings: [] as ProtectionCrossing[] };
         })();
 
     const result = written.result;
@@ -294,6 +300,11 @@ export const PATCH = authenticatedRoute<Params>(
           ...(written.valueType === undefined ? {} : { valueType: written.valueType }),
           ...(result.status === 'unchanged' ? { reason: 'unchanged' } : {}),
         },
+      ),
+      ...crossingRecords(
+        audit(scope.organization.id),
+        scope,
+        written.crossings.map((crossing) => ({ secretName: result.name, crossing })),
       ),
     );
 

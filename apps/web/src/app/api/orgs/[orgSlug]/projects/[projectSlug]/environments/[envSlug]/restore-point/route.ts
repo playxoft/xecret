@@ -13,6 +13,7 @@ import {
 import { errors } from '@/server/errors';
 import { json, parseJsonBody, parseQuery } from '@/server/http';
 import { assertEnvironmentChanges } from '@/server/references-service';
+import type { ProtectionCrossing } from '@/server/references-service';
 import {
   assertWithinWindow,
   matchesInstant,
@@ -28,7 +29,7 @@ import {
   enforceSecretRateLimit,
   secretWriter,
 } from '@/server/secrets-service';
-import { planRefusal } from '@/server/template-writes';
+import { crossingRecords, planRefusal } from '@/server/template-writes';
 import { authorize, resolveEnvironmentPath } from '@/server/tenancy';
 import type { EnvironmentScope } from '@/server/tenancy';
 
@@ -222,7 +223,10 @@ export const POST = authenticatedRoute<Params>(
       ]);
     }
 
+    const crossings: { secretName: string; crossing: ProtectionCrossing }[] = [];
     const writes = await toChangeWrites(scope, services, principal, body.writes, {
+      confirmCrossesProtection: body.confirmCrossesProtection,
+      crossings,
       existing: (name) => byName.get(name)?.existing,
       typeOf: (entry) => byName.get(entry.name)?.valueType ?? 'string',
       refused: (entry) =>
@@ -275,6 +279,7 @@ export const POST = authenticatedRoute<Params>(
           restoredTo: at.toISOString(),
           source: auditSource(principal),
         }),
+        ...crossingRecords(builder, scope, crossings),
       );
       emitEnvironmentChange(
         services,

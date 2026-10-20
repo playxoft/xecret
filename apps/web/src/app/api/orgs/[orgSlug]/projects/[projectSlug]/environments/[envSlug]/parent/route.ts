@@ -13,10 +13,13 @@ import { enforce, rateLimitKey } from '@/server/rate-limit';
 import {
   assertParentChange,
   assertTokenReach,
+  crossingRefusal,
   findParentCandidate,
   mayActOn,
+  parentCrossing,
   parentSlugOf,
 } from '@/server/references-service';
+import type { ProtectionCrossing } from '@/server/references-service';
 import { authenticatedRoute } from '@/server/route';
 import { environmentParentSchema, toEnvironment } from '@/server/schemas/resources';
 import { planRefusal } from '@/server/template-writes';
@@ -38,7 +41,11 @@ import { authorize, resolveEnvironmentPath } from '@/server/tenancy';
  *  - a change that would leave any view a template reaches unresolvable —
  *    including views in other projects that read into this one;
  *  - an environment with an active service token, which being pinned here could
- *    not read the parent.
+ *    not read the parent;
+ *  - a production environment made to inherit from one that is not, unless the
+ *    request says it knows (`confirmCrossesProtection: true`) — the 409 names who
+ *    could then change production's values, and a confirmed link is filed as its
+ *    own `environment.link_crosses_protection` (review round 1, M3).
  *
  * The check and the write happen under a lock on the project's environment
  * rows, so two re-parentings that would together form a loop cannot both pass.
@@ -79,6 +86,7 @@ export const PUT = authenticatedRoute<Params>(
     const previous = await parentSlugOf(services, orgId, scope.environment);
 
     let parentId: string | null = null;
+    let crossings: ProtectionCrossing[] = [];
     if (body.parent !== null) {
       requireFeature(
         scope.entitlements,
@@ -102,10 +110,19 @@ export const PUT = authenticatedRoute<Params>(
       }
       await assertTokenReach(scope, services, 'parent');
       parentId = parent.id;
+      if (parentId !== scope.environment.parentEnvironmentId) {
+        crossings = parentCrossing(scope, parent);
+      }
     }
 
     if (parentId === scope.environment.parentEnvironmentId) {
       return json({ environment: toEnvironment(scope.environment, previous) });
+    }
+
+    // Production inheriting from an environment that is not: allowed, but only
+    // when the request says it knows (review round 1, M3).
+    if (crossings.length > 0 && body.confirmCrossesProtection !== true) {
+      await crossingRefusal(scope, services, crossings);
     }
 
     const updated = await services.db
@@ -128,6 +145,17 @@ export const PUT = authenticatedRoute<Params>(
         parentEnvironmentSlug: body.parent,
         previousParentEnvironmentSlug: previous,
       }),
+      // Its own record, so "since when may staging's writers change production?"
+      // is one filter rather than every parent change read for its classes.
+      ...crossings.map(({ source }) =>
+        audit(orgId).success('environment.link_crosses_protection', resource, {
+          projectSlug: scope.project.slug,
+          environmentSlug: scope.environment.slug,
+          sourceProjectSlug: source.projectSlug,
+          sourceEnvironmentSlug: source.slug,
+          reason: 'inherited',
+        }),
+      ),
     );
 
     return json({ environment: toEnvironment(updated, body.parent) });

@@ -148,6 +148,18 @@ export function referencesFor(
 }
 
 /**
+ * `confirmCrossesProtection: true` on a write body, only when the person has
+ * confirmed the server's warning that a production template would read from an
+ * environment that is not production — never on a first attempt, so the server
+ * is always the one to say whether a write crosses (`protection-crossing.ts`).
+ */
+function crossingConfirmation(input: { confirmCrossesProtection?: boolean | undefined }): {
+  confirmCrossesProtection?: true;
+} {
+  return input.confirmCrossesProtection === true ? { confirmCrossesProtection: true } : {};
+}
+
+/**
  * A reference as the wire carries it: the parts that are present and none of
  * the ones that are not.
  *
@@ -198,10 +210,16 @@ export interface SecretIo {
     value: string;
     note?: string | undefined;
     valueType: string;
+    /** See `protection-crossing.ts`: sent only after the server's warning was shown. */
+    confirmCrossesProtection?: boolean | undefined;
   }) => Promise<SecretWriteResponse>;
   update: (
     secret: SecretRef,
-    input: { value: string; valueType?: string | undefined },
+    input: {
+      value: string;
+      valueType?: string | undefined;
+      confirmCrossesProtection?: boolean | undefined;
+    },
   ) => Promise<SecretWriteResponse>;
   /** Metadata only. Appends no version, and needs no key in `server` mode. */
   patchMetadata: (secret: SecretRef, patch: MetadataPatch) => Promise<void>;
@@ -509,6 +527,7 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
           valueType: input.valueType,
           ...declared,
           ...(encNote === undefined ? {} : { encNote }),
+          ...crossingConfirmation(input),
         });
       }),
 
@@ -541,6 +560,7 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
             expectedVersion: version,
             ...(input.valueType === undefined ? {} : { valueType: input.valueType }),
             ...declared,
+            ...crossingConfirmation(input),
           },
         );
       }),
