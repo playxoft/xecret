@@ -274,6 +274,7 @@ export {
   addEnvKeyGrants,
   deleteGrantsForUser,
   canClaimInvitationGrants,
+  findActiveGrantsForPrincipal,
   findGrantForPrincipal,
   findPendingInvitationForGrant,
   initializeEnvironmentKeys,
@@ -339,6 +340,7 @@ export {
   listSecretVersions,
   listSecrets,
   loadEnvironmentSecrets,
+  loadSecretsForEnvironments,
   restoreSecret,
   softDeleteSecret,
   updateSecretMetadata,
@@ -452,3 +454,15 @@ export type {
   SubscriptionRecord,
   UsageCounterRecord,
 } from './subscriptions';
+
+export {
+  countUsableServiceTokens,
+  findEnvironmentsBySlugs,
+  findProjectsReferencingEnvironments,
+  listChildEnvironments,
+  loadEnvironmentsByIds,
+  loadEnvironmentsOfProjects,
+  loadSecretGraphMetadata,
+  setEnvironmentParent,
+} from './references';
+export type { GraphEnvironmentRecord, GraphSecretRecord } from './references';

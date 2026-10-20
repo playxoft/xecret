@@ -2,10 +2,13 @@ import { sql } from 'drizzle-orm';
 import {
   boolean,
   check,
+  foreignKey,
+  index,
   integer,
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
@@ -77,6 +80,16 @@ export const environments = pgTable(
      */
     encryptionMode: text('encryption_mode').notNull().default('e2ee'),
     sortOrder: integer('sort_order').notNull().default(0),
+    /**
+     * The environment this one inherits from (P19 §1, migration 0024), or NULL.
+     *
+     * Its view is its own secrets laid over the parent's, child values winning —
+     * the resolution order lives in `@xecret/core/references`. Always in the same
+     * project, by the composite foreign key below; never itself, by a CHECK; and
+     * never a loop or a chain past five, which the application refuses before
+     * the write because no row constraint can follow a chain.
+     */
+    parentEnvironmentId: uuid('parent_environment_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
@@ -86,5 +99,18 @@ export const environments = pgTable(
     uniqueIndex('environments_project_slug_idx')
       .on(t.projectId, t.slug)
       .where(sql`${t.deletedAt} is null`),
+    unique('environments_project_id_id_unique').on(t.projectId, t.id),
+    foreignKey({
+      name: 'environments_parent_same_project_fk',
+      columns: [t.projectId, t.parentEnvironmentId],
+      foreignColumns: [t.projectId, t.id],
+    }),
+    check(
+      'environments_parent_not_self_check',
+      sql`${t.parentEnvironmentId} is null or ${t.parentEnvironmentId} <> ${t.id}`,
+    ),
+    index('environments_parent_idx')
+      .on(t.parentEnvironmentId)
+      .where(sql`${t.parentEnvironmentId} is not null`),
   ],
 );

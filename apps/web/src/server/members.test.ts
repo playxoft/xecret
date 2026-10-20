@@ -96,6 +96,7 @@ function gridRow(id: string, isProduction: boolean): OrganizationEnvironment {
     isProduction,
     encryptionMode: 'server',
     sortOrder: 0,
+    parentEnvironmentId: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
     deletedAt: null,
@@ -309,6 +310,7 @@ describe('the effective-access preview', () => {
       // asserting the same thing they always did.
       encryptionMode: 'server',
       sortOrder: 0,
+      parentEnvironmentId: null,
       createdAt: new Date(0),
       updatedAt: new Date(0),
       deletedAt: null,

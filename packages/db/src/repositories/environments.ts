@@ -577,6 +577,10 @@ const environmentColumns = {
   // hands ciphertext to a decryption path.
   encryptionMode: environments.encryptionMode,
   sortOrder: environments.sortOrder,
+  // P19 §1. Read wherever an environment is, because the pull branches on it:
+  // a parent means the bundle carries layers, and no parent means it costs
+  // nothing extra.
+  parentEnvironmentId: environments.parentEnvironmentId,
   createdAt: environments.createdAt,
   updatedAt: environments.updatedAt,
   deletedAt: environments.deletedAt,

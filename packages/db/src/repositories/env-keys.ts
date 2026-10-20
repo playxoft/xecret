@@ -625,6 +625,69 @@ export async function findGrantForPrincipal(
   return row ? toGrantRecord(row) : null;
 }
 
+/**
+ * One principal's grant on the active key of each of several environments, in
+ * **one query** — what a pull of an inheriting or referencing environment needs
+ * for its extra layers (P19 §1), instead of a key-state read per layer.
+ *
+ * Every environment with an active key is in the answer; `grant` is `null` where
+ * the principal holds none, which the caller reports as the pending-share state
+ * rather than as a failure to authenticate. An environment with no active key at
+ * all is absent.
+ */
+export async function findActiveGrantsForPrincipal(
+  exec: Executor,
+  params: {
+    orgId: string;
+    environmentIds: readonly string[];
+    recipientKind: GrantRecipientKind;
+    recipientId: string;
+  },
+): Promise<
+  Map<string, { activeKey: { id: string; version: number }; grant: EnvKeyGrantRecord | null }>
+> {
+  const answer = new Map<
+    string,
+    { activeKey: { id: string; version: number }; grant: EnvKeyGrantRecord | null }
+  >();
+  if (params.environmentIds.length === 0) return answer;
+
+  const rows = await exec
+    .select({
+      environmentId: envDataKeys.environmentId,
+      keyId: envDataKeys.id,
+      keyVersion: envDataKeys.version,
+      grant: GRANT_COLUMNS,
+    })
+    .from(envDataKeys)
+    .innerJoin(environments, eq(environments.id, envDataKeys.environmentId))
+    .innerJoin(projects, eq(projects.id, environments.projectId))
+    .leftJoin(
+      envKeyGrants,
+      and(eq(envKeyGrants.envDataKeyId, envDataKeys.id), recipientPredicate(params)),
+    )
+    .where(
+      and(
+        inArray(envDataKeys.environmentId, [...params.environmentIds]),
+        eq(envDataKeys.status, 'active'),
+        eq(projects.orgId, params.orgId),
+        isNull(environments.deletedAt),
+        isNull(projects.deletedAt),
+      ),
+    )
+    .orderBy(envDataKeys.environmentId, desc(envDataKeys.version));
+
+  for (const row of rows) {
+    // Newest active key first, as `loadEnvironmentKeyState` picks it.
+    if (answer.has(row.environmentId)) continue;
+    answer.set(row.environmentId, {
+      activeKey: { id: row.keyId, version: row.keyVersion },
+      grant: row.grant === null || row.grant.id === null ? null : toGrantRecord(row.grant),
+    });
+  }
+  return answer;
+}
+
 /** Every grant on an environment's active key. The rotation preview reads this. */
 export async function listGrantsForEnvironment(
   exec: Executor,

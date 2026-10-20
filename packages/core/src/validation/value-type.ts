@@ -1,4 +1,5 @@
 import { parse as parseYaml } from 'yaml';
+import { templateReferences, TemplateSyntaxError } from '../references/template';
 import { checkXmlWellFormed } from './xml';
 
 /**
@@ -47,6 +48,13 @@ export const SECRET_VALUE_TYPES = [
   'ulid',
   'uuidv4',
   'uuidv7',
+  /**
+   * The one type that changes what a value *means* rather than what it may hold
+   * (P19 §1): its `${…}` are references, resolved when the environment is read.
+   * Every other type is literal text for ever, which is why references are an
+   * opt-in rather than a syntax read in every value. See `@xecret/core/references`.
+   */
+  'template',
 ] as const;
 
 export type SecretValueType = (typeof SECRET_VALUE_TYPES)[number];
@@ -171,6 +179,12 @@ export const SECRET_VALUE_TYPE_DESCRIPTORS: Readonly<
     label: 'UUID v7',
     hint: 'A time-ordered UUID — version nibble 7.',
     example: '019456f0-8c3a-7d21-9f4e-6b8a2c5d1e30',
+  },
+  template: {
+    type: 'template',
+    label: 'Template',
+    hint: 'Text with ${KEY}, ${environment.KEY} or ${project.environment.KEY} references, resolved when read. $${ is a literal ${.',
+    example: 'postgres://${DB_USER}@${DB_HOST}/app',
   },
 };
 
@@ -368,6 +382,21 @@ const CHECKS: Readonly<Record<SecretValueType, Check>> = {
   uuidv4: (value) => (UUID_V4_PATTERN.test(value) ? VALID : invalid('Expected a version 4 UUID.')),
 
   uuidv7: (value) => (UUID_V7_PATTERN.test(value) ? VALID : invalid('Expected a version 7 UUID.')),
+
+  // The grammar only. Whether each reference resolves — and to something the
+  // writer may read, with no loop — is the server's question, asked of the
+  // declared references before the write is stored.
+  template: (value) => {
+    try {
+      templateReferences(value);
+      return VALID;
+    } catch (cause) {
+      // The parser's messages are fixed strings and an offset, never the value.
+      return invalid(
+        cause instanceof TemplateSyntaxError ? cause.message : 'That template cannot be read.',
+      );
+    }
+  },
 };
 
 /**
