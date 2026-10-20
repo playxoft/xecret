@@ -278,6 +278,16 @@ export const orgUsageCounters = pgTable(
      */
     meteredUnitsSent: bigint('metered_units_sent', { mode: 'number' }).notNull().default(0),
 
+    /**
+     * The fetches the plan included for this month, as it stood when the
+     * month opened (migration 0026) — the plan's allowance with any support
+     * raise of it. Raised, never lowered, by a flush while the month is still
+     * current. The overage meter bills the month against this and nothing
+     * else, so a later downgrade or a cleared override never re-bills it.
+     * `null`: not recorded, and never metered.
+     */
+    includedFetches: bigint('included_fetches', { mode: 'number' }),
+
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -297,6 +307,10 @@ export const orgUsageCounters = pgTable(
     primaryKey({ name: 'org_usage_counters_pkey', columns: [t.orgId, t.periodStart] }),
     check('org_usage_counters_fetches_check', sql`${t.secretFetches} >= 0`),
     check('org_usage_counters_units_check', sql`${t.meteredUnitsSent} >= 0`),
+    check(
+      'org_usage_counters_included_check',
+      sql`${t.includedFetches} is null or ${t.includedFetches} >= 0`,
+    ),
   ],
 );
 

@@ -1,6 +1,11 @@
 import { and, asc, count, eq, gt, isNotNull, isNull, lt, lte, ne, or, sql } from 'drizzle-orm';
 import type { AnyColumn, SQL } from 'drizzle-orm';
-import { FETCHES_PER_METERED_UNIT, PLANS, resolvePlanId } from '@xecret/core/entitlements';
+import {
+  DEFAULT_PLAN,
+  FETCHES_PER_METERED_UNIT,
+  PLANS,
+  resolvePlanId,
+} from '@xecret/core/entitlements';
 import type { BillingInterval, PlanId } from '@xecret/core/entitlements';
 import {
   billingCheckouts,
@@ -807,9 +812,15 @@ export async function addFetchCounts(
 
   const start = orgSubscriptions.currentPeriodStart;
   const end = orgSubscriptions.currentPeriodEnd;
+  // The month a conflicting row is for is the organisation's current one —
+  // the only month whose allowance a flush may still raise.
+  const isCurrentMonth = sql`${orgUsageCounters.periodStart} = (
+    select ${USAGE_PERIOD_START} from ${orgSubscriptions}
+     where ${orgSubscriptions.orgId} = ${orgUsageCounters.orgId})`;
   await exec.execute(sql`
-    insert into ${orgUsageCounters} (org_id, period_start, secret_fetches)
-    select placed.org_id, placed.period_start, sum(placed.fetches)::bigint
+    insert into ${orgUsageCounters} (org_id, period_start, secret_fetches, included_fetches)
+    select placed.org_id, placed.period_start, sum(placed.fetches)::bigint,
+           max(placed.included_fetches)::bigint
       from (
         select counted.org_id,
                (case
@@ -823,14 +834,70 @@ export async function addFetchCounts(
                       date_trunc('month', counted.at at time zone 'UTC') at time zone 'UTC')
                   else date_trunc('month', counted.at at time zone 'UTC') at time zone 'UTC'
                 end) as period_start,
-               counted.fetches
+               counted.fetches,
+               ${includedFetchesAllowance()} as included_fetches
           from (values ${values}) as counted(org_id, at, fetches)
           join ${orgSubscriptions} on ${orgSubscriptions.orgId} = counted.org_id
       ) as placed
      group by placed.org_id, placed.period_start
     on conflict (org_id, period_start) do update
       set secret_fetches = ${orgUsageCounters.secretFetches} + excluded.secret_fetches,
+          included_fetches = (case
+            when ${isCurrentMonth}
+              then greatest(
+                coalesce(${orgUsageCounters.includedFetches}, excluded.included_fetches),
+                excluded.included_fetches)
+            else ${orgUsageCounters.includedFetches}
+          end),
           updated_at = now()
+  `);
+}
+
+/**
+ * The fetches a month includes on the plan an `org_subscriptions` row is on
+ * now, as SQL: `entitlementsFromRow(row).limits.includedFetchesPerMonth`,
+ * worked out where the row is. The plan's own allowance — from `PLANS`, so it
+ * cannot drift from it, a withdrawn plan resolved as `resolvePlanId` resolves
+ * it — raised, never lowered, by a support override of it that is a number.
+ * A fractional override is rounded up (in the customer's favour), and one too
+ * large to read back exactly is held at the largest integer that can be.
+ *
+ * Written onto a counter row when its month opens (`addFetchCounts`), which is
+ * the figure that month is metered against from then on.
+ */
+function includedFetchesAllowance(): SQL {
+  const cases = planIdEnum.enumValues.map(
+    (plan) =>
+      sql`when ${plan} then ${PLANS[resolvePlanId(plan)].limits.includedFetchesPerMonth}::numeric`,
+  );
+  const plan = sql`(case ${orgSubscriptions.plan}::text ${sql.join(cases, sql` `)}
+    else ${PLANS[DEFAULT_PLAN].limits.includedFetchesPerMonth}::numeric end)`;
+  const raised = sql`(case
+    when jsonb_typeof(${orgSubscriptions.limitOverrides} -> 'includedFetchesPerMonth') = 'number'
+    then least(
+      ceil((${orgSubscriptions.limitOverrides} ->> 'includedFetchesPerMonth')::numeric),
+      ${Number.MAX_SAFE_INTEGER}::numeric)
+    else 0::numeric end)`;
+  return sql`(greatest(${plan}, ${raised})::bigint)`;
+}
+
+/**
+ * Raises the allowance recorded for the organisation's current month to what
+ * its plan includes now, if that is more — never lowers it. What the operator
+ * tool calls after a change that can raise it (`--limit-override`, `--plan`),
+ * in the same transaction, so a raise support grants counts for the month it
+ * was granted in, and the month keeps it after the raise is cleared.
+ */
+export async function raiseCurrentUsageAllowance(exec: Executor, orgId: string): Promise<void> {
+  await exec.execute(sql`
+    update ${orgUsageCounters}
+       set included_fetches = greatest(
+             coalesce(${orgUsageCounters.includedFetches}, 0), ${includedFetchesAllowance()}),
+           updated_at = now()
+      from ${orgSubscriptions}
+     where ${orgSubscriptions.orgId} = ${orgUsageCounters.orgId}
+       and ${orgUsageCounters.orgId} = ${orgId}
+       and ${orgUsageCounters.periodStart} = ${USAGE_PERIOD_START}
   `);
 }
 
@@ -838,7 +905,13 @@ export async function addFetchCounts(
 export async function currentUsage(
   exec: Executor,
   orgId: string,
-): Promise<{ periodStart: Date; secretFetches: number; meteredUnitsSent: number }> {
+): Promise<{
+  periodStart: Date;
+  secretFetches: number;
+  meteredUnitsSent: number;
+  /** The allowance recorded for the month; `null` before its first fetch is counted. */
+  includedFetches: number | null;
+}> {
   const [period] = await exec
     .select({ start: USAGE_PERIOD_START })
     .from(orgSubscriptions)
@@ -850,6 +923,7 @@ export async function currentUsage(
     .select({
       secretFetches: orgUsageCounters.secretFetches,
       meteredUnitsSent: orgUsageCounters.meteredUnitsSent,
+      includedFetches: orgUsageCounters.includedFetches,
     })
     .from(orgUsageCounters)
     .where(and(eq(orgUsageCounters.orgId, orgId), eq(orgUsageCounters.periodStart, periodStart)))
@@ -859,6 +933,7 @@ export async function currentUsage(
     periodStart,
     secretFetches: row?.secretFetches ?? 0,
     meteredUnitsSent: row?.meteredUnitsSent ?? 0,
+    includedFetches: row?.includedFetches ?? null,
   };
 }
 
@@ -872,27 +947,15 @@ export interface MeterableUsage {
   periodStart: Date;
   secretFetches: number;
   meteredUnitsSent: number;
+  /** The allowance the month was counted against — the figure it is billed past. */
+  includedFetches: number;
   subscription: SubscriptionRecord;
-}
-
-/**
- * The fewest fetches each stored plan includes, as SQL — the plan's own
- * allowance, which a support override can only raise. A floor, so a row below
- * it can owe nothing whatever its overrides say.
- */
-function includedFetchesFloor() {
-  const cases = planIdEnum.enumValues.map(
-    (plan) =>
-      sql`when ${plan} then ${PLANS[resolvePlanId(plan)].limits.includedFetchesPerMonth}::bigint`,
-  );
-  return sql`(case ${orgSubscriptions.plan}::text ${sql.join(cases, sql` `)} else 0::bigint end)`;
 }
 
 /**
  * Usage rows that may owe the provider something — the overage report's work
  * list, one page of it, in primary-key order so a run can page past any number.
- * What is *owed* is decided by the caller from the resolved plan (overrides
- * included); this narrows to the rows where the answer can be more than zero:
+ * Only rows where the answer can be more than zero:
  *
  *  - **On a subscription the provider bills**, in this deployment's Dodo mode.
  *  - **In a period the subscription paid for** (`metered_from`): a period that
@@ -900,9 +963,13 @@ function includedFetchesFloor() {
  *    never metered — fetches made on Free, or during a trial, are not billed by
  *    the subscription that came after them. Rows of a subscription still on
  *    trial are left out for the same reason.
- *  - **Past another whole unit**: at least the plan's own allowance plus one
- *    unit beyond what was already reported. A row that cannot owe is never
- *    listed, so it can never crowd out one that does.
+ *  - **Past another whole unit of the month's own allowance** — the
+ *    `included_fetches` recorded when it opened, never the plan the
+ *    organisation is on today: a Team month is billed past Team's allowance
+ *    after a downgrade to Pro, and a month support raised keeps its raise
+ *    after the override is cleared. A month with no allowance recorded is
+ *    never listed. A row that cannot owe is never listed either, so it can
+ *    never crowd out one that does.
  */
 export async function listMeterableUsage(
   exec: Executor,
@@ -932,7 +999,8 @@ export async function listMeterableUsage(
         isNotNull(orgSubscriptions.meteredFrom),
         sql`${orgUsageCounters.periodStart} >= ${orgSubscriptions.meteredFrom}`,
         sql`(${orgSubscriptions.trialEndsAt} is null or ${orgUsageCounters.periodStart} >= ${orgSubscriptions.trialEndsAt})`,
-        sql`${orgUsageCounters.secretFetches} >= ${includedFetchesFloor()} + (${orgUsageCounters.meteredUnitsSent} + 1) * ${unit}::bigint`,
+        isNotNull(orgUsageCounters.includedFetches),
+        sql`${orgUsageCounters.secretFetches} >= ${orgUsageCounters.includedFetches} + (${orgUsageCounters.meteredUnitsSent} + 1) * ${unit}::bigint`,
         after === undefined
           ? undefined
           : sql`(${orgUsageCounters.orgId}, ${orgUsageCounters.periodStart}) > (${after.orgId}::uuid, ${after.periodStart.toISOString()}::timestamptz)`,
@@ -946,6 +1014,8 @@ export async function listMeterableUsage(
     periodStart: row.usage.periodStart,
     secretFetches: row.usage.secretFetches,
     meteredUnitsSent: row.usage.meteredUnitsSent,
+    // Listed only with one recorded.
+    includedFetches: row.usage.includedFetches ?? Number.MAX_SAFE_INTEGER,
     subscription: row.subscription,
   }));
 }

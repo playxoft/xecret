@@ -301,7 +301,9 @@ export async function billingStatus(
     usage: {
       periodStart: usage.periodStart.toISOString(),
       secretFetches: usage.secretFetches,
-      includedFetches: entitlements.limits.includedFetchesPerMonth,
+      // What the month is billed past: the allowance it recorded when it
+      // opened, or — before its first fetch is counted — the plan's own.
+      includedFetches: usage.includedFetches ?? entitlements.limits.includedFetchesPerMonth,
       unitsReported: usage.meteredUnitsSent,
       overageRate: OVERAGE_RATE_TEXT,
     },

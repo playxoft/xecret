@@ -2,7 +2,6 @@ import { FETCHES_PER_METERED_UNIT, meteredUnitsOwed } from '@xecret/core/entitle
 import {
   addFetchCounts,
   appendAuditEvents,
-  entitlementsFromRow,
   listMeterableUsage,
   markMeteredUnitsSent,
 } from '@xecret/db/repositories';
@@ -81,9 +80,18 @@ import { billingSetup } from './config';
  * has just ended are therefore reported — once — into Dodo's next billing
  * period, never dropped and never billed twice.
  *
- * The included allowance is subtracted *here*, from `plans.ts` with any support
- * override — so Dodo's meter must carry no free threshold of its own, or the
- * allowance is given twice (docs/operations/billing.md).
+ * The included allowance is subtracted *here* — so Dodo's meter must carry no
+ * free threshold of its own, or the allowance is given twice
+ * (docs/operations/billing.md).
+ *
+ * ── Against the month's own allowance ──
+ * Each counter row records the allowance its month opened with
+ * (`included_fetches`: `plans.ts` with any support override), raised but never
+ * lowered while the month is current, and a month is billed against that
+ * figure alone. Billed against the plan as it is *today*, an old month would
+ * be re-billed every time the organisation moved: a Team month after a
+ * downgrade to Pro at renewal, a month support raised once the raise was
+ * cleared. A row with no allowance recorded is never billed.
  */
 
 /** Flush an isolate's counts at most this long after the first one waiting. */
@@ -231,9 +239,15 @@ export async function flushUsageToDodo(services: ServiceContext): Promise<UsageR
     const customerId = row.subscription.dodoCustomerId;
     if (customerId === null) return;
 
-    const included = entitlementsFromRow(row.subscription).limits.includedFetchesPerMonth;
+    // The month's own allowance, recorded when it opened — never the plan the
+    // organisation is on today, which may have moved since (see the header).
     const owed = Math.min(
-      meteredUnitsOwed(row.secretFetches, included, row.meteredUnitsSent, FETCHES_PER_METERED_UNIT),
+      meteredUnitsOwed(
+        row.secretFetches,
+        row.includedFetches,
+        row.meteredUnitsSent,
+        FETCHES_PER_METERED_UNIT,
+      ),
       MAX_UNITS_PER_RUN,
     );
     if (owed <= 0) return;

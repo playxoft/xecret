@@ -398,10 +398,12 @@ async function sendDueReminders(
           }
         }
 
-        // Usage at 80% and 100% of the allowance, once each per period.
-        const included = entitlementsFromRow(row).limits.includedFetchesPerMonth;
+        // Usage at 80% and 100% of the allowance, once each per month — the
+        // allowance the month recorded, which is the one it is billed past.
+        const usage = await currentUsage(services.db, row.orgId);
+        const included =
+          usage.includedFetches ?? entitlementsFromRow(row).limits.includedFetchesPerMonth;
         if (included > 0) {
-          const usage = await currentUsage(services.db, row.orgId);
           const occasion = usage.periodStart.toISOString();
           if (usage.secretFetches >= included) {
             await send(row, occasion, { kind: 'usage_100', used: usage.secretFetches, included });

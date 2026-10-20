@@ -75,7 +75,10 @@ import {
 import { createAuditBuilder } from '../packages/core/src/audit/index.ts';
 import { createDatabaseHandle } from '../packages/db/src/client.ts';
 import { appendAuditEvents } from '../packages/db/src/repositories/audit.ts';
-import { detachFromProvider } from '../packages/db/src/repositories/billing.ts';
+import {
+  detachFromProvider,
+  raiseCurrentUsageAllowance,
+} from '../packages/db/src/repositories/billing.ts';
 import { setBilledSeats } from '../packages/db/src/repositories/subscriptions.ts';
 import { orgSubscriptions } from '../packages/db/src/schema/billing.ts';
 import { subscriptionStatusEnum } from '../packages/db/src/schema/enums.ts';
@@ -625,6 +628,13 @@ async function main(): Promise<void> {
       // event: a partial write reported as a total failure, and the one shape of
       // outcome this table must never have.
       if (!row) throw new Error('The subscription UPDATE matched no row.');
+
+      // A raise of the allowance counts for the month it is granted in: the
+      // month's recorded allowance is what its overage is billed past, and it
+      // is only ever raised, so clearing the override later re-bills nothing.
+      if (patch.limitOverrides !== undefined || patch.plan !== undefined) {
+        await raiseCurrentUsageAllowance(tx, org.id);
+      }
 
       await appendAuditEvents(tx, [event]);
       return { updated: row, detached };

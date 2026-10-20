@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { FREE_SEAT_LIMIT } from '@xecret/core/entitlements';
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '../testing/pglite';
 import type { TestDatabase } from '../testing/pglite';
@@ -37,6 +39,7 @@ import {
   markMeteredUnitsSent,
   pruneBillingRequests,
   queueSeatSync,
+  raiseCurrentUsageAllowance,
   recordCheckout,
   recordLicenseKey,
   releaseBillingRequest,
@@ -47,6 +50,7 @@ import {
   writeSubscriptionState,
 } from './billing';
 import { addMember as addOrgMember, removeMember } from './membership';
+import { entitlementsFromRow } from './subscriptions';
 
 /**
  * Migration 0024 and the payment repositories (P12), against a real database —
@@ -142,18 +146,35 @@ async function debtOf(orgId: string) {
   return (await listSeatSyncs(t.db, 10_000)).find((row) => row.orgId === orgId) ?? null;
 }
 
-/** Fetches a usage row directly, for a period this test chose. */
+/**
+ * Fetches a usage row directly, for a period this test chose — with the
+ * allowance its month opened with: the plan's own, unless one is given.
+ */
 async function seedUsage(
   orgId: string,
   periodStart: Date,
   fetches: number,
   unitsSent = 0,
+  included?: number,
 ): Promise<void> {
   await t.pg.query(
-    `insert into org_usage_counters (org_id, period_start, secret_fetches, metered_units_sent)
-     values ($1, $2, $3, $4)`,
-    [orgId, periodStart, fetches, unitsSent],
+    `insert into org_usage_counters
+       (org_id, period_start, secret_fetches, metered_units_sent, included_fetches)
+     values ($1, $2, $3, $4, coalesce($5::bigint, (
+       select case plan when 'pro' then 200000 when 'team' then 1000000
+                        when 'enterprise' then 10000000 else 20000 end
+         from org_subscriptions where org_id = $1)))`,
+    [orgId, periodStart, fetches, unitsSent, included ?? null],
   );
+}
+
+async function allowanceOf(orgId: string, periodStart: Date): Promise<number | null> {
+  const result = await t.pg.query<{ included_fetches: string | null }>(
+    `select included_fetches from org_usage_counters where org_id = $1 and period_start = $2`,
+    [orgId, periodStart],
+  );
+  const value = result.rows[0]?.included_fetches;
+  return value === null || value === undefined ? null : Number(value);
 }
 
 async function usageRows(orgId: string): Promise<{ period: string; fetches: number }[]> {
@@ -325,6 +346,60 @@ describe('migration 0025', () => {
         [orgId],
       ),
     ).rejects.toThrow(/billing_requests_key_check/);
+  });
+});
+
+describe('migration 0026', () => {
+  it('backfills each existing month with the allowance its organisation’s plan includes', async () => {
+    const source = readFileSync(
+      fileURLToPath(new URL('../../migrations/0026_usage_month_allowance.sql', import.meta.url)),
+      'utf8',
+    );
+    const backfill = source
+      .split('--> statement-breakpoint')
+      .map((statement) =>
+        statement
+          .split('\n')
+          .filter((line) => !line.trimStart().startsWith('--'))
+          .join('\n')
+          .trim(),
+      )
+      .find((statement) => statement.startsWith('UPDATE'));
+    expect(backfill).toBeDefined();
+
+    const month = new Date(Date.UTC(2026, 6, 1));
+    const seeded: { orgId: string; expected: number }[] = [];
+    for (const [plan, overrides, expected] of [
+      ['free', null, 20_000],
+      ['pro', null, 200_000],
+      ['team', null, 1_000_000],
+      ['scale', null, 1_000_000],
+      ['enterprise', null, 10_000_000],
+      ['pro', { includedFetchesPerMonth: 750_000 }, 750_000],
+      ['team', { includedFetchesPerMonth: 5 }, 1_000_000],
+    ] as const) {
+      const { orgId } = await seedOrg({ plan });
+      await t.pg.query(`update org_subscriptions set limit_overrides = $2 where org_id = $1`, [
+        orgId,
+        overrides === null ? null : JSON.stringify(overrides),
+      ]);
+      // A month written before the column existed.
+      await t.pg.query(
+        `insert into org_usage_counters (org_id, period_start, secret_fetches) values ($1, $2, 1)`,
+        [orgId, month],
+      );
+      seeded.push({ orgId, expected });
+    }
+    const written = await seedOrg({ plan: 'pro' });
+    await seedUsage(written.orgId, month, 1, 0, 123_456);
+
+    await t.pg.exec(backfill!);
+
+    for (const { orgId, expected } of seeded) {
+      expect(await allowanceOf(orgId, month)).toBe(expected);
+    }
+    // A month that already records one keeps it.
+    expect(await allowanceOf(written.orgId, month)).toBe(123_456);
   });
 });
 
@@ -888,6 +963,157 @@ describe('the usage counter', () => {
         { orgId, fetches: 100_000, countedAt: new Date(Date.UTC(2026, month, 20)) },
       ]);
     }
+    const work = await listMeterableUsage(t.db, {
+      since: new Date(0),
+      limit: 1000,
+      mode: 'test_mode',
+    });
+    expect(work.some((row) => row.orgId === orgId)).toBe(false);
+  });
+
+  it('records the allowance a month opens with — the plan’s, raised (never lowered) by support', async () => {
+    const cases: { plan: string; overrides: Record<string, unknown> | null; expected: number }[] = [
+      { plan: 'free', overrides: null, expected: 20_000 },
+      { plan: 'pro', overrides: null, expected: 200_000 },
+      { plan: 'team', overrides: null, expected: 1_000_000 },
+      { plan: 'scale', overrides: null, expected: 1_000_000 },
+      { plan: 'enterprise', overrides: null, expected: 10_000_000 },
+      { plan: 'pro', overrides: { includedFetchesPerMonth: 500_000 }, expected: 500_000 },
+      { plan: 'pro', overrides: { includedFetchesPerMonth: 1_000 }, expected: 200_000 },
+      { plan: 'pro', overrides: { includedFetchesPerMonth: null }, expected: 200_000 },
+      { plan: 'pro', overrides: { projects: 9_000 }, expected: 200_000 },
+    ];
+    for (const { plan, overrides, expected } of cases) {
+      const { orgId } = await seedOrg({ plan });
+      await t.pg.query(`update org_subscriptions set limit_overrides = $2 where org_id = $1`, [
+        orgId,
+        overrides === null ? null : JSON.stringify(overrides),
+      ]);
+      await addFetchCounts(t.db, [{ orgId, fetches: 1 }]);
+      const recorded = (await currentUsage(t.db, orgId)).includedFetches;
+      // The database's figure is the one entitlement resolution reaches.
+      const resolved = entitlementsFromRow({
+        plan: plan as never,
+        status: 'active',
+        addonSaml: false,
+        addonDirectorySync: false,
+        limitOverrides: overrides as never,
+        currentPeriodEnd: null,
+      }).limits.includedFetchesPerMonth;
+      expect({ plan, overrides, recorded, resolved }).toEqual({
+        plan,
+        overrides,
+        recorded: expected,
+        resolved: expected,
+      });
+    }
+
+    // What entitlement resolution ignores, so does the meter; a fraction is
+    // rounded up, in the customer's favour.
+    for (const [value, expected] of [
+      ['900000', 200_000],
+      [250_000.5, 250_001],
+      [1e30, Number.MAX_SAFE_INTEGER],
+    ] as const) {
+      const { orgId } = await seedOrg({ plan: 'pro' });
+      await t.pg.query(`update org_subscriptions set limit_overrides = $2 where org_id = $1`, [
+        orgId,
+        JSON.stringify({ includedFetchesPerMonth: value }),
+      ]);
+      await addFetchCounts(t.db, [{ orgId, fetches: 1 }]);
+      expect((await currentUsage(t.db, orgId)).includedFetches).toBe(expected);
+    }
+  });
+
+  it('keeps an old month’s allowance when the plan moves — a Team month after a downgrade to Pro', async () => {
+    const now = Date.now();
+    const teamStart = new Date(now - 30 * DAY);
+    const renewal = new Date(now - 60_000);
+    const { orgId } = await seedOrg({
+      plan: 'team',
+      customer: `cus_${uniq()}`,
+      dodoSubscription: `sub_${uniq()}`,
+      periodStart: teamStart,
+      periodEnd: renewal,
+      meteredFrom: teamStart,
+    });
+    await addFetchCounts(t.db, [{ orgId, fetches: 1_050_000, countedAt: new Date(now - 2 * DAY) }]);
+    expect(await allowanceOf(orgId, teamStart)).toBe(1_000_000);
+
+    // Renewed on Pro: the downgrade took effect at the period end.
+    await t.pg.query(
+      `update org_subscriptions set plan = 'pro', current_period_start = $2,
+              current_period_end = $3 where org_id = $1`,
+      [orgId, renewal, new Date(now + 30 * DAY)],
+    );
+    // The Team month's last fetches, flushed after the renewal.
+    await addFetchCounts(t.db, [
+      { orgId, fetches: 3, countedAt: new Date(renewal.getTime() - 5_000) },
+    ]);
+    await addFetchCounts(t.db, [{ orgId, fetches: 4 }]);
+    expect(await allowanceOf(orgId, teamStart)).toBe(1_000_000);
+    expect(await allowanceOf(orgId, renewal)).toBe(200_000);
+
+    const work = (
+      await listMeterableUsage(t.db, { since: new Date(0), limit: 1000, mode: 'test_mode' })
+    ).filter((row) => row.orgId === orgId);
+    expect(work.map((row) => [row.periodStart.toISOString(), row.includedFetches])).toEqual([
+      [teamStart.toISOString(), 1_000_000],
+    ]);
+  });
+
+  it('raises the current month’s allowance with support, and keeps it after the raise is cleared', async () => {
+    const now = Date.now();
+    const start = new Date(now - 5 * DAY);
+    const { orgId } = await seedOrg({
+      plan: 'pro',
+      customer: `cus_${uniq()}`,
+      dodoSubscription: `sub_${uniq()}`,
+      periodStart: start,
+      periodEnd: new Date(now + 25 * DAY),
+      meteredFrom: start,
+    });
+    const setOverride = (value: number | null) =>
+      t.pg.query(`update org_subscriptions set limit_overrides = $2 where org_id = $1`, [
+        orgId,
+        value === null ? null : JSON.stringify({ includedFetchesPerMonth: value }),
+      ]);
+    await addFetchCounts(t.db, [{ orgId, fetches: 10 }]);
+    expect(await allowanceOf(orgId, start)).toBe(200_000);
+
+    // Raised mid-month — by the operator tool at once, and by the next flush.
+    await setOverride(400_000);
+    await raiseCurrentUsageAllowance(t.db, orgId);
+    expect(await allowanceOf(orgId, start)).toBe(400_000);
+    await setOverride(500_000);
+    await addFetchCounts(t.db, [{ orgId, fetches: 10 }]);
+    expect(await allowanceOf(orgId, start)).toBe(500_000);
+
+    // Cleared: the month keeps what it was granted, whoever writes next.
+    await setOverride(null);
+    await raiseCurrentUsageAllowance(t.db, orgId);
+    await addFetchCounts(t.db, [{ orgId, fetches: 450_000 }]);
+    expect(await allowanceOf(orgId, start)).toBe(500_000);
+    const work = await listMeterableUsage(t.db, {
+      since: new Date(0),
+      limit: 1000,
+      mode: 'test_mode',
+    });
+    expect(work.some((row) => row.orgId === orgId)).toBe(false);
+  });
+
+  it('never meters a month with no allowance recorded', async () => {
+    const start = new Date(Date.UTC(2026, 8, 1));
+    const { orgId } = await seedOrg({
+      plan: 'team',
+      customer: `cus_${uniq()}`,
+      dodoSubscription: `sub_${uniq()}`,
+      meteredFrom: start,
+    });
+    await t.pg.query(
+      `insert into org_usage_counters (org_id, period_start, secret_fetches) values ($1, $2, $3)`,
+      [orgId, start, 9 * OVER_TEAM],
+    );
     const work = await listMeterableUsage(t.db, {
       since: new Date(0),
       limit: 1000,

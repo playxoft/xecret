@@ -119,13 +119,15 @@ const billedTeam = () =>
     metered_from: PERIOD_START,
   });
 
-async function setFetches(orgId: string, fetches: number, unitsSent = 0) {
+/** The month's count, set outright — with the allowance it opened with: Team's, unless given. */
+async function setFetches(orgId: string, fetches: number, unitsSent = 0, included = 1_000_000) {
   await t.pg.query(
-    `insert into org_usage_counters (org_id, period_start, secret_fetches, metered_units_sent)
-     values ($1, $2, $3, $4)
+    `insert into org_usage_counters
+       (org_id, period_start, secret_fetches, metered_units_sent, included_fetches)
+     values ($1, $2, $3, $4, $5)
      on conflict (org_id, period_start) do update
        set secret_fetches = excluded.secret_fetches, updated_at = now()`,
-    [orgId, PERIOD_START, fetches, unitsSent],
+    [orgId, PERIOD_START, fetches, unitsSent, included],
   );
 }
 
@@ -297,8 +299,62 @@ describe('flushUsageToDodo', () => {
       `update org_subscriptions set limit_overrides = '{"includedFetchesPerMonth": 5000000}' where org_id = $1`,
       [orgId],
     );
-    await setFetches(orgId, 1_200_000);
+    // Counted as the product counts: the month opens with the raised allowance.
+    await addFetchCounts(t.db, [{ orgId, fetches: 1_200_000 }]);
     await usage.flushUsageToDodo(services());
+    expect(sentEvents()).toEqual([]);
+  });
+
+  it('never re-bills the last Team month at Pro’s allowance after a downgrade at renewal', async () => {
+    const orgId = await billedTeam();
+    await addFetchCounts(t.db, [{ orgId, fetches: 1_002_500 }]);
+    await usage.flushUsageToDodo(services());
+    expect(sentEvents().map((event) => event.eventId)).toEqual([
+      usage.meterEventId(orgId, PERIOD_START, 0),
+      usage.meterEventId(orgId, PERIOD_START, 1),
+    ]);
+    dodo.ingestUsage.mockClear();
+
+    // The downgrade Team → Pro lands at the period end: a Pro month begins.
+    const renewal = new Date(Date.now() - 60_000);
+    await t.pg.query(
+      `update org_subscriptions
+          set plan = 'pro', dodo_product_id = 'pdt_pro_m', seats = 1,
+              current_period_start = $2, current_period_end = $3
+        where org_id = $1`,
+      [orgId, renewal, new Date(Date.now() + 30 * DAY)],
+    );
+    await addFetchCounts(t.db, [{ orgId, fetches: 10 }]);
+    await usage.flushUsageToDodo(services());
+    // The Team month was billed past Team's million and is not billed again
+    // past Pro's 200,000 — 800 units nobody owed.
+    expect(sentEvents()).toEqual([]);
+    expect(await unitsSent(orgId)).toBe(2);
+  });
+
+  it('never re-bills a month support raised, once the raise is cleared', async () => {
+    const orgId = await seedOrg({
+      plan: 'pro',
+      billing_interval: 'monthly',
+      status: 'active',
+      dodo_customer_id: `cus_${randomUUID().replaceAll('-', '').slice(0, 12)}`,
+      dodo_subscription_id: `sub_${randomUUID().replaceAll('-', '').slice(0, 12)}`,
+      dodo_product_id: 'pdt_pro_m',
+      current_period_start: PERIOD_START,
+      current_period_end: new Date(Date.now() + 27 * DAY),
+      metered_from: PERIOD_START,
+      limit_overrides: JSON.stringify({ includedFetchesPerMonth: 500_000 }),
+    });
+    await addFetchCounts(t.db, [{ orgId, fetches: 450_000 }]);
+    await usage.flushUsageToDodo(services());
+    expect(sentEvents()).toEqual([]);
+
+    // The raise was for that month; support clears it afterwards.
+    await t.pg.query(`update org_subscriptions set limit_overrides = null where org_id = $1`, [
+      orgId,
+    ]);
+    await usage.flushUsageToDodo(services());
+    // Read against Pro's own 200,000 it would be 250 units — never owed.
     expect(sentEvents()).toEqual([]);
   });
 
@@ -307,7 +363,8 @@ describe('flushUsageToDodo', () => {
     const orgId = await billedTeam();
     const freeMonth = new Date(PERIOD_START.getTime() - 20 * 86_400_000);
     await t.pg.query(
-      `insert into org_usage_counters (org_id, period_start, secret_fetches) values ($1, $2, $3)`,
+      `insert into org_usage_counters (org_id, period_start, secret_fetches, included_fetches)
+       values ($1, $2, $3, 20000)`,
       [orgId, freeMonth, 9_000_000],
     );
     await setFetches(orgId, 1_000_500); // the paid period: no whole unit over yet
@@ -333,7 +390,8 @@ describe('flushUsageToDodo', () => {
       metered_from: trialEnd,
     });
     await t.pg.query(
-      `insert into org_usage_counters (org_id, period_start, secret_fetches) values ($1, $2, $3)`,
+      `insert into org_usage_counters (org_id, period_start, secret_fetches, included_fetches)
+       values ($1, $2, $3, 1000000)`,
       [orgId, new Date(trialEnd.getTime() - 14 * 86_400_000), 5_000_000],
     );
     await usage.flushUsageToDodo(services());

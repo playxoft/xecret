@@ -490,6 +490,7 @@ export {
   pruneReminders,
   queueBilledSeatSync,
   queueSeatSync,
+  raiseCurrentUsageAllowance,
   recordCheckout,
   recordLicenseKey,
   releaseBillingRequest,
