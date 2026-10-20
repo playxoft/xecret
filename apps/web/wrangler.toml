@@ -100,13 +100,15 @@ ZEPTOMAIL_FROM_NAME = "Xecret"
 ZEPTOMAIL_API_URL = "https://api.zeptomail.com/v1.1/email"
 # Payments: Dodo (P12, apps/web/src/server/billing/config.ts). None of these
 # are credentials — the API key and the webhook secret are Worker secrets, at
-# the foot of this file. They are left out until Dodo test mode is set up,
-# because billing is all or nothing: with none of them the deployment simply
-# takes no payments, and with some of them every billing route answers 503.
-# Fill them in together, from the Dodo mode DODO_ENVIRONMENT names, and run
-# `npm run phase:check-deploy` (.local/dodo/dodo-setup.md, docs/operations/billing.md):
+# the foot of this file. They are left out until Dodo is set up, because
+# billing is all or nothing: with none of them the deployment simply takes no
+# payments, and with some of them every billing route answers 503. Production
+# takes LIVE mode only — the test-mode rehearsal runs on staging, against its
+# own database (docs/operations/billing.md §2–3). Fill them in together, from
+# the Dodo mode DODO_ENVIRONMENT names, and run `npm run phase:check-deploy`
+# (.local/dodo/dodo-setup.md, docs/operations/billing.md):
 #
-#   DODO_ENVIRONMENT = "test_mode"
+#   DODO_ENVIRONMENT = "live_mode"
 #   DODO_PRODUCT_PRO_MONTHLY = "pdt_…"
 #   DODO_PRODUCT_PRO_YEARLY = "pdt_…"
 #   DODO_PRODUCT_TEAM_MONTHLY = "pdt_…"

@@ -966,6 +966,17 @@ audit_logs — no FKs by design; references are soft
       billing_checkouts and billing_license_keys (insert-only grants — a checkout that
       happened, a licence issued, never the key), billing_seat_syncs (seat counts owed to
       Dodo), billing_reminders (the email deduplication, by primary key) — additive
+0025  P12, review round 1: org_subscriptions.metered_from (usage is billed only from the
+      activation or the trial's end), .dodo_mode (test and live never cross), .dodo_event_id
+      (the tie-break for snapshots stamped alike), .on_hold_since (fourteen days ends the
+      plan), .dodo_scheduled_change_at (seat pushes wait for it), .dodo_currency and
+      .dodo_billing_country (what Dodo last reported); billing_checkouts.nonce (unique),
+      .subscription_id and .consumed_at (column-level UPDATE grant only — a checkout attaches
+      one subscription); billing_seat_syncs.generation, .claimed_until, .not_before,
+      .dead_lettered_at (one push per organisation, cleared only under the generation it
+      counted, retried only when due); the plan_ended_unpaid reminder; billing_requests
+      (idempotency keys for checkout and plan change) — additive, one backfill of
+      metered_from
 ```
 
 Migration 0024 (P12) is additive and **must be applied before the code that reads it**: from that
@@ -974,6 +985,9 @@ billing screen and its routes, the webhook, the billing jobs, and the check that
 delete an organisation (or an account's last organisation) Dodo still bills. Resolving an
 organisation on a request reads only `entitlementColumns` and is unaffected. Applying it first is
 harmless; older code never reads or writes any of it. `docs/operations/billing.md` §5.
+Migration 0025 follows the same rule, and adds the membership changes to what needs it: from
+that build `addMember` and `removeMember` write the seat-sync debt in their own transaction,
+naming `billing_seat_syncs.generation`.
 
 Migration 0022 (WS-5, review round 1) is additive, and — like 0021 — **must be applied before
 the code that names its columns**: from that build on every `select()` on `sessions`,
