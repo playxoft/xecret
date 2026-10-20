@@ -1,0 +1,134 @@
+{
+  "description": "Cross-implementation fixtures for the P19 secret-policy value rules. Read by packages/core/src/policy/fixtures/fixtures.test.ts and by the Go CLI. The name rule is the server's and is not here; the value rules run in every client that holds a plaintext.",
+  "entropy": [
+    { "value": "", "bits": 0 },
+    { "value": "aaaaaaaaaaaaaaaa", "bits": 0 },
+    { "value": "ab", "bits": 2 },
+    { "value": "password1", "bits": 27 },
+    { "value": "q8Z2xL0vR9sT4bW7nY1cK6mP3dF5gH0j", "bits": 158 },
+    { "value": "🔑🔑", "bits": 0 },
+    { "value": "café", "bits": 8 }
+  ],
+  "values": [
+    {
+      "name": "disabled policy asks nothing",
+      "policy": {
+        "enabled": false,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["changeme"]
+      },
+      "secretName": "API_KEY",
+      "value": "changeme",
+      "isProduction": true,
+      "violations": []
+    },
+    {
+      "name": "production scope skips other environments",
+      "policy": {
+        "enabled": true,
+        "scope": "production",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["changeme"]
+      },
+      "secretName": "API_KEY",
+      "value": "changeme",
+      "isProduction": false,
+      "violations": []
+    },
+    {
+      "name": "entropy applies only to matching names, case-insensitively",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": ["token"],
+        "forbiddenSubstrings": []
+      },
+      "secretName": "PORT",
+      "value": "5432",
+      "isProduction": false,
+      "violations": []
+    },
+    {
+      "name": "a short credential fails entropy",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": ["TOKEN"],
+        "forbiddenSubstrings": []
+      },
+      "secretName": "github_token",
+      "value": "short",
+      "isProduction": false,
+      "violations": ["minValueEntropyBits"]
+    },
+    {
+      "name": "an empty list applies entropy to every name",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": []
+      },
+      "secretName": "PORT",
+      "value": "5432",
+      "isProduction": false,
+      "violations": ["minValueEntropyBits"]
+    },
+    {
+      "name": "a forbidden substring in any case",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": null,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["ChangeMe"]
+      },
+      "secretName": "NOTE",
+      "value": "please CHANGEME soon",
+      "isProduction": false,
+      "violations": ["forbiddenSubstrings"]
+    },
+    {
+      "name": "both rules at once, entropy first",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": ["PASSWORD"],
+        "forbiddenSubstrings": ["password"]
+      },
+      "secretName": "DB_PASSWORD",
+      "value": "password",
+      "isProduction": true,
+      "violations": ["minValueEntropyBits", "forbiddenSubstrings"]
+    },
+    {
+      "name": "a long random value passes",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["changeme"]
+      },
+      "secretName": "API_TOKEN",
+      "value": "q8Z2xL0vR9sT4bW7nY1cK6mP3dF5gH0j",
+      "isProduction": true,
+      "violations": []
+    }
+  ]
+}
