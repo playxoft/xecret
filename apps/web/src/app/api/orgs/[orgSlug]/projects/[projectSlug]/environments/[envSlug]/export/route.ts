@@ -1,3 +1,4 @@
+import { countSecretFetch } from '@/server/billing/usage';
 import { parseQuery } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
 import { documentQuery } from '@/server/schemas/secrets';
@@ -82,6 +83,10 @@ export const GET = authenticatedRoute<Params>(
         },
       ),
     );
+
+    // One fetch towards the plan's allowance (P12) — a map increment; the
+    // write happens later, from `waitUntil`, and can never fail this read.
+    countSecretFetch(services, scope.organization.id);
 
     const document = renderSecretDocument(secrets, format);
 

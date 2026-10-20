@@ -1,3 +1,4 @@
+import { countSecretFetch } from '@/server/billing/usage';
 import { findSecretByName, softDeleteSecret, updateSecretMetadata } from '@xecret/db/repositories';
 import { toSecretValueType } from '@xecret/core/validation';
 import { errors } from '@/server/errors';
@@ -92,6 +93,9 @@ export const GET = authenticatedRoute<Params>(
     const value = e2ee ? null : await decryptOne(scope, services, material);
     const sealed = e2ee ? toClientSecret(material) : null;
 
+    // One fetch towards the plan's allowance (P12) — a map increment; the
+    // write happens later, from `waitUntil`, and can never fail this read.
+    countSecretFetch(services, scope.organization.id);
     record(
       audit(scope.organization.id).success(
         'secret.revealed',
