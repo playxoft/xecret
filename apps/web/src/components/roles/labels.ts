@@ -36,6 +36,8 @@ export const ACTION_LABELS: Readonly<Record<Action, string>> = {
   // `actionsForBase` never lists it. Labelled all the same, for the reason the
   // header gives.
   'sso.manage': 'Turn on single sign-on, set up its identity provider and require it',
+  // Owners only, like `sso.manage`, and for the same reason never offered.
+  'billing.manage': 'Manage the plan, payment details and invoices',
 };
 
 /**
@@ -62,5 +64,8 @@ export const ACTION_GROUPS: readonly { label: string; actions: readonly Action[]
     actions: ['member.read', 'member.invite', 'member.update', 'member.remove'],
   },
   { label: 'Service tokens', actions: ['token.create', 'token.revoke'] },
-  { label: 'Organisation', actions: ['audit.read', 'org.update', 'org.delete', 'sso.manage'] },
+  {
+    label: 'Organisation',
+    actions: ['audit.read', 'org.update', 'org.delete', 'sso.manage', 'billing.manage'],
+  },
 ];
