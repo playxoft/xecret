@@ -209,6 +209,48 @@ describe('decideSnapshot', () => {
     );
   });
 
+  it('ends a trial at the payment an upgrade during it took, and meters from that payment', () => {
+    const created = new Date(NOW.getTime() - 3 * DAY);
+    const bookedEnd = new Date(created.getTime() + 14 * DAY);
+    const onTrial = row({
+      ...following,
+      status: 'trialing',
+      trialEndsAt: bookedEnd,
+      meteredFrom: bookedEnd,
+      currentPeriodStart: created,
+    });
+    // Still on trial: nothing paid since the subscription was made.
+    const waiting = decide(
+      onTrial,
+      snapshot({
+        trial_period_days: 14,
+        created_at: created.toISOString(),
+        previous_billing_date: created.toISOString(),
+      }),
+    );
+    expect(waiting.kind === 'apply' && waiting.patch.status).toBe('trialing');
+
+    // The owner moved to yearly an hour ago; Dodo charged it at once.
+    const paid = new Date(NOW.getTime() - 3_600_000);
+    for (const days of [14, 0]) {
+      const upgraded = decide(
+        onTrial,
+        snapshot({
+          trial_period_days: days,
+          created_at: created.toISOString(),
+          previous_billing_date: paid.toISOString(),
+        }),
+      );
+      if (upgraded.kind !== 'apply') throw new Error('expected the upgrade to apply');
+      // Whether or not Dodo still reports the trial's length.
+      expect(upgraded.patch.status).toBe('active');
+      expect(upgraded.patch.meteredFrom?.getTime()).toBe(paid.getTime());
+      expect(upgraded.patch.trialEndsAt?.getTime() ?? null).toBe(
+        days === 0 ? null : paid.getTime(),
+      );
+    }
+  });
+
   it('orders two snapshots stamped alike by webhook id — whichever arrives first, the same one wins', () => {
     const at = new Date(NOW.getTime() - 1000);
     const applied = (webhookId: string, quantity: number) =>
@@ -287,9 +329,14 @@ describe('decideSnapshot', () => {
     );
 
     const created = new Date(NOW.getTime() - 2 * DAY);
+    // During a trial nothing has been paid: Dodo's last payment is its creation.
     const trial = decide(
       row(),
-      snapshot({ trial_period_days: 14, created_at: created.toISOString() }),
+      snapshot({
+        trial_period_days: 14,
+        created_at: created.toISOString(),
+        previous_billing_date: created.toISOString(),
+      }),
     );
     expect(trial.kind === 'apply' && trial.patch.meteredFrom?.getTime()).toBe(
       created.getTime() + 14 * DAY,

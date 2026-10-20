@@ -728,6 +728,36 @@ describe('the subscription lifecycle', () => {
     expect(row.trialEndsAt!.getTime()).toBeGreaterThan(Date.now() + 12 * DAY);
   });
 
+  it('an upgrade during a trial ends it at the payment it took — active, and metered from then', async () => {
+    const created = new Date(Date.now() - 3 * DAY);
+    const { orgId, subscriptionId, customerId } = await activeTeam({
+      trialDays: 14,
+      createdAt: created,
+      periodStart: created,
+    });
+    expect((await rowOf(orgId)).status).toBe('trialing');
+
+    // Monthly to yearly, charged at once: Dodo's last payment is now.
+    const paid = new Date(Date.now() - 60_000);
+    await deliver({
+      type: 'subscription.plan_changed',
+      data: subscriptionData({
+        subscriptionId,
+        customerId,
+        orgId,
+        product: PRODUCTS.teamYearly,
+        trialDays: 14,
+        createdAt: created,
+        periodStart: paid,
+        periodEnd: new Date(paid.getTime() + 365 * DAY),
+      }),
+    });
+    const row = await rowOf(orgId);
+    expect(row).toMatchObject({ plan: 'team', billingInterval: 'yearly', status: 'active' });
+    expect(row.trialEndsAt?.getTime()).toBe(paid.getTime());
+    expect(row.meteredFrom?.getTime()).toBe(paid.getTime());
+  });
+
   it('on hold changes the status only — the data plane is untouched and the owners are told builds are unaffected', async () => {
     const { orgId, subscriptionId, customerId } = await activeTeam();
     mail.sent = [];
