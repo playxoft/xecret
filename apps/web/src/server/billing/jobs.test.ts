@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { FREE_SEAT_LIMIT } from '@xecret/core/entitlements';
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '@xecret/db/testing';
 import type { TestDatabase } from '@xecret/db/testing';
-import { findSubscription } from '@xecret/db/repositories';
+import { addFetchCounts, currentUsage, findSubscription } from '@xecret/db/repositories';
 import type { ServiceContext } from '../context';
 import { createLogger } from '../logging';
 import type { LogEntry } from '../logging';
@@ -283,6 +283,32 @@ describe('runHourlyBillingJob', () => {
     mail.sent = [];
     await runHourlyBillingJob(services(), new Date(NOW.getTime() + 3_600_000));
     expect(subjects().filter((subject) => /trial|renews|80%/.test(subject))).toEqual([]);
+  });
+
+  it('warns a yearly plan about this month’s fetches, not the year’s', async () => {
+    const anchor = new Date(NOW.getTime() - 70 * DAY);
+    const yearly = await seedOrg({
+      plan: 'pro',
+      billing_interval: 'yearly',
+      dodo_product_id: 'pdt_pro_y',
+      current_period_start: anchor,
+      current_period_end: new Date(anchor.getTime() + 365 * DAY),
+    });
+    // The year's first month went past Pro's 200k; this month is at 85% of it.
+    await t.pg.query(
+      `insert into org_usage_counters (org_id, period_start, secret_fetches) values ($1, $2, 250000)`,
+      [yearly, anchor],
+    );
+    await addFetchCounts(t.db, [{ orgId: yearly, fetches: 170_000 }]);
+    const month = (await currentUsage(t.db, yearly)).periodStart;
+    expect(month.getTime()).toBeGreaterThan(anchor.getTime());
+
+    await runHourlyBillingJob(services(), NOW);
+    const sent = await t.pg.query<{ kind: string; occasion: string }>(
+      `select kind, occasion from billing_reminders where org_id = $1 and kind like 'usage_%'`,
+      [yearly],
+    );
+    expect(sent.rows).toEqual([{ kind: 'usage_80', occasion: month.toISOString() }]);
   });
 
   it('checks cards once a day, and warns only when no saved card outlives the window', async () => {

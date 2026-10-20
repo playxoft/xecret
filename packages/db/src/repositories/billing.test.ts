@@ -168,6 +168,31 @@ async function usageRows(orgId: string): Promise<{ period: string; fetches: numb
   }));
 }
 
+/** `anchor` plus `months` calendar months in UTC, a missing day clamped to the month's last. */
+function plusMonthsUtc(anchor: Date, months: number): Date {
+  const year = anchor.getUTCFullYear();
+  const month = anchor.getUTCMonth() + months;
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return new Date(
+    Date.UTC(
+      year,
+      month,
+      Math.min(anchor.getUTCDate(), lastDay),
+      anchor.getUTCHours(),
+      anchor.getUTCMinutes(),
+      anchor.getUTCSeconds(),
+      anchor.getUTCMilliseconds(),
+    ),
+  );
+}
+
+/** The start of the anniversary month of a yearly period begun at `anchor` that `at` is in. */
+function anniversaryMonthOf(anchor: Date, at: Date): Date {
+  let months = 0;
+  while (plusMonthsUtc(anchor, months + 1).getTime() <= at.getTime()) months += 1;
+  return plusMonthsUtc(anchor, months);
+}
+
 async function addMember(
   orgId: string,
   userId: string,
@@ -800,6 +825,75 @@ describe('the usage counter', () => {
       { period: previous.toISOString(), fetches: 5 },
       { period: renewed.toISOString(), fetches: 4 },
     ]);
+  });
+
+  it('counts a yearly plan month by month, from its billing anniversary', async () => {
+    // A year that began on 31 January: its months begin on the 31st where
+    // there is one, and on the month's last day where there is not.
+    const anchor = new Date(Date.UTC(2026, 0, 31, 10, 0, 0));
+    const { orgId } = await seedOrg({
+      plan: 'pro',
+      interval: 'yearly',
+      dodoSubscription: `sub_${uniq()}`,
+      periodStart: anchor,
+      periodEnd: new Date(Date.now() + 400 * DAY),
+    });
+    await addFetchCounts(t.db, [
+      { orgId, fetches: 1, countedAt: new Date(Date.UTC(2026, 1, 15)) },
+      { orgId, fetches: 2, countedAt: new Date(Date.UTC(2026, 1, 28, 10, 0, 0)) },
+      { orgId, fetches: 3, countedAt: new Date(Date.UTC(2026, 2, 30, 23, 59)) },
+      { orgId, fetches: 4, countedAt: new Date(Date.UTC(2026, 2, 31, 10, 0, 1)) },
+    ]);
+    expect(await usageRows(orgId)).toEqual([
+      { period: anchor.toISOString(), fetches: 1 },
+      { period: new Date(Date.UTC(2026, 1, 28, 10)).toISOString(), fetches: 5 },
+      { period: new Date(Date.UTC(2026, 2, 31, 10)).toISOString(), fetches: 4 },
+    ]);
+  });
+
+  it('reads a yearly plan’s usage for the month of the year it is in now', async () => {
+    const now = new Date();
+    const anchor = new Date(now.getTime() - 70 * DAY);
+    const { orgId } = await seedOrg({
+      plan: 'pro',
+      interval: 'yearly',
+      dodoSubscription: `sub_${uniq()}`,
+      periodStart: anchor,
+      periodEnd: new Date(anchor.getTime() + 365 * DAY),
+    });
+    // The year's first month was heavy; this month is not.
+    await seedUsage(orgId, anchor, 900_000);
+    await addFetchCounts(t.db, [{ orgId, fetches: 7 }]);
+
+    const usage = await currentUsage(t.db, orgId);
+    expect(usage.periodStart.toISOString()).toBe(anniversaryMonthOf(anchor, now).toISOString());
+    expect(usage.periodStart.getTime()).toBeGreaterThan(anchor.getTime());
+    expect(usage.secretFetches).toBe(7);
+  });
+
+  it('never meters a yearly plan that stays inside its monthly allowance', async () => {
+    const anchor = new Date(Date.UTC(2026, 2, 10));
+    const { orgId } = await seedOrg({
+      plan: 'pro',
+      interval: 'yearly',
+      customer: `cus_${uniq()}`,
+      dodoSubscription: `sub_${uniq()}`,
+      periodStart: anchor,
+      periodEnd: new Date(Date.now() + 400 * DAY),
+      meteredFrom: anchor,
+    });
+    // 100k a month for three months: 300k in the year, never 200k in a month.
+    for (const month of [2, 3, 4]) {
+      await addFetchCounts(t.db, [
+        { orgId, fetches: 100_000, countedAt: new Date(Date.UTC(2026, month, 20)) },
+      ]);
+    }
+    const work = await listMeterableUsage(t.db, {
+      since: new Date(0),
+      limit: 1000,
+      mode: 'test_mode',
+    });
+    expect(work.some((row) => row.orgId === orgId)).toBe(false);
   });
 
   it('counts a fetch made on Free just before an upgrade into the Free month', async () => {

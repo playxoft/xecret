@@ -49,6 +49,14 @@ import { billingSetup } from './config';
  * current when the flush lands. A fetch made on Free a few seconds before an
  * upgrade is not counted into the paid period after it.
  *
+ * ── A month at a time, whatever the billing period ──
+ * The allowance is `includedFetchesPerMonth`, so a counter row is a month: a
+ * monthly plan's period, Free's calendar month, or — for a yearly plan — the
+ * month of its year that the fetch fell in, counted from the billing
+ * anniversary (`USAGE_PERIOD_START` in the repository). Twelve quiet months of
+ * Pro yearly are twelve rows each under the allowance, never one year-long
+ * row over it.
+ *
  * The counter holds organisation ids and integers and nothing else — no
  * request object, no database handle, nothing that is I/O. workerd forbids
  * sharing those across requests; plain numbers are what it allows. The timer's

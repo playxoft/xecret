@@ -329,10 +329,13 @@ function Usage({ billing }: { billing: Billing }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Secret fetches this period</CardTitle>
+        <CardTitle>Secret fetches this month</CardTitle>
         <CardDescription>
-          Since {formatAbsoluteTime(billing.usage.periodStart)}. Reads across everything — the CLI,
-          CI and the API. Counted within a minute or so.
+          Since {formatAbsoluteTime(billing.usage.periodStart)}
+          {billing.interval === 'yearly'
+            ? ' — a yearly plan’s allowance is monthly, from its billing date'
+            : ''}
+          . Reads across everything — the CLI, CI and the API. Counted within a minute or so.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">

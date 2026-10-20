@@ -198,10 +198,13 @@ function compose(reminder: BillingReminder, organization: string): Composed {
     case 'usage_100': {
       const share = reminder.kind === 'usage_100' ? 'all' : '80%';
       return {
-        subject: `${organization} has used ${share} of this period's secret fetches`,
+        // The allowance is monthly, and so is what it is counted over — a
+        // yearly plan's month runs from its billing date (`USAGE_PERIOD_START`).
+        subject: `${organization} has used ${share} of this month's secret fetches`,
         lines: [
-          `${organization} has made ${count(reminder.used)} secret fetches this billing period, ` +
-            `${share === 'all' ? 'all' : '80%'} of the ${count(reminder.included)} its plan includes.`,
+          `${organization} has made ${count(reminder.used)} secret fetches this month, ` +
+            `${share === 'all' ? 'all' : '80%'} of the ${count(reminder.included)} a month its ` +
+            'plan includes.',
           `Nothing stops at the allowance. Fetches past it keep working and are billed at ` +
             `${OVERAGE_RATE_TEXT}, on the next invoice.`,
         ],

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { randomUUID } from 'node:crypto';
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '@xecret/db/testing';
 import type { TestDatabase } from '@xecret/db/testing';
-import { currentUsage } from '@xecret/db/repositories';
+import { addFetchCounts, currentUsage } from '@xecret/db/repositories';
 import type { ServiceContext } from '../context';
 import { createLogger } from '../logging';
 import type { LogEntry } from '../logging';
@@ -139,6 +139,26 @@ async function unitsSent(orgId: string): Promise<number> {
 
 const sentEvents = (): UsageEvent[] =>
   dodo.ingestUsage.mock.calls.flatMap((call) => call[0] as UsageEvent[]);
+
+const DAY = 86_400_000;
+
+/** `anchor` plus `months` calendar months in UTC, a missing day clamped to the month's last. */
+function plusMonthsUtc(anchor: Date, months: number): Date {
+  const year = anchor.getUTCFullYear();
+  const month = anchor.getUTCMonth() + months;
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return new Date(
+    Date.UTC(
+      year,
+      month,
+      Math.min(anchor.getUTCDate(), lastDay),
+      anchor.getUTCHours(),
+      anchor.getUTCMinutes(),
+      anchor.getUTCSeconds(),
+      anchor.getUTCMilliseconds(),
+    ),
+  );
+}
 
 describe('countSecretFetch', () => {
   /** Lets the flush timer a count armed run out, and waits for what it wrote. */
@@ -318,6 +338,39 @@ describe('flushUsageToDodo', () => {
     );
     await usage.flushUsageToDodo(services());
     expect(sentEvents().filter((event) => event.eventId.startsWith(orgId))).toEqual([]);
+  });
+
+  it('meters a yearly plan by the month of its year: 100k a month on Pro is never billed', async () => {
+    const anchor = new Date(Date.now() - 70 * 86_400_000);
+    const orgId = await seedOrg({
+      plan: 'pro',
+      billing_interval: 'yearly',
+      status: 'active',
+      dodo_customer_id: `cus_${randomUUID().replaceAll('-', '').slice(0, 12)}`,
+      dodo_subscription_id: `sub_${randomUUID().replaceAll('-', '').slice(0, 12)}`,
+      dodo_product_id: 'pdt_pro_y',
+      current_period_start: anchor,
+      current_period_end: new Date(anchor.getTime() + 365 * 86_400_000),
+      metered_from: anchor,
+    });
+    const inMonth = (month: number) => new Date(plusMonthsUtc(anchor, month).getTime() + 5 * DAY);
+    // 300k in the year so far — 100k in each month, against Pro's 200k a month.
+    await addFetchCounts(
+      t.db,
+      [0, 1, 2].map((month) => ({ orgId, fetches: 100_000, countedAt: inMonth(month) })),
+    );
+    await usage.flushUsageToDodo(services());
+    expect(sentEvents().filter((event) => event.eventId.startsWith(orgId))).toEqual([]);
+
+    // The second month goes to 205k: five units over, billed once, in that month.
+    await addFetchCounts(t.db, [{ orgId, fetches: 105_000, countedAt: inMonth(1) }]);
+    await usage.flushUsageToDodo(services());
+    const month = plusMonthsUtc(anchor, 1);
+    expect(
+      sentEvents()
+        .filter((event) => event.eventId.startsWith(orgId))
+        .map((event) => event.eventId),
+    ).toEqual([0, 1, 2, 3, 4].map((unit) => usage.meterEventId(orgId, month, unit)));
   });
 
   it('never meters a trial, Free, an operator’s grant, or a deployment with payments off', async () => {

@@ -1,4 +1,5 @@
 import { and, asc, count, eq, gt, isNotNull, isNull, lt, lte, ne, or, sql } from 'drizzle-orm';
+import type { AnyColumn, SQL } from 'drizzle-orm';
 import { FETCHES_PER_METERED_UNIT, PLANS, resolvePlanId } from '@xecret/core/entitlements';
 import type { BillingInterval, PlanId } from '@xecret/core/entitlements';
 import {
@@ -698,12 +699,60 @@ export async function listSeatSyncs(exec: Executor, limit: number): Promise<Seat
 /* ── usage ─────────────────────────────────────────────────────────────────── */
 
 /**
- * The usage period a fetch counts towards, as SQL over `org_subscriptions`.
+ * `anchor` plus `months` calendar months, in UTC, as SQL. A day the month does
+ * not have is the month's last (31 January plus one month is 28 February), and
+ * every step is taken from the anchor rather than from the step before it, so
+ * a period that began on the 31st returns to the 31st whenever there is one.
+ */
+function plusMonthsUtc(anchor: SQL | AnyColumn, months: SQL): SQL {
+  return sql`(((${anchor} at time zone 'UTC') + make_interval(months => ${months})) at time zone 'UTC')`;
+}
+
+/**
+ * The start of the month of a yearly period that `at` falls in, as SQL: the
+ * period's own start plus however many whole months have passed since it, in
+ * UTC — the billing anniversary, monthly. Whole calendar months between the
+ * two, less one when `at` has not yet reached that month's anniversary day.
+ */
+function anniversaryMonthStart(anchor: SQL | AnyColumn, at: SQL): SQL {
+  const months = sql`(((extract(year from (${at} at time zone 'UTC'))
+                       - extract(year from (${anchor} at time zone 'UTC'))) * 12
+                      + (extract(month from (${at} at time zone 'UTC'))
+                       - extract(month from (${anchor} at time zone 'UTC'))))::int)`;
+  return sql`(case
+    when ${plusMonthsUtc(anchor, months)} > ${at} then ${plusMonthsUtc(anchor, sql`${months} - 1`)}
+    else ${plusMonthsUtc(anchor, months)}
+  end)`;
+}
+
+/**
+ * Where, inside the paid period that covers `at`, a fetch at `at` is counted —
+ * as SQL over `org_subscriptions`, for a row whose current period does cover it.
+ *
+ * **The allowance is monthly, so the meter is too.** A monthly plan's period
+ * is its month. A yearly plan's period is a year, and counting a year of
+ * fetches against `includedFetchesPerMonth` would bill Pro yearly's twelve
+ * quiet months as one overspent one — so a yearly period is counted in months
+ * of its own, from the billing anniversary: a period that began on 10 March
+ * counts 10 March – 10 April, 10 April – 10 May, and so on. The meter's event
+ * ids, the usage bar and the 80% and 100% emails all key on the month.
+ */
+function paidUsagePeriodStart(at: SQL): SQL {
+  return sql`(case
+    when ${orgSubscriptions.billingInterval} = 'yearly'
+    then ${anniversaryMonthStart(orgSubscriptions.currentPeriodStart, at)}
+    else ${orgSubscriptions.currentPeriodStart}
+  end)`;
+}
+
+/**
+ * The usage period a fetch counts towards now, as SQL over `org_subscriptions`.
  *
  * The paid period while one is current — so the meter and the invoice agree
- * on what "this month" is — and the calendar month in UTC otherwise: Free has
- * no billing period, and a stale period (a renewal webhook that never came)
- * must not keep collecting fetches after its end.
+ * on what "this month" is; for a yearly plan, the month of it we are in (see
+ * {@link paidUsagePeriodStart}) — and the calendar month in UTC otherwise:
+ * Free has no billing period, and a stale period (a renewal webhook that never
+ * came) must not keep collecting fetches after its end.
  *
  * One expression, used by the writer and the reader alike, so the billing
  * screen can never be reading a different row from the one being added to.
@@ -711,7 +760,7 @@ export async function listSeatSyncs(exec: Executor, limit: number): Promise<Seat
 export const USAGE_PERIOD_START = sql<Date>`(case
   when ${orgSubscriptions.currentPeriodStart} is not null
    and ${orgSubscriptions.currentPeriodEnd} > now()
-  then ${orgSubscriptions.currentPeriodStart}
+  then ${paidUsagePeriodStart(sql`now()`)}
   else (date_trunc('month', now() at time zone 'UTC') at time zone 'UTC')
 end)`;
 
@@ -727,10 +776,12 @@ end)`;
  * ── Each count lands in the period it was **counted** in ──
  * `countedAt` is the second the fetches were made, not the moment of the
  * flush, and the period is decided against it: the paid period that covered
- * that second; the period before the current one, when a renewal moved the
- * row on between the fetch and its flush (the latest counter row that began by
- * then); or the calendar month, in UTC, when no paid period covered it. So a
- * fetch made on Free in the last seconds before an upgrade is never counted
+ * that second (for a yearly plan, the month of it from the billing
+ * anniversary — `paidUsagePeriodStart`); the period before the current one,
+ * when a renewal moved the row on between the fetch and its flush (the latest
+ * counter row that began by then); or the calendar month, in UTC, when no paid
+ * period covered it. So a fetch made on Free in the last seconds before an
+ * upgrade is never counted
  * into the paid period that follows, nor a fetch at the end of one period into
  * the next. Rows that land in the same period are summed first — one
  * statement cannot update a row twice.
@@ -763,7 +814,7 @@ export async function addFetchCounts(
         select counted.org_id,
                (case
                   when ${start} is not null and ${start} <= counted.at and ${end} > counted.at
-                    then ${start}
+                    then ${paidUsagePeriodStart(sql`counted.at`)}
                   when ${start} is not null and ${start} > counted.at
                     then coalesce(
                       (select max(earlier.period_start) from ${orgUsageCounters} as earlier

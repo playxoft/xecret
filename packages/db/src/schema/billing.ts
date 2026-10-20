@@ -259,7 +259,12 @@ export const orgUsageCounters = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: 'cascade' }),
 
-    /** Start of the billing period these counts belong to. Half of the key. */
+    /**
+     * Start of the month these counts belong to. Half of the key. A monthly
+     * plan's billing period, Free's calendar month, or a month of a yearly
+     * plan's year counted from its billing anniversary — the allowance is
+     * monthly, so what it is measured against is too.
+     */
     periodStart: timestamp('period_start', { withTimezone: true }).notNull(),
 
     secretFetches: bigint('secret_fetches', { mode: 'number' }).notNull().default(0),
