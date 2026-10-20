@@ -721,6 +721,32 @@ describe('the subscription lifecycle', () => {
     expect((await rowOf(orgId)).seats).toBe(3);
   });
 
+  it('owes the activation’s seat count from its own commit — even if no push ever runs', async () => {
+    const { orgId } = await seedOrg(2);
+    // The delivery commits; the effects after it are held, as if the isolate
+    // had gone before `waitUntil` ran them.
+    const response = await route.POST(
+      signedRequest({
+        type: 'subscription.active',
+        data: subscriptionData({
+          subscriptionId: `sub_${uniq()}`,
+          customerId: `cus_${uniq()}`,
+          orgId,
+          quantity: 4,
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect((await rowOf(orgId)).plan).toBe('team');
+    const owed = await t.pg.query(`select 1 from billing_seat_syncs where org_id = $1`, [orgId]);
+    expect(owed.rows).toHaveLength(1);
+
+    // The push after it pays the debt.
+    await Promise.allSettled(deferred);
+    const paid = await t.pg.query(`select 1 from billing_seat_syncs where org_id = $1`, [orgId]);
+    expect(paid.rows).toHaveLength(0);
+  });
+
   it('a trial is a trial, with its end recorded', async () => {
     const { orgId } = await activeTeam({ trialDays: 14, createdAt: new Date(Date.now() - DAY) });
     const row = await rowOf(orgId);

@@ -20,6 +20,7 @@ import type { ServiceContext } from '../context';
 import { errors } from '../errors';
 import { describeError } from '../logging';
 import { billingProvider, DODO_TIMEOUT_MS, DodoApiError } from './client';
+import type { BillingProvider } from './client';
 import { billingSetup } from './config';
 import type { DodoMode } from './config';
 import { subscriptionResource, systemAudit } from './audit';
@@ -65,8 +66,15 @@ import { sendBillingReminder } from './reminders';
  * the owner's downgrade. So while one is scheduled
  * (`dodo_scheduled_change_at`, from the subscription's `scheduled_change`) the
  * push is not attempted: the debt is put off until an hour after the change
- * takes effect, and the hourly job pushes the count as it is then.
+ * takes effect, and the hourly job pushes the count as it is then. Dodo is
+ * asked first whether the change is still scheduled — an owner can withdraw
+ * it in the portal — and a change gone at Dodo is forgotten and the push
+ * made; a 409 for one our row never heard of waits for the date Dodo gives.
  * https://docs.dodopayments.com/api-reference/subscriptions/change-plan
+ *
+ * ── A push Dodo refuses as no change ──
+ * Refused, and Dodo already bills that quantity of that product: the debt is
+ * paid, not failed — our row takes Dodo's count, and nothing is retried.
  *
  * ── How it is charged ──
  * `prorated_immediately_keep_cycle`: the difference for the rest of the period
@@ -200,17 +208,33 @@ export async function syncSeats(services: SeatServices, orgId: string): Promise<
 
       const now = new Date();
       if (row.dodoScheduledChangeAt !== null && row.dodoScheduledChangeAt > now) {
-        await deferSeatSync(
-          services.db,
+        // Our row says a change is scheduled. Dodo is asked whether it still
+        // is: an owner can withdraw a scheduled downgrade in the portal, and a
+        // push put off for a change that no longer exists would wait out a
+        // whole period for nothing.
+        const scheduled = await scheduledChangeAtDodo(provider, row.dodoSubscriptionId);
+        if (scheduled !== null) {
+          const until = scheduled === 'unknown' ? row.dodoScheduledChangeAt : scheduled;
+          if (until.getTime() !== row.dodoScheduledChangeAt.getTime()) {
+            await recordScheduledChange(services, orgId, until);
+          }
+          await deferSeatSync(
+            services.db,
+            orgId,
+            new Date(until.getTime() + SCHEDULED_CHANGE_GRACE_MS),
+            'scheduled_change',
+          );
+          log.info('A seat change waits for the plan change Dodo has scheduled', {
+            orgId,
+            seatCount: seats.billed,
+          });
+          return 'deferred';
+        }
+        // Gone at Dodo: forgotten here too, and the push goes now.
+        await recordScheduledChange(services, orgId, null);
+        log.info('The plan change our row had scheduled is no longer at Dodo; pushing seats now', {
           orgId,
-          new Date(row.dodoScheduledChangeAt.getTime() + SCHEDULED_CHANGE_GRACE_MS),
-          'scheduled_change',
-        );
-        log.info('A seat change waits for the plan change Dodo has scheduled', {
-          orgId,
-          seatCount: seats.billed,
         });
-        return 'deferred';
       }
 
       try {
@@ -223,17 +247,46 @@ export async function syncSeats(services: SeatServices, orgId: string): Promise<
         });
       } catch (cause) {
         if (cause instanceof DodoApiError && cause.category === 'conflict') {
-          // Dodo has a plan change scheduled that our row has not heard of yet.
+          // Dodo has a plan change scheduled that our row has not heard of
+          // yet: it waits for that change's date, when Dodo can say it.
+          const scheduled = await scheduledChangeAtDodo(provider, row.dodoSubscriptionId);
+          if (scheduled instanceof Date) await recordScheduledChange(services, orgId, scheduled);
           await deferSeatSync(
             services.db,
             orgId,
-            new Date(now.getTime() + SCHEDULED_CHANGE_GRACE_MS),
+            new Date(
+              (scheduled instanceof Date ? scheduled : now).getTime() + SCHEDULED_CHANGE_GRACE_MS,
+            ),
             'scheduled_change',
           );
           log.info('Dodo refused a seat push while a plan change is scheduled; it waits', {
             orgId,
           });
           return 'deferred';
+        }
+        if (
+          cause instanceof DodoApiError &&
+          cause.category === 'invalid' &&
+          (await alreadyBilled(provider, row.dodoSubscriptionId, row.dodoProductId, seats.billed))
+        ) {
+          // Refused as no change at all: Dodo already bills exactly this. The
+          // debt is paid — our row is brought to Dodo's count, and the next
+          // pass clears it rather than retrying a push Dodo will always refuse.
+          await services.db.transaction(async (tx) => {
+            await writeSubscriptionState(tx, orgId, {}, seats);
+            await appendAuditEvents(tx, [
+              systemAudit(services, orgId, 'seat sync').success(
+                'billing.seats_synced',
+                subscriptionResource(orgId),
+                { seatCount: seats.billed, previousSeatCount: row.seats },
+              ),
+            ]);
+          });
+          log.info('Dodo already bills the seat count; nothing to push', {
+            orgId,
+            seatCount: seats.billed,
+          });
+          continue;
         }
         await recordFailure(services, orgId, cause, { seats: seats.billed, previous: row.seats });
         return 'failed';
@@ -270,6 +323,52 @@ export async function syncSeats(services: SeatServices, orgId: string): Promise<
     await releaseSeatSync(services.db, orgId).catch(() => undefined);
     if (pushed !== null && pushed.from !== pushed.to) await tellOwners(services, orgId, pushed);
   }
+}
+
+/**
+ * When the plan change Dodo has scheduled for the subscription takes effect —
+ * `null` when it has none, `'unknown'` when Dodo could not be asked (a caller
+ * then keeps what it believed).
+ */
+async function scheduledChangeAtDodo(
+  provider: BillingProvider,
+  subscriptionId: string,
+): Promise<Date | null | 'unknown'> {
+  try {
+    const subscription = await provider.getSubscription(subscriptionId);
+    const at = subscription.scheduled_change?.effective_at;
+    if (at === null || at === undefined) return null;
+    const date = new Date(at);
+    return Number.isNaN(date.getTime()) ? 'unknown' : date;
+  } catch {
+    return 'unknown';
+  }
+}
+
+/** Whether Dodo already bills `quantity` of the product. A failure to ask answers no. */
+async function alreadyBilled(
+  provider: BillingProvider,
+  subscriptionId: string,
+  productId: string,
+  quantity: number,
+): Promise<boolean> {
+  try {
+    const subscription = await provider.getSubscription(subscriptionId);
+    return subscription.product_id === productId && subscription.quantity === quantity;
+  } catch {
+    return false;
+  }
+}
+
+/** Records on the row when Dodo's scheduled change lands — or that there is none. */
+async function recordScheduledChange(
+  services: SeatServices,
+  orgId: string,
+  at: Date | null,
+): Promise<void> {
+  await services.db.transaction(async (tx) => {
+    await writeSubscriptionState(tx, orgId, { dodoScheduledChangeAt: at });
+  });
 }
 
 /** A failed push: the debt's backoff, the audit record, and — at the cap — the alert. */

@@ -21,7 +21,7 @@ import type { MailMessage } from '../mail';
  * here; nothing reaches it.
  */
 
-const dodo = vi.hoisted(() => ({ changePlan: vi.fn() }));
+const dodo = vi.hoisted(() => ({ changePlan: vi.fn(), getSubscription: vi.fn() }));
 vi.mock('./client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./client')>()),
   billingProvider: () => dodo,
@@ -84,6 +84,9 @@ afterAll(async () => {
 
 beforeEach(() => {
   dodo.changePlan.mockReset();
+  dodo.getSubscription.mockReset();
+  // Unless a test says what Dodo has, asking it fails — the cautious answer.
+  dodo.getSubscription.mockRejectedValue(new Error('not stubbed'));
   dodo.changePlan.mockResolvedValue(undefined);
   lines = [];
   mail.sent = [];
@@ -330,14 +333,43 @@ describe('the seat debt and the push, round 1', () => {
     expect((await listSeatSyncs(t.db, 1000)).some((debt) => debt.orgId === orgId)).toBe(false);
   });
 
+  /** Dodo's subscription, as far as the seat sync reads it. */
+  const atDodo = (over: { quantity?: number; product?: string; scheduledAt?: Date | null }) => ({
+    subscription_id: 'sub',
+    status: 'active',
+    product_id: over.product ?? 'pdt_team_m',
+    quantity: over.quantity ?? 3,
+    scheduled_change:
+      over.scheduledAt === undefined || over.scheduledAt === null
+        ? null
+        : { effective_at: over.scheduledAt.toISOString() },
+  });
+
   it('waits for a plan change Dodo has scheduled instead of colliding with it', async () => {
     const effective = new Date(Date.now() + 10 * 86_400_000);
     const orgId = await billedOrg(3, 4, { dodo_scheduled_change_at: effective });
+    dodo.getSubscription.mockResolvedValue(atDodo({ scheduledAt: effective }));
     expect(await syncSeats(services(), orgId)).toBe('deferred');
     expect(dodo.changePlan).not.toHaveBeenCalled();
     const debt = (await listSeatSyncs(t.db, 1000)).find((row) => row.orgId === orgId);
     expect(debt?.notBefore?.getTime()).toBeGreaterThan(effective.getTime());
     expect(debt?.attempts).toBe(0);
+  });
+
+  it('pushes at once when the change our row had scheduled is gone at Dodo — and forgets it', async () => {
+    // The owner withdrew the downgrade in the portal; no event told us.
+    const orgId = await billedOrg(3, 4, {
+      dodo_scheduled_change_at: new Date(Date.now() + 10 * 86_400_000),
+    });
+    dodo.getSubscription.mockResolvedValue(atDodo({ scheduledAt: null }));
+    expect(await syncSeats(services(), orgId)).toBe('synced');
+    expect(
+      dodo.changePlan.mock.calls.map((call) => (call[1] as { quantity: number }).quantity),
+    ).toEqual([4]);
+    expect(await findSubscription(t.db, orgId)).toMatchObject({
+      seats: 4,
+      dodoScheduledChangeAt: null,
+    });
   });
 
   it('waits, too, when Dodo answers 409 for a change it has scheduled that we had not heard of', async () => {
@@ -347,6 +379,36 @@ describe('the seat debt and the push, round 1', () => {
     const debt = (await listSeatSyncs(t.db, 1000)).find((row) => row.orgId === orgId);
     expect(debt).toMatchObject({ attempts: 0, lastError: 'scheduled_change' });
     expect(debt?.notBefore?.getTime()).toBeGreaterThan(Date.now());
+
+    // When Dodo can say when the change lands, the push waits for that date.
+    const later = await billedOrg(3, 4);
+    const effective = new Date(Date.now() + 5 * 86_400_000);
+    dodo.getSubscription.mockResolvedValue(atDodo({ scheduledAt: effective }));
+    expect(await syncSeats(services(), later)).toBe('deferred');
+    const waiting = (await listSeatSyncs(t.db, 1000)).find((row) => row.orgId === later);
+    expect(waiting?.notBefore?.getTime()).toBeGreaterThan(effective.getTime());
+    expect((await findSubscription(t.db, later))?.dodoScheduledChangeAt?.getTime()).toBe(
+      effective.getTime(),
+    );
+  });
+
+  it('counts a push Dodo refuses as no change — it already bills that many — as paid', async () => {
+    const orgId = await billedOrg(3, 4);
+    dodo.changePlan.mockRejectedValue(new DodoApiError('invalid', 400));
+    dodo.getSubscription.mockResolvedValue(atDodo({ quantity: 4 }));
+    expect(await syncSeats(services(), orgId)).toBe('in-sync');
+    expect(dodo.changePlan).toHaveBeenCalledTimes(1);
+    expect((await findSubscription(t.db, orgId))?.seats).toBe(4);
+    expect((await listSeatSyncs(t.db, 1000)).some((debt) => debt.orgId === orgId)).toBe(false);
+    expect(mail.sent).toEqual([]);
+
+    // A refusal Dodo means — it bills something else — is still a failure.
+    const refused = await billedOrg(3, 4);
+    dodo.getSubscription.mockResolvedValue(atDodo({ quantity: 3 }));
+    expect(await syncSeats(services(), refused)).toBe('failed');
+    expect((await listSeatSyncs(t.db, 1000)).find((debt) => debt.orgId === refused)?.attempts).toBe(
+      1,
+    );
   });
 
   it('gives up after the cap, raises it once, and stops crowding the retry list', async () => {

@@ -4,6 +4,7 @@ import {
   consumeCheckout,
   createFreeSubscription,
   lockSubscription,
+  queueSeatSync,
   writeSubscriptionState,
 } from '@xecret/db/repositories';
 import { catalogEntryFor } from '../config';
@@ -165,6 +166,11 @@ export async function applySubscriptionSnapshot(
   }
 
   await writeSubscriptionState(tx, orgId, decision.patch, decision.seats);
+  // An activation's seat count is owed from this commit — the checkout's
+  // quantity may be out of date — so the debt is written with it, as a
+  // membership change writes its own. The push after the commit pays it; an
+  // isolate gone before that push leaves it for the hourly job.
+  if (decision.activated) await queueSeatSync(tx, orgId);
 
   const { change } = decision;
   if (change.material) {
