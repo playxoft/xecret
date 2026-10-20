@@ -491,10 +491,65 @@ async function graphAround(
   return loader;
 }
 
-/** A refusal at write time, naming what the walk found. Never a value — there is none. */
-function refusal(cause: unknown, field: string): never {
+/**
+ * What a refusal may say about the walk that refused it (review round 1, L9).
+ *
+ * A `ResolutionError` names the secrets on its path — the template that would
+ * dangle, the hop that loops — and the views it walked can be anywhere a
+ * template points into the changed environment from: another project, or
+ * production for a developer who may read only staging. Repeating such a name to
+ * a caller who could not list it is a disclosure of exactly what `can()` keeps
+ * from them. So the walk's own words are used only when **every** view on its
+ * path is one the caller may read; otherwise the refusal says what kind of
+ * thing is in the way, and where it is in general terms, and nothing else.
+ *
+ * Never a value either way — there is none to give.
+ */
+function readableMessage(
+  scope: EnvironmentScope,
+  principal: Principal,
+  loader: GraphLoader,
+  cause: ResolutionError,
+  generic: string,
+): string {
+  const contexts = new Set(
+    cause.path.map((key) => {
+      const separator = key.lastIndexOf(':');
+      return separator === -1 ? key : key.slice(0, separator);
+    }),
+  );
+  for (const id of contexts) {
+    const record = loader.records.get(id);
+    if (record === undefined || !mayActOn(scope, principal, record, 'secret.read')) return generic;
+  }
+  return cause.message;
+}
+
+/** The generic sentence: a template the caller cannot see is what is in the way. */
+const UNREADABLE_DEPENDENT = 'a secret in an environment you cannot read';
+
+/** A refusal at write time, naming what the walk found when the caller may see it. */
+function refusal(
+  scope: EnvironmentScope,
+  principal: Principal,
+  loader: GraphLoader,
+  cause: unknown,
+  field: string,
+): never {
   if (cause instanceof ResolutionError) {
-    throw errors.validation([{ field, message: cause.message }]);
+    throw errors.validation([
+      {
+        field,
+        message: readableMessage(
+          scope,
+          principal,
+          loader,
+          cause,
+          `This would leave ${UNREADABLE_DEPENDENT} unresolvable, in a loop or nested too deep. ` +
+            'Ask somebody who can read it to change it first.',
+        ),
+      },
+    ]);
   }
   throw cause;
 }
@@ -513,6 +568,7 @@ function refusal(cause: unknown, field: string): never {
  */
 export async function assertTemplateWrite(
   scope: EnvironmentScope,
+  principal: Principal,
   exec: Executor,
   write: { name: string; secretId: string; references: readonly DeclaredReference[] },
 ): Promise<void> {
@@ -536,7 +592,7 @@ export async function assertTemplateWrite(
       checkContexts(proposed, affectedContexts(proposed, scope.environment.id));
     });
   } catch (cause) {
-    refusal(cause, 'references');
+    refusal(scope, principal, loader, cause, 'references');
   }
 }
 
@@ -551,6 +607,7 @@ export async function assertTemplateWrite(
  */
 export async function assertRemovalKeepsReferences(
   scope: EnvironmentScope,
+  principal: Principal,
   exec: Executor,
   name: string,
 ): Promise<void> {
@@ -569,9 +626,13 @@ export async function assertRemovalKeepsReferences(
     });
   } catch (cause) {
     if (cause instanceof ResolutionError) {
+      const why = readableMessage(scope, principal, loader, cause, '');
       throw errors.conflict(
-        `${name} cannot be removed while a template depends on it: ${cause.message} ` +
-          'Change or delete the template first.',
+        why === ''
+          ? `${name} cannot be removed while ${UNREADABLE_DEPENDENT} depends on it. ` +
+              'Ask somebody who can read it to change or delete that template first.'
+          : `${name} cannot be removed while a template depends on it: ${why} ` +
+              'Change or delete the template first.',
       );
     }
     throw cause;
@@ -593,6 +654,7 @@ export async function assertRemovalKeepsReferences(
  */
 export async function assertEnvironmentChanges(
   scope: EnvironmentScope,
+  principal: Principal,
   exec: Executor,
   changes: EnvironmentChanges,
 ): Promise<void> {
@@ -633,9 +695,13 @@ export async function assertEnvironmentChanges(
     });
   } catch (cause) {
     if (cause instanceof ResolutionError) {
+      const why = readableMessage(scope, principal, loader, cause, '');
       throw errors.conflict(
-        `This change would leave a template unresolvable: ${cause.message} ` +
-          'Change the template, or include what it refers to.',
+        why === ''
+          ? `This change would leave ${UNREADABLE_DEPENDENT} unresolvable. ` +
+              'Ask somebody who can read it to change that template first.'
+          : `This change would leave a template unresolvable: ${why} ` +
+              'Change the template, or include what it refers to.',
       );
     }
     throw cause;
@@ -665,6 +731,7 @@ export type GraphGuard = (exec: Executor) => Promise<void>;
  */
 export function graphWriteGuard(
   scope: EnvironmentScope,
+  principal: Principal,
   check:
     | { kind: 'template'; name: string; secretId: string; references: readonly DeclaredReference[] }
     | { kind: 'removal'; name: string }
@@ -674,11 +741,11 @@ export function graphWriteGuard(
     await lockReferenceGraph(exec, scope.organization.id);
     switch (check.kind) {
       case 'template':
-        return assertTemplateWrite(scope, exec, check);
+        return assertTemplateWrite(scope, principal, exec, check);
       case 'removal':
-        return assertRemovalKeepsReferences(scope, exec, check.name);
+        return assertRemovalKeepsReferences(scope, principal, exec, check.name);
       case 'changes':
-        return assertEnvironmentChanges(scope, exec, check.changes);
+        return assertEnvironmentChanges(scope, principal, exec, check.changes);
     }
   };
 }
@@ -750,6 +817,7 @@ export async function assertProjectRemovable(
  */
 export async function assertParentChange(
   scope: EnvironmentScope,
+  principal: Principal,
   exec: Executor,
   parentId: string | null,
 ): Promise<void> {
@@ -766,7 +834,7 @@ export async function assertParentChange(
       checkContexts(proposed, affectedContexts(proposed, scope.environment.id));
     });
   } catch (cause) {
-    refusal(cause, 'parent');
+    refusal(scope, principal, loader, cause, 'parent');
   }
 }
 

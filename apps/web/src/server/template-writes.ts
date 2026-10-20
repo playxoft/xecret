@@ -129,10 +129,11 @@ export async function prepareTemplateDeclaration(
  */
 export function templateGuard(
   scope: EnvironmentScope,
+  principal: Principal,
   write: { name: string; secretId: string; declaredReferences: DeclaredReference[] | null },
 ): GraphGuard | undefined {
   if (write.declaredReferences === null) return undefined;
-  return graphWriteGuard(scope, {
+  return graphWriteGuard(scope, principal, {
     kind: 'template',
     name: write.name,
     secretId: write.secretId,

@@ -201,7 +201,7 @@ export const POST = authenticatedRoute<Params>(
     // The whole batch's templates, checked together — inside the write's own
     // transaction, under the graph lock (review round 1, L8); on its own for a
     // dry run, so the preview says what the promotion would be refused for.
-    const guard = graphWriteGuard(target, {
+    const guard = graphWriteGuard(target, principal, {
       kind: 'changes',
       changes: {
         set: writes.map((write) => ({

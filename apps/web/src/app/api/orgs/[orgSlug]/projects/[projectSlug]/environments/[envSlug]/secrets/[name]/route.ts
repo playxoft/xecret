@@ -236,7 +236,7 @@ export const PATCH = authenticatedRoute<Params>(
           const result = await writeClientSecretValue(scope, services, {
             declaredReferences,
             // The graph check, inside the write's transaction (review round 1, L8).
-            guard: templateGuard(scope, {
+            guard: templateGuard(scope, principal, {
               name: current.name,
               secretId: current.secretId,
               declaredReferences,
@@ -442,7 +442,7 @@ export const PUT = authenticatedRoute<Params>(
     const updated = await (
       renamed
         ? services.db.transaction(async (tx) => {
-            await graphWriteGuard(scope, { kind: 'removal', name })(tx);
+            await graphWriteGuard(scope, principal, { kind: 'removal', name })(tx);
             return updateSecretMetadata(tx, patch);
           })
         : updateSecretMetadata(services.db, patch)
@@ -528,7 +528,7 @@ export const DELETE = authenticatedRoute<Params>(
     // template written against this name at the same moment cannot pass a check
     // that could not see the deletion, or the other way round (review round 1, L8).
     await services.db.transaction(async (tx) => {
-      await graphWriteGuard(scope, { kind: 'removal', name: current.name })(tx);
+      await graphWriteGuard(scope, principal, { kind: 'removal', name: current.name })(tx);
       await softDeleteSecret(tx, scope.organization.id, current.secretId);
     });
 

@@ -314,7 +314,11 @@ async function createClientSecret(
   const result = await writeClientSecretValue(scope, services, {
     declaredReferences,
     // The graph check, inside the write's transaction (review round 1, L8).
-    guard: templateGuard(scope, { name: body.name, secretId: body.id, declaredReferences }),
+    guard: templateGuard(scope, principal, {
+      name: body.name,
+      secretId: body.id,
+      declaredReferences,
+    }),
     writer,
     name: body.name,
     // The client's uuid, not one minted here. It is an AAD component, so the

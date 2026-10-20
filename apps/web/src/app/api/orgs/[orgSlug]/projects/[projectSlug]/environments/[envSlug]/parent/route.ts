@@ -134,7 +134,7 @@ export const PUT = authenticatedRoute<Params>(
         // project, which the project lock alone does not see.
         await lockReferenceGraph(tx, orgId);
         await lockProjectEnvironments(tx, scope.project.id);
-        await assertParentChange(scope, tx, parentId);
+        await assertParentChange(scope, principal, tx, parentId);
         return setEnvironmentParent(tx, orgId, scope.environment.id, parentId);
       })
       .catch((cause: unknown) => {

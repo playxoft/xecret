@@ -144,7 +144,7 @@ export const POST = authenticatedRoute<Params>(
         : await writeClientSecretValue(scope, services, {
             declaredReferences,
             // The graph check, inside the write's transaction (review round 1, L8).
-            guard: templateGuard(scope, {
+            guard: templateGuard(scope, principal, {
               name: current.name,
               secretId: current.secretId,
               declaredReferences,

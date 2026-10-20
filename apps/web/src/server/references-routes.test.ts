@@ -1101,6 +1101,37 @@ describe('removing what a template depends on', () => {
     ).toBe(200);
   });
 
+  it('names a dependent template only to a caller who may read it (review round 1, L9)', async () => {
+    // Team, where production is deny-by-default for a developer: production's
+    // PROD_URL reads staging's HOST, and the developer may write staging only.
+    const org = await seedOrg('team');
+    const project = await seedProject(org);
+    const production = await seedEnv(org, project, 'production', { production: true });
+    const staging = await seedEnv(org, project, 'staging');
+    await seedSecret(org, staging, 'HOST');
+    await seedSecret(org, production, 'PROD_URL', [
+      { environment: 'staging', name: 'HOST', environmentId: staging.id },
+    ]);
+    const developer = await seedUser();
+    await addMember(org.orgId, developer.id, 'developer');
+    const host = envPath(org, staging.slug, '/secrets/HOST');
+    const remove = () =>
+      call(secretRoute.DELETE, 'DELETE', host.path, { ...host.params, name: 'HOST' });
+
+    caller = sessionOf(developer);
+    const hidden = await remove();
+    expect(hidden.status).toBe(409);
+    expect(errorMessage(hidden)).toMatch(
+      /a secret in an environment you cannot read depends on it/,
+    );
+    expect(errorMessage(hidden)).not.toContain('PROD_URL');
+
+    caller = sessionOf(org.owner);
+    const named = await remove();
+    expect(named.status).toBe(409);
+    expect(errorMessage(named)).toContain('PROD_URL');
+  });
+
   it('refuses deleting an environment another inherits from', async () => {
     const org = await seedOrg('pro');
     const project = await seedProject(org);

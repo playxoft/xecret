@@ -255,7 +255,7 @@ export const POST = authenticatedRoute<Params>(
       dryRun: body.dryRun,
       // Checked inside the write's transaction, under the graph lock (review
       // round 1, L8); on its own for a dry run.
-      guard: graphWriteGuard(scope, {
+      guard: graphWriteGuard(scope, principal, {
         kind: 'changes',
         changes: {
           set: writes.map((write) => ({
