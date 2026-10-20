@@ -1,8 +1,9 @@
 import { timingSafeEqual, toBase64Url } from '@xecret/core/crypto';
 
 /**
- * Scheduled work, run by the Worker's Cron Trigger through the application
- * itself (P23 — the retained-vault purge is the first, and so far only, job).
+ * Scheduled work, run by the Worker's Cron Triggers through the application
+ * itself: hourly, the retained-vault purge (P23) and the billing job (P12);
+ * nightly, the billing reconciler (P12).
  *
  * ── Why through the app rather than beside it ──
  * The scheduled handler lives in `worker.ts`, outside Next. It could open its
@@ -21,12 +22,33 @@ import { timingSafeEqual, toBase64Url } from '@xecret/core/crypto';
  * internet cannot know it, and outside a scheduled run there is none to know.
  *
  * And even a caller who got through would achieve nothing it should not: the
- * only job deletes retained vaults whose seven days are over, which is what is
- * due anyway, and migration 0020's triggers refuse anything earlier.
+ * purge deletes retained vaults whose seven days are over, which is what is
+ * due anyway, and migration 0020's triggers refuse anything earlier; the
+ * billing jobs do only what is due — report units with deterministic ids Dodo
+ * deduplicates, send reminders deduplicated by their own table, compare rows
+ * without correcting them.
  */
 
 export const SCHEDULED_HEADER = 'x-xecret-scheduled';
 export const VAULT_PURGE_PATH = '/api/internal/scheduled/vault-purge';
+/** P12: ended cancellations, seat-sync retries, the overage report, the dated reminders. */
+export const BILLING_HOURLY_PATH = '/api/internal/scheduled/billing-hourly';
+/** P12: the nightly comparison with Dodo, alert-only. */
+export const BILLING_DAILY_PATH = '/api/internal/scheduled/billing-daily';
+
+/**
+ * The two Cron Triggers in `wrangler.toml` (`[env.production.triggers]`), and
+ * the jobs each runs. Kept beside the paths so the schedule and what it runs
+ * are read in one place; `worker.ts` dispatches on `controller.cron`, which is
+ * exactly one of these strings.
+ */
+export const HOURLY_CRON = '17 * * * *';
+export const DAILY_CRON = '41 3 * * *';
+
+/** The jobs a Cron Trigger runs, in order. An unknown schedule runs the hourly set. */
+export function jobsFor(cron: string): readonly string[] {
+  return cron === DAILY_CRON ? [BILLING_DAILY_PATH] : [VAULT_PURGE_PATH, BILLING_HOURLY_PATH];
+}
 
 const NONCES = Symbol.for('xecret.scheduled-nonces');
 
