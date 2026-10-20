@@ -1,3 +1,4 @@
+import { assertPlaintextExportAllowed } from '@/server/export-policy';
 import { parseQuery } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
 import { documentQuery } from '@/server/schemas/secrets';
@@ -47,6 +48,32 @@ export const GET = authenticatedRoute<Params>(
     const scope = await resolveEnvironmentPath(principal, params, services);
     authorizeSecretAction(scope, principal, 'secret.read');
     await enforceSecretRateLimit(services, principal, 'read');
+
+    // ── Plaintext export disabled by policy (P19 §9) ──
+    // Before the mode check, so an end-to-end encrypted environment that has
+    // disabled export says so, rather than telling the caller to build the file
+    // in the browser — where the same policy refuses it again.
+    if (scope.environment.plaintextExportDisabled) {
+      record(
+        audit(scope.organization.id).error(
+          'secret.read',
+          {
+            type: 'environment',
+            id: scope.environment.id,
+            projectId: scope.project.id,
+            environmentId: scope.environment.id,
+          },
+          'policyRefused',
+          {
+            policyName: 'plaintextExport',
+            projectSlug: scope.project.slug,
+            environmentSlug: scope.environment.slug,
+            source: auditSource(principal),
+          },
+        ),
+      );
+      assertPlaintextExportAllowed(scope);
+    }
 
     // An `e2ee` environment cannot be exported by the server, because exporting
     // is formatting and formatting takes plaintext. The refusal is deliberate

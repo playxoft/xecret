@@ -22,6 +22,7 @@ import {
 } from '@/server/secrets-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
 import type { Principal } from '@/server/actor';
+import { enforceSecretPolicy, secretPolicyRefusal } from '@/server/policies-service';
 import { planRefusal, prepareTemplateDeclaration } from '@/server/template-writes';
 
 /**
@@ -140,24 +141,39 @@ export const POST = authenticatedRoute<Params>(
     // Parsed once, under the schema the environment's mode selects, and the two
     // branches meet again at a `SecretWriteResult` — so everything after this
     // point (the audit record, the response) is written once rather than twice.
+    const policyRefused = (id: string | null) =>
+      secretPolicyRefusal(record, audit(scope.organization.id), 'secret.created', {
+        type: 'secret',
+        id,
+        projectId: scope.project.id,
+        environmentId: scope.environment.id,
+      });
+
     const written = e2ee
-      ? await createClientSecret(scope, services, writer, request, principal, (name, id) =>
-          planRefusal(
-            record,
-            audit(scope.organization.id),
-            'secret.created',
-            {
-              type: 'secret',
-              id,
-              projectId: scope.project.id,
-              environmentId: scope.environment.id,
-            },
-            'secretReferencing',
-            scope.entitlements.plan,
-            { secretName: name },
-          ),
+      ? await createClientSecret(
+          scope,
+          services,
+          writer,
+          request,
+          principal,
+          (name, id) =>
+            planRefusal(
+              record,
+              audit(scope.organization.id),
+              'secret.created',
+              {
+                type: 'secret',
+                id,
+                projectId: scope.project.id,
+                environmentId: scope.environment.id,
+              },
+              'secretReferencing',
+              scope.entitlements.plan,
+              { secretName: name },
+            ),
+          policyRefused,
         )
-      : await createServerSecret(scope, services, writer, request);
+      : await createServerSecret(scope, services, writer, request, policyRefused(null));
 
     // The name, never the value. `AuditMetadata` makes the second half of that
     // sentence a type error rather than a habit — there is no field to put a
@@ -209,8 +225,17 @@ async function createServerSecret(
   services: ServiceContext,
   writer: SecretWriterRef,
   request: Request,
+  refused: (names: readonly string[]) => void,
 ): Promise<CreatedSecret> {
   const body = await parseJsonBody(request, createSecretBody);
+
+  // P19 §8: a new name, and a plaintext the server holds — both rules apply.
+  await enforceSecretPolicy(
+    scope,
+    services,
+    [{ name: body.name, newName: true, value: body.value }],
+    refused,
+  );
 
   const result = await writeSecretValue(scope, services, {
     writer,
@@ -238,8 +263,18 @@ async function createClientSecret(
   request: Request,
   principal: Principal,
   refusal: (name: string, id: string) => () => void,
+  policyRefused: (id: string) => (names: readonly string[]) => void,
 ): Promise<CreatedSecret> {
   const body = await parseJsonBody(request, createClientSecretBody);
+
+  // P19 §8: the name rule. The value rules ran in the client that encrypted
+  // this — the server never sees the value it would test.
+  await enforceSecretPolicy(
+    scope,
+    services,
+    [{ name: body.name, newName: true }],
+    policyRefused(body.id),
+  );
 
   // P19 §1: a template's declaration, resolved and checked before anything is
   // stored — or `null` for a value that is not one.

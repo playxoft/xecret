@@ -1,6 +1,11 @@
 import { json, parseQuery } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
 import { clientEnvironmentBundle } from '@/server/env-bundle';
+import {
+  assertPlaintextExportAllowed,
+  PLAINTEXT_EXPORT_HEADER,
+  plaintextExportOf,
+} from '@/server/export-policy';
 import { documentQuery, pullQuery } from '@/server/schemas/secrets';
 import {
   auditSource,
@@ -158,6 +163,33 @@ export const GET = authenticatedRoute<Params>(
 
     const { format } = parseQuery(request, documentQuery);
 
+    // ── Plaintext export disabled by policy (P19 §9) ──
+    // A document format exists to be written to a file, so it is refused here,
+    // before a value is decrypted. JSON is not: it is what `xecret run` reads,
+    // and the server cannot tell that from `xecret pull --format json` — so it
+    // is served, marked with the policy, and the CLI refuses the pull itself.
+    if (format !== 'json' && scope.environment.plaintextExportDisabled) {
+      record(
+        audit(scope.organization.id).error(
+          'secret.read',
+          {
+            type: 'environment',
+            id: scope.environment.id,
+            projectId: scope.project.id,
+            environmentId: scope.environment.id,
+          },
+          'policyRefused',
+          {
+            policyName: 'plaintextExport',
+            projectSlug: scope.project.slug,
+            environmentSlug: scope.environment.slug,
+            source: auditSource(principal),
+          },
+        ),
+      );
+      assertPlaintextExportAllowed(scope);
+    }
+
     const secrets = await decryptEnvironment(scope, services);
 
     // Queued before the document is rendered, not after. `renderSecretDocument`
@@ -197,6 +229,7 @@ export const GET = authenticatedRoute<Params>(
         // The body is entirely user-supplied content served from our own origin.
         // Without this, a browser that content-sniffs it as HTML would run it.
         'x-content-type-options': 'nosniff',
+        [PLAINTEXT_EXPORT_HEADER]: plaintextExportOf(scope.environment),
       },
     });
   },

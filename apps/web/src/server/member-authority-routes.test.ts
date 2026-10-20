@@ -3,6 +3,7 @@ import type { AuditRecord } from '@xecret/core/audit';
 import type { Action, CustomRole } from '@xecret/core/authz';
 import { ROLE_CAPABILITIES } from '@xecret/core/authz';
 import { uuidv7 } from '@xecret/core/ids';
+import { DEFAULT_SECRET_POLICY, DEFAULT_TOKEN_POLICY } from '@xecret/core/policy';
 import { createLogger } from './logging';
 import type { RequestLog } from './logging';
 
@@ -80,6 +81,8 @@ const repositories = vi.hoisted(() => ({
   loadEnvironmentsOfProjects: vi.fn(),
   loadEnvironmentsByIds: vi.fn(),
   findProjectsReferencingEnvironments: vi.fn(),
+  // P19 §6: the token policy, read at minting and by the listing. None set.
+  loadOrgPolicies: vi.fn(),
 }));
 
 vi.mock('./context', () => context);
@@ -484,6 +487,11 @@ beforeEach(() => {
   repositories.loadEnvironmentsOfProjects.mockResolvedValue([]);
   repositories.loadEnvironmentsByIds.mockResolvedValue([]);
   repositories.findProjectsReferencingEnvironments.mockResolvedValue([]);
+  repositories.loadOrgPolicies.mockResolvedValue({
+    tokens: DEFAULT_TOKEN_POLICY,
+    secrets: DEFAULT_SECRET_POLICY,
+    updatedAt: null,
+  });
   repositories.createInvitation.mockImplementation(
     async (_db: unknown, params: { email: string; role: Role }) => ({
       token: 'invitation-token',

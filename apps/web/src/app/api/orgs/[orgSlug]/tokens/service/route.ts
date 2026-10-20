@@ -1,9 +1,12 @@
 import { auditingDenials, serviceTokenActionsAt } from '@xecret/core/authz';
+import { checkServiceTokenAgainstPolicy, tokenMeetsPolicy } from '@xecret/core/policy';
 import {
   createServiceToken,
   listEnvironmentsForOrganization,
   listServiceTokens,
+  loadOrgPolicies,
 } from '@xecret/db/repositories';
+import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { requireMembership, requireSessionPrincipal } from '@/server/members-service';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
@@ -82,14 +85,27 @@ export const GET = authenticatedRoute<Params>(async ({ params, principal, servic
     ]),
   );
 
+  // P19 §6: a token minted before the policy is not revoked by it — that would
+  // break every pipeline at once — but the list says which ones fall outside it,
+  // so they can be replaced deliberately.
+  const { tokens: tokenPolicy } = await loadOrgPolicies(services.db, scope.organization.id);
+
   return json({
     data: tokens.flatMap((token) => {
       const resolved = bySlug.get(token.environmentId);
       // A token pinned to a deleted environment cannot be spent — resolution
       // 404s at authentication — and cannot be rendered either. Omitted, not
       // invented.
-      return resolved === undefined ? [] : [toServiceToken(token, resolved)];
+      return resolved === undefined
+        ? []
+        : [
+            {
+              ...toServiceToken(token, resolved),
+              meetsPolicy: tokenMeetsPolicy(tokenPolicy, token),
+            },
+          ];
     }),
+    policy: tokenPolicy,
   });
 });
 
@@ -152,14 +168,46 @@ export const POST = authenticatedRoute<Params>(
       await assertTokenCanResolve(environmentScope, services);
     }
 
+    // ── The organisation's token policy (P19 §6) ──
+    // Checked at minting, never at use: a token minted before the policy keeps
+    // working, and the listing marks it. Enforced whatever the plan — the plan
+    // gates *setting* a policy, not obeying one.
+    const now = new Date();
+    const ipAllowlist = body.ipAllowlist ?? null;
+    const expiresAt = resolveExpiry(body.expiresAt, now);
+    const { tokens: tokenPolicy } = await loadOrgPolicies(services.db, orgId);
+    const violations = checkServiceTokenAgainstPolicy(tokenPolicy, { ipAllowlist, expiresAt }, now);
+    if (violations.length > 0) {
+      record(
+        audit(orgId).error(
+          'token.created',
+          {
+            type: 'token',
+            id: null,
+            projectId: projectScope.project.id,
+            environmentId: environmentScope.environment.id,
+          },
+          'policyRefused',
+          {
+            policyName: 'tokens',
+            projectSlug: projectScope.project.slug,
+            environmentSlug: environmentScope.environment.slug,
+          },
+        ),
+      );
+      throw errors.validation(
+        violations.map((violation) => ({ field: violation.field, message: violation.message })),
+      );
+    }
+
     const issued = await createServiceToken(services.db, {
       orgId,
       projectId: projectScope.project.id,
       environmentId: environmentScope.environment.id,
       name: body.name,
       accessLevel,
-      ipAllowlist: body.ipAllowlist ?? null,
-      expiresAt: resolveExpiry(body.expiresAt, new Date()),
+      ipAllowlist,
+      expiresAt,
       createdBy: minter.user.id,
       // The public half only. The private half is the token's key half, which
       // the browser minted and this server must never see (spec §13.1).

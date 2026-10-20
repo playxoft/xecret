@@ -158,6 +158,14 @@ export type AuditErrorReason =
   | 'keyUnavailable'
   | 'upstreamUnavailable'
   | 'quotaExceeded'
+  /**
+   * An organisation or environment policy refused it (P19 §6, §8, §9) — a token
+   * without the allowlist the token policy requires, a secret name the secret
+   * policy forbids, a plaintext export of an environment that disabled them.
+   * `policyName` says which. Distinct from `quotaExceeded`, which is the *plan*
+   * refusing: one is the customer's own rule, the other is ours.
+   */
+  | 'policyRefused'
   | 'timeout'
   /**
    * The person was removed from the organisation and has not been invited

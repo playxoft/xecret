@@ -23,6 +23,7 @@ import {
   secretWriter,
 } from '@/server/secrets-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
+import { enforceSecretPolicy, secretPolicyRefusal } from '@/server/policies-service';
 import { assertRemovalKeepsReferences } from '@/server/references-service';
 import { planRefusal, prepareTemplateDeclaration } from '@/server/template-writes';
 
@@ -239,6 +240,19 @@ export const PATCH = authenticatedRoute<Params>(
         })()
       : await (async () => {
           const body = await parseJsonBody(request, updateSecretBody);
+          // P19 §8: the server holds this plaintext, so it holds the value
+          // rules too. The name is not new, so the name rule is not asked.
+          await enforceSecretPolicy(
+            scope,
+            services,
+            [{ name: current.name, newName: false, value: body.value }],
+            secretPolicyRefusal(record, audit(scope.organization.id), 'secret.updated', {
+              type: 'secret',
+              id: current.secretId,
+              projectId: scope.project.id,
+              environmentId: scope.environment.id,
+            }),
+          );
           const result = await writeSecretValue(scope, services, {
             writer,
             name: current.name,
@@ -363,6 +377,18 @@ export const PUT = authenticatedRoute<Params>(
       }
       // Renaming takes the old name out of every view that saw it.
       await assertRemovalKeepsReferences(scope, services, name);
+      // P19 §8: a rename introduces a name, so the name rule applies to it.
+      await enforceSecretPolicy(
+        scope,
+        services,
+        [{ name: body.name ?? name, newName: true }],
+        secretPolicyRefusal(record, audit(scope.organization.id), 'secret.updated', {
+          type: 'secret',
+          id: stored.secretId,
+          projectId: scope.project.id,
+          environmentId: scope.environment.id,
+        }),
+      );
     }
 
     const updated = await updateSecretMetadata(services.db, {

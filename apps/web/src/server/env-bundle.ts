@@ -10,6 +10,8 @@ import type { Principal } from './actor';
 import type { ServiceContext } from './context';
 import { environmentKeyState, grantRecipient } from './env-keys-service';
 import { errors } from './errors';
+import { plaintextExportOf } from './export-policy';
+import type { PlaintextExport } from './export-policy';
 import { mayActOn, planPull } from './references-service';
 import type { ReferencedRead } from './references-service';
 import { encodePublicKey } from './schemas/env-keys';
@@ -86,6 +88,13 @@ export interface ClientEnvironmentBundle {
   /** The caller's own key material, so one request answers the whole operation. */
   keys: EnvironmentKeysPayload;
   secrets: ClientSecretPayload[];
+  /**
+   * The environment's policies that a client enforces (P19 §9): whether this
+   * bundle may be written to a file. Carried here because the client does the
+   * formatting, so only the client can refuse it — see `export-policy.ts`.
+   * Absent from bundles served before P19, which a client reads as "allowed".
+   */
+  policy: { plaintextExport: PlaintextExport };
 }
 
 /**
@@ -235,6 +244,7 @@ export async function clientEnvironmentBundle(
         // file produce a one-line diff when a secret is added rather than a
         // reshuffle.
         secrets: sortByName(materials.map(toClientSecret)),
+        policy: { plaintextExport: plaintextExportOf(scope.environment) },
       },
       layerReads: [],
       referencedReads: [],
@@ -352,6 +362,10 @@ export async function clientEnvironmentBundle(
       },
       secrets: sortByName(materials.map(toResolvable)),
       layers,
+      // The environment being read decides, never a layer: a parent's policy
+      // governs exports of the parent, and inheriting its values does not make
+      // this environment's own setting any less its own.
+      policy: { plaintextExport: plaintextExportOf(scope.environment) },
     },
     layerReads,
     referencedReads,
