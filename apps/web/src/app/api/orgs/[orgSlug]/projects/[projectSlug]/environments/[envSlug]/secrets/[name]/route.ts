@@ -23,7 +23,9 @@ import {
   secretWriter,
 } from '@/server/secrets-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
+import { emitSecretChanges } from '@/server/change-events';
 import { enforceSecretPolicy, secretPolicyRefusal } from '@/server/policies-service';
+import { noteEnvironmentRead } from '@/server/read-alerts';
 import { assertRemovalKeepsReferences } from '@/server/references-service';
 import { planRefusal, prepareTemplateDeclaration } from '@/server/template-writes';
 
@@ -112,6 +114,8 @@ export const GET = authenticatedRoute<Params>(
         },
       ),
     );
+    // P19 §7: a reveal is a read of the environment, from wherever it came.
+    noteEnvironmentRead(scope, services, principal);
 
     return json({
       secret: {
@@ -293,6 +297,12 @@ export const PATCH = authenticatedRoute<Params>(
       ),
     );
 
+    if (result.status !== 'unchanged') {
+      emitSecretChanges(services, scope, principal, [
+        { type: 'secret.updated', name: result.name, version: result.version },
+      ]);
+    }
+
     return json({
       secret: { name: result.name, version: result.version, status: result.status },
     });
@@ -431,6 +441,14 @@ export const PUT = authenticatedRoute<Params>(
       ),
     );
 
+    // A rename changes what every reader of the environment finds, so it is an
+    // update to a subscriber; a note or a type is not, and is not announced.
+    if (renamed) {
+      emitSecretChanges(services, scope, principal, [
+        { type: 'secret.updated', name: updated.name, version: stored.version },
+      ]);
+    }
+
     return json({
       secret: {
         name: updated.name,
@@ -491,6 +509,10 @@ export const DELETE = authenticatedRoute<Params>(
         },
       ),
     );
+
+    emitSecretChanges(services, scope, principal, [
+      { type: 'secret.deleted', name: current.name, version: current.version },
+    ]);
 
     return json({ secret: { name: current.name, deleted: true } });
   },

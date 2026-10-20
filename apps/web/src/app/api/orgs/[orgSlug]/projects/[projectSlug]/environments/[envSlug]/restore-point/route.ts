@@ -2,6 +2,7 @@ import { auditingDenials } from '@xecret/core/authz';
 import type { Denial } from '@xecret/core/authz';
 import { fromBase64Url } from '@xecret/core/crypto';
 import type { Principal } from '@/server/actor';
+import { batchChanges, emitEnvironmentChange } from '@/server/change-events';
 import { requireFeature } from '@/server/entitlements';
 import {
   assertDistinctNames,
@@ -274,6 +275,13 @@ export const POST = authenticatedRoute<Params>(
           restoredTo: at.toISOString(),
           source: auditSource(principal),
         }),
+      );
+      emitEnvironmentChange(
+        services,
+        scope,
+        principal,
+        { type: 'environment.restored', counts, restoredTo: at.toISOString() },
+        batchChanges(results, removed),
       );
     }
 

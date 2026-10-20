@@ -1,4 +1,5 @@
 import { findSecretByName, getSecretVersion } from '@xecret/db/repositories';
+import { emitSecretChanges } from '@/server/change-events';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
@@ -181,6 +182,14 @@ export const POST = authenticatedRoute<Params>(
         },
       ),
     );
+
+    // P19 §5: the audit action and the webhook event share a name on purpose —
+    // from a subscriber's side, an old value made current is a rotation.
+    if (result.status !== 'unchanged') {
+      emitSecretChanges(services, scope, principal, [
+        { type: 'secret.rotated', name: result.name, version: result.version },
+      ]);
+    }
 
     return json({
       secret: {

@@ -1,4 +1,5 @@
 import { json, parseQuery } from '@/server/http';
+import { noteEnvironmentRead } from '@/server/read-alerts';
 import { authenticatedRoute } from '@/server/route';
 import { clientEnvironmentBundle } from '@/server/env-bundle';
 import {
@@ -158,6 +159,8 @@ export const GET = authenticatedRoute<Params>(
         ),
       );
 
+      // P19 §7, after the response: a read is never slower for being noted.
+      noteEnvironmentRead(scope, services, principal);
       return json(bundle);
     }
 
@@ -215,6 +218,8 @@ export const GET = authenticatedRoute<Params>(
         },
       ),
     );
+
+    noteEnvironmentRead(scope, services, principal);
 
     const document = renderSecretDocument(secrets, format);
 

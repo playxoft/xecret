@@ -1,5 +1,6 @@
 import { assertPlaintextExportAllowed } from '@/server/export-policy';
 import { parseQuery } from '@/server/http';
+import { noteEnvironmentRead } from '@/server/read-alerts';
 import { authenticatedRoute } from '@/server/route';
 import { documentQuery } from '@/server/schemas/secrets';
 import {
@@ -109,6 +110,8 @@ export const GET = authenticatedRoute<Params>(
         },
       ),
     );
+
+    noteEnvironmentRead(scope, services, principal);
 
     const document = renderSecretDocument(secrets, format);
 

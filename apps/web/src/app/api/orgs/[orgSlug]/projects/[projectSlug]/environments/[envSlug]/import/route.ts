@@ -26,6 +26,7 @@ import {
   secretWriter,
 } from '@/server/secrets-service';
 import type { ClientSecretWrite, SecretWrite } from '@/server/secrets-service';
+import { batchChanges, emitSecretChanges } from '@/server/change-events';
 import { resolveEnvironmentPath } from '@/server/tenancy';
 import type { EnvironmentScope } from '@/server/tenancy';
 
@@ -248,6 +249,7 @@ export const POST = authenticatedRoute<Params>(
           },
         ),
       );
+      emitSecretChanges(services, scope, principal, batchChanges(results, []));
     }
 
     return json({
@@ -418,6 +420,7 @@ async function importClientEntries(context: {
         },
       ),
     );
+    emitSecretChanges(services, scope, principal, batchChanges(results, []));
   }
 
   return json({

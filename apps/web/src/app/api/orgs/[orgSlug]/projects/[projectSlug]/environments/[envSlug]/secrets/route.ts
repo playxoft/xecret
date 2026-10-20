@@ -22,6 +22,7 @@ import {
 } from '@/server/secrets-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
 import type { Principal } from '@/server/actor';
+import { emitSecretChanges } from '@/server/change-events';
 import { enforceSecretPolicy, secretPolicyRefusal } from '@/server/policies-service';
 import { planRefusal, prepareTemplateDeclaration } from '@/server/template-writes';
 
@@ -196,6 +197,11 @@ export const POST = authenticatedRoute<Params>(
         },
       ),
     );
+
+    // P19 §5 — after the response, never in its way.
+    emitSecretChanges(services, scope, principal, [
+      { type: 'secret.created', name: written.result.name, version: written.result.version },
+    ]);
 
     return json(
       {

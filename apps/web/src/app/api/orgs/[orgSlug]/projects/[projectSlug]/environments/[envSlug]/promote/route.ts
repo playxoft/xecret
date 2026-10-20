@@ -2,6 +2,7 @@ import { auditingDenials } from '@xecret/core/authz';
 import type { Denial } from '@xecret/core/authz';
 import { loadEnvironmentSecrets } from '@xecret/db/repositories';
 import type { SecretMaterial } from '@xecret/db/repositories';
+import { batchChanges, emitEnvironmentChange } from '@/server/change-events';
 import { requireFeature } from '@/server/entitlements';
 import {
   assertDistinctNames,
@@ -233,6 +234,17 @@ export const POST = authenticatedRoute<Params>(
           sourceEnvironmentSlug: source.environment.slug,
           source: auditSource(principal),
         }),
+      );
+      emitEnvironmentChange(
+        services,
+        target,
+        principal,
+        {
+          type: 'environment.promoted',
+          source: { id: source.environment.id, slug: source.environment.slug },
+          counts,
+        },
+        batchChanges(results, removed),
       );
     }
 
