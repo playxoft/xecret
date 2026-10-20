@@ -91,6 +91,57 @@ function assertVersion(value: number, label: string): void {
   }
 }
 
+/**
+ * What a value sealed directly under an Org Master Key is for.
+ *
+ * A closed list, and the list is the point. The org key otherwise wraps only
+ * environment keys (`env-key`); anything else sealed under it is a new use of
+ * the organisation's root of trust, and each one is named here so that a value
+ * sealed for one purpose cannot be opened as another — a webhook signing secret
+ * presented where some future org-level credential was expected fails to
+ * authenticate rather than being accepted.
+ *
+ * Each word matches `[a-z-]+`, so the `|` delimiter cannot appear inside it and
+ * the encoding stays unambiguous without length prefixes.
+ */
+export type OrgValuePurpose = 'webhook-secret';
+
+const ORG_VALUE_PURPOSES: readonly OrgValuePurpose[] = ['webhook-secret'];
+
+/**
+ * Binds a value sealed under an Org Master Key (the server envelope, ADR 0002)
+ * to its organisation, its purpose, the row that stores it, and the version of
+ * the org key that sealed it (P19 §5: a webhook's signing secret).
+ *
+ *     xecret.aad.v1.org-value|<purpose>|<orgId>|<resourceId>|<orgKeyVersion>
+ *
+ * Its own purpose segment, `org-value`, distinct from `org-key`, `env-key` and
+ * `secret`: the same org key that wraps every environment key now also seals
+ * these, and a ciphertext must not be able to pass for the other kind. The
+ * resource id is what stops one webhook's sealed secret being copied onto
+ * another webhook's row — the database writer who could do that holds no key,
+ * and this is what makes the copy useless. The org key version is bound because
+ * the row records it (`secret_key_version`); a value presented with a different
+ * version is a different claim about which key sealed it.
+ */
+export function orgValueAad(params: {
+  orgId: string;
+  purpose: OrgValuePurpose;
+  resourceId: string;
+  orgKeyVersion: number;
+}): Bytes {
+  assertUuid(params.orgId, 'orgId');
+  if (!ORG_VALUE_PURPOSES.includes(params.purpose)) {
+    throw new TypeError('AAD component "purpose" must be a known org-value purpose');
+  }
+  assertUuid(params.resourceId, 'resourceId');
+  assertVersion(params.orgKeyVersion, 'orgKeyVersion');
+
+  return utf8Encode(
+    `${PREFIX}.org-value|${params.purpose}|${params.orgId}|${params.resourceId}|${params.orgKeyVersion}`,
+  );
+}
+
 /* ────────────────────────────── v2 ────────────────────────────── */
 
 /** Which principal a grant is sealed to. `env_key_grants` holds exactly one. */

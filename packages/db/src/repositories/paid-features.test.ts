@@ -25,18 +25,23 @@ import {
 } from './policies';
 import { RepositoryError } from './shared';
 import {
+  abandonDelivery,
   claimDeliveries,
   claimDueDeliveries,
   countWebhooks,
   createWebhook,
   deleteWebhook,
   disableWebhookForFailures,
+  ENQUEUE_CHUNK,
   enqueueDeliveries,
   findWebhook,
   findWebhookWithSecret,
   listDeliveries,
   listEnabledWebhooksForEvent,
+  listEnabledWebhooksForEvents,
   listWebhooks,
+  loadOrgKeyForSealing,
+  loadOrgKeyVersion,
   pruneWebhookDeliveries,
   recordDeliveryAttempt,
   updateWebhook,
@@ -391,6 +396,92 @@ describe('webhooks', () => {
       [hook.id],
     );
     expect(left.rows.map((row) => row.id)).toEqual([owed]);
+  });
+
+  it('lists, in one query, the enabled endpoints subscribed to any of a batch of events', async () => {
+    const f = await fixture();
+    const created = await webhook(f, ['secret.created']);
+    const both = await webhook(f, ['secret.created', 'secret.deleted']);
+    await webhook(f, ['environment.promoted']);
+    const off = await webhook(f, ['secret.deleted']);
+    await updateWebhook(t.db, f.orgId, off.id, { enabled: false });
+    await webhook(await fixture(), ['secret.created']);
+
+    const hooks = await listEnabledWebhooksForEvents(t.db, f.orgId, [
+      'secret.created',
+      'secret.deleted',
+      'secret.created',
+    ]);
+    expect(hooks.map((hook) => hook.id).sort()).toEqual([created.id, both.id].sort());
+    expect(hooks[0]!.secret.ciphertext).toEqual(ascii('sealed'));
+    expect(await listEnabledWebhooksForEvents(t.db, f.orgId, [])).toEqual([]);
+  });
+
+  it('abandons a claimed delivery without counting it against the endpoint', async () => {
+    const f = await fixture();
+    const hook = await webhook(f);
+    const [id] = await enqueueDeliveries(t.db, [
+      { webhookId: hook.id, orgId: f.orgId, eventType: 'secret.updated', body: '{}' },
+    ]);
+    // Only a claimed one: a pending delivery is the sweep's to take.
+    await abandonDelivery(t.db, id!, 'endpoint switched off before delivery');
+    expect((await listDeliveries(t.db, f.orgId, hook.id, 1))[0]!.status).toBe('pending');
+
+    await claimDeliveries(t.db, [id!]);
+    await abandonDelivery(t.db, id!, 'endpoint switched off before delivery');
+    expect((await listDeliveries(t.db, f.orgId, hook.id, 1))[0]).toMatchObject({
+      status: 'abandoned',
+      attempts: 0,
+      lastError: 'endpoint switched off before delivery',
+      nextAttemptAt: null,
+    });
+    expect(await findWebhook(t.db, f.orgId, hook.id)).toMatchObject({ consecutiveFailures: 0 });
+  });
+
+  it('splits a very large batch across statements, and answers every id in order', async () => {
+    const f = await fixture();
+    const hook = await webhook(f);
+    t.reset();
+    const ids = await enqueueDeliveries(
+      t.db,
+      Array.from({ length: ENQUEUE_CHUNK + 3 }, () => ({
+        webhookId: hook.id,
+        orgId: f.orgId,
+        eventType: 'secret.updated',
+        body: '{}',
+      })),
+    );
+    expect(ids).toHaveLength(ENQUEUE_CHUNK + 3);
+    expect(
+      t.statements.filter((statement) => /insert into "webhook_deliveries"/.test(statement.sql)),
+    ).toHaveLength(2);
+    const stored = await t.pg.query<{ n: number }>(
+      `select count(*)::int as n from webhook_deliveries where webhook_id = $1`,
+      [hook.id],
+    );
+    expect(stored.rows[0]!.n).toBe(ENQUEUE_CHUNK + 3);
+    await t.pg.query(`delete from webhook_deliveries where webhook_id = $1`, [hook.id]);
+  });
+
+  it('loads the org key to seal under, and the version a secret was sealed with', async () => {
+    const f = await fixture();
+    const insertKey = (version: number, status: 'active' | 'retired') =>
+      t.pg.query(
+        `insert into org_keys (id, org_id, version, wrapped_key, wrap_iv, root_key_version, status)
+         values ($1, $2, $3, $4, $5, 1, $6)`,
+        [randomUUID(), f.orgId, version, ascii(`key-${version}`), new Uint8Array(12), status],
+      );
+    expect(await loadOrgKeyForSealing(t.db, f.orgId)).toBeNull();
+    await insertKey(1, 'retired');
+    await insertKey(2, 'active');
+
+    const current = await loadOrgKeyForSealing(t.db, f.orgId);
+    expect(current).toMatchObject({ version: 2, rootKeyVersion: 1, algorithm: 'AES-256-GCM' });
+    expect(current!.ciphertext).toEqual(ascii('key-2'));
+    // A retired version still opens what it sealed.
+    expect((await loadOrgKeyVersion(t.db, f.orgId, 1))!.ciphertext).toEqual(ascii('key-1'));
+    expect(await loadOrgKeyVersion(t.db, f.orgId, 3)).toBeNull();
+    expect(await loadOrgKeyVersion(t.db, (await fixture()).orgId, 1)).toBeNull();
   });
 });
 

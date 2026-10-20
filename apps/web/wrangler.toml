@@ -99,14 +99,22 @@ ZEPTOMAIL_FROM_NAME = "Xecret"
 # gets read past.
 ZEPTOMAIL_API_URL = "https://api.zeptomail.com/v1.1/email"
 
-# The hourly scheduled job (`apps/web/worker.ts`): deletes reset vaults whose
-# seven-day retention has ended (P23, migration 0020). Declared here, under the
-# environment, rather than at the top level, so that local development and the
-# staging stub — which has no database — never run it. Correctness does not hang
-# on its timing: every read of a retained vault already ignores one past its
-# window; this is what removes the rows.
+# The scheduled jobs (`apps/web/worker.ts`, which dispatches on the expression).
+#
+#  - Hourly, `17 * * * *`: deletes reset vaults whose seven-day retention has
+#    ended (P23, migration 0020), and prunes finished webhook deliveries past
+#    thirty days and read sightings unseen for 180 (P19 §5, §7).
+#  - Every five minutes, `*/5 * * * *`: webhook retries that are due, and the
+#    read-alert digests whose hour has passed (P19 §5, §7). A retry delay of "a
+#    minute" therefore means "on the next run".
+#
+# Declared here, under the environment, rather than at the top level, so that
+# local development and the staging stub — which has no database — never run
+# them. Correctness does not hang on their timing: every read of a retained
+# vault already ignores one past its window, and a late retry or digest is late,
+# never lost. `worker.ts` matches these strings exactly; change both together.
 [env.production.triggers]
-crons = ["17 * * * *"]
+crons = ["17 * * * *", "*/5 * * * *"]
 
 # ADR 0002 — the Root KEK map. Sourced from Phase.dev, pushed to the
 # account's default Secrets Store by scripts/deploy-bootstrap.sh.

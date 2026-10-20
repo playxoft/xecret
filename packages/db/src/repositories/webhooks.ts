@@ -1,7 +1,22 @@
-import { and, arrayContains, asc, count, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
+import {
+  and,
+  arrayContains,
+  arrayOverlaps,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  lt,
+  or,
+  sql,
+} from 'drizzle-orm';
+import type { WrappedOrgKey } from '@xecret/core/crypto';
 import { uuidv7 } from '@xecret/core/ids';
+import { orgKeys } from '../schema/keys';
 import { webhookDeliveries, webhooks } from '../schema/paid-features';
 import type { WebhookDeliveryStatus } from '../schema/paid-features';
+import { toBytes, toCipherAlgorithm } from './environments';
 import { RepositoryError } from './shared';
 import type { Executor } from './shared';
 
@@ -10,10 +25,12 @@ import type { Executor } from './shared';
  *
  * ── The signing secret never leaves this file unsealed ──
  * It is stored as ciphertext under the organisation's master key, and the only
- * functions that return that ciphertext are the two a *sender* needs:
- * `listEnabledWebhooksForEvent` and the claim functions. The listing the
- * dashboard reads (`listWebhooks`) selects no secret column at all, so a
- * response built from it cannot carry one by accident.
+ * functions that return that ciphertext are the ones a *sender* needs: the two
+ * `listEnabledWebhooksFor…` listings, `findWebhookWithSecret` and the claim
+ * functions. The listing the dashboard reads (`listWebhooks`) selects no secret
+ * column at all, so a response built from it cannot carry one by accident.
+ * Opening it needs the org key row of the version it was sealed under
+ * (`loadOrgKeyVersion`) and the Root KEK, which no database holds.
  *
  * ── At-least-once ──
  * A delivery is claimed (`pending` → `delivering`) by one sender at a time, and
@@ -229,6 +246,102 @@ export async function deleteWebhook(
   return row ?? null;
 }
 
+/**
+ * The enabled endpoints subscribed to *any* of `eventTypes`, with their sealed
+ * secrets — one query for a batch of events, whatever mix of types it holds.
+ * Which event goes to which endpoint is the caller's to work out from each
+ * row's `eventTypes`.
+ */
+export async function listEnabledWebhooksForEvents(
+  exec: Executor,
+  orgId: string,
+  eventTypes: readonly string[],
+): Promise<WebhookWithSecret[]> {
+  if (eventTypes.length === 0) return [];
+  const rows = await exec
+    .select({ ...RECORD_COLUMNS, ...SECRET_COLUMNS })
+    .from(webhooks)
+    .where(
+      and(
+        eq(webhooks.orgId, orgId),
+        eq(webhooks.enabled, true),
+        arrayOverlaps(webhooks.eventTypes, [...new Set(eventTypes)]),
+      ),
+    );
+  return rows.map(withSecret);
+}
+
+/* ── the org key a signing secret is sealed under ─────────────────────────── */
+
+type OrgKeyRow = {
+  version: number;
+  wrappedKey: Uint8Array;
+  wrapIv: Uint8Array;
+  algorithm: string;
+  rootKeyVersion: number;
+};
+
+const ORG_KEY_COLUMNS = {
+  version: orgKeys.version,
+  wrappedKey: orgKeys.wrappedKey,
+  wrapIv: orgKeys.wrapIv,
+  algorithm: orgKeys.algorithm,
+  rootKeyVersion: orgKeys.rootKeyVersion,
+};
+
+function toWrappedOrgKey(row: OrgKeyRow): WrappedOrgKey {
+  return {
+    ciphertext: toBytes(row.wrappedKey),
+    iv: toBytes(row.wrapIv),
+    algorithm: toCipherAlgorithm(row.algorithm),
+    version: row.version,
+    rootKeyVersion: row.rootKeyVersion,
+  };
+}
+
+/**
+ * The organisation's current master key, for sealing a new signing secret.
+ *
+ * Newest active version, like the environment repository's own lookup — an
+ * interrupted org-key rotation leaves two active rows, and sealing under the
+ * newer is what keeps working while an operator finishes it. The version is
+ * recorded on the webhook row, so the secret is always opened with the key
+ * that sealed it, whatever happens to "current" afterwards.
+ */
+export async function loadOrgKeyForSealing(
+  exec: Executor,
+  orgId: string,
+): Promise<WrappedOrgKey | null> {
+  const [row] = await exec
+    .select(ORG_KEY_COLUMNS)
+    .from(orgKeys)
+    .where(and(eq(orgKeys.orgId, orgId), eq(orgKeys.status, 'active')))
+    .orderBy(desc(orgKeys.version))
+    .limit(1);
+  return row === undefined ? null : toWrappedOrgKey(row);
+}
+
+/**
+ * One version of the organisation's master key, for opening a signing secret
+ * sealed under it.
+ *
+ * Deliberately not filtered by status, for the reason `loadEnvironmentKeyChain`
+ * gives: a key retired by a rotation still protects every row sealed before
+ * the rotation re-sealed it.
+ */
+export async function loadOrgKeyVersion(
+  exec: Executor,
+  orgId: string,
+  version: number,
+): Promise<WrappedOrgKey | null> {
+  const [row] = await exec
+    .select(ORG_KEY_COLUMNS)
+    .from(orgKeys)
+    .where(and(eq(orgKeys.orgId, orgId), eq(orgKeys.version, version)))
+    .limit(1);
+  return row === undefined ? null : toWrappedOrgKey(row);
+}
+
 /** The enabled endpoints subscribed to `eventType`, with their sealed secrets. */
 export async function listEnabledWebhooksForEvent(
   exec: Executor,
@@ -278,6 +391,16 @@ const DELIVERY_COLUMNS = {
   completedAt: webhookDeliveries.completedAt,
 };
 
+/**
+ * How many deliveries one `INSERT` carries. Each row binds six parameters, and
+ * the wire protocol's parameter count is sixteen bits — 65,535 for PostgreSQL
+ * itself, but 32,767 for drivers that read it as signed, PGlite among them — so
+ * a batch past this is split, keeping every statement under the smaller bound.
+ * A bulk import into an organisation with many endpoints is the one caller that
+ * gets near it; below it, a batch is one statement whatever its size.
+ */
+export const ENQUEUE_CHUNK = 5_000;
+
 /** Queues one delivery per endpoint, due now. Answers the deliveries' ids, in order. */
 export async function enqueueDeliveries(
   exec: Executor,
@@ -285,17 +408,19 @@ export async function enqueueDeliveries(
 ): Promise<string[]> {
   if (deliveries.length === 0) return [];
   const rows = deliveries.map((delivery) => ({ id: uuidv7(), ...delivery }));
-  await exec.insert(webhookDeliveries).values(
-    rows.map((row) => ({
-      id: row.id,
-      webhookId: row.webhookId,
-      orgId: row.orgId,
-      eventType: row.eventType,
-      body: row.body,
-      status: 'pending' as const,
-      nextAttemptAt: sql`now()`,
-    })),
-  );
+  for (let start = 0; start < rows.length; start += ENQUEUE_CHUNK) {
+    await exec.insert(webhookDeliveries).values(
+      rows.slice(start, start + ENQUEUE_CHUNK).map((row) => ({
+        id: row.id,
+        webhookId: row.webhookId,
+        orgId: row.orgId,
+        eventType: row.eventType,
+        body: row.body,
+        status: 'pending' as const,
+        nextAttemptAt: sql`now()`,
+      })),
+    );
+  }
   return rows.map((row) => row.id);
 }
 
@@ -441,6 +566,30 @@ export async function recordDeliveryAttempt(
       .returning(RECORD_COLUMNS);
     return hook ?? null;
   });
+}
+
+/**
+ * Gives up a claimed delivery without attempting it — its endpoint was switched
+ * off after the delivery was queued, or the organisation's plan no longer
+ * includes webhooks. Not an attempt, so nothing is counted against the
+ * endpoint: a delivery that was never sent cannot have failed. `reason` is a
+ * fixed sentence from the caller, never anything a receiver said.
+ */
+export async function abandonDelivery(
+  exec: Executor,
+  deliveryId: string,
+  reason: string,
+): Promise<void> {
+  await exec
+    .update(webhookDeliveries)
+    .set({
+      status: 'abandoned',
+      lastError: reason.slice(0, 200),
+      nextAttemptAt: null,
+      claimedAt: null,
+      completedAt: sql`now()`,
+    })
+    .where(and(eq(webhookDeliveries.id, deliveryId), eq(webhookDeliveries.status, 'delivering')));
 }
 
 /**

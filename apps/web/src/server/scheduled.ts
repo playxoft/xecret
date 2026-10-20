@@ -1,8 +1,10 @@
 import { timingSafeEqual, toBase64Url } from '@xecret/core/crypto';
 
 /**
- * Scheduled work, run by the Worker's Cron Trigger through the application
- * itself (P23 — the retained-vault purge is the first, and so far only, job).
+ * Scheduled work, run by the Worker's Cron Triggers through the application
+ * itself: hourly, the retained-vault purge (P23) and the pruning of old webhook
+ * deliveries and read sightings; every five minutes, webhook retries and
+ * read-alert digests (P19 §5, §7). `jobsForCron` is which runs when.
  *
  * ── Why through the app rather than beside it ──
  * The scheduled handler lives in `worker.ts`, outside Next. It could open its
@@ -20,13 +22,63 @@ import { timingSafeEqual, toBase64Url } from '@xecret/core/crypto';
  * no log, no header on the wire, and no other isolate. A request from the
  * internet cannot know it, and outside a scheduled run there is none to know.
  *
- * And even a caller who got through would achieve nothing it should not: the
- * only job deletes retained vaults whose seven days are over, which is what is
- * due anyway, and migration 0020's triggers refuse anything earlier.
+ * And even a caller who got through would achieve nothing it should not: every
+ * job does only what is due anyway — deletes retained vaults whose seven days
+ * are over (migration 0020's triggers refuse anything earlier), prunes rows
+ * past their age, sends deliveries and digests that are owed.
  */
 
 export const SCHEDULED_HEADER = 'x-xecret-scheduled';
 export const VAULT_PURGE_PATH = '/api/internal/scheduled/vault-purge';
+/** Hourly: old webhook deliveries and old read sightings. */
+export const PRUNE_PATH = '/api/internal/scheduled/prune';
+/** Every five minutes: webhook retries, then read-alert digests. */
+export const NOTIFICATIONS_PATH = '/api/internal/scheduled/notifications';
+
+/** The two expressions in `wrangler.toml`'s `[env.production.triggers]`, exactly. */
+export const HOURLY_CRON = '17 * * * *';
+export const FIVE_MINUTE_CRON = '*/5 * * * *';
+
+/**
+ * Which jobs a Cron Trigger runs, by the expression that fired it.
+ *
+ * Anything that is not the five-minute expression runs the hourly jobs. That is
+ * the safe default in the direction that matters: the hourly jobs are
+ * idempotent — they delete only what is already due — so an expression edited
+ * in `wrangler.toml` and not here runs them more often than it needs to, which
+ * costs a few queries, rather than not at all, which would leave retained
+ * vaults past their window undeleted.
+ */
+export function jobsForCron(cron: string): readonly string[] {
+  return cron === FIVE_MINUTE_CRON ? [NOTIFICATIONS_PATH] : [VAULT_PURGE_PATH, PRUNE_PATH];
+}
+
+/**
+ * Runs several jobs, one after another, each in isolation: one that fails is
+ * reported and the next still runs. Throws once all have run if any failed, so
+ * the invocation is marked failed in the platform's own cron history.
+ *
+ * In sequence rather than at once: each job is a request with its own database
+ * connection, and a scheduled invocation shares the same six-connection budget
+ * as any other.
+ */
+export async function runScheduledJobs(
+  fetchApp: (request: Request) => Promise<Response>,
+  origin: string,
+  paths: readonly string[],
+): Promise<void> {
+  const failed: string[] = [];
+  for (const path of paths) {
+    try {
+      await runScheduledJob(fetchApp, origin, path);
+    } catch (cause) {
+      // `runScheduledJob`'s own sentence — a path and a status — or the name of
+      // whatever the in-process call threw. Never a response body.
+      failed.push(cause instanceof Error ? cause.message : path);
+    }
+  }
+  if (failed.length > 0) throw new Error(`Scheduled jobs failed: ${failed.join('; ')}`);
+}
 
 const NONCES = Symbol.for('xecret.scheduled-nonces');
 

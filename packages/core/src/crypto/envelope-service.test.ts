@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { uuidv7 } from '../ids/uuid-v7';
 import { KEY_LENGTH } from './aead';
 import { randomBytes, toBase64Url } from './encoding';
-import { EnvelopeService } from './envelope-service';
+import { EnvelopeService, MAX_ORG_VALUE_BYTES } from './envelope-service';
 import { InMemoryKeyProvider, parseRootKeyMaterial } from './key-provider';
 import { rewrapOrgKey } from './keys';
 import { DecryptionError } from './types';
@@ -147,6 +147,108 @@ describe('EnvelopeService', () => {
     }
 
     expect(keys.size).toBe(10);
+  });
+
+  describe('values sealed under the org key (P19 §5)', () => {
+    const SECRET = 'whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw';
+
+    async function sealed(service: EnvelopeService) {
+      const orgId = uuidv7();
+      const webhookId = uuidv7();
+      const orgKey = await service.createOrgKey(orgId);
+      const value = await service.sealOrgValue({
+        orgId,
+        orgKey,
+        purpose: 'webhook-secret',
+        resourceId: webhookId,
+        plaintext: SECRET,
+      });
+      return { orgId, webhookId, orgKey, value };
+    }
+
+    it('round-trips, and records the version of the org key that sealed it', async () => {
+      const service = new EnvelopeService(provider({ 1: rootV1 }, 1));
+      const { orgId, webhookId, orgKey, value } = await sealed(service);
+
+      expect(value.keyVersion).toBe(orgKey.version);
+      expect(new TextDecoder().decode(value.ciphertext)).not.toContain('whsec_');
+      expect(
+        await service.openOrgValue({
+          orgId,
+          orgKey,
+          purpose: 'webhook-secret',
+          resourceId: webhookId,
+          sealed: value,
+        }),
+      ).toBe(SECRET);
+    });
+
+    it('refuses to open on another row, another organisation or another org key', async () => {
+      const service = new EnvelopeService(provider({ 1: rootV1 }, 1));
+      const { orgId, webhookId, orgKey, value } = await sealed(service);
+      const open = (over: Partial<Parameters<EnvelopeService['openOrgValue']>[0]>) =>
+        service.openOrgValue({
+          orgId,
+          orgKey,
+          purpose: 'webhook-secret',
+          resourceId: webhookId,
+          sealed: value,
+          ...over,
+        });
+
+      // Copied onto another webhook's row: the AAD names the row.
+      await expect(open({ resourceId: uuidv7() })).rejects.toThrow(DecryptionError);
+      // Another organisation's key, presented under this organisation's id.
+      const other = await service.createOrgKey(uuidv7());
+      await expect(open({ orgKey: other })).rejects.toThrow(DecryptionError);
+      // A row claiming a different org key version than the key it is opened with.
+      await expect(open({ sealed: { ...value, keyVersion: 2 } })).rejects.toThrow(DecryptionError);
+      // A flipped bit.
+      const tampered = new Uint8Array(value.ciphertext);
+      tampered[0] = tampered[0]! ^ 1;
+      await expect(open({ sealed: { ...value, ciphertext: tampered } })).rejects.toThrow(
+        DecryptionError,
+      );
+    });
+
+    it('survives a Root KEK rotation, which re-wraps the org key and nothing else', async () => {
+      const before = new EnvelopeService(provider({ 1: rootV1 }, 1));
+      const { orgId, webhookId, orgKey, value } = await sealed(before);
+
+      const rotatedProvider = provider({ 1: rootV1, 2: rootV2 }, 2);
+      const rotated = await rewrapOrgKey({
+        oldRootKey: await rotatedProvider.getRootKey(1),
+        newRootKey: await rotatedProvider.getRootKey(2),
+        newRootKeyVersion: 2,
+        orgId,
+        wrapped: orgKey,
+      });
+
+      const after = new EnvelopeService(provider({ 2: rootV2 }, 2));
+      expect(
+        await after.openOrgValue({
+          orgId,
+          orgKey: rotated,
+          purpose: 'webhook-secret',
+          resourceId: webhookId,
+          sealed: value,
+        }),
+      ).toBe(SECRET);
+    });
+
+    it('refuses to seal more than a small value', async () => {
+      const service = new EnvelopeService(provider({ 1: rootV1 }, 1));
+      const orgId = uuidv7();
+      await expect(
+        service.sealOrgValue({
+          orgId,
+          orgKey: await service.createOrgKey(orgId),
+          purpose: 'webhook-secret',
+          resourceId: uuidv7(),
+          plaintext: 'x'.repeat(MAX_ORG_VALUE_BYTES + 1),
+        }),
+      ).rejects.toThrow(TypeError);
+    });
   });
 
   // Cryptographic erasure: dropping the env key row makes every secret in that

@@ -478,18 +478,23 @@ export {
 export type { OverrideOwner, OverrideRecord } from './overrides';
 
 export {
+  abandonDelivery,
   claimDeliveries,
   claimDueDeliveries,
   countWebhooks,
   createWebhook,
   deleteWebhook,
   disableWebhookForFailures,
+  ENQUEUE_CHUNK,
   enqueueDeliveries,
   findWebhook,
   findWebhookWithSecret,
   listDeliveries,
   listEnabledWebhooksForEvent,
+  listEnabledWebhooksForEvents,
   listWebhooks,
+  loadOrgKeyForSealing,
+  loadOrgKeyVersion,
   pruneWebhookDeliveries,
   recordDeliveryAttempt,
   STALE_CLAIM_MS,
