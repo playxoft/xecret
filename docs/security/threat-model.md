@@ -677,6 +677,48 @@ and an owner's password stays a way in past it (the break-glass, T3). A compromi
 identity provider can sign in as any of that organisation's non-owner members, inside its
 verified domains — that is what attaching one means, and it is bounded to that organisation.
 
+### T14 — The paid secret features as attack surface (P19)
+
+Six new ways for data to move — references, inheritance, overrides, promotion, restore and
+webhooks — and three policies. What each could have become, and what stops it:
+
+- **A reference as a permission bypass** (T3). A developer with write access to staging writes
+  `${production.DB_PASSWORD}` and pulls staging. Refused at write: every reference must name an
+  environment the writer may read (`can()`, the same call a direct pull makes), and refused
+  again at read — every contributing environment is authorised for the reader, and a referenced
+  secret travels only as the one secret named, never its environment. A service token, pinned
+  to one environment, is kept out of the situation entirely (no parent or outward reference on
+  a pinned environment, and no token minted on one).
+- **A server that rewrites a reference** (T7). The declaration is plaintext the server could
+  edit, so the client compares the decrypted template text against it and refuses a mismatch;
+  every value is still bound by its AAD to its own row and environment, so a server cannot
+  relocate a ciphertext into a view either.
+- **A forged override** (T7, T9). The first draft sealed overrides to the owner's public key,
+  which anybody holding it — the server included — could do: a compromised Worker could have
+  set `NODE_OPTIONS` on a developer's machine. Overrides are now GCM under a key HKDF-derived
+  from the owner's own private key (spec §2.2 type 13), so only the owner can make one the CLI
+  accepts. A service token is refused every override route and no bundle carries one, so an
+  override can never reach a CI run.
+- **Promotion and restore as laundering** (T3). Both are ordinary writes held to ordinary
+  grants on both sides, by a person, in one transaction, audited per secret. A restore is held to
+  the instant's value tags, so a client cannot "restore" a value that was never there.
+- **Webhooks as exfiltration or SSRF** (T1, T7). Payloads are an allowlist with no field a value
+  could go in; endpoints are `https` only, never private, loopback or link-local literals,
+  re-checked at every attempt, and redirects are never followed. A Worker cannot reach a
+  private network anyway, but a DNS name pointing at one is not stopped by the literal check —
+  the egress does that, not the validator. Signing secrets are sealed under the organisation's
+  master key and redacted from logs by shape.
+- **Client-enforced policies** (T3). Disabling plaintext export and the secret policy's value
+  rules run in the clients that hold the plaintext; a modified client skips them. They are
+  documented as guard rails, not boundaries. The name rule, the token policy and every plan gate
+  are server-side.
+- **Read alerts as a mail bomb** (T1). One email an hour per organisation at most, whatever the
+  number of new addresses; sightings are written after the response and never slow or refuse a
+  read.
+
+**Residual risk:** Low. The new surface reuses the existing authorisation call at every
+crossing, and no feature here gives the server a plaintext it did not already have.
+
 ---
 
 ## 4. Risk summary
@@ -696,6 +738,7 @@ verified domains — that is what attaching one means, and it is bounded to that
 | T11 | Vault reset by whoever holds the browser or the inbox | High | Low–Med | **Medium** without MFA; recoverable for 7 days |
 | T12 | The emailed escape archive, attacked offline | High | Low–Med | **Medium (accepted)**; Low with a strong passphrase |
 | T13 | A customer's identity provider, or whoever can rewire it | Critical (one org) | Low–Med | Low–Medium |
+| T14 | The paid secret features (references, overrides, promotion, restore, webhooks, policies) | High | Low–Med | Low |
 
 **Where to spend effort, in order:** T2 (test matrix as a CI gate) · T10 (escrow drills) ·
 T7 (dependency discipline, anomaly detection) · T5 (blast-radius limits, OIDC in v2).
@@ -721,3 +764,4 @@ customer's own systems after legitimate secret delivery.
 | 2026-10-18 | — | WS-5 (organisation SSO settings), review round 1: Boundary 4 added — a customer-attached identity provider; T1 corrected — `state` and PKCE do not cover the planted-AuthKit-session login CSRF, and the confirmation that does is described; T3 — `sso_required` is enforced per request again, and the owner exemption is recorded as a deliberate break-glass with a cost; T13 added — SSO administration owners-only with a step-up for the credential-grade portal link, JIT never re-admits a removed member, the link records its WorkOS environment, the add-on as the blast-radius gate |
 | 2026-10-18 | — | WS-5, review round 2: T1 restated as it now stands — the confirmation → `next` → `?org=` redirect chain closed (no `next` under `/api/`, the deep link honoured only with the warning page's browser-bound token, an SSO sign-in through an organisation the account is not in always held back), sign-out ends the AuthKit session, the last-account cookie, a decline ends the AuthKit session and is audited, inert display of the address and the organisation name; T13 — the portal's own fresh-sign-in record (emailed codes count; dated by `auth_time`), stale invitations withdrawn at JIT join and removal, `workos_home` so no other environment can write a link, foreign links ignored on the sign-in path, the owner exemption audited at CLI approval and owner invitations |
 | 2026-10-19 | — | WS-5, review round 3: T1 — reason (b), the not-member hold-back, restated as covering first-time and non-member identities only (in the attack the returning identity is a member of the attacker's organisation; the warning page's token and the `/api` refusal are what stop an unconfirmed deep link); a finished sign-in's `next` never names a sign-in screen; the double-click window swap on the two one-click screens added to what T1 leaves |
+| 2026-10-20 | — | P19 (paid secret features): T14 added — references held to `can()` at write and read, the declaration checked against the decrypted text, overrides made unforgeable by the server (symmetric under the owner's own key, replacing a sealed box), promotion and restore as ordinary audited writes, webhook payload allowlist and endpoint rules, client-enforced policies stated as guard rails, the read-alert throttle |

@@ -961,7 +961,27 @@ audit_logs — no FKs by design; references are soft
       organisations and VALIDATE of organizations_workos_link_client_check;
       sessions.workos_session_id (the AuthKit session, ended at sign-out) and
       sessions.fresh_auth_at (the setup portal's step-up) — additive
+0024  secret references (P19 §1): environments.parent_environment_id (same-project
+      composite FK, never itself), secret_versions.declared_references (jsonb array,
+      GIN-indexed for "who points here"), and 'template' in secrets_value_type_check
+      — additive; no new grant
+0025  personal_overrides (P19 §2): one per (environment, user, name), an xk2.gcm.
+      blob under the owner's override key; cascades with the environment, the user
+      and the organisation — additive; grants
+0026  webhooks and webhook_deliveries (P19 §5): endpoints with their sealed signing
+      secret and failure run, and the delivery log/queue — additive; grants
+0027  org_policies (P19 §6, §8: token policy columns, secret_policy jsonb) and
+      environments.plaintext_export_disabled / .read_alerts (P19 §9, §7) — additive;
+      grants for the new table
+0028  environment_read_sightings and read_alert_digests (P19 §7) — additive; grants
 ```
+
+Migrations 0024–0028 (P19) are additive and follow the same rule as 0018–0023: **apply them
+before the code that names their columns**, because from that build on every `select()` on
+`environments` and `secret_versions` names them. Nothing older reads the five new tables, and
+every row older code writes satisfies the new CHECKs. Their numbers were taken while P12's
+billing migrations were in flight on another branch; whichever merges second renumbers its
+files and journal entries rather than sharing a number.
 
 Migration 0022 (WS-5, review round 1) is additive, and — like 0021 — **must be applied before
 the code that names its columns**: from that build on every `select()` on `sessions`,
@@ -1036,7 +1056,7 @@ anywhere. Migrations run as a separate, more privileged role.
 
 ## 11. Deferred to later phases
 
-`webhooks` · `secret_references` for
-cross-environment inheritance · `billing_*` (the `seat_limit` column is the only hook needed
-now) · `oidc_trust_policies` for GitHub Actions federation (Phase 8 designs the token table
-for it; the feature is v2).
+`billing_*` (the `seat_limit` column is the only hook needed now) · `oidc_trust_policies` for
+GitHub Actions federation (Phase 8 designs the token table for it; the feature is v2).
+Webhooks and cross-environment references, once listed here, arrived in 0024–0026 — the
+references not as a table of their own but as a declaration on the version that holds them.
