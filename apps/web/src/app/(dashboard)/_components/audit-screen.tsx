@@ -95,6 +95,18 @@ const ACTIONS = [
   'org.sso.portal_link_created',
   'org.sso.required_toggled',
   'org.sso.jit_toggled',
+  'plan.changed',
+  'billing.checkout_started',
+  'billing.plan_change_requested',
+  'billing.portal_opened',
+  'billing.seats_synced',
+  'billing.payment_failed',
+  'billing.refunded',
+  'billing.dispute_opened',
+  'billing.region_mismatch',
+  'billing.duplicate_subscription',
+  'billing.drift_detected',
+  'billing.usage_reported',
 ] as const;
 
 interface Filters {
