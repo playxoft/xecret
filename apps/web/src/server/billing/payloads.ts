@@ -85,6 +85,7 @@ export type DodoPayment = z.infer<typeof dodoPaymentSchema>;
 export const dodoRefundSchema = z.object({
   refund_id: id,
   payment_id: id,
+  customer: z.optional(z.object({ customer_id: id })),
   is_partial: z.optional(z.boolean()),
 });
 export type DodoRefund = z.infer<typeof dodoRefundSchema>;

@@ -141,7 +141,29 @@ export async function readJsonBody(request: Request): Promise<unknown> {
   }
 }
 
-async function readBoundedText(request: Request): Promise<string> {
+/**
+ * The body as the exact text that arrived, bounded — for a route that must
+ * verify a signature over the raw bytes before anything parses them (the
+ * payment webhook). Malformed UTF-8 is refused rather than replaced: a
+ * replacement character would change the bytes the signature covers.
+ */
+export async function readRawBody(request: Request, maxBytes: number): Promise<string> {
+  const declared = request.headers.get('content-length');
+  if (declared !== null && Number(declared) > maxBytes) {
+    throw errors.tooLarge('Request body is too large.');
+  }
+  try {
+    return await readBoundedText(request, maxBytes);
+  } catch (cause) {
+    if (cause instanceof ApiError) throw cause;
+    throw errors.badRequest('Request body is not valid UTF-8.');
+  }
+}
+
+async function readBoundedText(
+  request: Request,
+  maxBytes: number = MAX_REQUEST_BODY_BYTES,
+): Promise<string> {
   const body = request.body;
   if (body === null) return '';
 
@@ -153,7 +175,7 @@ async function readBoundedText(request: Request): Promise<string> {
     const { done, value } = await reader.read();
     if (done) break;
     total += value.byteLength;
-    if (total > MAX_REQUEST_BODY_BYTES) {
+    if (total > maxBytes) {
       await reader.cancel();
       throw errors.tooLarge('Request body is too large.');
     }
