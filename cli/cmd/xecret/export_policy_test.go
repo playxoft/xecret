@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -113,6 +114,82 @@ func TestExportRefusesAnE2eeEnvironmentThePolicyDisables(t *testing.T) {
 	assertNotWritten(t, path)
 	if fake.any("/api/auth/vault") {
 		t.Error("a refused export opened the vault")
+	}
+}
+
+// resolvedBundle is a version 2 bundle of web/dev that inherits from
+// web/production, with each environment's own export setting and the
+// effective one the server works out. Refused before anything is decrypted, so
+// the parent's layer needs no key that opens anything.
+func (w *world) resolvedBundle(effective, own, parent string, rows ...api.ClientSecret) []byte {
+	w.t.Helper()
+	parentID := "018f3b2c-9c1a-7c3d-8e4f-3a00000000f0"
+	document := map[string]any{
+		"bundle": true, "bundleVersion": 2, "encryptionMode": "e2ee",
+		"keys": w.keyState(false)["keys"], "secrets": rows,
+		"environment": map[string]any{
+			"id": worldEnvID, "projectSlug": "web", "slug": "dev", "parentEnvironmentId": parentID,
+			"policy": map[string]any{"plaintextExport": own},
+		},
+		"layers": []any{map[string]any{
+			"environmentId": parentID, "projectSlug": "web", "environmentSlug": "production",
+			"parentEnvironmentId": nil,
+			"keys": map[string]any{
+				"encryptionMode": "e2ee", "environmentId": parentID,
+				"activeEdk": map[string]any{"id": worldEdkID, "version": 1},
+				"myGrant":   map[string]any{"edkSealed": w.grant.EDKSealed, "ehkSealed": w.grant.EHKSealed},
+			},
+			"secrets": []api.ClientSecret{w.row("018f3b2c-9c1a-7c3d-8e4f-3a00000000f1", "DB_PASSWORD", "hunter2-production", 1)},
+			"policy":  map[string]any{"plaintextExport": parent},
+		}},
+		"policy": map[string]any{"plaintextExport": effective},
+	}
+	raw, err := json.Marshal(document)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return raw
+}
+
+// Review round 1, M1: a resolved pull of dev, which inherits production's
+// values, is refused when production disables export — and the refusal names
+// production, whose admins can change it, rather than dev, whose setting is
+// already "allowed".
+func TestPullRefusesAResolvedBundleWhoseParentDisablesExport(t *testing.T) {
+	w := newWorld(t, e2ee.RecipientMember)
+	fake := newFakeAPI(t)
+	loggedIn(t, w, fake)
+	fake.reply(http.MethodGet, "/pull", http.StatusOK,
+		w.resolvedBundle("disabled", "allowed", "disabled", w.row(worldSecretID, "LOG_LEVEL", "debug", 1)))
+
+	path := outFile(t)
+	stdout, _, err := captured(t, func() error { return cmdPull(withScope("--format", "env", "-o", path)) })
+	want := "plaintext export is disabled for web/dev: it reads values from web/production, whose " +
+		"environment policy disables plaintext export; an owner or admin of the organisation can " +
+		"change it in that environment's settings. 'xecret run' is unaffected."
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v", err)
+	}
+	if stdout != "" {
+		t.Errorf("a refused pull printed %q", stdout)
+	}
+	assertNotWritten(t, path)
+	if fake.any("/api/auth/vault") {
+		t.Error("a refused pull opened the vault")
+	}
+}
+
+// The environment's own refusal still reads as its own, whatever its layers say.
+func TestAResolvedBundleRefusedByItsOwnPolicyNamesItself(t *testing.T) {
+	w := newWorld(t, e2ee.RecipientMember)
+	fake := newFakeAPI(t)
+	loggedIn(t, w, fake)
+	fake.reply(http.MethodGet, "/pull", http.StatusOK,
+		w.resolvedBundle("disabled", "disabled", "allowed", w.row(worldSecretID, "LOG_LEVEL", "debug", 1)))
+
+	_, _, err := captured(t, func() error { return cmdPull(withScope("--format", "env", "-o", outFile(t))) })
+	if err == nil || err.Error() != disabledMessage {
+		t.Fatalf("err = %v", err)
 	}
 }
 

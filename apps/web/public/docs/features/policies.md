@@ -76,6 +76,15 @@ download refuse for that environment, naming the policy and who can change it.
 `xecret run` is never affected: it puts values into a process without writing
 them anywhere, which is the habit this policy exists to encourage.
 
+The setting follows the **values**, wherever they are read from. A `pull` of
+staging that [inherits](references.md#inheritance) from production, or whose
+template reaches `${production.DB_PASSWORD}`, writes production's values to a
+file, so it is refused when production disables export — and the refusal names
+production, whose admins can change it. An environment that is only walked
+through to reach a reference, and contributes no value of its own, does not
+count. The dashboard's download of an environment's own values is decided by
+that environment alone, because nothing else is in it.
+
 What it can and cannot do, plainly: anybody who may read a value can still write
 it down — they hold it in plaintext the moment they read it. What the policy
 removes is the one-command route from a vault to an unencrypted file on a

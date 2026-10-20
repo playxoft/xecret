@@ -29,7 +29,13 @@ import type { Executor } from './shared';
  * another tenant's environment however its text is written.
  */
 
-/** An environment as the graph needs it: identity, place, parent and mode. */
+/**
+ * An environment as the graph needs it: identity, place, parent and mode — and
+ * the two switches a resolved pull has to honour for every environment it reads,
+ * not only the one it was asked for: whether plaintext export is disabled (the
+ * bundle's effective policy is the strictest of its contributors) and whether
+ * reads of it are noted for new-address alerts.
+ */
 export interface GraphEnvironmentRecord {
   id: string;
   projectId: string;
@@ -38,6 +44,9 @@ export interface GraphEnvironmentRecord {
   parentEnvironmentId: string | null;
   encryptionMode: string;
   isProduction: boolean;
+  plaintextExportDisabled: boolean;
+  /** `null` is the default: on for production, off elsewhere. */
+  readAlerts: boolean | null;
 }
 
 /** One live secret's current version, as metadata. */
@@ -58,6 +67,8 @@ const ENVIRONMENT_COLUMNS = {
   parentEnvironmentId: environments.parentEnvironmentId,
   encryptionMode: environments.encryptionMode,
   isProduction: environments.isProduction,
+  plaintextExportDisabled: environments.plaintextExportDisabled,
+  readAlerts: environments.readAlerts,
 };
 
 function liveEnvironmentsOf(orgId: string): SQL | undefined {

@@ -466,7 +466,7 @@ func cmdPull(args []string) error {
 	// — so the server says what the policy is and this is where it is applied.
 	// See exportDisabledError.
 	if pulled.ExportDisabled() {
-		return exportDisabledError(resolved)
+		return exportDisabledError(resolved, pulled.ExportRefusedBy())
 	}
 
 	document := pulled.Document

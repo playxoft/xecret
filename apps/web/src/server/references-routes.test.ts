@@ -329,6 +329,7 @@ interface LayerShape {
     myGrant: { edkSealed: string };
   } | null;
   secrets: SecretShape[];
+  policy?: { plaintextExport: string };
 }
 
 interface Body {
@@ -339,9 +340,15 @@ interface Body {
     fields?: { field: string; message: string }[];
   };
   bundleVersion?: number;
-  environment?: { slug?: string; parent?: string | null; parentEnvironmentId?: string | null };
+  environment?: {
+    slug?: string;
+    parent?: string | null;
+    parentEnvironmentId?: string | null;
+    policy?: { plaintextExport: string };
+  };
   secrets?: SecretShape[];
   layers?: LayerShape[];
+  policy?: { plaintextExport: string };
 }
 
 interface Answer {
@@ -688,6 +695,118 @@ describe('pulling only an environment’s own values (layers=none)', () => {
     const answer = await pullOwn(org, 'development');
     expect(answer.status).toBe(200);
     expect(answer.body.bundleVersion).toBe(1);
+  });
+});
+
+describe('the export policy a resolved pull carries', () => {
+  // Review round 1, M1: the bundle used to carry the pulled environment's own
+  // setting alone, so disabling export on production was stepped round by a
+  // staging template reaching into it, or a staging that inherits from it.
+  async function disableExport(env: Env) {
+    await t.pg.query(`update environments set plaintext_export_disabled = true where id = $1`, [
+      env.id,
+    ]);
+  }
+
+  it('is disabled when a parent that contributes values has export disabled', async () => {
+    const org = await seedOrg('pro');
+    const project = await seedProject(org);
+    const production = await seedEnv(org, project, 'production', { production: true });
+    const staging = await seedEnv(org, project, 'staging', { parentId: production.id });
+    for (const env of [production, staging])
+      await grantTo(env, { memberUserId: org.owner.id }, org.owner.id);
+    await seedSecret(org, production, 'DB_PASSWORD');
+    await seedSecret(org, staging, 'LOG_LEVEL');
+    await disableExport(production);
+    caller = sessionOf(org.owner);
+
+    const answer = await pull(org, 'staging');
+    expect(answer.status).toBe(200);
+    expect(answer.body.policy).toEqual({ plaintextExport: 'disabled' });
+    // Each environment's own answer, so a client can name the one that refused.
+    expect(answer.body.environment!.policy).toEqual({ plaintextExport: 'allowed' });
+    expect(answer.body.layers!.map((layer) => [layer.environmentSlug, layer.policy])).toEqual([
+      ['production', { plaintextExport: 'disabled' }],
+    ]);
+  });
+
+  it('is disabled when a template reaches into an environment with export disabled', async () => {
+    const org = await seedOrg('pro');
+    const project = await seedProject(org);
+    const production = await seedEnv(org, project, 'production', { production: true });
+    const staging = await seedEnv(org, project, 'staging');
+    for (const env of [production, staging])
+      await grantTo(env, { memberUserId: org.owner.id }, org.owner.id);
+    await seedSecret(org, production, 'DB_PASSWORD');
+    await seedSecret(org, staging, 'URL', [
+      { environment: 'production', name: 'DB_PASSWORD', environmentId: production.id },
+    ]);
+    await disableExport(production);
+    caller = sessionOf(org.owner);
+
+    const answer = await pull(org, 'staging');
+    expect(answer.status).toBe(200);
+    expect(answer.body.policy).toEqual({ plaintextExport: 'disabled' });
+  });
+
+  it('is the environment’s own when it is the one that disables export', async () => {
+    const org = await seedOrg('pro');
+    const project = await seedProject(org);
+    const base = await seedEnv(org, project, 'base');
+    const staging = await seedEnv(org, project, 'staging', { parentId: base.id });
+    for (const env of [base, staging])
+      await grantTo(env, { memberUserId: org.owner.id }, org.owner.id);
+    await seedSecret(org, base, 'HOST');
+    await disableExport(staging);
+    caller = sessionOf(org.owner);
+
+    const answer = await pull(org, 'staging');
+    expect(answer.body.policy).toEqual({ plaintextExport: 'disabled' });
+    expect(answer.body.environment!.policy).toEqual({ plaintextExport: 'disabled' });
+    expect(answer.body.layers![0]!.policy).toEqual({ plaintextExport: 'allowed' });
+  });
+
+  it('ignores a layer that contributes no value — it is carried only to walk the chain', async () => {
+    // app's template reaches shared.DB_HOST; shared inherits from base, which is
+    // carried so a client can walk shared's chain and sets nothing reached.
+    const org = await seedOrg('pro');
+    const project = await seedProject(org);
+    const base = await seedEnv(org, project, 'base');
+    const shared = await seedEnv(org, project, 'shared', { parentId: base.id });
+    const app = await seedEnv(org, project, 'app');
+    for (const env of [base, shared, app])
+      await grantTo(env, { memberUserId: org.owner.id }, org.owner.id);
+    await seedSecret(org, base, 'UNRELATED');
+    await seedSecret(org, shared, 'DB_HOST');
+    await seedSecret(org, app, 'URL', [
+      { environment: 'shared', name: 'DB_HOST', environmentId: shared.id },
+    ]);
+    await disableExport(base);
+    caller = sessionOf(org.owner);
+
+    const answer = await pull(org, 'app');
+    expect(answer.status).toBe(200);
+    const baseLayer = answer.body.layers!.find((layer) => layer.environmentId === base.id);
+    expect(baseLayer).toMatchObject({ keys: null, policy: { plaintextExport: 'disabled' } });
+    expect(answer.body.policy).toEqual({ plaintextExport: 'allowed' });
+  });
+
+  it('leaves the own-values pull (layers=none) to the environment’s own setting', async () => {
+    const org = await seedOrg('pro');
+    const project = await seedProject(org);
+    const production = await seedEnv(org, project, 'production', { production: true });
+    const staging = await seedEnv(org, project, 'staging', { parentId: production.id });
+    for (const env of [production, staging])
+      await grantTo(env, { memberUserId: org.owner.id }, org.owner.id);
+    await seedSecret(org, production, 'DB_PASSWORD');
+    await seedSecret(org, staging, 'LOG_LEVEL');
+    await disableExport(production);
+    caller = sessionOf(org.owner);
+
+    const answer = await pullOwn(org, 'staging');
+    expect(answer.status).toBe(200);
+    expect(answer.body.layers).toEqual([]);
+    expect(answer.body.policy).toEqual({ plaintextExport: 'allowed' });
   });
 });
 

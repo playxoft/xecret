@@ -325,7 +325,7 @@ func (a *app) exportDocument(
 
 	apiErr, ok := api.AsError(err)
 	if ok && apiErr.Status == 403 && strings.HasPrefix(apiErr.Message, "export_disabled:") {
-		return nil, exportDisabledError(resolved)
+		return nil, exportDisabledError(resolved, nil)
 	}
 	if !ok || apiErr.Status != 409 {
 		return nil, err
@@ -339,7 +339,7 @@ func (a *app) exportDocument(
 	// pull is the same endpoint `run` reads through — so it says what the policy
 	// is, and the refusal is this process's to make.
 	if pulled.ExportDisabled() {
-		return nil, exportDisabledError(resolved)
+		return nil, exportDisabledError(resolved, pulled.ExportRefusedBy())
 	}
 	if pulled.Bundle == nil {
 		// The export refused for a reason that was not the encryption mode, and
@@ -371,11 +371,35 @@ func (a *app) exportDocument(
 // A fresh error rather than the server's 403 wrapped: the hint that error would
 // collect — "ask an admin to review your access" — sends somebody to ask for
 // access they already have.
-func exportDisabledError(resolved scope) error {
+//
+// ── Naming the environment that refused ──
+//
+// A resolved pull is refused when any environment it draws values from
+// disables export — a parent, or one a template reaches into — and a message
+// naming only the environment pulled would send its admins to a setting that
+// is already "allowed". refusedBy is what the bundle says about each one; when
+// it names environments other than the one pulled, so does the message. Empty
+// (an older server, or a server-mode pull) falls back to the environment
+// pulled, which is then the one that refused.
+func exportDisabledError(resolved scope, refusedBy []string) error {
+	pulled := resolved.Project + "/" + resolved.Environment
+	var others []string
+	for _, name := range refusedBy {
+		if name != pulled {
+			others = append(others, name)
+		}
+	}
+	if len(others) == 0 {
+		return fmt.Errorf(
+			"plaintext export is disabled for %s by its environment policy; an owner or admin of the "+
+				"organisation can change it in the environment's settings. 'xecret run' is unaffected.",
+			pulled)
+	}
 	return fmt.Errorf(
-		"plaintext export is disabled for %s/%s by its environment policy; an owner or admin of the "+
-			"organisation can change it in the environment's settings. 'xecret run' is unaffected.",
-		resolved.Project, resolved.Environment)
+		"plaintext export is disabled for %s: it reads values from %s, whose environment policy "+
+			"disables plaintext export; an owner or admin of the organisation can change it in that "+
+			"environment's settings. 'xecret run' is unaffected.",
+		pulled, strings.Join(others, ", "))
 }
 
 // noteUnappliedOverrides says, on stderr, when the person running `pull` or

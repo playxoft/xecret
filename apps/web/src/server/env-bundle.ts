@@ -93,8 +93,22 @@ export interface ClientEnvironmentBundle {
    * bundle may be written to a file. Carried here because the client does the
    * formatting, so only the client can refuse it — see `export-policy.ts`.
    * Absent from bundles served before P19, which a client reads as "allowed".
+   *
+   * In a version 2 bundle this is the **effective** policy: `disabled` when the
+   * environment being read, or any layer that contributes a value to it, has
+   * export disabled. Every client that reads only this field — every CLI that
+   * shipped before the per-layer policies did — therefore refuses an export of
+   * production's values through a staging template, which is the bypass the
+   * effective policy exists to close. The per-environment answers ride beside
+   * it, on `environment.policy` and each layer's `policy`, so a client can say
+   * *which* environment's policy refused.
    */
-  policy: { plaintextExport: PlaintextExport };
+  policy: BundlePolicy;
+}
+
+/** What a bundle says about leaving xecret's control. */
+export interface BundlePolicy {
+  plaintextExport: PlaintextExport;
 }
 
 /**
@@ -127,6 +141,8 @@ export interface ResolvedEnvironmentBundle extends Omit<
     projectSlug: string;
     slug: string;
     parentEnvironmentId: string | null;
+    /** This environment's own setting, before any layer's is taken into account. */
+    policy: BundlePolicy;
   };
   secrets: ResolvableSecretPayload[];
   layers: BundleLayer[];
@@ -140,6 +156,13 @@ export interface BundleLayer {
   /** `null` for a layer that contributes no secret and needs no key. */
   keys: LayerKeys | null;
   secrets: ResolvableSecretPayload[];
+  /**
+   * The layer's own export setting. It counts towards the bundle's effective
+   * `policy` only when the layer contributes a secret (`keys` is not `null`): a
+   * layer carried only so the chain can be walked hands the client no value to
+   * write out.
+   */
+  policy: BundlePolicy;
 }
 
 /** The part of `GET …/keys` that opens a layer: the active key and the caller's grant. */
@@ -283,6 +306,7 @@ export async function clientEnvironmentBundle(
     );
   }
 
+  const ownPolicy: BundlePolicy = { plaintextExport: plaintextExportOf(scope.environment) };
   const ownBundle = (layers: BundleLayer[]): ResolvedEnvironmentBundle => ({
     bundle: true,
     bundleVersion: 2,
@@ -293,13 +317,11 @@ export async function clientEnvironmentBundle(
       projectSlug: scope.project.slug,
       slug: scope.environment.slug,
       parentEnvironmentId: scope.environment.parentEnvironmentId,
+      policy: ownPolicy,
     },
     secrets: sortByName(materials.map(toResolvable)),
     layers,
-    // The environment being read decides, never a layer: a parent's policy
-    // governs exports of the parent, and inheriting its values does not make
-    // this environment's own setting any less its own.
-    policy: { plaintextExport: plaintextExportOf(scope.environment) },
+    policy: effectivePolicy(ownPolicy, layers),
   });
 
   // ── Own values only: the graph is not walked ──
@@ -390,8 +412,35 @@ export async function clientEnvironmentBundle(
       parentEnvironmentId: record.parentEnvironmentId,
       keys: layerKeys,
       secrets,
+      policy: { plaintextExport: plaintextExportOf(record) },
     });
   }
 
   return { bundle: ownBundle(layers), layerReads, referencedReads };
+}
+
+/**
+ * The export policy a resolved bundle carries: `disabled` if the environment
+ * being read, or **any layer that contributes a value**, has plaintext export
+ * disabled.
+ *
+ * ── Why the strictest, not the environment's own ──
+ * The first version reported the pulled environment's setting alone, on the
+ * reasoning that a parent's policy governs exports *of the parent*. It does —
+ * and a resolved pull is one. A `pull --format env` of staging whose template
+ * reaches `${production.DB_PASSWORD}`, or whose parent is production, writes
+ * production's values to a file; reporting staging's "allowed" made disabling
+ * export on production a setting anybody with a staging template could step
+ * round. The values decide, wherever they were stored.
+ *
+ * A layer that contributes nothing — carried only so a client can walk the
+ * chain to a referenced environment — puts no value in the output and does not
+ * count. Nor does any of this reach the own-values pull (`layers=none`), which
+ * carries no layer at all.
+ */
+export function effectivePolicy(own: BundlePolicy, layers: readonly BundleLayer[]): BundlePolicy {
+  const refused =
+    own.plaintextExport === 'disabled' ||
+    layers.some((layer) => layer.keys !== null && layer.policy.plaintextExport === 'disabled');
+  return { plaintextExport: refused ? 'disabled' : 'allowed' };
 }

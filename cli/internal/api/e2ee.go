@@ -164,6 +164,12 @@ type EnvironmentBundle struct {
 	// Policy is what the environment's policy says about this bundle leaving
 	// xecret's control. Absent from a server that predates the policy, which is
 	// the same answer as "allowed".
+	//
+	// In a version 2 bundle it is the *effective* policy: "disabled" when the
+	// environment, or any layer that contributes a value to it, disables export
+	// — so a client that reads only this field still refuses to write
+	// production's values out through a staging template. The per-environment
+	// answers are on Environment.Policy and each layer's Policy.
 	Policy *BundlePolicy `json:"policy,omitempty"`
 }
 
@@ -174,6 +180,9 @@ type BundleEnvironment struct {
 	Slug        string `json:"slug"`
 	// ParentEnvironmentID is null for an environment that inherits from nothing.
 	ParentEnvironmentID *string `json:"parentEnvironmentId"`
+	// Policy is this environment's own export setting, before any layer's. Absent
+	// from a server that sends only the effective policy.
+	Policy *BundlePolicy `json:"policy,omitempty"`
 }
 
 // BundleLayer is one environment a version 2 bundle carries beyond the one
@@ -194,6 +203,14 @@ type BundleLayer struct {
 	// only so the client can walk the same chain the server walked.
 	Keys    *EnvironmentKeys `json:"keys"`
 	Secrets []ClientSecret   `json:"secrets"`
+	// Policy is the layer's own export setting. It counts only for a layer that
+	// contributes a value (Keys not null). Absent from an older server.
+	Policy *BundlePolicy `json:"policy,omitempty"`
+}
+
+// contributes reports whether a layer hands the client any value to write out.
+func (l BundleLayer) contributes() bool {
+	return l.Keys != nil || len(l.Secrets) > 0
 }
 
 // BundlePolicy is the `policy` of a bundle.
@@ -242,11 +259,44 @@ type Pulled struct {
 // ExportDisabled reports whether the environment's policy refuses a plaintext
 // copy of what this pull produced — the question `pull` and `export` ask before
 // writing anything, and `run` never asks.
+//
+// For a version 2 bundle it is asked of every environment the output draws
+// on, not only the one being pulled: the server's effective policy says so,
+// and a layer's own "disabled" is honoured here as well, so a server that sent
+// the per-layer answers but not the effective one cannot make a difference.
 func (p *Pulled) ExportDisabled() bool {
 	if p.Bundle != nil {
-		return p.Bundle.Policy != nil && p.Bundle.Policy.PlaintextExport == PlaintextExportDisabled
+		if disabled(p.Bundle.Policy) {
+			return true
+		}
+		return len(p.ExportRefusedBy()) > 0
 	}
 	return p.PlaintextExport == PlaintextExportDisabled
+}
+
+// ExportRefusedBy names, as "project/environment", each environment whose own
+// policy refuses this output: the one pulled, if it is one, and every layer
+// that contributes a value. Empty when the server did not say which — a
+// version 1 bundle, a server-mode document, or a server that sends only the
+// effective policy — and the caller then names the environment it pulled.
+func (p *Pulled) ExportRefusedBy() []string {
+	if p.Bundle == nil {
+		return nil
+	}
+	var names []string
+	if environment := p.Bundle.Environment; environment != nil && disabled(environment.Policy) {
+		names = append(names, environment.ProjectSlug+"/"+environment.Slug)
+	}
+	for _, layer := range p.Bundle.Layers {
+		if layer.contributes() && disabled(layer.Policy) {
+			names = append(names, layer.ProjectSlug+"/"+layer.EnvironmentSlug)
+		}
+	}
+	return names
+}
+
+func disabled(policy *BundlePolicy) bool {
+	return policy != nil && policy.PlaintextExport == PlaintextExportDisabled
 }
 
 // Pull fetches an environment.

@@ -124,6 +124,47 @@ func TestPullReadsAVersionTwoBundle(t *testing.T) {
 	}
 }
 
+// Review round 1, M1: a layer that contributes values and disables export
+// refuses the output — named — even from a server that sent only the
+// per-environment answers and an "allowed" effective policy; a layer carried
+// only to walk the chain does not.
+func TestExportPolicyIsAskedOfEveryContributingLayer(t *testing.T) {
+	bundle := func(effective, ownPolicy, contributing, walkedOnly string) string {
+		return `{"bundle":true,"bundleVersion":2,"encryptionMode":"e2ee",
+			"keys":{"encryptionMode":"e2ee","environmentId":"env-staging","activeEdk":{"id":"k1","version":1}},
+			"environment":{"id":"env-staging","projectSlug":"api","slug":"staging","parentEnvironmentId":"env-prod",
+			               "policy":{"plaintextExport":"` + ownPolicy + `"}},
+			"secrets":[],
+			"layers":[
+				{"environmentId":"env-prod","projectSlug":"api","environmentSlug":"production","parentEnvironmentId":null,
+				 "keys":{"encryptionMode":"e2ee","environmentId":"env-prod","activeEdk":{"id":"k2","version":1}},
+				 "secrets":[{"id":"s1","name":"DB_PASSWORD","ciphertext":"xk2.gcm.x","version":1}],
+				 "policy":{"plaintextExport":"` + contributing + `"}},
+				{"environmentId":"env-root","projectSlug":"api","environmentSlug":"root","parentEnvironmentId":null,
+				 "keys":null,"secrets":[],"policy":{"plaintextExport":"` + walkedOnly + `"}}
+			],
+			"policy":{"plaintextExport":"` + effective + `"}}`
+	}
+
+	refused := pullOnce(t, bundle("allowed", "allowed", "disabled", "allowed"))
+	if !refused.ExportDisabled() {
+		t.Error("a contributing layer that disables export was ignored")
+	}
+	if got := refused.ExportRefusedBy(); len(got) != 1 || got[0] != "api/production" {
+		t.Errorf("ExportRefusedBy = %v, want [api/production]", got)
+	}
+
+	walked := pullOnce(t, bundle("allowed", "allowed", "allowed", "disabled"))
+	if walked.ExportDisabled() || len(walked.ExportRefusedBy()) != 0 {
+		t.Errorf("a layer that contributes nothing refused the export: %v", walked.ExportRefusedBy())
+	}
+
+	own := pullOnce(t, bundle("disabled", "disabled", "allowed", "allowed"))
+	if got := own.ExportRefusedBy(); !own.ExportDisabled() || len(got) != 1 || got[0] != "api/staging" {
+		t.Errorf("the environment's own refusal: disabled=%v by=%v", own.ExportDisabled(), got)
+	}
+}
+
 // A server that predates the policy says nothing, which is "allowed".
 func TestABundleWithNoPolicyAllowsExport(t *testing.T) {
 	pulled := pullOnce(t, `{"bundle":true,"bundleVersion":1,"encryptionMode":"e2ee",
