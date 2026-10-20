@@ -963,33 +963,34 @@ audit_logs — no FKs by design; references are soft
       sessions.fresh_auth_at (the setup portal's step-up) — additive
 0024  (P12, payments — on its own branch; see below)
 0025  (P12, payments, review round 1 — on its own branch; see below)
-0026  secret references (P19 §1): environments.parent_environment_id (same-project
+0026  (P12, payments, review round 2 — on its own branch; see below)
+0027  secret references (P19 §1): environments.parent_environment_id (same-project
       composite FK, never itself), secret_versions.declared_references (jsonb array,
       GIN-indexed for "who points here"), and 'template' in secrets_value_type_check
       — additive; no new grant
-0027  personal_overrides (P19 §2): one per (environment, user, name), an xk2.gcm.
+0028  personal_overrides (P19 §2): one per (environment, user, name), an xk2.gcm.
       blob under the owner's override key; cascades with the environment, the user
       and the organisation — additive; grants
-0028  webhooks and webhook_deliveries (P19 §5): endpoints with their sealed signing
+0029  webhooks and webhook_deliveries (P19 §5): endpoints with their sealed signing
       secret and failure run, and the delivery log/queue — additive; grants
-0029  org_policies (P19 §6, §8: token policy columns, secret_policy jsonb) and
+0030  org_policies (P19 §6, §8: token policy columns, secret_policy jsonb) and
       environments.plaintext_export_disabled / .read_alerts (P19 §9, §7) — additive;
       grants for the new table
-0030  environment_read_sightings and read_alert_digests (P19 §7) — additive; grants
+0031  environment_read_sightings and read_alert_digests (P19 §7) — additive; grants
 ```
 
-Migrations 0026–0030 (P19) are additive and follow the same rule as 0018–0023: **apply them
+Migrations 0027–0031 (P19) are additive and follow the same rule as 0018–0023: **apply them
 before the code that names their columns**, because from that build on every `select()` on
 `environments` and `secret_versions` names them. Nothing older reads the five new tables, and
 every row older code writes satisfies the new CHECKs.
 
-**P12 merges first.** P12's billing migrations hold 0024 and 0025 on their own branch, and
-P19 was renumbered to 0026–0030 to sit after them (review round 1), journal timestamps
-included: Drizzle's migrator applies an entry only when its `when` is later than the last one
-the database recorded, so P19's entries are dated after P12's. If P19 were applied first, a
-database would record P19's later timestamps and then silently skip P12's two — so the order
-is P12, then P19, and a database that has already run P19 on a branch without P12 is rebuilt,
-not patched.
+**P12 merges first.** P12's billing migrations hold 0024–0026 on their own branch, and P19
+was renumbered to 0027–0031 to sit after them (review round 1), journal timestamps included:
+Drizzle's migrator applies an entry only when its `when` is later than the last one the
+database recorded, so P19's entries (`when` 1788400000000–1788800000000) are dated after
+P12's three (up to 1788300000000). If P19 were applied first, a database would record P19's
+later timestamps and then silently skip P12's — so the order is P12, then P19, and a database
+that has already run P19 on a branch without P12 is rebuilt, not patched.
 
 Migration 0022 (WS-5, review round 1) is additive, and — like 0021 — **must be applied before
 the code that names its columns**: from that build on every `select()` on `sessions`,
@@ -1066,5 +1067,5 @@ anywhere. Migrations run as a separate, more privileged role.
 
 `billing_*` (the `seat_limit` column is the only hook needed now) · `oidc_trust_policies` for
 GitHub Actions federation (Phase 8 designs the token table for it; the feature is v2).
-Webhooks and cross-environment references, once listed here, arrived in 0026–0028 — the
+Webhooks and cross-environment references, once listed here, arrived in 0027–0029 — the
 references not as a table of their own but as a declaration on the version that holds them.

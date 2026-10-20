@@ -49,7 +49,7 @@ import {
 
 /**
  * Personal overrides, webhooks, policies and read sightings (P19, migrations
- * 0027–0030), against a real PostgreSQL with every migration applied.
+ * 0028–0031), against a real PostgreSQL with every migration applied.
  */
 
 let t: TestDatabase;

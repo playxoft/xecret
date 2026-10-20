@@ -18,7 +18,7 @@ import { environments } from './resources';
 import { organizations } from './tenancy';
 
 /**
- * The tables P19 adds (migrations 0027–0030). Each is documented at length in
+ * The tables P19 adds (migrations 0028–0031). Each is documented at length in
  * its migration; what is here is the shape the code reads.
  */
 

@@ -21,7 +21,7 @@ import { RepositoryError } from './shared';
 import type { Executor } from './shared';
 
 /**
- * Webhook endpoints and their deliveries (P19 §5, migration 0028).
+ * Webhook endpoints and their deliveries (P19 §5, migration 0029).
  *
  * ── The signing secret never leaves this file unsealed ──
  * It is stored as ciphertext under the organisation's master key, and the only

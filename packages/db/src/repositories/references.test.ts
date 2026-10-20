@@ -23,7 +23,7 @@ import {
 import { RepositoryError } from './shared';
 
 /**
- * The reference graph's storage (P19 §1, migration 0026), against a real
+ * The reference graph's storage (P19 §1, migration 0027), against a real
  * PostgreSQL with every migration applied.
  *
  * Two kinds of property are checked. The schema's own — a parent stays in its
@@ -144,7 +144,7 @@ async function secret(
 
 /* ── the schema ──────────────────────────────────────────────────────────── */
 
-describe('migration 0026', () => {
+describe('migration 0027', () => {
   it('keeps a parent in the same project', async () => {
     const owner = await org();
     const other = await project(owner, `other-${randomUUID().slice(0, 6)}`);

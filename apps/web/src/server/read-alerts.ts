@@ -36,7 +36,7 @@ import type { EnvironmentScope } from './tenancy';
  *
  * ── What counts as "new" ──
  * One (environment, principal, address) triple, recorded in
- * `environment_read_sightings` (migration 0030). The principal is the *device*
+ * `environment_read_sightings` (migration 0031). The principal is the *device*
  * for a CLI login and a CI token — each login and each token is its own row —
  * and the *person* for a browser session, so a new laptop is a new sighting and
  * a new browser tab is not. An IPv6 address is recorded as its /64 — the unit a
