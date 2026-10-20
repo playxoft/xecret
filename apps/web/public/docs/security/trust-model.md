@@ -3,7 +3,7 @@ title: What xecret can and cannot see
 navTitle: Trust model
 description: The encryption model stated plainly — envelope encryption, the key hierarchy, what a database breach yields, and when you should choose a zero-knowledge product instead.
 keywords: [envelope encryption, zero knowledge alternative, secret manager security, aes-256-gcm, key hierarchy, threat model]
-updated: 2026-08-16
+updated: 2026-10-20
 ---
 
 A security product that overstates its guarantees has broken the only thing it
@@ -93,6 +93,11 @@ Stated plainly, because these are the failures people are surprised by:
   ships it, xecret cannot stop that.
 - **`xecret pull` writing a file.** The command warns each time. What happens
   to that file afterwards is yours.
+- **A member determined to keep a copy.** [Disabling plaintext
+  export](../features/policies.md#disabling-plaintext-export) and the secret
+  policy's value rules are enforced by the clients that hold the plaintext, so
+  they stop honest mistakes, not somebody who means to get round them — anyone
+  who may read a value can write it down.
 - **Anything a browser can read.** `NEXT_PUBLIC_` and `VITE_` variables are
   inlined into bundles you serve to the public. Managed and versioned, yes;
   private, no. See [React / Vite](../guides/react-vite.md).

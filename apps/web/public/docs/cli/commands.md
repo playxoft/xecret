@@ -3,7 +3,7 @@ title: CLI command reference
 navTitle: Command reference
 description: Every xecret command and flag — login, init, projects, secrets, versions, import, pull, export, run, audit, tokens and cache — with examples and the exact behaviour of each.
 keywords: [xecret command reference, xecret run flags, xecret secrets set, xecret secrets versions, xecret audit, xecret import, xecret pull, cli reference]
-updated: 2026-10-12
+updated: 2026-10-20
 ---
 
 Every command the `xecret` binary accepts. Run `xecret help` for the same list
@@ -258,12 +258,23 @@ xecret secrets set PORT --type int --note "the container listens here"
 
 | Flag | Effect |
 |---|---|
-| `--type TYPE` | Declares the value's shape: `string` `boolean` `int` `decimal` `email` `url` `date` `datetime` `json` `yaml` `xml` `ulid` `uuidv4` `uuidv7`. Future writes that do not match are refused by the server. |
+| `--type TYPE` | Declares the value's shape: `string` `boolean` `int` `decimal` `email` `url` `date` `datetime` `json` `yaml` `xml` `ulid` `uuidv4` `uuidv7`, or `template` for a value built from other secrets. Future writes that do not match are refused by the server. |
 | `--note TEXT` | A note shown beside the secret in the dashboard. |
 | `--from-file PATH` | Take the file's bytes as the value, verbatim — trailing newline included. A pipe's final newline is the shell's framing and is stripped; a file's is part of the file, and a PEM key ends in one. Limited to 64 KB, the server's ceiling on one secret. |
 | `--generate[=BYTES]` | Mint a random value with the OS entropy source and write it without ever printing it. 32 bytes by default, rendered as 43 url-safe characters. Use `--generate=48` — with the `=` — to choose a length. |
 
 Writing the same value again is a no-op rather than a new version.
+
+A **template** (`--type template`, or a secret already declared one) refers to
+other secrets — `${DB_HOST}`, `${staging.DB_HOST}`, `${billing.prod.API_KEY}` —
+and is resolved when it is read. The CLI parses the value before encrypting it,
+refuses a malformed reference locally, and declares the references it found so
+the server can check them for loops before storing anything. See
+[References and inheritance](../features/references.md).
+
+If your organisation has a [secret policy](../features/policies.md#secret-naming-and-strength),
+the value is checked against its entropy and forbidden-word rules before it is
+encrypted, and refused with the rule it broke. The value itself is never shown.
 
 ### `xecret secrets annotate`
 
@@ -424,6 +435,11 @@ recorded as `secret.read` with a count.
 > one at a time, which is less safe and completely unaudited. Add the file to
 > `.gitignore` and delete it when you are done.
 
+Neither `pull` nor `export` includes your [personal overrides](../features/overrides.md);
+each says on stderr when you have some in the environment. Both refuse outright
+when the environment's policy [disables plaintext export](../features/policies.md#disabling-plaintext-export),
+naming the policy and who can change it. `xecret run` is never affected.
+
 ### `xecret vault open-archive`
 
 ```bash
@@ -475,6 +491,38 @@ The API is authoritative; the cache answers only when the API *cannot* — a
 network failure or a 5xx. A 401, 403 or 404 is a *decision* (a revocation,
 above all), and decisions are never softened by a local file. Full behaviour:
 [the offline cache](offline-cache.md).
+
+An environment that inherits from another, or holds templates, is resolved
+before the process starts — every inherited value and every reference, each
+opened under its own environment's key. Logged in as yourself (never under
+`XECRET_TOKEN`), `run` then applies your personal overrides on top and names
+them on stderr; offline, it says it did not.
+
+### `xecret overrides`
+
+```bash
+xecret overrides list   [--json]
+xecret overrides set    NAME [-] [--from-file PATH]
+xecret overrides unset  NAME
+```
+
+Your own value for one secret in one environment, used by `xecret run` on your
+machine in place of the shared one — a local database instead of staging's —
+without anybody else's environment changing. Nobody else can read it, the
+server included, and nobody else can make one in its place: it is encrypted
+under a key only your own vault derives. The value is read from stdin or a
+hidden prompt, never from an argument.
+
+```bash
+printf '%s' "postgres://localhost/app" | xecret overrides set DATABASE_URL -
+xecret run -- npm run dev       # applied 1 personal override(s): DATABASE_URL
+xecret overrides unset DATABASE_URL
+```
+
+Refused under `XECRET_TOKEN`: a CI run always gets the shared values. An
+override set before a vault reset no longer opens, and `run` stops rather than
+silently using the shared value, naming the `unset` that removes it. Setting one
+needs the Pro plan. See [Personal overrides](../features/overrides.md).
 
 ## Administration
 
@@ -702,6 +750,7 @@ xecret init
 
 # daily
 xecret run -- npm run dev
+xecret overrides set DATABASE_URL       # your local value, only for you
 
 # look at things
 xecret projects

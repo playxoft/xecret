@@ -3,7 +3,7 @@ title: API endpoint reference
 navTitle: Endpoint reference
 description: Every HTTP endpoint — auth, organisations, projects, environments, secrets, bulk read, import and export, members, tokens and the audit log.
 keywords: [xecret api endpoints, secrets rest endpoints, pull endpoint, audit api, members api, api reference]
-updated: 2026-10-14
+updated: 2026-10-20
 ---
 
 Every route, grouped the way you will look for them. Paths are relative to
@@ -189,6 +189,37 @@ table into a denial-of-service surface against itself.
 
 The dry run and the real import call the same planning function, so the preview
 cannot disagree with the outcome.
+
+## Environments and policies
+
+The features in [Environments and policies](../features/references.md). Every
+write here is end-to-end encrypted: the client encrypts, the server checks
+shapes, names and permissions, and stores. A plan refusal is **403**
+`plan_limit` naming the plan that would allow it; none of these is ever asked of
+a read of the environment itself.
+
+| Method | Path | Notes |
+|---|---|---|
+| `PUT` | `…/environments/{envSlug}/parent` | Body `{ parent: envSlug \| null }`. Inherit from another environment of the project, or stop. Setting one needs Pro and read access to the parent; refused for a loop, a chain past five, an environment a service token is pinned to, or a change that would leave a template unresolvable. |
+| `GET` | `…/pull?bundle=2` | What a client that resolves inheritance and templates asks for. An environment that uses either answers **409** `resolution_unsupported` to a client that does not ask. |
+| `GET` | `…/environments/{envSlug}/overrides` | Your own [personal overrides](../features/overrides.md): `{ overrides: [{ name, ciphertext, updatedAt }], canSet, upgradeTo }`. A person's credential only — a service token gets **403**. |
+| `PUT` `DELETE` | `…/overrides/{name}` | Body `{ ciphertext }` (an `xk2.gcm.` blob under your override key). Setting needs Pro; removing never does. |
+| `POST` | `…/environments/{target}/promote` | Body `{ source, writes, removals?, dryRun }`. [Promotion](../features/promotion-and-restore.md#promotion), atomic. `writes` are client-encrypted entries for the target, of names the source holds. |
+| `GET` | `…/environments/{envSlug}/restore-point?at=` | The [restore](../features/promotion-and-restore.md#point-in-time-restore) preview: each secret at the instant, its action, and your grants for the keys its old values were written under. Audited as a read. |
+| `POST` | `…/environments/{envSlug}/restore-point` | Body `{ at, writes, dryRun }`. Each entry is checked against the instant's value tag. Past the plan's window: **403** `plan_limit`. |
+| `PATCH` | `…/environments/{envSlug}/policy` | Body `{ plaintextExport?: allowed\|disabled, readAlerts?: boolean \| null }`. Owners and admins. Disabling export needs Team; switching alerts on, Pro. |
+| `GET` | `…/environments/{envSlug}/read-sightings` | Recent new addresses that read the environment, and whether alerts are on. Owners and admins. |
+| `GET` | `/orgs/{orgSlug}/policies` | The [token and secret policies](../features/policies.md), and which the plan lets you turn on. Readable by every member and service token. |
+| `PATCH` | `/orgs/{orgSlug}/policies` | Body `{ tokens?, secrets? }`, each whole. Owners and admins, from a session. Tightening needs the plan; loosening never does. |
+| `GET` `POST` | `/orgs/{orgSlug}/webhooks` | [Webhooks](../features/webhooks.md). Body `{ url, description?, eventTypes }`. The signing secret is returned **once**. |
+| `GET` `PATCH` `DELETE` | `/orgs/{orgSlug}/webhooks/{webhookId}` | `PATCH` takes `url`, `description`, `eventTypes`, `enabled`. |
+| `POST` | `…/webhooks/{webhookId}/rotate-secret` | A new signing secret, returned **once**. |
+| `POST` | `…/webhooks/{webhookId}/test` | One `webhook.test` delivery, attempted inline. |
+| `GET` | `…/webhooks/{webhookId}/deliveries` | The delivery log, newest first. |
+
+A server-mode environment whose plaintext export is disabled refuses
+`…/export` and document-format pulls with **403** `export_disabled:`, and marks
+the JSON pull `xecret run` reads with `x-xecret-plaintext-export: disabled`.
 
 ## Members, invitations and grants
 
