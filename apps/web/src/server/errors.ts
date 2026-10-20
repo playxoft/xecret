@@ -554,10 +554,10 @@ export const errors = {
   billingOtherMode: (): ApiError =>
     new ApiError(
       'conflict',
-      'This organisation’s subscription was made in a different payment environment from the ' +
-        'one this installation uses, so it cannot be changed from here. Contact support with ' +
-        'the request id. Nothing was changed or charged.',
-      { logDetail: 'subscription from the other dodo mode' },
+      'This organisation’s billing record was made in a different payment environment from the ' +
+        'one this installation uses, so nothing can be bought or changed for it from here. ' +
+        'Contact support with the request id. Nothing was changed or charged.',
+      { logDetail: 'billing record from the other dodo mode' },
     ),
 
   /** The organisation's payment customer is held by another organisation too. */

@@ -318,7 +318,7 @@ export async function billingStatus(
     warnings,
     addons: { saml: row.addonSaml },
     actions: {
-      checkout: enabled && !live && !managedBySupport(row) && !awaitingActivation(row),
+      checkout: enabled && ours && !live && !managedBySupport(row) && !awaitingActivation(row),
       changePlan: enabled && live && ours,
       portal: enabled && ours && row.dodoCustomerId !== null,
     },
@@ -367,6 +367,10 @@ export async function startCheckout(
       if (hasLiveSubscription(row)) throw errors.billingAlreadySubscribed();
       if (managedBySupport(row)) throw errors.billingManagedBySupport();
       if (awaitingActivation(row)) throw errors.billingCheckoutPending();
+      // A Free row still carrying the other Dodo mode's ids: its payment would
+      // be taken here and then refused by the webhook (`other-mode`), so the
+      // owner would be charged for nothing. Refused before Dodo is asked.
+      if (!sameMode(row, config)) throw errors.billingOtherMode();
 
       const seats = providerSeats(
         selection.plan,

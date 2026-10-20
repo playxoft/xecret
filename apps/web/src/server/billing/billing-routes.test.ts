@@ -439,6 +439,23 @@ describe('checkout', () => {
     expect(rows.rows).toHaveLength(0);
   });
 
+  it('refuses a checkout for a Free row recorded in the other Dodo mode — before anything is charged', async () => {
+    // A live-mode customer left on a Free row, on this test-mode deployment.
+    const { orgId, slug } = await seedOrg({
+      dodo_customer_id: 'cus_livemode01',
+      dodo_mode: 'live_mode',
+    });
+    const answer = await checkout(slug, { plan: 'team', interval: 'monthly' });
+    expect(answer.status).toBe(409);
+    expect(JSON.stringify(answer.body)).toContain('different payment environment');
+    expect(dodo.createCheckoutSession).not.toHaveBeenCalled();
+    const rows = await t.pg.query(`select 1 from billing_checkouts where org_id = $1`, [orgId]);
+    expect(rows.rows).toHaveLength(0);
+    expect((await call(statusRoute.GET, 'GET', slug)).body['billing']).toMatchObject({
+      actions: { checkout: false },
+    });
+  });
+
   it('refuses to send the browser to a checkout URL that is not https', async () => {
     const { slug } = await seedOrg();
     dodo.createCheckoutSession.mockResolvedValue({

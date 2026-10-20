@@ -20,8 +20,10 @@
  * It reads values but never prints them. Where a value must be shown to be
  * useful — a client id, a key version — it is one that is already public.
  *
- * One check makes a network call: asking WorkOS whether the API key and the
- * client id belong together (see `checkWorkosPairing`). `--offline` skips it.
+ * Two checks make a network call: asking WorkOS whether the API key and the
+ * client id belong together (see `checkWorkosPairing`), and asking Dodo
+ * whether its key and products belong to the mode `DODO_ENVIRONMENT` names
+ * (`checkDodoPairing`). `--offline` skips both.
  */
 
 import { parseRootKeyMaterial } from '../packages/core/src/crypto/key-provider.ts';
@@ -339,9 +341,8 @@ function checkLogging(): void {
  * Worker uses, so a value that passes here cannot fail there for a reason this
  * script did not consider.
  *
- * No network call. Whether the key belongs to the mode is something only Dodo
- * can answer, and the first real webhook delivery (Dodo shows them on the
- * endpoint page) is the check that does.
+ * No network call here: whether the key and the products belong to the mode
+ * is asked of Dodo by `checkDodoPairing`, below, unless `--offline`.
  */
 function checkBilling(): void {
   try {
@@ -477,6 +478,91 @@ async function checkWorkosPairing(): Promise<void> {
   }
 }
 
+/**
+ * Asks Dodo whether `DODO_API_KEY` belongs to the mode `DODO_ENVIRONMENT`
+ * names, and whether the products do — the pairing nothing about a key's
+ * format says. Dodo's test and live modes share nothing: a key is issued in
+ * one, and the products, the meter and the webhook endpoint are made in one.
+ * A deployment whose `DODO_ENVIRONMENT` and key disagree would send owners to
+ * checkouts that fail, or take money in the mode nothing here reads.
+ *
+ * It reads one product (`GET /products/{id}`, Pro monthly) from the host of
+ * the named mode: read-only, nothing is created. 200 is a key, a mode and a
+ * product that belong together; 401 or 403 is a key from the other mode (or
+ * a revoked one); 404 is a key of this mode and a product id from the other.
+ *
+ * **What this cannot check:** `DODO_WEBHOOK_SECRET`. A signing secret belongs
+ * to one webhook endpoint, made in one mode, and nothing Dodo answers to an
+ * API key says which — so a live deployment holding the test endpoint's
+ * secret (or the reverse) passes here and refuses every delivery 401. The
+ * first delivery after the deploy is that check (docs/operations/billing.md,
+ * "The variables"): Dodo's endpoint page shows it answered 200.
+ */
+async function checkDodoPairing(): Promise<void> {
+  let config: Extract<ReturnType<typeof billingSetup>, { state: 'enabled' }>['config'];
+  try {
+    const setup = billingSetup(process.env as never);
+    if (setup.state === 'disabled') return;
+    config = setup.config;
+  } catch {
+    // `checkBilling` reports the half-configuration.
+    return;
+  }
+
+  const name = 'DODO key ↔ mode';
+  const product = config.catalog.find(
+    (entry) => entry.plan === 'pro' && entry.interval === 'monthly',
+  )!;
+  let status: number;
+  try {
+    const response = await fetch(
+      `${config.baseUrl}/products/${encodeURIComponent(product.productId)}`,
+      {
+        headers: { authorization: `Bearer ${config.apiKey}`, accept: 'application/json' },
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    status = response.status;
+    // Not read: a product is not a secret, but nothing here needs it.
+    await response.body?.cancel().catch(() => undefined);
+  } catch (cause) {
+    check(
+      name,
+      false,
+      `could not ask Dodo (${cause instanceof Error ? cause.message : String(cause)}) — rerun ` +
+        'with network access, or with --offline to skip this one check',
+    );
+    return;
+  }
+
+  if (status === 200) {
+    check(name, true, `the key reads ${product.productId} in ${config.mode}`);
+  } else if (status === 401 || status === 403) {
+    check(
+      name,
+      false,
+      `Dodo's ${config.mode} host refused this key — it is from the other mode (test and live ` +
+        'keys are separate), or it was revoked. DODO_ENVIRONMENT and DODO_API_KEY must come from ' +
+        'the same Dodo mode',
+    );
+  } else if (status === 404) {
+    check(
+      name,
+      false,
+      `the key works in ${config.mode}, but ${product.productId} is not a product there — ` +
+        'the DODO_PRODUCT_* ids are from the other mode, or mistyped',
+    );
+  } else {
+    check(name, false, `unexpected answer from Dodo (HTTP ${status})`);
+  }
+  check(
+    'DODO webhook ↔ mode',
+    true,
+    `not checkable here — confirm the first delivery after the deploy is answered 200 ` +
+      `(the secret must be the ${config.mode} endpoint's)`,
+  );
+}
+
 async function main(): Promise<void> {
   checkDatabase();
   checkRootKeys();
@@ -485,6 +571,7 @@ async function main(): Promise<void> {
   checkEmail();
   checkLogging();
   checkBilling();
+  if (!process.argv.includes('--offline')) await checkDodoPairing();
 
   const width = Math.max(...results.map((r) => r.name.length));
   const failed = results.filter((r) => !r.ok).length;
