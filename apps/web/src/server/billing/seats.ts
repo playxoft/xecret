@@ -78,9 +78,10 @@ import { sendBillingReminder } from './reminders';
  *
  * ── How it is charged ──
  * `prorated_immediately_keep_cycle`: the difference for the rest of the period
- * is charged when somebody joins, and credited — as credit on the
- * subscription, applied to its renewals — when somebody leaves (01-billing
- * §P12), with the period and the renewal date left where they were. (Dodo's
+ * is charged when somebody joins, and credited when somebody leaves (01-billing
+ * §P12) — to the Dodo customer's wallet, one customer per organisation, which
+ * Dodo applies to the next charges and never refunds to the card — with the
+ * period and the renewal date left where they were. (Dodo's
  * `difference_immediately`, which the plan named, resets the billing cycle to
  * the day of every change; see `PlanChange.proration`.) `apply_change` on a
  * failed charge: the person has already joined, so the subscription says so,

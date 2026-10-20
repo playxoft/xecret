@@ -31,9 +31,10 @@ import { resolveOrg } from '@/server/tenancy';
  * subscription — a second one would charge twice — for one whose paid checkout
  * is still being applied, and for one whose plan support set by hand.
  *
- * `Idempotency-Key` (the billing screen sends a fresh one per click): a repeat
- * with the same key gets the first checkout back, not a second one, and is not
- * audited twice.
+ * `Idempotency-Key` (the billing screen sends one per decision — kept for
+ * every retry of the same plan and period, replaced when the choice changes):
+ * a repeat with the same key gets the first checkout back, not a second one,
+ * and is not audited twice.
  */
 
 type Params = { orgSlug: string };

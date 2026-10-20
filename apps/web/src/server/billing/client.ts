@@ -133,11 +133,14 @@ export interface PlanChange {
    *  - `prorated_immediately_keep_cycle` for seat changes: "charges the price
    *    difference between the new and old plan for the time left in the
    *    current cycle", quantity included, and "keeps `next_billing_date`". A
-   *    seat removed leaves a negative difference, held as credit on the
-   *    subscription and applied to its renewals — not refunded to the card.
+   *    seat removed leaves a negative difference, which this mode puts in the
+   *    **Dodo customer's wallet** — one customer per organisation — where Dodo
+   *    applies it to the next charges; it is never refunded to the card.
    *  - `prorated_immediately` for an upgrade: credits the unused part of the
-   *    current cycle and charges a full cycle of the new plan, the cycle
-   *    restarting that day.
+   *    current cycle — credit scoped to the subscription, applied to its
+   *    renewals — and charges a full cycle of the new plan, the cycle
+   *    restarting that day. During a trial it ends the trial and charges at
+   *    once (`decideSnapshot` reads the trial as over from that payment).
    *
    * Not `difference_immediately`, which the seat sync used first: it charges
    * the whole price difference and **resets the billing cycle to the day of
