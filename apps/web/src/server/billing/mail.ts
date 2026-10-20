@@ -183,11 +183,13 @@ function compose(reminder: BillingReminder, organization: string): Composed {
             (amount ? ` The ${period} charge is now ${amount} before tax.` : ''),
           // Dodo's `prorated_immediately_keep_cycle`, the mode the seat sync
           // uses: the difference for the time left in the period, the period
-          // itself unchanged; a negative difference is held as credit on the
-          // subscription and applied to its renewals, not refunded to the card.
+          // itself unchanged; a negative difference goes to the Dodo customer's
+          // wallet — one customer per organisation — which Dodo applies to
+          // the next charges automatically and never refunds to the card
+          // (https://docs.dodopayments.com/features/customer-wallet).
           'Adding a member charges the difference for the rest of the current period; removing ' +
-            'one leaves the difference as credit on the subscription, used against its next ' +
-            'renewals. A pending invitation is not billed until it is accepted.',
+            'one leaves the difference as credit on the organisation’s billing account, used ' +
+            'against its next charges. A pending invitation is not billed until it is accepted.',
         ],
         action: 'Review billing',
       };

@@ -135,7 +135,7 @@ describe('billingMail', () => {
   it('says how a seat change is billed as Dodo bills it: the rest of the period, and credit kept', () => {
     const mail = billingMail(EXAMPLES.seats_changed, CONTEXT);
     expect(mail.text).toContain('difference for the rest of the current period');
-    expect(mail.text).toContain('credit on the subscription');
+    expect(mail.text).toContain('credit on the organisation’s billing account');
     const withoutAmount = billingMail(
       { kind: 'seats_changed', seats: 6, previousSeats: 5, interval: 'yearly' },
       CONTEXT,

@@ -156,7 +156,7 @@ On `xecret-staging.playxoft.com`, with a Dodo test card, on a throwaway organisa
       customers for the owner's address, and each organisation's Manage billing opens its own.
 - [ ] Invite and accept a member: Dodo's subscription quantity goes up by one, the period end
       does not move, and once the push lands the owners get the "now billed for N seats" email.
-      Remove them: it goes down, and the difference shows as credit on the subscription.
+      Remove them: it goes down, and the difference shows in the customer's wallet in Dodo.
 - [ ] Suspend a member: the quantity does **not** change, and no seat email is sent.
 - [ ] Change plan (Team → Pro, yearly → monthly): the preview says "at renewal", nothing is
       charged today. Then invite a member: the quantity does not change at Dodo until the
@@ -254,8 +254,9 @@ UPDATE billing_seat_syncs SET dead_lettered_at = NULL, attempts = 0, not_before 
 ```
 
 Seat pushes use Dodo's `prorated_immediately_keep_cycle`: the difference for the time left in
-the period is charged when somebody joins, and a seat removed leaves the difference as credit
-on the subscription, applied to its renewals — the period and the renewal date never move.
+the period is charged when somebody joins, and a seat removed puts the difference in the Dodo
+customer's wallet — one customer per organisation — which Dodo applies to the next charges and
+never refunds to the card; the period and the renewal date never move.
 (`difference_immediately`, which the plan named, resets the billing cycle to the day of every
 change.) While a plan change is scheduled for the period end, Dodo refuses any other change
 with a 409, so the push waits until an hour after the scheduled date.
