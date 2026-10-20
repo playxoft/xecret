@@ -81,7 +81,7 @@ export const environments = pgTable(
     encryptionMode: text('encryption_mode').notNull().default('e2ee'),
     sortOrder: integer('sort_order').notNull().default(0),
     /**
-     * The environment this one inherits from (P19 §1, migration 0024), or NULL.
+     * The environment this one inherits from (P19 §1, migration 0026), or NULL.
      *
      * Its view is its own secrets laid over the parent's, child values winning —
      * the resolution order lives in `@xecret/core/references`. Always in the same
@@ -92,7 +92,7 @@ export const environments = pgTable(
     parentEnvironmentId: uuid('parent_environment_id'),
     /**
      * Whether `xecret pull` and `export` are refused here (P19 §9, migration
-     * 0027). `run` is unaffected. A guardrail the CLI enforces against the habit
+     * 0029). `run` is unaffected. A guardrail the CLI enforces against the habit
      * of exporting production — see the migration for exactly what it does not
      * stop.
      */

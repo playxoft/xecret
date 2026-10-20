@@ -6,7 +6,7 @@ import { RepositoryError } from './shared';
 import type { Executor } from './shared';
 
 /**
- * Personal overrides (P19 §2, migration 0025).
+ * Personal overrides (P19 §2, migration 0027).
  *
  * Every function here is scoped by **owner** as well as by organisation and
  * environment: there is no read in this file that returns somebody else's

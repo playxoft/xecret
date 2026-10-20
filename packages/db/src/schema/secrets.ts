@@ -188,7 +188,7 @@ export const secretVersions = pgTable(
     valueHmac: bytea('value_hmac'),
     /**
      * What a template version's writer declared it refers to (P19 §1, migration
-     * 0024): the references as written, each with the environment its slugs
+     * 0026): the references as written, each with the environment its slugs
      * resolved to at write time — `null` for an unqualified `${KEY}`, which means
      * "the environment being read". NULL for every version that is not a
      * template.

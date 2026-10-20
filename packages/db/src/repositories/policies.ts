@@ -14,7 +14,7 @@ import type { Executor } from './shared';
 
 /**
  * Organisation and environment policies, and the read sightings behind the
- * new-location alerts (P19 §6–§9, migrations 0027 and 0028).
+ * new-location alerts (P19 §6–§9, migrations 0029 and 0030).
  */
 
 export interface OrgPolicies {
