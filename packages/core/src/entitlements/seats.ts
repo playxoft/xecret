@@ -13,8 +13,66 @@
  */
 
 import { resolvePlanId } from './entitlements';
-import { MINIMUM_SEATS } from './plans';
+import { MINIMUM_SEATS, PLANS } from './plans';
 import type { StoredPlanId } from './types';
+
+/**
+ * The access ceiling written for a paid plan whose seats are not capped.
+ *
+ * Pro and Team publish no seat limit (`limits.seats` is `null`) — they bill per
+ * seat and admit as many people as are paid for, and when a subscription the
+ * payment provider manages gains a member, the seat count follows it there
+ * (P12 seat sync). `organizations.seat_limit` is an integer that invitations
+ * are refused against, so "uncapped" has to be a number; this is a number no
+ * real organisation reaches and the column's CHECK accepts. Seats are billed,
+ * so abuse is self-limiting — the reason `FAIR_USE.seats` is `null` too.
+ */
+export const UNCAPPED_SEAT_LIMIT = 100_000;
+
+/**
+ * The seat ceiling a Free organisation is held to: `organizations.seat_limit`'s
+ * column default, and what every Free organisation is refused against today.
+ *
+ * Not `PLANS.free.limits.seats` (3). That divergence is the one documented on
+ * `FREE_LIMITS.seats` and is left to the owner to close, with the thirty days'
+ * notice pricing-plan §5 promises before any limit applies. A paid subscription
+ * that ends returns the organisation to this — the number every Free
+ * organisation already has — rather than to a tighter one no other Free
+ * organisation is held to. Nobody already seated is removed by it: the ceiling
+ * refuses new invitations, never existing members.
+ */
+export const FREE_SEAT_LIMIT = 5;
+
+/**
+ * Seats for a subscription the payment provider manages: what to bill for the
+ * organisation's membership, and what invitations are refused against.
+ *
+ * `seatedMembers` is every member holding a seat, **whatever their status** —
+ * suspension is a security act, never a discount — and nothing else. A pending
+ * invitation is not billed: the pricing page says so ("a pending invitation is
+ * not counted until it is accepted"), and a charge for somebody who never
+ * accepted is exactly the line on an invoice that becomes a chargeback.
+ *
+ * Billed is floored at the plan's minimum (`MINIMUM_SEATS`) — published on the
+ * pricing page as "billed from 3 members up" — and never below one.
+ *
+ * Enforced is the plan's own seat limit, or {@link UNCAPPED_SEAT_LIMIT} where
+ * the plan has none: an organisation on a per-seat plan is never refused an
+ * invitation for want of a seat, because the seat is bought the moment the
+ * invitation is accepted. It is never below billed.
+ */
+export function providerSeats(
+  plan: StoredPlanId,
+  seatedMembers: number,
+): { billed: number; enforced: number } {
+  const resolved = resolvePlanId(plan);
+  if (resolved === 'free') return { billed: 1, enforced: FREE_SEAT_LIMIT };
+
+  const seated = Number.isFinite(seatedMembers) ? Math.max(0, Math.trunc(seatedMembers)) : 0;
+  const billed = Math.max(MINIMUM_SEATS[resolved], seated, 1);
+  const ceiling = PLANS[resolved].limits.seats ?? UNCAPPED_SEAT_LIMIT;
+  return { billed, enforced: Math.max(ceiling, billed) };
+}
 
 export interface SeatRequest {
   /**

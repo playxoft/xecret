@@ -30,7 +30,14 @@ const ROLE = 'xecret_app_permissions';
  * Append-only by design: the role may read and add rows, never change or
  * remove them. Listed here so that losing the restriction fails too.
  */
-const APPEND_ONLY = new Set(['audit_logs', 'billing_webhook_events']);
+const APPEND_ONLY = new Set([
+  'audit_logs',
+  'billing_webhook_events',
+  // Migration 0024: a checkout that happened, and a licence key the provider
+  // issued, are records — never edited into something else.
+  'billing_checkouts',
+  'billing_license_keys',
+]);
 
 /**
  * Narrower still, by design (migration 0020): a retained vault's wraps and
@@ -40,7 +47,12 @@ const APPEND_ONLY = new Set(['audit_logs', 'billing_webhook_events']);
  * which is a column privilege and therefore not a table-wide UPDATE.
  */
 const INSERT_ONLY = new Set(['retained_vault_wraps', 'retained_vault_grants']);
-const NO_TABLE_UPDATE = new Set(['retained_vaults']);
+const NO_TABLE_UPDATE = new Set([
+  'retained_vaults',
+  // Migration 0024: a sent reminder is inserted, and pruned once its occasion
+  // is long past; rewriting one would re-arm a reminder already sent.
+  'billing_reminders',
+]);
 
 /**
  * Read-only, by design (migration 0023): which WorkOS environment the database

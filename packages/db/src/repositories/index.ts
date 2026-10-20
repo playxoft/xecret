@@ -452,3 +452,33 @@ export type {
   SubscriptionRecord,
   UsageCounterRecord,
 } from './subscriptions';
+
+export {
+  addFetchCounts,
+  billingCounts,
+  claimReminder,
+  completeSeatSync,
+  currentUsage,
+  failSeatSync,
+  findBillingOrganization,
+  findCheckout,
+  findOrgIdByDodoCustomer,
+  findOrgIdByDodoSubscription,
+  listEndedCancellations,
+  listMeterableUsage,
+  listOwnerRecipients,
+  listProviderSubscriptions,
+  listSeatSyncs,
+  liveOrganizationExists,
+  lockSubscription,
+  markMeteredUnitsSent,
+  pruneReminders,
+  queueSeatSync,
+  recordCheckout,
+  recordLicenseKey,
+  reminderSentSince,
+  seatedMemberCount,
+  USAGE_PERIOD_START,
+  writeSubscriptionState,
+} from './billing';
+export type { CheckoutRecord, MeterableUsage, SeatSyncRecord } from './billing';
