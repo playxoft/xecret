@@ -18,7 +18,12 @@ import {
 } from '@/server/secrets-service';
 import type { ProtectionCrossing } from '@/server/references-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
-import { crossingRecords, planRefusal, prepareTemplateDeclaration } from '@/server/template-writes';
+import {
+  crossingRecords,
+  planRefusal,
+  prepareTemplateDeclaration,
+  templateGuard,
+} from '@/server/template-writes';
 
 /**
  * Restores an earlier value as a new current version.
@@ -138,6 +143,12 @@ export const POST = authenticatedRoute<Params>(
         ? await restoreSecretVersion(scope, services, { writer, current, previous })
         : await writeClientSecretValue(scope, services, {
             declaredReferences,
+            // The graph check, inside the write's transaction (review round 1, L8).
+            guard: templateGuard(scope, {
+              name: current.name,
+              secretId: current.secretId,
+              declaredReferences,
+            }),
             writer,
             name: current.name,
             // A restore always appends to a secret that exists, so this is the

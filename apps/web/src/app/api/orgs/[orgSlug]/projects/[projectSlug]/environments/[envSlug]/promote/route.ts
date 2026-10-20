@@ -13,7 +13,7 @@ import {
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { enforceSecretPolicy, secretPolicyRefusal } from '@/server/policies-service';
-import { assertEnvironmentChanges } from '@/server/references-service';
+import { graphWriteGuard } from '@/server/references-service';
 import type { ProtectionCrossing } from '@/server/references-service';
 import { authenticatedRoute } from '@/server/route';
 import { promoteClientBody } from '@/server/schemas/secrets';
@@ -198,13 +198,19 @@ export const POST = authenticatedRoute<Params>(
         ),
     });
 
-    await assertEnvironmentChanges(target, services, {
-      set: writes.map((write) => ({
-        name: write.name,
-        secretId: write.existing?.secretId ?? write.secretId,
-        references: write.declaredReferences ?? null,
-      })),
-      remove: body.removals,
+    // The whole batch's templates, checked together — inside the write's own
+    // transaction, under the graph lock (review round 1, L8); on its own for a
+    // dry run, so the preview says what the promotion would be refused for.
+    const guard = graphWriteGuard(target, {
+      kind: 'changes',
+      changes: {
+        set: writes.map((write) => ({
+          name: write.name,
+          secretId: write.existing?.secretId ?? write.secretId,
+          references: write.declaredReferences ?? null,
+        })),
+        remove: body.removals,
+      },
     });
 
     await enforceSecretPolicy(
@@ -221,6 +227,7 @@ export const POST = authenticatedRoute<Params>(
       writes,
       removals: removed.map((secret) => secret.secretId),
       dryRun: body.dryRun,
+      guard,
     });
     const counts = countResults(results, removed.length);
 

@@ -2,6 +2,7 @@ import { auditingDenials } from '@xecret/core/authz';
 import type { Denial } from '@xecret/core/authz';
 import {
   lockProjectEnvironments,
+  lockReferenceGraph,
   RepositoryError,
   setEnvironmentParent,
 } from '@xecret/db/repositories';
@@ -127,6 +128,11 @@ export const PUT = authenticatedRoute<Params>(
 
     const updated = await services.db
       .transaction(async (tx) => {
+        // The organisation's graph lock first — every graph write takes it
+        // before any row lock — then the project's rows (review round 1, L8):
+        // a parent change can close a loop with a template written in another
+        // project, which the project lock alone does not see.
+        await lockReferenceGraph(tx, orgId);
         await lockProjectEnvironments(tx, scope.project.id);
         await assertParentChange(scope, tx, parentId);
         return setEnvironmentParent(tx, orgId, scope.environment.id, parentId);

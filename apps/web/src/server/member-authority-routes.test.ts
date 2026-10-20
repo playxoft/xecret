@@ -81,6 +81,7 @@ const repositories = vi.hoisted(() => ({
   loadEnvironmentsOfProjects: vi.fn(),
   loadEnvironmentsByIds: vi.fn(),
   findProjectsReferencingEnvironments: vi.fn(),
+  lockReferenceGraph: vi.fn(),
   // P19 §6: the token policy, read at minting and by the listing. None set.
   loadOrgPolicies: vi.fn(),
 }));
@@ -353,7 +354,10 @@ beforeEach(() => {
       startedAt: number,
     ) => ({
       env: { XECRET_PUBLIC_URL: 'https://xecret.playxoft.com', XECRET_ENV: 'production' },
-      db: {},
+      // A project's deletion is checked and written in one transaction (P19,
+      // review round 1); the repositories are mocked, so the transaction is the
+      // callback run with nothing in particular.
+      db: { transaction: (run: (tx: unknown) => Promise<unknown>) => run({}) },
       envelope: {},
       meta: {
         requestId,

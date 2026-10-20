@@ -84,7 +84,6 @@ export async function toChangeWrites(
       effectiveType: valueType,
       requested: entry.references,
       refused: options.refused(entry),
-      batched: true,
       previous: existing?.declaredReferences ?? null,
       confirmCrossesProtection: options.confirmCrossesProtection,
       onCrossing: (found) =>

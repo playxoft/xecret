@@ -29,6 +29,7 @@ import {
   loadEnvironmentsOfProjects,
   loadOrganizationAuthorizationContexts,
   loadSecretGraphMetadata,
+  lockReferenceGraph,
 } from '@xecret/db/repositories';
 import type { Executor, GraphEnvironmentRecord, GraphSecretRecord } from '@xecret/db/repositories';
 import type { Principal } from './actor';
@@ -503,14 +504,20 @@ function refusal(cause: unknown, field: string): never {
  * looping, or too deep — checked against the graph *as it would be* after the
  * write, in every context that can see the template: the environment itself,
  * everything that inherits from it, and everything that reads into either.
+ *
+ * ── Run it inside the write's transaction, under `lockReferenceGraph` ──
+ * As every check in this section is (review round 1, L8): checked outside, two
+ * concurrent writes — A→B and B→A — each pass a check that cannot see the
+ * other, and both commit a loop. `graphWriteGuard` is the one way the routes
+ * call these, and the write path runs it first thing in its transaction.
  */
 export async function assertTemplateWrite(
   scope: EnvironmentScope,
-  services: ServiceContext,
+  exec: Executor,
   write: { name: string; secretId: string; references: readonly DeclaredReference[] },
 ): Promise<void> {
   const loader = await graphAround(
-    services.db,
+    exec,
     scope.organization.id,
     scope.project.id,
     scope.environment.id,
@@ -544,11 +551,11 @@ export async function assertTemplateWrite(
  */
 export async function assertRemovalKeepsReferences(
   scope: EnvironmentScope,
-  services: ServiceContext,
+  exec: Executor,
   name: string,
 ): Promise<void> {
   const loader = await graphAround(
-    services.db,
+    exec,
     scope.organization.id,
     scope.project.id,
     scope.environment.id,
@@ -586,20 +593,13 @@ export async function assertRemovalKeepsReferences(
  */
 export async function assertEnvironmentChanges(
   scope: EnvironmentScope,
-  services: ServiceContext,
-  changes: {
-    set: readonly {
-      name: string;
-      secretId: string;
-      references: readonly DeclaredReference[] | null;
-    }[];
-    remove: readonly string[];
-  },
+  exec: Executor,
+  changes: EnvironmentChanges,
 ): Promise<void> {
   if (changes.set.length === 0 && changes.remove.length === 0) return;
 
   const loader = await graphAround(
-    services.db,
+    exec,
     scope.organization.id,
     scope.project.id,
     scope.environment.id,
@@ -642,6 +642,47 @@ export async function assertEnvironmentChanges(
   }
 }
 
+/** What a batch changes about one environment's secrets, for `assertEnvironmentChanges`. */
+export interface EnvironmentChanges {
+  set: readonly {
+    name: string;
+    secretId: string;
+    references: readonly DeclaredReference[] | null;
+  }[];
+  remove: readonly string[];
+}
+
+/** A graph check, run by the write path inside its transaction. See `graphWriteGuard`. */
+export type GraphGuard = (exec: Executor) => Promise<void>;
+
+/**
+ * The graph check a write must pass, as the write path runs it: inside the
+ * write's own transaction, after `lockReferenceGraph`, so the graph it reads is
+ * the graph the write commits into (review round 1, L8). For a dry run — which
+ * opens no transaction — the same check runs on its own, because a preview must
+ * still say what the write would be refused for; the lock it takes then is held
+ * only for its own statement, which costs a dry run nothing.
+ */
+export function graphWriteGuard(
+  scope: EnvironmentScope,
+  check:
+    | { kind: 'template'; name: string; secretId: string; references: readonly DeclaredReference[] }
+    | { kind: 'removal'; name: string }
+    | { kind: 'changes'; changes: EnvironmentChanges },
+): GraphGuard {
+  return async (exec) => {
+    await lockReferenceGraph(exec, scope.organization.id);
+    switch (check.kind) {
+      case 'template':
+        return assertTemplateWrite(scope, exec, check);
+      case 'removal':
+        return assertRemovalKeepsReferences(scope, exec, check.name);
+      case 'changes':
+        return assertEnvironmentChanges(scope, exec, check.changes);
+    }
+  };
+}
+
 function graphHasTemplates(graph: ReferenceGraph<ServerGraphSecret>): boolean {
   for (const environment of graph.values()) {
     for (const secret of environment.secrets.values()) if (secret.template) return true;
@@ -653,16 +694,16 @@ function graphHasTemplates(graph: ReferenceGraph<ServerGraphSecret>): boolean {
  * Refuses deleting an environment that another inherits from, or that a
  * template elsewhere points into. Both would turn a deletion into somebody
  * else's broken deploy.
+ *
+ * Asked inside the deletion's transaction, after `lockReferenceGraph`, like
+ * every other graph check — a template written into this environment at the
+ * same moment would otherwise pass a check that could not see the deletion.
  */
 export async function assertEnvironmentRemovable(
   scope: EnvironmentScope,
-  services: ServiceContext,
+  exec: Executor,
 ): Promise<void> {
-  const children = await listChildEnvironments(
-    services.db,
-    scope.organization.id,
-    scope.environment.id,
-  );
+  const children = await listChildEnvironments(exec, scope.organization.id, scope.environment.id);
   if (children.length > 0) {
     throw errors.conflict(
       `${children.map((child) => child.slug).join(', ')} inherit${children.length === 1 ? 's' : ''} ` +
@@ -670,7 +711,7 @@ export async function assertEnvironmentRemovable(
     );
   }
 
-  const inbound = await findProjectsReferencingEnvironments(services.db, scope.organization.id, [
+  const inbound = await findProjectsReferencingEnvironments(exec, scope.organization.id, [
     scope.environment.id,
   ]);
   if (inbound.length > 0) {
@@ -682,16 +723,16 @@ export async function assertEnvironmentRemovable(
 
 /**
  * Refuses deleting a project whose environments a template in another project
- * refers to.
+ * refers to. Asked under the graph lock, as `assertEnvironmentRemovable` is.
  */
 export async function assertProjectRemovable(
-  services: ServiceContext,
+  exec: Executor,
   orgId: string,
   projectId: string,
 ): Promise<void> {
-  const environments = await loadEnvironmentsOfProjects(services.db, orgId, [projectId]);
+  const environments = await loadEnvironmentsOfProjects(exec, orgId, [projectId]);
   const inbound = await findProjectsReferencingEnvironments(
-    services.db,
+    exec,
     orgId,
     environments.map((environment) => environment.id),
   );

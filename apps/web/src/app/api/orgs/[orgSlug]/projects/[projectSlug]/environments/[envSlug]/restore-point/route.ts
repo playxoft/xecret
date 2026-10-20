@@ -12,7 +12,7 @@ import {
 } from '@/server/environment-changes';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody, parseQuery } from '@/server/http';
-import { assertEnvironmentChanges } from '@/server/references-service';
+import { graphWriteGuard } from '@/server/references-service';
 import type { ProtectionCrossing } from '@/server/references-service';
 import {
   assertWithinWindow,
@@ -248,20 +248,24 @@ export const POST = authenticatedRoute<Params>(
     );
     const skipped = plan.items.filter((item) => !item.available);
 
-    await assertEnvironmentChanges(scope, services, {
-      set: writes.map((write) => ({
-        name: write.name,
-        secretId: write.existing?.secretId ?? write.secretId,
-        references: write.declaredReferences ?? null,
-      })),
-      remove: removed.map((item) => item.name),
-    });
-
     const results = await applyClientSecretWrites(scope, services, {
       writer: secretWriter(principal),
       writes,
       removals: removed.map((item) => item.secretId),
       dryRun: body.dryRun,
+      // Checked inside the write's transaction, under the graph lock (review
+      // round 1, L8); on its own for a dry run.
+      guard: graphWriteGuard(scope, {
+        kind: 'changes',
+        changes: {
+          set: writes.map((write) => ({
+            name: write.name,
+            secretId: write.existing?.secretId ?? write.secretId,
+            references: write.declaredReferences ?? null,
+          })),
+          remove: removed.map((item) => item.name),
+        },
+      }),
     });
     const counts = countResults(results, removed.length);
 

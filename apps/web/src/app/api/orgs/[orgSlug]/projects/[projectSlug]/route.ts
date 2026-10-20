@@ -2,6 +2,7 @@ import { auditingDenials } from '@xecret/core/authz';
 import type { Denial } from '@xecret/core/authz';
 import {
   listEnvironments,
+  lockReferenceGraph,
   RepositoryError,
   softDeleteProject,
   updateProject,
@@ -162,12 +163,16 @@ export const DELETE = authenticatedRoute<Params>(
       }
     }
 
-    // P19 §1: a template in another project pointing into this one would break.
-    await assertProjectRemovable(services, orgId, scope.project.id);
-
-    const project = await softDeleteProject(services.db, orgId, scope.project.id).catch(
-      rethrowVanished,
-    );
+    // P19 §1: a template in another project pointing into this one would break —
+    // checked and deleted in one transaction, under the graph lock, so such a
+    // template cannot be written between the two (review round 1, L8).
+    const project = await services.db
+      .transaction(async (tx) => {
+        await lockReferenceGraph(tx, orgId);
+        await assertProjectRemovable(tx, orgId, scope.project.id);
+        return softDeleteProject(tx, orgId, scope.project.id);
+      })
+      .catch(rethrowVanished);
 
     record(audit(orgId).success('project.deleted', resource, { projectSlug: project.slug }));
 

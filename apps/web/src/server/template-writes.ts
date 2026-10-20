@@ -11,14 +11,14 @@ import type { ServiceContext } from './context';
 import { requireFeature } from './entitlements';
 import { errors } from './errors';
 import {
-  assertTemplateWrite,
   assertTokenReach,
   crossingRefusal,
   declareReferences,
+  graphWriteGuard,
   reachesOutside,
   referenceCrossings,
 } from './references-service';
-import type { ProtectionCrossing } from './references-service';
+import type { GraphGuard, ProtectionCrossing } from './references-service';
 import type { EnvironmentScope } from './tenancy';
 
 /**
@@ -33,12 +33,14 @@ import type { EnvironmentScope } from './tenancy';
  *    control plane; *reading* an existing template never asks), the request must
  *    carry the declaration — an older client that sends none is told to upgrade
  *    rather than allowed to store a template that declares nothing — every
- *    reference must name an environment the writer may read, one reaching outside
- *    this environment must not strand a CI token pinned here, and the graph as it
- *    would be after the write must still resolve in every view it reaches.
+ *    reference must name an environment the writer may read, and one reaching
+ *    outside this environment must not strand a CI token pinned here.
  *
  * Returns what to store beside the ciphertext: the resolved declaration, or
- * `null`.
+ * `null`. Whether the graph as it would be after the write still resolves in
+ * every view it reaches is *not* asked here: that check reads the graph, so it
+ * runs inside the write's transaction, under the graph lock — `templateGuard`
+ * for one write, `graphWriteGuard` with `changes` for a batch.
  */
 export async function prepareTemplateDeclaration(
   scope: EnvironmentScope,
@@ -52,13 +54,6 @@ export async function prepareTemplateDeclaration(
     requested: readonly SecretReference[] | undefined;
     /** Records the refusal when the plan does not include the feature. See `planRefusal`. */
     refused?: (() => void) | undefined;
-    /**
-     * Leave the graph check to the caller, which is changing many secrets at once
-     * and checks them together (`assertEnvironmentChanges`) — one at a time, a
-     * template promoted beside the value it refers to would be refused for want
-     * of a secret the same batch creates.
-     */
-    batched?: boolean | undefined;
     /**
      * What the version this write replaces declared, so a reference already
      * there is not asked about again. Absent for a create.
@@ -122,13 +117,27 @@ export async function prepareTemplateDeclaration(
     }
     params.onCrossing?.(crossings);
   }
-  if (params.batched === true) return declared;
-  await assertTemplateWrite(scope, services, {
-    name: params.name,
-    secretId: params.secretId,
-    references: declared,
-  });
+  // The graph itself is checked by the write, inside its transaction and under
+  // `lockReferenceGraph` — see `templateGuard` and `graphWriteGuard`.
   return declared;
+}
+
+/**
+ * The graph check a single template write passes inside its transaction, or
+ * `undefined` for a write that declares nothing (a value that is not a
+ * template cannot add a reference, so it cannot make a loop or a dangling one).
+ */
+export function templateGuard(
+  scope: EnvironmentScope,
+  write: { name: string; secretId: string; declaredReferences: DeclaredReference[] | null },
+): GraphGuard | undefined {
+  if (write.declaredReferences === null) return undefined;
+  return graphWriteGuard(scope, {
+    kind: 'template',
+    name: write.name,
+    secretId: write.secretId,
+    references: write.declaredReferences,
+  });
 }
 
 /**

@@ -26,9 +26,14 @@ import { resolveEnvironmentPath } from '@/server/tenancy';
 import { emitSecretChanges } from '@/server/change-events';
 import { enforceSecretPolicy, secretPolicyRefusal } from '@/server/policies-service';
 import { noteEnvironmentRead } from '@/server/read-alerts';
-import { assertRemovalKeepsReferences } from '@/server/references-service';
+import { graphWriteGuard } from '@/server/references-service';
 import type { ProtectionCrossing } from '@/server/references-service';
-import { crossingRecords, planRefusal, prepareTemplateDeclaration } from '@/server/template-writes';
+import {
+  crossingRecords,
+  planRefusal,
+  prepareTemplateDeclaration,
+  templateGuard,
+} from '@/server/template-writes';
 
 /**
  * One secret: reveal, new version, delete.
@@ -230,6 +235,12 @@ export const PATCH = authenticatedRoute<Params>(
           });
           const result = await writeClientSecretValue(scope, services, {
             declaredReferences,
+            // The graph check, inside the write's transaction (review round 1, L8).
+            guard: templateGuard(scope, {
+              name: current.name,
+              secretId: current.secretId,
+              declaredReferences,
+            }),
             writer,
             name: current.name,
             // An append, so the stored id is the one the ciphertext names —
@@ -396,8 +407,8 @@ export const PUT = authenticatedRoute<Params>(
             'where it sits. Create it under the new name and delete this one.',
         );
       }
-      // Renaming takes the old name out of every view that saw it.
-      await assertRemovalKeepsReferences(scope, services, name);
+      // Renaming takes the old name out of every view that saw it — checked
+      // below, inside the rename's own transaction.
       // P19 §8: a rename introduces a name, so the name rule applies to it.
       await enforceSecretPolicy(
         scope,
@@ -412,7 +423,7 @@ export const PUT = authenticatedRoute<Params>(
       );
     }
 
-    const updated = await updateSecretMetadata(services.db, {
+    const patch = {
       orgId: scope.organization.id,
       environmentId: scope.environment.id,
       name,
@@ -422,9 +433,23 @@ export const PUT = authenticatedRoute<Params>(
         ? {}
         : { encNote: body.encNote === null ? null : encodeBlob(body.encNote) }),
       ...(body.valueType === undefined ? {} : { valueType: body.valueType }),
+    };
+    // A rename changes the reference graph — the old name leaves every view —
+    // so it is checked and written in one transaction, under the graph lock,
+    // where a template written concurrently against the old name cannot slip
+    // between the two (review round 1, L8). A note or a type is not, and stays
+    // one statement.
+    const updated = await (
+      renamed
+        ? services.db.transaction(async (tx) => {
+            await graphWriteGuard(scope, { kind: 'removal', name })(tx);
+            return updateSecretMetadata(tx, patch);
+          })
+        : updateSecretMetadata(services.db, patch)
+    )
       // A rename that collides with a live secret comes back from the unique
       // index as `conflict`, and leaves here as a 409 rather than a 500.
-    }).catch(rethrowRepositoryFailure);
+      .catch(rethrowRepositoryFailure);
 
     record(
       audit(scope.organization.id).success(
@@ -498,10 +523,14 @@ export const DELETE = authenticatedRoute<Params>(
     if (!current) throw errors.notFound('no live secret with that name in environment');
 
     // P19 §1: a deletion that would leave a template somewhere referring to
-    // nothing is refused here, rather than discovered by the next `xecret run`.
-    await assertRemovalKeepsReferences(scope, services, current.name);
-
-    await softDeleteSecret(services.db, scope.organization.id, current.secretId);
+    // nothing is refused here, rather than discovered by the next `xecret run` —
+    // checked inside the deletion's own transaction, under the graph lock, so a
+    // template written against this name at the same moment cannot pass a check
+    // that could not see the deletion, or the other way round (review round 1, L8).
+    await services.db.transaction(async (tx) => {
+      await graphWriteGuard(scope, { kind: 'removal', name: current.name })(tx);
+      await softDeleteSecret(tx, scope.organization.id, current.secretId);
+    });
 
     record(
       audit(scope.organization.id).success(

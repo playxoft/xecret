@@ -467,6 +467,7 @@ export {
   listUserEmails,
   loadSecretGraphMetadata,
   lockProjectEnvironments,
+  lockReferenceGraph,
   setEnvironmentParent,
 } from './references';
 export type { GraphEnvironmentRecord, GraphSecretRecord } from './references';

@@ -293,11 +293,48 @@ export async function listUserEmails(
  * nothing anybody waits on.
  */
 export async function lockProjectEnvironments(exec: Executor, projectId: string): Promise<void> {
+  // `NO KEY UPDATE`, not `UPDATE`: it conflicts with itself — which is the
+  // serialisation wanted — but not with the `KEY SHARE` every insert into
+  // `secrets` takes on its environment row for the foreign key, so an ordinary
+  // secret write elsewhere in the project never queues behind a re-parenting.
   await exec
     .select({ id: environments.id })
     .from(environments)
     .where(eq(environments.projectId, projectId))
-    .for('update');
+    .for('no key update');
+}
+
+/**
+ * Serialises every write that changes an organisation's reference graph — a
+ * template written, a secret a template could depend on removed or renamed, a
+ * promotion or restore, an environment re-parented — for the rest of the
+ * transaction (review round 1, L8).
+ *
+ * ── Why not the project's environment rows alone ──
+ * `lockProjectEnvironments` serialises writes inside one project, which is
+ * where inheritance lives. References cross projects, and a loop can be closed
+ * by two writes that share no project at all: P→Q is added in project A while
+ * R→S is added in project C, where Q…R and S…P already exist through B and D.
+ * Locking each write's own project and the projects its references name
+ * serialises neither against the other, both checks pass, and the loop is
+ * stored. One lock per organisation is the smallest one every such pair of
+ * writes shares.
+ *
+ * ── Why that costs nothing anybody waits on ──
+ * It is a transaction-scoped advisory lock: no row is touched, it ends with the
+ * transaction (so a Hyperdrive or pooled connection never keeps it), and only
+ * graph writes take it — a plain value write, which is nearly every write,
+ * never does. Taken **before** any row lock in the same transaction, always, so
+ * it cannot participate in a deadlock with the project lock above.
+ *
+ * The key is derived from the organisation id with `hashtextextended`; a
+ * collision with another organisation only makes two organisations' graph
+ * writes queue behind each other, never lets either skip a check.
+ */
+export async function lockReferenceGraph(exec: Executor, orgId: string): Promise<void> {
+  await exec.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`xecret.reference-graph:${orgId}`}, 0))`,
+  );
 }
 
 /**

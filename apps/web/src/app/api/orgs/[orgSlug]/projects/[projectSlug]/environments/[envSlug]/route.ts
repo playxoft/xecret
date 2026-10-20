@@ -2,6 +2,7 @@ import { auditingDenials } from '@xecret/core/authz';
 import type { Denial } from '@xecret/core/authz';
 import {
   countSecrets,
+  lockReferenceGraph,
   RepositoryError,
   softDeleteEnvironment,
   updateEnvironment,
@@ -195,11 +196,15 @@ export const DELETE = authenticatedRoute<Params>(
 
     // P19 §1: an environment another inherits from, or that a template elsewhere
     // points into, would take somebody else's deploy down with it.
-    await assertEnvironmentRemovable(scope, services);
-
-    const environment = await softDeleteEnvironment(services.db, orgId, scope.environment.id).catch(
-      rethrowVanished,
-    );
+    // Checked and deleted in one transaction, under the graph lock, so a parent
+    // or a template pointing here cannot land between the two (review round 1, L8).
+    const environment = await services.db
+      .transaction(async (tx) => {
+        await lockReferenceGraph(tx, orgId);
+        await assertEnvironmentRemovable(scope, tx);
+        return softDeleteEnvironment(tx, orgId, scope.environment.id);
+      })
+      .catch(rethrowVanished);
 
     record(
       audit(orgId).success('environment.deleted', resource, {

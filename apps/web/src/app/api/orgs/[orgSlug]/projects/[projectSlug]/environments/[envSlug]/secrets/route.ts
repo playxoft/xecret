@@ -25,7 +25,12 @@ import type { Principal } from '@/server/actor';
 import { emitSecretChanges } from '@/server/change-events';
 import { enforceSecretPolicy, secretPolicyRefusal } from '@/server/policies-service';
 import type { ProtectionCrossing } from '@/server/references-service';
-import { crossingRecords, planRefusal, prepareTemplateDeclaration } from '@/server/template-writes';
+import {
+  crossingRecords,
+  planRefusal,
+  prepareTemplateDeclaration,
+  templateGuard,
+} from '@/server/template-writes';
 
 /**
  * An environment's secrets: the masked listing, and creation.
@@ -308,6 +313,8 @@ async function createClientSecret(
 
   const result = await writeClientSecretValue(scope, services, {
     declaredReferences,
+    // The graph check, inside the write's transaction (review round 1, L8).
+    guard: templateGuard(scope, { name: body.name, secretId: body.id, declaredReferences }),
     writer,
     name: body.name,
     // The client's uuid, not one minted here. It is an AAD component, so the

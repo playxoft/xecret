@@ -1229,6 +1229,66 @@ describe('setting a parent', () => {
   });
 });
 
+/* ── concurrent graph writes ──────────────────────────────────────────────── */
+
+describe('two template writes that together close a loop (review round 1, L8)', () => {
+  // x.T and y.T are plain. Making x.T a template reading y.T is fine on its
+  // own, and so is making y.T one reading x.T; together they are a loop. The
+  // second write is run in full in the window between the first one's own
+  // reads and its transaction — exactly where a check made outside the
+  // transaction cannot see it.
+  it('stores one of them and refuses the other', async () => {
+    const org = await seedOrg('pro');
+    const project = await seedProject(org);
+    const x = await seedEnv(org, project, 'x');
+    const y = await seedEnv(org, project, 'y');
+    await seedSecret(org, x, 'T');
+    await seedSecret(org, y, 'T');
+    caller = sessionOf(org.owner);
+
+    function makeTemplate(env: Env, other: string) {
+      const { path, params } = envPath(org, env.slug, '/secrets/T');
+      return call(
+        secretRoute.PATCH,
+        'PATCH',
+        path,
+        { ...params, name: 'T' },
+        {
+          value: {
+            ciphertext: blob(`T-${env.slug}`),
+            clientAlgorithm: 'xk2.gcm',
+            envDataKeyId: env.keyId,
+            valueHmac: OTHER_HMAC,
+          },
+          expectedVersion: 2,
+          valueType: 'template',
+          references: [{ environment: other, name: 'T' }],
+        },
+      );
+    }
+
+    let second: Answer | undefined;
+    // The active-key read is the write path's last statement before its
+    // transaction opens, after every check that once ran outside it.
+    const armed = t.beforeNextStatement(/"env_data_keys"/, async () => {
+      second = await makeTemplate(y, 'x');
+    });
+    const first = await makeTemplate(x, 'y');
+
+    expect(armed.fired()).toBe(true);
+    expect(second?.status).toBe(200);
+    expect(first.status).toBe(422);
+    expect(JSON.stringify(first.body)).toMatch(/loop/);
+
+    const templates = await t.pg.query<{ environment_id: string }>(
+      `select s.environment_id from secrets s
+        where s.environment_id in ($1, $2) and s.name = 'T' and s.value_type = 'template'`,
+      [x.id, y.id],
+    );
+    expect(templates.rows).toEqual([{ environment_id: y.id }]);
+  });
+});
+
 /* ── links that cross production's protection ─────────────────────────────── */
 
 describe('a production environment linked to one that is not (review round 1, M3)', () => {

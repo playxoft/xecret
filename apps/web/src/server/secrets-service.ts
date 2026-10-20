@@ -40,6 +40,7 @@ import type { ServiceContext } from './context';
 import { errors } from './errors';
 import { enforce, rateLimitKey } from './rate-limit';
 import type { RateLimitBucket } from './rate-limit';
+import type { GraphGuard } from './references-service';
 import { authorize } from './tenancy';
 import type { EnvironmentScope } from './tenancy';
 
@@ -482,6 +483,14 @@ export interface ClientSecretWriteBatch {
    * same batch.
    */
   removals?: readonly string[] | undefined;
+  /**
+   * The reference-graph check this batch must pass (P19 §1), run as the first
+   * thing inside its transaction — after the graph lock, so no concurrent write
+   * can change the graph between the check and the commit (review round 1, L8).
+   * A dry run, which opens no transaction, runs it on its own; a batch that turns
+   * out to write nothing runs nothing. See `graphWriteGuard`.
+   */
+  guard?: GraphGuard | undefined;
 }
 
 /**
@@ -529,7 +538,10 @@ export async function applyClientSecretWrites(
   }
 
   const results = prepared.map(toClientWriteResult);
-  if (batch.dryRun === true) return results;
+  if (batch.dryRun === true) {
+    await batch.guard?.(services.db);
+    return results;
+  }
 
   const pending = prepared.filter((write) => write.kind !== 'unchanged');
   const noteOnly = prepared.filter(
@@ -538,7 +550,7 @@ export async function applyClientSecretWrites(
 
   if (pending.length === 0 && noteOnly.length === 0 && removals.length === 0) return results;
 
-  await commitClientWrites(services, scope, batch.writer, prepared, removals);
+  await commitClientWrites(services, scope, batch.writer, prepared, removals, batch.guard);
   return results;
 }
 
@@ -546,10 +558,14 @@ export async function applyClientSecretWrites(
 export async function writeClientSecretValue(
   scope: EnvironmentScope,
   services: ServiceContext,
-  params: ClientSecretWrite & { writer: SecretWriterRef },
+  params: ClientSecretWrite & { writer: SecretWriterRef; guard?: GraphGuard | undefined },
 ): Promise<SecretWriteResult> {
-  const { writer, ...write } = params;
-  const [result] = await applyClientSecretWrites(scope, services, { writer, writes: [write] });
+  const { writer, guard, ...write } = params;
+  const [result] = await applyClientSecretWrites(scope, services, {
+    writer,
+    writes: [write],
+    guard,
+  });
 
   if (!result) {
     // Unreachable: one write in, one result out. A throw rather than a non-null
@@ -744,9 +760,14 @@ async function commitClientWrites(
   writer: SecretWriterRef,
   writes: readonly PreparedClientWrite[],
   removals: readonly string[] = [],
+  guard?: GraphGuard,
 ): Promise<void> {
   try {
     await services.db.transaction(async (tx) => {
+      // The graph check first, under its lock, so what it read is what this
+      // transaction commits into — see `ClientSecretWriteBatch.guard`.
+      await guard?.(tx);
+
       // Removals first, so a name a removal frees is free for a create in the
       // same transaction.
       for (const secretId of removals) {
