@@ -60,6 +60,8 @@ export const appPath = {
   root: (): string => '/app',
   org: (org: string): string => `/app/${segment(org)}`,
   orgSettings: (org: string): string => `/app/${segment(org)}/settings`,
+  /** The billing screen (P12). Owners only; Dodo's checkout and portal return here. */
+  orgBilling: (org: string): string => `/app/${segment(org)}/settings/billing`,
   members: (org: string): string => `/app/${segment(org)}/members`,
   tokens: (org: string): string => `/app/${segment(org)}/tokens`,
   audit: (org: string): string => `/app/${segment(org)}/audit`,
@@ -145,6 +147,14 @@ export const apiPath = {
   sso: (org: string): string => `${apiPath.org(org)}/sso`,
   /** `POST` mints a WorkOS Admin Portal link for setting up the identity provider. */
   ssoPortal: (org: string): string => `${apiPath.sso(org)}/portal`,
+  /** The billing screen's status (P12). */
+  billing: (org: string): string => `${apiPath.org(org)}/billing`,
+  /** `POST` a plan and period: a Dodo checkout URL to send the browser to. */
+  billingCheckout: (org: string): string => `${apiPath.billing(org)}/checkout`,
+  /** `GET` previews and `POST` requests a move to another plan or period. */
+  billingChange: (org: string): string => `${apiPath.billing(org)}/change`,
+  /** `POST` mints a link into Dodo's customer portal. */
+  billingPortal: (org: string): string => `${apiPath.billing(org)}/portal`,
   serviceTokens: (org: string): string => `${apiPath.org(org)}/tokens/service`,
   cliTokens: (org: string): string => `${apiPath.org(org)}/tokens/cli`,
   token: (org: string, kind: 'cli' | 'service', tokenId: string): string =>
