@@ -140,6 +140,13 @@ export interface ClientValueBody {
   valueHmac: string;
 }
 
+/** One reference a template declares (P19 §1), exactly as its writer parsed it. */
+export interface DeclaredReferencePayload {
+  project?: string;
+  environment?: string;
+  name: string;
+}
+
 /** A stored ciphertext on its way back, from a reveal or from the pull bundle. */
 export interface ClientSecretCiphertext {
   /** The `secrets` row id — an AAD component, not bookkeeping. */
@@ -150,9 +157,23 @@ export interface ClientSecretCiphertext {
   /** May name a **retired** key: a version written before a rotation. */
   envDataKeyId: string;
   version: number;
+  /** Present, and `true`, on a template in a version 2 bundle or a restore plan. */
+  template?: true;
+  /** What a template's writer declared beside the ciphertext. */
+  references?: DeclaredReferencePayload[];
 }
 
-/** `GET …/pull` in `e2ee` mode: the grant and the values, read together. */
+/**
+ * `GET …/pull` in `e2ee` mode: the grant and the values, read together.
+ *
+ * Both bundle versions in one type, because a client that asks for version 2
+ * is answered version 1 wherever the environment needs nothing more (see
+ * `server/env-bundle.ts`), and the two share every field this client reads.
+ * What version 2 adds — the environment's own identity and its `layers` of
+ * ancestors and referenced environments — is optional here and read only for
+ * what it says *about* this environment; see `pullOwn` in `secret-io.ts` for
+ * why no layer's values are shown.
+ */
 export interface ClientEnvironmentBundle {
   /** Always `true`, and the field a client branches on — see `env-bundle.ts`. */
   bundle: true;
@@ -160,4 +181,27 @@ export interface ClientEnvironmentBundle {
   encryptionMode: 'e2ee';
   keys: EnvironmentKeys;
   secrets: ClientSecretCiphertext[];
+  /** The environment's export policy (P19 §9). Absent from bundles served before P19. */
+  policy?: { plaintextExport: 'allowed' | 'disabled' };
+  /** Version 2 only: which environment this is, and what it inherits from. */
+  environment?: {
+    id: string;
+    projectSlug: string;
+    slug: string;
+    parentEnvironmentId: string | null;
+  };
+  /** Version 2 only: the ancestors and referenced environments a resolution reads. */
+  layers?: {
+    environmentId: string;
+    projectSlug: string;
+    environmentSlug: string;
+    parentEnvironmentId: string | null;
+    keys: {
+      encryptionMode: 'e2ee';
+      environmentId: string;
+      activeEdk: ActiveEdk;
+      myGrant: MyGrant | null;
+    } | null;
+    secrets: ClientSecretCiphertext[];
+  }[];
 }

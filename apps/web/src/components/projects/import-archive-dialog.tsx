@@ -36,6 +36,8 @@ import { CredentialChoice, RECOVERY_CODE_HINT } from '@/components/vault/credent
 import type { CredentialMethod } from '@/components/vault/credential-choice';
 import { readRecoveryCode } from '@/components/vault/vault-client';
 import { useVaultKeys } from '@/components/vault/vault-keys';
+import { policyProblem } from '@/components/policies/policy-checks';
+import { useOrgPolicies } from '@/components/policies/secret-policy-context';
 import {
   defaultMapping,
   describeTarget,
@@ -112,6 +114,11 @@ export interface ImportArchiveDialogProps {
 export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
   const vaultKeys = useVaultKeys();
   const locked = vaultKeys === null;
+  // The organisation's secret policy (P19 §8). An archive import writes every
+  // value in it anew, so each is held to the value rules before it is
+  // encrypted — `null` while loading or unreadable, which refuses nothing.
+  const policies = useOrgPolicies(props.orgSlug);
+  const secretPolicy = policies.data?.secrets ?? null;
   const [step, setStep] = useState<Step>({ kind: 'file' });
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
@@ -255,11 +262,21 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
           continue;
         }
 
+        const targetIsProduction =
+          props.environments.find((entry) => entry.slug === target)?.isProduction ?? false;
         const plan = await importValues({
           io: io.io,
           values: importableValues(environment),
           strategy,
           dryRun,
+          checkPolicy: (entry) =>
+            policyProblem(secretPolicy, {
+              name: entry.name,
+              newName: entry.newName,
+              value: entry.value,
+              valueType: 'string',
+              isProduction: targetIsProduction,
+            }),
         });
         const written = plan.counts.create + plan.counts.overwrite;
         if (!dryRun && written > 0) wrote = true;

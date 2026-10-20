@@ -9,8 +9,20 @@ import {
   toSecretValueType,
 } from '@xecret/core/validation';
 import type { SecretValueType } from '@xecret/core/validation';
+import type { SecretPolicy } from '@xecret/core/policy';
 import { isApiError } from '@/lib/api';
 import type { SecretIo } from '@/components/envkeys';
+import { withoutReasonPrefix } from '@/components/plans/plan-copy';
+import {
+  policyProblem,
+  policyViolations,
+  violationField,
+} from '@/components/policies/policy-checks';
+import {
+  crossesTemplateBoundary,
+  TEMPLATE_RENAME_REFUSAL,
+  TEMPLATE_RETYPE_NEEDS_VALUE,
+} from './template-references';
 import type { SecretSummary } from './types';
 
 /**
@@ -210,6 +222,26 @@ export interface SaveTarget {
    * listing; this is it.
    */
   byName: ReadonlyMap<string, SecretSummary>;
+  /**
+   * Whether that environment is production, for a secret policy scoped to
+   * production (P19 §8). `ComparedEnvironment` carries it already. Absent is
+   * read as not production — the reading that applies *fewer* rules, which is
+   * the safe direction for a client check the server's name rule backs up.
+   */
+  isProduction?: boolean | undefined;
+}
+
+/**
+ * The organisation's secret policy, as one save is held to it (P19 §8).
+ *
+ * Passed per call, like `extras`: the policy is read once per screen and can
+ * change while rows are being composed, and the rule that matters is the one
+ * in force when Save is pressed.
+ */
+export interface SavePolicy {
+  policy: SecretPolicy | null;
+  /** Whether the environment the page is about is production. */
+  isProduction: boolean;
 }
 
 export interface SaveOutcome {
@@ -331,6 +363,7 @@ export interface StagedChanges {
   save: (
     stored: ReadonlyMap<string, SecretSummary>,
     extras?: readonly SaveTarget[],
+    policy?: SavePolicy,
   ) => Promise<SaveOutcome>;
   /**
    * Drops every seeded plaintext, keeping whatever the user typed over it.
@@ -540,20 +573,83 @@ export function describeWriteFailure(cause: unknown, environmentName?: string): 
 
   if (!isApiError(cause)) return { field: 'value', message: 'Could not save this secret.' };
 
+  // ── Not every 409 is a taken name ──
+  // It used to be: a conflict here could only come from the unique index, so
+  // the sentence was written for that. P19 gave the same status several other
+  // meanings — a template that would leave a reference dangling, a rename of a
+  // template, a type change that has to be a value write, an environment that
+  // is not end-to-end encrypted — and each of those read, under this mapping,
+  // as "a secret with this name already exists", which sends somebody to look
+  // for a duplicate that is not there. The duplicate's own message is the one
+  // that says so; every other conflict is shown in the server's words, without
+  // the machine-readable prefix some of them carry.
   if (cause.code === 'conflict') {
-    return {
-      field: 'name',
-      message: `A secret with this name already exists in ${where}.`,
-    };
+    return /already exists/i.test(cause.message)
+      ? { field: 'name', message: `A secret with this name already exists in ${where}.` }
+      : { field: 'value', message: withoutReasonPrefix(cause.message) };
   }
 
   const fields = cause.fieldErrors();
   const nameProblem = fields['name'];
   if (nameProblem !== undefined) return { field: 'name', message: nameProblem };
-  const valueProblem = fields['value'];
+  const valueProblem = fields['value'] ?? fields['references'];
   if (valueProblem !== undefined) return { field: 'value', message: valueProblem };
 
-  return { field: 'value', message: cause.message };
+  // A plan refusal (P19): the server's sentence names the feature and the plan
+  // that would allow it, which is the whole of what the row can usefully say.
+  return { field: 'value', message: withoutReasonPrefix(cause.message) };
+}
+
+/**
+ * What the organisation's secret policy says about a draft, at save time.
+ *
+ * Separate from `draftProblem` because it asks a different authority — the
+ * organisation's rulebook rather than the product's grammar — and because each
+ * environment a row writes to answers it for itself: a production-scoped rule
+ * applies to the production box and not to the dev one beside it. The name is
+ * new everywhere a draft writes, so the name rule is asked of every
+ * environment the row lands in; the value rules, of each value against the
+ * environment it goes to. Reported against the box it is about, exactly as the
+ * other environments' problems are.
+ */
+export function draftPolicyProblem(
+  draft: Draft,
+  name: string,
+  policy: SavePolicy | undefined,
+  extras: readonly SaveTarget[] = [],
+): DraftError | null {
+  if (policy === undefined || policy.policy === null) return null;
+  const valueType = toSecretValueType(draft.valueType);
+
+  if (draft.value.length > 0) {
+    const violations = policyViolations(policy.policy, {
+      name,
+      newName: true,
+      value: draft.value,
+      valueType,
+      isProduction: policy.isProduction,
+    });
+    if (violations.length > 0) {
+      const nameViolation = violations.find((violation) => violationField(violation) === 'name');
+      return nameViolation !== undefined
+        ? { field: 'name', message: nameViolation.message }
+        : { field: 'value', message: violations.map((violation) => violation.message).join(' ') };
+    }
+  }
+
+  for (const target of draftTargets(draft)) {
+    const environment = extras.find((entry) => entry.slug === target.slug);
+    const problem = policyProblem(policy.policy, {
+      name,
+      newName: true,
+      value: target.value,
+      valueType,
+      isProduction: environment?.isProduction ?? false,
+    });
+    if (problem !== null) return { field: 'value', slug: target.slug, message: problem };
+  }
+
+  return null;
 }
 
 /**
@@ -998,6 +1094,7 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
     async (
       stored: ReadonlyMap<string, SecretSummary>,
       extras: readonly SaveTarget[] = [],
+      policy?: SavePolicy,
     ): Promise<SaveOutcome> => {
       setSaving(true);
 
@@ -1089,7 +1186,12 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
           }
 
           const name = draft.name.trim();
-          const localProblem = draftProblem(draft, name, claimed, targetClaims);
+          // The product's rules first, then the organisation's (P19 §8): a
+          // value that is the wrong shape is refused for that before anybody is
+          // told it is too weak. Both before anything is encrypted.
+          const localProblem =
+            draftProblem(draft, name, claimed, targetClaims) ??
+            draftPolicyProblem(draft, name, policy, extras);
 
           if (localProblem !== null) {
             survivingDrafts.push({ ...draft, error: localProblem });
@@ -1260,22 +1362,53 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
             continue;
           }
 
+          const row = stored.get(name);
+          // The type the row holds today, and the one it will hold after this
+          // save — the staged one where one was staged.
+          const storedType = toSecretValueType(row?.valueType ?? 'string');
+          const effectiveType = edit.valueType ?? storedType;
+          /**
+           * Whether this save turns the value into a template or back (P19 §1).
+           *
+           * The server takes that only as a value write, because the meaning of
+           * the stored text changes with it and a template's declaration lives
+           * on a version — the metadata route refuses it. So such a change is
+           * sent as a write of the value the editor holds: the new one if one
+           * was typed, otherwise the stored one it was seeded with. The row
+           * opens the editor on that value the moment such a type is picked.
+           */
+          const retypesTemplate =
+            edit.valueType !== undefined && crossesTemplateBoundary(storedType, edit.valueType);
+          /** The plaintext this save encrypts and writes, or `undefined` for none. */
+          const written = hasValue ? edit.value : retypesTemplate ? edit.baseline : undefined;
+          const savePolicy = policy?.policy ?? null;
+          const isProduction = policy?.isProduction ?? false;
+
           // Checked here as well as on the server, so a bad new name or a value
           // of the wrong shape is reported against its own row instead of
           // costing a round trip and coming back as one failure in a batch of
-          // thirty.
+          // thirty. A rename also meets the two P19 rules: a template cannot be
+          // renamed, and a new name is held to the organisation's naming rule.
           if (renaming && rename !== undefined) {
             const check = checkSecretName(rename);
             const problem = !check.valid
               ? (check.message ?? 'That name cannot be used.')
               : claimed.has(rename)
                 ? 'That name is already taken in this environment.'
-                : null;
+                : effectiveType === 'template'
+                  ? TEMPLATE_RENAME_REFUSAL
+                  : policyProblem(savePolicy, { name: rename, newName: true, isProduction });
             if (problem !== null) {
               survivingEdits.set(name, { ...edit, error: problem });
               outcome.failed += 1;
               continue;
             }
+          }
+
+          if (retypesTemplate && written === undefined) {
+            survivingEdits.set(name, { ...edit, error: TEMPLATE_RETYPE_NEEDS_VALUE });
+            outcome.failed += 1;
+            continue;
           }
           // The value this row will hold once the save lands: the new one where
           // one was typed, and otherwise the stored one the editor was seeded
@@ -1286,12 +1419,10 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
           // showing that in red. Still skipped where nothing was seeded: there
           // is no value here to check, and the server tolerates the mismatch on
           // purpose.
-          const effectiveValue = hasValue ? edit.value : edit.baseline;
           // The staged type where one was staged, and otherwise the type the
-          // secret already has: a row that changes only its value is declared
-          // just as firmly as one that changes both.
-          const row = stored.get(name);
-          const effectiveType = edit.valueType ?? toSecretValueType(row?.valueType ?? 'string');
+          // secret already has (`effectiveType`, above): a row that changes only
+          // its value is declared just as firmly as one that changes both.
+          const effectiveValue = hasValue ? edit.value : edit.baseline;
           if (effectiveValue !== undefined) {
             const shape = checkSecretValue(effectiveValue, effectiveType);
             if (!shape.valid) {
@@ -1299,6 +1430,25 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
                 ...edit,
                 error: shape.message ?? 'That value does not match its type.',
               });
+              outcome.failed += 1;
+              continue;
+            }
+          }
+
+          // P19 §8: the value rules, asked of the plaintext about to be
+          // encrypted — and only of that. A row that changes its note, or its
+          // type within plain text, writes no value, and the value it already
+          // holds is a warning on screen rather than a refusal here.
+          if (written !== undefined) {
+            const problem = policyProblem(savePolicy, {
+              name,
+              newName: false,
+              value: written,
+              valueType: effectiveType,
+              isProduction,
+            });
+            if (problem !== null) {
+              survivingEdits.set(name, { ...edit, error: problem });
               outcome.failed += 1;
               continue;
             }
@@ -1321,17 +1471,21 @@ export function useStagedChanges(io: SecretIo | null): StagedChanges {
               continue;
             }
 
-            const target = { id: row.id, name, version: row.version };
+            // The stored type travels with the row, so the IO can tell a
+            // template it is rewriting from one it is not: the type after the
+            // write — staged, else stored — decides whether it declares
+            // references, exactly as the server decides it.
+            const target = { id: row.id, name, version: row.version, valueType: row.valueType };
 
-            if (hasValue) {
+            if (written !== undefined) {
               const result = await io.update(target, {
-                value: edit.value,
+                value: written,
                 ...(edit.valueType === undefined ? {} : { valueType: edit.valueType }),
               });
               changed = changed || result.secret.status !== 'unchanged';
             }
 
-            const typeOnly = !hasValue && edit.valueType !== undefined;
+            const typeOnly = written === undefined && edit.valueType !== undefined;
             if (hasMeta || typeOnly) {
               const note = edit.note?.trim();
               await io.patchMetadata(target, {
