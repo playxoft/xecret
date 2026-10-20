@@ -92,11 +92,10 @@ export function ProjectActions({
   // One item per capability, so an admin whose custom role withholds one of
   // them loses that item rather than the whole menu — and the menu is drawn
   // whenever any one of them is left, an inviter with nothing else included.
-  // Inviting needs a role to invite *at*, as on the Members page it links to.
+  // The Invite item only links to the Members page, so it needs no role to
+  // invite at here; that page is the one that explains when there is none.
   const canManageMembers = canAdminister(organization, 'member.update');
-  const canInvite =
-    canAdminister(organization, 'member.invite') &&
-    organization.authority.assignableRoles.length > 0;
+  const canInvite = canAdminister(organization, 'member.invite');
   const canRename = canAdminister(organization, 'project.update');
   const canDelete = canAdminister(organization, 'project.delete');
   if (!canManageMembers && !canInvite && !canRename && !canDelete) return null;

@@ -71,12 +71,13 @@ describe('ProjectActions', () => {
     expect(html).toContain('aria-label="Manage API"');
   });
 
-  it('is not drawn for an inviter with no role to invite at', () => {
-    // As on the Members page the Invite item links to: `member.invite`
-    // alone hands out nothing.
+  it('is drawn for an inviter even with no role to invite at', () => {
+    // The Invite item is a link to the Members page, which is where "there is
+    // no role you may invite at" is explained — hiding the whole menu here
+    // left an invite-only role with no way in at all (PR #104 item 8).
     const html = render(organization('admin', [...CUSTOM_ROLE_FLOOR, 'member.invite']));
 
-    expect(html).not.toContain('Manage API');
+    expect(html).toContain('aria-label="Manage API"');
   });
 
   it('is drawn for a plain admin', () => {
