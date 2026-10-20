@@ -37,8 +37,7 @@ import {
 import { PLANS as PLAN_DEFINITIONS } from '@xecret/core/entitlements';
 import { cn } from '@/lib/cn';
 import { absoluteUrl, breadcrumbSchema, SITE_KEYWORDS, SITE_NAME } from '@/lib/site';
-import { billingSetup } from '@/server/billing/config';
-import { workerContext } from '@/server/context';
+import { takesPayments } from '@/server/billing/payments-live';
 
 /**
  * The pricing page.
@@ -111,11 +110,13 @@ import { workerContext } from '@/server/context';
  *
  * ── On the honesty of every number here ──
  * Whether anything here is billed depends on the deployment, and the page asks
- * rather than assumes (`takesPayments`). A deployment with no payment provider
- * configured — a self-hoster, or this one before Dodo is set up — still says
- * that nothing is billed, in the description, the comparison table and the
- * FAQ. One that takes payments (P12) says how to pay instead. The sentence came
- * off in P12, as the plan said it would, and only where it stopped being true.
+ * rather than assumes (`takesPayments`, `server/billing/payments-live.ts`). A
+ * deployment with no payment provider configured — a self-hoster, this one
+ * before Dodo is set up, or one rehearsing against Dodo's *test* mode — still
+ * says that nothing is billed, in the description, the comparison table and
+ * the FAQ. One that takes real payments (P12, Dodo's live mode) says how to pay
+ * instead. The sentence came off in P12, as the plan said it would, and only
+ * where it stopped being true.
  */
 
 // Both of these name the billing period, and that is not pedantry: $5 and $12
@@ -1784,6 +1785,15 @@ const FAQ: readonly PricingFaqItem[] = [
     // right. Stating the limit rather than the first value above it lets the
     // sentence read from `LIMITS` like everything else on the page.
     answer: `Nothing breaks and nothing is deleted. Free covers ${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} members, and you are asked to move up the next time you need one more of any of those. Everything already stored keeps working and the CLI keeps running. Going over the included fetch allowance is billed, never blocked. During pre-alpha there is no limit to exceed at all.`,
+    // The answer above ends on pre-alpha, and was the one pre-alpha sentence
+    // the payments build left ungated. The live one says what is true then:
+    // the ceilings are still not enforced (docs/operations/billing.md §6), and
+    // fetches past the allowance cost something only on a paid plan — Free has
+    // no subscription to bill them to.
+    whenPaymentsLive: {
+      question: 'What happens when I exceed the free tier?',
+      answer: `Nothing breaks and nothing is deleted. Free covers ${LIMITS.free.organizations} organisation, ${LIMITS.free.projects} projects, ${LIMITS.free.environmentsPerProject} environments in each of them and ${LIMITS.free.seats} members, and you are asked to move up the next time you need one more of any of those. Everything already stored keeps working and the CLI keeps running. Going over the included fetch allowance is never blocked: on Free it costs nothing, and on a paid plan the fetches past it are billed at the overage rate. The plan ceilings themselves are not enforced yet, so for now there is no limit to exceed at all.`,
+    },
   },
   {
     question: 'Can a billing problem break my build?',
@@ -2206,25 +2216,6 @@ function CellValue({ value }: { value: Cell }) {
  * actually charged is decided at checkout from their billing country and the
  * card that pays**, never from a header a client can send.
  */
-/**
- * Whether this deployment takes payments (P12) — every Dodo variable set.
- *
- * Asked rather than assumed, so the page can never say "nothing is billed" on a
- * deployment that bills, or "pay at checkout" on one that cannot: a self-hoster
- * and this deployment before Dodo is set up both answer `false`. Reads the
- * Worker's configuration only — no binding, no database, no network — and
- * answers `false` wherever it cannot be read (a test, a build-time render, a
- * half-configured deployment, whose billing routes answer 503 anyway).
- */
-async function takesPayments(): Promise<boolean> {
-  try {
-    const { env } = await workerContext();
-    return billingSetup(env).state === 'enabled';
-  } catch {
-    return false;
-  }
-}
-
 async function resolveInitialCurrency(): Promise<CurrencyId> {
   try {
     const country = (await headers()).get('CF-IPCountry');

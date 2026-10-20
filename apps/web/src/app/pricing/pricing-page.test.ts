@@ -231,11 +231,14 @@ describe('the honesty rules this page is built on', () => {
 
   it('asks the deployment whether it takes payments, and the page and its metadata both ask', () => {
     const code = withoutComments(SOURCE);
-    const ask = code.slice(code.indexOf('async function takesPayments('));
-    // Enabled only when every Dodo variable is set; anything else — a test, a
-    // half-configured deployment — is "not billing".
-    expect(ask.slice(0, ask.indexOf('\n}\n'))).toMatch(
-      /billingSetup\(env\)\.state === 'enabled'[\s\S]*catch[\s\S]*return false/,
+    // The one shared check, which answers yes only for live mode
+    // (`takesLivePayments`, tested in `server/billing/config.test.ts`).
+    expect(code).toContain("import { takesPayments } from '@/server/billing/payments-live';");
+    const helper = withoutComments(
+      readFileSync(join(import.meta.dirname, '../../server/billing/payments-live.ts'), 'utf8'),
+    );
+    expect(helper).toMatch(
+      /await connection\(\);[\s\S]*takesLivePayments\(env\)[\s\S]*return false/,
     );
     expect(code).toContain('pricingDescription(currency, await takesPayments())');
     expect(code).toContain('const paymentsLive = await takesPayments();');
@@ -254,7 +257,9 @@ describe('the honesty rules this page is built on', () => {
     for (const block of blocks) {
       const [before, live] = block.split('whenPaymentsLive:');
       if (
-        /no plan is billed|neither is billed|no card|billing system connected/.test(before ?? '')
+        /pre-alpha|no plan is billed|neither is billed|no card|billing system connected/.test(
+          before ?? '',
+        )
       ) {
         expect(
           live,
@@ -266,7 +271,7 @@ describe('the honesty rules this page is built on', () => {
         expect(live).not.toMatch(/pre-alpha|not billed|no plan is billed|nothing is billed/);
       }
     }
-    expect(conditional).toBe(3);
+    expect(conditional).toBe(4);
   });
 
   it('marks unbuilt capabilities rather than omitting or claiming them', () => {
