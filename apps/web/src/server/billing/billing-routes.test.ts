@@ -772,6 +772,10 @@ describe('the customer portal, round 1', () => {
       ]);
     }
     caller = sessionOf(owner);
+    // The billing screen does not offer what the route would refuse.
+    expect((await call(statusRoute.GET, 'GET', slug)).body['billing']).toMatchObject({
+      actions: { portal: false },
+    });
     const answer = await call(portalRoute.POST, 'POST', slug, '/portal');
     expect(answer.status).toBe(409);
     expect(dodo.createPortalSession).not.toHaveBeenCalled();

@@ -102,6 +102,17 @@ export async function applyPaymentEvent(
 
   // payment.succeeded
   const subscriptionId = payment.subscription_id ?? null;
+  // A payment not linked, for a human: alerted, and on the organisation's
+  // audit record as the snapshot handler records the same refusals.
+  const notLinked = (message: string, fields: Record<string, string | null>) => {
+    outcome.audit.push(
+      audit.error('billing.duplicate_subscription', resource, 'conflict', {
+        billingEvent: input.eventType,
+        plan: row.plan,
+      }),
+    );
+    outcome.effects.push({ kind: 'alert', message, fields: { orgId, ...fields } });
+  };
   if (
     input.checkout !== null &&
     subscriptionId !== null &&
@@ -110,44 +121,35 @@ export async function applyPaymentEvent(
     if (row.plan !== 'free') {
       // An operator's grant, or a second subscription beside the one the row
       // follows: nothing is linked, and a human decides.
-      outcome.effects.push({
-        kind: 'alert',
-        message:
-          row.dodoSubscriptionId === null
-            ? 'A checkout payment arrived for an organisation whose plan an operator set by hand ' +
+      notLinked(
+        row.dodoSubscriptionId === null
+          ? 'A checkout payment arrived for an organisation whose plan an operator set by hand ' +
               '— its subscription was not linked, and will not be applied. Refund or cancel it ' +
               'in Dodo, or move the organisation onto it deliberately'
-            : 'A checkout payment arrived for an organisation that already follows another ' +
+          : 'A checkout payment arrived for an organisation that already follows another ' +
               'subscription — not linked. The customer may be paying twice: check both in Dodo',
-        fields: {
-          orgId,
-          reason: row.dodoSubscriptionId === null ? 'operator-managed' : 'duplicate',
-        },
-      });
+        { reason: row.dodoSubscriptionId === null ? 'operator-managed' : 'duplicate' },
+      );
     } else if (row.dodoSubscriptionId !== null && row.dodoEventAt === null) {
       // A Free row still waiting for the subscription an earlier checkout's
       // payment linked: two checkouts paid before either activated. The
       // first link stands — replacing it would strand a subscription the
       // customer has already paid for — and a human refunds one.
-      outcome.effects.push({
-        kind: 'alert',
-        message:
-          'A checkout payment arrived for an organisation still waiting for the subscription ' +
+      notLinked(
+        'A checkout payment arrived for an organisation still waiting for the subscription ' +
           'another checkout’s payment linked — not linked. The customer is paying twice: refund ' +
           'or cancel one in Dodo',
-        fields: { orgId, reason: 'duplicate' },
-      });
+        { reason: 'duplicate' },
+      );
     } else {
       // Never steal a subscription another organisation already follows.
       const holder = await findOrgIdByDodoSubscription(tx, subscriptionId);
       if (holder !== null && holder !== orgId) {
-        outcome.effects.push({
-          kind: 'alert',
-          message:
-            'A payment from one organisation’s checkout names a subscription another ' +
+        notLinked(
+          'A payment from one organisation’s checkout names a subscription another ' +
             'organisation already follows — not linked. Check both in Dodo',
-          fields: { orgId, otherOrgId: holder },
-        });
+          { otherOrgId: holder },
+        );
       } else if (holder === null) {
         const spent = await consumeCheckout(tx, { orgId, subscriptionId, by: input.checkout });
         if (spent) {
@@ -161,13 +163,11 @@ export async function applyPaymentEvent(
             dodoEventId: null,
           });
         } else {
-          outcome.effects.push({
-            kind: 'alert',
-            message:
-              'A checkout payment arrived whose checkout was already spent on another ' +
+          notLinked(
+            'A checkout payment arrived whose checkout was already spent on another ' +
               'subscription — not linked. The customer may be paying twice: check Dodo',
-            fields: { orgId },
-          });
+            {},
+          );
         }
       }
     }

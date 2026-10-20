@@ -267,9 +267,12 @@ export async function billingStatus(
   const setup = billingSetup(services.env);
   const row = await subscriptionOf(services, orgId);
   const now = new Date();
-  const [counts, usage] = await Promise.all([
+  const [counts, usage, customerHolders] = await Promise.all([
     billingCounts(services.db, orgId, now),
     currentUsage(services.db, orgId),
+    row.dodoCustomerId === null
+      ? Promise.resolve(0)
+      : countOrgsWithDodoCustomer(services.db, row.dodoCustomerId),
   ]);
 
   const plan = resolvePlanId(row.plan);
@@ -350,7 +353,9 @@ export async function billingStatus(
     actions: {
       checkout: enabled && ours && !live && !managedBySupport(row) && !awaitingActivation(row),
       changePlan: enabled && live && ours,
-      portal: enabled && ours && row.dodoCustomerId !== null,
+      // Offered only where `openPortal` would open it: a customer this
+      // organisation alone holds.
+      portal: enabled && ours && row.dodoCustomerId !== null && customerHolders === 1,
     },
   };
 }

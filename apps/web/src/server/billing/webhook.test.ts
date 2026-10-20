@@ -1172,6 +1172,10 @@ describe('an operator’s grant, against a checkout payment', () => {
     expect(
       lines.some((line) => line.level === 'error' && /operator set by hand/.test(line.message)),
     ).toBe(true);
+    // On the organisation's record too, as a refused subscription is.
+    expect(
+      (await auditOf(orgId)).filter((entry) => entry.action === 'billing.duplicate_subscription'),
+    ).toHaveLength(1);
 
     await deliver({
       type: 'subscription.active',
@@ -1330,7 +1334,7 @@ describe('a first checkout', () => {
     expect(
       (await auditOf(orgId)).filter((entry) => entry.action === 'billing.duplicate_subscription')
         .length,
-    ).toBeGreaterThanOrEqual(1);
+    ).toBe(2); // the second payment, and the second subscription
   });
 
   it('raises a billing country that is not the card’s country, and changes nothing', async () => {
