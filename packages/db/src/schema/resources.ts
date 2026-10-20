@@ -90,6 +90,18 @@ export const environments = pgTable(
      * the write because no row constraint can follow a chain.
      */
     parentEnvironmentId: uuid('parent_environment_id'),
+    /**
+     * Whether `xecret pull` and `export` are refused here (P19 §9, migration
+     * 0027). `run` is unaffected. A guardrail the CLI enforces against the habit
+     * of exporting production — see the migration for exactly what it does not
+     * stop.
+     */
+    plaintextExportDisabled: boolean('plaintext_export_disabled').notNull().default(false),
+    /**
+     * Whether a read from an unseen address or device emails the owners and
+     * admins (P19 §7). `null` is the default: on for production, off elsewhere.
+     */
+    readAlerts: boolean('read_alerts'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),

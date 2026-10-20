@@ -1,0 +1,543 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { DEFAULT_SECRET_POLICY, DEFAULT_TOKEN_POLICY } from '@xecret/core/policy';
+import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '../testing/pglite';
+import type { TestDatabase } from '../testing/pglite';
+import { removeMember } from './membership';
+import {
+  deleteOverride,
+  listOverrides,
+  MAX_OVERRIDES_PER_ENVIRONMENT,
+  upsertOverride,
+} from './overrides';
+import {
+  claimReadAlertDigest,
+  listAdministratorAddresses,
+  listOrgsOwedReadAlerts,
+  listReadSightings,
+  loadOrgPolicies,
+  pruneReadSightings,
+  recordReadSighting,
+  saveSecretPolicy,
+  saveTokenPolicy,
+  takeOwedSightings,
+  updateEnvironmentPolicy,
+} from './policies';
+import { RepositoryError } from './shared';
+import {
+  claimDeliveries,
+  claimDueDeliveries,
+  countWebhooks,
+  createWebhook,
+  deleteWebhook,
+  disableWebhookForFailures,
+  enqueueDeliveries,
+  findWebhook,
+  findWebhookWithSecret,
+  listDeliveries,
+  listEnabledWebhooksForEvent,
+  listWebhooks,
+  pruneWebhookDeliveries,
+  recordDeliveryAttempt,
+  updateWebhook,
+} from './webhooks';
+
+/**
+ * Personal overrides, webhooks, policies and read sightings (P19, migrations
+ * 0025–0028), against a real PostgreSQL with every migration applied.
+ */
+
+let t: TestDatabase;
+
+beforeAll(async () => {
+  t = await createTestDatabase();
+}, TEST_DATABASE_TIMEOUT_MS);
+
+afterAll(async () => {
+  await t.close();
+});
+
+const ascii = (value: string) => new TextEncoder().encode(value);
+
+async function attempt(sql: string, params: unknown[]): Promise<string | null> {
+  try {
+    await t.pg.query(sql, params);
+    return null;
+  } catch (cause) {
+    return (cause as Error).message;
+  }
+}
+
+async function user(): Promise<string> {
+  const id = randomUUID();
+  await t.pg.query(
+    `insert into users (id, workos_user_id, email, email_verified) values ($1, $2, $3, true)`,
+    [id, `user_${id.slice(0, 8)}`, `p19-${id.slice(0, 8)}@example.com`],
+  );
+  return id;
+}
+
+interface Fixture {
+  orgId: string;
+  ownerId: string;
+  projectId: string;
+  environmentId: string;
+}
+
+async function fixture(): Promise<Fixture> {
+  const ownerId = await user();
+  const orgId = randomUUID();
+  const projectId = randomUUID();
+  const environmentId = randomUUID();
+  await t.pg.query(
+    `insert into organizations (id, name, slug, created_by) values ($1, 'Acme', $2, $3)`,
+    [orgId, `acme-${orgId.slice(0, 8)}`, ownerId],
+  );
+  await t.pg.query(
+    `insert into org_members (id, org_id, user_id, role) values ($1, $2, $3, 'owner')`,
+    [randomUUID(), orgId, ownerId],
+  );
+  await t.pg.query(
+    `insert into projects (id, org_id, name, slug, created_by) values ($1, $2, 'API', 'api', $3)`,
+    [projectId, orgId, ownerId],
+  );
+  await t.pg.query(
+    `insert into environments (id, project_id, name, slug, encryption_mode, is_production) values ($1, $2, 'Production', 'production', 'e2ee', true)`,
+    [environmentId, projectId],
+  );
+  return { orgId, ownerId, projectId, environmentId };
+}
+
+async function member(orgId: string, role: string): Promise<{ userId: string; memberId: string }> {
+  const userId = await user();
+  const memberId = randomUUID();
+  await t.pg.query(`insert into org_members (id, org_id, user_id, role) values ($1, $2, $3, $4)`, [
+    memberId,
+    orgId,
+    userId,
+    role,
+  ]);
+  return { userId, memberId };
+}
+
+/* ── personal overrides ──────────────────────────────────────────────────── */
+
+describe('personal overrides', () => {
+  it('belong to one person: set, replaced, listed and removed by their owner alone', async () => {
+    const f = await fixture();
+    const teammate = await member(f.orgId, 'developer');
+    const owner = { orgId: f.orgId, environmentId: f.environmentId, userId: f.ownerId };
+
+    const first = await upsertOverride(t.db, {
+      ...owner,
+      name: 'DB_URL',
+      ciphertext: ascii('xk2.x25519.a'),
+    });
+    expect(first.created).toBe(true);
+    const second = await upsertOverride(t.db, {
+      ...owner,
+      name: 'DB_URL',
+      ciphertext: ascii('xk2.x25519.b'),
+    });
+    expect(second.created).toBe(false);
+    expect(second.record.id).toBe(first.record.id);
+
+    const listed = await listOverrides(t.db, owner);
+    expect(listed.map((row) => [row.name, new TextDecoder().decode(row.ciphertext)])).toEqual([
+      ['DB_URL', 'xk2.x25519.b'],
+    ]);
+
+    // Nothing in the file can return another person's override.
+    expect(await listOverrides(t.db, { ...owner, userId: teammate.userId })).toEqual([]);
+    expect(
+      await deleteOverride(t.db, { ...owner, userId: teammate.userId, name: 'DB_URL' }),
+    ).toBeNull();
+
+    expect((await deleteOverride(t.db, { ...owner, name: 'DB_URL' }))?.id).toBe(first.record.id);
+    expect(await listOverrides(t.db, owner)).toEqual([]);
+  });
+
+  it('refuses an environment outside the organisation, and a name outside the grammar', async () => {
+    const f = await fixture();
+    const stranger = await fixture();
+    await expect(
+      upsertOverride(t.db, {
+        orgId: stranger.orgId,
+        environmentId: f.environmentId,
+        userId: stranger.ownerId,
+        name: 'X',
+        ciphertext: ascii('x'),
+      }),
+    ).rejects.toThrow(RepositoryError);
+
+    expect(
+      await attempt(
+        `insert into personal_overrides (id, org_id, environment_id, user_id, name, ciphertext) values ($1, $2, $3, $4, 'bad-name', '\\x00')`,
+        [randomUUID(), f.orgId, f.environmentId, f.ownerId],
+      ),
+    ).toMatch(/personal_overrides_name_check/);
+  });
+
+  it(`caps new names at ${MAX_OVERRIDES_PER_ENVIRONMENT}, but lets an existing one be replaced`, async () => {
+    const f = await fixture();
+    const owner = { orgId: f.orgId, environmentId: f.environmentId, userId: f.ownerId };
+    const values = Array.from({ length: MAX_OVERRIDES_PER_ENVIRONMENT }, (_, index) => [
+      randomUUID(),
+      f.orgId,
+      f.environmentId,
+      f.ownerId,
+      `K${index}`,
+      ascii('xk2.x25519.x'),
+    ]);
+    for (const row of values) {
+      await t.pg.query(
+        `insert into personal_overrides (id, org_id, environment_id, user_id, name, ciphertext) values ($1, $2, $3, $4, $5, $6)`,
+        row,
+      );
+    }
+
+    await expect(
+      upsertOverride(t.db, { ...owner, name: 'ONE_MORE', ciphertext: ascii('x') }),
+    ).rejects.toMatchObject({ code: 'quotaExceeded' });
+    await expect(
+      upsertOverride(t.db, { ...owner, name: 'K0', ciphertext: ascii('replaced') }),
+    ).resolves.toMatchObject({ created: false });
+  });
+
+  it('go with the member when they are removed from the organisation', async () => {
+    const f = await fixture();
+    const leaver = await member(f.orgId, 'developer');
+    await upsertOverride(t.db, {
+      orgId: f.orgId,
+      environmentId: f.environmentId,
+      userId: leaver.userId,
+      name: 'MINE',
+      ciphertext: ascii('x'),
+    });
+
+    await removeMember(t.db, { orgId: f.orgId, memberId: leaver.memberId }, () => undefined);
+
+    const left = await t.pg.query<{ n: number }>(
+      `select count(*)::int as n from personal_overrides where user_id = $1`,
+      [leaver.userId],
+    );
+    expect(left.rows[0]!.n).toBe(0);
+  });
+});
+
+/* ── webhooks ────────────────────────────────────────────────────────────── */
+
+const sealed = { ciphertext: ascii('sealed'), iv: new Uint8Array(12), keyVersion: 1 };
+
+async function webhook(f: Fixture, eventTypes = ['secret.updated']) {
+  return createWebhook(t.db, {
+    id: randomUUID(),
+    orgId: f.orgId,
+    url: 'https://hooks.example.com/x',
+    description: null,
+    eventTypes,
+    secret: sealed,
+    createdBy: f.ownerId,
+  });
+}
+
+describe('webhooks', () => {
+  it('lists without the secret, and finds with it only when asked', async () => {
+    const f = await fixture();
+    const hook = await webhook(f);
+
+    const [listed] = await listWebhooks(t.db, f.orgId);
+    expect(listed).toMatchObject({ id: hook.id, enabled: true, disabledReason: null });
+    expect(Object.keys(listed!)).not.toContain('secretCiphertext');
+    expect(Object.keys(listed!)).not.toContain('secret');
+
+    expect((await findWebhookWithSecret(t.db, f.orgId, hook.id))?.secret.keyVersion).toBe(1);
+    expect(await countWebhooks(t.db, f.orgId)).toBe(1);
+
+    const stranger = await fixture();
+    expect(await findWebhook(t.db, stranger.orgId, hook.id)).toBeNull();
+    expect(await findWebhookWithSecret(t.db, stranger.orgId, hook.id)).toBeNull();
+    expect(await deleteWebhook(t.db, stranger.orgId, hook.id)).toBeNull();
+  });
+
+  it('selects only enabled endpoints subscribed to the event', async () => {
+    const f = await fixture();
+    const subscribed = await webhook(f, ['secret.updated', 'secret.created']);
+    await webhook(f, ['environment.promoted']);
+    const off = await webhook(f, ['secret.updated']);
+    await updateWebhook(t.db, f.orgId, off.id, { enabled: false });
+
+    const hooks = await listEnabledWebhooksForEvent(t.db, f.orgId, 'secret.updated');
+    expect(hooks.map((hook) => hook.id)).toEqual([subscribed.id]);
+    expect(hooks[0]!.secret.ciphertext).toEqual(ascii('sealed'));
+  });
+
+  it('keeps "off" and "why it is off" together', async () => {
+    const f = await fixture();
+    const hook = await webhook(f);
+    expect(await attempt(`update webhooks set enabled = false where id = $1`, [hook.id])).toMatch(
+      /webhooks_enabled_reason_check/,
+    );
+
+    const off = await updateWebhook(t.db, f.orgId, hook.id, { enabled: false });
+    expect(off).toMatchObject({ enabled: false, disabledReason: 'manual' });
+    const on = await updateWebhook(t.db, f.orgId, hook.id, { enabled: true });
+    expect(on).toMatchObject({ enabled: true, disabledReason: null, consecutiveFailures: 0 });
+  });
+
+  it('claims a delivery once, retries it, and counts the failures on its endpoint', async () => {
+    const f = await fixture();
+    const hook = await webhook(f);
+    const [id] = await enqueueDeliveries(t.db, [
+      { webhookId: hook.id, orgId: f.orgId, eventType: 'secret.updated', body: '{"a":1}' },
+    ]);
+
+    const claimed = await claimDeliveries(t.db, [id!]);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]!.webhook.secret.ciphertext).toEqual(ascii('sealed'));
+    // A second sender gets nothing.
+    expect(await claimDeliveries(t.db, [id!])).toEqual([]);
+
+    const afterFailure = await recordDeliveryAttempt(t.db, {
+      deliveryId: id!,
+      webhookId: hook.id,
+      outcome: {
+        kind: 'failed',
+        statusCode: 500,
+        error: 'HTTP 500',
+        retryAt: new Date(Date.now() - 1000),
+      },
+    });
+    expect(afterFailure).toMatchObject({ consecutiveFailures: 1 });
+    expect(afterFailure!.failingSince).not.toBeNull();
+
+    // Due again, so the sweep takes it.
+    const swept = await claimDueDeliveries(t.db, 10);
+    expect(swept.map((entry) => entry.delivery.id)).toContain(id);
+
+    const afterSuccess = await recordDeliveryAttempt(t.db, {
+      deliveryId: id!,
+      webhookId: hook.id,
+      outcome: { kind: 'succeeded', statusCode: 204 },
+    });
+    expect(afterSuccess).toMatchObject({ consecutiveFailures: 0, failingSince: null });
+
+    const [logged] = await listDeliveries(t.db, f.orgId, hook.id, 10);
+    expect(logged).toMatchObject({ status: 'succeeded', attempts: 2, lastStatusCode: 204 });
+    expect(await listDeliveries(t.db, (await fixture()).orgId, hook.id, 10)).toEqual([]);
+  });
+
+  it('takes back a delivery whose sender died mid-claim', async () => {
+    const f = await fixture();
+    const hook = await webhook(f);
+    const [id] = await enqueueDeliveries(t.db, [
+      { webhookId: hook.id, orgId: f.orgId, eventType: 'secret.updated', body: '{}' },
+    ]);
+    await t.pg.query(
+      `update webhook_deliveries set status = 'delivering', claimed_at = now() - interval '10 minutes' where id = $1`,
+      [id],
+    );
+    expect((await claimDueDeliveries(t.db, 50)).map((entry) => entry.delivery.id)).toContain(id);
+  });
+
+  it('abandons a delivery with no retries left, and disables an endpoint once', async () => {
+    const f = await fixture();
+    const hook = await webhook(f);
+    const [first, second] = await enqueueDeliveries(t.db, [
+      { webhookId: hook.id, orgId: f.orgId, eventType: 'secret.updated', body: '{}' },
+      { webhookId: hook.id, orgId: f.orgId, eventType: 'secret.updated', body: '{}' },
+    ]);
+    await claimDeliveries(t.db, [first!]);
+    await recordDeliveryAttempt(t.db, {
+      deliveryId: first!,
+      webhookId: hook.id,
+      outcome: { kind: 'failed', statusCode: null, error: 'timeout', retryAt: null },
+    });
+
+    const disabled = await disableWebhookForFailures(t.db, hook.id);
+    expect(disabled).toMatchObject({ enabled: false, disabledReason: 'failures' });
+    expect(await disableWebhookForFailures(t.db, hook.id)).toBeNull();
+
+    const statuses = await t.pg.query<{ id: string; status: string }>(
+      `select id, status from webhook_deliveries where webhook_id = $1`,
+      [hook.id],
+    );
+    expect(Object.fromEntries(statuses.rows.map((row) => [row.id, row.status]))).toEqual({
+      [first!]: 'abandoned',
+      [second!]: 'abandoned',
+    });
+  });
+
+  it('prunes finished deliveries past their age and leaves owed ones', async () => {
+    const f = await fixture();
+    const hook = await webhook(f);
+    const [done, owed] = await enqueueDeliveries(t.db, [
+      { webhookId: hook.id, orgId: f.orgId, eventType: 'secret.updated', body: '{}' },
+      { webhookId: hook.id, orgId: f.orgId, eventType: 'secret.updated', body: '{}' },
+    ]);
+    await t.pg.query(
+      `update webhook_deliveries set status = 'succeeded', created_at = now() - interval '40 days' where id = $1`,
+      [done],
+    );
+    await t.pg.query(
+      `update webhook_deliveries set created_at = now() - interval '40 days' where id = $1`,
+      [owed],
+    );
+    expect(
+      await pruneWebhookDeliveries(t.db, new Date(Date.now() - 30 * 86_400_000)),
+    ).toBeGreaterThanOrEqual(1);
+    const left = await t.pg.query<{ id: string }>(
+      `select id from webhook_deliveries where webhook_id = $1`,
+      [hook.id],
+    );
+    expect(left.rows.map((row) => row.id)).toEqual([owed]);
+  });
+});
+
+/* ── policies ────────────────────────────────────────────────────────────── */
+
+describe('organisation policies', () => {
+  it('answers every default for an organisation that never set one', async () => {
+    const f = await fixture();
+    expect(await loadOrgPolicies(t.db, f.orgId)).toEqual({
+      tokens: DEFAULT_TOKEN_POLICY,
+      secrets: DEFAULT_SECRET_POLICY,
+      updatedAt: null,
+    });
+  });
+
+  it('stores each policy without disturbing the other', async () => {
+    const f = await fixture();
+    await saveTokenPolicy(t.db, {
+      orgId: f.orgId,
+      policy: { requireIpAllowlist: true, maxLifetimeDays: 30 },
+      updatedBy: f.ownerId,
+    });
+    await saveSecretPolicy(t.db, {
+      orgId: f.orgId,
+      policy: { ...DEFAULT_SECRET_POLICY, enabled: true },
+      updatedBy: f.ownerId,
+    });
+
+    const loaded = await loadOrgPolicies(t.db, f.orgId);
+    expect(loaded.tokens).toEqual({ requireIpAllowlist: true, maxLifetimeDays: 30 });
+    expect(loaded.secrets.enabled).toBe(true);
+    expect(loaded.updatedAt).toBeInstanceOf(Date);
+
+    expect(
+      await attempt(`update org_policies set token_max_lifetime_days = 0 where org_id = $1`, [
+        f.orgId,
+      ]),
+    ).toMatch(/org_policies_token_lifetime_check/);
+  });
+
+  it('fills a field an older stored policy lacks from the default', async () => {
+    const f = await fixture();
+    await t.pg.query(
+      `insert into org_policies (org_id, secret_policy) values ($1, '{"enabled": true}')`,
+      [f.orgId],
+    );
+    const loaded = await loadOrgPolicies(t.db, f.orgId);
+    expect(loaded.secrets).toEqual({ ...DEFAULT_SECRET_POLICY, enabled: true });
+  });
+
+  it('sets an environment’s switches within the organisation', async () => {
+    const f = await fixture();
+    const updated = await updateEnvironmentPolicy(t.db, f.orgId, f.environmentId, {
+      plaintextExportDisabled: true,
+      readAlerts: false,
+    });
+    expect(updated).toMatchObject({ plaintextExportDisabled: true, readAlerts: false });
+
+    const reset = await updateEnvironmentPolicy(t.db, f.orgId, f.environmentId, {
+      readAlerts: null,
+    });
+    expect(reset.readAlerts).toBeNull();
+    expect(reset.plaintextExportDisabled).toBe(true);
+
+    const stranger = await fixture();
+    await expect(
+      updateEnvironmentPolicy(t.db, stranger.orgId, f.environmentId, { readAlerts: true }),
+    ).rejects.toThrow(RepositoryError);
+  });
+
+  it('addresses owners and admins, never developers or the suspended', async () => {
+    const f = await fixture();
+    await member(f.orgId, 'admin');
+    await member(f.orgId, 'developer');
+    const suspended = await member(f.orgId, 'admin');
+    await t.pg.query(`update org_members set status = 'suspended' where id = $1`, [
+      suspended.memberId,
+    ]);
+    expect(await listAdministratorAddresses(t.db, f.orgId, 10)).toHaveLength(2);
+  });
+});
+
+/* ── read sightings ──────────────────────────────────────────────────────── */
+
+describe('read sightings', () => {
+  const sighting = (f: Fixture, ip: string, principalId = f.ownerId) => ({
+    orgId: f.orgId,
+    environmentId: f.environmentId,
+    principalKind: 'cli_token' as const,
+    principalId,
+    principalLabel: 'laptop',
+    ipAddress: ip,
+  });
+
+  it('is new once per principal and address', async () => {
+    const f = await fixture();
+    expect(await recordReadSighting(t.db, sighting(f, '198.51.100.7'))).toEqual({ isNew: true });
+    expect(await recordReadSighting(t.db, sighting(f, '198.51.100.7'))).toEqual({ isNew: false });
+    expect(await recordReadSighting(t.db, sighting(f, '198.51.100.8'))).toEqual({ isNew: true });
+    expect(await recordReadSighting(t.db, sighting(f, '198.51.100.7', randomUUID()))).toEqual({
+      isNew: true,
+    });
+    expect(await listReadSightings(t.db, f.orgId, f.environmentId, 10)).toHaveLength(3);
+  });
+
+  it('throttles the digest to one claim per window', async () => {
+    const f = await fixture();
+    const hourAgo = new Date(Date.now() - 3_600_000);
+    expect(await claimReadAlertDigest(t.db, f.orgId, hourAgo)).toBe(true);
+    expect(await claimReadAlertDigest(t.db, f.orgId, hourAgo)).toBe(false);
+    // Once the last send is older than the window, the next claim succeeds.
+    await t.pg.query(
+      `update read_alert_digests set last_sent_at = now() - interval '2 hours' where org_id = $1`,
+      [f.orgId],
+    );
+    expect(await claimReadAlertDigest(t.db, f.orgId, hourAgo)).toBe(true);
+  });
+
+  it('hands each owed sighting out once, with what an alert names', async () => {
+    const f = await fixture();
+    await recordReadSighting(t.db, sighting(f, '198.51.100.20'));
+    await recordReadSighting(t.db, sighting(f, '198.51.100.21'));
+
+    expect(await listOrgsOwedReadAlerts(t.db, new Date(), 100)).toContain(f.orgId);
+
+    const owed = await takeOwedSightings(t.db, f.orgId, 50);
+    expect(owed).toHaveLength(2);
+    expect(owed[0]).toMatchObject({
+      environmentSlug: 'production',
+      projectSlug: 'api',
+      isProduction: true,
+      principalLabel: 'laptop',
+    });
+    expect(await takeOwedSightings(t.db, f.orgId, 50)).toEqual([]);
+    expect(await listOrgsOwedReadAlerts(t.db, new Date(), 100)).not.toContain(f.orgId);
+  });
+
+  it('prunes what has not been seen in a long while', async () => {
+    const f = await fixture();
+    await recordReadSighting(t.db, sighting(f, '198.51.100.30'));
+    await t.pg.query(
+      `update environment_read_sightings set last_seen_at = now() - interval '200 days' where org_id = $1`,
+      [f.orgId],
+    );
+    expect(await pruneReadSightings(t.db, new Date(Date.now() - 180 * 86_400_000))).toBeGreaterThan(
+      0,
+    );
+    expect(await recordReadSighting(t.db, sighting(f, '198.51.100.30'))).toEqual({ isNew: true });
+  });
+});

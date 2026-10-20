@@ -534,6 +534,8 @@ describe('response shapes', () => {
     encryptionMode: 'server',
     sortOrder: 2,
     parentEnvironmentId: null,
+    plaintextExportDisabled: false,
+    readAlerts: null,
     createdAt: new Date('2026-01-03T10:00:00.000Z'),
     updatedAt: new Date('2026-02-03T10:00:00.000Z'),
     deletedAt: null,

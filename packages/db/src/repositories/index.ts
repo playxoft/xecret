@@ -466,3 +466,62 @@ export {
   setEnvironmentParent,
 } from './references';
 export type { GraphEnvironmentRecord, GraphSecretRecord } from './references';
+
+export {
+  deleteOverride,
+  deleteOverridesForMember,
+  listOverrides,
+  MAX_OVERRIDES_PER_ENVIRONMENT,
+  upsertOverride,
+} from './overrides';
+export type { OverrideOwner, OverrideRecord } from './overrides';
+
+export {
+  claimDeliveries,
+  claimDueDeliveries,
+  countWebhooks,
+  createWebhook,
+  deleteWebhook,
+  disableWebhookForFailures,
+  enqueueDeliveries,
+  findWebhook,
+  findWebhookWithSecret,
+  listDeliveries,
+  listEnabledWebhooksForEvent,
+  listWebhooks,
+  pruneWebhookDeliveries,
+  recordDeliveryAttempt,
+  STALE_CLAIM_MS,
+  updateWebhook,
+} from './webhooks';
+export type {
+  ClaimedDelivery,
+  CreateWebhookParams,
+  DeliveryOutcome,
+  DeliveryRecord,
+  WebhookPatch,
+  WebhookRecord,
+  WebhookSecretMaterial,
+  WebhookWithSecret,
+} from './webhooks';
+
+export {
+  claimReadAlertDigest,
+  listAdministratorAddresses,
+  listOrgsOwedReadAlerts,
+  listReadSightings,
+  loadOrgPolicies,
+  pruneReadSightings,
+  recordReadSighting,
+  saveSecretPolicy,
+  saveTokenPolicy,
+  takeOwedSightings,
+  updateEnvironmentPolicy,
+} from './policies';
+export type {
+  EnvironmentPolicyPatch,
+  OrgPolicies,
+  OwedSighting,
+  SightingParams,
+  SightingRecord,
+} from './policies';

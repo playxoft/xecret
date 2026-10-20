@@ -71,6 +71,8 @@ function gridRow(id: string, isProduction: boolean): OrganizationEnvironment {
     encryptionMode: 'server',
     sortOrder: 0,
     parentEnvironmentId: null,
+    plaintextExportDisabled: false,
+    readAlerts: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
     deletedAt: null,
