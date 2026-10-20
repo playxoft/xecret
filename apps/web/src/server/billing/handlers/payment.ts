@@ -124,6 +124,19 @@ export async function applyPaymentEvent(
           reason: row.dodoSubscriptionId === null ? 'operator-managed' : 'duplicate',
         },
       });
+    } else if (row.dodoSubscriptionId !== null && row.dodoEventAt === null) {
+      // A Free row still waiting for the subscription an earlier checkout's
+      // payment linked: two checkouts paid before either activated. The
+      // first link stands — replacing it would strand a subscription the
+      // customer has already paid for — and a human refunds one.
+      outcome.effects.push({
+        kind: 'alert',
+        message:
+          'A checkout payment arrived for an organisation still waiting for the subscription ' +
+          'another checkout’s payment linked — not linked. The customer is paying twice: refund ' +
+          'or cancel one in Dodo',
+        fields: { orgId, reason: 'duplicate' },
+      });
     } else {
       // Never steal a subscription another organisation already follows.
       const holder = await findOrgIdByDodoSubscription(tx, subscriptionId);

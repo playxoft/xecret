@@ -434,6 +434,33 @@ export async function listLapsedTrials(
     .limit(options.limit);
 }
 
+/**
+ * Rows on Free that a checkout's payment linked to a subscription whose
+ * snapshot has never been applied, linked before `linkedBefore` — a paid
+ * checkout stranded short of its plan (the `subscription.active` lost, or
+ * refused until Dodo gave up). The hourly job asks Dodo what each became.
+ * "Linked" is dated by the row's last write: nothing else writes a Free row
+ * between the link and the activation.
+ */
+export async function listAwaitingActivation(
+  exec: Executor,
+  options: { linkedBefore: Date; limit: number },
+): Promise<SubscriptionRecord[]> {
+  return exec
+    .select()
+    .from(orgSubscriptions)
+    .where(
+      and(
+        eq(orgSubscriptions.plan, 'free'),
+        isNotNull(orgSubscriptions.dodoSubscriptionId),
+        isNull(orgSubscriptions.dodoEventAt),
+        lt(orgSubscriptions.updatedAt, options.linkedBefore),
+      ),
+    )
+    .orderBy(asc(orgSubscriptions.updatedAt))
+    .limit(options.limit);
+}
+
 /* ── checkouts ─────────────────────────────────────────────────────────────── */
 
 export type CheckoutRecord = typeof billingCheckouts.$inferSelect;
@@ -503,6 +530,23 @@ export async function findOpenCheckout(
     )
     .limit(1);
   return row?.checkout ?? null;
+}
+
+/**
+ * The organisation's checkout carrying this nonce, whatever its state — so a
+ * caller that found no *open* one can tell an expired checkout of its own
+ * (still unspent, older than the window) from a nonce nobody minted for it.
+ */
+export async function findCheckoutByNonce(
+  exec: Executor,
+  query: { orgId: string; nonce: string },
+): Promise<CheckoutRecord | null> {
+  const [row] = await exec
+    .select()
+    .from(billingCheckouts)
+    .where(and(eq(billingCheckouts.orgId, query.orgId), eq(billingCheckouts.nonce, query.nonce)))
+    .limit(1);
+  return row ?? null;
 }
 
 /**

@@ -253,6 +253,11 @@ export function decideSnapshot(input: {
     }
     if (!live) return { kind: 'ignore', reason: 'other-subscription' };
     if (!input.attachable) return { kind: 'ignore', reason: 'unverified-checkout' };
+    // Still waiting for the subscription an earlier checkout's payment linked:
+    // two checkouts paid. The first link stands; this one is reported.
+    if (row.dodoSubscriptionId !== null && row.dodoEventAt === null) {
+      return { kind: 'ignore', reason: 'duplicate-subscription' };
+    }
   } else if (row.plan !== 'free' && row.dodoProductId === null) {
     // The row follows this subscription by id but on a paid plan no snapshot
     // wrote — a snapshot always records the product. An operator set the plan

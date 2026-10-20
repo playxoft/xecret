@@ -1222,6 +1222,91 @@ describe('a first checkout', () => {
     expect(await rowOf(orgId)).toMatchObject({ plan: 'team', dodoSubscriptionId: subscriptionId });
   });
 
+  it('asks Dodo to retry a subscription from our own checkout paid after its week — never calls it foreign', async () => {
+    const { orgId, ownerId } = await seedOrg();
+    const { nonce } = await openCheckout(orgId, ownerId);
+    await t.pg.query(
+      `update billing_checkouts set created_at = now() - interval '8 days' where nonce = $1`,
+      [nonce],
+    );
+    const active = {
+      id: `msg_${uniq()}`,
+      type: 'subscription.active',
+      data: subscriptionData({
+        subscriptionId: `sub_${uniq()}`,
+        customerId: `cus_${uniq()}`,
+        orgId,
+        nonce,
+      }),
+    };
+    const answer = await deliver(active);
+    expect(answer.status).toBe(503);
+    expect(await claims(active.id)).toBe(0);
+    expect(await rowOf(orgId)).toMatchObject({ plan: 'free', dodoSubscriptionId: null });
+    expect(
+      lines.some((line) => line.level === 'error' && /more than a week old/.test(line.message)),
+    ).toBe(true);
+    expect(lines.some((line) => /attached to nothing/.test(line.message))).toBe(false);
+  });
+
+  it('keeps the first of two paid checkouts linked, and raises the second — never replaces it', async () => {
+    const { orgId, ownerId } = await seedOrg();
+    const first = await openCheckout(orgId, ownerId);
+    const second = await openCheckout(orgId, ownerId);
+    const firstSubscription = `sub_${uniq()}`;
+    const secondSubscription = `sub_${uniq()}`;
+    const customerId = `cus_${uniq()}`;
+    const pay = (subscriptionId: string, sessionId: string) =>
+      deliver({
+        type: 'payment.succeeded',
+        data: {
+          payment_id: `pay_${uniq()}`,
+          subscription_id: subscriptionId,
+          checkout_session_id: sessionId,
+          customer: { customer_id: customerId },
+          billing: { country: 'US' },
+          currency: 'USD',
+        },
+      });
+
+    // Both paid before either subscription activated.
+    expect((await pay(firstSubscription, first.sessionId)).status).toBe(200);
+    expect((await rowOf(orgId)).dodoSubscriptionId).toBe(firstSubscription);
+    expect((await pay(secondSubscription, second.sessionId)).status).toBe(200);
+    expect((await rowOf(orgId)).dodoSubscriptionId).toBe(firstSubscription);
+    expect(lines.some((line) => line.level === 'error' && /still waiting/.test(line.message))).toBe(
+      true,
+    );
+
+    // The second's own activation is refused too; the first's is applied.
+    await deliver({
+      type: 'subscription.active',
+      data: subscriptionData({
+        subscriptionId: secondSubscription,
+        customerId,
+        orgId,
+        nonce: second.nonce,
+        product: PRODUCTS.proMonthly,
+      }),
+    });
+    expect(await rowOf(orgId)).toMatchObject({
+      plan: 'free',
+      dodoSubscriptionId: firstSubscription,
+    });
+    await deliver({
+      type: 'subscription.active',
+      data: subscriptionData({ subscriptionId: firstSubscription, customerId, orgId: null }),
+    });
+    expect(await rowOf(orgId)).toMatchObject({
+      plan: 'team',
+      dodoSubscriptionId: firstSubscription,
+    });
+    expect(
+      (await auditOf(orgId)).filter((entry) => entry.action === 'billing.duplicate_subscription')
+        .length,
+    ).toBeGreaterThanOrEqual(1);
+  });
+
   it('raises a billing country that is not the card’s country, and changes nothing', async () => {
     const { orgId, subscriptionId, customerId } = await activeTeam({
       country: 'IN',

@@ -4,6 +4,7 @@ import {
   appendAuditEvents,
   claimWebhookEvent,
   findCheckout,
+  findCheckoutByNonce,
   findOpenCheckout,
   findOrgIdByDodoCustomer,
   findOrgIdByDodoSubscription,
@@ -100,9 +101,10 @@ type Placement =
   /**
    * Not placed; `retry` when the event is ours and a later delivery could
    * place it; `foreign` when its metadata named one of our organisations
-   * without a checkout of that organisation's to back it.
+   * without a checkout of that organisation's to back it; `expired` when it
+   * named that organisation's own checkout, unspent, past its window.
    */
-  | { orgId: null; retry: boolean; foreign?: boolean };
+  | { orgId: null; retry: boolean; foreign?: boolean; expired?: boolean };
 
 export async function receiveDodoWebhook(
   services: ServiceContext,
@@ -181,10 +183,22 @@ export async function receiveDodoWebhook(
   // links the subscription to its organisation — has not arrived. Not claimed;
   // Dodo retries, and by then the payment has.
   if (placement.orgId === null && placement.retry) {
-    log.warn(`Could not yet place a ${eventType} webhook; asking Dodo to retry`, {
-      webhookId,
-      eventType,
-    });
+    if (placement.expired === true) {
+      // Somebody paid through a checkout of ours after its week was up. Not a
+      // stranger's purchase, so not claimed as one: Dodo keeps retrying while
+      // a human looks (docs/operations/billing.md, "Stranded checkouts").
+      log.error(
+        `A ${eventType} came from one of our own checkouts, unspent but more than a week old — ` +
+          'not attached yet; asking Dodo to retry. Attach it by hand if its payment does not ' +
+          '(docs/operations/billing.md, "Stranded checkouts")',
+        { webhookId, eventType },
+      );
+    } else {
+      log.warn(`Could not yet place a ${eventType} webhook; asking Dodo to retry`, {
+        webhookId,
+        eventType,
+      });
+    }
     throw errors.unavailable('billing event not yet placeable');
   }
 
@@ -350,26 +364,40 @@ const NONCE = /^[A-Za-z0-9_-]{16,128}$/;
  * The organisation our checkout's metadata names — only with the nonce of an
  * open checkout of that same organisation beside it. `foreign` when metadata
  * names a live organisation of ours without one: somebody else's purchase
- * wearing our organisation id.
+ * wearing our organisation id. `expired` when the nonce is that
+ * organisation's own, unspent, but older than the window: our own checkout,
+ * paid late — never treated as foreign, and never attached by metadata
+ * alone. It waits (503) for its payment to link it, or a human.
  */
+type FromMetadata =
+  | { kind: 'placed'; orgId: string; nonce: string; plan: string }
+  /** Names a live organisation of ours, with no open checkout of its own behind it. */
+  | { kind: 'foreign' }
+  /** That organisation's own checkout, unspent, past the window. */
+  | { kind: 'expired' }
+  /** Names nothing of ours. */
+  | { kind: 'none' };
+
 async function fromMetadata(
   exec: Executor,
   metadata: Record<string, unknown> | null | undefined,
   now: Date,
-): Promise<{ orgId: string; nonce: string; plan: string } | { foreign: boolean }> {
+): Promise<FromMetadata> {
   const value = metadata?.[ORG_METADATA_KEY];
-  if (typeof value !== 'string' || !UUID.test(value)) return { foreign: false };
+  if (typeof value !== 'string' || !UUID.test(value)) return { kind: 'none' };
   const orgId = value.toLowerCase();
-  if (!(await liveOrganizationExists(exec, orgId))) return { foreign: false };
+  if (!(await liveOrganizationExists(exec, orgId))) return { kind: 'none' };
 
   const nonce = metadata?.[CHECKOUT_NONCE_METADATA_KEY];
-  if (typeof nonce !== 'string' || !NONCE.test(nonce)) return { foreign: true };
+  if (typeof nonce !== 'string' || !NONCE.test(nonce)) return { kind: 'foreign' };
   const checkout = await findOpenCheckout(exec, {
     orgId,
     nonce,
     openSince: new Date(now.getTime() - CHECKOUT_OPEN_MS),
   });
-  return checkout === null ? { foreign: true } : { orgId, nonce, plan: checkout.plan };
+  if (checkout !== null) return { kind: 'placed', orgId, nonce, plan: checkout.plan };
+  const own = await findCheckoutByNonce(exec, { orgId, nonce });
+  return own !== null && own.subscriptionId === null ? { kind: 'expired' } : { kind: 'foreign' };
 }
 
 async function place(
@@ -384,14 +412,17 @@ async function place(
       const byId = await findOrgIdByDodoSubscription(exec, subscription.subscription_id);
       if (byId) return { orgId: byId, checkout: null, checkoutPlan: null };
       const byMetadata = await fromMetadata(exec, subscription.metadata, now);
-      if ('orgId' in byMetadata) {
+      if (byMetadata.kind === 'placed') {
         return {
           orgId: byMetadata.orgId,
           checkout: { nonce: byMetadata.nonce },
           checkoutPlan: byMetadata.plan,
         };
       }
-      if (byMetadata.foreign) return { orgId: null, retry: false, foreign: true };
+      if (byMetadata.kind === 'foreign') return { orgId: null, retry: false, foreign: true };
+      // Our own checkout, paid after its window: not foreign, and not attached
+      // by metadata alone — its payment links it by session, or a human does.
+      if (byMetadata.kind === 'expired') return { orgId: null, retry: true, expired: true };
       // Not placed. Ours (a product we sell) is worth retrying for — its first
       // payment may yet link it; anything else — a self-host licence
       // subscription — never belonged to an organisation and is claimed and
@@ -415,14 +446,15 @@ async function place(
         }
       }
       const byMetadata = await fromMetadata(exec, payment.metadata, now);
-      if ('orgId' in byMetadata) {
+      if (byMetadata.kind === 'placed') {
         return {
           orgId: byMetadata.orgId,
           checkout: { nonce: byMetadata.nonce },
           checkoutPlan: byMetadata.plan,
         };
       }
-      return { orgId: null, retry: false, foreign: byMetadata.foreign };
+      if (byMetadata.kind === 'expired') return { orgId: null, retry: true, expired: true };
+      return { orgId: null, retry: false, foreign: byMetadata.kind === 'foreign' };
     }
     case 'refund':
     case 'dispute':

@@ -178,8 +178,10 @@ describe('decideSnapshot', () => {
   });
 
   it('starts a new region lock for a returning customer once the old one has run out', () => {
+    // Back on Free from a subscription that ended (a snapshot of it applied).
     const lapsed = row({
       dodoSubscriptionId: 'sub_old',
+      dodoEventAt: new Date(NOW.getTime() - 30 * DAY),
       regionLockedUntil: new Date(NOW.getTime() - DAY),
       billingCountry: 'IN',
       currency: 'INR',
@@ -282,6 +284,16 @@ describe('decideSnapshot', () => {
       reason: 'unverified-checkout',
     });
     expect(decide(row(), snapshot(), { attachable: true }).kind).toBe('apply');
+  });
+
+  it('never attaches a second checkout’s subscription over a first one still waiting to activate', () => {
+    // The first checkout's payment linked `sub_1`; its snapshot has not come.
+    const waiting = row({ dodoSubscriptionId: 'sub_1', dodoEventAt: null });
+    expect(decide(waiting, snapshot({ subscription_id: 'sub_2' }))).toEqual({
+      kind: 'ignore',
+      reason: 'duplicate-subscription',
+    });
+    expect(decide(waiting, snapshot({ subscription_id: 'sub_1' })).kind).toBe('apply');
   });
 
   it('never applies anything over a grant written on the id of a subscription that ended', () => {

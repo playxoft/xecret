@@ -3,6 +3,7 @@ import {
   appendAuditEvents,
   currentUsage,
   entitlementsFromRow,
+  listAwaitingActivation,
   listDueSeatSyncs,
   listEndedCancellations,
   listLapsedTrials,
@@ -51,7 +52,8 @@ import type { UsageReport } from './usage';
  *  3. **Stale trials.** A row still `trialing` hours after its trial ended has
  *     missed whatever Dodo sent at the conversion. Dodo is asked what the
  *     subscription is now, and that snapshot is applied as a webhook's would
- *     be.
+ *     be. **Stranded checkouts** the same way: a Free row a checkout's payment
+ *     linked to a subscription whose snapshot never arrived.
  *  4. **Seat-sync debts** that are due, pushed as the count is now.
  *  5. **The overage report** (`flushUsageToDodo`).
  *  6. **The billing reminders** that come from a date rather than an event:
@@ -72,6 +74,13 @@ export const HOLD_LIMIT_MS = 14 * 24 * 60 * 60 * 1000;
 
 /** How long after a trial's end a row still `trialing` is asked about. */
 export const TRIAL_GRACE_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * How long after a checkout's payment linked its subscription the job asks
+ * Dodo why it never activated. Dodo's own `active` normally lands within a
+ * minute of the payment; this leaves its retries a good while first.
+ */
+export const ACTIVATION_GRACE_MS = 30 * 60 * 1000;
 
 /** The UTC hour the card-expiry check runs in — once a day, one Dodo call per paying customer. */
 export const CARD_CHECK_HOUR_UTC = 9;
@@ -114,6 +123,9 @@ export async function runHourlyBillingJob(
   });
   await step('stale-trials', async () => {
     await refreshLapsedTrials(services, setup.config, now);
+  });
+  await step('stranded-activations', async () => {
+    await refreshStrandedActivations(services, setup.config, now);
   });
   await step('seat-syncs', async () => {
     report.seatSyncs = await retrySeatSyncs(services, now);
@@ -310,6 +322,83 @@ async function refreshLapsedTrials(
           ? { category: cause.category }
           : { error: describeError(cause) }),
       });
+    }
+  }
+}
+
+/**
+ * Step 3b. A checkout whose payment linked its subscription to a Free row,
+ * and whose snapshot never came — the `subscription.active` lost, or
+ * refused until Dodo stopped retrying. The customer has paid and is still on
+ * Free, and the row refuses another checkout while it waits. Dodo is asked
+ * what the subscription is, and that is applied as a webhook's snapshot
+ * would be: the plan, if it is live. If it ended before it ever activated,
+ * the link is marked as resolved, so the row stops waiting (and a new
+ * checkout is offered again), and a human is told.
+ */
+async function refreshStrandedActivations(
+  services: ServiceContext,
+  config: BillingConfig,
+  now: Date,
+): Promise<void> {
+  const log = services.log.at('refreshStrandedActivations');
+  const provider = billingProvider(config);
+  const rows = await listAwaitingActivation(services.db, {
+    linkedBefore: new Date(now.getTime() - ACTIVATION_GRACE_MS),
+    limit: 50,
+  });
+  for (const row of rows) {
+    if (row.dodoSubscriptionId === null) continue;
+    if (row.dodoMode !== null && row.dodoMode !== config.mode) continue;
+    try {
+      const snapshot = await provider.getSubscription(row.dodoSubscriptionId);
+      if (snapshot.subscription_id !== row.dodoSubscriptionId) continue;
+      const outcome = await services.db.transaction(async (tx) => {
+        const applied: HandlerOutcome = await applySubscriptionSnapshot(tx, {
+          orgId: row.orgId,
+          eventType: 'subscription.refreshed',
+          eventAt: now,
+          now,
+          snapshot,
+          config,
+          audit: systemAudit(services, row.orgId, 'billing job'),
+          webhookId: null,
+          checkout: null,
+        });
+        // Nothing to grant — it ended before it activated: the wait is over.
+        const after = await lockSubscription(tx, row.orgId);
+        const ended = snapshot.status === 'expired' || snapshot.status === 'failed';
+        if (
+          ended &&
+          after !== null &&
+          after.plan === 'free' &&
+          after.dodoSubscriptionId === row.dodoSubscriptionId &&
+          after.dodoEventAt === null
+        ) {
+          await writeSubscriptionState(tx, row.orgId, { dodoEventAt: now, dodoEventId: null });
+          applied.effects.push({
+            kind: 'alert',
+            message:
+              'A checkout was paid but its subscription ended at Dodo before it ever activated — ' +
+              'the organisation stays on Free and may check out again. Check whether the payment ' +
+              'was refunded in Dodo',
+            fields: { orgId: row.orgId, subscriptionStatus: snapshot.status },
+          });
+        }
+        if (applied.audit.length > 0) await appendAuditEvents(tx, applied.audit);
+        return applied;
+      });
+      if (outcome.effects.length > 0) await runBillingEffects(services, outcome.effects);
+    } catch (cause) {
+      log.warn(
+        'Could not ask Dodo what a paid checkout’s subscription became; the next run asks again',
+        {
+          orgId: row.orgId,
+          ...(cause instanceof DodoApiError
+            ? { category: cause.category }
+            : { error: describeError(cause) }),
+        },
+      );
     }
   }
 }
