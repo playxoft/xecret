@@ -7,7 +7,7 @@ import {
 } from '@xecret/db/repositories';
 import { catalogEntryFor } from '../config';
 import type { BillingConfig } from '../config';
-import { subscriptionResource } from '../effects';
+import { subscriptionResource } from '../audit';
 import type { HandlerOutcome } from '../effects';
 import type { DodoSubscription } from '../payloads';
 import { decideSnapshot } from '../snapshot';
@@ -176,6 +176,11 @@ export async function applySubscriptionSnapshot(
       },
     });
   }
+
+  // The checkout's quantity was counted when the owner clicked; people may have
+  // joined or left before the payment landed. The seat sync pushes the count
+  // as it is now, and does nothing when it already matches.
+  if (decision.activated) outcome.effects.push({ kind: 'seat-sync', orgId });
 
   if (decision.ended && row.addonSaml) {
     outcome.effects.push({

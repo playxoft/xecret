@@ -1,5 +1,5 @@
 import { actorId } from '@/server/actor';
-import { subscriptionResource } from '@/server/billing/effects';
+import { subscriptionResource } from '@/server/billing/audit';
 import { authorizeBilling, requireBillingSession, startCheckout } from '@/server/billing/service';
 import { json, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';

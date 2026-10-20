@@ -54,6 +54,12 @@ vi.mock('../mail', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../mail')>()),
   mailerFrom: () => ({ send: async (message: MailMessage) => void mail.sent.push(message) }),
 }));
+// The seat sync an activation triggers talks to Dodo; here it talks to this.
+const dodo = vi.hoisted(() => ({ changePlan: vi.fn(async () => undefined) }));
+vi.mock('./client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./client')>()),
+  billingProvider: () => dodo,
+}));
 
 const route = await import('@/app/api/billing/webhook/route');
 
@@ -131,12 +137,22 @@ beforeEach(() => {
 
 const uniq = () => randomUUID().replaceAll('-', '').slice(0, 16);
 
-async function seedOrg(): Promise<{ orgId: string; ownerId: string }> {
-  const ownerId = randomUUID();
+async function seedUser(): Promise<string> {
+  const id = randomUUID();
   await t.pg.query(
     `insert into users (id, workos_user_id, email, email_verified) values ($1, $2, $3, true)`,
-    [ownerId, `user_01${ownerId.replaceAll('-', '').slice(0, 20)}`, `o-${uniq()}@example.com`],
+    [id, `user_01${id.replaceAll('-', '').slice(0, 20)}`, `o-${uniq()}@example.com`],
   );
+  return id;
+}
+
+/**
+ * An organisation with `members` seated members, the first its owner — three
+ * by default, Team's minimum, so a snapshot billing three seats is already
+ * what the seat sync would push.
+ */
+async function seedOrg(members = 3): Promise<{ orgId: string; ownerId: string }> {
+  const ownerId = await seedUser();
   const orgId = randomUUID();
   await t.pg.query(
     `insert into organizations (id, name, slug, created_by) values ($1, 'Acme', $2, $3)`,
@@ -147,6 +163,12 @@ async function seedOrg(): Promise<{ orgId: string; ownerId: string }> {
     `insert into org_members (id, org_id, user_id, role) values ($1, $2, $3, 'owner')`,
     [randomUUID(), orgId, ownerId],
   );
+  for (let index = 1; index < members; index += 1) {
+    await t.pg.query(
+      `insert into org_members (id, org_id, user_id, role) values ($1, $2, $3, 'developer')`,
+      [randomUUID(), orgId, await seedUser()],
+    );
+  }
   return { orgId, ownerId };
 }
 
@@ -279,9 +301,11 @@ async function auditOf(
 async function activeTeam(
   over: Partial<SubscriptionFixture> = {},
 ): Promise<{ orgId: string; subscriptionId: string; customerId: string }> {
-  const { orgId } = await seedOrg();
+  // As many members as the checkout billed, so the seat sync the activation
+  // triggers finds the bill already right.
+  const { orgId } = await seedOrg(over.quantity ?? 3);
   const subscriptionId = `sub_${uniq()}`;
-  const customerId = `cus_${uniq()}`;
+  const customerId = over.customerId ?? `cus_${uniq()}`;
   const answer = await deliver({
     type: 'subscription.active',
     data: subscriptionData({ subscriptionId, customerId, orgId, ...over }),
@@ -533,7 +557,7 @@ describe('a delivery applies at most once', () => {
 
 describe('deliveries out of order', () => {
   it('a renewed that arrives before its active leaves the newer state, not the older', async () => {
-    const { orgId } = await seedOrg();
+    const { orgId } = await seedOrg(5);
     const subscriptionId = `sub_${uniq()}`;
     const customerId = `cus_${uniq()}`;
     const renewedAt = new Date(Date.now() - 10_000);
@@ -635,6 +659,27 @@ describe('the subscription lifecycle', () => {
     });
     // An automated change: no operator on the record.
     expect(change!.metadata).not.toHaveProperty('operator');
+  });
+
+  it('pushes the count as it is now when the checkout’s quantity is out of date by activation', async () => {
+    // Checked out with four seats; two people left before the payment landed.
+    const { orgId } = await seedOrg(2);
+    dodo.changePlan.mockClear();
+    await deliver({
+      type: 'subscription.active',
+      data: subscriptionData({
+        subscriptionId: `sub_${uniq()}`,
+        customerId: `cus_${uniq()}`,
+        orgId,
+        quantity: 4,
+      }),
+    });
+    // Team bills from three: two members are billed as three, credited the difference.
+    expect(dodo.changePlan).toHaveBeenCalledWith(
+      expect.stringMatching(/^sub_/),
+      expect.objectContaining({ quantity: 3, proration: 'difference_immediately' }),
+    );
+    expect((await rowOf(orgId)).seats).toBe(3);
   });
 
   it('a trial is a trial, with its end recorded', async () => {

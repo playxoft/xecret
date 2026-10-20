@@ -15,7 +15,8 @@ import { json, readRawBody } from '../http';
 import { catalogEntryFor, billingSetup } from './config';
 import type { BillingConfig } from './config';
 import { ORG_METADATA_KEY } from './client';
-import { noOutcome, runBillingEffects, systemAudit } from './effects';
+import { systemAudit } from './audit';
+import { noOutcome, runBillingEffects } from './effects';
 import type { HandlerOutcome } from './effects';
 import {
   applyLicenseKey,

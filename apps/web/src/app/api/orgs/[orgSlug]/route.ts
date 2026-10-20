@@ -5,6 +5,7 @@ import {
   updateOrganization,
 } from '@xecret/db/repositories';
 import { actorId } from '@/server/actor';
+import { assertNotStillBilled } from '@/server/billing/seats';
 import { errors } from '@/server/errors';
 import { json, noContent, parseJsonBody } from '@/server/http';
 import { enforce, rateLimitKey } from '@/server/rate-limit';
@@ -162,6 +163,10 @@ export const DELETE = authenticatedRoute<Params>(
           'Repeat the request with {"confirm": "<organisation slug>"}.',
       );
     }
+
+    // An organisation Dodo still bills would keep renewing after it is gone
+    // (P12): the subscription is cancelled first, from the billing screen.
+    await assertNotStillBilled(services.db, orgId);
 
     // Idempotent by construction — the update filters on `deleted_at is null`,
     // so a second call changes nothing. `resolveOrg` has already answered 404
