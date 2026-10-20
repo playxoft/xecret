@@ -10,6 +10,11 @@
  *   phase run -- npm run plan:set  -- --org acme --limit-override projects=2000
  *   phase run -- npm run plan:set  -- --org acme --plan free
  *
+ * On an organisation billed through Dodo (P12), `--plan`, `--interval`,
+ * `--seats` and `--status` are refused unless `--over-dodo` is passed: Dodo
+ * owns those, and its next webhook would overwrite them. Add-ons and limit
+ * overrides are never Dodo's and are always settable.
+ *
  * ## Seats are two columns, and this tool writes both
  *
  * `org_subscriptions.seats` is what the invoice is computed from.
@@ -258,6 +263,13 @@ function describe(
   console.log(`  add-ons         saml=${row.addonSaml} directorySync=${row.addonDirectorySync}`);
   console.log(`  currency        ${row.currency ?? '—'} ${row.billingCountry ?? ''}`);
   console.log(`  period ends     ${row.currentPeriodEnd?.toISOString() ?? '—'}`);
+  // Whether Dodo owns the billing fields — and so whether this tool may change
+  // them without --over-dodo. The ids themselves are not printed: a customer id
+  // stays out of terminals and scrollback as it stays out of logs.
+  console.log(
+    `  billed by       ${row.dodoSubscriptionId !== null && row.plan !== 'free' ? 'Dodo (plan, interval, seats and status follow its webhooks)' : 'this tool'}`,
+  );
+  if (row.cancelAtPeriodEnd) console.log('  cancels         at the end of the current period');
   console.log(`  grandfathered   ${row.grandfatheredUntil?.toISOString() ?? '—'}`);
   console.log(`  overrides       ${row.limitOverrides ? JSON.stringify(row.limitOverrides) : '—'}`);
   console.log(`  features        ${enabled.length ? enabled.join(', ') : 'none'}`);
@@ -341,6 +353,29 @@ async function main(): Promise<void> {
         .limit(1);
       if (row) describe(row, slug, org.seatLimit);
       return;
+    }
+
+    // ── A subscription Dodo bills is Dodo's to change (P12) ──
+    // Its plan, interval, seats and status are written by the payment webhook
+    // from Dodo's own record, and the next webhook would quietly put back
+    // whatever this run wrote — or, for seats, the seat sync would push this
+    // number to Dodo and charge for it. So the billing fields of such a
+    // subscription are refused here unless the operator says, in so many
+    // words, that they mean to diverge from Dodo; the change is then theirs to
+    // make in Dodo too. Add-ons and limit overrides are not Dodo's and stay
+    // free to set.
+    const dodoManaged =
+      existing !== undefined && existing.dodoSubscriptionId !== null && existing.plan !== 'free';
+    const touchesBilling = ['plan', 'interval', 'seats', 'status'].some(
+      (flag) => typeof args[flag] === 'string',
+    );
+    if (dodoManaged && touchesBilling && args['over-dodo'] !== true) {
+      fail(
+        `"${slug}" is billed through Dodo, which owns its plan, interval, seats and status: the ` +
+          'next payment webhook would overwrite this change. Change it in the billing screen or ' +
+          'the Dodo dashboard instead — or pass --over-dodo if you mean to diverge from Dodo ' +
+          '(the nightly reconciler will report the difference until Dodo agrees).',
+      );
     }
 
     const patch: Partial<typeof orgSubscriptions.$inferInsert> = {};
