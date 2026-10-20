@@ -26,7 +26,11 @@
 
 import { parseRootKeyMaterial } from '../packages/core/src/crypto/key-provider.ts';
 import { MIN_STATE_SECRET_LENGTH } from '../packages/core/src/auth/oauth-state.ts';
-import { BillingMisconfiguredError, billingSetup } from '../apps/web/src/server/billing/config.ts';
+import {
+  BillingMisconfiguredError,
+  billingSetup,
+  isWebhookSecret,
+} from '../apps/web/src/server/billing/config.ts';
 
 interface Result {
   name: string;
@@ -358,12 +362,15 @@ function checkBilling(): void {
       config.apiKey.length >= 16,
       config.apiKey.length >= 16 ? 'set' : 'suspiciously short',
     );
+    // `whsec_` and base64 of the key — what the verifying library decodes.
+    // `billingSetup` already refuses anything else (as a half-configuration,
+    // below); said here too so a passing run says what was checked.
     check(
       'DODO_WEBHOOK_SECRET',
-      config.webhookSecret.startsWith('whsec_'),
-      config.webhookSecret.startsWith('whsec_')
-        ? 'set'
-        : 'not a Standard Webhooks secret — expected `whsec_…`, from the endpoint’s Overview tab',
+      isWebhookSecret(config.webhookSecret),
+      isWebhookSecret(config.webhookSecret)
+        ? 'set (whsec_ + base64)'
+        : 'not a Standard Webhooks secret — expected `whsec_` and base64, from the endpoint’s Overview tab',
     );
     // Product ids are not credentials, and seeing them is how an operator
     // notices a live id in a test-mode deployment.

@@ -12,8 +12,12 @@
  *
  * On an organisation billed through Dodo (P12), `--plan`, `--interval`,
  * `--seats` and `--status` are refused unless `--over-dodo` is passed: Dodo
- * owns those, and its next webhook would overwrite them. Add-ons and limit
- * overrides are never Dodo's and are always settable.
+ * owns those, and its next webhook would overwrite them. `--over-dodo` takes
+ * the organisation off its Dodo subscription — the provider ids are cleared in
+ * the same transaction (`detachFromProvider`) and printed, so the operator can
+ * cancel the subscription at Dodo — and the plan becomes an operator's grant,
+ * which no webhook overwrites. Add-ons and limit overrides are never Dodo's
+ * and are always settable.
  *
  * ## Seats are two columns, and this tool writes both
  *
@@ -71,6 +75,7 @@ import {
 import { createAuditBuilder } from '../packages/core/src/audit/index.ts';
 import { createDatabaseHandle } from '../packages/db/src/client.ts';
 import { appendAuditEvents } from '../packages/db/src/repositories/audit.ts';
+import { detachFromProvider } from '../packages/db/src/repositories/billing.ts';
 import { setBilledSeats } from '../packages/db/src/repositories/subscriptions.ts';
 import { orgSubscriptions } from '../packages/db/src/schema/billing.ts';
 import { subscriptionStatusEnum } from '../packages/db/src/schema/enums.ts';
@@ -373,10 +378,16 @@ async function main(): Promise<void> {
       fail(
         `"${slug}" is billed through Dodo, which owns its plan, interval, seats and status: the ` +
           'next payment webhook would overwrite this change. Change it in the billing screen or ' +
-          'the Dodo dashboard instead — or pass --over-dodo if you mean to diverge from Dodo ' +
-          '(the nightly reconciler will report the difference until Dodo agrees).',
+          'the Dodo dashboard instead — or pass --over-dodo to take the organisation off its ' +
+          'Dodo subscription and set the plan by hand (the subscription keeps billing at Dodo ' +
+          'until you cancel it there).',
       );
     }
+    // Taking the organisation off Dodo: its provider ids go, in the same
+    // transaction as the plan, so the row afterwards reads as exactly what it
+    // is — an operator's grant (or Free) — and no webhook, seat sync or meter
+    // acts on it again.
+    const detach = dodoManaged && touchesBilling && args['over-dodo'] === true;
 
     const patch: Partial<typeof orgSubscriptions.$inferInsert> = {};
     const changes: string[] = [];
@@ -552,6 +563,7 @@ async function main(): Promise<void> {
     if (changes.length === 0) {
       fail('Nothing to do. Pass --plan, --seats, --status, --addon, --limit-override, or --show.');
     }
+    if (detach) changes.push('detached-from-dodo');
 
     patch.updatedAt = new Date();
 
@@ -598,7 +610,8 @@ async function main(): Promise<void> {
     // The audit row joins them: a record of a change that did not fully commit
     // is worse than no record, and this is the table the product promises is
     // truthful.
-    const updated = await db.transaction(async (tx) => {
+    const { updated, detached } = await db.transaction(async (tx) => {
+      const detached = detach ? await detachFromProvider(tx, org.id) : null;
       if (seats !== undefined) await setBilledSeats(tx, org.id, seats);
 
       const [row] = await tx
@@ -614,10 +627,19 @@ async function main(): Promise<void> {
       if (!row) throw new Error('The subscription UPDATE matched no row.');
 
       await appendAuditEvents(tx, [event]);
-      return row;
+      return { updated: row, detached };
     });
 
     console.log(`✓ ${slug}: ${changes.join(' ')}`);
+    if (detached !== null) {
+      // The run's record of which subscription it took the organisation off —
+      // the only one, since the row no longer says. The customer id is not
+      // printed: the subscription finds it in the Dodo dashboard.
+      console.warn(
+        `  ! Taken off Dodo subscription ${detached.dodoSubscriptionId ?? '(none)'}. It keeps ` +
+          'billing at Dodo until you cancel it there; nothing here will act on it again.',
+      );
+    }
     describe(updated, slug, seats?.enforced ?? org.seatLimit);
   } finally {
     await end();
