@@ -1,5 +1,5 @@
 import { actorId } from '@/server/actor';
-import { subscriptionResource } from '@/server/billing/effects';
+import { subscriptionResource } from '@/server/billing/audit';
 import {
   authorizeBilling,
   previewPlanChange,

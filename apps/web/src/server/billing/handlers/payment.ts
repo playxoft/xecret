@@ -6,7 +6,7 @@ import {
   recordLicenseKey,
   writeSubscriptionState,
 } from '@xecret/db/repositories';
-import { subscriptionResource } from '../effects';
+import { subscriptionResource } from '../audit';
 import type { HandlerOutcome } from '../effects';
 import type { DodoDispute, DodoLicenseKey, DodoPayment, DodoRefund } from '../payloads';
 

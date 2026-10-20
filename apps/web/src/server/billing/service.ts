@@ -31,7 +31,7 @@ import { billingProvider, DodoApiError } from './client';
 import type { PlanChange, PlanChangePreview } from './client';
 import { billingSetup, productFor } from './config';
 import type { BillingConfig, PurchasablePlan } from './config';
-import { subscriptionResource } from './effects';
+import { subscriptionResource } from './audit';
 import { formatMinor, OVERAGE_RATE_TEXT } from './money';
 
 /**

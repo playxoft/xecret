@@ -48,6 +48,7 @@ import type { SignInErrorCode } from '@/lib/sign-in-errors';
 import { DatabaseAuditSink } from './audit-sink';
 import type { Bindings } from './bindings';
 import { MissingBindingError } from './bindings';
+import { scheduleSeatSync } from './billing/seats';
 import type { ServiceContext } from './context';
 import { describeError } from './logging';
 import { attemptKey, consume } from './rate-limit';
@@ -761,6 +762,8 @@ async function joinJustInTime(services: ServiceContext, params: IssueSignInParam
       }
 
       if (joined.outcome === 'joined') {
+        // A seat is taken without an invitation; the bill follows it (P12).
+        scheduleSeatSync(services, organization.id);
         services.waitUntil(
           writeEvents(services, [
             audit.success(

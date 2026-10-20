@@ -281,7 +281,9 @@ export type SeatSyncRecord = typeof billingSeatSyncs.$inferSelect;
  * no-op that keeps the original `queued_at`.
  */
 export async function queueSeatSync(exec: Executor, orgId: string): Promise<void> {
-  await exec.insert(billingSeatSyncs).values({ orgId }).onConflictDoNothing();
+  // The application's clock, not the database's: `completeSeatSync` compares
+  // this with the moment a push began, which the application stamped too.
+  await exec.insert(billingSeatSyncs).values({ orgId, queuedAt: new Date() }).onConflictDoNothing();
 }
 
 /** The debts, oldest first. */
