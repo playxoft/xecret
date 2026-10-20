@@ -677,6 +677,67 @@ and an owner's password stays a way in past it (the break-glass, T3). A compromi
 identity provider can sign in as any of that organisation's non-owner members, inside its
 verified domains — that is what attaching one means, and it is bounded to that organisation.
 
+### T14 — Payments: forged, replayed or misplaced billing events, and wrong charges (P12)
+
+| | |
+|---|---|
+| **Goal** | Obtain a paid plan without paying; or make a customer pay twice, or for the wrong thing; or use billing to lock a team out of its secrets |
+| **Impact** | High (money, one organisation's features) · **Likelihood** | Medium |
+
+**Threats:** a forged webhook ("this organisation paid for Team") · a captured genuine webhook
+replayed later, or a genuine one delivered twice · webhooks arriving out of order, so an old
+state overwrites a new one · a webhook placed against the wrong organisation · a client choosing
+its own price, seat count or currency (purchasing-power arbitrage by VPN) · two checkouts
+completing, charging twice · an admin opening the customer portal to cancel the owner's plan ·
+a seat count drifting from the membership in either direction · a usage meter that reports a
+unit twice · a billing failure, or a billing outage, refusing a secret fetch · a customer id,
+card detail, API key or webhook secret reaching a log or an audit row.
+
+**Mitigations:**
+- **The webhook's credential is its signature**: Standard Webhooks HMAC-SHA256 over the raw
+  body with `DODO_WEBHOOK_SECRET`, checked by the reference library (constant-time,
+  rotation-aware) before anything is read or written; a timestamp outside five minutes either
+  way is refused. A delivery is **claimed** by its `webhook-id` — a primary key, inserted in the
+  same transaction as the change, so concurrent duplicates cannot both win and a handler that
+  throws un-claims it for Dodo's retry. Tests cover forgery, tampering, replay outside the
+  window, and three deliveries — sequential and concurrent — of events whose re-application is
+  *not* idempotent, so the claim is proven on its own.
+- **Snapshots, not deltas.** Every subscription event carries the whole subscription and is
+  applied as one, skipped if older than the last applied for that subscription
+  (`dodo_event_at`) — a reordered delivery can be skipped, never half-applied.
+- **Placement from our own records**: the subscription id we stored, the checkout session we
+  created (`billing_checkouts`), or the organisation id we put in the metadata Dodo signs back —
+  and that id must name a live organisation. Never anything a browser sent. An event for one of
+  our subscriptions that cannot be placed yet is answered 503, unclaimed, so Dodo retries.
+- **The client names a plan and a period and nothing else** (strict schemas). Seats are counted
+  from the membership, prices are Dodo's, and the currency follows the billing country Dodo
+  records — currency selection is switched off at checkout, and for twelve months a returning
+  organisation is pinned to its first country and currency. A billing country that differs from
+  the card's issuing country, or moves mid-lock, is raised for a human and changes nothing.
+- **No second subscription**: checkout is refused for a subscribed organisation; a second live
+  subscription that arrives anyway is not applied and alerts a human to refund it. A webhook
+  never overwrites an operator's grant.
+- **Owners only** (`billing.manage`), browser sessions only; the portal link is audited and
+  never stored or logged.
+- **Seats** follow the membership after the commit, with the debt written first, the count
+  re-read after each push, an hourly retry, and the nightly reconciler reporting any difference
+  — never correcting it silently.
+- **Usage** is counted in the isolate and can only under-count (a failed flush is dropped, not
+  retried); each overage unit has a deterministic event id, and units are recorded as reported
+  only after Dodo accepted them, with `GREATEST`.
+- **D19, unchanged**: `isDataPlaneActive` is `true` for every status, and nothing on the
+  secret-fetch path imports anything billing. An on-hold subscription keeps even the dashboard.
+- **Redaction**: Dodo responses are parsed by schemas that declare only the fields read, so
+  names, addresses and card digits are dropped at the boundary; audit metadata for billing is
+  counts and closed vocabularies; `cus_…` and `whsec_…` are redacted from log and audit text;
+  a sweep test asserts none of a payload's identifiers reach either.
+
+**Residual risk:** Low–Medium. Dodo itself is trusted for what it signs — a compromised Dodo
+account or webhook secret can grant any plan (rotate the secret; the reconciler compares against
+Dodo's API, signed by the API key, not by the webhook). The usage meter under-counts by up to
+fifteen seconds of an evicted isolate's traffic, in the customer's favour. An owner's own
+session can cancel the plan from the portal, as the person who pays.
+
 ---
 
 ## 4. Risk summary
@@ -696,6 +757,7 @@ verified domains — that is what attaching one means, and it is bounded to that
 | T11 | Vault reset by whoever holds the browser or the inbox | High | Low–Med | **Medium** without MFA; recoverable for 7 days |
 | T12 | The emailed escape archive, attacked offline | High | Low–Med | **Medium (accepted)**; Low with a strong passphrase |
 | T13 | A customer's identity provider, or whoever can rewire it | Critical (one org) | Low–Med | Low–Medium |
+| T14 | Forged, replayed or misplaced billing events; wrong charges | High | Medium | Low–Medium |
 
 **Where to spend effort, in order:** T2 (test matrix as a CI gate) · T10 (escrow drills) ·
 T7 (dependency discipline, anomaly detection) · T5 (blast-radius limits, OIDC in v2).
@@ -721,3 +783,4 @@ customer's own systems after legitimate secret delivery.
 | 2026-10-18 | — | WS-5 (organisation SSO settings), review round 1: Boundary 4 added — a customer-attached identity provider; T1 corrected — `state` and PKCE do not cover the planted-AuthKit-session login CSRF, and the confirmation that does is described; T3 — `sso_required` is enforced per request again, and the owner exemption is recorded as a deliberate break-glass with a cost; T13 added — SSO administration owners-only with a step-up for the credential-grade portal link, JIT never re-admits a removed member, the link records its WorkOS environment, the add-on as the blast-radius gate |
 | 2026-10-18 | — | WS-5, review round 2: T1 restated as it now stands — the confirmation → `next` → `?org=` redirect chain closed (no `next` under `/api/`, the deep link honoured only with the warning page's browser-bound token, an SSO sign-in through an organisation the account is not in always held back), sign-out ends the AuthKit session, the last-account cookie, a decline ends the AuthKit session and is audited, inert display of the address and the organisation name; T13 — the portal's own fresh-sign-in record (emailed codes count; dated by `auth_time`), stale invitations withdrawn at JIT join and removal, `workos_home` so no other environment can write a link, foreign links ignored on the sign-in path, the owner exemption audited at CLI approval and owner invitations |
 | 2026-10-19 | — | WS-5, review round 3: T1 — reason (b), the not-member hold-back, restated as covering first-time and non-member identities only (in the attack the returning identity is a member of the attacker's organisation; the warning page's token and the `/api` refusal are what stop an unconfirmed deep link); a finished sign-in's `next` never names a sign-in screen; the double-click window swap on the two one-click screens added to what T1 leaves |
+| 2026-10-20 | — | P12 (payments through Dodo): T14 added — the webhook's signature, replay window and primary-key claim; snapshots applied in order rather than deltas; placement from our own records; nothing priced, counted or currency-chosen by the client, with the region lock and the card-country check raised for a human; no second subscription and no webhook over an operator's grant; owners-only billing; seat sync after the commit with a debt, a re-count and an alert-only reconciler; a meter that can only under-count; D19 unchanged; redaction of customer ids and webhook secrets |

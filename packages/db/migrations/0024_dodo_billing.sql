@@ -7,10 +7,12 @@
 -- this ahead of the build that uses it is harmless: the previous release never
 -- reads or writes any of it.
 --
--- Apply it BEFORE deploying the P12 build. Every `select()` on
--- `org_subscriptions` from that build names the new columns, so a request that
--- loads a subscription fails against a database without them — and that is
--- every request that resolves an organisation.
+-- Apply it BEFORE deploying the P12 build. Every whole-row `select()` on
+-- `org_subscriptions` from that build names the new columns, so the billing
+-- routes, the webhook, the billing jobs and the check behind deleting an
+-- organisation or an account all fail against a database without them.
+-- (Resolving an organisation on a request reads only the entitlement columns
+-- and is unaffected.)
 --
 -- ── org_subscriptions: four columns the webhooks fill ──
 --
