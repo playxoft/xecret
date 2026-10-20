@@ -389,6 +389,74 @@ export const importClientBody = z.object({
  * a value that does not match its declared type — reachable through the
  * product's own happy path.
  */
+/**
+ * The most secrets one promotion or one restore may change (P19 §3, §4), for the
+ * reason `MAX_IMPORT_ITEMS` gives: bytes are bounded by the body ceiling, rows
+ * are not, and every row is an INSERT inside one transaction.
+ */
+export const MAX_CHANGE_ITEMS = 1000;
+
+/**
+ * One value a promotion or a restore writes: an import entry's shape, plus the
+ * type and — for a template — the references, because both features carry
+ * templates where an import cannot.
+ */
+const changeEntrySchema = z.object({
+  id: secretIdSchema,
+  name: secretNameSchema,
+  expectedVersion: expectedVersionSchema,
+  value: clientValueSchema,
+  valueType: z.optional(valueTypeSchema),
+  references: referencesSchema,
+});
+
+const changeEntriesSchema = z
+  .array(changeEntrySchema)
+  .check(
+    z.maxLength(MAX_CHANGE_ITEMS, `One change cannot write more than ${MAX_CHANGE_ITEMS} secrets.`),
+  );
+
+/**
+ * Promoting one environment's values into another (P19 §3), as the client built
+ * it: it read both, decided the diff with the values masked, and re-encrypted
+ * each value it promotes under the target's key and for the target's row.
+ *
+ * `removals` names secrets of the target that the source does not hold and the
+ * person chose to remove; nothing is removed that is not named.
+ */
+export const promoteClientBody = z.strictObject({
+  source: environmentSlugSchema,
+  writes: changeEntriesSchema,
+  removals: z._default(
+    z
+      .array(secretNameSchema)
+      .check(
+        z.maxLength(MAX_CHANGE_ITEMS, `One change cannot remove more than ${MAX_CHANGE_ITEMS}.`),
+      ),
+    [],
+  ),
+  dryRun: z.boolean(),
+});
+
+export type PromoteClientBody = z.infer<typeof promoteClientBody>;
+
+/** A restore point: an instant, ISO 8601 with an offset. */
+export const restorePointQuery = z.object({ at: z.iso.datetime({ offset: true }) });
+
+/**
+ * Restoring an environment to an instant (P19 §4): every value the plan says to
+ * write, re-encrypted by the client for the row and version it lands on.
+ * Removals and revivals are not in the body — they follow from the instant, and
+ * the server, which can read names and timestamps, decides them itself.
+ */
+export const restorePointBody = z.strictObject({
+  at: z.iso.datetime({ offset: true }),
+  writes: changeEntriesSchema,
+  dryRun: z.boolean(),
+});
+
+export type RestorePointBody = z.infer<typeof restorePointBody>;
+
 export const updateSecretBody = z.object({
   value: secretValueSchema,
   valueType: z.optional(valueTypeSchema),

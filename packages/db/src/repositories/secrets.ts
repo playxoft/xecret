@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import { uuidv7 } from '@xecret/core/ids';
 import type { EncryptedValue } from '@xecret/core/crypto';
@@ -381,6 +381,67 @@ export async function loadEnvironmentSecrets(
         eq(secrets.environmentId, environmentId),
         eq(projects.orgId, orgId),
         isNull(secrets.deletedAt),
+        isNull(environments.deletedAt),
+        isNull(projects.deletedAt),
+      ),
+    )
+    .orderBy(asc(secretVersions.secretId), desc(secretVersions.version));
+
+  return rows.map(toSecretMaterial);
+}
+
+/**
+ * An environment **as it stood at `at`** (P19 §4, point-in-time restore): every
+ * secret that was live then — including one deleted since — with the version
+ * that was current then. One query, the `loadEnvironmentSecrets` shape with two
+ * changes: a version counts only if it was written by `at`, and a secret counts
+ * only if it had not been deleted by then.
+ *
+ * The fifth function that returns ciphertext. A restore re-encrypts these values
+ * as new versions; it never copies one forward, because the AAD binds the
+ * version (see `restoreSecretVersion`).
+ *
+ * Names are unique among live secrets at every instant (`secrets_env_name_idx`
+ * is partial on `deleted_at IS NULL`), so the answer has at most one row per
+ * name. A version pruned since `at` is simply absent, and so is its secret: what
+ * was not kept cannot be restored, and the caller says so.
+ */
+export async function loadEnvironmentSecretsAt(
+  exec: Executor,
+  orgId: string,
+  environmentId: string,
+  at: Date,
+): Promise<SecretMaterial[]> {
+  const rows = await exec
+    .selectDistinctOn([secretVersions.secretId], {
+      secretId: secrets.id,
+      name: secrets.name,
+      valueType: secrets.valueType,
+      environmentId: secrets.environmentId,
+      versionId: secretVersions.id,
+      version: secretVersions.version,
+      envKeyId: secretVersions.envKeyId,
+      envDataKeyId: secretVersions.envDataKeyId,
+      ciphertext: secretVersions.ciphertext,
+      iv: secretVersions.iv,
+      algorithm: secretVersions.algorithm,
+      clientAlgorithm: secretVersions.clientAlgorithm,
+      valueHmac: secretVersions.valueHmac,
+      declaredReferences: secretVersions.declaredReferences,
+      createdBy: secretVersions.createdBy,
+      createdByServiceTokenId: secretVersions.createdByServiceTokenId,
+      createdAt: secretVersions.createdAt,
+    })
+    .from(secretVersions)
+    .innerJoin(secrets, eq(secrets.id, secretVersions.secretId))
+    .innerJoin(environments, eq(environments.id, secrets.environmentId))
+    .innerJoin(projects, eq(projects.id, environments.projectId))
+    .where(
+      and(
+        eq(secrets.environmentId, environmentId),
+        eq(projects.orgId, orgId),
+        lte(secretVersions.createdAt, at),
+        or(isNull(secrets.deletedAt), gt(secrets.deletedAt, at)),
         isNull(environments.deletedAt),
         isNull(projects.deletedAt),
       ),

@@ -49,6 +49,13 @@ export async function prepareTemplateDeclaration(
     requested: readonly SecretReference[] | undefined;
     /** Records the refusal when the plan does not include the feature. See `planRefusal`. */
     refused?: (() => void) | undefined;
+    /**
+     * Leave the graph check to the caller, which is changing many secrets at once
+     * and checks them together (`assertEnvironmentChanges`) — one at a time, a
+     * template promoted beside the value it refers to would be refused for want
+     * of a secret the same batch creates.
+     */
+    batched?: boolean | undefined;
   },
 ): Promise<DeclaredReference[] | null> {
   if (params.effectiveType !== 'template') {
@@ -86,6 +93,7 @@ export async function prepareTemplateDeclaration(
   if (reachesOutside(scope.environment.id, declared)) {
     await assertTokenReach(scope, services, 'reference');
   }
+  if (params.batched === true) return declared;
   await assertTemplateWrite(scope, services, {
     name: params.name,
     secretId: params.secretId,

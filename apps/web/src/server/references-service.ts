@@ -412,6 +412,77 @@ export async function assertRemovalKeepsReferences(
   }
 }
 
+/**
+ * The batch form of the two checks above, for a write that changes many secrets
+ * of one environment at once — a promotion, a point-in-time restore (P19 §3, §4).
+ *
+ * Every change is applied to the graph together and every affected view checked
+ * once, because checked one at a time two changes can each be fine and together
+ * not: two templates that each refer to the other, or a template promoted beside
+ * the plain value it refers to, which a one-at-a-time check would refuse for want
+ * of a secret the same batch creates.
+ *
+ * Costs the project's rows and nothing more when neither the batch nor the graph
+ * holds a template.
+ */
+export async function assertEnvironmentChanges(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+  changes: {
+    set: readonly {
+      name: string;
+      secretId: string;
+      references: readonly DeclaredReference[] | null;
+    }[];
+    remove: readonly string[];
+  },
+): Promise<void> {
+  if (changes.set.length === 0 && changes.remove.length === 0) return;
+
+  const loader = await graphAround(
+    services.db,
+    scope.organization.id,
+    scope.project.id,
+    scope.environment.id,
+  );
+  const writesTemplates = changes.set.some((change) => change.references !== null);
+  if (!writesTemplates && !graphHasTemplates(loader.graph)) return;
+
+  try {
+    await loader.ask((graph) => {
+      let proposed = graph;
+      for (const name of changes.remove) {
+        proposed = withSecret(proposed, scope.environment.id, name, null);
+      }
+      for (const change of changes.set) {
+        proposed = withSecret(proposed, scope.environment.id, change.name, {
+          id: change.secretId,
+          name: change.name,
+          valueType: change.references === null ? 'string' : 'template',
+          version: 0,
+          template: change.references !== null,
+          references: change.references ?? [],
+        });
+      }
+      // The contexts of the graph before and after: a removal is seen by the
+      // views that saw the old secret, a template by the views that will see it.
+      const contexts = new Set([
+        ...affectedContexts(graph, scope.environment.id),
+        ...affectedContexts(proposed, scope.environment.id),
+      ]);
+      checkContexts(proposed, [...contexts]);
+    });
+  } catch (cause) {
+    if (cause instanceof ResolutionError) {
+      throw errors.conflict(
+        `This change would leave a template unresolvable: ${cause.message} ` +
+          'Change the template, or include what it refers to.',
+      );
+    }
+    throw cause;
+  }
+}
+
 function graphHasTemplates(graph: ReferenceGraph<ServerGraphSecret>): boolean {
   for (const environment of graph.values()) {
     for (const secret of environment.secrets.values()) if (secret.template) return true;

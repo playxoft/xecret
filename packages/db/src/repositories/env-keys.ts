@@ -688,6 +688,50 @@ export async function findActiveGrantsForPrincipal(
   return answer;
 }
 
+/**
+ * One principal's grants on specific data keys of one environment — active or
+ * **retired** — in one query: what a point-in-time restore (P19 §4) needs to open
+ * versions written before a rotation. Keyed by data-key id; a key the principal
+ * holds no grant on is absent, and the versions under it cannot be restored by
+ * this caller.
+ *
+ * A retired grant opens history and nothing written since (see
+ * `loadMemberKeyPresence`), which is exactly what a restore reads.
+ */
+export async function findGrantsForPrincipalOnKeys(
+  exec: Executor,
+  params: {
+    orgId: string;
+    environmentId: string;
+    envDataKeyIds: readonly string[];
+    recipientKind: GrantRecipientKind;
+    recipientId: string;
+  },
+): Promise<Map<string, { keyVersion: number; grant: EnvKeyGrantRecord }>> {
+  const answer = new Map<string, { keyVersion: number; grant: EnvKeyGrantRecord }>();
+  if (params.envDataKeyIds.length === 0) return answer;
+
+  const rows = await exec
+    .select({ keyId: envDataKeys.id, keyVersion: envDataKeys.version, grant: GRANT_COLUMNS })
+    .from(envKeyGrants)
+    .innerJoin(envDataKeys, eq(envDataKeys.id, envKeyGrants.envDataKeyId))
+    .innerJoin(environments, eq(environments.id, envDataKeys.environmentId))
+    .innerJoin(projects, eq(projects.id, environments.projectId))
+    .where(
+      and(
+        inArray(envDataKeys.id, [...params.envDataKeyIds]),
+        eq(envDataKeys.environmentId, params.environmentId),
+        eq(projects.orgId, params.orgId),
+        recipientPredicate(params),
+      ),
+    );
+
+  for (const row of rows) {
+    answer.set(row.keyId, { keyVersion: row.keyVersion, grant: toGrantRecord(row.grant) });
+  }
+  return answer;
+}
+
 /** Every grant on an environment's active key. The rotation preview reads this. */
 export async function listGrantsForEnvironment(
   exec: Executor,

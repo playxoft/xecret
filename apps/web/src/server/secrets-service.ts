@@ -28,6 +28,7 @@ import {
   loadEnvironmentKeyChain,
   loadEnvironmentKeyState,
   loadEnvironmentSecrets,
+  softDeleteSecret,
   toBytes,
   updateSecretMetadata,
 } from '@xecret/db/repositories';
@@ -473,6 +474,14 @@ export interface ClientSecretWriteBatch {
   writer: SecretWriterRef;
   writes: readonly ClientSecretWrite[];
   dryRun?: boolean | undefined;
+  /**
+   * Secrets to soft-delete in the same transaction as the writes (P19 §3 and
+   * §4): a promotion that removes what the source no longer has, a restore that
+   * takes out what was created since. By id, already resolved and checked by the
+   * caller. Applied first, so a name a removal frees is free for a create in the
+   * same batch.
+   */
+  removals?: readonly string[] | undefined;
 }
 
 /**
@@ -506,13 +515,17 @@ export async function applyClientSecretWrites(
   services: ServiceContext,
   batch: ClientSecretWriteBatch,
 ): Promise<SecretWriteResult[]> {
-  if (batch.writes.length === 0) return [];
+  const removals = batch.removals ?? [];
+  if (batch.writes.length === 0 && removals.length === 0) return [];
 
-  const activeKeyId = await requireActiveDataKey(scope, services);
+  // The active key is what every write must have been sealed against; a batch
+  // that only removes writes no ciphertext and asks nothing of it.
+  const activeKeyId =
+    batch.writes.length === 0 ? null : await requireActiveDataKey(scope, services);
 
   const prepared: PreparedClientWrite[] = [];
   for (const write of batch.writes) {
-    prepared.push(prepareClientWrite(activeKeyId, write));
+    prepared.push(prepareClientWrite(activeKeyId ?? '', write));
   }
 
   const results = prepared.map(toClientWriteResult);
@@ -523,9 +536,9 @@ export async function applyClientSecretWrites(
     (write) => write.kind === 'unchanged' && write.encNote !== undefined,
   );
 
-  if (pending.length === 0 && noteOnly.length === 0) return results;
+  if (pending.length === 0 && noteOnly.length === 0 && removals.length === 0) return results;
 
-  await commitClientWrites(services, scope, batch.writer, prepared);
+  await commitClientWrites(services, scope, batch.writer, prepared, removals);
   return results;
 }
 
@@ -730,9 +743,16 @@ async function commitClientWrites(
   scope: EnvironmentScope,
   writer: SecretWriterRef,
   writes: readonly PreparedClientWrite[],
+  removals: readonly string[] = [],
 ): Promise<void> {
   try {
     await services.db.transaction(async (tx) => {
+      // Removals first, so a name a removal frees is free for a create in the
+      // same transaction.
+      for (const secretId of removals) {
+        await softDeleteSecret(tx, scope.organization.id, secretId);
+      }
+
       for (const write of writes) {
         const payload = {
           mode: 'e2ee' as const,
