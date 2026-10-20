@@ -34,9 +34,19 @@ const SERVICE_TOKENS: ServiceTokenListResponse = {
       expiresAt: null,
       lastUsedAt: null,
       revokedAt: null,
+      meetsPolicy: true,
     },
   ],
+  policy: { requireIpAllowlist: false, maxLifetimeDays: null },
 };
+
+/** The same token, judged against a policy that requires an allowlist. */
+const OUTSIDE_POLICY: ServiceTokenListResponse = {
+  data: SERVICE_TOKENS.data.map((token) => ({ ...token, meetsPolicy: false })),
+  policy: { requireIpAllowlist: true, maxLifetimeDays: null },
+};
+
+const listing = vi.hoisted(() => ({ current: null as ServiceTokenListResponse | null }));
 
 const fetched = vi.hoisted(() => ({ paths: [] as string[] }));
 
@@ -44,7 +54,7 @@ vi.mock('../_lib/use-api-resource', () => ({
   useApiResource: (path: string | null) => {
     if (path !== null) fetched.paths.push(path);
     const data = path?.includes('/tokens/service')
-      ? SERVICE_TOKENS
+      ? (listing.current ?? SERVICE_TOKENS)
       : path === null
         ? null
         : { data: [] };
@@ -85,6 +95,7 @@ function render(org: SessionOrganization): string {
 
 beforeEach(() => {
   fetched.paths.length = 0;
+  listing.current = null;
 });
 
 describe('TokensScreen', () => {
@@ -101,6 +112,23 @@ describe('TokensScreen', () => {
 
     expect(html).toContain('New service token');
     expect(html).not.toContain('aria-label="Revoke deploy"');
+  });
+
+  it('marks a token outside the token policy, saying which rule and that it keeps working', () => {
+    listing.current = OUTSIDE_POLICY;
+    const html = render(organization('admin'));
+
+    expect(html).toContain('Outside policy');
+    expect(html).toContain('has no IP allowlist');
+    expect(html).toContain('keeps working');
+    expect(html).toContain('Some tokens predate the token policy');
+  });
+
+  it('marks nothing when every token meets the policy', () => {
+    const html = render(organization('admin'));
+
+    expect(html).not.toContain('Outside policy');
+    expect(html).not.toContain('predate the token policy');
   });
 
   it('asks nothing about service tokens of a role that may do neither', () => {
