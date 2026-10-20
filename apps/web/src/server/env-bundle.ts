@@ -178,7 +178,11 @@ export interface ResolvableSecretPayload extends ClientSecretPayload {
   references?: DeclaredReference[];
 }
 
-/** What a resolved pull read beyond the environment itself — for the audit trail. */
+/**
+ * What a resolved pull read beyond the environment itself — for the audit
+ * trail, and for the new-address alerts of each environment read (P19 §7),
+ * which is why it carries the two facts that decide whether those apply.
+ */
 export interface LayerRead {
   environmentId: string;
   projectId: string;
@@ -186,6 +190,8 @@ export interface LayerRead {
   environmentSlug: string;
   secretCount: number;
   kind: 'inherited' | 'referenced';
+  isProduction: boolean;
+  readAlerts: boolean | null;
 }
 
 export interface BundleResult {
@@ -402,6 +408,8 @@ export async function clientEnvironmentBundle(
         environmentSlug: record.slug,
         secretCount: secrets.length,
         kind: inChain.has(id) ? 'inherited' : 'referenced',
+        isProduction: record.isProduction,
+        readAlerts: record.readAlerts,
       });
     }
 

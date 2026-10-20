@@ -160,7 +160,19 @@ export const GET = authenticatedRoute<Params>(
       );
 
       // P19 §7, after the response: a read is never slower for being noted.
-      noteEnvironmentRead(scope, services, principal);
+      // Every environment the pull delivered values from is noted under its own
+      // alert setting — production's values read through a staging template are
+      // a read of production.
+      noteEnvironmentRead(
+        scope,
+        services,
+        principal,
+        layerReads.map((layer) => ({
+          id: layer.environmentId,
+          isProduction: layer.isProduction,
+          readAlerts: layer.readAlerts,
+        })),
+      );
       return json(bundle);
     }
 

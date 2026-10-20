@@ -102,6 +102,10 @@ address.
 
 - **On by default for production**, off elsewhere. Each environment can be
   switched either way, or back to the default.
+- **A read is a read of every environment it draws values from.** A pull of
+  staging that inherits from production, or whose template reaches
+  `${production.DB_PASSWORD}`, is noted as a read of production under
+  production's setting — and of staging under staging's.
 - **Digest-throttled**: at most one email an hour per organisation. Everything
   else seen in the hour waits for the next digest, so a CI fleet on rotating
   addresses produces one email listing them, never one per runner.

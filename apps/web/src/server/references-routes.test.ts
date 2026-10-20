@@ -698,6 +698,73 @@ describe('pulling only an environment’s own values (layers=none)', () => {
   });
 });
 
+describe('new-address read alerts on a resolved pull', () => {
+  // Review round 1, M2: only the pulled environment was noted, so production's
+  // values read through a staging template — or a staging that inherits from
+  // production — never fired production's alert, which is on by default.
+  async function sightingsIn(env: Env): Promise<{ ip_address: string }[]> {
+    const { rows } = await t.pg.query<{ ip_address: string }>(
+      `select host(ip_address) as ip_address from environment_read_sightings where environment_id = $1`,
+      [env.id],
+    );
+    return rows;
+  }
+
+  async function stagingReadingProduction(via: 'template' | 'parent') {
+    const org = await seedOrg('pro');
+    const project = await seedProject(org);
+    const production = await seedEnv(org, project, 'production', { production: true });
+    const staging = await seedEnv(
+      org,
+      project,
+      'staging',
+      via === 'parent' ? { parentId: production.id } : {},
+    );
+    for (const env of [production, staging])
+      await grantTo(env, { memberUserId: org.owner.id }, org.owner.id);
+    await seedSecret(org, production, 'DB_PASSWORD');
+    if (via === 'template') {
+      await seedSecret(org, staging, 'URL', [
+        { environment: 'production', name: 'DB_PASSWORD', environmentId: production.id },
+      ]);
+    } else {
+      await seedSecret(org, staging, 'LOG_LEVEL');
+    }
+    caller = sessionOf(org.owner);
+    return { org, production, staging };
+  }
+
+  for (const via of ['template', 'parent'] as const) {
+    it(`notes production's read when staging resolves its values through a ${via}`, async () => {
+      const { org, production, staging } = await stagingReadingProduction(via);
+
+      const answer = await pull(org, 'staging');
+      expect(answer.status).toBe(200);
+      expect(await sightingsIn(production)).toEqual([{ ip_address: '203.0.113.5' }]);
+      // Staging's own default is off: not production, and never switched on.
+      expect(await sightingsIn(staging)).toEqual([]);
+    });
+  }
+
+  it('leaves the own-values pull to the environment’s own setting', async () => {
+    const { org, production, staging } = await stagingReadingProduction('template');
+
+    expect((await pullOwn(org, 'staging')).status).toBe(200);
+    expect(await sightingsIn(production)).toEqual([]);
+    expect(await sightingsIn(staging)).toEqual([]);
+  });
+
+  it('honours a layer switched off, and staging switched on', async () => {
+    const { org, production, staging } = await stagingReadingProduction('parent');
+    await t.pg.query(`update environments set read_alerts = false where id = $1`, [production.id]);
+    await t.pg.query(`update environments set read_alerts = true where id = $1`, [staging.id]);
+
+    expect((await pull(org, 'staging')).status).toBe(200);
+    expect(await sightingsIn(production)).toEqual([]);
+    expect(await sightingsIn(staging)).toEqual([{ ip_address: '203.0.113.5' }]);
+  });
+});
+
 describe('the export policy a resolved pull carries', () => {
   // Review round 1, M1: the bundle used to carry the pulled environment's own
   // setting alone, so disabling export on production was stepped round by a

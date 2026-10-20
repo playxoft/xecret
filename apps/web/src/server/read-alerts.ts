@@ -78,28 +78,55 @@ const UNENTITLED_DRAIN = 1000;
 const RECIPIENT_LIMIT = 20;
 
 /**
- * Notes that `principal` read `scope.environment` from this request's address.
+ * Another environment a read delivered values from — a parent, or one a
+ * template reached into — with the two facts its alert setting is decided by.
+ */
+export interface AlsoReadEnvironment {
+  id: string;
+  isProduction: boolean;
+  readAlerts: boolean | null;
+}
+
+/**
+ * Notes that `principal` read `scope.environment` from this request's address —
+ * and every environment in `alsoRead`, which a resolved pull delivered values
+ * from, each under its **own** alert setting.
+ *
+ * ── Why the layers count ──
+ * A pull of staging that resolves `${production.DB_PASSWORD}`, or inherits
+ * from production, reads production's values. Noting only staging — off by
+ * default, because it is not production — meant a new laptop could read
+ * production through staging and production's alert never fired. Each
+ * environment is asked its own `readAlertsActive`, so production's default
+ * (on) applies to production's values, and staging's default (off) still keeps
+ * staging's own sighting unrecorded.
  *
  * Skips — synchronously, at no cost — when the address is unknown, when the
- * plan does not include `newIpReadAlerts`, or when the environment's alerts are
- * off (`readAlertsActive`: its own setting, else on for production only).
+ * plan does not include `newIpReadAlerts`, or when no environment read has its
+ * alerts on (`readAlertsActive`: its own setting, else on for production only).
  */
 export function noteEnvironmentRead(
   scope: EnvironmentScope,
   services: ServiceContext,
   principal: Principal,
+  alsoRead: readonly AlsoReadEnvironment[] = [],
 ): void {
   try {
     const ip = services.meta.ipAddress;
     if (ip === null) return;
     if (!scope.entitlements.features.newIpReadAlerts) return;
-    if (!readAlertsActive(scope.environment)) return;
+
+    const noted = new Set<string>();
+    for (const environment of [scope.environment, ...alsoRead]) {
+      if (readAlertsActive(environment)) noted.add(environment.id);
+    }
+    if (noted.size === 0) return;
 
     const address = normaliseReadAddress(ip);
     if (address === null) return;
 
     services.waitUntil(
-      noteNow(scope, services, principal, address).catch((cause: unknown) => {
+      noteNow(scope, services, principal, address, [...noted]).catch((cause: unknown) => {
         services.log
           .at('readAlerts')
           .error('Could not record a read sighting; the read itself was unaffected', {
@@ -124,19 +151,26 @@ async function noteNow(
   services: ServiceContext,
   principal: Principal,
   address: string,
+  environmentIds: readonly string[],
 ): Promise<void> {
   const orgId = scope.organization.id;
   const who = await sightingPrincipalOf(services, principal);
 
-  const { isNew } = await recordReadSighting(services.db, {
-    orgId,
-    environmentId: scope.environment.id,
-    principalKind: who.kind,
-    principalId: who.id,
-    principalLabel: who.label,
-    ipAddress: address,
-  });
-  if (!isNew) return;
+  // One sighting per environment read, each in its own environment's list.
+  // One digest for all of them: the throttle is the organisation's.
+  let anyNew = false;
+  for (const environmentId of environmentIds) {
+    const { isNew } = await recordReadSighting(services.db, {
+      orgId,
+      environmentId,
+      principalKind: who.kind,
+      principalId: who.id,
+      principalLabel: who.label,
+      ipAddress: address,
+    });
+    anyNew ||= isNew;
+  }
+  if (!anyNew) return;
 
   const claimed = await claimReadAlertDigest(
     services.db,

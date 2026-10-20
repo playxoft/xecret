@@ -1240,7 +1240,9 @@ served with `x-xecret-plaintext-export`, since it is what `xecret run` reads.
 caused them, and cost nothing — not one query — on a plan without the feature. A plain pull is
 unchanged at 15 statements; a production pull on a plan with alerts adds one, after the response;
 a pull that resolves a parent or a cross-environment reference costs six more, constant in the
-number of secrets.
+number of secrets — and notes a sighting, after the response, for each environment it delivered
+values from whose own alert setting is on (production's values read through a staging template
+are a read of production).
 
 ### Tokens
 
