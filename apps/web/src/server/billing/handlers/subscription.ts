@@ -104,9 +104,9 @@ export async function applySubscriptionSnapshot(
           kind: 'alert',
           message:
             decision.reason === 'operator-managed'
-              ? 'A live Dodo subscription arrived for an organisation whose plan an operator set ' +
-                'by hand — it was not applied. Refund or cancel it in Dodo, or move the ' +
-                'organisation onto it deliberately'
+              ? 'A Dodo subscription event arrived for an organisation whose plan an operator set ' +
+                'by hand — it was not applied. If the subscription is live, refund or cancel it ' +
+                'in Dodo, or move the organisation onto it deliberately'
               : 'A second live Dodo subscription arrived for an organisation that already has one ' +
                 '— it was not applied. The customer is paying twice: refund or cancel one in Dodo',
           fields: { orgId, eventType, reason: decision.reason },

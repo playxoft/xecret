@@ -33,7 +33,11 @@ import type { DodoSubscription, DodoSubscriptionStatus } from './payloads';
  *     the checkout's nonce (`attachable`); anything else is reported and never
  *     attached. A paid row with no subscription at all is an operator's grant
  *     (`plan:set`, an Enterprise contract) and is never overwritten by a
- *     webhook. And a row that returned to Free from a subscription is given
+ *     webhook — nor is a paid row that follows the subscription by id with no
+ *     product recorded, which no snapshot ever leaves behind: that is a grant
+ *     written over the id of a subscription that ended, and whatever Dodo
+ *     later says of that subscription is reported, never applied. And a row
+ *     that returned to Free from a subscription is given
  *     its plan back by that subscription only when Dodo says it is `active`
  *     again — never by one still on hold, which is how an unpaid subscription
  *     the hourly job ended would otherwise grant itself back.
@@ -240,6 +244,14 @@ export function decideSnapshot(input: {
     }
     if (!live) return { kind: 'ignore', reason: 'other-subscription' };
     if (!input.attachable) return { kind: 'ignore', reason: 'unverified-checkout' };
+  } else if (row.plan !== 'free' && row.dodoProductId === null) {
+    // The row follows this subscription by id but on a paid plan no snapshot
+    // wrote — a snapshot always records the product. An operator set the plan
+    // by hand over the id an ended subscription left behind (`plan:set` now
+    // takes such a row off it first; this is the second lock). Whatever Dodo
+    // says of the old subscription — a late `cancelled`, or that it is
+    // `active` again — is reported, never applied over the grant.
+    return { kind: 'ignore', reason: 'operator-managed' };
   } else if (
     row.plan === 'free' &&
     row.dodoEventAt !== null &&

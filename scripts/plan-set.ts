@@ -16,8 +16,11 @@
  * the organisation off its Dodo subscription — the provider ids are cleared in
  * the same transaction (`detachFromProvider`) and printed, so the operator can
  * cancel the subscription at Dodo — and the plan becomes an operator's grant,
- * which no webhook overwrites. Add-ons and limit overrides are never Dodo's
- * and are always settable.
+ * which no webhook overwrites. A row on Free that still carries the ids of a
+ * subscription that ended is taken off them the same way, without the flag,
+ * whenever a billing field is set: a grant over a kept id would follow a
+ * subscription Dodo can still send events for. Add-ons and limit overrides are
+ * never Dodo's and are always settable.
  *
  * ## Seats are two columns, and this tool writes both
  *
@@ -77,6 +80,7 @@ import { createDatabaseHandle } from '../packages/db/src/client.ts';
 import { appendAuditEvents } from '../packages/db/src/repositories/audit.ts';
 import {
   detachFromProvider,
+  operatorBillingEdit,
   raiseCurrentUsageAllowance,
 } from '../packages/db/src/repositories/billing.ts';
 import { setBilledSeats } from '../packages/db/src/repositories/subscriptions.ts';
@@ -372,12 +376,19 @@ async function main(): Promise<void> {
     // words, that they mean to diverge from Dodo; the change is then theirs to
     // make in Dodo too. Add-ons and limit overrides are not Dodo's and stay
     // free to set.
-    const dodoManaged =
-      existing !== undefined && existing.dodoSubscriptionId !== null && existing.plan !== 'free';
+    //
+    // And whatever the plan, a row that still carries provider ids — a Free
+    // row keeps the id of the subscription it ended on — is taken off them
+    // before a billing field is written: a grant over a kept id would follow a
+    // subscription Dodo can still send events for (`operatorBillingEdit`).
     const touchesBilling = ['plan', 'interval', 'seats', 'status'].some(
       (flag) => typeof args[flag] === 'string',
     );
-    if (dodoManaged && touchesBilling && args['over-dodo'] !== true) {
+    const edit =
+      existing === undefined
+        ? 'write'
+        : operatorBillingEdit(existing, { touchesBilling, overDodo: args['over-dodo'] === true });
+    if (edit === 'refuse') {
       fail(
         `"${slug}" is billed through Dodo, which owns its plan, interval, seats and status: the ` +
           'next payment webhook would overwrite this change. Change it in the billing screen or ' +
@@ -390,7 +401,7 @@ async function main(): Promise<void> {
     // transaction as the plan, so the row afterwards reads as exactly what it
     // is — an operator's grant (or Free) — and no webhook, seat sync or meter
     // acts on it again.
-    const detach = dodoManaged && touchesBilling && args['over-dodo'] === true;
+    const detach = edit === 'detach';
 
     const patch: Partial<typeof orgSubscriptions.$inferInsert> = {};
     const changes: string[] = [];
@@ -646,8 +657,12 @@ async function main(): Promise<void> {
       // the only one, since the row no longer says. The customer id is not
       // printed: the subscription finds it in the Dodo dashboard.
       console.warn(
-        `  ! Taken off Dodo subscription ${detached.dodoSubscriptionId ?? '(none)'}. It keeps ` +
-          'billing at Dodo until you cancel it there; nothing here will act on it again.',
+        existing?.plan === 'free'
+          ? `  ! Taken off the Dodo subscription it ended on (${detached.dodoSubscriptionId ?? 'none'}), ` +
+              'so no later event of that subscription can overwrite this change. If it is somehow ' +
+              'still live at Dodo, cancel it there.'
+          : `  ! Taken off Dodo subscription ${detached.dodoSubscriptionId ?? '(none)'}. It keeps ` +
+              'billing at Dodo until you cancel it there; nothing here will act on it again.',
       );
     }
     describe(updated, slug, seats?.enforced ?? org.seatLimit);

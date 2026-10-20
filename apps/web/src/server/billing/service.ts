@@ -122,14 +122,22 @@ async function subscriptionOf(
   return row;
 }
 
-/** Whether the row follows a live Dodo subscription — the only kind a plan change can act on. */
+/**
+ * Whether the row follows a live Dodo subscription — the only kind a plan
+ * change can act on. A snapshot always records the product; a paid row
+ * without one was set by hand (see `managedBySupport`).
+ */
 function hasLiveSubscription(row: SubscriptionRecord): boolean {
-  return row.dodoSubscriptionId !== null && row.plan !== 'free';
+  return row.dodoSubscriptionId !== null && row.dodoProductId !== null && row.plan !== 'free';
 }
 
-/** A paid plan nobody bought through checkout: an operator's grant or an Enterprise contract. */
+/**
+ * A paid plan nobody bought through checkout: an operator's grant or an
+ * Enterprise contract — including one written, before `plan:set` took such
+ * rows off their ids, over the id of a subscription that had ended.
+ */
 function managedBySupport(row: SubscriptionRecord): boolean {
-  return row.dodoSubscriptionId === null && row.plan !== 'free';
+  return row.plan !== 'free' && (row.dodoSubscriptionId === null || row.dodoProductId === null);
 }
 
 /**

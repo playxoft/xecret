@@ -96,11 +96,13 @@ const decide = (
     attachable: over.attachable ?? true,
   });
 
+/** A row a snapshot of `sub_1` wrote — which always records the product. */
 const following = row({
   plan: 'team',
   billingInterval: 'monthly',
   seats: 3,
   dodoSubscriptionId: 'sub_1',
+  dodoProductId: 'pdt_team_m',
   dodoEventAt: new Date(NOW.getTime() - 60_000),
   currency: 'USD',
   billingCountry: 'US',
@@ -238,6 +240,27 @@ describe('decideSnapshot', () => {
       reason: 'unverified-checkout',
     });
     expect(decide(row(), snapshot(), { attachable: true }).kind).toBe('apply');
+  });
+
+  it('never applies anything over a grant written on the id of a subscription that ended', () => {
+    // An operator gave the Free row Team by hand; it still carried the id of
+    // the subscription it ended on, and no snapshot ever wrote a product.
+    const grant = row({
+      plan: 'team',
+      billingInterval: 'yearly',
+      seats: 25,
+      dodoSubscriptionId: 'sub_1',
+      dodoProductId: null,
+      dodoEventAt: new Date(NOW.getTime() - DAY),
+    });
+    for (const status of ['cancelled', 'active', 'on_hold', 'expired'] as const) {
+      expect(decide(grant, snapshot({ status }))).toEqual({
+        kind: 'ignore',
+        reason: 'operator-managed',
+      });
+    }
+    // A subscription that wrote the row records its product, and is applied.
+    expect(decide(following, snapshot()).kind).toBe('apply');
   });
 
   it('gives a plan back to the subscription a row left only when Dodo says it is active again', () => {

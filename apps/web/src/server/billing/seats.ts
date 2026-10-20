@@ -366,7 +366,16 @@ export function scheduleSeatSync(
 export async function assertNotStillBilled(exec: Executor, orgId: string): Promise<void> {
   const row = await findSubscription(exec, orgId);
   if (row === null) return;
-  if (row.plan === 'free' || row.dodoSubscriptionId === null || row.cancelAtPeriodEnd) return;
+  // A paid row with no product recorded is a grant written by hand (no
+  // snapshot leaves one behind), whatever id it still carries.
+  if (
+    row.plan === 'free' ||
+    row.dodoSubscriptionId === null ||
+    row.dodoProductId === null ||
+    row.cancelAtPeriodEnd
+  ) {
+    return;
+  }
   throw errors.conflict(
     'This organisation still has an active subscription, which would keep renewing after it ' +
       'is deleted. Cancel it first from Billing → Manage billing, then delete the ' +

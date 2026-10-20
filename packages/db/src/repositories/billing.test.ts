@@ -37,6 +37,7 @@ import {
   liveOrganizationExists,
   lockSubscription,
   markMeteredUnitsSent,
+  operatorBillingEdit,
   pruneBillingRequests,
   queueSeatSync,
   raiseCurrentUsageAllowance,
@@ -103,6 +104,8 @@ async function seedOrg(
     trialEndsAt?: Date | null;
     mode?: string | null;
     onHoldSince?: Date | null;
+    /** The product a snapshot recorded — by default one for a paid row with a subscription. */
+    product?: string | null;
   } = {},
 ): Promise<Seeded> {
   const ownerId = await seedUser();
@@ -116,8 +119,8 @@ async function seedOrg(
     `insert into org_subscriptions
        (org_id, plan, billing_interval, status, dodo_customer_id, dodo_subscription_id,
         current_period_start, current_period_end, cancel_at_period_end, metered_from,
-        trial_ends_at, dodo_mode, on_hold_since)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        trial_ends_at, dodo_mode, on_hold_since, dodo_product_id)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
     [
       orgId,
       plan,
@@ -136,6 +139,11 @@ async function seedOrg(
       subscription.trialEndsAt ?? null,
       subscription.mode ?? null,
       subscription.onHoldSince ?? null,
+      subscription.product !== undefined
+        ? subscription.product
+        : plan !== 'free' && subscription.dodoSubscription
+          ? 'pdt_seeded'
+          : null,
     ],
   );
   await addMember(orgId, ownerId, 'owner');
@@ -1182,6 +1190,89 @@ describe('detachFromProvider (plan:set over a Dodo subscription)', () => {
   it('answers null for a row that followed no subscription', async () => {
     const { orgId } = await seedOrg({ plan: 'enterprise', interval: 'yearly' });
     expect(await t.db.transaction((tx) => detachFromProvider(tx, orgId))).toBeNull();
+  });
+
+  it('takes a Free row off the subscription it ended on, too', async () => {
+    // Ended (here, or by Dodo): Free, but the ids kept so Dodo's events still find it.
+    const subscriptionId = `sub_${uniq()}`;
+    const { orgId } = await seedOrg({
+      customer: `cus_${uniq()}`,
+      dodoSubscription: subscriptionId,
+      mode: 'test_mode',
+    });
+    await t.pg.query(`update org_subscriptions set dodo_event_at = now() where org_id = $1`, [
+      orgId,
+    ]);
+    await ensureSeatSync(t.db, orgId);
+
+    const detached = await t.db.transaction(async (tx) => {
+      const ids = await detachFromProvider(tx, orgId);
+      await writeSubscriptionState(tx, orgId, { plan: 'team', billingInterval: 'yearly' });
+      return ids;
+    });
+    expect(detached?.dodoSubscriptionId).toBe(subscriptionId);
+    const row = await t.db.transaction((tx) => lockSubscription(tx, orgId));
+    expect(row).toMatchObject({
+      plan: 'team',
+      dodoSubscriptionId: null,
+      dodoCustomerId: null,
+      dodoMode: null,
+      dodoEventAt: null,
+    });
+    expect(await findOrgIdByDodoSubscription(t.db, subscriptionId)).toBeNull();
+    expect(await debtOf(orgId)).toBeNull();
+  });
+});
+
+describe('operatorBillingEdit (plan:set’s rule)', () => {
+  const none = {
+    dodoSubscriptionId: null,
+    dodoCustomerId: null,
+    dodoProductId: null,
+    dodoMode: null,
+    dodoEventAt: null,
+    dodoEventId: null,
+    dodoScheduledChangeAt: null,
+  };
+  const billing = { touchesBilling: true, overDodo: false };
+
+  it('refuses a billing change over a subscription Dodo bills, unless told --over-dodo', () => {
+    const billed = {
+      ...none,
+      plan: 'team' as const,
+      dodoSubscriptionId: 'sub_1',
+      dodoCustomerId: 'cus_1',
+      dodoProductId: 'pdt_team_m',
+    };
+    expect(operatorBillingEdit(billed, billing)).toBe('refuse');
+    expect(operatorBillingEdit(billed, { ...billing, overDodo: true })).toBe('detach');
+  });
+
+  it('detaches a Free row that kept an ended subscription’s ids, whatever plan is granted', () => {
+    const endedHere = {
+      ...none,
+      plan: 'free' as const,
+      dodoSubscriptionId: 'sub_1',
+      dodoCustomerId: 'cus_1',
+      dodoMode: 'test_mode' as const,
+      dodoEventAt: new Date(),
+    };
+    expect(operatorBillingEdit(endedHere, billing)).toBe('detach');
+    // A customer id alone is still a provider's: a checkout would reuse it.
+    expect(operatorBillingEdit({ ...none, plan: 'free', dodoCustomerId: 'cus_1' }, billing)).toBe(
+      'detach',
+    );
+  });
+
+  it('writes a row that carries nothing of a provider, and any add-on or override', () => {
+    expect(operatorBillingEdit({ ...none, plan: 'free' }, billing)).toBe('write');
+    expect(operatorBillingEdit({ ...none, plan: 'enterprise' }, billing)).toBe('write');
+    expect(
+      operatorBillingEdit(
+        { ...none, plan: 'team', dodoSubscriptionId: 'sub_1', dodoProductId: 'pdt_team_m' },
+        { touchesBilling: false, overDodo: false },
+      ),
+    ).toBe('write');
   });
 });
 

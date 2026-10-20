@@ -456,6 +456,7 @@ export type {
 export {
   addFetchCounts,
   billingCounts,
+  carriesProviderIds,
   claimBillingRequest,
   claimReminder,
   claimSeatSync,
@@ -486,6 +487,7 @@ export {
   liveOrganizationExists,
   lockSubscription,
   markMeteredUnitsSent,
+  operatorBillingEdit,
   pruneBillingRequests,
   pruneReminders,
   queueBilledSeatSync,
@@ -506,6 +508,7 @@ export type {
   BillingRequestClaim,
   CheckoutRecord,
   MeterableUsage,
+  OperatorBillingEdit,
   ProviderSubscriptionPatch,
   SeatSyncRecord,
 } from './billing';

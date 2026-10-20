@@ -158,9 +158,73 @@ export interface ProviderSubscriptionPatch extends SubscriptionPatch {
 }
 
 /**
+ * Whether a row still carries anything of a provider subscription — an id, a
+ * mode, a product, an applied event. A row on Free keeps its subscription id
+ * when the subscription ends (so Dodo's later events still find it), and a
+ * row that carries one is a row a webhook can still write.
+ */
+export function carriesProviderIds(
+  row: Pick<
+    SubscriptionRecord,
+    | 'dodoSubscriptionId'
+    | 'dodoCustomerId'
+    | 'dodoProductId'
+    | 'dodoMode'
+    | 'dodoEventAt'
+    | 'dodoEventId'
+    | 'dodoScheduledChangeAt'
+  >,
+): boolean {
+  return (
+    row.dodoSubscriptionId !== null ||
+    row.dodoCustomerId !== null ||
+    row.dodoProductId !== null ||
+    row.dodoMode !== null ||
+    row.dodoEventAt !== null ||
+    row.dodoEventId !== null ||
+    row.dodoScheduledChangeAt !== null
+  );
+}
+
+/** What the operator tool does with a run that sets an organisation's plan by hand. */
+export type OperatorBillingEdit =
+  /** Nothing of a provider subscription on the row: write the change. */
+  | 'write'
+  /** Dodo bills the row and `--over-dodo` was not passed: refuse. */
+  | 'refuse'
+  /** Take the row off its provider ids first (`detachFromProvider`), then write. */
+  | 'detach';
+
+/**
+ * The operator tool's rule for a run that touches the billing fields — plan,
+ * interval, seats, status. Pure, so the rule is tested where it is stated.
+ *
+ *  - A subscription Dodo bills (a paid plan with a subscription id) is Dodo's
+ *    to change: refused, unless the operator passes `--over-dodo`.
+ *  - **Any** row that still carries provider ids is taken off them before the
+ *    change is written — **whatever its plan**. A row on Free keeps the id of
+ *    the subscription it ended on; a grant written over that id would leave
+ *    the grant following a subscription Dodo can still send events for, and a
+ *    late `cancelled`, or the subscription coming back, would be applied over
+ *    the contract.
+ *  - A run that touches no billing field (an add-on, a limit override) writes,
+ *    whatever the row carries: those are never Dodo's.
+ */
+export function operatorBillingEdit(
+  row: Pick<SubscriptionRecord, 'plan'> & Parameters<typeof carriesProviderIds>[0],
+  run: { touchesBilling: boolean; overDodo: boolean },
+): OperatorBillingEdit {
+  if (!run.touchesBilling) return 'write';
+  const billedByDodo = row.dodoSubscriptionId !== null && row.plan !== 'free';
+  if (billedByDodo && !run.overDodo) return 'refuse';
+  return carriesProviderIds(row) ? 'detach' : 'write';
+}
+
+/**
  * Takes an organisation off the provider subscription it followed — what the
  * operator tool does when it sets a plan by hand over one Dodo bills
- * (`plan:set --over-dodo`).
+ * (`plan:set --over-dodo`), and over a row on Free that kept the ids of a
+ * subscription that ended (see {@link operatorBillingEdit}).
  *
  * Clears the provider ids and every column that only means something beside
  * them, so the row reads afterwards as exactly what it now is: an operator's
@@ -168,9 +232,9 @@ export interface ProviderSubscriptionPatch extends SubscriptionPatch {
  * seats and add-ons are the caller's to write in the same transaction.
  *
  * Returns the ids it cleared, for the operator's own record of the run: the
- * subscription is still live at Dodo until somebody cancels it there, and this
- * is the only place that says which one it was. `null` when the row followed
- * none.
+ * subscription may still be live at Dodo until somebody cancels it there, and
+ * this is the only place that says which one it was. `null` when the row
+ * carried nothing of one.
  */
 export async function detachFromProvider(
   tx: Transaction,
@@ -178,7 +242,7 @@ export async function detachFromProvider(
 ): Promise<{ dodoSubscriptionId: string | null; dodoCustomerId: string | null } | null> {
   const row = await lockSubscription(tx, orgId);
   if (row === null) return null;
-  if (row.dodoSubscriptionId === null && row.dodoCustomerId === null) return null;
+  if (!carriesProviderIds(row)) return null;
   await tx
     .update(orgSubscriptions)
     .set({
@@ -519,6 +583,7 @@ export async function queueBilledSeatSync(exec: Executor, orgId: string): Promis
      where ${orgSubscriptions.orgId} = ${orgId}
        and ${orgSubscriptions.plan} <> 'free'
        and ${orgSubscriptions.dodoSubscriptionId} is not null
+       and ${orgSubscriptions.dodoProductId} is not null
     on conflict (org_id) do update
       set generation = ${billingSeatSyncs.generation} + 1,
           attempts = 0,

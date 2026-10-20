@@ -5,7 +5,13 @@ import type { AuditRecord } from '@xecret/core/audit';
 import { FREE_SEAT_LIMIT, isDataPlaneActive, UNCAPPED_SEAT_LIMIT } from '@xecret/core/entitlements';
 import { createTestDatabase, TEST_DATABASE_TIMEOUT_MS } from '@xecret/db/testing';
 import type { TestDatabase } from '@xecret/db/testing';
-import { entitlementsFromRow, findSubscription, recordCheckout } from '@xecret/db/repositories';
+import {
+  detachFromProvider,
+  entitlementsFromRow,
+  findSubscription,
+  recordCheckout,
+  writeSubscriptionState,
+} from '@xecret/db/repositories';
 import { createLogger } from '../logging';
 import type { LogEntry, RequestLog } from '../logging';
 import type { MailMessage } from '../mail';
@@ -880,6 +886,81 @@ describe('what is never applied', () => {
       }),
     });
     expect(await rowOf(orgId)).toMatchObject({ plan: 'enterprise', seats: 25 });
+  });
+
+  it('a grant over the id of a subscription that ended is never overwritten by it — late cancelled, or active again', async () => {
+    const { orgId, subscriptionId, customerId } = await activeTeam();
+    const at = Date.now();
+    await deliver({
+      type: 'subscription.expired',
+      data: subscriptionData({ subscriptionId, customerId, orgId, status: 'expired' }),
+      at: new Date(at - 30_000),
+    });
+    // Ended: Free, with the subscription's id kept so its later events find it.
+    expect(await rowOf(orgId)).toMatchObject({ plan: 'free', dodoSubscriptionId: subscriptionId });
+
+    // Support grants Enterprise the way plan:set did before it took such a
+    // row off its ids: the plan written, the old id left in place.
+    await t.pg.query(
+      `update org_subscriptions set plan = 'enterprise', billing_interval = 'yearly', seats = 25
+        where org_id = $1`,
+      [orgId],
+    );
+    lines = [];
+    for (const [status, offset] of [
+      ['cancelled', 20_000],
+      ['active', 10_000],
+    ] as const) {
+      const answer = await deliver({
+        type: `subscription.${status}`,
+        data: subscriptionData({ subscriptionId, customerId, orgId, status }),
+        at: new Date(at - offset),
+      });
+      expect(answer.status).toBe(200);
+      expect(await rowOf(orgId)).toMatchObject({
+        plan: 'enterprise',
+        billingInterval: 'yearly',
+        seats: 25,
+      });
+    }
+    expect(
+      lines.filter((line) => line.level === 'error' && /operator set by hand/.test(line.message)),
+    ).toHaveLength(2);
+    expect(
+      (await auditOf(orgId)).filter((entry) => entry.action === 'billing.duplicate_subscription'),
+    ).toHaveLength(2);
+  });
+
+  it('a grant made by taking the row off the ended subscription’s ids is never reached by it', async () => {
+    const { orgId, subscriptionId, customerId } = await activeTeam();
+    const at = Date.now();
+    await deliver({
+      type: 'subscription.expired',
+      data: subscriptionData({ subscriptionId, customerId, orgId, status: 'expired' }),
+      at: new Date(at - 30_000),
+    });
+    // What plan:set does now (`operatorBillingEdit` → detach).
+    await t.db.transaction(async (tx) => {
+      await detachFromProvider(tx, orgId);
+      await writeSubscriptionState(tx, orgId, { plan: 'enterprise', billingInterval: 'yearly' });
+    });
+    lines = [];
+    for (const [status, offset] of [
+      ['cancelled', 20_000],
+      ['active', 10_000],
+    ] as const) {
+      const answer = await deliver({
+        type: `subscription.${status}`,
+        data: subscriptionData({ subscriptionId, customerId, orgId, status }),
+        at: new Date(at - offset),
+      });
+      expect(answer.status).toBe(200);
+      expect(await rowOf(orgId)).toMatchObject({ plan: 'enterprise', dodoSubscriptionId: null });
+    }
+    // Its checkout was spent long ago: attached to nothing, and raised.
+    expect(
+      lines.filter((line) => line.level === 'error' && /attached to nothing/.test(line.message)),
+    ).toHaveLength(2);
   });
 
   it('a product this deployment does not sell grants nothing, and is reported as drift', async () => {
