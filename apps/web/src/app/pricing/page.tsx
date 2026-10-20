@@ -37,6 +37,8 @@ import {
 import { PLANS as PLAN_DEFINITIONS } from '@xecret/core/entitlements';
 import { cn } from '@/lib/cn';
 import { absoluteUrl, breadcrumbSchema, SITE_KEYWORDS, SITE_NAME } from '@/lib/site';
+import { billingSetup } from '@/server/billing/config';
+import { workerContext } from '@/server/context';
 
 /**
  * The pricing page.
@@ -108,9 +110,12 @@ import { absoluteUrl, breadcrumbSchema, SITE_KEYWORDS, SITE_NAME } from '@/lib/s
  * mistake available to us. `NOT_YET` is one constant for exactly that reason.
  *
  * ── On the honesty of every number here ──
- * Nothing on this page is billed yet, and the sentence that says so sits under
- * the billing toggle, above the first price rather than in a footnote below the
- * last one.
+ * Whether anything here is billed depends on the deployment, and the page asks
+ * rather than assumes (`takesPayments`). A deployment with no payment provider
+ * configured — a self-hoster, or this one before Dodo is set up — still says
+ * that nothing is billed, in the description, the comparison table and the
+ * FAQ. One that takes payments (P12) says how to pay instead. The sentence came
+ * off in P12, as the plan said it would, and only where it stopped being true.
  */
 
 // Both of these name the billing period, and that is not pedantry: $5 and $12
@@ -173,7 +178,7 @@ const HERO_DESCRIPTION =
   'genuinely free, every paid plan is per member with a lower yearly rate, service tokens and ' +
   'CI never cost anything, and running the whole server yourself is free forever.';
 
-function pricingDescription(currency: CurrencyId): string {
+function pricingDescription(currency: CurrencyId, paymentsLive: boolean): string {
   const pro = planPrices('pro', currency);
   const team = planPrices('team', currency);
 
@@ -181,14 +186,16 @@ function pricingDescription(currency: CurrencyId): string {
     `Four xecret plans: free for one developer, Pro ${pro.yearly.price} a member a month ` +
     `billed yearly (${pro.monthly.price} monthly), Team ${team.yearly.price} billed yearly ` +
     `(${team.monthly.price} monthly), Enterprise by contract, and self-hosted free forever. ` +
-    'Service tokens and CI never cost anything, and no card is taken in pre-alpha.'
+    (paymentsLive
+      ? 'Service tokens and CI never cost anything, and a declined card never stops a build.'
+      : 'Service tokens and CI never cost anything, and no card is taken in pre-alpha.')
   );
 }
 
 export async function generateMetadata(): Promise<Metadata> {
   const currency = await resolveInitialCurrency();
   const title = pricingTitle(currency);
-  const description = pricingDescription(currency);
+  const description = pricingDescription(currency, await takesPayments());
 
   return {
     title,
@@ -1728,7 +1735,15 @@ const INCLUDED = [
 
 /* ── FAQ ───────────────────────────────────────────────────────────────────── */
 
-const FAQ: readonly FaqItem[] = [
+/**
+ * A question, and — where the honest answer changes once this deployment takes
+ * payments — the answer it gives then. Carried on the entry rather than in a
+ * table keyed by the question's text, which would stop applying the first time
+ * somebody reworded the question.
+ */
+type PricingFaqItem = FaqItem & { readonly whenPaymentsLive?: FaqItem | undefined };
+
+const FAQ: readonly PricingFaqItem[] = [
   {
     question: 'What counts as a member?',
     // The seat floor belongs in this answer specifically: it is the one that
@@ -1779,6 +1794,11 @@ const FAQ: readonly FaqItem[] = [
     question: 'Is there an annual price?',
     answer:
       'Yes, and it is what the page opens on. In US dollars, billed yearly, Pro is $5 a member a month and Team is $12 — charged as $60 and $144 a member a year, a third to two fifths below the monthly rate. The other four sheets carry their own figures; the cards above show whichever one you are reading. The exact saving differs by plan as well as by currency, because each sheet is a set of deliberate prices rather than one number converted: on the euro sheet it is 33 per cent on Pro and 38 on Team, and on the rupee sheet 40 on Pro and 37 on Team. That is why the chip beside the toggle says "up to" — it carries the better of the two figures for whichever sheet you are reading, so it is an upper bound rather than a promise for every card. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both, and neither is billed at all during pre-alpha.',
+    whenPaymentsLive: {
+      question: 'Is there an annual price?',
+      answer:
+        'Yes, and it is what the page opens on. In US dollars, billed yearly, Pro is $5 a member a month and Team is $12 — charged as $60 and $144 a member a year, a third to two fifths below the monthly rate. The other four sheets carry their own figures; the cards above show whichever one you are reading. The exact saving differs by plan as well as by currency, because each sheet is a set of deliberate prices rather than one number converted: on the euro sheet it is 33 per cent on Pro and 38 on Team, and on the rupee sheet 40 on Pro and 37 on Team. That is why the chip beside the toggle says "up to" — it carries the better of the two figures for whichever sheet you are reading, so it is an upper bound rather than a promise for every card. The controls above the plans and above the comparison table switch every price on the page and stay in step with each other. Monthly stays available on both.',
+    },
   },
   {
     question: 'Why is it cheaper in India?',
@@ -1789,6 +1809,11 @@ const FAQ: readonly FaqItem[] = [
     question: 'Do you take a card during pre-alpha?',
     answer:
       'No. There is no billing system connected yet, so there is nothing to enter a card into. Every paid feature that exists is switched on for every account, and the ones marked "Coming soon" on this page are not built for anybody. We will give notice well before that changes rather than converting anyone silently.',
+    whenPaymentsLive: {
+      question: 'How do I pay?',
+      answer:
+        'From your organisation’s billing page, as an owner: choose Pro or Team, monthly or yearly, and pay at the checkout of Dodo Payments, our merchant of record. Dodo takes the payment, charges the tax your country requires and issues the invoice; we never see the card number. Members are counted for you and the seat count follows the team as people join and leave. The card, the invoices and cancelling are in Dodo’s customer portal, linked from the same page.',
+    },
   },
   {
     question: 'Is self-hosting really free and unlimited?',
@@ -1809,8 +1834,21 @@ const FAQ: readonly FaqItem[] = [
     question: 'Can I move between plans?',
     answer:
       'Yes, in both directions and at any time. Moving up takes effect immediately and is prorated for the rest of the period; moving down takes effect at the end of the period you have already paid for, and nothing is deleted when it does. None of this is live yet, because no plan is billed yet.',
+    whenPaymentsLive: {
+      question: 'Can I move between plans?',
+      answer:
+        'Yes, in both directions and at any time, from the billing page. Moving up takes effect immediately and is prorated for the rest of the period; moving down takes effect at the end of the period you have already paid for, and nothing is deleted when it does.',
+    },
   },
 ];
+
+/** The FAQ as this deployment answers it: plain `FaqItem`s, for the page and its structured data alike. */
+function faqFor(paymentsLive: boolean): readonly FaqItem[] {
+  return FAQ.map((item) => {
+    const chosen = paymentsLive && item.whenPaymentsLive ? item.whenPaymentsLive : item;
+    return { question: chosen.question, answer: chosen.answer };
+  });
+}
 
 /* ── Structured data ───────────────────────────────────────────────────────── */
 
@@ -2168,6 +2206,25 @@ function CellValue({ value }: { value: Cell }) {
  * actually charged is decided at checkout from their billing country and the
  * card that pays**, never from a header a client can send.
  */
+/**
+ * Whether this deployment takes payments (P12) — every Dodo variable set.
+ *
+ * Asked rather than assumed, so the page can never say "nothing is billed" on a
+ * deployment that bills, or "pay at checkout" on one that cannot: a self-hoster
+ * and this deployment before Dodo is set up both answer `false`. Reads the
+ * Worker's configuration only — no binding, no database, no network — and
+ * answers `false` wherever it cannot be read (a test, a build-time render, a
+ * half-configured deployment, whose billing routes answer 503 anyway).
+ */
+async function takesPayments(): Promise<boolean> {
+  try {
+    const { env } = await workerContext();
+    return billingSetup(env).state === 'enabled';
+  } catch {
+    return false;
+  }
+}
+
 async function resolveInitialCurrency(): Promise<CurrencyId> {
   try {
     const country = (await headers()).get('CF-IPCountry');
@@ -2317,6 +2374,8 @@ function PriceControls() {
 
 export default async function PricingPage() {
   const initialCurrency = await resolveInitialCurrency();
+  const paymentsLive = await takesPayments();
+  const faq = faqFor(paymentsLive);
 
   return (
     <PublicPage current="pricing">
@@ -2326,7 +2385,7 @@ export default async function PricingPage() {
       <JsonLd
         data={graph(
           productSchema(initialCurrency),
-          faqSchema(FAQ),
+          faqSchema(faq),
           breadcrumbSchema([{ name: 'Pricing', path: '/pricing' }]),
         )}
       />
@@ -2752,8 +2811,10 @@ export default async function PricingPage() {
                   <caption className="sr-only">
                     Every xecret plan compared, capability by capability, in five groups. The header
                     shows the price for the currency and billing period selected above the table,
-                    which is the same pair the plan cards use. During pre-alpha every feature that
-                    exists is available on every account and nothing is billed.
+                    which is the same pair the plan cards use.{' '}
+                    {paymentsLive
+                      ? 'Paid plans are bought from an organisation’s billing page.'
+                      : 'During pre-alpha every feature that exists is available on every account and nothing is billed.'}
                   </caption>
                   <thead className="bg-canvas-inset">
                     <tr className="border-line border-b">
@@ -2914,7 +2975,7 @@ export default async function PricingPage() {
           description={`The ${FAQ.length} that decide whether a price is workable, answered including the several where the honest answer is that it is not built yet.`}
         />
 
-        <Faq items={FAQ} className="mx-auto mt-10 max-w-3xl" />
+        <Faq items={faq} className="mx-auto mt-10 max-w-3xl" />
 
         <p className="text-fg-muted mx-auto mt-6 max-w-3xl text-center text-sm leading-7">
           These are the billing questions.{' '}
