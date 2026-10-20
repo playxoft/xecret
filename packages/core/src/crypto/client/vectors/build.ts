@@ -139,13 +139,9 @@ const CODE_BYTES = {
 
 /**
  * The randomness behind the two personal-override vectors (spec §2.2 type 13).
- * Separate from `EPHEMERAL` and `IV` so adding these changed no existing vector.
+ * Separate from `IV` so adding these changed no existing vector.
  */
 const OVERRIDE_RANDOMNESS = {
-  ephemeral: [
-    '7d8a68697dce38554fce9770697f0ee5f029eddcf2f9ed6540291d5336812dbd',
-    'a1f7cedcf9305e997c5b570bbe03a8ec45d4e26560bc4bfc77a98ba82457643a',
-  ],
   iv: ['28172a2094a5513230b4e91f', '24568a5750393ca41d33bc4b'],
 } as const;
 
@@ -906,14 +902,16 @@ async function blobParseVectors(): Promise<Vector[]> {
 }
 
 /**
- * Personal overrides: a value sealed to its owner's own public key, bound to the
- * organisation, the environment, the owner and the name. One ASCII value, and
- * one whose NFC form differs from its bytes as typed — the same normalisation
- * rule as a secret value, checked in both implementations.
+ * Personal overrides: a value encrypted under its owner's override key — HKDF of
+ * their own X25519 private key — and bound to the organisation, the environment,
+ * the owner and the name. One ASCII value, and one whose NFC form differs from
+ * its bytes as typed — the same normalisation rule as a secret value, checked in
+ * both implementations. The derived key is in the vector, so a second
+ * implementation can tell a derivation fault from an encryption fault.
  */
 async function overrideValueVectors(): Promise<Vector[]> {
   const ownerPrivateKey = fromHex(KEY.memberPrivate);
-  const ownerPublicKey = encryptionPublicKey(ownerPrivateKey);
+  const overrideKey = await deriveKey({ ikm: ownerPrivateKey, info: HKDF_INFO.overrideKey });
 
   const cases = [
     {
@@ -940,13 +938,9 @@ async function overrideValueVectors(): Promise<Vector[]> {
       name: testCase.name,
     });
     const plaintext = normalizedUtf8(testCase.plaintext);
-    const blob = await sealToPublicKeyWithRandomness({
-      recipientPublicKey: ownerPublicKey,
-      plaintext,
-      aad,
-      ephemeralPrivateKey: fromHex(OVERRIDE_RANDOMNESS.ephemeral[index]!),
-      iv: fromHex(OVERRIDE_RANDOMNESS.iv[index]!),
-    });
+    const blob = formatGcmBlob(
+      await encryptGcmWithIv(overrideKey, fromHex(OVERRIDE_RANDOMNESS.iv[index]!), plaintext, aad),
+    );
 
     vectors.push({
       id: testCase.id,
@@ -958,12 +952,10 @@ async function overrideValueVectors(): Promise<Vector[]> {
         userId: ID.member,
         name: testCase.name,
         ownerPrivateKeyHex: KEY.memberPrivate,
-        ownerPublicKeyHex: toHex(ownerPublicKey),
-        ephemeralPrivateKeyHex: OVERRIDE_RANDOMNESS.ephemeral[index]!,
         ivHex: OVERRIDE_RANDOMNESS.iv[index]!,
         plaintext: testCase.plaintext,
       },
-      expected: { aad, plaintextHex: toHex(plaintext), blob },
+      expected: { aad, overrideKeyHex: toHex(overrideKey), plaintextHex: toHex(plaintext), blob },
     });
   }
   return vectors;

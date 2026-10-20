@@ -337,20 +337,19 @@ func TestSealedBoxVectors(t *testing.T) {
 func TestOverrideValueVectors(t *testing.T) {
 	for _, v := range byKind(t, "override-value") {
 		var input struct {
-			OrgID               string `json:"orgId"`
-			EnvironmentID       string `json:"environmentId"`
-			UserID              string `json:"userId"`
-			Name                string `json:"name"`
-			OwnerPrivateKey     string `json:"ownerPrivateKeyHex"`
-			OwnerPublicKey      string `json:"ownerPublicKeyHex"`
-			EphemeralPrivateKey string `json:"ephemeralPrivateKeyHex"`
-			IvHex               string `json:"ivHex"`
-			Plaintext           string `json:"plaintext"`
+			OrgID           string `json:"orgId"`
+			EnvironmentID   string `json:"environmentId"`
+			UserID          string `json:"userId"`
+			Name            string `json:"name"`
+			OwnerPrivateKey string `json:"ownerPrivateKeyHex"`
+			IvHex           string `json:"ivHex"`
+			Plaintext       string `json:"plaintext"`
 		}
 		var expected struct {
-			Aad          string `json:"aad"`
-			PlaintextHex string `json:"plaintextHex"`
-			Blob         string `json:"blob"`
+			Aad            string `json:"aad"`
+			OverrideKeyHex string `json:"overrideKeyHex"`
+			PlaintextHex   string `json:"plaintextHex"`
+			Blob           string `json:"blob"`
 		}
 		unmarshal(t, v.Input, &input, v.ID)
 		unmarshal(t, v.Expected, &expected, v.ID)
@@ -368,25 +367,25 @@ func TestOverrideValueVectors(t *testing.T) {
 		}
 
 		ownerPrivateKey := decodeHex(t, input.OwnerPrivateKey, "ownerPrivateKeyHex")
-		ownerPublicKey, err := EncryptionPublicKey(ownerPrivateKey)
+		key, err := DeriveOverrideKey(ownerPrivateKey)
 		if err != nil {
 			t.Fatalf("%s: %v", v.ID, err)
 		}
-		equalHex(t, ownerPublicKey, input.OwnerPublicKey, v.ID, "owner public key")
+		equalHex(t, key, expected.OverrideKeyHex, v.ID, "override key")
 
 		plaintext := normalizedUTF8(input.Plaintext)
 		equalHex(t, plaintext, expected.PlaintextHex, v.ID, "NFC plaintext")
 
-		blob, err := sealToPublicKeyWithRandomness(
-			ownerPublicKey, plaintext, aad,
-			decodeHex(t, input.EphemeralPrivateKey, "ephemeralPrivateKeyHex"),
-			decodeHex(t, input.IvHex, "ivHex"),
-		)
+		sealed, err := encryptGCMWithIV(key, decodeHex(t, input.IvHex, "ivHex"), plaintext, aad)
+		if err != nil {
+			t.Fatalf("%s: %v", v.ID, err)
+		}
+		blob, err := formatGCMBlob(decodeHex(t, input.IvHex, "ivHex"), sealed)
 		if err != nil {
 			t.Fatalf("%s: %v", v.ID, err)
 		}
 		if blob != expected.Blob {
-			t.Errorf("%s: sealed blob\n got %s\nwant %s", v.ID, blob, expected.Blob)
+			t.Errorf("%s: override blob\n got %s\nwant %s", v.ID, blob, expected.Blob)
 		}
 
 		opened, err := OpenOverrideValue(ownerPrivateKey, context, expected.Blob)
@@ -402,6 +401,53 @@ func TestOverrideValueVectors(t *testing.T) {
 		if _, err := OpenOverrideValue(ownerPrivateKey, moved, expected.Blob); err == nil {
 			t.Errorf("%s: an override moved to another name opened", v.ID)
 		}
+	}
+}
+
+// TestOverrideMadeByAnybodyElseIsRefused: the property the construction exists
+// for. The server holds the owner's public key, so a sealed box to it is
+// something the server could make — and it must not open as an override.
+func TestOverrideMadeByAnybodyElseIsRefused(t *testing.T) {
+	owner, err := GenerateEncryptionKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	context := OverrideContext{
+		OrgID:         "018f3b2c-9c1a-7c3d-8e4f-0a1b2c3d4e5f",
+		EnvironmentID: "018f3b2c-9c1a-7c3d-8e4f-1a1b2c3d4e5f",
+		UserID:        "018f3b2c-9c1a-7c3d-8e4f-4a1b2c3d4e5f",
+		Name:          "NODE_OPTIONS",
+	}
+	aad, err := context.aad()
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged, err := SealToPublicKey(owner.PublicKey, []byte("--require /tmp/evil.js"), aad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenOverrideValue(owner.PrivateKey, context, forged); err == nil {
+		t.Fatal("a sealed box to the owner's public key opened as their override")
+	}
+
+	other, err := GenerateEncryptionKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	underAnotherKey, err := SealOverrideValue(other.PrivateKey, context, "--require /tmp/evil.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenOverrideValue(owner.PrivateKey, context, underAnotherKey); err == nil {
+		t.Fatal("an override made under another member's key opened")
+	}
+
+	mine, err := SealOverrideValue(owner.PrivateKey, context, "--max-old-space-size=4096")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened, err := OpenOverrideValue(owner.PrivateKey, context, mine); err != nil || opened != "--max-old-space-size=4096" {
+		t.Fatalf("the owner's own override did not round-trip: %v", err)
 	}
 }
 

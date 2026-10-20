@@ -1,14 +1,14 @@
 import Ajv2020 from 'ajv/dist/2020.js';
 import { describe, expect, it } from 'vitest';
 import { DecryptionError } from '../../types';
-import { BlobFormatError, parseBlob, parseGcmBlob } from '../blob';
+import { BlobFormatError, formatGcmBlob, parseBlob, parseGcmBlob } from '../blob';
 import { fromHex, normalizedUtf8, toHex } from '../bytes';
 import { decryptGcm, encryptGcmWithIv } from '../gcm';
 import { deriveKey } from '../hkdf';
 import { nobleArgon2idProvider } from '../kdf';
 import type { Argon2idParams } from '../kdf';
 import { encryptionPublicKey, signingPublicKey } from '../keypair';
-import { openOverrideValue } from '../override';
+import { deriveOverrideKey, openOverrideValue } from '../override';
 import { overrideValueAad } from '../../aad';
 import {
   deriveRecoveryKey,
@@ -246,18 +246,15 @@ describe('override-value vectors', () => {
     expect(aad).toBe(vector.expected['aad']);
 
     const ownerPrivateKey = bytes(vector, 'ownerPrivateKeyHex');
-    expect(toHex(encryptionPublicKey(ownerPrivateKey))).toBe(hex(vector, 'ownerPublicKeyHex'));
+    const overrideKey = await deriveOverrideKey(ownerPrivateKey);
+    expect(toHex(overrideKey)).toBe(hex(vector, 'overrideKeyHex', 'expected'));
 
     const plaintext = normalizedUtf8(vector.input['plaintext'] as string);
     expect(toHex(plaintext)).toBe(hex(vector, 'plaintextHex', 'expected'));
 
-    const blob = await sealToPublicKeyWithRandomness({
-      recipientPublicKey: bytes(vector, 'ownerPublicKeyHex'),
-      plaintext,
-      aad,
-      ephemeralPrivateKey: bytes(vector, 'ephemeralPrivateKeyHex'),
-      iv: bytes(vector, 'ivHex'),
-    });
+    const blob = formatGcmBlob(
+      await encryptGcmWithIv(overrideKey, bytes(vector, 'ivHex'), plaintext, aad),
+    );
     expect(blob).toBe(vector.expected['blob']);
 
     // The public entry point opens it, and returns the NFC form.

@@ -81,6 +81,18 @@ export const HKDF_INFO = {
   valueHmac: 'xecret.v2.value-hmac',
   /** An invite fragment's seed → the invite keypair's X25519 private scalar. */
   inviteKey: 'xecret.v2.invite-key',
+  /**
+   * A member's own X25519 private key → the AES-256-GCM key their personal
+   * overrides are encrypted under (spec §2.2 type 13, P19 §2).
+   *
+   * Symmetric, and derived from a secret only the owner holds, so that an
+   * override is something only its owner can *make* as well as read — a sealed
+   * box to their public key could be produced by anybody, the server included.
+   * The scalar is 32 uniformly random bytes, so it is sound input keying
+   * material, and this domain string keeps the derived key independent of every
+   * use the scalar has in X25519.
+   */
+  overrideKey: 'xecret.v2.override-key',
 } as const;
 
 export type HkdfInfo = (typeof HKDF_INFO)[keyof typeof HKDF_INFO];

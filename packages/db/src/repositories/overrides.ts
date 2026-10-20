@@ -11,7 +11,7 @@ import type { Executor } from './shared';
  * Every function here is scoped by **owner** as well as by organisation and
  * environment: there is no read in this file that returns somebody else's
  * override, and no caller can ask for one by id. That is the storage half of
- * "never visible to another member"; the ciphertext being sealed to the owner's
+ * "never visible to another member"; the ciphertext being under the owner's
  * own key (spec §2.2 type 13) is the cryptographic half.
  */
 
@@ -21,7 +21,7 @@ export const MAX_OVERRIDES_PER_ENVIRONMENT = 100;
 export interface OverrideRecord {
   id: string;
   name: string;
-  /** The ASCII of the `xk2.x25519.` blob. */
+  /** The ASCII of the `xk2.gcm.` blob. */
   ciphertext: Uint8Array;
   createdAt: Date;
   updatedAt: Date;

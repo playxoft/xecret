@@ -11,8 +11,8 @@ import { resolveEnvironmentPath } from '@/server/tenancy';
  * The caller's own personal overrides in one environment (P19 §2) — what
  * `xecret run` fetches beside the bundle, and what the dashboard lists.
  *
- * Sealed boxes addressed to the caller and to nobody else, so serving them
- * concedes nothing; not audited, for the reason the masked listing is not — it
+ * Ciphertext under a key only the caller can derive, so serving it concedes
+ * nothing; not audited, for the reason the masked listing is not — it
  * is the caller's own ciphertext, and recording every `xecret run` fetching it
  * would bury the records that matter. Setting and removing one are audited.
  *

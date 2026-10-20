@@ -2,8 +2,10 @@
 -- without touching the environment everybody else reads.
 --
 -- ── What a row holds ──
--- A sealed box to the owner's own X25519 public key (spec §2.2 type 13), bound
--- by its AAD to this row's unique key — organisation, environment, owner, name.
+-- An `xk2.gcm.` blob under the owner's override key — HKDF of their own X25519
+-- private key (spec §2.2 type 13) — bound by its AAD to this row's unique key —
+-- organisation, environment, owner, name. Only the owner can open one, and only
+-- the owner can make one: the key is derived from a secret nobody else holds.
 -- Not under the environment's EDK, so nobody else who reads the environment can
 -- open it, and no rotation has to touch it. The server stores it and serves it
 -- back to its owner; it cannot read it.

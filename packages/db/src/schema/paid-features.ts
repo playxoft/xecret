@@ -23,7 +23,7 @@ import { organizations } from './tenancy';
  */
 
 /**
- * A personal override (P19 §2): a value sealed to its owner's own public key
+ * A personal override (P19 §2): a value under its owner's own override key
  * (spec §2.2 type 13). Served to its owner, through a person's credential,
  * and never to a service token.
  */
@@ -41,7 +41,7 @@ export const personalOverrides = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
-    /** The ASCII of an `xk2.x25519.` blob. Stored verbatim; the server holds no key for it. */
+    /** The ASCII of an `xk2.gcm.` blob. Stored verbatim; the server holds no key for it. */
     ciphertext: bytea('ciphertext').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

@@ -13,7 +13,7 @@ import type { Principal } from './actor';
 import { errors } from './errors';
 import { createLogger } from './logging';
 import type { RequestLog } from './logging';
-import { ORIGIN, routeFixtures, sealed } from './testing/route-fixtures';
+import { blob, ORIGIN, routeFixtures } from './testing/route-fixtures';
 import type { Org } from './testing/route-fixtures';
 
 /**
@@ -133,7 +133,7 @@ function list(org: Org, env = 'development') {
   return f.call<Body>(listRoute.GET, 'GET', path, params);
 }
 
-function put(org: Org, name: string, ciphertext = sealed(name), env = 'development') {
+function put(org: Org, name: string, ciphertext = blob(name), env = 'development') {
   const { path, params } = f.envPath(org, env, `/overrides/${name}`);
   return f.call<Body>(overrideRoute.PUT, 'PUT', path, { ...params, name }, { ciphertext });
 }
@@ -181,23 +181,23 @@ describe('setting a personal override', () => {
   it('sets and replaces one on Pro, auditing each — the name, never the value', async () => {
     const { org } = await setup();
 
-    const first = await put(org, 'DATABASE_URL', sealed('one'));
+    const first = await put(org, 'DATABASE_URL', blob('one'));
     expect(first.status).toBe(200);
     expect(first.body.override).toMatchObject({ name: 'DATABASE_URL', created: true });
 
-    const second = await put(org, 'DATABASE_URL', sealed('two'));
+    const second = await put(org, 'DATABASE_URL', blob('two'));
     expect(second.body.override).toMatchObject({ created: false });
 
     const listed = await list(org);
     expect(listed.body.canSet).toBe(true);
     expect(listed.body.overrides).toEqual([
-      expect.objectContaining({ name: 'DATABASE_URL', ciphertext: sealed('two') }),
+      expect.objectContaining({ name: 'DATABASE_URL', ciphertext: blob('two') }),
     ]);
 
     const sets = recorded('override.set');
     expect(sets).toHaveLength(2);
     expect(sets[0]).toMatchObject({ outcome: 'success', metadata: { secretName: 'DATABASE_URL' } });
-    expect(JSON.stringify(sets)).not.toContain(sealed('two'));
+    expect(JSON.stringify(sets)).not.toContain(blob('two'));
   });
 
   it('works from a CLI login, which is the person', async () => {
@@ -209,7 +209,7 @@ describe('setting a personal override', () => {
 
   it('refuses a malformed value and a name that is not a variable name', async () => {
     const { org } = await setup();
-    expect((await put(org, 'DATABASE_URL', 'xk2.gcm.notasealedbox')).status).toBe(422);
+    expect((await put(org, 'DATABASE_URL', 'xk2.x25519.notagcmblobbutlongenoughtopasstheminimumlengthcheck0000000000000')).status).toBe(422);
     expect((await put(org, '1BAD')).status).toBeGreaterThanOrEqual(400);
   });
 
@@ -244,17 +244,17 @@ describe('who sees an override', () => {
   it('never a pull — not the owner’s own, not a CI run’s', async () => {
     const { org, project, env } = await setup();
     await f.seedSecret(org, env, 'DATABASE_URL');
-    expect((await put(org, 'DATABASE_URL', sealed('mine'))).status).toBe(200);
+    expect((await put(org, 'DATABASE_URL', blob('mine'))).status).toBe(200);
 
     const { path, params } = f.envPath(org, 'development', '/pull?format=json&bundle=2');
     const own = await f.call<Body>(pullRoute.GET, 'GET', path, params);
     expect(own.status).toBe(200);
-    expect(own.text).not.toContain(sealed('mine'));
+    expect(own.text).not.toContain(blob('mine'));
 
     caller = await f.seedServiceToken(org, project, env);
     const ci = await f.call<Body>(pullRoute.GET, 'GET', path, params);
     expect(ci.status).toBe(200);
-    expect(ci.text).not.toContain(sealed('mine'));
+    expect(ci.text).not.toContain(blob('mine'));
   });
 
   it('not a stranger, and not an unauthenticated caller', async () => {

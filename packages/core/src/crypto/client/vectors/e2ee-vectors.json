@@ -2,8 +2,8 @@
   "$schema": "./e2ee-vectors.schema.json",
   "specVersion": "2.0",
   "blobVersion": "xk2",
-  "generatedAt": "2026-10-20T08:33:40.766Z",
-  "generator": "packages/core/scripts/generate-vectors.ts@e6aac59",
+  "generatedAt": "2026-10-20T11:37:07.634Z",
+  "generator": "packages/core/scripts/generate-vectors.ts@f36a4bb",
   "vectors": [
     {
       "id": "argon2id/ascii-passphrase",
@@ -741,15 +741,14 @@
         "userId": "018f3b2c-9c1a-7c3d-8e4f-4a1b2c3d4e5f",
         "name": "DATABASE_URL",
         "ownerPrivateKeyHex": "26a9b87988efc959b7e1179fcb2a4d2d3e9050e6f3a8fb91767af148c6c28c06",
-        "ownerPublicKeyHex": "d822a7087f4fc4817012a0dfc4725f4fe35e97e4a9349c347b90ac2f3cbe4770",
-        "ephemeralPrivateKeyHex": "7d8a68697dce38554fce9770697f0ee5f029eddcf2f9ed6540291d5336812dbd",
         "ivHex": "28172a2094a5513230b4e91f",
         "plaintext": "postgres://dev:dev@localhost:5432/app"
       },
       "expected": {
         "aad": "xecret.aad.v2.override-value|018f3b2c-9c1a-7c3d-8e4f-0a1b2c3d4e5f|018f3b2c-9c1a-7c3d-8e4f-1a1b2c3d4e5f|018f3b2c-9c1a-7c3d-8e4f-4a1b2c3d4e5f|DATABASE_URL",
+        "overrideKeyHex": "7a979556478a66d11e0c8a1d2eb7dcab2bc91b055b5fe511c6a91596c1821da5",
         "plaintextHex": "706f7374677265733a2f2f6465763a646576406c6f63616c686f73743a353433322f617070",
-        "blob": "xk2.x25519.mSkLQ5i7PYZsQGiXwSi895GxWj1I5SbmLuUlQkgtWygoFyoglKVRMjC06R_Vg8S1wGvQTisn1MzFSYmmeeZkvZTMmFeFU26rEJ2bJFLrv_N7JLQXxImOX-hylxLfjaro4A"
+        "blob": "xk2.gcm.KBcqIJSlUTIwtOkflBUOw_8F7jI3gxoye8QWStcx-0tBHeWtvVJEyGH24IC1peFhYKorn2GNHnrJkucpxudJsYA"
       }
     },
     {
@@ -762,15 +761,14 @@
         "userId": "018f3b2c-9c1a-7c3d-8e4f-4a1b2c3d4e5f",
         "name": "GREETING",
         "ownerPrivateKeyHex": "26a9b87988efc959b7e1179fcb2a4d2d3e9050e6f3a8fb91767af148c6c28c06",
-        "ownerPublicKeyHex": "d822a7087f4fc4817012a0dfc4725f4fe35e97e4a9349c347b90ac2f3cbe4770",
-        "ephemeralPrivateKeyHex": "a1f7cedcf9305e997c5b570bbe03a8ec45d4e26560bc4bfc77a98ba82457643a",
         "ivHex": "24568a5750393ca41d33bc4b",
         "plaintext": "naïve-token-café-2026"
       },
       "expected": {
         "aad": "xecret.aad.v2.override-value|018f3b2c-9c1a-7c3d-8e4f-0a1b2c3d4e5f|018f3b2c-9c1a-7c3d-8e4f-1a1b2c3d4e5f|018f3b2c-9c1a-7c3d-8e4f-4a1b2c3d4e5f|GREETING",
+        "overrideKeyHex": "7a979556478a66d11e0c8a1d2eb7dcab2bc91b055b5fe511c6a91596c1821da5",
         "plaintextHex": "6e61c3af76652d746f6b656e2d636166c3a92d32303236",
-        "blob": "xk2.x25519.ErFofI-1XdAtCjyaeh1eyeoVPZywJSQ4xuyU1_fsD34kVopXUDk8pB0zvEsKaYgzaNdemYCivNVFRIoyyoRe5E1kqyrD7rA2Rx2LGMHNfedikgU"
+        "blob": "xk2.gcm.JFaKV1A5PKQdM7xLhUbxRVRLYea41QEZXtyvyaQQX11-V8jB0PiUoa59L9UTuYbISA73"
       }
     }
   ]

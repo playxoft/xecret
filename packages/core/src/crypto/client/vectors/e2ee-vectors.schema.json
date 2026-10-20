@@ -561,7 +561,7 @@
       },
 
       "overrideValue": {
-        "description": "Spec section 2.2 type 13. A personal override, sealed to its owner's own X25519 public key under the override-value AAD.",
+        "description": "Spec section 2.2 type 13. A personal override: AES-256-GCM under the owner's override key (HKDF-SHA256 of their X25519 private key, info xecret.v2.override-key), under the override-value AAD.",
         "type": "object",
         "properties": {
           "kind": { "const": "override-value" },
@@ -573,8 +573,6 @@
               "userId",
               "name",
               "ownerPrivateKeyHex",
-              "ownerPublicKeyHex",
-              "ephemeralPrivateKeyHex",
               "ivHex",
               "plaintext"
             ],
@@ -585,20 +583,19 @@
               "userId": { "$ref": "#/$defs/uuid" },
               "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
               "ownerPrivateKeyHex": { "$ref": "#/$defs/hex32" },
-              "ownerPublicKeyHex": { "$ref": "#/$defs/hex32" },
-              "ephemeralPrivateKeyHex": { "$ref": "#/$defs/hex32" },
               "ivHex": { "$ref": "#/$defs/hex12" },
               "plaintext": { "type": "string" }
             }
           },
           "expected": {
             "type": "object",
-            "required": ["aad", "plaintextHex", "blob"],
+            "required": ["aad", "overrideKeyHex", "plaintextHex", "blob"],
             "additionalProperties": false,
             "properties": {
               "aad": { "$ref": "#/$defs/aadString" },
+              "overrideKeyHex": { "$ref": "#/$defs/hex32" },
               "plaintextHex": { "$ref": "#/$defs/hex" },
-              "blob": { "$ref": "#/$defs/sealedBlob" }
+              "blob": { "$ref": "#/$defs/gcmBlob" }
             }
           }
         }

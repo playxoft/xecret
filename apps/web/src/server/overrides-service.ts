@@ -12,9 +12,10 @@ import type { EnvironmentScope } from './tenancy';
  *
  * ── The four rules, and where each is kept ──
  *  - **Never visible to another member.** Every repository read is scoped by
- *    owner, and the value is sealed to the owner's own X25519 key (spec §2.2,
- *    type 13) — so a teammate holding the environment's key still cannot open
- *    it, and neither can this server.
+ *    owner, and the value is under a key derived from the owner's own X25519
+ *    private key (spec §2.2, type 13) — so a teammate holding the environment's
+ *    key still cannot open it, and this server can neither open one nor make
+ *    one the owner's CLI would accept.
  *  - **Never part of a CI fetch.** A service token is refused every override
  *    route, below, and no bundle or pull carries an override: they are fetched
  *    separately, by the CLI, for a person, and applied after resolution.

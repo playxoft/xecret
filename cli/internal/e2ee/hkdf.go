@@ -33,6 +33,11 @@ const (
 	// InfoInviteKey derives an invitation keypair's X25519 scalar from its
 	// fragment seed.
 	InfoInviteKey = "xecret.v2.invite-key"
+	// InfoOverrideKey derives, from a member's own X25519 private key, the
+	// AES-256-GCM key their personal overrides are encrypted under (spec §2.2
+	// type 13). Symmetric, so that only the owner can make an override as well
+	// as read one — a sealed box to their public key could be made by anybody.
+	InfoOverrideKey = "xecret.v2.override-key"
 )
 
 // registeredInfo is the registry, closed by assertion rather than by
@@ -48,6 +53,7 @@ var registeredInfo = map[string]bool{
 	InfoPRFWrap:          true,
 	InfoValueHmac:        true,
 	InfoInviteKey:        true,
+	InfoOverrideKey:      true,
 }
 
 // HKDFOutputBytes — every derivation in this specification produces 32 bytes.
