@@ -108,6 +108,14 @@ var completionTree = []completionCommand{
 				Flags: scoped("--version")},
 			{Name: "delete", Description: "Soft-delete a secret", Flags: scoped("--yes")},
 		}},
+	{Name: "overrides", Description: "Your own values for secrets, applied only by run",
+		// As for secrets: the bare form prints usage, a leading flag lists.
+		Flags: scoped("--json"),
+		Subcommands: []completionCommand{
+			{Name: "list", Description: "Your overrides, names only", Flags: scoped("--json")},
+			{Name: "set", Description: "Set your own value for one secret", Flags: scoped("--from-file")},
+			{Name: "unset", Description: "Remove one of your overrides", Flags: scoped()},
+		}},
 	{Name: "import", Description: "Send a .env, JSON, YAML or shell file to the server",
 		Flags: scoped("--json", "--format", "--strategy", "--dry-run")},
 	{Name: "pull", Description: "Print every secret in a chosen format",

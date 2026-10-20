@@ -21,6 +21,8 @@ import (
 	"github.com/playxoft/xecret/cli/internal/envkeys"
 	"github.com/playxoft/xecret/cli/internal/ids"
 	"github.com/playxoft/xecret/cli/internal/output"
+	"github.com/playxoft/xecret/cli/internal/policy"
+	"github.com/playxoft/xecret/cli/internal/references"
 )
 
 // secretNamePattern mirrors the server's constraint, so an impossible name
@@ -59,6 +61,16 @@ credential last actually change?".
 at the provider it belongs to, so a history that handed back values would be a
 page of live credentials. Reading the past is 'get --version N' or 'restore',
 one at a time, each audited.
+
+A secret of type 'template' is built from others when it is read:
+
+  printf '%s' 'postgres://${DB_USER}@${shared.DB_HOST}/app' | \
+    xecret secrets set DATABASE_URL --type template
+
+${KEY} is KEY as the environment being read sees it, ${env.KEY} is KEY in
+another environment of this project, ${project.env.KEY} reaches another
+project, and $${ is a literal ${. 'run', 'pull' and 'export' resolve them; a
+secret of any other type is literal text, whatever it contains.
 `
 
 func cmdSecrets(args []string) error {
@@ -348,7 +360,7 @@ func secretsSet(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	material, err := a.openKeys(ctx, client, credentials, resolved)
+	keys, material, err := a.openKeyState(ctx, client, credentials, resolved)
 	if err != nil {
 		return withE2eeHint(err)
 	}
@@ -359,6 +371,13 @@ func secretsSet(args []string) error {
 	)
 	if material != nil {
 		defer material.Close()
+		// The organisation's value rules, applied to the plaintext before
+		// anything is encrypted — this process is the last thing in the path of a
+		// CLI write that holds the value. See internal/policy for why that is a
+		// concession rather than a guarantee.
+		if err := checkSecretPolicy(ctx, client, resolved, keys.IsProduction, name, value); err != nil {
+			return err
+		}
 		appended, result, err = writeClientSecret(
 			ctx, a, client, material, resolved, name, value, *valueType, *note)
 	} else {
@@ -881,6 +900,17 @@ func decryptRevealed(material *envkeys.Material, secret revealedSecret) (string,
 // the stored row and refuses the write when the two disagree; without that a
 // concurrent writer's version lands under this ciphertext and the row is
 // unopenable for ever, by everybody, behind an HTTP 200.
+//
+// ── A template says what it references ──
+//
+// The same listing carries the stored type, which is what decides whether this
+// write is a template's when `--type` does not say: `xecret secrets set URL` on
+// an existing template is a template write, and the server requires it to
+// declare its references. So the type in force is `--type` if given and the
+// stored one otherwise, and only a template's value is parsed — refused here, on
+// a syntax error, before anything is encrypted — and only a template's write
+// carries a `references` list. Every other value is literal text for ever,
+// whatever `${…}` it happens to contain.
 func writeClientSecret(
 	ctx context.Context,
 	a *app,
@@ -902,6 +932,16 @@ func writeClientSecret(
 		}
 	}
 
+	effectiveType := valueType
+	if effectiveType == "" && current != nil {
+		effectiveType = current.ValueType
+	}
+	declared, err := templateDeclaration(value, effectiveType)
+	if err != nil {
+		return false, nil, fmt.Errorf(
+			"%s is a template, and this value is not valid template syntax, so nothing was written: %w", name, err)
+	}
+
 	if current != nil {
 		nextVersion := current.Version + 1
 		sealed, encryptErr := material.EncryptSecret(current.ID, nextVersion, value)
@@ -909,7 +949,7 @@ func writeClientSecret(
 			return false, nil, encryptErr
 		}
 		result, err = client.UpdateClientSecret(
-			ctx, resolved.Org, resolved.Project, resolved.Environment, name, sealed, nextVersion, valueType)
+			ctx, resolved.Org, resolved.Project, resolved.Environment, name, sealed, nextVersion, valueType, declared)
 		return true, result, withWriteConflictHint(err)
 	}
 
@@ -935,8 +975,85 @@ func writeClientSecret(
 	}
 
 	result, err = client.CreateClientSecret(
-		ctx, resolved.Org, resolved.Project, resolved.Environment, id, name, sealed, valueType, encNote)
+		ctx, resolved.Org, resolved.Project, resolved.Environment, id, name, sealed, valueType, encNote, declared)
 	return false, result, err
+}
+
+// templateValueType is the declared type whose values are read for references.
+const templateValueType = "template"
+
+// templateDeclaration is what a write of value must declare, given the type the
+// secret will hold once it lands: the distinct references in its text, in the
+// order they first appear, for a template — and nil for anything else, which is
+// what keeps the key off a plain write's body (see api.withReferences).
+//
+// The error is the parser's own, which states the rule that was broken and
+// never any part of the value.
+func templateDeclaration(value, effectiveType string) ([]api.ReferenceDeclaration, error) {
+	if effectiveType != templateValueType {
+		return nil, nil
+	}
+	parsed, err := references.TemplateReferences(value)
+	if err != nil {
+		return nil, err
+	}
+	declared := make([]api.ReferenceDeclaration, 0, len(parsed))
+	for _, reference := range parsed {
+		declared = append(declared, api.ReferenceDeclaration{
+			Project:     reference.Project,
+			Environment: reference.Environment,
+			Name:        reference.Name,
+		})
+	}
+	return declared, nil
+}
+
+// checkSecretPolicy applies the organisation's value rules to a value about to
+// be written, and refuses it — locally, before it is encrypted — when they say
+// no.
+//
+// A deployment that predates the policy answers the read with a 404, and that is
+// "no policy", silently: refusing every write against an older server over a
+// rule it has no way to have would be the policy breaking the product. Any other
+// failure to read it stops the write, because a policy this process could not
+// read is not one it can say was satisfied.
+//
+// The refusal lists the rules' own sentences, which name the secret and the
+// policy's numbers and never the value — not even which forbidden word matched.
+func checkSecretPolicy(
+	ctx context.Context,
+	client *api.Client,
+	resolved scope,
+	isProduction bool,
+	name, value string,
+) error {
+	policies, err := client.Policies(ctx, resolved.Org)
+	if err != nil {
+		if apiErr, ok := api.AsError(err); ok && apiErr.Status == 404 {
+			return nil
+		}
+		return fmt.Errorf("could not read the organisation's secret policy, so %s was not written: %w", name, err)
+	}
+
+	rules := policies.Secrets
+	violations := policy.CheckValueAgainstPolicy(policy.SecretPolicy{
+		Enabled:             rules.Enabled,
+		Scope:               rules.Scope,
+		NamePattern:         rules.NamePattern,
+		MinValueEntropyBits: rules.MinValueEntropyBits,
+		EntropyAppliesTo:    rules.EntropyAppliesTo,
+		ForbiddenSubstrings: rules.ForbiddenSubstrings,
+	}, name, value, isProduction)
+	if len(violations) == 0 {
+		return nil
+	}
+
+	var message strings.Builder
+	fmt.Fprintf(&message, "%s was not written — this organisation's secret policy refuses the value:", name)
+	for _, violation := range violations {
+		fmt.Fprintf(&message, "\n  %s", violation.Message)
+	}
+	return errors.New(message.String())
 }
 
 // restoreClientSecret is `restore` for an end-to-end encrypted environment.
@@ -987,15 +1104,26 @@ func restoreClientSecret(
 	if err != nil {
 		return nil, err
 	}
-	current := 0
+	current, currentType := 0, ""
 	for _, secret := range existing {
 		if secret.Name == name {
-			current = secret.Version
+			current, currentType = secret.Version, secret.ValueType
 			break
 		}
 	}
 	if current == 0 {
 		return nil, fmt.Errorf("%s does not exist in %s/%s", name, resolved.Project, resolved.Environment)
+	}
+
+	// A template's restore restores its text, and the references in that text are
+	// declared again — re-parsed from the version just decrypted, because the
+	// declaration the old version was written with belongs to the graph as it was
+	// then. The stored type decides, as it does on the server: a restore changes
+	// a value, never what kind of value it is.
+	declared, err := templateDeclaration(plaintext, currentType)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"%s is a template, and v%d is not valid template syntax, so it was not restored: %w", name, version, err)
 	}
 
 	nextVersion := current + 1
@@ -1005,7 +1133,7 @@ func restoreClientSecret(
 	}
 
 	result, err := client.RestoreClientSecret(
-		ctx, resolved.Org, resolved.Project, resolved.Environment, name, version, sealed, nextVersion)
+		ctx, resolved.Org, resolved.Project, resolved.Environment, name, version, sealed, nextVersion, declared)
 	return result, withWriteConflictHint(err)
 }
 
@@ -1016,12 +1144,37 @@ func restoreClientSecret(
 // the request it sent. There is nothing to repair and nothing was lost — the
 // point of the check is that nothing was *written* — so the whole remedy is to
 // run the command again against the state that now exists.
+//
+// Only for that refusal. A 409 is also how the server says a write can never
+// succeed as sent — an import that would rewrite a template, a template whose
+// references would form a loop — and telling somebody to run the same command
+// again over one of those is advice that fails identically every time. Those
+// keep the server's own words, which say what to do instead.
 func withWriteConflictHint(err error) error {
 	apiErr, ok := api.AsError(err)
-	if !ok || apiErr.Status != 409 {
+	if !ok || apiErr.Status != 409 || !isWriteRace(apiErr) {
 		return err
 	}
 	return fmt.Errorf("%w. Run the command again: it re-reads the secret first", err)
+}
+
+// reasonPrefix is the `snake_case:` a server message opens with when it names
+// its own reason — `version_conflict:`, `resolution_failed:`, `e2ee_required:`.
+var reasonPrefix = regexp.MustCompile(`^[a-z][a-z0-9_]*:`)
+
+// isWriteRace tells a 409 that means "something wrote first" from one that
+// means "not like this". A message that names its reason is a race only when
+// the reason is `version_conflict`; one that does not is a race — the rotation
+// and concurrent-write refusals carry no prefix — except for the import's
+// refusal to rewrite a template, which names the secret instead.
+func isWriteRace(apiErr *api.Error) bool {
+	if strings.Contains(apiErr.Message, " is a template.") {
+		return false
+	}
+	if reason := reasonPrefix.FindString(apiErr.Message); reason != "" {
+		return reason == "version_conflict:"
+	}
+	return true
 }
 
 // sealNote moves a plaintext note onto the encrypted field, where the

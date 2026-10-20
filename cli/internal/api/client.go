@@ -149,9 +149,24 @@ func (c *Client) Get(ctx context.Context, path string, out any) error {
 // GetRaw issues a GET and returns the response body verbatim — for the pull
 // and export documents, which are not JSON envelopes.
 func (c *Client) GetRaw(ctx context.Context, path string) ([]byte, error) {
-	var raw []byte
+	body, _, err := c.getRawWithHeader(ctx, path)
+	return body, err
+}
+
+// getRawWithHeader is GetRaw that also hands back the response headers, for the
+// one read whose answer is partly a header: a server-mode pull says whether its
+// environment's policy allows a plaintext export in
+// `x-xecret-plaintext-export`, beside a document it cannot put that in.
+func (c *Client) getRawWithHeader(ctx context.Context, path string) ([]byte, http.Header, error) {
+	var raw rawResponse
 	err := c.doRetry(ctx, http.MethodGet, path, nil, nil, &raw)
-	return raw, err
+	return raw.body, raw.header, err
+}
+
+// rawResponse is where a verbatim read leaves what arrived.
+type rawResponse struct {
+	body   []byte
+	header http.Header
 }
 
 // Post issues a POST. Not retried: the server may have processed a request
@@ -165,9 +180,10 @@ func (c *Client) Patch(ctx context.Context, path string, body, out any) error {
 	return c.do(ctx, http.MethodPatch, path, body, out, nil)
 }
 
-// Put issues a PUT. Not retried, as for Post — the one PUT in this API changes
-// a secret's metadata, and a repeat that raced a concurrent rename would
-// silently undo it.
+// Put issues a PUT. Not retried, as for Post. One PUT changes a secret's
+// metadata, and a repeat that raced a concurrent rename would silently undo it;
+// the other replaces a personal override, and a repeat that landed after the
+// person's next `overrides set` would put the older value back.
 func (c *Client) Put(ctx context.Context, path string, body, out any) error {
 	return c.do(ctx, http.MethodPut, path, body, out, nil)
 }
@@ -181,7 +197,7 @@ func (c *Client) doRetry(
 	ctx context.Context,
 	method, path string,
 	body, out any,
-	raw *[]byte,
+	raw *rawResponse,
 ) error {
 	var lastErr error
 	for attempt := 0; attempt < retryAttempts; attempt++ {
@@ -201,7 +217,7 @@ func (c *Client) doRetry(
 	return lastErr
 }
 
-func (c *Client) do(ctx context.Context, method, path string, body, out any, raw *[]byte) error {
+func (c *Client) do(ctx context.Context, method, path string, body, out any, raw *rawResponse) error {
 	var reader io.Reader
 	if body != nil {
 		payload, err := json.Marshal(body)
@@ -261,7 +277,8 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any, raw
 		if readErr != nil {
 			return &Error{Status: 0, Code: "network_error", Message: "response was cut short"}
 		}
-		*raw = data
+		raw.body = data
+		raw.header = response.Header.Clone()
 		return nil
 	}
 

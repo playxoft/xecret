@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 // The endpoints that exist only because the server cannot decrypt.
@@ -74,7 +75,8 @@ type MyGrant struct {
 	SignedByUserID string `json:"signedByUserId"`
 }
 
-// EnvironmentKeys is GET …/keys, and the `keys` half of the pull bundle.
+// EnvironmentKeys is GET …/keys, the `keys` half of the pull bundle, and — with
+// IsProduction absent — the `keys` of each layer of a version 2 bundle.
 type EnvironmentKeys struct {
 	// EncryptionMode is "e2ee" or "server". Every dual-mode decision the CLI
 	// makes reads this rather than guessing from a response's shape.
@@ -83,6 +85,34 @@ type EnvironmentKeys struct {
 	ActiveEDK      *ActiveKey `json:"activeEdk"`
 	// MyGrant is null when the caller has access but nobody has shared the key.
 	MyGrant *MyGrant `json:"myGrant"`
+	// IsProduction is read from GET …/keys, which every write already makes, so
+	// that the secret policy's production scope costs no second request to
+	// decide. False where the server does not say, which is the direction that
+	// asks less of a value rather than refusing one.
+	IsProduction bool `json:"isProduction"`
+}
+
+// DeclaredReference is one reference a template's writer declared, as a pull
+// serves it: the text between the braces, split into its parts, and the
+// environment the server resolved that text to.
+//
+// EnvironmentID is null for an unqualified `${KEY}`, which means "the
+// environment being read" and so cannot be resolved until something is read.
+type DeclaredReference struct {
+	Project       string  `json:"project,omitempty"`
+	Environment   string  `json:"environment,omitempty"`
+	Name          string  `json:"name"`
+	EnvironmentID *string `json:"environmentId"`
+}
+
+// ReferenceDeclaration is a reference as a *write* declares it: the parts of
+// the text and nothing the server works out. No environmentId — the server
+// resolves the slugs itself, against the graph as it stands when the write
+// lands, and refuses a body that tries to tell it the answer.
+type ReferenceDeclaration struct {
+	Project     string `json:"project,omitempty"`
+	Environment string `json:"environment,omitempty"`
+	Name        string `json:"name"`
 }
 
 // ClientSecret is one row of the e2ee pull bundle: ciphertext and the context
@@ -99,6 +129,13 @@ type ClientSecret struct {
 	EnvDataKeyID string `json:"envDataKeyId"`
 	Version      int    `json:"version"`
 	UpdatedAt    string `json:"updatedAt"`
+	// Template says this row's text is read for references. Present only on a
+	// template, and only in a version 2 bundle; every other row is literal text
+	// for ever, whatever it happens to contain.
+	Template bool `json:"template,omitempty"`
+	// References is what the template's writer declared, which the decrypted
+	// text is checked against before anything is resolved.
+	References []DeclaredReference `json:"references,omitempty"`
 }
 
 // EnvironmentBundle is GET …/pull for an e2ee environment: the key state and
@@ -109,14 +146,74 @@ type EnvironmentBundle struct {
 	// leaving a client to work it out from what the response happens to contain.
 	// See [Client.Pull].
 	Bundle bool `json:"bundle"`
-	// BundleVersion is the shape of everything below it. Carried and not yet
-	// acted on: a client that refuses an unknown version cannot be sent a new
-	// one, so the first build to see this field has to accept whatever it says.
+	// BundleVersion is the shape of everything below it. 1 is an environment's
+	// own secrets and nothing else; 2 adds Environment and Layers, for an
+	// environment that inherits or holds a template. A plain environment is
+	// still served as 1 to a client that can read 2.
 	BundleVersion  int             `json:"bundleVersion"`
 	EncryptionMode string          `json:"encryptionMode"`
 	Keys           EnvironmentKeys `json:"keys"`
 	Secrets        []ClientSecret  `json:"secrets"`
+	// Environment names the environment being read: the context every
+	// unqualified reference resolves in. Version 2 only.
+	Environment *BundleEnvironment `json:"environment,omitempty"`
+	// Layers is every other environment the resolution touches — each ancestor
+	// whole, and each environment a template reaches into with only the secrets
+	// it reaches. Version 2 only.
+	Layers []BundleLayer `json:"layers,omitempty"`
+	// Policy is what the environment's policy says about this bundle leaving
+	// xecret's control. Absent from a server that predates the policy, which is
+	// the same answer as "allowed".
+	Policy *BundlePolicy `json:"policy,omitempty"`
 }
+
+// BundleEnvironment is the `environment` of a version 2 bundle.
+type BundleEnvironment struct {
+	ID          string `json:"id"`
+	ProjectSlug string `json:"projectSlug"`
+	Slug        string `json:"slug"`
+	// ParentEnvironmentID is null for an environment that inherits from nothing.
+	ParentEnvironmentID *string `json:"parentEnvironmentId"`
+}
+
+// BundleLayer is one environment a version 2 bundle carries beyond the one
+// being read.
+//
+// Every ciphertext in it is bound by its AAD to the row and the environment
+// that hold it, and opens only under that environment's own key, which is why
+// a layer carries its own grant. Nothing is re-encrypted: a layer is ciphertext
+// the caller could have pulled directly, delivered together so the resolution
+// happens on one consistent read.
+type BundleLayer struct {
+	EnvironmentID       string  `json:"environmentId"`
+	ProjectSlug         string  `json:"projectSlug"`
+	EnvironmentSlug     string  `json:"environmentSlug"`
+	ParentEnvironmentID *string `json:"parentEnvironmentId"`
+	// Keys is null for a layer that contributes no secret — an ancestor of a
+	// referenced environment that sets nothing the reference needs. It is there
+	// only so the client can walk the same chain the server walked.
+	Keys    *EnvironmentKeys `json:"keys"`
+	Secrets []ClientSecret   `json:"secrets"`
+}
+
+// BundlePolicy is the `policy` of a bundle.
+type BundlePolicy struct {
+	// PlaintextExport is "allowed" or "disabled". See [PlaintextExportDisabled].
+	PlaintextExport string `json:"plaintextExport"`
+}
+
+// PlaintextExportDisabled is the one value of the export policy that refuses.
+//
+// Stated as the refusal rather than as "anything but allowed": an absent field,
+// an empty one, and a value this build has never heard of all mean a server
+// that did not say "disabled", and turning an unknown word into a refusal would
+// break `pull` against a deployment for having added a third state.
+const PlaintextExportDisabled = "disabled"
+
+// PlaintextExportHeader is how a server-mode pull says the same thing. A
+// server-rendered document has nowhere to carry a policy field, and inventing
+// one inside it would change the document `pull` writes out.
+const PlaintextExportHeader = "x-xecret-plaintext-export"
 
 // Pulled is what a pull produced, in whichever mode the environment is in.
 //
@@ -136,6 +233,20 @@ type Pulled struct {
 	// Document is the server-rendered file for a server-mode environment,
 	// verbatim, in the requested format.
 	Document []byte
+	// PlaintextExport is the pull's PlaintextExportHeader, as the server sent
+	// it. Read for a server-mode environment, whose document has nowhere else to
+	// say it; a bundle's own Policy is what answers for an e2ee one.
+	PlaintextExport string
+}
+
+// ExportDisabled reports whether the environment's policy refuses a plaintext
+// copy of what this pull produced — the question `pull` and `export` ask before
+// writing anything, and `run` never asks.
+func (p *Pulled) ExportDisabled() bool {
+	if p.Bundle != nil {
+		return p.Bundle.Policy != nil && p.Bundle.Policy.PlaintextExport == PlaintextExportDisabled
+	}
+	return p.PlaintextExport == PlaintextExportDisabled
 }
 
 // Pull fetches an environment.
@@ -162,19 +273,31 @@ type Pulled struct {
 // accepted with the ambiguity closed: `secrets` must be a JSON *array*, which in
 // a flat document it can never be, because every value in one is a string. That
 // tolerance can be deleted once no supported deployment predates the marker.
+//
+// ── `bundle=2`, on every pull ──
+//
+// The request says this client can resolve inheritance and references (P19 §1).
+// It is a statement of capability, not a request for a shape: an environment
+// that uses neither is still answered with version 1, unchanged, and one that
+// uses either is answered with version 2 — which a client that did not say so
+// is refused with a 409 `resolution_unsupported:` rather than handed a view
+// missing every inherited value and holding a template's literal `${…}` text.
+// A deployment that predates the parameter ignores it.
 func (c *Client) Pull(ctx context.Context, org, project, env, format string) (*Pulled, error) {
-	raw, err := c.GetRaw(ctx, envPath(org, project, env)+"/pull?format="+url.QueryEscape(format))
+	raw, header, err := c.getRawWithHeader(ctx,
+		envPath(org, project, env)+"/pull?format="+url.QueryEscape(format)+"&bundle=2")
 	if err != nil {
 		return nil, err
 	}
+	exportPolicy := strings.ToLower(strings.TrimSpace(header.Get(PlaintextExportHeader)))
 
 	if looksLikeBundle(raw) {
 		var bundle EnvironmentBundle
 		if json.Unmarshal(raw, &bundle) == nil {
-			return &Pulled{Bundle: &bundle, Raw: raw}, nil
+			return &Pulled{Bundle: &bundle, Raw: raw, PlaintextExport: exportPolicy}, nil
 		}
 	}
-	return &Pulled{Document: raw}, nil
+	return &Pulled{Document: raw, PlaintextExport: exportPolicy}, nil
 }
 
 // looksLikeBundle answers the question above without decoding the whole body.
@@ -245,18 +368,35 @@ func (c *Client) RevealClient(ctx context.Context, org, project, env, name strin
 	return &response.Secret, nil
 }
 
+// withReferences puts a template's declaration on a write body, and puts
+// nothing there for a value that is not a template.
+//
+// Two states, and the distinction is the server's rule rather than this
+// client's taste: a template's write **must** declare its references — an
+// empty list is a template that references nothing, and an absent one is
+// refused — and any other write **must not**. So nil means "not a template"
+// and leaves the key off; a non-nil slice, empty or not, is sent as an array.
+func withReferences(body map[string]any, references []ReferenceDeclaration) {
+	if references != nil {
+		body["references"] = references
+	}
+}
+
 // CreateClientSecret writes a pre-encrypted secret.
 //
 // The id is minted here rather than by the server, and that is not a
 // convenience: it is an AAD component, so the ciphertext is already sealed
 // against it by the time this request is built. A server-assigned id would
 // arrive after the only moment it could have been bound.
+//
+// references is the template's declaration, or nil — see [withReferences].
 func (c *Client) CreateClientSecret(
 	ctx context.Context,
 	org, project, env, id, name string,
 	value ClientValue,
 	valueType string,
 	encNote *string,
+	references []ReferenceDeclaration,
 ) (*WriteResult, error) {
 	body := map[string]any{"id": id, "name": name, "value": value}
 	if valueType != "" {
@@ -265,6 +405,7 @@ func (c *Client) CreateClientSecret(
 	if encNote != nil {
 		body["encNote"] = *encNote
 	}
+	withReferences(body, references)
 
 	var response struct {
 		Secret WriteResult `json:"secret"`
@@ -283,17 +424,23 @@ func (c *Client) CreateClientSecret(
 // target from the stored row, and a disagreement — a second writer, a stale
 // listing — would store bytes the row does not name, unopenable for ever behind
 // a 200. Stating it turns that into a 409 the caller retries.
+//
+// references is the template's declaration, or nil — see [withReferences].
+// Whether this write is a template's is the caller's to work out, from the type
+// it is setting or, failing that, the type the secret already has.
 func (c *Client) UpdateClientSecret(
 	ctx context.Context,
 	org, project, env, name string,
 	value ClientValue,
 	expectedVersion int,
 	valueType string,
+	references []ReferenceDeclaration,
 ) (*WriteResult, error) {
 	body := map[string]any{"value": value, "expectedVersion": expectedVersion}
 	if valueType != "" {
 		body["valueType"] = valueType
 	}
+	withReferences(body, references)
 
 	var response struct {
 		Secret WriteResult `json:"secret"`
@@ -329,12 +476,18 @@ type ClientImportEntry struct {
 // Two version numbers, and they are different: version is the one being restored
 // *from*, expectedVersion the one these bytes are bound to. See
 // UpdateClientSecret for what the second one prevents.
+//
+// references is, for a template, the restored text's references re-parsed from
+// the version that was decrypted — the server checks them against the graph as
+// it stands today, which may not be the graph that version was written into.
+// nil for anything else; see [withReferences].
 func (c *Client) RestoreClientSecret(
 	ctx context.Context,
 	org, project, env, name string,
 	version int,
 	value ClientValue,
 	expectedVersion int,
+	references []ReferenceDeclaration,
 ) (*RestoreResult, error) {
 	var response struct {
 		Secret RestoreResult `json:"secret"`
@@ -344,6 +497,7 @@ func (c *Client) RestoreClientSecret(
 		"expectedVersion": expectedVersion,
 		"value":           value,
 	}
+	withReferences(body, references)
 	if err := c.Post(ctx, secretPath(org, project, env, name)+"/restore", body, &response); err != nil {
 		return nil, err
 	}
@@ -382,4 +536,73 @@ func (c *Client) ImportClientEntries(
 		return nil, err
 	}
 	return &result, nil
+}
+
+// ── Personal overrides (P19 §2) ──
+//
+// One person's own value for one secret in one environment, used by `xecret
+// run` on their machine in place of the shared one. Sealed to that person's own
+// X25519 public key rather than under the environment's EDK (spec §2.2 type 13),
+// because every reader of the environment holds the EDK and an override must
+// not be readable by another member — as a property of the ciphertext, not only
+// of the route that declines to serve it.
+//
+// So these endpoints are a person's and nobody else's. The listing returns the
+// caller's own overrides and no one else's, and a service token is refused with
+// a 403 — which the CLI never collects, because it never calls these under
+// XECRET_TOKEN.
+
+// PersonalOverride is one row of GET …/overrides. Ciphertext only: the server
+// cannot open it, and neither can anybody but its owner.
+type PersonalOverride struct {
+	Name       string `json:"name"`
+	Ciphertext string `json:"ciphertext"`
+	UpdatedAt  string `json:"updatedAt"`
+}
+
+// OverrideWrite is what PUT …/overrides/{name} reports.
+type OverrideWrite struct {
+	Name      string `json:"name"`
+	UpdatedAt string `json:"updatedAt"`
+	// Created is false when an override for this name already existed and was
+	// replaced — overrides are replaced in place, never versioned.
+	Created bool `json:"created"`
+}
+
+func overridePath(org, project, env, name string) string {
+	return envPath(org, project, env) + "/overrides/" + url.PathEscape(name)
+}
+
+// Overrides lists the caller's own overrides for an environment.
+func (c *Client) Overrides(ctx context.Context, org, project, env string) ([]PersonalOverride, error) {
+	var response struct {
+		Overrides []PersonalOverride `json:"overrides"`
+	}
+	if err := c.Get(ctx, envPath(org, project, env)+"/overrides", &response); err != nil {
+		return nil, err
+	}
+	return response.Overrides, nil
+}
+
+// SetOverride stores a sealed override, replacing the caller's existing one for
+// that name if there is one. A plan without the feature answers 403
+// `plan_limit`; a server-mode environment answers 409 `e2ee_required:`.
+func (c *Client) SetOverride(
+	ctx context.Context,
+	org, project, env, name, ciphertext string,
+) (*OverrideWrite, error) {
+	var response struct {
+		Override OverrideWrite `json:"override"`
+	}
+	body := map[string]any{"ciphertext": ciphertext}
+	if err := c.Put(ctx, overridePath(org, project, env, name), body, &response); err != nil {
+		return nil, err
+	}
+	return &response.Override, nil
+}
+
+// DeleteOverride removes the caller's override for a name. 404 when there is
+// none.
+func (c *Client) DeleteOverride(ctx context.Context, org, project, env, name string) error {
+	return c.Delete(ctx, overridePath(org, project, env, name), nil, nil)
 }
