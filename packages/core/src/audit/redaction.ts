@@ -93,6 +93,9 @@ const CREDENTIAL_SOURCES: readonly string[] = [
   String.raw`\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{8,}`,
   // Google API key.
   String.raw`\bAIza[0-9A-Za-z_-]{35}`,
+  // A Standard Webhooks signing secret: ours (P19 §5), and every provider's that
+  // uses the scheme. Base64 — with `+`, `/` and `=` — not base64url.
+  String.raw`\bwhsec_[A-Za-z0-9+/]{16,}={0,2}`,
   // Any PEM private key header. The body is caught by the entropy rule below.
   String.raw`-----BEGIN [A-Z ]*PRIVATE KEY-----`,
   // JWT. The header always begins `eyJ` — base64url of `{"`. A trailing empty

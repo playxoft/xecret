@@ -225,6 +225,13 @@ describe('credential detection — values that must never reach a log', () => {
     expect(looksLikeCredential('rk_live_4eC39HqLyjWDarjtT1zdp7dc')).toBe(true);
   });
 
+  it('recognises a Standard Webhooks signing secret — ours, and any provider’s', () => {
+    // The shape `generateWebhookSecret` mints (P19 §5): `whsec_` and 32 bytes,
+    // base64 — with `+`, `/` and `=`, which the base64url rules do not cover.
+    expect(looksLikeCredential('whsec_C2FVsBQIhrscChlQIMV+b5sSYspob7oD/LmVfNhPmwI=')).toBe(true);
+    expect(looksLikeCredential('rotated the whsec_ secret')).toBe(false);
+  });
+
   it('recognises Google API keys', () => {
     expect(looksLikeCredential('AIzaSyD-1234567890abcdefghijklmnopqrstu')).toBe(true);
   });
