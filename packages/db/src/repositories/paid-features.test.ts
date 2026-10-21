@@ -395,6 +395,77 @@ describe('webhooks', () => {
     await settle();
   });
 
+  it(
+    'prefers organisations never claimed from, so more than 25 backlogged ones ' +
+      'cannot starve a newcomer (review round 2, F4)',
+    async () => {
+      // Picking organisations by whose oldest delivery had waited longest let
+      // more than `limit` simultaneously backlogged organisations shut out
+      // everybody else forever: a newcomer's delivery is, by definition,
+      // younger than ones that have already been waiting, so it never made
+      // the cut while that many older backlogs kept re-qualifying every
+      // sweep. The fix orders candidate organisations by when they were last
+      // served instead — oldest claim first, never-claimed-from first of
+      // all — so a newcomer the first sweep skipped is first in line for the
+      // next one.
+      const settle = () =>
+        t.pg.query(
+          `update webhook_deliveries set status = 'abandoned', next_attempt_at = null, claimed_at = null
+           where status in ('pending', 'delivering')`,
+        );
+      await settle();
+
+      const BACKLOGGED = 25;
+      for (let i = 0; i < BACKLOGGED; i += 1) {
+        const org = await fixture();
+        const hook = await webhook(org);
+        // Two apiece, so each organisation still has one left after the
+        // first sweep claims the other — still backlogged, still competing,
+        // for the second sweep to actually test anything.
+        await enqueueDeliveries(t.db, [
+          { webhookId: hook.id, orgId: org.orgId, eventType: 'secret.updated', body: '{}' },
+          { webhookId: hook.id, orgId: org.orgId, eventType: 'secret.updated', body: '{}' },
+        ]);
+        await t.pg.query(
+          `update webhook_deliveries set next_attempt_at = now() - interval '2 hours' where webhook_id = $1`,
+          [hook.id],
+        );
+      }
+
+      const newcomer = await fixture();
+      const newcomerHook = await webhook(newcomer);
+      const [newcomerDeliveryId] = await enqueueDeliveries(t.db, [
+        {
+          webhookId: newcomerHook.id,
+          orgId: newcomer.orgId,
+          eventType: 'secret.updated',
+          body: '{}',
+        },
+      ]);
+      // Due, but younger than every one of the 25 backlogs.
+      await t.pg.query(
+        `update webhook_deliveries set next_attempt_at = now() - interval '1 minute' where webhook_id = $1`,
+        [newcomerHook.id],
+      );
+
+      // First sweep: 26 organisations are due and only 25 fit. Nobody has
+      // been served yet, so the tie is broken by age, same as the old rule
+      // — the newcomer's single, younger delivery loses out.
+      const first = await claimDueDeliveries(t.db, BACKLOGGED);
+      expect(first).toHaveLength(BACKLOGGED);
+      expect(first.some((entry) => entry.delivery.id === newcomerDeliveryId)).toBe(false);
+
+      // Second sweep: the 25 backlogged organisations were just served, so
+      // they are no longer "never claimed from" — the newcomer, still never
+      // served, now sorts first and is no longer shut out by organisations
+      // that simply have an older backlog.
+      const second = await claimDueDeliveries(t.db, BACKLOGGED);
+      expect(second.some((entry) => entry.delivery.id === newcomerDeliveryId)).toBe(true);
+
+      await settle();
+    },
+  );
+
   it('hands back claims a sweep did not get to, due as they were', async () => {
     const f = await fixture();
     const hook = await webhook(f);

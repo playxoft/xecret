@@ -470,7 +470,8 @@ export async function claimDeliveries(
 /**
  * Claims up to `limit` deliveries that are due — pending and past their
  * `next_attempt_at` — taking them **in turns across organisations** (review
- * round 1, M4).
+ * round 1, M4), and choosing *which* organisations get a turn by who has
+ * waited longest since their last one (review round 2, F4).
  *
  * ── Why in turns ──
  * Oldest-first across the whole table let one organisation's backlog — a bulk
@@ -482,15 +483,28 @@ export async function claimDeliveries(
  * on, until `limit`. One organisation with a backlog still gets the whole claim
  * when nobody else is waiting; it can no longer hold anybody else back.
  *
+ * ── Why *which* organisations, not merely whose head is oldest (review round
+ * 2, F4) ──
+ * At most `limit` organisations are considered per claim, and choosing them by
+ * whose oldest delivery had waited longest let more than `limit` simultaneously
+ * backlogged organisations starve every organisation outside that set: a
+ * newcomer's delivery is, by definition, younger than deliveries that have
+ * already been waiting, so it never made the cut while twenty-five others with
+ * older backlogs kept re-qualifying every sweep. Choosing by **when this
+ * organisation last had anything claimed at all** — oldest claim first, an
+ * organisation never claimed from going first of all — fixes that: a claim
+ * marks every organisation it touches as just served, so the next sweep's
+ * `limit` seats go to whoever it skipped, newcomer included. One query, one
+ * join against the same table, no new column or index.
+ *
  * ── Concurrency ──
  * `FOR UPDATE SKIP LOCKED` on each organisation's candidates, so two sweeps
  * running at once take disjoint sets rather than racing for the same rows, and
  * `status = 'pending'` again on the update itself, so a row another sweep
  * claimed between the two can never be claimed twice.
  *
- * At most `limit` organisations are considered per claim — the ones whose
- * oldest delivery has waited longest — each with at most `limit` candidates,
- * so a claim locks a bounded set however large the backlog.
+ * Each selected organisation still contributes at most `limit` candidates, so
+ * a claim locks a bounded set however large any one organisation's backlog.
  *
  * A claim a sender never finished is taken back first; see
  * `releaseStaleClaims`.
@@ -515,11 +529,16 @@ export async function claimDueDeliveries(
                        order by candidate.next_attempt_at, candidate.id
                      ) as turn
               from (
-                select "org_id", min("next_attempt_at") as oldest
-                from ${webhookDeliveries}
-                where "status" = 'pending' and "next_attempt_at" <= now()
-                group by "org_id"
-                order by oldest
+                select due."org_id", min(due."next_attempt_at") as oldest
+                from ${webhookDeliveries} as due
+                left join (
+                  select "org_id", max("claimed_at") as last_claimed
+                  from ${webhookDeliveries}
+                  group by "org_id"
+                ) as served on served."org_id" = due."org_id"
+                where due."status" = 'pending' and due."next_attempt_at" <= now()
+                group by due."org_id", served.last_claimed
+                order by served.last_claimed nulls first, oldest
                 limit ${limit}
               ) as orgs
               cross join lateral (
