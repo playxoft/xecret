@@ -209,6 +209,10 @@ describe('checkWebhookUrl', () => {
     'https://hooks.example.com:8443/path?q=1',
     'https://203.0.114.10/hook',
     'https://[2606:4700::6810:84e5]/hook',
+    // Starts with 2001: but is not Teredo (2001:0::/32) or documentation.
+    'https://[2001:4860:4860::8888]/hook',
+    // v4-mapped, carrying a public v4 address.
+    'https://[::ffff:8.8.8.8]/hook',
   ])('accepts %s', (url) => {
     expect(checkWebhookUrl(url)).toEqual({ valid: true });
   });
@@ -238,6 +242,18 @@ describe('checkWebhookUrl', () => {
     ['https://[fd00::1]/', 'privateAddress'],
     ['https://[fe80::1]/', 'privateAddress'],
     ['https://[64:ff9b::a00:1]/', 'privateAddress'],
+    // Review round 1, L10: the families the first list missed.
+    ['https://[fec0::1]/', 'privateAddress'], // site-local fec0::/10
+    ['https://[feff:0:0:0:0:0:0:1]/', 'privateAddress'], // the top of fec0::/10
+    ['https://[::ffff:0:127.0.0.1]/', 'privateAddress'], // SIIT, v4-translated
+    ['https://[::ffff:0:808:808]/', 'privateAddress'], // SIIT, whatever it carries
+    ['https://[2002:c0a8:101::1]/', 'privateAddress'], // 6to4, here 192.168.1.1
+    ['https://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/', 'privateAddress'], // Teredo
+    ['https://[2001::1]/', 'privateAddress'], // Teredo, compressed
+    ['https://[100::1]/', 'privateAddress'], // discard-only 100::/64
+    ['https://[2001:db8::1]/', 'privateAddress'], // documentation
+    ['https://[64:ff9b:1::a00:1]/', 'privateAddress'], // local-use NAT64
+    ['https://[::]/', 'privateAddress'], // unspecified
     [`https://example.com/${'a'.repeat(2048)}`, 'tooLong'],
   ])('refuses %s as %s', (url, problem) => {
     const check = checkWebhookUrl(url);

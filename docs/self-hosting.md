@@ -352,6 +352,23 @@ today, so a second provider needs its own.
 - **Mail, monitoring, error reporting** are yours to wire; the log pipeline
   never contains secret values by construction, but where the logs go is your
   decision.
+- **Webhook egress.** A webhook is a URL an organisation admin types and the
+  server then fetches. `checkWebhookUrl` (`packages/core/src/webhooks/url.ts`)
+  refuses `http`, credentials in the URL, local names, and every private,
+  loopback, link-local, site-local, unique-local, CGNAT, multicast, reserved and
+  transition-mechanism IP literal (v4-mapped, SIIT, NAT64, 6to4, Teredo), at
+  save and again before every attempt, and redirects are never followed. What
+  it cannot do is resolve DNS: a public name whose address is private — or is
+  made private after the URL was saved (DNS rebinding) — passes it. **On
+  Cloudflare Workers that is closed by the platform**, because a Worker's
+  `fetch` has no route into a private network or to a metadata endpoint. **If
+  you run this code anywhere else** — Node, a container, a VM — it is open:
+  the server would POST to whatever the name resolves to from inside your
+  network. Put an egress control in front of it that judges the address
+  *after* resolution — a forward proxy that refuses private destinations
+  (Smokescreen is one), or a network policy that denies the application
+  private, link-local and metadata egress (`169.254.169.254`, `fd00:ec2::254`)
+  — and, until you have one, do not create webhook endpoints.
 
 ## The trust model you are accepting
 

@@ -720,11 +720,14 @@ webhooks — and three policies. What each could have become, and what stops it:
   grants on both sides, by a person, in one transaction, audited per secret. A restore is held to
   the instant's value tags, so a client cannot "restore" a value that was never there.
 - **Webhooks as exfiltration or SSRF** (T1, T7). Payloads are an allowlist with no field a value
-  could go in; endpoints are `https` only, never private, loopback or link-local literals,
-  re-checked at every attempt, and redirects are never followed. A Worker cannot reach a
-  private network anyway, but a DNS name pointing at one is not stopped by the literal check —
-  the egress does that, not the validator. Signing secrets are sealed under the organisation's
-  master key and redacted from logs by shape.
+  could go in; endpoints are `https` only, never a private, loopback, link-local, site-local or
+  reserved literal — nor a v6 transition form that carries or reaches a v4 address (mapped,
+  SIIT, NAT64, 6to4, Teredo; added in review round 1) — re-checked at every attempt, and
+  redirects are never followed. A DNS name pointing at a private address, or re-pointed at one
+  later (rebinding), is not stopped by the literal check — the egress does that, not the
+  validator. A Worker has no route into a private network; a self-hoster running the code
+  elsewhere does, and `docs/self-hosting.md` says what to put in front of it. Signing secrets are
+  sealed under the organisation's master key and redacted from logs by shape.
 - **One tenant's webhook volume as another's outage** (T2, review round 1). Delivery is shared
   infrastructure, and one sweep claimed the oldest twenty-five deliveries in the whole table: a
   single large import into an organisation with several endpoints held every other

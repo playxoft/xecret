@@ -13,14 +13,21 @@
  *  - `https:` only. A webhook carries a signature and the names of a customer's
  *    secrets; neither belongs on the wire in the clear.
  *  - No userinfo. Credentials in a URL end up in logs.
- *  - No IP literal in a private, loopback, link-local, unique-local, CGNAT,
- *    multicast or reserved range, v4 or v6 — including the v4-mapped v6 forms.
+ *  - No IP literal in a private, loopback, link-local, site-local,
+ *    unique-local, CGNAT, multicast, discard-only or reserved range, v4 or v6 —
+ *    and none of the v6 forms that carry or reach a v4 address: v4-mapped,
+ *    v4-compatible, SIIT (`::ffff:0:0/96`), NAT64 (`64:ff9b::/96`), 6to4
+ *    (`2002::/16`) and Teredo (`2001::/32`) (review round 1, L10).
  *  - No host that names the machine or its network: `localhost`, and the
  *    `.localhost`, `.local`, `.internal`, `.lan`, `.home.arpa` suffixes.
  *
  * What it cannot do is resolve DNS: a public name that resolves to a private
- * address is not caught here. The platform is what catches that, and
- * `docs/self-hosting.md` says so for anyone running the code elsewhere.
+ * address — or is re-pointed at one after the URL was saved, which is DNS
+ * rebinding — passes every rule here. On Cloudflare Workers the platform
+ * closes that, because a Worker's `fetch` has no route into a private network.
+ * Anywhere else it is open, and the "Webhook egress" entry in
+ * `docs/self-hosting.md` (and the public self-hosting page) says what to put in
+ * front of it.
  */
 
 export const WEBHOOK_URL_MAX_LENGTH = 2048;
@@ -105,30 +112,87 @@ function isPublicIpv4([a, b, c]: [number, number, number, number]): boolean {
   return true;
 }
 
+/**
+ * The eight 16-bit pieces of an IPv6 address, or `null` when it is not one.
+ *
+ * Judged on the pieces rather than on the text, because the text has more than
+ * one spelling for every address — `2001:0:…` and `2001::…`, `::ffff:7f00:1`
+ * and `::ffff:127.0.0.1` — and a prefix test on one spelling misses the others.
+ * The URL parser has already put the address in its canonical compressed form;
+ * a dotted v4 tail is accepted anyway.
+ */
+function ipv6Pieces(address: string): number[] | null {
+  let text = address;
+  const tail: number[] = [];
+  const dotted = /^(.*:)(\d{1,3}(?:\.\d{1,3}){3})$/.exec(text);
+  if (dotted !== null) {
+    const v4 = parseIpv4(dotted[2]!);
+    if (v4 === null) return null;
+    tail.push((v4[0] << 8) | v4[1], (v4[2] << 8) | v4[3]);
+    const head = dotted[1]!;
+    text = head.endsWith('::') ? head : head.slice(0, -1);
+  }
+
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+  const parse = (part: string | undefined): number[] | null => {
+    if (part === undefined || part === '') return [];
+    const pieces: number[] = [];
+    for (const piece of part.split(':')) {
+      if (!/^[0-9a-f]{1,4}$/.test(piece)) return null;
+      pieces.push(parseInt(piece, 16));
+    }
+    return pieces;
+  };
+  const left = parse(halves[0]);
+  const right = parse(halves[1]);
+  if (left === null || right === null) return null;
+
+  const given = left.length + right.length + tail.length;
+  if (halves.length === 1) return given === 8 ? [...left, ...tail] : null;
+  if (given > 7) return null;
+  return [...left, ...Array<number>(8 - given).fill(0), ...right, ...tail];
+}
+
 function isPublicIpv6(address: string): boolean {
-  const lower = address.toLowerCase();
-  if (lower === '::' || lower === '::1') return false;
+  const p = ipv6Pieces(address.toLowerCase());
+  if (p === null) return false;
+  const [p0, p1, p2, p3, p4, p5, p6, p7] = p as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  const zeroTo = (end: number) => p.slice(0, end).every((piece) => piece === 0);
+  const carriedV4 = (): [number, number, number, number] => [
+    p6 >> 8,
+    p6 & 0xff,
+    p7 >> 8,
+    p7 & 0xff,
+  ];
 
-  // v4-mapped and v4-compatible: judged by the v4 address they carry. The URL
-  // parser renders `::ffff:127.0.0.1` as `::ffff:7f00:1`, so both spellings
-  // are handled.
-  const mapped = /^::(?:ffff:)?(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
-  if (mapped !== null) {
-    const v4 = parseIpv4(mapped[1]!);
-    return v4 !== null && isPublicIpv4(v4);
-  }
-  const mappedHex = /^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(lower);
-  if (mappedHex !== null) {
-    const high = parseInt(mappedHex[1]!, 16);
-    const low = parseInt(mappedHex[2]!, 16);
-    return isPublicIpv4([high >> 8, high & 0xff, low >> 8, low & 0xff]);
-  }
+  if (zeroTo(8)) return false; // unspecified ::
+  if (zeroTo(7) && p7 === 1) return false; // loopback ::1
+  // v4-mapped (::ffff:0:0/96) and the deprecated v4-compatible (::/96): judged
+  // by the v4 address they carry.
+  if (zeroTo(5) && p5 === 0xffff) return isPublicIpv4(carriedV4());
+  if (zeroTo(6)) return isPublicIpv4(carriedV4());
+  // SIIT, v4-translated (::ffff:0:0:0/96): a v4 address in v6 clothing, refused
+  // whole — no public webhook is reached that way.
+  if (zeroTo(4) && p4 === 0xffff && p5 === 0) return false;
 
-  const first = parseInt(lower.split(':')[0] || '0', 16);
-  if ((first & 0xfe00) === 0xfc00) return false; // unique local fc00::/7
-  if ((first & 0xffc0) === 0xfe80) return false; // link-local fe80::/10
-  if ((first & 0xff00) === 0xff00) return false; // multicast
-  if (lower.startsWith('2001:db8:') || lower === '2001:db8::') return false; // documentation
-  if (lower.startsWith('64:ff9b:')) return false; // NAT64, which reaches v4 private ranges
+  if ((p0 & 0xfe00) === 0xfc00) return false; // unique local fc00::/7
+  if ((p0 & 0xffc0) === 0xfe80) return false; // link-local fe80::/10
+  if ((p0 & 0xffc0) === 0xfec0) return false; // site-local fec0::/10, deprecated but routed by some stacks
+  if ((p0 & 0xff00) === 0xff00) return false; // multicast ff00::/8
+  if (p0 === 0x0100 && p1 === 0 && p2 === 0 && p3 === 0) return false; // discard-only 100::/64
+  if (p0 === 0x2001 && p1 === 0x0db8) return false; // documentation 2001:db8::/32
+  if (p0 === 0x2001 && p1 === 0) return false; // Teredo 2001::/32, a tunnel to any v4 address
+  if (p0 === 0x2002) return false; // 6to4 2002::/16, likewise
+  if (p0 === 0x0064 && p1 === 0xff9b) return false; // NAT64 64:ff9b::/96 and 64:ff9b:1::/48
   return true;
 }
