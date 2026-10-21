@@ -171,38 +171,38 @@
       "breakpoints": true
     },
     {
-      "idx": 27,
-      "version": "7",
-      "when": 1788400000000,
-      "tag": "0027_secret_references",
-      "breakpoints": true
-    },
-    {
       "idx": 28,
       "version": "7",
       "when": 1788500000000,
-      "tag": "0028_personal_overrides",
+      "tag": "0028_secret_references",
       "breakpoints": true
     },
     {
       "idx": 29,
       "version": "7",
       "when": 1788600000000,
-      "tag": "0029_webhooks",
+      "tag": "0029_personal_overrides",
       "breakpoints": true
     },
     {
       "idx": 30,
       "version": "7",
       "when": 1788700000000,
-      "tag": "0030_policies",
+      "tag": "0030_webhooks",
       "breakpoints": true
     },
     {
       "idx": 31,
       "version": "7",
       "when": 1788800000000,
-      "tag": "0031_read_sightings",
+      "tag": "0031_policies",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1788900000000,
+      "tag": "0032_read_sightings",
       "breakpoints": true
     }
   ]
