@@ -137,13 +137,13 @@ const SECTIONS: readonly LegalSection[] = [
           session: its IP address, its user agent, when it was created, when it was last seen, when
           it expires, when its PIN was last accepted, how it signed in &mdash; password, Google, or
           which organisation&rsquo;s single sign-on &mdash; and the sign-in provider&rsquo;s own
-          session identifier, so that signing out here can end that session too. The session token itself is stored only as
-          a hash, so a database dump yields hashes rather than usable sessions. If you reset your
-          vault, the session you signed in again with also records when that sign-in happened, when
-          a code was last emailed and how many were requested, and how many codes were tried &mdash;
-          never a code itself, and the proof it leads to only as a hash. That record belongs to the
-          session and is removed with it; it stops counting for anything ten minutes after the
-          sign-in.
+          session identifier, so that signing out here can end that session too. The session token
+          itself is stored only as a hash, so a database dump yields hashes rather than usable
+          sessions. If you reset your vault, the session you signed in again with also records when
+          that sign-in happened, when a code was last emailed and how many were requested, and how
+          many codes were tried &mdash; never a code itself, and the proof it leads to only as a
+          hash. That record belongs to the session and is removed with it; it stops counting for
+          anything ten minutes after the sign-in.
         </>,
         <>
           <strong className="text-fg font-medium">Token metadata.</strong> For each CLI or service
@@ -435,9 +435,9 @@ const SECTIONS: readonly LegalSection[] = [
         </>,
         <>
           <code className="text-fg font-mono text-[0.9em]">__Host-xecret_last_account</code> — a
-          signed note of which account last signed in on this browser, so we do not ask
-          &ldquo;Is this you?&rdquo; needlessly when our sign-in provider remembers you. HttpOnly,
-          secure, and valid for 180 days. It names an account id and nothing else.
+          signed note of which account last signed in on this browser, so we do not ask &ldquo;Is
+          this you?&rdquo; needlessly when our sign-in provider remembers you. HttpOnly, secure, and
+          valid for 180 days. It names an account id and nothing else.
         </>,
       ],
       'The sign-in page itself is served by WorkOS, and whatever it stores in your browser is governed by WorkOS’s own policy rather than this one.',
