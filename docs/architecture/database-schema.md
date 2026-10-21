@@ -999,7 +999,8 @@ harmless; older code never reads or writes any of it. `docs/operations/billing.m
 Migration 0025 follows the same rule, and adds the membership changes to what needs it: from
 that build `addMember` and `removeMember` write the seat-sync debt in their own transaction,
 naming `billing_seat_syncs.generation`. Migration 0026 too: from that build the usage flush
-writes `org_usage_counters.included_fetches` and the meter reads it.
+writes `org_usage_counters.included_fetches` and the meter reads it. And 0027: from that build
+the hourly billing job and the reconciler write the once-only alert kinds to `billing_reminders`.
 
 Migration 0022 (WS-5, review round 1) is additive, and — like 0021 — **must be applied before
 the code that names its columns**: from that build on every `select()` on `sessions`,

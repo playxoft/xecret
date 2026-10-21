@@ -285,7 +285,9 @@ Delete this subsection once production has run the WorkOS build for a while.
   build first breaks the billing screen, the payment webhook (Dodo retries, so
   nothing is lost once it is applied), the hourly billing job, and deleting an
   organisation or an account — each reads whole `org_subscriptions` rows. Ordinary
-  requests and secret fetches are unaffected.
+  requests and secret fetches are unaffected. The same holds for its follow-ups
+  **0025, 0026 and 0027**, applied with it, in order (`docs/operations/billing.md`
+  §5 says what each adds).
 
 ### Payments (Dodo)
 
