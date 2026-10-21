@@ -14,6 +14,7 @@ import {
   tokenPolicyIsActive,
   tokenPolicyTightens,
   validateSecretPolicy,
+  longestRepeatRun,
 } from './index';
 import type { SecretPolicy } from './index';
 
@@ -126,8 +127,39 @@ describe('validateSecretPolicy', () => {
     },
   );
 
+  // Review round 1, L12: no repeated group, so the nested check let these
+  // through, and each backtracks polynomially in the name's length.
+  it.each([
+    ['A*A*A*A*A*A*A*A*A*A*A*A*!'],
+    ['\\w*\\w*\\w*X'],
+    ['[A-Z]*[A-Z]*[A-Z]*'],
+    ['A*?A*?A*?'],
+    ['A{1,}A{2,9}A+'],
+    ['(?:AB)*(?:AB)*(?:AB)*'],
+    ['A*B?A*B?A*'],
+    ['PREFIX_(X*X*X*)'],
+  ])('refuses three or more repeated parts in a row: %s', (pattern) => {
+    expect(refused({ ...ON, namePattern: pattern })).toBe('namePattern');
+  });
+
+  it('counts a run on one level, broken by any part that does not repeat', () => {
+    expect(longestRepeatRun('[A-Z][A-Z0-9_]*')).toBe(1);
+    expect(longestRepeatRun('[A-Z]+_[A-Z]+_[A-Z0-9]+')).toBe(1);
+    expect(longestRepeatRun('A*B*')).toBe(2);
+    expect(longestRepeatRun('A{3}B{3}C{3}')).toBe(0);
+    expect(longestRepeatRun('A*|B*|C*')).toBe(1);
+    expect(longestRepeatRun('[*+]*[{]*')).toBe(2);
+    expect(longestRepeatRun('\\u{41}*\\p{Lu}*')).toBe(2);
+  });
+
   it('accepts ordinary patterns, including an unrepeated alternation', () => {
-    for (const pattern of ['[A-Z][A-Z0-9_]*', '(APP|SVC)_[A-Z0-9_]+', 'NEXT_PUBLIC_.*']) {
+    for (const pattern of [
+      '[A-Z][A-Z0-9_]*',
+      '(APP|SVC)_[A-Z0-9_]+',
+      'NEXT_PUBLIC_.*',
+      '[A-Z]+_[A-Z]+_[A-Z0-9]+',
+      '[A-Z]*[0-9]*',
+    ]) {
       expect(() => validateSecretPolicy({ ...ON, namePattern: pattern })).not.toThrow();
     }
   });

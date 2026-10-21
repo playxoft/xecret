@@ -55,6 +55,10 @@ The policy can apply to every environment or only to production ones.
 
 **The name rule** is enforced by the server on every write that introduces a
 name — a create, a rename, an import, a promotion — whatever client sent it.
+Because the server runs it on every such write, a pattern is refused when it is
+saved if it could make one check slow: a repeated group that itself repeats,
+like `(A+)+`, or more than two repeated parts in a row, like `A*B*C*`. Both can
+almost always be written as a single class — `[ABC]*`.
 
 **The value rules** need the value, which the server never sees in an
 end-to-end encrypted environment. The dashboard, `xecret secrets set` and

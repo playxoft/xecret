@@ -121,6 +121,111 @@ export class SecretPolicyError extends Error {
  */
 const NESTED_QUANTIFIER = /\((?:[^()\\]|\\.)*(?:[+*|]|\{\d)(?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d)/;
 
+/**
+ * The most repeated parts a name pattern may have in a row (review round 1,
+ * L12).
+ *
+ * `A*A*A*A*A*A*A*A*!` holds no repeated group, so `NESTED_QUANTIFIER` let it
+ * through — and every repeated part that can take the same characters as its
+ * neighbour multiplies the ways to split a name between them. Against a
+ * 256-character name that does not match, `k` such parts in a row cost on the
+ * order of 256^k steps: two is sixty-five thousand, which is nothing; eight is
+ * a Worker pinned for hours. Three in a row is where the cost stops being
+ * negligible, so three is refused.
+ *
+ * As coarse as the check above, on purpose: it does not ask whether the parts
+ * overlap — `[A-Z]*[0-9]*[_]*` cannot, and is refused anyway — because asking
+ * would be a regular-expression engine of its own. Such a pattern can almost
+ * always be written as one class (`[A-Z0-9_]*`). An optional part (`?`, `{0,1}`)
+ * neither counts nor breaks a run; anything else does break it.
+ */
+const MAX_ADJACENT_REPEATS = 2;
+
+/**
+ * The longest run of repeated parts — an atom followed by `*`, `+` or a
+ * variable `{m,n}` — directly after one another at the same level of a
+ * pattern. A group is one part of the level it sits in, and its own content is
+ * a level of its own. A static, single-pass scan: it never runs the pattern.
+ */
+export function longestRepeatRun(pattern: string): number {
+  const runs: number[] = [0];
+  let longest = 0;
+  let index = 0;
+
+  /** Reads the quantifier at `index`: `true` repeats, `false` none, `null` optional. */
+  const quantifier = (): boolean | null => {
+    const char = pattern[index];
+    let kind: boolean | null;
+    if (char === '*' || char === '+') {
+      kind = true;
+      index += 1;
+    } else if (char === '?') {
+      kind = null;
+      index += 1;
+    } else if (char === '{') {
+      const braces = /^\{(\d+)(,(\d*))?\}/.exec(pattern.slice(index));
+      if (braces === null) return false;
+      index += braces[0].length;
+      const min = Number(braces[1]);
+      const max = braces[2] === undefined ? min : braces[3] === '' ? Infinity : Number(braces[3]);
+      kind = max === min ? false : max <= 1 ? null : true;
+    } else {
+      return false;
+    }
+    // A lazy quantifier backtracks just the same.
+    if (pattern[index] === '?') index += 1;
+    return kind;
+  };
+
+  const part = (repeated: boolean | null) => {
+    if (repeated === null) return;
+    const level = runs.length - 1;
+    const run = repeated ? runs[level]! + 1 : 0;
+    runs[level] = run;
+    longest = Math.max(longest, run);
+  };
+
+  while (index < pattern.length) {
+    const char = pattern[index]!;
+    if (char === '\\') {
+      index += 2;
+      // `\u{…}`, `\p{…}`: the braces belong to the escape.
+      if (pattern[index] === '{' && /[upP]/.test(pattern[index - 1] ?? '')) {
+        const close = pattern.indexOf('}', index);
+        index = close === -1 ? pattern.length : close + 1;
+      }
+      part(quantifier());
+    } else if (char === '[') {
+      index += 1;
+      if (pattern[index] === '^') index += 1;
+      if (pattern[index] === ']') index += 1;
+      while (index < pattern.length && pattern[index] !== ']') {
+        index += pattern[index] === '\\' ? 2 : 1;
+      }
+      index += 1;
+      part(quantifier());
+    } else if (char === '(') {
+      runs.push(0);
+      index += 1;
+      const prefix = /^\?(?::|=|!|<=|<!|<[A-Za-z_][A-Za-z0-9_]*>)/.exec(pattern.slice(index));
+      if (prefix !== null) index += prefix[0].length;
+    } else if (char === ')') {
+      if (runs.length > 1) runs.pop();
+      index += 1;
+      part(quantifier());
+    } else if (char === '|') {
+      runs[runs.length - 1] = 0;
+      index += 1;
+    } else if (char === '^' || char === '$') {
+      index += 1;
+    } else {
+      index += 1;
+      part(quantifier());
+    }
+  }
+  return longest;
+}
+
 /** Checks a policy's shape before it is stored, throwing a `SecretPolicyError`. */
 export function validateSecretPolicy(policy: SecretPolicy): SecretPolicy {
   if (policy.scope !== 'all' && policy.scope !== 'production') {
@@ -143,6 +248,13 @@ export function validateSecretPolicy(policy: SecretPolicy): SecretPolicy {
         'namePattern',
         'A name pattern may not repeat a group that itself repeats or alternates, e.g. (A+)+ — ' +
           'rewrite it without the repeated group.',
+      );
+    }
+    if (longestRepeatRun(pattern) > MAX_ADJACENT_REPEATS) {
+      throw new SecretPolicyError(
+        'namePattern',
+        `A name pattern may not have more than ${MAX_ADJACENT_REPEATS} repeated parts in a row, ` +
+          'e.g. A*B*C* — join them into one, e.g. [ABC]*.',
       );
     }
     try {

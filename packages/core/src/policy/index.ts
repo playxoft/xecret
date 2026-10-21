@@ -3,6 +3,7 @@ export {
   checkValueAgainstPolicy,
   DEFAULT_SECRET_POLICY,
   estimateEntropyBits,
+  longestRepeatRun,
   policyApplies,
   SECRET_POLICY_LIMITS,
   SecretPolicyError,
