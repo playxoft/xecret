@@ -462,6 +462,8 @@ export {
   findEnvironmentsBySlugs,
   findProjectsReferencingEnvironments,
   listChildEnvironments,
+  listProductionChildEnvironments,
+  listProductionEnvironmentsReferencing,
   loadEnvironmentsByIds,
   loadEnvironmentsOfProjects,
   listUserEmails,

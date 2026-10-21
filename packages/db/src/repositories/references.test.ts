@@ -9,6 +9,8 @@ import {
   findEnvironmentsBySlugs,
   findProjectsReferencingEnvironments,
   listChildEnvironments,
+  listProductionChildEnvironments,
+  listProductionEnvironmentsReferencing,
   loadEnvironmentsByIds,
   loadEnvironmentsOfProjects,
   loadSecretGraphMetadata,
@@ -316,6 +318,66 @@ describe('loading the graph', () => {
     const stranger = await org();
     await expect(setEnvironmentParent(t.db, stranger.orgId, child.id, null)).rejects.toThrow(
       RepositoryError,
+    );
+  });
+
+  async function markProduction(id: string): Promise<void> {
+    await t.pg.query(`update environments set is_production = true where id = $1`, [id]);
+  }
+
+  it('lists only the production children, review round 2 (F1)', async () => {
+    const owner = await org();
+    const base = await environment(owner.projectId, 'base');
+    const productionChild = await environment(owner.projectId, 'prod-child', base.id);
+    await markProduction(productionChild.id);
+    await environment(owner.projectId, 'plain-child', base.id);
+
+    expect(await listProductionChildEnvironments(t.db, owner.orgId, base.id)).toMatchObject([
+      { id: productionChild.id, slug: 'prod-child', isProduction: true },
+    ]);
+
+    const stranger = await org();
+    expect(await listProductionChildEnvironments(t.db, stranger.orgId, base.id)).toEqual([]);
+  });
+
+  it('finds only the production environments whose current template points here, across projects (F1)', async () => {
+    const owner = await org();
+    const other = await project(owner, `other-${randomUUID().slice(0, 6)}`);
+    const target = await environment(owner.projectId, 'target');
+
+    const prodHere = await environment(owner.projectId, 'prod-here');
+    await markProduction(prodHere.id);
+    await secret(owner, prodHere, 'URL', [
+      { environment: 'target', name: 'HOST', environmentId: target.id },
+    ]);
+
+    const prodThere = await environment(other, 'prod-there');
+    await markProduction(prodThere.id);
+    await secret(owner, prodThere, 'URL', [
+      { environment: 'target', name: 'HOST', environmentId: target.id },
+    ]);
+
+    // A non-production referrer, and a referrer whose template moved away:
+    // neither belongs in the answer.
+    const plain = await environment(owner.projectId, 'plain');
+    const movedId = await secret(owner, plain, 'OLD', [
+      { environment: 'target', name: 'HOST', environmentId: target.id },
+    ]);
+    await addSecretVersion(t.db, {
+      orgId: owner.orgId,
+      secretId: movedId,
+      payload: payload(plain.keyId, 'moved'),
+      declaredReferences: [{ name: 'LOCAL', environmentId: null }],
+      writer: { userId: owner.userId },
+    });
+
+    const found = await listProductionEnvironmentsReferencing(t.db, owner.orgId, target.id);
+    expect(found.map((row) => row.slug).sort()).toEqual(['prod-here', 'prod-there']);
+    expect(found.every((row) => row.isProduction)).toBe(true);
+
+    const stranger = await org();
+    expect(await listProductionEnvironmentsReferencing(t.db, stranger.orgId, target.id)).toEqual(
+      [],
     );
   });
 

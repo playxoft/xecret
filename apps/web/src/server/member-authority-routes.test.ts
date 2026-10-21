@@ -82,6 +82,13 @@ const repositories = vi.hoisted(() => ({
   loadEnvironmentsByIds: vi.fn(),
   findProjectsReferencingEnvironments: vi.fn(),
   lockReferenceGraph: vi.fn(),
+  // Review round 2, F1: asked whenever `is_production` itself flips, to catch
+  // a crossing a link's own creation would have asked about. Nothing here
+  // inherits, holds a template or is depended on, so every test that reaches
+  // one defaults to "nothing crosses" unless it says otherwise.
+  loadSecretGraphMetadata: vi.fn(),
+  listProductionChildEnvironments: vi.fn(),
+  listProductionEnvironmentsReferencing: vi.fn(),
   // P19 §6: the token policy, read at minting and by the listing. None set.
   loadOrgPolicies: vi.fn(),
 }));
@@ -424,6 +431,11 @@ beforeEach(() => {
     { ...production, project: { id: PROJECT_ID, name: 'API', slug: 'api' } },
   ]);
   repositories.listGrantsForMember.mockResolvedValue([]);
+  // Review round 2, F1: no template anywhere and nothing depends on anything,
+  // by default — a test that wants a crossing sets its own mock.
+  repositories.loadSecretGraphMetadata.mockResolvedValue([]);
+  repositories.listProductionChildEnvironments.mockResolvedValue([]);
+  repositories.listProductionEnvironmentsReferencing.mockResolvedValue([]);
   lockedAs = {};
   repositories.removeAccessGrant.mockImplementation(
     async (_db: unknown, params: MemberWriteParams, guard: Guard) => {

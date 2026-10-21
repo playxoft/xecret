@@ -107,11 +107,24 @@ So such a link is never made silently:
 - A confirmed link is recorded as its own `environment.link_crosses_protection`
   audit event, against production, naming the source.
 
-Only the link being made is asked about. Re-saving a template with a reference
-it already had, a production environment inheriting from another production
-one, and staging reading from production ask nothing. If you want production's
-values to come only from places production's own rules govern, keep the
-production environments' parents and references production too.
+The same question is asked when an environment's production mark changes
+underneath a link that was already there, in whichever direction makes it
+cross: marking an environment production while it already inherits from, or
+already holds a template reading, one that is not; or removing the mark from
+an environment a still-production one — in this project or another — already
+inherits from or reads through a template. Nothing about the link moved; only
+which side now answers to production's rules did, and that is exactly as much
+a new write path onto (or out from under) production as making the link
+itself.
+
+Only the link being made, or the flag change that newly crosses one, is asked
+about. Re-saving a template with a reference it already had, a production
+environment inheriting from another production one, and staging reading from
+production ask nothing. If you want production's values to come only from
+places production's own rules govern, keep the production environments'
+parents and references production too — including a production environment
+of *another* project: it answers to that project's own writers, not to this
+one's, so a link into it is exactly as much a crossing as a link into staging.
 
 ## Resolution happens on your machine
 

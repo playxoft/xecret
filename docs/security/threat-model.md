@@ -700,8 +700,11 @@ webhooks — and three policies. What each could have become, and what stops it:
   (a shared base of non-secret defaults is a real design), but never silent: a production
   environment newly linked to one that is not production needs `confirmCrossesProtection`, the
   refusal that asks names the source's writers (people and write tokens), and a confirmed link
-  files `environment.link_crosses_protection` against production. Only the link being made is
-  asked about — the direct parent or a reference the write adds.
+  files `environment.link_crosses_protection` against production. Only the link being made, or a
+  flag change that newly crosses a link already there, is asked about — the direct parent or a
+  reference the write adds, or (review round 2, F1) `is_production` turned on while such a link
+  already exists, or turned off while a still-production environment, in this project or another,
+  still depends on it.
 - **A server that rewrites a reference** (T7). The declaration is plaintext the server could
   edit, so the client compares the decrypted template text against it and refuses a mismatch,
   and every value is bound by its AAD to its own row and environment. Stated precisely (review
@@ -807,3 +810,4 @@ customer's own systems after legitimate secret delivery.
 | 2026-10-18 | — | WS-5, review round 2: T1 restated as it now stands — the confirmation → `next` → `?org=` redirect chain closed (no `next` under `/api/`, the deep link honoured only with the warning page's browser-bound token, an SSO sign-in through an organisation the account is not in always held back), sign-out ends the AuthKit session, the last-account cookie, a decline ends the AuthKit session and is audited, inert display of the address and the organisation name; T13 — the portal's own fresh-sign-in record (emailed codes count; dated by `auth_time`), stale invitations withdrawn at JIT join and removal, `workos_home` so no other environment can write a link, foreign links ignored on the sign-in path, the owner exemption audited at CLI approval and owner invitations |
 | 2026-10-19 | — | WS-5, review round 3: T1 — reason (b), the not-member hold-back, restated as covering first-time and non-member identities only (in the attack the returning identity is a member of the attacker's organisation; the warning page's token and the `/api` refusal are what stop an unconfirmed deep link); a finished sign-in's `next` never names a sign-in screen; the double-click window swap on the two one-click screens added to what T1 leaves |
 | 2026-10-20 | — | P19 (paid secret features): T15 added (written as T14, renumbered in review round 1 because P12 holds T14) — references held to `can()` at write and read, the declaration checked against the decrypted text, overrides made unforgeable by the server (symmetric under the owner's own key, replacing a sealed box), promotion and restore as ordinary audited writes, webhook payload allowlist and endpoint rules, client-enforced policies stated as guard rails, the read-alert throttle |
+| 2026-10-21 | — | P19, review round 2 (F1): T15 restated — `is_production` flipped on an environment that already holds a crossing link bypassed M3 entirely; turning it on now asks about an existing parent or template reference into one that is not production, and turning it off now asks about every still-production environment, in this project or another, that depends on it; a confirmed flip files `environment.link_crosses_protection` the same as a confirmed new link |

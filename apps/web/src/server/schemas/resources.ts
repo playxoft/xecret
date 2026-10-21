@@ -339,6 +339,16 @@ export const environmentCreateSchema = z.strictObject(
   UNEXPECTED_FIELD,
 );
 
+/**
+ * `PATCH …/environments/{env}`: a name, a display order, and `isProduction` —
+ * which, going either direction, can cross production's protection exactly as
+ * creating a link does (review round 2, F1): turning it *on* can expose this
+ * environment's existing parent or references, and turning it *off* can leave
+ * a still-production environment elsewhere reading values nobody with its own
+ * access now governs. `confirmCrossesProtection` is the same field
+ * `environmentParentSchema` takes, for the same reason — see
+ * `ProtectionCrossing` and `ProtectionDependency` in `references-service.ts`.
+ */
 export const environmentPatchSchema = z
   .strictObject(
     {
@@ -346,6 +356,7 @@ export const environmentPatchSchema = z
       isProduction: z.optional(z.boolean()),
       sortOrder: z.optional(z.int().check(z.gte(0), z.lte(SORT_ORDER_MAX))),
       slug: immutableSlugField,
+      confirmCrossesProtection: z.optional(z.boolean()),
     },
     UNEXPECTED_FIELD,
   )

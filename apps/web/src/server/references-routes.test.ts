@@ -426,6 +426,11 @@ function setParent(org: Org, env: string, parent: string | null) {
   return call(parentRoute.PUT, 'PUT', path, params, { parent });
 }
 
+function patchEnvironment(org: Org, env: string, body: Record<string, unknown>) {
+  const { path, params } = envPath(org, env);
+  return call(environmentRoute.PATCH, 'PATCH', path, params, body);
+}
+
 const errorMessage = (answer: Answer) => String(answer.body.error?.message ?? '');
 
 /* ── the pull ─────────────────────────────────────────────────────────────── */
@@ -1463,6 +1468,186 @@ describe('a production environment linked to one that is not (review round 1, M3
         references: [{ environment: 'staging', name: 'DB_HOST' }],
       },
     );
+    expect(answer.status).toBe(200);
+    expect(audit.some((record) => record.action === 'environment.link_crosses_protection')).toBe(
+      false,
+    );
+  });
+});
+
+/* ── the production flag's own crossings (review round 2, F1) ────────────── */
+
+describe('flipping is_production crosses protection the way a link does (review round 2, F1)', () => {
+  it('turning it on asks about an existing parent that is not production', async () => {
+    const org = await seedOrg('pro');
+    const project = await seedProject(org);
+    const base = await seedEnv(org, project, 'base');
+    const staging = await seedEnv(org, project, 'staging', { parentId: base.id });
+    caller = sessionOf(org.owner);
+
+    const refused = await patchEnvironment(org, 'staging', { isProduction: true });
+    expect(refused.status).toBe(409);
+    expect(errorMessage(refused)).toMatch(
+      /^link_crosses_protection: This would make the production environment api\/staging inherit values from api\/base/,
+    );
+    const stored = await t.pg.query<{ is_production: boolean }>(
+      `select is_production from environments where id = $1`,
+      [staging.id],
+    );
+    expect(stored.rows[0]!.is_production).toBe(false);
+    expect(audit.some((record) => record.action === 'environment.link_crosses_protection')).toBe(
+      false,
+    );
+
+    audit = [];
+    const confirmed = await patchEnvironment(org, 'staging', {
+      isProduction: true,
+      confirmCrossesProtection: true,
+    });
+    expect(confirmed.status).toBe(200);
+    expect(confirmed.body.environment?.parent).toBe('base');
+    expect(audit.map((record) => record.action)).toEqual([
+      'environment.updated',
+      'environment.link_crosses_protection',
+    ]);
+    expect(audit[1]).toMatchObject({
+      outcome: 'success',
+      environmentId: staging.id,
+      metadata: {
+        environmentSlug: 'staging',
+        sourceProjectSlug: 'api',
+        sourceEnvironmentSlug: 'base',
+        reason: 'is_production',
+      },
+    });
+  });
+
+  it('turning it on asks about an existing template reference into one that is not production', async () => {
+    const org = await seedOrg('pro');
+    const project = await seedProject(org);
+    const base = await seedEnv(org, project, 'base2');
+    const staging = await seedEnv(org, project, 'staging2');
+    await seedSecret(org, staging, 'URL', [
+      { environment: 'base2', name: 'X', environmentId: base.id },
+    ]);
+    caller = sessionOf(org.owner);
+
+    const refused = await patchEnvironment(org, 'staging2', { isProduction: true });
+    expect(refused.status).toBe(409);
+    expect(errorMessage(refused)).toMatch(/api\/base2/);
+
+    audit = [];
+    const confirmed = await patchEnvironment(org, 'staging2', {
+      isProduction: true,
+      confirmCrossesProtection: true,
+    });
+    expect(confirmed.status).toBe(200);
+    expect(
+      audit.find((record) => record.action === 'environment.link_crosses_protection'),
+    ).toMatchObject({
+      metadata: { sourceEnvironmentSlug: 'base2', reason: 'is_production' },
+    });
+  });
+
+  it('turning it on asks nothing when the existing parent is already production', async () => {
+    const org = await seedOrg('pro');
+    const project = await seedProject(org);
+    const parent = await seedEnv(org, project, 'parent-prod', { production: true });
+    await seedEnv(org, project, 'child', { parentId: parent.id });
+    caller = sessionOf(org.owner);
+
+    const answer = await patchEnvironment(org, 'child', { isProduction: true });
+    expect(answer.status).toBe(200);
+    expect(audit.some((record) => record.action === 'environment.link_crosses_protection')).toBe(
+      false,
+    );
+  });
+
+  it('turning it off asks about a still-production environment of the same project that inherits from it', async () => {
+    const org = await seedOrg('pro');
+    const project = await seedProject(org);
+    const production = await seedEnv(org, project, 'production', { production: true });
+    const child = await seedEnv(org, project, 'production-eu', {
+      parentId: production.id,
+      production: true,
+    });
+    caller = sessionOf(org.owner);
+
+    const refused = await patchEnvironment(org, 'production', { isProduction: false });
+    expect(refused.status).toBe(409);
+    expect(errorMessage(refused)).toMatch(/^link_crosses_protection: api\/production-eu/);
+    const stored = await t.pg.query<{ is_production: boolean }>(
+      `select is_production from environments where id = $1`,
+      [production.id],
+    );
+    expect(stored.rows[0]!.is_production).toBe(true);
+
+    audit = [];
+    const confirmed = await patchEnvironment(org, 'production', {
+      isProduction: false,
+      confirmCrossesProtection: true,
+    });
+    expect(confirmed.status).toBe(200);
+    expect(audit.map((record) => record.action)).toEqual([
+      'environment.updated',
+      'environment.link_crosses_protection',
+    ]);
+    expect(audit[1]).toMatchObject({
+      outcome: 'success',
+      environmentId: child.id,
+      metadata: {
+        environmentSlug: 'production-eu',
+        sourceProjectSlug: 'api',
+        sourceEnvironmentSlug: 'production',
+        reason: 'is_production',
+      },
+    });
+  });
+
+  it('turning it off asks about a still-production environment of another project that reads through a template', async () => {
+    const org = await seedOrg('pro');
+    const project = await seedProject(org, 'api');
+    const production = await seedEnv(org, project, 'production', { production: true });
+    await seedSecret(org, production, 'DB_HOST');
+
+    const other = await seedProject(org, 'other');
+    const productionB = await seedEnv(org, other, 'production-b', { production: true });
+    await seedSecret(org, productionB, 'URL', [
+      { project: 'api', environment: 'production', name: 'DB_HOST', environmentId: production.id },
+    ]);
+    caller = sessionOf(org.owner);
+
+    const refused = await patchEnvironment(org, 'production', { isProduction: false });
+    expect(refused.status).toBe(409);
+    expect(errorMessage(refused)).toMatch(/^link_crosses_protection: other\/production-b/);
+
+    audit = [];
+    const confirmed = await patchEnvironment(org, 'production', {
+      isProduction: false,
+      confirmCrossesProtection: true,
+    });
+    expect(confirmed.status).toBe(200);
+    expect(
+      audit.find((record) => record.action === 'environment.link_crosses_protection'),
+    ).toMatchObject({
+      environmentId: productionB.id,
+      metadata: {
+        projectSlug: 'other',
+        environmentSlug: 'production-b',
+        sourceProjectSlug: 'api',
+        sourceEnvironmentSlug: 'production',
+        reason: 'is_production',
+      },
+    });
+  });
+
+  it('turning it off asks nothing when nothing still production depends on it', async () => {
+    const org = await seedOrg('pro');
+    const project = await seedProject(org);
+    await seedEnv(org, project, 'solo', { production: true });
+    caller = sessionOf(org.owner);
+
+    const answer = await patchEnvironment(org, 'solo', { isProduction: false });
     expect(answer.status).toBe(200);
     expect(audit.some((record) => record.action === 'environment.link_crosses_protection')).toBe(
       false,

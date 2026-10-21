@@ -228,6 +228,76 @@ export async function listChildEnvironments(
 }
 
 /**
+ * Live **production** environments that name this one as their parent (review
+ * round 2, F1).
+ *
+ * Asked when `is_production` is turned *off*: a still-production child would go
+ * on inheriting from an environment every developer can now write, without its
+ * own deny-by-default ever being consulted. A non-production child is not
+ * returned — it was never protected by the flag, so losing it crosses nothing.
+ * Always the same project, because a parent is always of its own project.
+ */
+export async function listProductionChildEnvironments(
+  exec: Executor,
+  orgId: string,
+  environmentId: string,
+): Promise<GraphEnvironmentRecord[]> {
+  return exec
+    .select(ENVIRONMENT_COLUMNS)
+    .from(environments)
+    .innerJoin(projects, eq(projects.id, environments.projectId))
+    .where(
+      and(
+        eq(environments.parentEnvironmentId, environmentId),
+        eq(environments.isProduction, true),
+        liveEnvironmentsOf(orgId),
+      ),
+    )
+    .orderBy(asc(environments.slug));
+}
+
+/**
+ * Live **production** environments, in any project of the organisation, whose
+ * current template points into this one (review round 2, F1's counterpart to
+ * `findProjectsReferencingEnvironments`, at the granularity a demotion refusal
+ * has to name: the environment, not only the project).
+ *
+ * Same containment query and "current version" rule as
+ * `findProjectsReferencingEnvironments`; this one also joins back to the
+ * referencing environment's own row, so it can be filtered to production and
+ * named by project and slug, including a production environment of a project
+ * other than this one's.
+ */
+export async function listProductionEnvironmentsReferencing(
+  exec: Executor,
+  orgId: string,
+  environmentId: string,
+): Promise<GraphEnvironmentRecord[]> {
+  const contains = sql`${secretVersions.declaredReferences} @> ${JSON.stringify([{ environmentId }])}::jsonb`;
+
+  return exec
+    .selectDistinctOn([environments.id], ENVIRONMENT_COLUMNS)
+    .from(secretVersions)
+    .innerJoin(secrets, eq(secrets.id, secretVersions.secretId))
+    .innerJoin(environments, eq(environments.id, secrets.environmentId))
+    .innerJoin(projects, eq(projects.id, environments.projectId))
+    .where(
+      and(
+        liveEnvironmentsOf(orgId),
+        isNull(secrets.deletedAt),
+        eq(environments.isProduction, true),
+        sql`${secretVersions.declaredReferences} is not null`,
+        contains,
+        sql`${secretVersions.version} = (
+          select max(latest.version) from ${secretVersions} as latest
+          where latest.secret_id = ${secretVersions.secretId}
+        )`,
+      ),
+    )
+    .orderBy(asc(environments.id));
+}
+
+/**
  * How many usable service tokens are pinned to any of these environments:
  * not revoked, not expired.
  *

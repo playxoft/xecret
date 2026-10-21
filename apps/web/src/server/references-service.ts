@@ -24,6 +24,8 @@ import {
   findEnvironmentsBySlugs,
   findProjectsReferencingEnvironments,
   listChildEnvironments,
+  listProductionChildEnvironments,
+  listProductionEnvironmentsReferencing,
   listUserEmails,
   loadEnvironmentsByIds,
   loadEnvironmentsOfProjects,
@@ -466,6 +468,124 @@ async function describeWriters(
   return tokens === 0
     ? people
     : `${people}, and ${tokens} write service token${tokens === 1 ? '' : 's'}`;
+}
+
+/**
+ * The crossings produced by turning *on* an environment's `is_production`
+ * flag (review round 2, F1): its own parent, if it has one that is not
+ * production, and every reference one of its own templates already declares
+ * into an environment that is not production.
+ *
+ * `parentCrossing` and `referenceCrossings` ask the same question of a link
+ * about to be *created*; this asks it of every link already there, because
+ * the environment holding it is only now becoming production. Both links were
+ * free to write a moment ago — nothing below admin could read this environment
+ * either way — so a flip is exactly as much a new write path onto production
+ * as inheriting from, or adding a reference into, one that is not.
+ */
+export async function productionFlagCrossings(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+): Promise<ProtectionCrossing[]> {
+  const crossings: ProtectionCrossing[] = [];
+
+  const parentId = scope.environment.parentEnvironmentId ?? null;
+  if (parentId !== null) {
+    const [parent] = await loadEnvironmentsByIds(services.db, scope.organization.id, [parentId]);
+    if (parent !== undefined && !parent.isProduction) {
+      crossings.push({ source: parent, via: 'parent' });
+    }
+  }
+
+  const metadata = await loadSecretGraphMetadata(services.db, scope.organization.id, [
+    scope.environment.id,
+  ]);
+  const targets = [
+    ...new Set(
+      metadata
+        .filter((row) => row.valueType === 'template')
+        .flatMap((row) => row.declaredReferences ?? [])
+        .map((reference) => reference.environmentId)
+        .filter((id): id is string => id !== null && id !== scope.environment.id),
+    ),
+  ];
+  if (targets.length > 0) {
+    const records = await loadEnvironmentsByIds(services.db, scope.organization.id, targets);
+    for (const source of records) {
+      if (!source.isProduction) crossings.push({ source, via: 'reference' });
+    }
+  }
+
+  return crossings;
+}
+
+/**
+ * A still-production environment that depends on one about to lose
+ * `is_production` (review round 2, F1) — the mirror of `ProtectionCrossing`
+ * for the other direction. `dependent` is always production; the environment
+ * losing the flag is the `source` half of the link, named by the caller's own
+ * `scope`.
+ */
+export interface ProtectionDependency {
+  dependent: GraphEnvironmentRecord;
+  via: 'parent' | 'reference';
+}
+
+/**
+ * The crossings produced by turning *off* an environment's `is_production`
+ * flag: every still-production environment — of this project or another —
+ * that inherits from it, or holds a template reading through it.
+ *
+ * Once the flag is off, every developer in the organisation can write here, so
+ * each of these would be a production environment reading values from a
+ * source whose own access rules no longer apply, without anybody with access
+ * to *that* production environment being asked.
+ */
+export async function productionFlagDependents(
+  scope: EnvironmentScope,
+  services: ServiceContext,
+): Promise<ProtectionDependency[]> {
+  const [children, referencing] = await Promise.all([
+    listProductionChildEnvironments(services.db, scope.organization.id, scope.environment.id),
+    listProductionEnvironmentsReferencing(services.db, scope.organization.id, scope.environment.id),
+  ]);
+
+  const dependents: ProtectionDependency[] = children.map((dependent) => ({
+    dependent,
+    via: 'parent' as const,
+  }));
+  const seen = new Set(children.map((child) => child.id));
+  for (const dependent of referencing) {
+    if (seen.has(dependent.id)) continue;
+    seen.add(dependent.id);
+    dependents.push({ dependent, via: 'reference' });
+  }
+  return dependents;
+}
+
+/**
+ * The refusal an unconfirmed demotion gets: a 409 naming every production
+ * environment — this one's project or another's — that depends on the one
+ * about to lose its production mark, so the person confirming knows who would
+ * start reading values nobody with access to *their* environment was asked
+ * about.
+ */
+export function productionFlagDependentsRefusal(
+  scope: EnvironmentScope,
+  dependents: readonly ProtectionDependency[],
+): never {
+  const here = `${scope.project.slug}/${scope.environment.slug}`;
+  const names = dependents.map(({ dependent }) => `${dependent.projectSlug}/${dependent.slug}`);
+  const one = names.length === 1;
+
+  throw errors.conflict(
+    `link_crosses_protection: ${names.join(', ')}, which ${one ? 'is' : 'are'} production, ` +
+      `${one ? 'inherits from, or reads through a template from,' : 'inherit from, or read through templates from,'} ` +
+      `${here}. Removing ${here}'s production mark would hand every developer in this ` +
+      `organisation write access to the values ${one ? 'it reads' : 'they read'} from here, ` +
+      `without ${one ? 'its own access rules' : 'their own access rules'} being asked. Confirm ` +
+      'the change (confirmCrossesProtection: true) to make it anyway.',
+  );
 }
 
 /* ── write-time checks ───────────────────────────────────────────────────── */
