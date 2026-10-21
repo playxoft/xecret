@@ -3,7 +3,7 @@ title: Webhooks on secret change
 navTitle: Webhooks
 description: Get a signed HTTPS call when a secret is created, changed, rotated or deleted, or an environment is promoted or restored. Payloads carry names, never values.
 keywords: [secret change webhook, standard webhooks, webhook signature verification, secret rotation notification, devops automation]
-updated: 2026-10-20
+updated: 2026-10-21
 ---
 
 A webhook calls an HTTPS endpoint of yours when something changes in your
@@ -23,6 +23,35 @@ you need. Set them up in *Organisation settings → Webhooks* (owners and admins
 
 Writing a value identical to the current one changes nothing and sends nothing.
 Each endpoint subscribes to the events it wants.
+
+### One event per kind of change, not per secret
+
+An import, a promotion or a restore can change hundreds of secrets in one go.
+It sends **one event of each kind it caused** — one `secret.created` for
+everything it created, one `secret.updated`, one `secret.deleted` — listing the
+secrets in `data.secrets`, with `data.counts` saying how many:
+
+```json
+{
+  "type": "secret.created",
+  "timestamp": "2026-10-20T09:30:00.000Z",
+  "data": {
+    "organization": { "id": "0193…", "slug": "acme" },
+    "project": { "id": "0193…", "slug": "checkout-api" },
+    "environment": { "id": "0193…", "slug": "staging" },
+    "secrets": [
+      { "name": "SENTRY_DSN", "version": 1 },
+      { "name": "STRIPE_WEBHOOK_SECRET", "version": 1 }
+    ],
+    "counts": { "created": 2 },
+    "actor": { "type": "user", "id": "0193…", "label": "dana@acme.example" }
+  }
+}
+```
+
+An event about one secret carries `data.secret`; an event about several carries
+`data.secrets` instead — never both — so handle both shapes. The list holds at
+most 1,000 entries, which is also the most one batch can change.
 
 ## The payload never contains a value
 
@@ -86,6 +115,12 @@ hours, 12 hours and 24 hours after each failure, give or take the five minutes
 between delivery sweeps — then abandoned. A retry sends the same body,
 re-signed with a fresh timestamp, under the same `webhook-id`, so use it to
 discard duplicates.
+
+The first few deliveries of a change are sent straight away; anything left over,
+and every retry, is sent by the next delivery sweep. A sweep takes organisations
+**in turns** — every organisation's oldest delivery before anybody's second — so
+another organisation's large backlog never holds yours up, and keeps sending
+until nothing is due or its time is up, when the rest waits for the next sweep.
 
 An endpoint that keeps failing — 15 failures in a row spanning at least a day —
 is **disabled automatically**, and the organisation's owners and admins are

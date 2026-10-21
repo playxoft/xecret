@@ -18,6 +18,7 @@ import type { ServiceContext } from './context';
 import { errors } from './errors';
 import { createLogger } from './logging';
 import type { LogEntry, RequestLog } from './logging';
+import type { EnvironmentScope } from './tenancy';
 
 /**
  * Webhooks on secret change (P19 §5), end to end: the routes, emission,
@@ -75,6 +76,7 @@ const deliveriesRoute =
 const notificationsRoute = await import('@/app/api/internal/scheduled/notifications/route');
 const pruneRoute = await import('@/app/api/internal/scheduled/prune/route');
 const service = await import('./webhooks-service');
+const changeEvents = await import('./change-events');
 const scheduled = await import('./scheduled');
 const { enqueueDeliveries, loadEntitlements } = await import('@xecret/db/repositories');
 
@@ -1208,6 +1210,146 @@ describe('the sweep', () => {
     expect(await service.sweepWebhookDeliveries(servicesFor())).toBe(12);
     expect(peak).toBeLessThanOrEqual(4);
     expect(peak).toBeGreaterThan(1);
+  });
+
+  // Review round 1, M4: one claim of twenty-five per run was the ceiling.
+  it('keeps claiming while it has time, past one batch', async () => {
+    const { org, id } = await withWebhook();
+    const owed = service.WEBHOOK_SWEEP_BATCH * 2 + 10;
+    await enqueueDeliveries(
+      t.db,
+      Array.from({ length: owed }, () => ({
+        webhookId: id,
+        orgId: org.orgId,
+        eventType: 'secret.updated',
+        body: '{}',
+      })),
+    );
+    expect(await service.sweepWebhookDeliveries(servicesFor())).toBe(owed);
+    expect(hits).toHaveLength(owed);
+    expect((await deliveriesOf(id)).every((row) => row.status === 'succeeded')).toBe(true);
+  });
+
+  it('stops starting deliveries when its time is up, and hands the rest back due', async () => {
+    const { org, id } = await withWebhook();
+    await enqueueDeliveries(
+      t.db,
+      Array.from({ length: service.WEBHOOK_SWEEP_BATCH }, () => ({
+        webhookId: id,
+        orgId: org.orgId,
+        eventType: 'secret.updated',
+        body: '{}',
+      })),
+    );
+    receiver = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return new Response(null, { status: 204 });
+    };
+
+    const attempted = await service.sweepWebhookDeliveries(servicesFor(), { budgetMs: 60 });
+    expect(attempted).toBeGreaterThan(0);
+    expect(attempted).toBeLessThan(service.WEBHOOK_SWEEP_BATCH);
+
+    const rows = await deliveriesOf(id);
+    // Nothing is left claimed for the stale-claim rule to find in five minutes.
+    expect(rows.filter((row) => row.status === 'delivering')).toEqual([]);
+    const handedBack = rows.filter((row) => row.status === 'pending');
+    expect(handedBack).toHaveLength(service.WEBHOOK_SWEEP_BATCH - attempted);
+    for (const row of handedBack) {
+      expect(row.attempts).toBe(0);
+      expect(row.next_attempt_at!.getTime()).toBeLessThanOrEqual(Date.now());
+    }
+  });
+
+  it('sends a quiet organisation’s one delivery in the same run as another’s backlog', async () => {
+    const busy = await withWebhook();
+    await enqueueDeliveries(
+      t.db,
+      Array.from({ length: 3000 }, () => ({
+        webhookId: busy.id,
+        orgId: busy.org.orgId,
+        eventType: 'secret.updated',
+        body: '{}',
+      })),
+    );
+    await t.pg.query(
+      `update webhook_deliveries set next_attempt_at = now() - interval '1 hour' where webhook_id = $1`,
+      [busy.id],
+    );
+    const quiet = await withWebhook();
+    const [single] = await enqueueDeliveries(t.db, [
+      { webhookId: quiet.id, orgId: quiet.org.orgId, eventType: 'secret.updated', body: '{}' },
+    ]);
+
+    // A run that has time for no more than its first claim still sends it.
+    receiver = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return new Response(null, { status: 204 });
+    };
+    await service.sweepWebhookDeliveries(servicesFor(), { budgetMs: 150 });
+    expect(hits.map((hit) => hit.headers.get('webhook-id'))).toContain(single);
+    expect((await deliveriesOf(quiet.id))[0]).toMatchObject({ status: 'succeeded' });
+  });
+});
+
+/* ── one event per kind of change, for a batch ────────────────────────────── */
+
+describe('a batch write', () => {
+  async function scopeOf(org: Org) {
+    return {
+      organization: { id: org.orgId, slug: org.slug },
+      project: { id: '0190a000-0000-7000-8000-000000000001', slug: 'api' },
+      environment: { id: '0190a000-0000-7000-8000-000000000002', slug: 'production' },
+      entitlements: await loadEntitlements(t.db, org.orgId),
+    } as unknown as EnvironmentScope;
+  }
+
+  it('queues one event per kind of change, listing the secrets, whatever its size (review round 1, M4)', async () => {
+    const { org, id } = await withWebhook(['secret.created', 'secret.updated', 'secret.deleted']);
+    const results = [
+      ...Array.from({ length: 400 }, (_, index) => ({
+        status: 'created' as const,
+        name: `NEW_${index}`,
+        version: 1,
+      })),
+      { status: 'updated' as const, name: 'DATABASE_URL', version: 7 },
+      { status: 'updated' as const, name: 'REDIS_URL', version: 3 },
+      { status: 'unchanged' as const, name: 'PORT', version: 2 },
+    ];
+
+    // What the import route sends after it lands.
+    changeEvents.emitSecretChanges(
+      servicesFor(),
+      await scopeOf(org),
+      caller,
+      changeEvents.batchChanges(results, [{ name: 'OLD_KEY' }]),
+    );
+    await Promise.allSettled(deferred);
+
+    const rows = await deliveriesOf(id);
+    expect(rows.map((row) => row.event_type).sort()).toEqual([
+      'secret.created',
+      'secret.deleted',
+      'secret.updated',
+    ]);
+    const bodies = new Map(
+      hits.map((hit) => {
+        const payload = JSON.parse(hit.body) as { type: string; data: Record<string, unknown> };
+        return [payload.type, payload.data] as const;
+      }),
+    );
+    const created = bodies.get('secret.created')!;
+    expect(created['secret']).toBeUndefined();
+    expect(created['secrets']).toHaveLength(400);
+    expect((created['secrets'] as unknown[])[0]).toEqual({ name: 'NEW_0', version: 1 });
+    expect(created['counts']).toEqual({ created: 400 });
+    expect(bodies.get('secret.updated')!['secrets']).toEqual([
+      { name: 'DATABASE_URL', version: 7 },
+      { name: 'REDIS_URL', version: 3 },
+    ]);
+    // A kind with one secret is the event a single write sends.
+    expect(bodies.get('secret.deleted')!['secret']).toEqual({ name: 'OLD_KEY' });
+    expect(bodies.get('secret.deleted')!['secrets']).toBeUndefined();
   });
 });
 

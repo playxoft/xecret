@@ -721,6 +721,12 @@ webhooks — and three policies. What each could have become, and what stops it:
   private network anyway, but a DNS name pointing at one is not stopped by the literal check —
   the egress does that, not the validator. Signing secrets are sealed under the organisation's
   master key and redacted from logs by shape.
+- **One tenant's webhook volume as another's outage** (T2, review round 1). Delivery is shared
+  infrastructure, and one sweep claimed the oldest twenty-five deliveries in the whole table: a
+  single large import into an organisation with several endpoints held every other
+  organisation's deliveries behind it for days. A batch write now emits one event per kind of
+  change rather than per secret, the sweep takes organisations in turns and keeps claiming under
+  a time budget, so one organisation's backlog delays only its own deliveries.
 - **Client-enforced policies** (T3). Disabling plaintext export and the secret policy's value
   rules run in the clients that hold the plaintext; a modified client skips them. They are
   documented as guard rails, not boundaries. The name rule, the token policy and every plan gate

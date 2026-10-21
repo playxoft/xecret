@@ -13,6 +13,7 @@ import {
   WEBHOOK_DISABLE_AFTER_MS,
   WEBHOOK_EVENT_TYPES,
   WEBHOOK_MAX_ATTEMPTS,
+  WEBHOOK_MAX_SECRETS_PER_EVENT,
   WEBHOOK_RETRY_DELAYS_SECONDS,
 } from './index';
 import type { WebhookEventData } from './index';
@@ -141,6 +142,36 @@ describe('payloads', () => {
     });
     expect(long.data.secret?.name.length).toBe(256);
     expect(long.data.actor.label?.length).toBe(320);
+  });
+
+  it('lists the secrets of a coalesced batch by name and version, bounded, and nothing else', () => {
+    const { secret: _single, ...rest } = data;
+    void _single;
+    const batch = buildWebhookPayload('secret.updated', new Date(), {
+      ...rest,
+      secrets: [
+        { name: 'A', version: 2 },
+        { name: 'B', value: 'hunter2' } as unknown as { name: string },
+        ...Array.from({ length: WEBHOOK_MAX_SECRETS_PER_EVENT + 50 }, (_, index) => ({
+          name: `K${index}`,
+          version: 1,
+        })),
+      ],
+      counts: { updated: WEBHOOK_MAX_SECRETS_PER_EVENT + 52 },
+    });
+    expect(batch.data.secret).toBeUndefined();
+    expect(batch.data.secrets).toHaveLength(WEBHOOK_MAX_SECRETS_PER_EVENT);
+    expect(batch.data.secrets?.slice(0, 2)).toEqual([{ name: 'A', version: 2 }, { name: 'B' }]);
+    expect(batch.data.counts).toEqual({ updated: WEBHOOK_MAX_SECRETS_PER_EVENT + 52 });
+    expect(JSON.stringify(batch)).not.toContain('hunter2');
+
+    // One or the other, never both: `secret` wins when a caller sends both.
+    const both = buildWebhookPayload('secret.updated', new Date(), {
+      ...data,
+      secrets: [{ name: 'OTHER' }],
+    });
+    expect(both.data.secret).toEqual(data.secret);
+    expect(both.data.secrets).toBeUndefined();
   });
 
   it('knows its event types', () => {

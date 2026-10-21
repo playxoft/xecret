@@ -120,9 +120,13 @@ export const webhookDeliveries = pgTable(
       sql`${t.status} in ('pending', 'delivering', 'succeeded', 'abandoned')`,
     ),
     check('webhook_deliveries_attempts_check', sql`${t.attempts} >= 0`),
+    // Per organisation, because the sweep takes organisations in turns.
     index('webhook_deliveries_due_idx')
-      .on(t.nextAttemptAt)
+      .on(t.orgId, t.nextAttemptAt)
       .where(sql`${t.status} = 'pending'`),
+    index('webhook_deliveries_claimed_idx')
+      .on(t.claimedAt)
+      .where(sql`${t.status} = 'delivering'`),
     index('webhook_deliveries_webhook_idx').on(t.webhookId, t.createdAt.desc()),
   ],
 );

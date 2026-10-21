@@ -27,6 +27,7 @@ import {
   loadOrgKeyForSealing,
   loadOrgKeyVersion,
   recordDeliveryAttempt,
+  releaseDeliveries,
 } from '@xecret/db/repositories';
 import type {
   ClaimedDelivery,
@@ -115,8 +116,23 @@ export const WEBHOOK_INLINE_ATTEMPTS = 10;
  */
 export const WEBHOOK_INLINE_BUDGET_MS = 20_000;
 
-/** Deliveries one five-minute sweep claims. Twenty-five at four in flight is under two minutes, worst case. */
+/**
+ * Deliveries one claim of the sweep takes. The sweep claims again and again
+ * until nothing is due or {@link WEBHOOK_SWEEP_BUDGET_MS} is spent, so this
+ * bounds one round trip's locks, not a run's throughput.
+ */
 export const WEBHOOK_SWEEP_BATCH = 25;
+
+/**
+ * No new delivery is started by a sweep after this long (review round 1, M4).
+ * One fixed claim of twenty-five every five minutes was a ceiling of 7,200
+ * deliveries a day for every organisation together — a single large import
+ * could fill it for days. Now the sweep keeps claiming while it has time, and
+ * a delivery still waiting when the time is up is handed back, due, for the
+ * next run. Twenty seconds of starts, plus the last attempts' ten-second
+ * timeout, keeps a run well inside what a Cron Trigger allows.
+ */
+export const WEBHOOK_SWEEP_BUDGET_MS = 20_000;
 
 export const WEBHOOK_USER_AGENT = 'xecret-webhooks/1';
 
@@ -627,47 +643,73 @@ async function inPool<T>(
 /* ── the sweep and the test ──────────────────────────────────────────────── */
 
 /**
- * The five-minute sweep: claims up to {@link WEBHOOK_SWEEP_BATCH} deliveries
- * that are due — first attempts the inline budget left, retries whose time has
- * come, and claims a dead sender left behind — and attempts them. Answers how
- * many were attempted.
+ * The five-minute sweep: claims what is due — first attempts the inline budget
+ * left, retries whose time has come, and claims a dead sender left behind — in
+ * claims of {@link WEBHOOK_SWEEP_BATCH}, taken in turns across organisations
+ * (`claimDueDeliveries`), and attempts them; then claims again, until nothing
+ * is due or {@link WEBHOOK_SWEEP_BUDGET_MS} is spent. Answers how many were
+ * attempted.
+ *
+ * What a claim holds past the budget is handed back unattempted
+ * (`releaseDeliveries`), due as it was, rather than left claimed for the
+ * stale-claim rule to find five minutes later.
  *
  * A delivery for an organisation whose plan no longer includes webhooks is
  * abandoned rather than sent: "paused" means nothing is delivered, and a
  * backlog that resumed the day an organisation upgraded again would be a
  * stream of stale events about changes long since superseded.
  */
-export async function sweepWebhookDeliveries(services: ServiceContext): Promise<number> {
-  const claimed = await claimDueDeliveries(services.db, WEBHOOK_SWEEP_BATCH);
-  if (claimed.length === 0) return 0;
-
+export async function sweepWebhookDeliveries(
+  services: ServiceContext,
+  options: { budgetMs?: number } = {},
+): Promise<number> {
+  const deadline = Date.now() + (options.budgetMs ?? WEBHOOK_SWEEP_BUDGET_MS);
   const run = new DeliveryRun(services);
   let attempted = 0;
-  await inPool(
-    claimed,
-    WEBHOOK_DELIVERY_CONCURRENCY,
-    async (entry) => {
-      if (!(await run.planIncludesWebhooks(entry.delivery.orgId))) {
-        await abandonDelivery(
-          services.db,
-          entry.delivery.id,
-          'paused: the plan no longer includes webhooks',
-        );
-        return;
-      }
-      // A test that was claimed and never finished is retried once, and not
-      // again: nobody is waiting for its answer any more.
-      await run.attempt(entry, { retries: entry.delivery.eventType !== WEBHOOK_TEST_EVENT });
-      attempted += 1;
-    },
-    (cause) => {
-      services.log
-        .at('webhooks')
-        .error('A scheduled webhook delivery failed to complete; the sweep takes it back later', {
-          error: describeError(cause),
-        });
-    },
-  );
+
+  while (Date.now() < deadline) {
+    const claimed = await claimDueDeliveries(services.db, WEBHOOK_SWEEP_BATCH);
+    if (claimed.length === 0) break;
+
+    const unstarted: string[] = [];
+    await inPool(
+      claimed,
+      WEBHOOK_DELIVERY_CONCURRENCY,
+      async (entry) => {
+        if (Date.now() >= deadline) {
+          unstarted.push(entry.delivery.id);
+          return;
+        }
+        if (!(await run.planIncludesWebhooks(entry.delivery.orgId))) {
+          await abandonDelivery(
+            services.db,
+            entry.delivery.id,
+            'paused: the plan no longer includes webhooks',
+          );
+          return;
+        }
+        // A test that was claimed and never finished is retried once, and not
+        // again: nobody is waiting for its answer any more.
+        await run.attempt(entry, { retries: entry.delivery.eventType !== WEBHOOK_TEST_EVENT });
+        attempted += 1;
+      },
+      (cause) => {
+        services.log
+          .at('webhooks')
+          .error('A scheduled webhook delivery failed to complete; the sweep takes it back later', {
+            error: describeError(cause),
+          });
+      },
+    );
+
+    if (unstarted.length > 0) {
+      await releaseDeliveries(services.db, unstarted);
+      break;
+    }
+    // A short claim is everything that was due — or everything another sweep
+    // running at once had not already locked. Either way, this one is done.
+    if (claimed.length < WEBHOOK_SWEEP_BATCH) break;
+  }
   return attempted;
 }
 

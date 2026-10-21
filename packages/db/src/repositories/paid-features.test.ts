@@ -44,6 +44,7 @@ import {
   loadOrgKeyVersion,
   pruneWebhookDeliveries,
   recordDeliveryAttempt,
+  releaseDeliveries,
   updateWebhook,
 } from './webhooks';
 
@@ -343,6 +344,73 @@ describe('webhooks', () => {
       [id],
     );
     expect((await claimDueDeliveries(t.db, 50)).map((entry) => entry.delivery.id)).toContain(id);
+  });
+
+  it('takes organisations in turns, so one backlog cannot starve another (review round 1, M4)', async () => {
+    // Nothing else owed, so the claim is about these two organisations alone.
+    const settle = () =>
+      t.pg.query(
+        `update webhook_deliveries set status = 'abandoned', next_attempt_at = null, claimed_at = null
+         where status in ('pending', 'delivering')`,
+      );
+    await settle();
+
+    const busy = await fixture();
+    const busyHook = await webhook(busy);
+    const backlog = await enqueueDeliveries(
+      t.db,
+      Array.from({ length: 3000 }, () => ({
+        webhookId: busyHook.id,
+        orgId: busy.orgId,
+        eventType: 'secret.updated',
+        body: '{}',
+      })),
+    );
+    // Every one of them older than anything the quiet organisation owes.
+    await t.pg.query(
+      `update webhook_deliveries set next_attempt_at = now() - interval '1 hour' where webhook_id = $1`,
+      [busyHook.id],
+    );
+    const quiet = await fixture();
+    const quietHook = await webhook(quiet);
+    const [single] = await enqueueDeliveries(t.db, [
+      { webhookId: quietHook.id, orgId: quiet.orgId, eventType: 'secret.updated', body: '{}' },
+    ]);
+
+    const first = await claimDueDeliveries(t.db, 25);
+    expect(first).toHaveLength(25);
+    expect(first.filter((entry) => entry.delivery.orgId === busy.orgId)).toHaveLength(24);
+    // In turns: the backlog's oldest, then the quiet organisation's one, then
+    // the rest of the backlog — the order a sweep attempts them in.
+    expect(first.map((entry) => entry.delivery.id).indexOf(single!)).toBe(1);
+
+    // And with nobody else waiting, the backlog gets every claim, oldest first.
+    const second = await claimDueDeliveries(t.db, 25);
+    expect(second).toHaveLength(25);
+    expect(second.every((entry) => entry.delivery.orgId === busy.orgId)).toBe(true);
+    const claimedIds = new Set([...first, ...second].map((entry) => entry.delivery.id));
+    expect(claimedIds.size).toBe(50);
+    expect(backlog.filter((id) => claimedIds.has(id))).toHaveLength(49);
+
+    await settle();
+  });
+
+  it('hands back claims a sweep did not get to, due as they were', async () => {
+    const f = await fixture();
+    const hook = await webhook(f);
+    const [id] = await enqueueDeliveries(t.db, [
+      { webhookId: hook.id, orgId: f.orgId, eventType: 'secret.updated', body: '{}' },
+    ]);
+    await claimDeliveries(t.db, [id!]);
+    await releaseDeliveries(t.db, [id!]);
+    const [row] = (
+      await t.pg.query<{ status: string; claimed_at: Date | null; attempts: number }>(
+        `select status, claimed_at, attempts from webhook_deliveries where id = $1`,
+        [id],
+      )
+    ).rows;
+    expect(row).toEqual({ status: 'pending', claimed_at: null, attempts: 0 });
+    expect((await claimDeliveries(t.db, [id!])).map((entry) => entry.delivery.id)).toEqual([id]);
   });
 
   it('abandons a delivery with no retries left, and disables an endpoint once', async () => {

@@ -57,6 +57,15 @@ export interface WebhookEventData {
   readonly environment?: { readonly id: string; readonly slug: string } | undefined;
   /** The secret's name and the version now current. Never its value. */
   readonly secret?: { readonly name: string; readonly version?: number | undefined } | undefined;
+  /**
+   * For one write that changed several secrets the same way — an import, a
+   * promotion, a restore: every one of them, by name and version, in one event
+   * instead of one event each (review round 1, M4). Present instead of `secret`,
+   * never beside it, and capped at {@link WEBHOOK_MAX_SECRETS_PER_EVENT}; `counts`
+   * says how many there were in all.
+   */
+  readonly secrets?:
+    readonly { readonly name: string; readonly version?: number | undefined }[] | undefined;
   /** For a promotion: where the values came from. */
   readonly source?: { readonly id: string; readonly slug: string } | undefined;
   /** For a promotion or a restore: what changed, as counts. */
@@ -84,6 +93,14 @@ const NAME_LIMIT = 256;
 const SLUG_LIMIT = 128;
 const LABEL_LIMIT = 320;
 
+/**
+ * The most secrets one coalesced event lists. A batch is itself capped at a
+ * thousand writes (an import, a promotion, a restore), so in practice the list
+ * is whole; the cap is what keeps a body bounded if that ever changes, and
+ * `counts` still says how many there were.
+ */
+export const WEBHOOK_MAX_SECRETS_PER_EVENT = 1000;
+
 function clip(value: string, limit: number): string {
   return value.length <= limit ? value : value.slice(0, limit);
 }
@@ -96,6 +113,14 @@ function ref(
   value: { id: string; slug: string } | undefined,
 ): { id: string; slug: string } | undefined {
   return value === undefined ? undefined : { id: value.id, slug: clip(value.slug, SLUG_LIMIT) };
+}
+
+function secretRef(value: { name: string; version?: number | undefined }): {
+  name: string;
+  version?: number;
+} {
+  const version = count(value.version);
+  return { name: clip(value.name, NAME_LIMIT), ...(version === undefined ? {} : { version }) };
 }
 
 /**
@@ -129,11 +154,11 @@ export function buildWebhookPayload(
   if (source !== undefined) clean.source = source;
 
   if (data.secret !== undefined) {
-    const version = count(data.secret.version);
-    clean.secret = {
-      name: clip(data.secret.name, NAME_LIMIT),
-      ...(version === undefined ? {} : { version }),
-    };
+    clean.secret = secretRef(data.secret);
+  } else if (data.secrets !== undefined) {
+    // Rebuilt entry by entry, for the reason the whole object is: an entry is
+    // a name and a version, and nothing a cast slipped in beside them survives.
+    clean.secrets = data.secrets.slice(0, WEBHOOK_MAX_SECRETS_PER_EVENT).map(secretRef);
   }
 
   if (data.counts !== undefined) {

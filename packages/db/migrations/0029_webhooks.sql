@@ -100,10 +100,17 @@ ALTER TABLE "webhook_deliveries"
 	FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id")
 	ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 
--- The retry sweep: pending deliveries that are due.
+-- The retry sweep: pending deliveries that are due, per organisation. The sweep
+-- takes organisations in turns — each one's oldest first — so one with a
+-- backlog cannot hold the others' deliveries behind it.
 CREATE INDEX "webhook_deliveries_due_idx"
-	ON "webhook_deliveries" USING btree ("next_attempt_at")
+	ON "webhook_deliveries" USING btree ("org_id", "next_attempt_at")
 	WHERE "status" = 'pending';--> statement-breakpoint
+
+-- Claims a sender never finished, which the sweep takes back.
+CREATE INDEX "webhook_deliveries_claimed_idx"
+	ON "webhook_deliveries" USING btree ("claimed_at")
+	WHERE "status" = 'delivering';--> statement-breakpoint
 
 -- The dashboard's delivery log, newest first.
 CREATE INDEX "webhook_deliveries_webhook_idx"

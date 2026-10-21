@@ -469,34 +469,154 @@ export async function claimDeliveries(
 
 /**
  * Claims up to `limit` deliveries that are due — pending and past their
- * `next_attempt_at` — or that a sender claimed and never finished.
+ * `next_attempt_at` — taking them **in turns across organisations** (review
+ * round 1, M4).
  *
- * `FOR UPDATE SKIP LOCKED` in the subquery, so two sweeps running at once take
- * disjoint sets rather than racing for the same rows.
+ * ── Why in turns ──
+ * Oldest-first across the whole table let one organisation's backlog — a bulk
+ * import into an organisation with several endpoints was thousands of rows —
+ * fill every claim for as long as it lasted, while every other organisation's
+ * deliveries, a single secret change included, waited behind it. Now each
+ * organisation with something due is a queue of its own: a claim takes every
+ * such organisation's oldest delivery first, then each one's second, and so
+ * on, until `limit`. One organisation with a backlog still gets the whole claim
+ * when nobody else is waiting; it can no longer hold anybody else back.
+ *
+ * ── Concurrency ──
+ * `FOR UPDATE SKIP LOCKED` on each organisation's candidates, so two sweeps
+ * running at once take disjoint sets rather than racing for the same rows, and
+ * `status = 'pending'` again on the update itself, so a row another sweep
+ * claimed between the two can never be claimed twice.
+ *
+ * At most `limit` organisations are considered per claim — the ones whose
+ * oldest delivery has waited longest — each with at most `limit` candidates,
+ * so a claim locks a bounded set however large the backlog.
+ *
+ * A claim a sender never finished is taken back first; see
+ * `releaseStaleClaims`.
  */
 export async function claimDueDeliveries(
   exec: Executor,
   limit: number,
 ): Promise<ClaimedDelivery[]> {
-  const staleBefore = new Date(Date.now() - STALE_CLAIM_MS);
+  await releaseStaleClaims(exec);
   const claimed = await exec
     .update(webhookDeliveries)
     .set({ status: 'delivering', claimedAt: sql`now()` })
     .where(
-      inArray(
-        webhookDeliveries.id,
-        sql`(
-          select ${webhookDeliveries.id} from ${webhookDeliveries}
-          where (${webhookDeliveries.status} = 'pending' and ${webhookDeliveries.nextAttemptAt} <= now())
-             or (${webhookDeliveries.status} = 'delivering' and ${webhookDeliveries.claimedAt} < ${staleBefore})
-          order by ${webhookDeliveries.nextAttemptAt} asc nulls first
-          limit ${limit}
-          for update skip locked
-        )`,
+      and(
+        inArray(
+          webhookDeliveries.id,
+          sql`(
+            select picked.id from (
+              select candidate.id, candidate.next_attempt_at, orgs.oldest,
+                     row_number() over (
+                       partition by orgs.org_id
+                       order by candidate.next_attempt_at, candidate.id
+                     ) as turn
+              from (
+                select "org_id", min("next_attempt_at") as oldest
+                from ${webhookDeliveries}
+                where "status" = 'pending' and "next_attempt_at" <= now()
+                group by "org_id"
+                order by oldest
+                limit ${limit}
+              ) as orgs
+              cross join lateral (
+                select due."id", due."next_attempt_at"
+                from ${webhookDeliveries} as due
+                where due."org_id" = orgs."org_id"
+                  and due."status" = 'pending'
+                  and due."next_attempt_at" <= now()
+                order by due."next_attempt_at", due."id"
+                limit ${limit}
+                for update skip locked
+              ) as candidate
+            ) as picked
+            order by picked.turn, picked.oldest, picked.next_attempt_at, picked.id
+            limit ${limit}
+          )`,
+        ),
+        eq(webhookDeliveries.status, 'pending'),
       ),
     )
     .returning(DELIVERY_COLUMNS);
-  return attachWebhooks(exec, claimed);
+  // `RETURNING` answers in whatever order the rows were updated, not the
+  // subquery's, and the sweep attempts a claim front to back — so a claim
+  // handed back unfinished when its time ran out would have been the quiet
+  // organisation's delivery as often as not. Put back in turns.
+  return attachWebhooks(exec, inTurns(claimed));
+}
+
+/**
+ * Deliveries in turns across organisations: each one's oldest, organisations
+ * ordered by how long their oldest has waited, then each one's second, and so
+ * on — the order `claimDueDeliveries` chose them in.
+ */
+function inTurns(deliveries: readonly DeliveryRecord[]): DeliveryRecord[] {
+  const time = (delivery: DeliveryRecord) => delivery.nextAttemptAt?.getTime() ?? 0;
+  const byOrg = new Map<string, DeliveryRecord[]>();
+  for (const delivery of deliveries) {
+    const queue = byOrg.get(delivery.orgId);
+    if (queue === undefined) byOrg.set(delivery.orgId, [delivery]);
+    else queue.push(delivery);
+  }
+  const queues = [...byOrg.values()].map((queue) =>
+    queue.sort((a, b) => time(a) - time(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+  );
+  queues.sort((a, b) => time(a[0]!) - time(b[0]!));
+
+  const ordered: DeliveryRecord[] = [];
+  for (let turn = 0; ordered.length < deliveries.length; turn += 1) {
+    for (const queue of queues) {
+      const next = queue[turn];
+      if (next !== undefined) ordered.push(next);
+    }
+  }
+  return ordered;
+}
+
+/**
+ * Puts back, due as they were, the deliveries a sender claimed more than
+ * `STALE_CLAIM_MS` ago and never finished — it died, or ran out of time — so
+ * the next claim takes them in their organisation's turn like anything else
+ * that is due. Answers how many.
+ */
+export async function releaseStaleClaims(exec: Executor): Promise<number> {
+  const staleBefore = new Date(Date.now() - STALE_CLAIM_MS);
+  const rows = await exec
+    .update(webhookDeliveries)
+    .set({
+      status: 'pending',
+      claimedAt: null,
+      nextAttemptAt: sql`coalesce(${webhookDeliveries.nextAttemptAt}, now())`,
+    })
+    .where(
+      and(eq(webhookDeliveries.status, 'delivering'), lt(webhookDeliveries.claimedAt, staleBefore)),
+    )
+    .returning({ id: webhookDeliveries.id });
+  return rows.length;
+}
+
+/**
+ * Hands claimed deliveries back, unattempted and due as they were — what a
+ * sweep does with the rest of a claim when its time is up, so they are sent by
+ * the next sweep rather than waiting `STALE_CLAIM_MS` to be taken back.
+ */
+export async function releaseDeliveries(
+  exec: Executor,
+  deliveryIds: readonly string[],
+): Promise<void> {
+  if (deliveryIds.length === 0) return;
+  await exec
+    .update(webhookDeliveries)
+    .set({ status: 'pending', claimedAt: null })
+    .where(
+      and(
+        inArray(webhookDeliveries.id, [...deliveryIds]),
+        eq(webhookDeliveries.status, 'delivering'),
+      ),
+    );
 }
 
 export type DeliveryOutcome =

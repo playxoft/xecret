@@ -501,6 +501,8 @@ export {
   loadOrgKeyVersion,
   pruneWebhookDeliveries,
   recordDeliveryAttempt,
+  releaseDeliveries,
+  releaseStaleClaims,
   STALE_CLAIM_MS,
   updateWebhook,
 } from './webhooks';

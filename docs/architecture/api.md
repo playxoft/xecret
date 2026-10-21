@@ -1244,6 +1244,16 @@ number of secrets — and notes a sighting, after the response, for each environ
 values from whose own alert setting is on (production's values read through a staging template
 are a read of production).
 
+A batch write (import, promotion, point-in-time restore) emits **one event per kind of change**
+— `secret.created`, `secret.updated`, `secret.deleted` — listing its secrets in `data.secrets`
+with `data.counts`, so its delivery count is bounded by the number of endpoints, not by the
+number of secrets. The five-minute sweep (`sweepWebhookDeliveries`) claims in batches of 25,
+taken **in turns across organisations** (`claimDueDeliveries`: each organisation's oldest due
+delivery before any organisation's second, over a `(org_id, next_attempt_at)` partial index), and
+keeps claiming for up to 20 seconds; what a claim still holds when the time is up is handed back
+due (`releaseDeliveries`), and a claim a dead sender left is taken back first
+(`releaseStaleClaims`).
+
 ### Tokens
 
 | Method | Path | Notes |
