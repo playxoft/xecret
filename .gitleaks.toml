@@ -41,6 +41,18 @@ description = "self-identifying credential specimens quoted in the documentation
 regexTarget = "secret"
 regexes = ['''(?i)example[-_]?not[-_]?a[-_]?real[-_]?key''']
 
+# P19 test fixtures, allowlisted by exact value. The first is the Standard
+# Webhooks specification's published test-vector secret — public by
+# definition, pinned so our signer reproduces the spec's own signature. The
+# second is a synthetic token minted for the policy route tests.
+[[allowlists]]
+description = "the Standard Webhooks spec's published test secret, and the policy tests' synthetic token"
+regexTarget = "secret"
+regexes = [
+  '''whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw''',
+  '''q8Z2xL0vR9sT4bW7nY1cK6mP3dF5gH0j''',
+]
+
 # E2EE protocol identifiers: HKDF info strings, AAD purposes, and storage-key
 # versions all start with `xecret.` and are public by definition — domain
 # separation only works if both sides of the wire can read the label. No real
