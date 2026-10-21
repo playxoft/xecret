@@ -5,9 +5,14 @@ import type { SecretPolicy } from '@xecret/core/policy';
 import { errorMessage } from '@/lib/api';
 import {
   nameWarning,
+  PENDING_SECRET_POLICY,
+  POLICY_PENDING_MESSAGE,
+  POLICY_UNREADABLE_MESSAGE,
   policyProblem,
   policyRefusal,
   policyViolations,
+  secretPolicyFrom,
+  UNREADABLE_SECRET_POLICY,
   valueWarning,
   violationField,
 } from './policy-checks';
@@ -113,6 +118,43 @@ describe('policyViolations — the write check', () => {
     expect(policyProblem(ON, { name: 'X', newName: false, value: 'ok', isProduction: false })).toBe(
       null,
     );
+  });
+});
+
+describe('a policy the screen does not have (review round 1, M5)', () => {
+  const value = { name: 'API_TOKEN', newName: false, value: STRONG, isProduction: false };
+
+  it('is the organisation’s once it lands, and a stand-in until then or when it fails', () => {
+    expect(secretPolicyFrom({ data: { secrets: ON }, error: null })).toBe(ON);
+    expect(secretPolicyFrom({ data: null, error: null })).toBe(PENDING_SECRET_POLICY);
+    expect(secretPolicyFrom({ data: null, error: new Error('down') })).toBe(
+      UNREADABLE_SECRET_POLICY,
+    );
+  });
+
+  it('refuses a value — even one every rule would accept — saying why', () => {
+    expect(policyProblem(UNREADABLE_SECRET_POLICY, value)).toBe(POLICY_UNREADABLE_MESSAGE);
+    expect(policyProblem(PENDING_SECRET_POLICY, value)).toBe(POLICY_PENDING_MESSAGE);
+    expect(
+      policyViolations(UNREADABLE_SECRET_POLICY, { ...value, newName: true }).map(violationField),
+    ).toEqual(['value']);
+  });
+
+  it('lets a write that carries no value through: the server asks the name rule itself', () => {
+    expect(
+      policyViolations(UNREADABLE_SECRET_POLICY, {
+        name: 'renamed',
+        newName: true,
+        isProduction: true,
+      }),
+    ).toEqual([]);
+  });
+
+  it('warns about nothing, because it describes no rule', () => {
+    expect(nameWarning(UNREADABLE_SECRET_POLICY, 'legacy-name', false)).toBeNull();
+    expect(
+      valueWarning(UNREADABLE_SECRET_POLICY, { name: 'API_TOKEN', value: 'x', isProduction: true }),
+    ).toBeNull();
   });
 });
 

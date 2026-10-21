@@ -3,7 +3,7 @@ title: Policies and new-address read alerts
 navTitle: Policies and alerts
 description: Require IP allowlists and short lifetimes on tokens, enforce secret naming and strength rules, disable plaintext export, and get told when a new address reads production.
 keywords: [secret policy, token ip allowlist, token expiry policy, disable env export, read alerts, secret entropy rules]
-updated: 2026-10-20
+updated: 2026-10-21
 ---
 
 Rules an organisation sets for itself, and a notification it can ask for. Each
@@ -57,12 +57,27 @@ The policy can apply to every environment or only to production ones.
 name — a create, a rename, an import, a promotion — whatever client sent it.
 
 **The value rules** need the value, which the server never sees in an
-end-to-end encrypted environment. The dashboard and `xecret secrets set` apply
-them before encrypting, from the same rules and the same test fixtures, so both
-accept and refuse the same values; in a server-side-encrypted environment the
-server enforces them as well. A modified client could skip them, and this page
-does not pretend otherwise: they are a guard rail for honest mistakes, not a
-boundary against a member who means to get round them.
+end-to-end encrypted environment. The dashboard, `xecret secrets set` and
+`xecret import` apply them before encrypting, from one implementation and one
+set of shared test fixtures, so they accept and refuse the same values; in a
+server-side-encrypted environment the server enforces them as well. A modified
+client could skip them, and this page does not pretend otherwise: they are a
+guard rail for honest mistakes, not a boundary against a member who means to get
+round them.
+
+A [template](references.md)'s text is not a credential of its own, so it is
+read differently: the entropy rule is not asked of it, and the forbidden words
+are looked for in its literal text only — `postgres://app:${DB_PASSWORD}@db`
+does not contain the word "password", because `DB_PASSWORD` is a reference's
+name. The secrets a template names are held to the rules where they are
+written.
+
+**If the policy cannot be read**, a client refuses the write rather than
+skipping the rules, and says so: the dashboard while the policy is loading or
+after it failed to load, the CLI when the request fails. Only a server too old
+to have policies at all is treated as having none. A write that carries no
+value — a rename, a note — is unaffected, because the server checks the name
+rule itself.
 
 Existing names and values that break the rules are **warnings** in the dashboard,
 never errors. A policy adopted today is not a reason to make yesterday's value

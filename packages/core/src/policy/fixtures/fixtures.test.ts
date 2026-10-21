@@ -14,6 +14,8 @@ interface ValueCase {
   policy: SecretPolicy;
   secretName: string;
   value: string;
+  /** The type the secret will hold; absent means a plain value. */
+  valueType?: string;
   isProduction: boolean;
   violations: string[];
 }
@@ -30,6 +32,7 @@ describe('the shared policy fixtures', () => {
         testCase.secretName,
         testCase.value,
         testCase.isProduction,
+        testCase.valueType,
       ).map((violation) => violation.rule),
     ).toEqual(testCase.violations);
   });

@@ -1,3 +1,5 @@
+import { parseTemplate } from '../references/template';
+
 /**
  * The secret naming and strength policy (P19 §8, `secretPolicy`, Team and above).
  *
@@ -223,17 +225,36 @@ export function checkNameAgainstPolicy(
 /**
  * The value rules. Run by the clients — the server cannot — before a value is
  * encrypted. See the header for why that is a concession and not a guarantee.
+ *
+ * ── Templates ──
+ * `valueType` is the type the secret will hold once the write lands. A
+ * template's text is not its value: `postgres://${DB_USER}@${DB_HOST}` carries no
+ * credential of its own, and the secrets it names are held to these rules where
+ * they are written. So for a template the entropy rule is not asked — a
+ * reference is short and predictable by design, and `${DB_PASSWORD}` would fail
+ * it every time — and the forbidden-word rule is asked of the literal text only,
+ * each piece on its own line, so a reference *named* `DB_PASSWORD` is not taken
+ * for the word "password" sitting in the value. A template that does not parse
+ * is checked whole: it is about to be refused for its syntax anyway, and checking
+ * less of it would be the wrong way to be lenient.
+ *
+ * Here rather than in each client (review round 1, M5): the dashboard and the
+ * CLI disagreed — the CLI held a template's text to the entropy rule — and
+ * `policy-fixtures.json`, which both suites read, now carries template cases.
  */
 export function checkValueAgainstPolicy(
   policy: SecretPolicy,
   name: string,
   value: string,
   isProduction: boolean,
+  valueType?: string,
 ): PolicyViolation[] {
   if (!policyApplies(policy, isProduction)) return [];
   const violations: PolicyViolation[] = [];
+  const template = valueType === TEMPLATE_VALUE_TYPE;
+  const text = template ? literalText(value) : value;
 
-  if (policy.minValueEntropyBits !== null && entropyRuleApplies(policy, name)) {
+  if (!template && policy.minValueEntropyBits !== null && entropyRuleApplies(policy, name)) {
     if (estimateEntropyBits(value) < policy.minValueEntropyBits) {
       violations.push({
         rule: 'minValueEntropyBits',
@@ -244,7 +265,7 @@ export function checkValueAgainstPolicy(
     }
   }
 
-  const lowered = value.toLowerCase();
+  const lowered = text.toLowerCase();
   if (policy.forbiddenSubstrings.some((entry) => lowered.includes(entry.toLowerCase()))) {
     violations.push({
       rule: 'forbiddenSubstrings',
@@ -253,6 +274,23 @@ export function checkValueAgainstPolicy(
   }
 
   return violations;
+}
+
+/** The declared type whose values are read for references. */
+const TEMPLATE_VALUE_TYPE = 'template';
+
+/**
+ * A template's literal text, each piece on a line of its own — so a word cannot
+ * be assembled across a reference — or the whole value when it does not parse.
+ */
+function literalText(value: string): string {
+  try {
+    return parseTemplate(value)
+      .flatMap((segment) => (segment.kind === 'text' ? [segment.text] : []))
+      .join('\n');
+  } catch {
+    return value;
+  }
 }
 
 function entropyRuleApplies(policy: SecretPolicy, name: string): boolean {

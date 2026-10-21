@@ -1,5 +1,5 @@
 {
-  "description": "Cross-implementation fixtures for the P19 secret-policy value rules. Read by packages/core/src/policy/fixtures/fixtures.test.ts and by the Go CLI. The name rule is the server's and is not here; the value rules run in every client that holds a plaintext.",
+  "description": "Cross-implementation fixtures for the P19 secret-policy value rules. Read by packages/core/src/policy/fixtures/fixtures.test.ts and by the Go CLI. The name rule is the server's and is not here; the value rules run in every client that holds a plaintext. A value case's optional valueType is the type the secret will hold; 'template' reads only the literal text and skips the entropy rule.",
   "entropy": [
     { "value": "", "bits": 0 },
     { "value": "aaaaaaaaaaaaaaaa", "bits": 0 },
@@ -129,6 +129,118 @@
       "value": "q8Z2xL0vR9sT4bW7nY1cK6mP3dF5gH0j",
       "isProduction": true,
       "violations": []
+    },
+    {
+      "name": "a template is not held to the entropy rule",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 512,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": []
+      },
+      "secretName": "DB_PASSWORD_URL",
+      "value": "postgres://${DB_USER}:${DB_PASSWORD}@db",
+      "valueType": "template",
+      "isProduction": true,
+      "violations": []
+    },
+    {
+      "name": "the same text as a plain value is",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 512,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": []
+      },
+      "secretName": "DB_PASSWORD_URL",
+      "value": "postgres://${DB_USER}:${DB_PASSWORD}@db",
+      "valueType": "string",
+      "isProduction": true,
+      "violations": ["minValueEntropyBits"]
+    },
+    {
+      "name": "a forbidden word in a reference's name is not in a template's text",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": null,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["password"]
+      },
+      "secretName": "DB_URL",
+      "value": "postgres://app:${DB_PASSWORD}@db",
+      "valueType": "template",
+      "isProduction": false,
+      "violations": []
+    },
+    {
+      "name": "a forbidden word in a template's literal text is",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": null,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["changeme"]
+      },
+      "secretName": "DB_URL",
+      "value": "postgres://app:ChangeMe@${DB_HOST}",
+      "valueType": "template",
+      "isProduction": false,
+      "violations": ["forbiddenSubstrings"]
+    },
+    {
+      "name": "a word is not assembled across a reference",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": null,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["password"]
+      },
+      "secretName": "GREETING",
+      "value": "pass${MIDDLE}word",
+      "valueType": "template",
+      "isProduction": false,
+      "violations": []
+    },
+    {
+      "name": "an escaped reference is literal text",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": null,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["${password}"]
+      },
+      "secretName": "DOC",
+      "value": "write $${password} for a literal",
+      "valueType": "template",
+      "isProduction": false,
+      "violations": ["forbiddenSubstrings"]
+    },
+    {
+      "name": "a template that does not parse is checked whole",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["password"]
+      },
+      "secretName": "BROKEN",
+      "value": "${DB_PASSWORD",
+      "valueType": "template",
+      "isProduction": false,
+      "violations": ["forbiddenSubstrings"]
     }
   ]
 }

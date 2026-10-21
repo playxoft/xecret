@@ -36,7 +36,7 @@ import { CredentialChoice, RECOVERY_CODE_HINT } from '@/components/vault/credent
 import type { CredentialMethod } from '@/components/vault/credential-choice';
 import { readRecoveryCode } from '@/components/vault/vault-client';
 import { useVaultKeys } from '@/components/vault/vault-keys';
-import { policyProblem } from '@/components/policies/policy-checks';
+import { policyProblem, secretPolicyFrom } from '@/components/policies/policy-checks';
 import { useOrgPolicies } from '@/components/policies/secret-policy-context';
 import {
   defaultMapping,
@@ -116,9 +116,10 @@ export function ImportArchiveDialog(props: ImportArchiveDialogProps) {
   const locked = vaultKeys === null;
   // The organisation's secret policy (P19 §8). An archive import writes every
   // value in it anew, so each is held to the value rules before it is
-  // encrypted — `null` while loading or unreadable, which refuses nothing.
+  // encrypted — and refused, saying why, while the policy is loading or when it
+  // cannot be read (review round 1, M5).
   const policies = useOrgPolicies(props.orgSlug);
-  const secretPolicy = policies.data?.secrets ?? null;
+  const secretPolicy = secretPolicyFrom(policies);
   const [step, setStep] = useState<Step>({ kind: 'file' });
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState<Busy>(null);

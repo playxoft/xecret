@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -111,6 +112,119 @@ func TestThePolicyScopeIsAnsweredByTheKeyState(t *testing.T) {
 	err := set(t, "PORT", "--from-file", valueFile(t, "5432"))
 	if err == nil || !strings.Contains(err.Error(), "64 bits of entropy") {
 		t.Fatalf("err = %v, want the entropy rule in production", err)
+	}
+}
+
+// ── Review round 1, M5: the same answer as the dashboard ──
+
+// A template's text is read as a template: no entropy rule, and a forbidden word
+// in a reference's name is not in the value. Pinned for both clients by the
+// template cases in policy-fixtures.json; this is the command applying it, with
+// the type given and with the type the stored secret already holds.
+func TestSecretsSetReadsATemplateAsATemplate(t *testing.T) {
+	strict := map[string]any{
+		"enabled": true, "scope": "all", "namePattern": nil, "minValueEntropyBits": 512,
+		"entropyAppliesTo": []string{}, "forbiddenSubstrings": []string{"password"},
+	}
+	const template = "postgres://app:${DB_PASSWORD}@db"
+
+	_, fake := writeWorld(t, true)
+	withPolicy(fake, strict)
+	if err := set(t, "DB_URL", "--type", "template", "--from-file", valueFile(t, template)); err != nil {
+		t.Fatalf("a template was refused for its references: %v", err)
+	}
+
+	// No --type: the stored secret is a template, and is read as one.
+	_, fake = writeWorld(t, true, api.SecretListItem{
+		ID: "018f3b2c-9c1a-7c3d-8e4f-1a1b2c3d4e53", Name: "DB_URL", ValueType: "template", Version: 2,
+	})
+	withPolicy(fake, strict)
+	fake.reply(http.MethodPatch, "/secrets/DB_URL", http.StatusOK,
+		map[string]any{"secret": map[string]any{"name": "DB_URL", "version": 3, "status": "changed"}})
+	if err := set(t, "DB_URL", "--from-file", valueFile(t, template)); err != nil {
+		t.Fatalf("a stored template was refused for its references: %v", err)
+	}
+
+	// The same text as a plain value is held to both rules.
+	_, fake = writeWorld(t, true)
+	withPolicy(fake, strict)
+	err := set(t, "DB_URL", "--from-file", valueFile(t, template))
+	if err == nil || !strings.Contains(err.Error(), "512 bits") || !strings.Contains(err.Error(), "forbidden words") {
+		t.Fatalf("err = %v, want both rules for a plain value", err)
+	}
+}
+
+// A policy that cannot be read refuses the write, naming why.
+func TestSecretsSetFailsClosedWhenThePolicyCannotBeRead(t *testing.T) {
+	_, fake := writeWorld(t, true)
+	fake.refuse(http.MethodGet, "/policies", http.StatusInternalServerError, "internal", "Something failed.")
+
+	err := set(t, "API_KEY", "--from-file", valueFile(t, "q8Z2xL0vR9sT4bW7nY1cK6mP3dF5gH0j"))
+	if err == nil || !strings.Contains(err.Error(), "could not read the organisation's secret policy") ||
+		!strings.Contains(err.Error(), "API_KEY was not written") {
+		t.Fatalf("err = %v, want a refusal naming the unreadable policy", err)
+	}
+	if len(fake.sent(http.MethodPost, "/secrets")) != 0 {
+		t.Error("a write was sent against a policy nobody could read")
+	}
+}
+
+// `xecret import` into an end-to-end encrypted environment skipped the value
+// rules altogether. It asks them of every value, before anything is encrypted.
+func importFile(t *testing.T, content string) string {
+	t.Helper()
+	path := t.TempDir() + string(os.PathSeparator) + "secrets.env"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func runImport(t *testing.T, args ...string) error {
+	t.Helper()
+	_, _, err := captured(t, func() error { return cmdImport(withScope(args...)) })
+	return err
+}
+
+func TestImportAppliesTheValueRulesToEveryValue(t *testing.T) {
+	_, fake := writeWorld(t, true)
+	withPolicy(fake, forbidding("changeme"))
+	fake.reply(http.MethodPost, "/import", http.StatusOK,
+		map[string]any{"dryRun": false, "counts": map[string]int{"create": 1}, "items": []any{}})
+
+	err := runImport(t, importFile(t, "API_KEY=changeme\nDB_PASSWORD=Changeme2024\nPORT=5432\n"))
+	if err == nil || !strings.Contains(err.Error(), "nothing was imported") ||
+		!strings.Contains(err.Error(), "refuses 2 value") ||
+		!strings.Contains(err.Error(), "API_KEY") || !strings.Contains(err.Error(), "DB_PASSWORD") {
+		t.Fatalf("err = %v, want both refusals named", err)
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "changeme") {
+		t.Errorf("the refusal carries part of a value: %v", err)
+	}
+	if len(fake.sent(http.MethodPost, "/import")) != 0 {
+		t.Error("a refused import was sent")
+	}
+
+	// Values the rules accept are imported.
+	if err := runImport(t, importFile(t, "PORT=5432\n")); err != nil {
+		t.Fatalf("an acceptable import: %v", err)
+	}
+	if len(fake.sent(http.MethodPost, "/import")) != 1 {
+		t.Error("an acceptable import was not sent")
+	}
+}
+
+func TestImportFailsClosedWhenThePolicyCannotBeRead(t *testing.T) {
+	_, fake := writeWorld(t, true)
+	fake.refuse(http.MethodGet, "/policies", http.StatusInternalServerError, "internal", "Something failed.")
+
+	err := runImport(t, importFile(t, "PORT=5432\n"))
+	if err == nil || !strings.Contains(err.Error(), "could not read the organisation's secret policy") ||
+		!strings.Contains(err.Error(), "nothing was imported") {
+		t.Fatalf("err = %v, want a refusal naming the unreadable policy", err)
+	}
+	if len(fake.sent(http.MethodPost, "/import")) != 0 {
+		t.Error("an import was sent against a policy nobody could read")
 	}
 }
 

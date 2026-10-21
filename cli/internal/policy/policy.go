@@ -34,6 +34,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"github.com/playxoft/xecret/cli/internal/references"
 )
 
 // SecretPolicy is the `secrets` half of `GET /api/orgs/{org}/policies`.
@@ -77,15 +79,29 @@ func PolicyApplies(policy SecretPolicy, isProduction bool) bool {
 // value is encrypted. See the package header for why that is a concession and
 // not a guarantee.
 //
+// valueType is the type the secret will hold once the write lands. A template's
+// text is not its value — `postgres://${DB_USER}@${DB_HOST}` carries no
+// credential of its own, and the secrets it names are held to these rules where
+// they are written — so a template is not asked the entropy rule, and the
+// forbidden-word rule reads its literal text only, each piece on a line of its
+// own, so a reference named DB_PASSWORD is not taken for the word "password". A
+// template that does not parse is checked whole. This is the TypeScript's rule,
+// pinned by the template cases in policy-fixtures.json (review round 1, M5).
+//
 // One violation per rule, however many forbidden words match: the message for
 // the second rule is the same sentence whichever word it was, by design.
-func CheckValueAgainstPolicy(policy SecretPolicy, name, value string, isProduction bool) []Violation {
+func CheckValueAgainstPolicy(policy SecretPolicy, name, value string, isProduction bool, valueType string) []Violation {
 	if !PolicyApplies(policy, isProduction) {
 		return nil
 	}
 	var violations []Violation
+	template := valueType == templateValueType
+	text := value
+	if template {
+		text = literalText(value)
+	}
 
-	if policy.MinValueEntropyBits != nil && entropyRuleApplies(policy, name) {
+	if !template && policy.MinValueEntropyBits != nil && entropyRuleApplies(policy, name) {
 		if EstimateEntropyBits(value) < *policy.MinValueEntropyBits {
 			violations = append(violations, Violation{
 				Rule: RuleMinValueEntropyBits,
@@ -97,7 +113,7 @@ func CheckValueAgainstPolicy(policy SecretPolicy, name, value string, isProducti
 		}
 	}
 
-	lowered := strings.ToLower(value)
+	lowered := strings.ToLower(text)
 	for _, entry := range policy.ForbiddenSubstrings {
 		if strings.Contains(lowered, strings.ToLower(entry)) {
 			violations = append(violations, Violation{
@@ -109,6 +125,26 @@ func CheckValueAgainstPolicy(policy SecretPolicy, name, value string, isProducti
 	}
 
 	return violations
+}
+
+// templateValueType is the declared type whose values are read for references.
+const templateValueType = "template"
+
+// literalText is a template's literal text, each piece on a line of its own so a
+// word cannot be assembled across a reference — or the whole value when it does
+// not parse.
+func literalText(value string) string {
+	segments, err := references.ParseTemplate(value)
+	if err != nil {
+		return value
+	}
+	pieces := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		if segment.Reference == nil {
+			pieces = append(pieces, segment.Text)
+		}
+	}
+	return strings.Join(pieces, "\n")
 }
 
 func entropyRuleApplies(policy SecretPolicy, name string) bool {

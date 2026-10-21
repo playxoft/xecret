@@ -24,6 +24,7 @@ type fixtureFile struct {
 		Policy       SecretPolicy `json:"policy"`
 		SecretName   string       `json:"secretName"`
 		Value        string       `json:"value"`
+		ValueType    string       `json:"valueType"`
 		IsProduction bool         `json:"isProduction"`
 		Violations   []string     `json:"violations"`
 	} `json:"values"`
@@ -59,7 +60,7 @@ func TestValueFixtures(t *testing.T) {
 	cases := loadFixtures(t).Values
 	for _, c := range cases {
 		rules := []string{}
-		for _, violation := range CheckValueAgainstPolicy(c.Policy, c.SecretName, c.Value, c.IsProduction) {
+		for _, violation := range CheckValueAgainstPolicy(c.Policy, c.SecretName, c.Value, c.IsProduction, c.ValueType) {
 			rules = append(rules, violation.Rule)
 		}
 		if !reflect.DeepEqual(rules, c.Violations) {
@@ -81,7 +82,7 @@ func TestAViolationNeverCarriesTheValueOrTheWord(t *testing.T) {
 	}
 	const value = "my-HUNTER2-password"
 
-	violations := CheckValueAgainstPolicy(policy, "DB_PASSWORD", value, false)
+	violations := CheckValueAgainstPolicy(policy, "DB_PASSWORD", value, false, "")
 	if len(violations) != 2 {
 		t.Fatalf("violations = %+v, want both rules", violations)
 	}
@@ -99,7 +100,7 @@ func TestAViolationNeverCarriesTheValueOrTheWord(t *testing.T) {
 // One violation per rule, however many forbidden words match.
 func TestForbiddenWordsAreOneViolation(t *testing.T) {
 	policy := SecretPolicy{Enabled: true, Scope: "all", ForbiddenSubstrings: []string{"a", "b", "c"}}
-	if violations := CheckValueAgainstPolicy(policy, "X", "abc", false); len(violations) != 1 {
+	if violations := CheckValueAgainstPolicy(policy, "X", "abc", false, ""); len(violations) != 1 {
 		t.Fatalf("violations = %+v, want exactly one", violations)
 	}
 }

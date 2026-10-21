@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/playxoft/xecret/cli/internal/api"
@@ -77,18 +78,19 @@ func cmdImport(args []string) error {
 	// always preferred. An `e2ee` one cannot: uploading a file full of plaintext
 	// to an endpoint that must never see one is the whole thing the model
 	// forbids, so the parse, the plan and the encryption all happen here.
-	material, err := a.openKeys(ctx, client, credentials, resolved)
+	keys, material, err := a.openKeyState(ctx, client, credentials, resolved)
 	if err != nil {
 		return withE2eeHint(err)
 	}
 	if material != nil {
 		defer material.Close()
 		return importClientSide(ctx, a, client, material, resolved, importInput{
-			content:  string(content),
-			filename: filepath.Base(filePath),
-			format:   *format,
-			strategy: *strategy,
-			dryRun:   *dryRun,
+			content:      string(content),
+			filename:     filepath.Base(filePath),
+			format:       *format,
+			strategy:     *strategy,
+			dryRun:       *dryRun,
+			isProduction: keys.IsProduction,
 		})
 	}
 
@@ -139,6 +141,8 @@ type importInput struct {
 	format   string
 	strategy string
 	dryRun   bool
+	// isProduction answers a `production`-scoped secret policy.
+	isProduction bool
 }
 
 // importClientSide parses, plans and encrypts an import for an end-to-end
@@ -185,6 +189,36 @@ func importClientSide(
 	}
 
 	plan := importer.BuildPlan(parsed, names, importer.Strategy(input.strategy))
+
+	// The organisation's value rules (review round 1, M5), asked of every value
+	// this import would write, before any of them is encrypted — the dashboard's
+	// import asks them, and `secrets set` does, and this path skipped them. Read
+	// once for the batch; one that cannot be read refuses the import, naming why.
+	// Every refusal is listed, not the first, so one run tells the person
+	// everything the file needs, and none of them names a value.
+	rules, err := loadSecretPolicy(ctx, client, resolved)
+	if err != nil {
+		return fmt.Errorf("%w, so nothing was imported", err)
+	}
+	var refusals []string
+	for _, item := range plan.Items {
+		if item.Status == importer.StatusInvalid || item.Status == importer.StatusSkip {
+			continue
+		}
+		// An overwrite keeps the stored type — an import declares none — so an
+		// existing template is read as one.
+		valueType := ""
+		if target, exists := current[item.TargetName]; exists {
+			valueType = target.ValueType
+		}
+		if refusal := refuseByPolicy(rules, input.isProduction, item.TargetName, item.Value, valueType); refusal != nil {
+			refusals = append(refusals, refusal.Error())
+		}
+	}
+	if len(refusals) > 0 {
+		return fmt.Errorf("nothing was imported — this organisation's secret policy refuses %d value(s):\n%s",
+			len(refusals), strings.Join(refusals, "\n"))
+	}
 
 	entries := make([]api.ClientImportEntry, 0, len(plan.Items))
 	localCounts := map[string]int{}

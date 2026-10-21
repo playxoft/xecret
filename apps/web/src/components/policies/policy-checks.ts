@@ -1,10 +1,10 @@
 import {
   checkNameAgainstPolicy,
   checkValueAgainstPolicy,
+  DEFAULT_SECRET_POLICY,
   policyApplies,
 } from '@xecret/core/policy';
 import type { PolicyViolation, SecretPolicy } from '@xecret/core/policy';
-import { parseTemplate } from '@xecret/core/references';
 import { ApiError } from '@/lib/api';
 import type { FieldProblem } from '@/lib/api';
 
@@ -29,15 +29,9 @@ import type { FieldProblem } from '@/lib/api';
  * replaced anyway.
  *
  * ── Templates ──
- * A template's text is not its value: `postgres://${DB_USER}@${DB_HOST}` carries
- * no credential of its own, and the secrets it names are held to the rules
- * where they are written. So for a template the entropy rule is not asked — a
- * reference is short and predictable by design, and `${DB_PASSWORD}` would fail
- * it every time — and the forbidden-word rule is asked of the literal text
- * only, so a reference *named* `DB_PASSWORD` is not mistaken for the word
- * "password" sitting in the value. A template that does not parse is checked
- * whole: it is about to be refused for its syntax anyway, and checking less of
- * it would be the wrong way to be lenient.
+ * A template's literal text is what the value rules read, without the entropy
+ * rule — decided in `checkValueAgainstPolicy` itself, so this screen and the
+ * CLI give the same answer (`policy-fixtures.json` pins it for both).
  *
  * Every message comes from `@xecret/core/policy`, which builds them from the
  * policy's own fields and never from the value — the forbidden-word rule does
@@ -62,18 +56,6 @@ export interface PolicyWrite {
   isProduction: boolean;
 }
 
-/** The text of a value the value rules are asked about. See the header on templates. */
-function checkedText(value: string, valueType: string | undefined): string {
-  if (valueType !== 'template') return value;
-  try {
-    return parseTemplate(value)
-      .flatMap((segment) => (segment.kind === 'text' ? [segment.text] : []))
-      .join('\n');
-  } catch {
-    return value;
-  }
-}
-
 function valueViolations(
   policy: SecretPolicy,
   name: string,
@@ -81,32 +63,85 @@ function valueViolations(
   valueType: string | undefined,
   isProduction: boolean,
 ): PolicyViolation[] {
-  const violations = checkValueAgainstPolicy(
-    policy,
-    name,
-    checkedText(value, valueType),
-    isProduction,
-  );
-  return valueType === 'template'
-    ? violations.filter((violation) => violation.rule !== 'minValueEntropyBits')
-    : violations;
+  return checkValueAgainstPolicy(policy, name, value, isProduction, valueType);
 }
+
+/* ── a policy this screen does not have ───────────────────────────────────── */
+
+/**
+ * Stand-ins for a policy this screen could not read, or has not yet (review
+ * round 1, M5).
+ *
+ * ── Fail closed, like the CLI ──
+ * The value rules exist nowhere but in the clients, so a client that writes a
+ * value without having read them has skipped them — and this screen used to do
+ * exactly that whenever `GET /policies` failed or had not landed, while the CLI
+ * refused. Both now refuse: a write that carries a value, against either of
+ * these, is refused with a sentence that says why. A write that carries none — a
+ * rename, a note — goes ahead, because its only rule is the name rule and the
+ * server asks that itself.
+ *
+ * Frozen, disabled policies rather than a wider type, so every helper that only
+ * *describes* (`nameWarning`, `valueWarning`) reads them as "no rule" and says
+ * nothing, and only the refusing path below needs to know.
+ */
+export const PENDING_SECRET_POLICY: SecretPolicy = Object.freeze({
+  ...DEFAULT_SECRET_POLICY,
+  enabled: false,
+});
+export const UNREADABLE_SECRET_POLICY: SecretPolicy = Object.freeze({
+  ...DEFAULT_SECRET_POLICY,
+  enabled: false,
+});
+
+/** Why a value cannot be saved against a policy this screen does not have. */
+export const POLICY_PENDING_MESSAGE =
+  'The organisation’s secret policy is still loading, so this value was not saved. Try again in a moment.';
+export const POLICY_UNREADABLE_MESSAGE =
+  'The organisation’s secret policy could not be read, so this value was not saved. Reload the page and try again.';
+
+/**
+ * The policy a screen applies, from its `GET /policies`: the organisation's
+ * when it has landed, and otherwise the stand-in that says why not.
+ */
+export function secretPolicyFrom(resource: {
+  data: { secrets: SecretPolicy } | null;
+  error: unknown;
+}): SecretPolicy {
+  if (resource.data !== null) return resource.data.secrets;
+  return resource.error === null || resource.error === undefined
+    ? PENDING_SECRET_POLICY
+    : UNREADABLE_SECRET_POLICY;
+}
+
+/** A broken rule, or the one refusal a missing policy produces. */
+export type WriteViolation =
+  PolicyViolation | { readonly rule: 'policyUnavailable'; readonly message: string };
 
 /**
  * Every rule a write breaks, name first.
  *
- * `null` policy — not loaded yet, or the request failed — breaks nothing. The
- * dashboard does not refuse a write because it could not read the rulebook: the
- * server still asks the name rule, and a screen that froze every save on a
- * failed `GET /policies` would turn a transient error into an outage.
+ * `null` is "no policy applies" — a caller with nothing to enforce. A screen
+ * that reads the organisation's passes `secretPolicyFrom(…)`, and the two
+ * stand-ins it can hand back refuse a value outright; see above.
  */
 export function policyViolations(
   policy: SecretPolicy | null,
   write: PolicyWrite,
-): PolicyViolation[] {
+): WriteViolation[] {
+  if (policy === PENDING_SECRET_POLICY || policy === UNREADABLE_SECRET_POLICY) {
+    if (write.value === undefined) return [];
+    return [
+      {
+        rule: 'policyUnavailable',
+        message:
+          policy === PENDING_SECRET_POLICY ? POLICY_PENDING_MESSAGE : POLICY_UNREADABLE_MESSAGE,
+      },
+    ];
+  }
   if (policy === null || !policyApplies(policy, write.isProduction)) return [];
 
-  const violations: PolicyViolation[] = [];
+  const violations: WriteViolation[] = [];
   if (write.newName) {
     violations.push(...checkNameAgainstPolicy(policy, write.name, write.isProduction));
   }
@@ -158,7 +193,7 @@ export function policyRefusal(problems: readonly FieldProblem[]): ApiError {
 }
 
 /** Which field a broken rule belongs under, for a form that has both. */
-export function violationField(violation: PolicyViolation): 'name' | 'value' {
+export function violationField(violation: WriteViolation): 'name' | 'value' {
   return violation.rule === 'namePattern' ? 'name' : 'value';
 }
 

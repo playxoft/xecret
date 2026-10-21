@@ -27,6 +27,7 @@ import {
   useEnvironmentKeys,
 } from '@/components/envkeys';
 import { OverridesCard } from '@/components/overrides/overrides-card';
+import { secretPolicyFrom } from '@/components/policies/policy-checks';
 import { SecretPolicyProvider, useOrgPolicies } from '@/components/policies/secret-policy-context';
 import { EnvironmentBadge } from '@/components/projects/environment-badge';
 import { EnvironmentSwitcher } from '@/components/projects/environment-switcher';
@@ -153,12 +154,13 @@ export function EnvironmentScreen({
    *
    * Every editor below — a stored row, a new row, a compared cell, the import
    * — asks it before it encrypts, so it is read here and handed down rather
-   * than fetched per row. `null` until it lands, which refuses nothing: the
-   * server's name rule is the backstop, and a screen that froze every save on a
-   * slow `GET /policies` would turn latency into an outage.
+   * than fetched per row. Until it lands, or when it cannot be read, a write
+   * that carries a value is refused saying so (review round 1, M5): the value
+   * rules live only in the clients, and saving without them is skipping them.
+   * A rename or a note still saves — the server asks the name rule itself.
    */
   const policies = useOrgPolicies(orgSlug);
-  const secretPolicy = policies.data?.secrets ?? null;
+  const secretPolicy = secretPolicyFrom(policies);
 
   /**
    * What this environment inherits from (P19 §1), by name where the listing has

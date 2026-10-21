@@ -32,9 +32,11 @@ export function useOrgPolicies(orgSlug: string): ApiResource<OrgPoliciesResponse
  * `production`-scoped one applies to some of the environments on screen and
  * not to others.
  *
- * `null` while the policy is loading or could not be read, which every helper
- * in `policy-checks.ts` reads as "no rule". See `policyViolations` for why a
- * failed read does not freeze the screen.
+ * A screen that reads the organisation's policy supplies `secretPolicyFrom(…)`,
+ * which is a stand-in while it loads or when it could not be read — and a value
+ * written against either stand-in is refused, naming why (review round 1, M5).
+ * `null`, the default, is "no policy applies": a component rendered outside any
+ * screen that reads one.
  */
 const SecretPolicyContext = createContext<SecretPolicy | null>(null);
 

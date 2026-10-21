@@ -730,7 +730,10 @@ webhooks — and three policies. What each could have become, and what stops it:
 - **Client-enforced policies** (T3). Disabling plaintext export and the secret policy's value
   rules run in the clients that hold the plaintext; a modified client skips them. They are
   documented as guard rails, not boundaries. The name rule, the token policy and every plan gate
-  are server-side.
+  are server-side. An *unmodified* client never skips them by accident (review round 1): both
+  read a template the same way from one implementation pinned by shared fixtures, both apply
+  them to every value-carrying write including the CLI's import, and both refuse a write when the
+  policy cannot be read rather than treating it as absent.
 - **Read alerts as a mail bomb** (T1). One email an hour per organisation at most, whatever the
   number of new addresses; sightings are written after the response and never slow or refuse a
   read.

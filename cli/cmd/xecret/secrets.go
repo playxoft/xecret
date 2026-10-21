@@ -373,19 +373,12 @@ func secretsSet(args []string) error {
 	)
 	if material != nil {
 		defer material.Close()
-		// The organisation's value rules, applied to the plaintext before
-		// anything is encrypted — this process is the last thing in the path of a
-		// CLI write that holds the value. See internal/policy for why that is a
-		// concession rather than a guarantee.
-		if err := checkSecretPolicy(ctx, client, resolved, keys.IsProduction, name, value); err != nil {
-			return err
-		}
 		var options []api.WriteOption
 		if *confirmLink {
 			options = append(options, api.ConfirmCrossesProtection())
 		}
 		appended, result, err = writeClientSecret(
-			ctx, a, client, material, resolved, name, value, *valueType, *note, options...)
+			ctx, a, client, material, resolved, keys.IsProduction, name, value, *valueType, *note, options...)
 		err = withCrossingHint(err)
 	} else {
 		// Create, and on "already exists" append a version instead. Two calls in
@@ -924,6 +917,7 @@ func writeClientSecret(
 	client *api.Client,
 	material *envkeys.Material,
 	resolved scope,
+	isProduction bool,
 	name, value, valueType, note string,
 	options ...api.WriteOption,
 ) (appended bool, result *api.WriteResult, err error) {
@@ -944,6 +938,17 @@ func writeClientSecret(
 	if effectiveType == "" && current != nil {
 		effectiveType = current.ValueType
 	}
+
+	// The organisation's value rules, applied to the plaintext before anything
+	// is encrypted — this process is the last thing in the path of a CLI write
+	// that holds the value — and asked of the type the secret will hold, so a
+	// template already declared one is read as a template even when this command
+	// names no type. See internal/policy for why that is a concession rather than
+	// a guarantee.
+	if err := checkSecretPolicy(ctx, client, resolved, isProduction, name, value, effectiveType); err != nil {
+		return false, nil, err
+	}
+
 	declared, err := templateDeclaration(value, effectiveType)
 	if err != nil {
 		return false, nil, fmt.Errorf(
@@ -1033,40 +1038,58 @@ func templateDeclaration(value, effectiveType string) ([]api.ReferenceDeclaratio
 
 // checkSecretPolicy applies the organisation's value rules to a value about to
 // be written, and refuses it — locally, before it is encrypted — when they say
-// no.
-//
-// A deployment that predates the policy answers the read with a 404, and that is
-// "no policy", silently: refusing every write against an older server over a
-// rule it has no way to have would be the policy breaking the product. Any other
-// failure to read it stops the write, because a policy this process could not
-// read is not one it can say was satisfied.
-//
-// The refusal lists the rules' own sentences, which name the secret and the
-// policy's numbers and never the value — not even which forbidden word matched.
+// no. valueType is the type the secret will hold once the write lands, so a
+// template is read as one (see policy.CheckValueAgainstPolicy).
 func checkSecretPolicy(
 	ctx context.Context,
 	client *api.Client,
 	resolved scope,
 	isProduction bool,
-	name, value string,
+	name, value, valueType string,
 ) error {
+	rules, err := loadSecretPolicy(ctx, client, resolved)
+	if err != nil {
+		return fmt.Errorf("%w, so %s was not written", err, name)
+	}
+	return refuseByPolicy(rules, isProduction, name, value, valueType)
+}
+
+// loadSecretPolicy reads the organisation's secret policy once, for a write or
+// a batch of them.
+//
+// A deployment that predates the policy answers the read with a 404, and that is
+// "no policy" — nil, silently: refusing every write against an older server over
+// a rule it has no way to have would be the policy breaking the product. Any
+// other failure to read it is an error the caller refuses the write with,
+// naming the reason: a policy this process could not read is not one it can say
+// was satisfied. The dashboard fails the same way (review round 1, M5).
+func loadSecretPolicy(ctx context.Context, client *api.Client, resolved scope) (*policy.SecretPolicy, error) {
 	policies, err := client.Policies(ctx, resolved.Org)
 	if err != nil {
 		if apiErr, ok := api.AsError(err); ok && apiErr.Status == 404 {
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("could not read the organisation's secret policy, so %s was not written: %w", name, err)
+		return nil, fmt.Errorf("could not read the organisation's secret policy (%w)", err)
 	}
-
 	rules := policies.Secrets
-	violations := policy.CheckValueAgainstPolicy(policy.SecretPolicy{
+	return &policy.SecretPolicy{
 		Enabled:             rules.Enabled,
 		Scope:               rules.Scope,
 		NamePattern:         rules.NamePattern,
 		MinValueEntropyBits: rules.MinValueEntropyBits,
 		EntropyAppliesTo:    rules.EntropyAppliesTo,
 		ForbiddenSubstrings: rules.ForbiddenSubstrings,
-	}, name, value, isProduction)
+	}, nil
+}
+
+// refuseByPolicy is the refusal for one value, or nil. It lists the rules' own
+// sentences, which name the secret and the policy's numbers and never the value
+// — not even which forbidden word matched. A nil policy refuses nothing.
+func refuseByPolicy(rules *policy.SecretPolicy, isProduction bool, name, value, valueType string) error {
+	if rules == nil {
+		return nil
+	}
+	violations := policy.CheckValueAgainstPolicy(*rules, name, value, isProduction, valueType)
 	if len(violations) == 0 {
 		return nil
 	}
