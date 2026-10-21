@@ -984,6 +984,10 @@ audit_logs — no FKs by design; references are soft
       re-bills it, and a month without one is never billed. (A yearly plan's counter
       rows are months of its year, from the billing anniversary — no schema change.)
       — additive, one backfill from each organisation's current plan
+0027  P12, review round 3: billing_reminders_kind_check widened with three once-only
+      alerts (alert_unknown_product, alert_activation_waiting, alert_operator_managed) —
+      the reminders' primary key deduplicates an error line the hourly job would
+      otherwise repeat every run; never an email — constraint only, no backfill
 ```
 
 Migration 0024 (P12) is additive and **must be applied before the code that reads it**: from that

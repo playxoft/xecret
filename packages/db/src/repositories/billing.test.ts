@@ -8,6 +8,7 @@ import type { TestDatabase } from '../testing/pglite';
 import {
   addFetchCounts,
   billingCounts,
+  claimBillingAlert,
   claimBillingRequest,
   claimReminder,
   claimSeatSync,
@@ -408,6 +409,30 @@ describe('migration 0026', () => {
     }
     // A month that already records one keeps it.
     expect(await allowanceOf(written.orgId, month)).toBe(123_456);
+  });
+});
+
+describe('migration 0027', () => {
+  it('raises each once-only alert once per occasion, beside the reminders, and nothing undefined', async () => {
+    const { orgId } = await seedOrg();
+    for (const kind of [
+      'alert_unknown_product',
+      'alert_activation_waiting',
+      'alert_operator_managed',
+    ] as const) {
+      expect(await claimBillingAlert(t.db, { orgId, kind, occasion: 'sub_1' })).toBe(true);
+      expect(await claimBillingAlert(t.db, { orgId, kind, occasion: 'sub_1' })).toBe(false);
+      // Another subscription is another occasion.
+      expect(await claimBillingAlert(t.db, { orgId, kind, occasion: 'sub_2' })).toBe(true);
+    }
+    // The emails are untouched by it.
+    expect(await claimReminder(t.db, { orgId, kind: 'usage_80', occasion: 'sub_1' })).toBe(true);
+    await expect(
+      t.pg.query(
+        `insert into billing_reminders (org_id, kind, occasion) values ($1, 'alert_promo', 'x')`,
+        [orgId],
+      ),
+    ).rejects.toThrow(/billing_reminders_kind_check/);
   });
 });
 

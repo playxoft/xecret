@@ -457,6 +457,7 @@ export {
   addFetchCounts,
   billingCounts,
   carriesProviderIds,
+  claimBillingAlert,
   claimBillingRequest,
   claimReminder,
   claimSeatSync,

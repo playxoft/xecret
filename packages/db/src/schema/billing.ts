@@ -452,8 +452,29 @@ export const BILLING_REMINDER_KINDS = [
 export type BillingReminderKind = (typeof BILLING_REMINDER_KINDS)[number];
 
 /**
- * Which billing emails have gone out (migration 0024). The primary key is the
- * deduplication: a reminder is sent only by whoever won the insert.
+ * The alerts for a human that the billing jobs raise once rather than on every
+ * run while their cause lasts (migration 0027). Kept in the reminders' ledger,
+ * deduplicated by the same key; never an email.
+ *
+ *  - `alert_unknown_product`: a subscription a job asked Dodo about is on a
+ *    product this deployment does not sell. Once per subscription and product.
+ *  - `alert_activation_waiting`: a paid checkout's subscription, a day after
+ *    its payment linked it, is still pending at Dodo or unknown to it.
+ *  - `alert_operator_managed`: a paid row follows a subscription id with no
+ *    product recorded — an operator's grant over an old subscription's id.
+ */
+export const BILLING_ALERT_KINDS = [
+  'alert_unknown_product',
+  'alert_activation_waiting',
+  'alert_operator_managed',
+] as const;
+
+export type BillingAlertKind = (typeof BILLING_ALERT_KINDS)[number];
+
+/**
+ * Which billing emails have gone out (migration 0024), and which once-only
+ * alerts have been raised (0027). The primary key is the deduplication: a
+ * reminder is sent, or an alert raised, only by whoever won the insert.
  */
 export const billingReminders = pgTable(
   'billing_reminders',
@@ -461,7 +482,7 @@ export const billingReminders = pgTable(
     orgId: uuid('org_id')
       .notNull()
       .references(() => organizations.id, { onDelete: 'cascade' }),
-    kind: text('kind').notNull().$type<BillingReminderKind>(),
+    kind: text('kind').notNull().$type<BillingReminderKind | BillingAlertKind>(),
     /** What is being reminded about: a trial end date, a period, a payment. */
     occasion: text('occasion').notNull(),
     sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
@@ -470,7 +491,9 @@ export const billingReminders = pgTable(
     primaryKey({ name: 'billing_reminders_pkey', columns: [t.orgId, t.kind, t.occasion] }),
     check(
       'billing_reminders_kind_check',
-      sql.raw(`"kind" IN (${BILLING_REMINDER_KINDS.map((kind) => `'${kind}'`).join(', ')})`),
+      sql.raw(
+        `"kind" IN (${[...BILLING_REMINDER_KINDS, ...BILLING_ALERT_KINDS].map((kind) => `'${kind}'`).join(', ')})`,
+      ),
     ),
     check('billing_reminders_occasion_check', sql`length(${t.occasion}) between 1 and 128`),
     index('billing_reminders_sent_idx').on(t.sentAt),

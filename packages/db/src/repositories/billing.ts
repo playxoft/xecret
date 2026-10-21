@@ -16,7 +16,7 @@ import {
   orgSubscriptions,
   orgUsageCounters,
 } from '../schema/billing';
-import type { BillingReminderKind, BillingRequestKind } from '../schema/billing';
+import type { BillingAlertKind, BillingReminderKind, BillingRequestKind } from '../schema/billing';
 import { planIdEnum } from '../schema/enums';
 import { users } from '../schema/identity';
 import { projects } from '../schema/resources';
@@ -1176,6 +1176,27 @@ export async function claimReminder(
   const inserted = await exec
     .insert(billingReminders)
     .values({ ...reminder, occasion: reminder.occasion.slice(0, 128) })
+    .onConflictDoNothing()
+    .returning({ orgId: billingReminders.orgId });
+  return inserted.length > 0;
+}
+
+/**
+ * Claims a once-only alert for a human, returning false when it was already
+ * raised — {@link claimReminder}'s ledger and key, for an error line a billing
+ * job would otherwise repeat on every run for as long as its cause lasts: a
+ * product this deployment does not sell, a paid checkout's subscription Dodo
+ * still has pending. The occasion names what is alerted about, so a new
+ * subscription (or a new product) is raised anew. Pruned with the reminders:
+ * a cause that outlasts a year is raised again.
+ */
+export async function claimBillingAlert(
+  exec: Executor,
+  alert: { orgId: string; kind: BillingAlertKind; occasion: string },
+): Promise<boolean> {
+  const inserted = await exec
+    .insert(billingReminders)
+    .values({ ...alert, occasion: alert.occasion.slice(0, 128) })
     .onConflictDoNothing()
     .returning({ orgId: billingReminders.orgId });
   return inserted.length > 0;
