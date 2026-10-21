@@ -3,7 +3,7 @@ title: Environment promotion and point-in-time restore
 navTitle: Promotion and restore
 description: Promote values from staging to production with a masked diff, and put an environment back the way it was at an earlier moment — atomically, and without losing history.
 keywords: [environment promotion, promote secrets, secret diff, point in time restore, secrets rollback]
-updated: 2026-10-20
+updated: 2026-10-21
 ---
 
 Two ways of changing many secrets at once, both on the Pro plan and above, and
@@ -82,8 +82,16 @@ reaches it.
 
 A value written before a key rotation is encrypted under the key that was
 active then. Your browser opens it with your grant for that older key, which a
-rotation keeps. A value under a key you never held cannot be restored by you;
-the preview says which, and the restore leaves those as they are and lists them.
+rotation keeps.
+
+A value under a key you never held a grant for cannot be restored by you, so
+**a restore can be partial**: those secrets stay exactly as they are now while
+everything else goes back to the moment you picked. The preview warns you
+before anything is written and names each one, and the result lists them again
+as left as they are. Somebody who holds that key can restore them. A value whose
+key *was* given to you but that does not open in your browser is different: it
+stops the whole restore, because the server will not apply part of a moment it
+was asked to restore in full.
 
 Each value your browser sends back is checked against the one stored for that
 moment, so a stale or mistaken client cannot restore the wrong value.

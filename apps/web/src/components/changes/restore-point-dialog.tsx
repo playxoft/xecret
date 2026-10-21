@@ -9,6 +9,7 @@ import {
   isoToLocalInput,
   localInputToIso,
   openRestorePlan,
+  partialRestoreNotice,
   postRestore,
 } from '@/components/envkeys/restore-point';
 import type {
@@ -403,6 +404,7 @@ function PlanTable({
   const rows = previewed.opened.items.filter((entry) => entry.item.action !== 'unchanged');
   const same = previewed.opened.items.length - rows.length;
   const response = previewed.response;
+  const partial = partialRestoreNotice(previewed.opened.items);
 
   return (
     <div className="flex flex-col gap-2">
@@ -415,6 +417,11 @@ function PlanTable({
         </p>
         {rows.length > 0 ? <p className="mt-1">Nothing has been written yet.</p> : null}
       </Alert>
+      {partial === null ? null : (
+        <Alert tone="warning" title="Not everything can be put back">
+          <p>{partial}</p>
+        </Alert>
+      )}
 
       {rows.length > 0 ? (
         <TableContainer aria-label="What the restore does" className="max-h-[45vh] overflow-y-auto">

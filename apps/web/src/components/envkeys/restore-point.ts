@@ -121,6 +121,33 @@ export function writesValue(item: RestorePlanItem): boolean {
   return item.expectedVersion !== null && item.available;
 }
 
+/**
+ * The warning a preview carries when the restore it describes would be
+ * **partial** (review round 1, L13) — some of what the moment held was written
+ * under a key this person holds no grant for, so those secrets are left as they
+ * are while everything else is put back — or `null` when it is whole.
+ *
+ * Said before the apply, by name, because the outcome is a mixture: an
+ * environment that is part "as it was" and part "as it is now" is exactly what a
+ * person reading "restored to 14:30" would not assume. A value whose key *was*
+ * served but that did not open is not this case — it blocks the restore instead.
+ */
+export function partialRestoreNotice(
+  items: readonly Pick<OpenedRestoreItem, 'item' | 'problem'>[],
+): string | null {
+  const left = items
+    .filter((entry) => entry.problem === 'unavailable' && entry.item.action !== 'unchanged')
+    .map((entry) => entry.item.name);
+  if (left.length === 0) return null;
+  const many = left.length > 1;
+  return (
+    `This restore is partial. ${left.join(', ')} ${many ? 'were' : 'was'} written under a key ` +
+    `you hold no grant for, so ${many ? 'they stay' : 'it stays'} exactly as ${many ? 'they are' : 'it is'} ` +
+    'now while everything else goes back. Somebody who holds that key can restore ' +
+    `${many ? 'them' : 'it'}.`
+  );
+}
+
 /** One line of the preview: the plan's item, and its value at the instant when it opened. */
 export interface OpenedRestoreItem {
   item: RestorePlanItem;

@@ -20,7 +20,13 @@ import type { VaultKeyMaterial } from '@/components/vault/key-store';
 import { sealGrantFor } from './env-keys';
 import { holdEnvKey, releaseEnvKeys } from './env-key-store';
 import type { EnvKeyMaterial } from './env-key-store';
-import { isoToLocalInput, localInputToIso, openRestorePlan, writesValue } from './restore-point';
+import {
+  isoToLocalInput,
+  localInputToIso,
+  openRestorePlan,
+  partialRestoreNotice,
+  writesValue,
+} from './restore-point';
 import type { RestorePlan, RestorePlanItem, RestorePlanKey } from './restore-point';
 import { decryptValue } from './secret-crypto';
 
@@ -397,6 +403,36 @@ describe('the helpers around it', () => {
     expect(writesValue(base)).toBe(true);
     expect(writesValue({ ...base, available: false })).toBe(false);
     expect(writesValue({ ...base, expectedVersion: null })).toBe(false);
+  });
+
+  it('says, by name, when a restore would be partial (review round 1, L13)', () => {
+    const base: RestorePlanItem = {
+      name: 'X',
+      action: 'update',
+      secretId: null,
+      expectedVersion: 2,
+      valueType: 'string',
+      available: true,
+      from: null,
+    };
+    const whole = [{ item: base, problem: null }];
+    expect(partialRestoreNotice(whole)).toBeNull();
+
+    const one = partialRestoreNotice([
+      ...whole,
+      { item: { ...base, name: 'OLD_KEY', available: false }, problem: 'unavailable' as const },
+    ]);
+    expect(one).toMatch(/^This restore is partial\. OLD_KEY was written under a key/);
+    expect(one).toContain('it stays exactly as it is');
+
+    const two = partialRestoreNotice([
+      { item: { ...base, name: 'A', available: false }, problem: 'unavailable' as const },
+      { item: { ...base, name: 'B', available: false }, problem: 'unavailable' as const },
+    ]);
+    expect(two).toContain('A, B were written');
+    // A value whose key was served but did not open blocks the restore; it is
+    // not a partial one.
+    expect(partialRestoreNotice([{ item: base, problem: 'unreadable' as const }])).toBeNull();
   });
 
   it('round-trips a local date-time through ISO 8601', () => {
