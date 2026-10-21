@@ -1096,6 +1096,47 @@ describe('the usage counter', () => {
     ]);
   });
 
+  it('keeps a past month’s allowance when a late flush lands after an upgrade — not raised to the new plan’s', async () => {
+    const now = Date.now();
+    const proStart = new Date(now - 30 * DAY);
+    const renewal = new Date(now - 60_000);
+    const { orgId } = await seedOrg({
+      plan: 'pro',
+      customer: `cus_${uniq()}`,
+      dodoSubscription: `sub_${uniq()}`,
+      periodStart: proStart,
+      periodEnd: renewal,
+      meteredFrom: proStart,
+    });
+    await addFetchCounts(t.db, [{ orgId, fetches: 250_000, countedAt: new Date(now - 2 * DAY) }]);
+    expect(await allowanceOf(orgId, proStart)).toBe(200_000);
+
+    // Renewed on Team: an upgrade, so the plan's allowance now is the larger.
+    await t.pg.query(
+      `update org_subscriptions set plan = 'team', current_period_start = $2,
+              current_period_end = $3 where org_id = $1`,
+      [orgId, renewal, new Date(now + 30 * DAY)],
+    );
+    // The Pro month's last fetches, flushed after it. The month is past, so it
+    // keeps what it opened with: raised to Team's million — what greatest()
+    // with the plan of today would do — its 50,000 over Pro's would go unbilled.
+    await addFetchCounts(t.db, [
+      { orgId, fetches: 3, countedAt: new Date(renewal.getTime() - 5_000) },
+    ]);
+    expect(await usageRows(orgId)).toEqual([{ period: proStart.toISOString(), fetches: 250_003 }]);
+    expect(await allowanceOf(orgId, proStart)).toBe(200_000);
+
+    // The month that is current now opens with Team's.
+    await addFetchCounts(t.db, [{ orgId, fetches: 4 }]);
+    expect(await allowanceOf(orgId, renewal)).toBe(1_000_000);
+    const work = (
+      await listMeterableUsage(t.db, { since: new Date(0), limit: 1000, mode: 'test_mode' })
+    ).filter((row) => row.orgId === orgId);
+    expect(work.map((row) => [row.periodStart.toISOString(), row.includedFetches])).toEqual([
+      [proStart.toISOString(), 200_000],
+    ]);
+  });
+
   it('raises the current month’s allowance with support, and keeps it after the raise is cleared', async () => {
     const now = Date.now();
     const start = new Date(now - 5 * DAY);
