@@ -13,7 +13,18 @@ import { subscriptionResource } from '../audit';
 import type { HandlerOutcome } from '../effects';
 import type { DodoSubscription } from '../payloads';
 import { decideSnapshot } from '../snapshot';
+import type { IgnoreReason } from '../snapshot';
 import { paymentFailedOccasion } from '../reminders';
+
+/**
+ * A handler's outcome, and why nothing was written when nothing was — what a
+ * job that asked Dodo itself acts on (`jobs.ts`): it stops waiting on a
+ * subscription `decideSnapshot` found ended, by that decision rather than a
+ * second reading of the snapshot. `null` when the snapshot was applied.
+ */
+export interface SnapshotOutcome extends HandlerOutcome {
+  ignored: IgnoreReason | null;
+}
 
 /**
  * Every `subscription.*` event: apply the snapshot it carries.
@@ -46,9 +57,9 @@ export async function applySubscriptionSnapshot(
     /** The open checkout this subscription came from, when placement found one. */
     checkout: { sessionId: string } | { nonce: string } | null;
   },
-): Promise<HandlerOutcome> {
+): Promise<SnapshotOutcome> {
   const { orgId, eventType, snapshot, audit } = input;
-  const outcome: HandlerOutcome = { audit: [], effects: [] };
+  const outcome: SnapshotOutcome = { audit: [], effects: [], ignored: null };
   const resource = subscriptionResource(orgId);
 
   let locked = await lockSubscription(tx, orgId);
@@ -73,7 +84,8 @@ export async function applySubscriptionSnapshot(
     attachable: input.checkout !== null,
   });
 
-  const unverified = (): HandlerOutcome => {
+  const unverified = (): SnapshotOutcome => {
+    outcome.ignored = 'unverified-checkout';
     outcome.audit.push(
       audit.error('billing.duplicate_subscription', resource, 'conflict', {
         billingEvent: eventType,
@@ -92,6 +104,7 @@ export async function applySubscriptionSnapshot(
   };
 
   if (decision.kind === 'ignore') {
+    outcome.ignored = decision.reason;
     switch (decision.reason) {
       case 'duplicate-subscription':
       case 'operator-managed':

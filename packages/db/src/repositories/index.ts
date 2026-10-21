@@ -455,6 +455,7 @@ export type {
 
 export {
   addFetchCounts,
+  awaitingActivation,
   billingCounts,
   carriesProviderIds,
   claimBillingAlert,

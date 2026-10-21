@@ -435,16 +435,42 @@ export async function listLapsedTrials(
 }
 
 /**
- * Rows on Free that a checkout's payment linked to a subscription whose
- * snapshot has never been applied, linked before `linkedBefore` — a paid
+ * Whether a row is on Free waiting for the subscription a paid checkout
+ * linked: the checkout's first payment wrote the subscription's id, and no
+ * snapshot of it has been applied yet (`dodo_event_at` null). The customer
+ * has paid and Dodo bills the subscription; the plan arrives with its
+ * snapshot — the webhook's, or the hourly job's ask. One statement of the
+ * shape, for the sweep that asks, the checkout it refuses, and the operator
+ * tool that must not write over it.
+ */
+export function awaitingActivation(
+  row: Pick<SubscriptionRecord, 'plan' | 'dodoSubscriptionId' | 'dodoEventAt'>,
+): boolean {
+  return row.plan === 'free' && row.dodoSubscriptionId !== null && row.dodoEventAt === null;
+}
+
+/**
+ * Rows {@link awaitingActivation}, linked before `linkedBefore` — a paid
  * checkout stranded short of its plan (the `subscription.active` lost, or
  * refused until Dodo gave up). The hourly job asks Dodo what each became.
  * "Linked" is dated by the row's last write: nothing else writes a Free row
  * between the link and the activation.
+ *
+ * Only rows of this deployment's Dodo `mode` (or of none recorded), filtered
+ * here rather than by the caller: a row of the other mode is never asked
+ * about and so never stops waiting, and filtered after the `LIMIT` enough of
+ * them would fill every page. Paged by organisation with `afterOrgId`, so a
+ * row that keeps waiting — Dodo has it pending, or does not know it — can
+ * never crowd out one linked after it.
  */
 export async function listAwaitingActivation(
   exec: Executor,
-  options: { linkedBefore: Date; limit: number },
+  options: {
+    linkedBefore: Date;
+    mode: 'test_mode' | 'live_mode';
+    limit: number;
+    afterOrgId?: string | undefined;
+  },
 ): Promise<SubscriptionRecord[]> {
   return exec
     .select()
@@ -455,9 +481,13 @@ export async function listAwaitingActivation(
         isNotNull(orgSubscriptions.dodoSubscriptionId),
         isNull(orgSubscriptions.dodoEventAt),
         lt(orgSubscriptions.updatedAt, options.linkedBefore),
+        or(isNull(orgSubscriptions.dodoMode), eq(orgSubscriptions.dodoMode, options.mode)),
+        options.afterOrgId === undefined
+          ? undefined
+          : gt(orgSubscriptions.orgId, options.afterOrgId),
       ),
     )
-    .orderBy(asc(orgSubscriptions.updatedAt))
+    .orderBy(asc(orgSubscriptions.orgId))
     .limit(options.limit);
 }
 

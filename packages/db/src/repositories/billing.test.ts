@@ -27,6 +27,7 @@ import {
   findOpenCheckout,
   findOrgIdByDodoCustomer,
   findOrgIdByDodoSubscription,
+  listAwaitingActivation,
   listDueSeatSyncs,
   listEndedCancellations,
   listLapsedTrials,
@@ -1362,6 +1363,42 @@ describe('subscription sweeps', () => {
     const found = new Set((await listEndedCancellations(t.db, 1000)).map((row) => row.orgId));
     expect(found.has(ended.orgId)).toBe(true);
     expect(found.has(running.orgId)).toBe(false);
+  });
+
+  it('lists checkouts awaiting activation of this Dodo mode only — in the query — paged by organisation', async () => {
+    const linked = new Date(Date.now() - DAY);
+    const seedAwaiting = async (mode: string | null) => {
+      const { orgId } = await seedOrg({
+        customer: `cus_${uniq()}`,
+        dodoSubscription: `sub_${uniq()}`,
+        mode,
+      });
+      await t.pg.query(`update org_subscriptions set updated_at = $2 where org_id = $1`, [
+        orgId,
+        linked,
+      ]);
+      return orgId;
+    };
+    const ours = await seedAwaiting('test_mode');
+    const unrecorded = await seedAwaiting(null);
+    const theirs = await seedAwaiting('live_mode');
+    const listed = async (mode: 'test_mode' | 'live_mode') =>
+      (await listAwaitingActivation(t.db, { linkedBefore: new Date(), mode, limit: 10_000 })).map(
+        (row) => row.orgId,
+      );
+
+    const test = await listed('test_mode');
+    expect(test).toContain(ours);
+    expect(test).toContain(unrecorded);
+    expect(test).not.toContain(theirs);
+    const live = await listed('live_mode');
+    expect(live).toContain(theirs);
+    expect(live).not.toContain(ours);
+
+    const options = { linkedBefore: new Date(), mode: 'test_mode' as const, limit: 1 };
+    const [first] = await listAwaitingActivation(t.db, options);
+    const [second] = await listAwaitingActivation(t.db, { ...options, afterOrgId: first!.orgId });
+    expect(second!.orgId > first!.orgId).toBe(true);
   });
 
   it('lists provider subscriptions on a paid plan, paged by organisation', async () => {

@@ -33,6 +33,7 @@ vi.mock('../mail', async (importOriginal) => ({
 
 const {
   runHourlyBillingJob,
+  ACTIVATION_ALERT_AFTER_MS,
   ACTIVATION_GRACE_MS,
   CANCELLATION_GRACE_MS,
   CARD_CHECK_HOUR_UTC,
@@ -496,6 +497,149 @@ describe('runHourlyBillingJob, round 1', () => {
       `sub_${fresh.slice(0, 12).replaceAll('-', '')}`,
     );
     expect((await findSubscription(t.db, fresh))?.seats).toBe(4);
+  });
+});
+
+describe('runHourlyBillingJob, round 3: stranded checkouts', () => {
+  const subscriptionOf = (orgId: string) => `sub_${orgId.slice(0, 12).replaceAll('-', '')}`;
+  /** A Free row a paid checkout linked, past the grace the webhook is given. */
+  const awaiting = (over: Record<string, unknown> = {}) => ({
+    plan: 'free',
+    billing_interval: null,
+    dodo_product_id: null,
+    current_period_start: null,
+    current_period_end: null,
+    updated_at: new Date(NOW.getTime() - ACTIVATION_GRACE_MS - 60_000),
+    ...over,
+  });
+  function dodoSays(id: string, over: Partial<DodoSubscription> = {}): DodoSubscription {
+    return {
+      subscription_id: id,
+      status: 'active',
+      product_id: 'pdt_team_m',
+      quantity: 3,
+      currency: 'USD',
+      customer: { customer_id: `cus_${id.slice(4)}` },
+      billing: { country: 'US' },
+      metadata: {},
+      next_billing_date: new Date(NOW.getTime() + 29 * DAY).toISOString(),
+      previous_billing_date: new Date(NOW.getTime() - DAY).toISOString(),
+      cancel_at_next_billing_date: false,
+      trial_period_days: 0,
+      created_at: new Date(NOW.getTime() - DAY).toISOString(),
+      recurring_pre_tax_amount: 5700,
+      addons: [],
+      ...over,
+    };
+  }
+  const alertsFor = (orgId: string, pattern: RegExp) =>
+    lines.filter(
+      (line) => line.level === 'error' && line['orgId'] === orgId && pattern.test(line.message),
+    );
+  const nextHour = new Date(NOW.getTime() + 3_600_000);
+
+  it('stops waiting on a checkout cancelled at Dodo, its period over, before it ever activated', async () => {
+    const orgId = await seedOrg(awaiting(), 1);
+    const id = subscriptionOf(orgId);
+    dodo.getSubscription.mockImplementation(async (asked: string) =>
+      dodoSays(
+        asked,
+        asked === id
+          ? { status: 'cancelled', next_billing_date: new Date(NOW.getTime() - DAY).toISOString() }
+          : {},
+      ),
+    );
+
+    await runHourlyBillingJob(services(), NOW);
+
+    // `decideSnapshot` reads it as ended (already Free); so does the sweep now.
+    const row = await findSubscription(t.db, orgId);
+    expect(row).toMatchObject({ plan: 'free', dodoSubscriptionId: id });
+    expect(row?.dodoEventAt).not.toBeNull();
+    expect(alertsFor(orgId, /ended at Dodo before it ever activated/)).toHaveLength(1);
+
+    dodo.getSubscription.mockClear();
+    await runHourlyBillingJob(services(), nextHour);
+    expect(dodo.getSubscription).not.toHaveBeenCalledWith(id);
+  });
+
+  it('raises a product this deployment does not sell once, not every hour — and keeps asking', async () => {
+    const stranded = await seedOrg(awaiting(), 1);
+    const trial = await seedOrg({
+      status: 'trialing',
+      trial_ends_at: new Date(NOW.getTime() - TRIAL_GRACE_MS - 60_000),
+    });
+    const withdrawn = new Set([subscriptionOf(stranded), subscriptionOf(trial)]);
+    dodo.getSubscription.mockImplementation(async (asked: string) =>
+      dodoSays(asked, withdrawn.has(asked) ? { product_id: 'pdt_withdrawn' } : {}),
+    );
+
+    await runHourlyBillingJob(services(), NOW);
+    await runHourlyBillingJob(services(), nextHour);
+
+    for (const orgId of [stranded, trial]) {
+      expect(alertsFor(orgId, /on a product this deployment does not sell/)).toHaveLength(1);
+      const drift = await t.pg.query(
+        `select 1 from audit_logs where org_id = $1 and action = 'billing.drift_detected'`,
+        [orgId],
+      );
+      expect(drift.rows).toHaveLength(1);
+    }
+    // Still waiting, and asked again: the run after the catalogue is fixed grants it.
+    const askedAbout = dodo.getSubscription.mock.calls.map((call) => call[0] as string);
+    expect(askedAbout.filter((asked) => asked === subscriptionOf(stranded))).toHaveLength(2);
+    expect(await findSubscription(t.db, stranded)).toMatchObject({
+      plan: 'free',
+      dodoEventAt: null,
+    });
+  });
+
+  it('raises a checkout Dodo still has pending, or does not know, a day on — once, and keeps waiting', async () => {
+    const dayAgo = new Date(NOW.getTime() - ACTIVATION_ALERT_AFTER_MS - 60_000);
+    const pending = await seedOrg(awaiting({ updated_at: dayAgo }), 1);
+    const unknown = await seedOrg(awaiting({ updated_at: dayAgo }), 1);
+    const recent = await seedOrg(awaiting(), 1);
+    const stillPending = new Set([subscriptionOf(pending), subscriptionOf(recent)]);
+    dodo.getSubscription.mockImplementation(async (asked: string) => {
+      if (asked === subscriptionOf(unknown)) throw new DodoApiError('not_found', 404);
+      return dodoSays(asked, stillPending.has(asked) ? { status: 'pending' } : {});
+    });
+
+    await runHourlyBillingJob(services(), NOW);
+    await runHourlyBillingJob(services(), nextHour);
+
+    expect(alertsFor(pending, /still has its subscription pending/)).toHaveLength(1);
+    expect(alertsFor(unknown, /does not know its subscription/)).toHaveLength(1);
+    // Half an hour in, a pending subscription is nobody's alarm yet.
+    expect(alertsFor(recent, /./)).toEqual([]);
+    for (const orgId of [pending, unknown, recent]) {
+      expect(await findSubscription(t.db, orgId)).toMatchObject({
+        plan: 'free',
+        dodoEventAt: null,
+      });
+    }
+  });
+
+  it('asks about a checkout of its own Dodo mode, however many of the other mode were linked before it', async () => {
+    // More than a page of them, linked earlier: filtered after the LIMIT, they
+    // filled it, and this deployment's own checkout was never asked about.
+    const others = new Set<string>();
+    for (let index = 0; index < 55; index += 1) {
+      const orgId = await seedOrg(
+        awaiting({ dodo_mode: 'live_mode', updated_at: new Date(NOW.getTime() - 3 * DAY) }),
+        1,
+      );
+      others.add(subscriptionOf(orgId));
+    }
+    const ours = await seedOrg(awaiting({ dodo_mode: 'test_mode' }), 1);
+    dodo.getSubscription.mockImplementation(async (asked: string) => dodoSays(asked));
+
+    await runHourlyBillingJob(services(), NOW);
+
+    const askedAbout = dodo.getSubscription.mock.calls.map((call) => call[0] as string);
+    expect(askedAbout).toContain(subscriptionOf(ours));
+    expect(askedAbout.some((asked) => others.has(asked))).toBe(false);
+    expect(await findSubscription(t.db, ours)).toMatchObject({ plan: 'team', status: 'active' });
   });
 });
 

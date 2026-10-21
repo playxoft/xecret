@@ -191,6 +191,20 @@ function parseDate(value: string | null | undefined): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+/**
+ * Whether the subscription is over (rule 4): expired, failed, or cancelled
+ * with its paid period run out — a cancellation keeps the plan until then.
+ * The one statement of it: `decideSnapshot` returns an ended subscription's
+ * row to Free by it (`already-free` when the row is there already), and the
+ * hourly job's stranded-checkout sweep stops waiting on that decision.
+ */
+export function subscriptionHasEnded(snapshot: DodoSubscription, now: Date): boolean {
+  if (snapshot.status === 'expired' || snapshot.status === 'failed') return true;
+  if (snapshot.status !== 'cancelled') return false;
+  const periodEnd = parseDate(snapshot.next_billing_date);
+  return periodEnd === null || periodEnd <= now;
+}
+
 export function decideSnapshot(input: {
   row: SubscriptionRecord;
   snapshot: DodoSubscription;
@@ -234,10 +248,7 @@ export function decideSnapshot(input: {
     }
   }
 
-  const ended =
-    snapshot.status === 'expired' ||
-    snapshot.status === 'failed' ||
-    (snapshot.status === 'cancelled' && (periodEnd === null || periodEnd <= now));
+  const ended = subscriptionHasEnded(snapshot, now);
   const live = LIVE.has(snapshot.status) && !ended;
 
   // 2. Whose subscription.
