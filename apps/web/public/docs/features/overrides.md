@@ -2,7 +2,7 @@
 title: Personal overrides
 description: Use your own value for one secret on your machine — a local database instead of staging's — without changing the environment anyone else reads, or any CI run.
 keywords: [local overrides, personal secrets, developer overrides, local env override, xecret run]
-updated: 2026-10-20
+updated: 2026-10-21
 ---
 
 A personal override is **your** value for one secret in one environment. When
@@ -33,7 +33,12 @@ also how you try a new variable locally before proposing it.
   the server.
 - **Never forged.** The same key is the only one that can make an override your
   CLI will accept, so a value cannot be slipped into your process in your name —
-  not by a teammate, and not by the server.
+  not by a teammate, and not by the server. What a misbehaving server *could*
+  do is keep handing back an override of yours it should have forgotten — the
+  value you replaced, or one you removed — because an override carries no
+  version your CLI could check. It can only ever be a value you set yourself,
+  for that same name and environment; the
+  [trust model](../security/trust-model.md) lists it among what xecret does not protect you from.
 - **Never part of a CI fetch.** A service token is refused every override route
   and no pull or bundle carries one: a pipeline always gets the shared values. A
   personal override that changed a production deploy would be the worst bug this

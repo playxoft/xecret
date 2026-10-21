@@ -3,7 +3,7 @@ title: What xecret can and cannot see
 navTitle: Trust model
 description: The encryption model stated plainly — envelope encryption, the key hierarchy, what a database breach yields, and when you should choose a zero-knowledge product instead.
 keywords: [envelope encryption, zero knowledge alternative, secret manager security, aes-256-gcm, key hierarchy, threat model]
-updated: 2026-10-20
+updated: 2026-10-21
 ---
 
 A security product that overstates its guarantees has broken the only thing it
@@ -98,6 +98,15 @@ Stated plainly, because these are the failures people are surprised by:
   policy's value rules are enforced by the clients that hold the plaintext, so
   they stop honest mistakes, not somebody who means to get round them — anyone
   who may read a value can write it down.
+- **A server that misbehaves, in two narrow ways**, even where values are
+  end-to-end encrypted. It could answer a [reference](../features/references.md)
+  or an inherited name with a *different value you can already decrypt* —
+  another secret, or one from another environment whose key you hold — because
+  which environment a slug means, and which stored secret a name means, are
+  things your client learns from the server. And it could keep serving a
+  [personal override](../features/overrides.md) you replaced or removed,
+  because an override carries no version. It cannot make up a value, read one
+  you could not, or forge an override in your name.
 - **Anything a browser can read.** `NEXT_PUBLIC_` and `VITE_` variables are
   inlined into bundles you serve to the public. Managed and versioned, yes;
   private, no. See [React / Vite](../guides/react-vite.md).

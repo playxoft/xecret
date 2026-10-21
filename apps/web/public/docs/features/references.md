@@ -3,7 +3,7 @@ title: Secret references and environment inheritance
 navTitle: References and inheritance
 description: Build one secret from others with ${env.KEY} templates, and let an environment inherit from a parent — resolved on your machine, never on our servers.
 keywords: [secret references, environment inheritance, secret templates, interpolation, environment variables composition]
-updated: 2026-10-20
+updated: 2026-10-21
 ---
 
 Two ways to stop copying the same value into five places: a **template** that
@@ -56,9 +56,19 @@ storing, against the graph as it would be after the write:
 - at most **50** references in one template.
 
 Deleting or renaming a secret a template depends on, or deleting an environment
-one points into, is refused with the template named. When it is read, the
-client compares the decrypted text against the declaration and refuses a
-mismatch, so a server cannot quietly point a reference somewhere else.
+one points into, is refused with the template named.
+
+When a template is read, the client compares its decrypted text against the
+declaration stored beside it and refuses a mismatch, so the declaration a server
+holds cannot say something the text does not. What that check does **not**
+prove is that the server answered each reference honestly: which environment a
+slug means, and which stored secret a name means, are things the client learns
+from the server. A server that misbehaved could therefore answer
+`${staging.DB_HOST}` with a different value — but only one the reader can
+already decrypt, from an environment whose key they hold. It cannot make up a
+value, because it holds no key to encrypt one, and it cannot reach into an
+environment the reader has no key for. The [trust model](../security/trust-model.md)
+lists this as a residual risk.
 
 ## Inheritance
 

@@ -703,9 +703,13 @@ webhooks — and three policies. What each could have become, and what stops it:
   files `environment.link_crosses_protection` against production. Only the link being made is
   asked about — the direct parent or a reference the write adds.
 - **A server that rewrites a reference** (T7). The declaration is plaintext the server could
-  edit, so the client compares the decrypted template text against it and refuses a mismatch;
-  every value is still bound by its AAD to its own row and environment, so a server cannot
-  relocate a ciphertext into a view either.
+  edit, so the client compares the decrypted template text against it and refuses a mismatch,
+  and every value is bound by its AAD to its own row and environment. Stated precisely (review
+  round 1): that stops a server *fabricating* a value or serving one from an environment whose
+  key the reader does not hold. It does not stop a server *redirecting* a reference among values
+  the reader can already decrypt — which environment a slug names and which row a name names are
+  both answers the client takes from the server, and `secret-value`'s AAD binds ids, not names.
+  See the residual risk below.
 - **A forged override** (T7, T9). The first draft sealed overrides to the owner's public key,
   which anybody holding it — the server included — could do: a compromised Worker could have
   set `NODE_OPTIONS` on a developer's machine. Overrides are now GCM under a key HKDF-derived
@@ -739,7 +743,20 @@ webhooks — and three policies. What each could have become, and what stops it:
   read.
 
 **Residual risk:** Low. The new surface reuses the existing authorisation call at every
-crossing, and no feature here gives the server a plaintext it did not already have.
+crossing, and no feature here gives the server a plaintext it did not already have. Two
+residuals are a server that misbehaves (T7, T9), and are accepted as such:
+
+- **Redirection among readable values.** A server can answer a reference — or an inherited
+  name — with a different value the reader can already decrypt: another secret of the same
+  environment, or one from any environment whose key the reader holds. It cannot fabricate a
+  value or reach an environment the reader holds no key for. Closing it would mean binding the
+  name into `secret-value`'s AAD and having clients pin slug-to-environment mappings, a format
+  change deferred rather than made here.
+- **Replay of an override its owner replaced or removed.** `override-value`'s AAD binds the
+  organisation, environment, owner and name, and no version or counter, because an override is
+  replaced in place. A server can therefore go on serving the owner's *previous* override, or
+  one the owner deleted, and the owner's client will open it. It cannot forge a new one, or one
+  for another person or name. A per-override counter the client checks would close it.
 
 ---
 
