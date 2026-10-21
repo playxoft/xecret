@@ -2,8 +2,10 @@ import type { BillingDriftField } from '@xecret/core/audit';
 import { providerSeats, resolvePlanId } from '@xecret/core/entitlements';
 import {
   appendAuditEvents,
+  claimBillingAlert,
   listProviderSubscriptions,
   listSeatSyncs,
+  operatorManaged,
   seatedMemberCount,
 } from '@xecret/db/repositories';
 import type { SubscriptionRecord } from '@xecret/db/repositories';
@@ -38,7 +40,9 @@ import type { DodoSubscription } from './payloads';
  * minutes apart from the date they name).
  *
  * Rows recorded under the other Dodo mode are not compared: this deployment's
- * key cannot see them, and they would all read as missing.
+ * key cannot see them, and they would all read as missing. Nor is an
+ * operator's grant written over an old subscription's id (a paid row with the
+ * id and no product, `operatorManaged`): it is reported once, not nightly.
  */
 
 /** How far apart the two period ends may be before it is drift. */
@@ -138,6 +142,10 @@ export async function reconcileSubscriptions(services: ServiceContext): Promise<
     for (const row of page) {
       if (row.dodoSubscriptionId === null) continue;
       if (row.dodoMode !== null && row.dodoMode !== config.mode) continue;
+      if (operatorManaged(row)) {
+        await reportOperatorGrant(services, row, row.dodoSubscriptionId);
+        continue;
+      }
       report.checked += 1;
 
       let drift: BillingDriftField[];
@@ -181,4 +189,47 @@ export async function reconcileSubscriptions(services: ServiceContext): Promise<
 
   log.info(`Reconciled ${report.checked} subscription(s) with Dodo`, { ...report });
   return report;
+}
+
+/**
+ * A paid row that follows a subscription id with no product recorded — an
+ * operator's grant written over the id of a subscription that ended
+ * (`operatorManaged`). Not compared: Dodo's record of the old subscription is
+ * not what the grant follows, and every night would report the same product
+ * drift (or `missing`). Reported once instead, per subscription id, for a
+ * human to take the row off it.
+ */
+async function reportOperatorGrant(
+  services: ServiceContext,
+  row: SubscriptionRecord,
+  subscriptionId: string,
+): Promise<void> {
+  const first = await services.db.transaction(async (tx) => {
+    const claimed = await claimBillingAlert(tx, {
+      orgId: row.orgId,
+      kind: 'alert_operator_managed',
+      occasion: subscriptionId,
+    });
+    if (claimed) {
+      await appendAuditEvents(tx, [
+        systemAudit(services, row.orgId, 'billing reconciler').error(
+          'billing.drift_detected',
+          subscriptionResource(row.orgId),
+          'conflict',
+          { driftFields: ['product'], plan: row.plan },
+        ),
+      ]);
+    }
+    return claimed;
+  });
+  if (!first) return;
+  services.log
+    .at('reconcileSubscriptions')
+    .error(
+      'A paid organisation follows a Dodo subscription id with no product recorded — an ' +
+        'operator’s grant written over the id of a subscription that ended. It is not compared ' +
+        'with Dodo, and the hourly job leaves it alone. Check the subscription is not live in ' +
+        'Dodo, then take the organisation off it with plan:set --over-dodo',
+      { orgId: row.orgId, plan: row.plan },
+    );
 }

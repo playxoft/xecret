@@ -40,6 +40,7 @@ import {
   lockSubscription,
   markMeteredUnitsSent,
   operatorBillingEdit,
+  operatorManaged,
   pruneBillingRequests,
   queueSeatSync,
   raiseCurrentUsageAllowance,
@@ -1394,13 +1395,72 @@ describe('subscription sweeps', () => {
       dodoSubscription: `sub_${uniq()}`,
       trialEndsAt: new Date(now + DAY),
     });
+    const otherMode = await seedOrg({
+      plan: 'team',
+      status: 'trialing',
+      dodoSubscription: `sub_${uniq()}`,
+      trialEndsAt: new Date(now - 5 * 60 * 60_000),
+      mode: 'live_mode',
+    });
     const trials = new Set(
-      (await listLapsedTrials(t.db, { endedBefore: new Date(now - 60 * 60_000), limit: 1000 })).map(
-        (row) => row.orgId,
-      ),
+      (
+        await listLapsedTrials(t.db, {
+          endedBefore: new Date(now - 60 * 60_000),
+          mode: 'test_mode',
+          limit: 1000,
+        })
+      ).map((row) => row.orgId),
     );
     expect(trials.has(lapsed.orgId)).toBe(true);
     expect(trials.has(running.orgId)).toBe(false);
+    // Never asked about by this deployment, so left out in the query, not after the LIMIT.
+    expect(trials.has(otherMode.orgId)).toBe(false);
+  });
+
+  it('leaves an operator’s grant over an old subscription’s id out of every sweep', async () => {
+    const now = Date.now();
+    // Paid, following a subscription id, no product: no snapshot writes that.
+    const grant = () => ({ plan: 'team', dodoSubscription: `sub_${uniq()}`, product: null });
+    const cancelling = await seedOrg({
+      ...grant(),
+      cancelAtPeriodEnd: true,
+      periodEnd: new Date(now - 60_000),
+    });
+    const held = await seedOrg({
+      ...grant(),
+      status: 'on_hold',
+      onHoldSince: new Date(now - 15 * DAY),
+    });
+    const trialing = await seedOrg({
+      ...grant(),
+      status: 'trialing',
+      trialEndsAt: new Date(now - 5 * 60 * 60_000),
+    });
+    for (const { orgId } of [cancelling, held, trialing]) {
+      const row = await t.db.transaction((tx) => lockSubscription(tx, orgId));
+      expect(operatorManaged(row!)).toBe(true);
+    }
+
+    const ids = (rows: { orgId: string }[]) => new Set(rows.map((row) => row.orgId));
+    expect(ids(await listEndedCancellations(t.db, 10_000)).has(cancelling.orgId)).toBe(false);
+    expect(
+      ids(await listLongHolds(t.db, { since: new Date(now - 14 * DAY), limit: 10_000 })).has(
+        held.orgId,
+      ),
+    ).toBe(false);
+    expect(
+      ids(
+        await listLapsedTrials(t.db, {
+          endedBefore: new Date(now - 60 * 60_000),
+          mode: 'test_mode',
+          limit: 10_000,
+        }),
+      ).has(trialing.orgId),
+    ).toBe(false);
+    // The reconciler still finds it, to report it.
+    expect(ids(await listProviderSubscriptions(t.db, { limit: 10_000 })).has(held.orgId)).toBe(
+      true,
+    );
   });
 
   it('finds cancellations whose paid period is over, by the database clock', async () => {

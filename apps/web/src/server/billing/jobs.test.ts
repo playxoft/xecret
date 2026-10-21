@@ -500,8 +500,38 @@ describe('runHourlyBillingJob, round 1', () => {
   });
 });
 
+/** The subscription id `seedOrg` gives an organisation. */
+const subscriptionOf = (orgId: string) => `sub_${orgId.slice(0, 12).replaceAll('-', '')}`;
+
+/** What Dodo answers about a subscription: live on Team monthly, unless told otherwise. */
+function dodoSays(id: string, over: Partial<DodoSubscription> = {}): DodoSubscription {
+  return {
+    subscription_id: id,
+    status: 'active',
+    product_id: 'pdt_team_m',
+    quantity: 3,
+    currency: 'USD',
+    customer: { customer_id: `cus_${id.slice(4)}` },
+    billing: { country: 'US' },
+    metadata: {},
+    next_billing_date: new Date(NOW.getTime() + 29 * DAY).toISOString(),
+    previous_billing_date: new Date(NOW.getTime() - DAY).toISOString(),
+    cancel_at_next_billing_date: false,
+    trial_period_days: 0,
+    created_at: new Date(NOW.getTime() - DAY).toISOString(),
+    recurring_pre_tax_amount: 5700,
+    addons: [],
+    ...over,
+  };
+}
+
+/** The error lines — alerts for a human — logged about one organisation. */
+const alertsFor = (orgId: string, pattern: RegExp) =>
+  lines.filter(
+    (line) => line.level === 'error' && line['orgId'] === orgId && pattern.test(line.message),
+  );
+
 describe('runHourlyBillingJob, round 3: stranded checkouts', () => {
-  const subscriptionOf = (orgId: string) => `sub_${orgId.slice(0, 12).replaceAll('-', '')}`;
   /** A Free row a paid checkout linked, past the grace the webhook is given. */
   const awaiting = (over: Record<string, unknown> = {}) => ({
     plan: 'free',
@@ -512,30 +542,6 @@ describe('runHourlyBillingJob, round 3: stranded checkouts', () => {
     updated_at: new Date(NOW.getTime() - ACTIVATION_GRACE_MS - 60_000),
     ...over,
   });
-  function dodoSays(id: string, over: Partial<DodoSubscription> = {}): DodoSubscription {
-    return {
-      subscription_id: id,
-      status: 'active',
-      product_id: 'pdt_team_m',
-      quantity: 3,
-      currency: 'USD',
-      customer: { customer_id: `cus_${id.slice(4)}` },
-      billing: { country: 'US' },
-      metadata: {},
-      next_billing_date: new Date(NOW.getTime() + 29 * DAY).toISOString(),
-      previous_billing_date: new Date(NOW.getTime() - DAY).toISOString(),
-      cancel_at_next_billing_date: false,
-      trial_period_days: 0,
-      created_at: new Date(NOW.getTime() - DAY).toISOString(),
-      recurring_pre_tax_amount: 5700,
-      addons: [],
-      ...over,
-    };
-  }
-  const alertsFor = (orgId: string, pattern: RegExp) =>
-    lines.filter(
-      (line) => line.level === 'error' && line['orgId'] === orgId && pattern.test(line.message),
-    );
   const nextHour = new Date(NOW.getTime() + 3_600_000);
 
   it('stops waiting on a checkout cancelled at Dodo, its period over, before it ever activated', async () => {
@@ -781,5 +787,56 @@ describe('the nightly reconciler', () => {
       [flaky],
     );
     expect(none.rows).toHaveLength(0);
+  });
+});
+
+describe('an operator’s grant over an old subscription’s id (round 3)', () => {
+  /** A paid row following a subscription id with no product: no snapshot leaves one. */
+  const grant = { dodo_product_id: null };
+
+  it('is left alone by the hourly sweeps, and reported by the reconciler once, not nightly', async () => {
+    const cancelling = await seedOrg({
+      ...grant,
+      cancel_at_period_end: true,
+      current_period_end: new Date(NOW.getTime() - CANCELLATION_GRACE_MS - 60_000),
+    });
+    const held = await seedOrg({
+      ...grant,
+      status: 'on_hold',
+      on_hold_since: new Date(NOW.getTime() - HOLD_LIMIT_MS - 60_000),
+    });
+    const trialing = await seedOrg({
+      ...grant,
+      status: 'trialing',
+      trial_ends_at: new Date(NOW.getTime() - TRIAL_GRACE_MS - 60_000),
+    });
+    const grants = [cancelling, held, trialing];
+    dodo.getSubscription.mockImplementation(async (id: string) => dodoSays(id));
+
+    await runHourlyBillingJob(services(), NOW);
+
+    // Neither ended to Free nor asked about: the grant is the operator's.
+    expect((await findSubscription(t.db, cancelling))?.plan).toBe('team');
+    expect(await findSubscription(t.db, held)).toMatchObject({ plan: 'team', status: 'on_hold' });
+    expect((await findSubscription(t.db, trialing))?.status).toBe('trialing');
+    for (const orgId of grants) {
+      expect(dodo.getSubscription).not.toHaveBeenCalledWith(subscriptionOf(orgId));
+      expect(alertsFor(orgId, /./)).toEqual([]);
+    }
+
+    await reconcileSubscriptions(services());
+    await reconcileSubscriptions(services());
+
+    for (const orgId of grants) {
+      expect(dodo.getSubscription).not.toHaveBeenCalledWith(subscriptionOf(orgId));
+      expect(alertsFor(orgId, /no product recorded/)).toHaveLength(1);
+      const drift = await t.pg.query<{ metadata: Record<string, unknown> }>(
+        `select metadata from audit_logs where org_id = $1 and action = 'billing.drift_detected'`,
+        [orgId],
+      );
+      expect(drift.rows.map((row) => row.metadata)).toEqual([
+        expect.objectContaining({ driftFields: ['product'] }),
+      ]);
+    }
   });
 });

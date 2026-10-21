@@ -493,6 +493,7 @@ export {
   lockSubscription,
   markMeteredUnitsSent,
   operatorBillingEdit,
+  operatorManaged,
   pruneBillingRequests,
   pruneReminders,
   queueBilledSeatSync,

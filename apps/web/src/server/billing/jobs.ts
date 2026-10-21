@@ -12,6 +12,7 @@ import {
   listLongHolds,
   listProviderSubscriptions,
   lockSubscription,
+  operatorManaged,
   pruneBillingRequests,
   pruneReminders,
   writeSubscriptionState,
@@ -71,7 +72,9 @@ import type { UsageReport } from './usage';
  * Nothing here ever touches the data path. Only steps 1–3 change a row, and
  * each only what its own date already decided; every other difference between
  * our rows and Dodo's is the nightly reconciler's to *report* (`reconcile.ts`),
- * never to fix.
+ * never to fix. Steps 1–3 never touch an operator's grant either — a paid row
+ * following a subscription id with no product recorded (`operatorManaged`) is
+ * left out of their lists, and the reconciler reports it once.
  */
 
 /** How long after a cancelled period's end the job waits for Dodo's own event. */
@@ -201,11 +204,13 @@ async function endLapsedCancellations(services: ServiceContext, now: Date): Prom
     if (due === null || due.getTime() + CANCELLATION_GRACE_MS > now.getTime()) continue;
 
     const changed = await services.db.transaction(async (tx) => {
-      // Re-read under the row's lock: a webhook may have moved it since.
+      // Re-read under the row's lock: a webhook — or an operator — may have
+      // moved it since.
       const row = await lockSubscription(tx, candidate.orgId);
       if (
         row === null ||
         row.plan === 'free' ||
+        operatorManaged(row) ||
         !row.cancelAtPeriodEnd ||
         row.currentPeriodEnd === null ||
         row.currentPeriodEnd.getTime() + CANCELLATION_GRACE_MS > now.getTime()
@@ -248,6 +253,7 @@ async function endLongHolds(services: ServiceContext, now: Date): Promise<number
       if (
         row === null ||
         row.plan === 'free' ||
+        operatorManaged(row) ||
         row.status !== 'on_hold' ||
         row.onHoldSince === null ||
         row.onHoldSince > cutoff
@@ -359,11 +365,11 @@ async function refreshLapsedTrials(
   const provider = billingProvider(config);
   const rows = await listLapsedTrials(services.db, {
     endedBefore: new Date(now.getTime() - TRIAL_GRACE_MS),
+    mode: config.mode,
     limit: 50,
   });
   for (const row of rows) {
     if (row.dodoSubscriptionId === null) continue;
-    if (row.dodoMode !== null && row.dodoMode !== config.mode) continue;
     try {
       const snapshot = await provider.getSubscription(row.dodoSubscriptionId);
       if (snapshot.subscription_id !== row.dodoSubscriptionId) continue;

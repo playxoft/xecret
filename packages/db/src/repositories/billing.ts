@@ -196,6 +196,22 @@ export type OperatorBillingEdit =
   | 'detach';
 
 /**
+ * A paid plan nobody bought through checkout: an operator's grant or an
+ * Enterprise contract (no subscription at all) — or a paid row that follows a
+ * subscription by id with **no product recorded**, which no snapshot ever
+ * leaves behind (a snapshot always records the product). That is a grant
+ * written, before `plan:set` took such rows off their ids, over the id of a
+ * subscription that had ended. Nothing automatic changes either: the webhook
+ * reports instead of applying, the hourly sweeps leave them out, and the
+ * reconciler reports one once instead of comparing it.
+ */
+export function operatorManaged(
+  row: Pick<SubscriptionRecord, 'plan' | 'dodoSubscriptionId' | 'dodoProductId'>,
+): boolean {
+  return row.plan !== 'free' && (row.dodoSubscriptionId === null || row.dodoProductId === null);
+}
+
+/**
  * Whether Dodo bills the row: a paid plan that follows a subscription — or a
  * row still on Free {@link awaitingActivation}, whose checkout was paid and
  * whose subscription is live at Dodo. That one's activation, from the webhook
@@ -378,6 +394,21 @@ export async function listProviderSubscriptions(
 }
 
 /**
+ * A paid row that follows a subscription a snapshot wrote — a subscription
+ * id **and** a product: what the hourly sweeps may act on. A paid row with
+ * the id and no product is {@link operatorManaged}, and is left out here
+ * rather than skipped by the caller, so no number of them can fill a sweep's
+ * `LIMIT` (the reconciler reports each once).
+ */
+function billedByASnapshot(): SQL | undefined {
+  return and(
+    ne(orgSubscriptions.plan, 'free'),
+    isNotNull(orgSubscriptions.dodoSubscriptionId),
+    isNotNull(orgSubscriptions.dodoProductId),
+  );
+}
+
+/**
  * Cancelled subscriptions whose paid period is over — the boundary the
  * `cancel_at_period_end` flag was waiting for. The hourly job returns each to
  * Free; this only finds them. By the database's clock, not a Worker's.
@@ -392,8 +423,7 @@ export async function listEndedCancellations(
     .where(
       and(
         eq(orgSubscriptions.cancelAtPeriodEnd, true),
-        ne(orgSubscriptions.plan, 'free'),
-        isNotNull(orgSubscriptions.dodoSubscriptionId),
+        billedByASnapshot(),
         lt(orgSubscriptions.currentPeriodEnd, sql`now()`),
       ),
     )
@@ -415,8 +445,7 @@ export async function listLongHolds(
     .where(
       and(
         eq(orgSubscriptions.status, 'on_hold'),
-        ne(orgSubscriptions.plan, 'free'),
-        isNotNull(orgSubscriptions.dodoSubscriptionId),
+        billedByASnapshot(),
         lte(orgSubscriptions.onHoldSince, options.since),
       ),
     )
@@ -427,11 +456,13 @@ export async function listLongHolds(
 /**
  * Provider subscriptions still marked `trialing` although their trial ended
  * before `endedBefore` — a status no webhook moved on. The hourly job asks
- * Dodo what they became.
+ * Dodo what they became; so only rows of its own Dodo `mode` (or of none
+ * recorded), in the query, as {@link listAwaitingActivation} does — one of the
+ * other mode is never asked about, and stays a lapsed trial here for ever.
  */
 export async function listLapsedTrials(
   exec: Executor,
-  options: { endedBefore: Date; limit: number },
+  options: { endedBefore: Date; mode: 'test_mode' | 'live_mode'; limit: number },
 ): Promise<SubscriptionRecord[]> {
   return exec
     .select()
@@ -439,9 +470,9 @@ export async function listLapsedTrials(
     .where(
       and(
         eq(orgSubscriptions.status, 'trialing'),
-        ne(orgSubscriptions.plan, 'free'),
-        isNotNull(orgSubscriptions.dodoSubscriptionId),
+        billedByASnapshot(),
         lt(orgSubscriptions.trialEndsAt, options.endedBefore),
+        or(isNull(orgSubscriptions.dodoMode), eq(orgSubscriptions.dodoMode, options.mode)),
       ),
     )
     .orderBy(asc(orgSubscriptions.trialEndsAt))

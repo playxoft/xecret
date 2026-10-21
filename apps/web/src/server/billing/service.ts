@@ -19,6 +19,7 @@ import {
   countOrgsWithDodoCustomer,
   currentUsage,
   findSubscription,
+  operatorManaged,
   recordCheckout,
   releaseBillingRequest,
   seatedMemberCount,
@@ -135,11 +136,10 @@ function hasLiveSubscription(row: SubscriptionRecord): boolean {
 /**
  * A paid plan nobody bought through checkout: an operator's grant or an
  * Enterprise contract — including one written, before `plan:set` took such
- * rows off their ids, over the id of a subscription that had ended.
+ * rows off their ids, over the id of a subscription that had ended. The same
+ * rule the webhook, the hourly sweeps and the reconciler apply.
  */
-function managedBySupport(row: SubscriptionRecord): boolean {
-  return row.plan !== 'free' && (row.dodoSubscriptionId === null || row.dodoProductId === null);
-}
+const managedBySupport = operatorManaged;
 
 /** Whether the row's Dodo ids belong to the mode this deployment talks to. */
 function sameMode(row: SubscriptionRecord, config: BillingConfig): boolean {
