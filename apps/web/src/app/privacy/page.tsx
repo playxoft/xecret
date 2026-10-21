@@ -33,7 +33,7 @@ const TITLE = 'Privacy policy';
 const DESCRIPTION =
   'What xecret stores, what our encryption model does and does not protect, who else processes it, how long we keep it, and how to exercise your rights.';
 
-const UPDATED = '2026-10-14';
+const UPDATED = '2026-10-20';
 const EFFECTIVE = '2026-10-26';
 
 const CANONICAL = absoluteUrl('/privacy');
@@ -66,7 +66,7 @@ const SUMMARY = [
   'We hold your email address, the names of your organisations, projects, environments and secrets, the encrypted secret values themselves, and a log of who read or changed what.',
   'xecret can technically decrypt your secret values. Envelope encryption, decryption inside one request handler, and every decryption written to an append-only audit log. This is not a zero-knowledge product and we will not describe it as one.',
   'Secret names, structure and audit metadata are not encrypted the way values are. Treat the name of a secret as something we can read.',
-  'We do not sell or share personal information. There is no advertising or analytics cookie on this site — the only cookies are your session, a CSRF token, and a ten-minute one that protects a sign-in in progress.',
+  'We do not sell or share personal information. There is no advertising or analytics cookie on this site — the only cookies are your session, a CSRF token, and the few short-lived ones that protect a sign-in in progress or remember which account last signed in on this browser.',
   'You can export everything with the CLI and delete your own account. If you self-host, none of this is us: the operator of that deployment writes their own policy.',
 ] as const;
 
@@ -135,19 +135,27 @@ const SECTIONS: readonly LegalSection[] = [
         <>
           <strong className="text-fg font-medium">Sessions and devices.</strong> For each browser
           session: its IP address, its user agent, when it was created, when it was last seen, when
-          it expires, and when its PIN was last accepted. The session token itself is stored only as
-          a hash, so a database dump yields hashes rather than usable sessions. If you reset your
-          vault, the session you signed in again with also records when that sign-in happened, when
-          a code was last emailed and how many were requested, and how many codes were tried &mdash;
-          never a code itself, and the proof it leads to only as a hash. That record belongs to the
-          session and is removed with it; it stops counting for anything ten minutes after the
-          sign-in.
+          it expires, when its PIN was last accepted, how it signed in &mdash; password, Google, or
+          which organisation&rsquo;s single sign-on &mdash; and the sign-in provider&rsquo;s own
+          session identifier, so that signing out here can end that session too. The session token
+          itself is stored only as a hash, so a database dump yields hashes rather than usable
+          sessions. If you reset your vault, the session you signed in again with also records when
+          that sign-in happened, when a code was last emailed and how many were requested, and how
+          many codes were tried &mdash; never a code itself, and the proof it leads to only as a
+          hash. That record belongs to the session and is removed with it; it stops counting for
+          anything ten minutes after the sign-in.
         </>,
         <>
           <strong className="text-fg font-medium">Token metadata.</strong> For each CLI or service
           token: its name, its prefix, its scope, who created it, and when it was created, expires,
           was last used and was revoked. The token value is stored as a hash and shown to you
           exactly once.
+        </>,
+        <>
+          <strong className="text-fg font-medium">Membership, and its end.</strong> Which
+          organisations your account belongs to and your role in each. When an organisation removes
+          you, a record that you were removed &mdash; by whom and when &mdash; is kept, so that its
+          single sign-on cannot silently re-admit you. Accepting a fresh invitation clears it.
         </>,
         <>
           <strong className="text-fg font-medium">Your PIN, as a hash.</strong> Plus the
@@ -394,7 +402,7 @@ const SECTIONS: readonly LegalSection[] = [
     id: 'cookies',
     heading: 'Cookies and browser storage',
     paragraphs: [
-      'Three cookies, all strictly necessary, none of them a tracker:',
+      'Six cookies, all strictly necessary, none of them a tracker:',
       [
         <>
           <code className="text-fg font-mono text-[0.9em]">__Host-xecret_session</code> — your
@@ -412,6 +420,24 @@ const SECTIONS: readonly LegalSection[] = [
           only be completed in the browser that started it. HttpOnly, secure, signed, and valid for
           ten minutes. It holds the one-time values that tie the sign-in to your browser and the
           page to return you to.
+        </>,
+        <>
+          <code className="text-fg font-mono text-[0.9em]">__Host-xecret_sign_in_confirm</code> —
+          set only when a sign-in is held back for your confirmation (&ldquo;Is this you?&rdquo;).
+          It carries the held-back sign-in, sealed so that only this site can read it. HttpOnly,
+          secure, single-use, and valid for five minutes.
+        </>,
+        <>
+          <code className="text-fg font-mono text-[0.9em]">__Host-xecret_sso_continue</code> — set
+          when you open an organisation&rsquo;s sign-in link, so that only the warning page&rsquo;s
+          own Continue button can start that organisation&rsquo;s sign-in. HttpOnly, secure, and
+          valid for five minutes.
+        </>,
+        <>
+          <code className="text-fg font-mono text-[0.9em]">__Host-xecret_last_account</code> — a
+          signed note of which account last signed in on this browser, so we do not ask &ldquo;Is
+          this you?&rdquo; needlessly when our sign-in provider remembers you. HttpOnly, secure, and
+          valid for 180 days. It names an account id and nothing else.
         </>,
       ],
       'The sign-in page itself is served by WorkOS, and whatever it stores in your browser is governed by WorkOS’s own policy rather than this one.',
