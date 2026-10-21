@@ -55,14 +55,31 @@ const OUTCOME_TONE = { success: undefined, denied: 'warning', error: 'danger' } 
 
 /** Actions offered as filters. A plain list, not an import: the filter is a
  *  convenience over the stored strings, and an old row's action must remain
- *  filterable even if a later release renames the constant that wrote it. */
-const ACTIONS = [
+ *  filterable even if a later release renames the constant that wrote it.
+ *  Exported so a test can hold it to the actions the product writes. */
+export const AUDIT_FILTER_ACTIONS = [
   'secret.read',
   'secret.revealed',
   'secret.created',
   'secret.updated',
+  'secret.rotated',
   'secret.deleted',
   'secret.imported',
+  // P19 (review round 1, L11): references, promotion, restore, policies,
+  // overrides and webhooks.
+  'environment.parent_changed',
+  'environment.link_crosses_protection',
+  'environment.promoted',
+  'environment.restored',
+  'environment.policy_changed',
+  'org.policy_changed',
+  'override.set',
+  'override.removed',
+  'webhook.created',
+  'webhook.updated',
+  'webhook.deleted',
+  'webhook.secret_rotated',
+  'webhook.disabled',
   'member.invited',
   'member.joined',
   'member.jit_joined',
@@ -311,7 +328,7 @@ export function AuditScreen({ orgSlug }: { orgSlug: string }) {
               onChange={(action) => setFilters((f) => ({ ...f, action }))}
               options={[
                 { value: NO_FILTER, label: 'All actions' },
-                ...ACTIONS.map((action) => ({ value: action, label: action })),
+                ...AUDIT_FILTER_ACTIONS.map((action) => ({ value: action, label: action })),
               ]}
             />
             <FilterSelect
@@ -725,6 +742,7 @@ export function describeEvent(event: AuditEvent): string {
     );
   }
   if (typeof m['deviceName'] === 'string') parts.push(m['deviceName']);
+  describeP19(event, parts);
   // A setting's new value — `sso_required`, the just-in-time opt-in.
   if (typeof m['enabled'] === 'boolean') parts.push(m['enabled'] ? 'switched on' : 'switched off');
   // The owner exemption: how the owner signed in instead of the organisation's
@@ -749,6 +767,66 @@ export function describeEvent(event: AuditEvent): string {
 
   return parts.join(' · ');
 }
+
+/**
+ * The context the P19 records carry (review round 1, L11): an inheritance
+ * change, the other end of a link into production, a promotion's source and
+ * counts, a restore's instant, which policy changed, a webhook's host and
+ * events. Only fields of the shape the builder writes are read; anything else
+ * says nothing rather than something wrong.
+ */
+function describeP19(event: AuditEvent, parts: string[]): void {
+  const m = event.metadata;
+  const text = (key: string) => (typeof m[key] === 'string' ? (m[key] as string) : null);
+
+  if (event.action === 'environment.parent_changed') {
+    const from =
+      'previousParentEnvironmentSlug' in m ? text('previousParentEnvironmentSlug') : null;
+    const to = 'parentEnvironmentSlug' in m ? text('parentEnvironmentSlug') : null;
+    parts.push(`inherits from ${from ?? 'nothing'} → ${to ?? 'nothing'}`);
+  }
+
+  const source = text('sourceEnvironmentSlug');
+  if (source !== null) {
+    const where =
+      text('sourceProjectSlug') === null ? source : `${text('sourceProjectSlug')}/${source}`;
+    if (event.action === 'environment.link_crosses_protection') {
+      parts.push(
+        m['reason'] === 'inherited'
+          ? `inherits from ${where}, which is not production`
+          : `a template reads from ${where}, which is not production`,
+      );
+    } else {
+      parts.push(`from ${where}`);
+    }
+  }
+
+  const counts = (['created', 'updated', 'deleted'] as const).flatMap((kind) => {
+    const value = m[`${kind}Count`];
+    return typeof value === 'number' ? [`${value} ${kind}`] : [];
+  });
+  if (counts.length > 0) parts.push(counts.join(', '));
+
+  const restoredTo = text('restoredTo');
+  if (restoredTo !== null) parts.push(`to ${restoredTo}`);
+
+  const policy = text('policyName');
+  if (policy !== null) parts.push(POLICY_WORDS[policy] ?? policy);
+
+  const host = text('endpointHost');
+  if (host !== null) parts.push(host);
+  if (Array.isArray(m['eventTypes']) && m['eventTypes'].length > 0) {
+    parts.push(m['eventTypes'].filter((type) => typeof type === 'string').join(', '));
+  }
+}
+
+/** Which policy an `org.policy_changed` or `environment.policy_changed` was about. */
+const POLICY_WORDS: Readonly<Record<string, string>> = {
+  tokens: 'token policy',
+  secrets: 'secret naming and strength policy',
+  plaintextExport: 'plaintext export',
+  readAlerts: 'new-address read alerts',
+};
 
 /** Why a sign-in was held back for confirmation, as a phrase. */
 const CONFIRMATION_WORDS: Readonly<Record<string, string>> = {
