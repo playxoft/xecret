@@ -388,6 +388,9 @@ class DeliveryRun {
       deliveryId: delivery.id,
       webhookId: webhook.id,
       outcome,
+      // A test is not part of the endpoint's record: it neither counts towards
+      // an automatic disable nor clears a run of real failures (round 1, L13).
+      affectsEndpoint: delivery.eventType !== WEBHOOK_TEST_EVENT,
     });
 
     if (

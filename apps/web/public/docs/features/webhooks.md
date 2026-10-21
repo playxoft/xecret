@@ -98,7 +98,10 @@ export function verify(secret: string, headers: Headers, body: string): boolean 
   const expected = createHmac('sha256', key).update(`${id}.${timestamp}.${body}`).digest();
   return (headers.get('webhook-signature') ?? '')
     .split(' ')
-    .map((part) => Buffer.from(part.replace(/^v1,/, ''), 'base64'))
+    // Only `v1,` signatures count: anything else is a scheme this code does
+    // not verify, not a signature to compare.
+    .filter((part) => part.startsWith('v1,'))
+    .map((part) => Buffer.from(part.slice('v1,'.length), 'base64'))
     .some((given) => given.length === expected.length && timingSafeEqual(given, expected));
 }
 ```

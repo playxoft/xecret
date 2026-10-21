@@ -633,11 +633,23 @@ export type DeliveryOutcome =
  * Records how an attempt went, on the delivery and on its endpoint, in one
  * transaction. Answers the endpoint as it now stands, so the caller can decide
  * whether sustained failure has earned it an automatic disable.
+ *
+ * `affectsEndpoint: false` records the delivery alone and answers `null`: a
+ * test a person asked for from the dashboard is not part of the endpoint's
+ * delivery record, so its failure neither counts towards an automatic disable
+ * nor its success clears a run of real failures (review round 1, L13). A person
+ * testing a broken endpoint while they fix it must not be what switches it off.
  */
 export async function recordDeliveryAttempt(
   exec: Executor,
-  params: { deliveryId: string; webhookId: string; outcome: DeliveryOutcome },
+  params: {
+    deliveryId: string;
+    webhookId: string;
+    outcome: DeliveryOutcome;
+    affectsEndpoint?: boolean | undefined;
+  },
 ): Promise<WebhookRecord | null> {
+  const affectsEndpoint = params.affectsEndpoint ?? true;
   return exec.transaction(async (tx) => {
     const { outcome } = params;
     if (outcome.kind === 'succeeded') {
@@ -653,6 +665,7 @@ export async function recordDeliveryAttempt(
           completedAt: sql`now()`,
         })
         .where(eq(webhookDeliveries.id, params.deliveryId));
+      if (!affectsEndpoint) return null;
 
       const [hook] = await tx
         .update(webhooks)
@@ -674,6 +687,7 @@ export async function recordDeliveryAttempt(
         completedAt: outcome.retryAt === null ? sql`now()` : null,
       })
       .where(eq(webhookDeliveries.id, params.deliveryId));
+    if (!affectsEndpoint) return null;
 
     const [hook] = await tx
       .update(webhooks)

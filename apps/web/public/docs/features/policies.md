@@ -16,8 +16,12 @@ enforced whatever the plan says next: a downgrade never switches a security
 control off, because somebody may be relying on it. Loosening a policy, or
 switching it off, never needs a plan.
 
-No policy ever blocks a read. A build that worked yesterday reads its secrets
-today, whatever was decided in between.
+No policy ever stops a build from running: `xecret run`, on a laptop or in CI,
+works tomorrow if it worked yesterday, whatever was decided in between. The one
+policy that refuses a read is [disabling plaintext
+export](#disabling-plaintext-export), and only for the commands whose whole job
+is to write the values into a file — `pull`, `export` and the dashboard's
+download.
 
 One more guard rail sits beside the policies, though it is not one you switch
 on: production reading values from an environment that is not production — by

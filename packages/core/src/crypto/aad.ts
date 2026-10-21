@@ -345,14 +345,21 @@ export function cliHandoffAad(params: { codeChallenge: string; handoffPublicKey:
  * Binds a personal override (P19 §2) to the organisation, the environment, the
  * person it belongs to, and the name it overrides.
  *
- * A sealed box to the owner's *own* X25519 public key, never to the
+ * AES-256-GCM under the owner's **override key** — HKDF of their own X25519
+ * private scalar, `xecret.v2.override-key` (spec §2.2 type 13) — never under the
  * environment's key: a teammate holding the EDK must not be able to open
  * somebody's local override, and an EDK rotation must not have to touch one.
+ * Not a sealed box to the owner's public key, which an earlier draft used:
+ * anybody holding a public key can seal to it, the server included, so a box
+ * proved nothing about who made the override. Only the owner can derive this
+ * key, so only the owner can make an override their client accepts.
+ *
  * The four components are exactly the row's unique key, so an override moved to
  * another person, another environment or another name fails to open rather than
- * applying somewhere it was not written for. `name` is a component because
- * secret names are `[A-Za-z_][A-Za-z0-9_]*`, which the component pattern
- * already admits.
+ * applying somewhere it was not written for. There is no version: an override is
+ * replaced in place, so a server could serve the owner's previous one again —
+ * a residual risk T15 states. `name` is a component because secret names are
+ * `[A-Za-z_][A-Za-z0-9_]*`, which the component pattern already admits.
  */
 export function overrideValueAad(params: {
   orgId: string;

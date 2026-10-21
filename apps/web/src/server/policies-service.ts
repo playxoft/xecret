@@ -33,14 +33,20 @@ import type { EnvironmentScope } from './tenancy';
  * ── The secret policy, and where each half of it runs ──
  * The **name** rule runs here, on every write that introduces a name: a create,
  * a rename, an import, a promotion. The server sees names, so the server can
- * hold every client to it.
+ * hold every client to it. It is the *name* rule that is never asked of a write
+ * to a name that already exists — a rotation of a legacy name is not refused
+ * for the name (review round 1, L13: this said "never on a write to an
+ * existing name" of the whole policy, which is not what happens).
  *
  * The **value** rules — entropy and forbidden words — need the plaintext, which
  * the server has only for a `server`-mode environment. There it enforces them
  * too. For an end-to-end encrypted environment they run in the clients that do
- * the encrypting (the dashboard and `xecret secrets set`), before encryption,
- * from the same fixtures; a modified client can skip them, and the docs say so
- * rather than claiming a guarantee the architecture cannot give.
+ * the encrypting (the dashboard, `xecret secrets set` and `xecret import`),
+ * before encryption, from one implementation and shared fixtures; a modified
+ * client can skip them, and the docs say so rather than claiming a guarantee
+ * the architecture cannot give. They are asked of **every** value written, an
+ * existing name's included: the next write of a value is exactly when it is
+ * held to the rule.
  *
  * Neither rule ever blocks a read, a restore or a rollback: a policy adopted
  * today is not a reason to make yesterday's value unreachable. Existing names and

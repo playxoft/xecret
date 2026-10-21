@@ -414,7 +414,7 @@ func (a *app) applyPersonalOverrides(
 	opened := make(map[string]string, len(overrides))
 	var unopenable []string
 	for _, override := range overrides {
-		if !secretNamePattern.MatchString(override.Name) || len(override.Name) > 255 ||
+		if !secretNamePattern.MatchString(override.Name) || len(override.Name) > importer.SecretNameMaxLength ||
 			importer.IsReservedSecretName(override.Name) {
 			return nil, fmt.Errorf(
 				"the server returned a personal override named %q, which no secret may be called; nothing was run",

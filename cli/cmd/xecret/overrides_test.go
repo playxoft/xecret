@@ -274,6 +274,32 @@ func TestOverridesSetSealsToTheCallersOwnKey(t *testing.T) {
 	}
 }
 
+// A name is at most 256 characters — the column, the server and the dashboard
+// all say 256, and the CLI said 255 (review round 1, L13).
+func TestOverridesSetAcceptsAName256CharactersLong(t *testing.T) {
+	longest := "K" + strings.Repeat("_", 255)
+	w := newWorld(t, e2ee.RecipientMember)
+	fake := newFakeAPI(t)
+	loggedIn(t, w, fake)
+	fake.reply(http.MethodGet, "/keys", http.StatusOK, w.keyState(false))
+	fake.reply(http.MethodPut, "/overrides/"+longest, http.StatusOK, map[string]any{
+		"override": map[string]any{"name": longest, "updatedAt": "2026-10-20T00:00:00Z", "created": true},
+	})
+
+	if _, _, err := captured(t, func() error {
+		return overridesSet(withScope(longest, "--from-file", valueFile(t, "local")))
+	}); err != nil {
+		t.Fatalf("a 256-character name was refused: %v", err)
+	}
+	if len(fake.sent(http.MethodPut, "/overrides/"+longest)) != 1 {
+		t.Error("the override was not sent")
+	}
+
+	if _, err := oneName([]string{longest + "X"}); err == nil {
+		t.Error("a 257-character name was accepted")
+	}
+}
+
 // The value is never an argument: it would land in shell history and in every
 // process listing on the machine. `-` is the one second word accepted.
 func TestOverridesSetRefusesAValueOnTheCommandLine(t *testing.T) {

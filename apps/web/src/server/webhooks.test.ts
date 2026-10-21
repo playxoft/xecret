@@ -849,6 +849,32 @@ describe('a delivery', () => {
     expect(hits).toEqual([]);
   });
 
+  it('is not switched off by a failing test, nor has its failures cleared by a passing one (review round 1, L13)', async () => {
+    const { org, id } = await withWebhook();
+    // One more real failure would switch it off.
+    await t.pg.query(
+      `update webhooks set consecutive_failures = 14, failing_since = now() - interval '2 days' where id = $1`,
+      [id],
+    );
+    const health = async () =>
+      (
+        await t.pg.query<{ enabled: boolean; consecutive_failures: number }>(
+          `select enabled, consecutive_failures from webhooks where id = $1`,
+          [id],
+        )
+      ).rows[0];
+
+    receiver = () => new Response(null, { status: 500 });
+    const failed = await sendTest(org, id);
+    expect(failed.body.delivery).toMatchObject({ status: 'abandoned', lastStatusCode: 500 });
+    expect(await health()).toEqual({ enabled: true, consecutive_failures: 14 });
+    expect(mail).toEqual([]);
+
+    receiver = () => new Response(null, { status: 204 });
+    expect((await sendTest(org, id)).body.delivery?.status).toBe('succeeded');
+    expect(await health()).toEqual({ enabled: true, consecutive_failures: 14 });
+  });
+
   it('is rate-limited when tested', async () => {
     const { org, id } = await withWebhook();
     env['RL_MUTATION'] = { limit: vi.fn(async () => ({ success: false })) };

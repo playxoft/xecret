@@ -20,6 +20,7 @@ import (
 	"github.com/playxoft/xecret/cli/internal/cred"
 	"github.com/playxoft/xecret/cli/internal/envkeys"
 	"github.com/playxoft/xecret/cli/internal/ids"
+	"github.com/playxoft/xecret/cli/internal/importer"
 	"github.com/playxoft/xecret/cli/internal/output"
 	"github.com/playxoft/xecret/cli/internal/policy"
 	"github.com/playxoft/xecret/cli/internal/references"
@@ -831,7 +832,7 @@ func oneName(positional []string) (string, error) {
 		return "", errors.New("expected exactly one secret name")
 	}
 	name := positional[0]
-	if !secretNamePattern.MatchString(name) || len(name) > 255 {
+	if !secretNamePattern.MatchString(name) || len(name) > importer.SecretNameMaxLength {
 		return "", fmt.Errorf("%q is not a valid secret name (letters, digits and _, not starting with a digit)", name)
 	}
 	return name, nil
