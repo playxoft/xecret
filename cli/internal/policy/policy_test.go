@@ -15,6 +15,14 @@ import (
 const fixturesPath = "../../../packages/core/src/policy/fixtures/policy-fixtures.json"
 
 type fixtureFile struct {
+	// NamePatterns is read only by this package's own backtracking-guard
+	// port (review round 2, F2) — the name rule itself stays the server's
+	// alone; see name_pattern.go.
+	NamePatterns []struct {
+		Name    string `json:"name"`
+		Pattern string `json:"pattern"`
+		Safe    bool   `json:"safe"`
+	} `json:"namePatterns"`
 	Entropy []struct {
 		Value string `json:"value"`
 		Bits  int    `json:"bits"`
@@ -54,6 +62,24 @@ func TestEntropyFixtures(t *testing.T) {
 		}
 	}
 	t.Logf("checked %d entropy cases", len(cases))
+}
+
+// TestNamePatternFixtures checks this package's own port of the backtracking
+// guard against the same patterns the TypeScript suite refuses or accepts
+// (review round 2, F2). Go's regexp (RE2) is linear-time and never at risk
+// from these shapes; what this proves is only that the port agrees with the
+// TypeScript it was copied from, pattern for pattern.
+func TestNamePatternFixtures(t *testing.T) {
+	cases := loadFixtures(t).NamePatterns
+	if len(cases) == 0 {
+		t.Fatal("the fixture file carries no namePatterns cases")
+	}
+	for _, c := range cases {
+		if got := NamePatternIsSafe(c.Pattern); got != c.Safe {
+			t.Errorf("%s: NamePatternIsSafe(%q) = %v, want %v", c.Name, c.Pattern, got, c.Safe)
+		}
+	}
+	t.Logf("checked %d name pattern cases", len(cases))
 }
 
 func TestValueFixtures(t *testing.T) {

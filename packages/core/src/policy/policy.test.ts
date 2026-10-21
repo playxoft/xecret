@@ -142,6 +142,32 @@ describe('validateSecretPolicy', () => {
     expect(refused({ ...ON, namePattern: pattern })).toBe('namePattern');
   });
 
+  // Review round 2, F2: a group with no quantifier of its own, a zero-width
+  // escape, an empty group and a lookaround each reset the run instead of
+  // letting it pass through, so these backtrack exactly like `A*A*A*` and
+  // must be refused the same way.
+  it.each([
+    ['(?:[A-Z_]*)(?:[A-Z_]*)(?:[A-Z_]*)'],
+    ['[A-Z_]*\\B[A-Z_]*\\B[A-Z_]*'],
+    ['A*()A*()A*'],
+    ['A*(?=)A*(?=)A*'],
+  ])('refuses the repeated-run bypass %s', (pattern) => {
+    expect(longestRepeatRun(pattern)).toBeGreaterThan(2);
+    expect(refused({ ...ON, namePattern: pattern })).toBe('namePattern');
+  });
+
+  it('passes the run through rather than amplifying it: two is still two', () => {
+    expect(longestRepeatRun('(?:[A-Z_]*)[A-Z_]*')).toBe(2);
+    expect(longestRepeatRun('A*\\BA*')).toBe(2);
+    expect(longestRepeatRun('A*()A*')).toBe(2);
+    expect(longestRepeatRun('A*(?=)A*')).toBe(2);
+    // A group's own quantifier is unaffected: this path already worked.
+    expect(longestRepeatRun('(?:AB)*(?:AB)*')).toBe(2);
+    // A disambiguating lookaround with real content still breaks the run,
+    // the same way a literal does.
+    expect(longestRepeatRun('A*(?=B)A*(?=B)A*')).toBe(1);
+  });
+
   it('counts a run on one level, broken by any part that does not repeat', () => {
     expect(longestRepeatRun('[A-Z][A-Z0-9_]*')).toBe(1);
     expect(longestRepeatRun('[A-Z]+_[A-Z]+_[A-Z0-9]+')).toBe(1);

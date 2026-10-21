@@ -82,11 +82,15 @@ func PolicyApplies(policy SecretPolicy, isProduction bool) bool {
 // valueType is the type the secret will hold once the write lands. A template's
 // text is not its value — `postgres://${DB_USER}@${DB_HOST}` carries no
 // credential of its own, and the secrets it names are held to these rules where
-// they are written — so a template is not asked the entropy rule, and the
-// forbidden-word rule reads its literal text only, each piece on a line of its
-// own, so a reference named DB_PASSWORD is not taken for the word "password". A
-// template that does not parse is checked whole. This is the TypeScript's rule,
-// pinned by the template cases in policy-fixtures.json (review round 1, M5).
+// they are written — so a template that actually holds a reference is not asked
+// the entropy rule. A template that parses to no reference at all is a plain
+// value wearing the template type, so it is held to the entropy rule exactly as
+// a plain value is (review round 2, F3); a template that does not parse is
+// checked whole, because it is about to be refused for its syntax anyway.
+// Either way the forbidden-word rule reads its literal text only, each piece on
+// a line of its own, so a reference named DB_PASSWORD is not taken for the word
+// "password". This is the TypeScript's rule, pinned by the template cases in
+// policy-fixtures.json (review round 1, M5; review round 2, F3).
 //
 // One violation per rule, however many forbidden words match: the message for
 // the second rule is the same sentence whichever word it was, by design.
@@ -97,12 +101,17 @@ func CheckValueAgainstPolicy(policy SecretPolicy, name, value string, isProducti
 	var violations []Violation
 	template := valueType == templateValueType
 	text := value
+	referenceFree := false
 	if template {
-		text = literalText(value)
+		text, referenceFree = literalText(value)
 	}
 
-	if !template && policy.MinValueEntropyBits != nil && entropyRuleApplies(policy, name) {
-		if EstimateEntropyBits(value) < *policy.MinValueEntropyBits {
+	// Exempt only a template that actually holds a reference — one that
+	// parses to none is a plain value in every way the entropy rule can see.
+	entropyExempt := template && !referenceFree
+
+	if !entropyExempt && policy.MinValueEntropyBits != nil && entropyRuleApplies(policy, name) {
+		if EstimateEntropyBits(text) < *policy.MinValueEntropyBits {
 			violations = append(violations, Violation{
 				Rule: RuleMinValueEntropyBits,
 				Message: fmt.Sprintf(
@@ -130,21 +139,26 @@ func CheckValueAgainstPolicy(policy SecretPolicy, name, value string, isProducti
 // templateValueType is the declared type whose values are read for references.
 const templateValueType = "template"
 
-// literalText is a template's literal text, each piece on a line of its own so a
-// word cannot be assembled across a reference — or the whole value when it does
-// not parse.
-func literalText(value string) string {
+// literalText is a template's literal text, each piece on a line of its own so
+// a word cannot be assembled across a reference, and whether it parsed to no
+// reference at all (review round 2, F3). A template that does not parse is
+// returned whole, and never reference-free: it is about to be refused for its
+// syntax anyway, so it is checked as plainly as possible rather than leniently.
+func literalText(value string) (string, bool) {
 	segments, err := references.ParseTemplate(value)
 	if err != nil {
-		return value
+		return value, false
 	}
 	pieces := make([]string, 0, len(segments))
+	referenceFree := true
 	for _, segment := range segments {
 		if segment.Reference == nil {
 			pieces = append(pieces, segment.Text)
+		} else {
+			referenceFree = false
 		}
 	}
-	return strings.Join(pieces, "\n")
+	return strings.Join(pieces, "\n"), referenceFree
 }
 
 func entropyRuleApplies(policy SecretPolicy, name string) bool {

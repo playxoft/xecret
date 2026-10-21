@@ -146,9 +146,36 @@ const MAX_ADJACENT_REPEATS = 2;
  * variable `{m,n}` — directly after one another at the same level of a
  * pattern. A group is one part of the level it sits in, and its own content is
  * a level of its own. A static, single-pass scan: it never runs the pattern.
+ *
+ * ── What passes through without breaking, or hiding, a run (review round 2,
+ * F2) ──
+ * Four constructs consume no character of the name and disambiguate nothing,
+ * so none of them may reset a run the way an ordinary literal does, and a
+ * group that closes without its own quantifier is not "no part" either — what
+ * it closed *on* is:
+ *
+ *  - A **group with no quantifier of its own** — `(?:[A-Z_]*)[A-Z_]*`'s first
+ *    half — is transparent: if its content ended on an active repeat, the
+ *    group is exactly as exploitable as that repeat sitting at this level
+ *    directly, so it counts as one repeated part here, not as the reset a
+ *    "no quantifier" atom otherwise is. `(?:AB)*`, where the *group* carries
+ *    the quantifier, is unaffected — that path already worked.
+ *  - An **empty group** — `()`, `(?:)`, or an empty **lookaround** `(?=)` —
+ *    matches the empty string, so there is nothing on either side of it to
+ *    disambiguate. A lookaround with real content, `(?=B)`, still behaves
+ *    like a literal and still breaks a run.
+ *  - A **zero-width escape** — `\b`, `\B` — a boundary assertion, not a
+ *    character.
+ *
+ * Both are skipped as if they were not there: the run they sit beside
+ * continues exactly as it stood.
  */
 export function longestRepeatRun(pattern: string): number {
   const runs: number[] = [0];
+  // One entry per currently open group, parallel to `runs`: where its content
+  // started, to tell an empty group (or an empty lookaround) from one that
+  // merely did not repeat.
+  const groups: { start: number }[] = [];
   let longest = 0;
   let index = 0;
 
@@ -188,13 +215,16 @@ export function longestRepeatRun(pattern: string): number {
   while (index < pattern.length) {
     const char = pattern[index]!;
     if (char === '\\') {
+      const escaped = pattern[index + 1];
       index += 2;
       // `\u{…}`, `\p{…}`: the braces belong to the escape.
       if (pattern[index] === '{' && /[upP]/.test(pattern[index - 1] ?? '')) {
         const close = pattern.indexOf('}', index);
         index = close === -1 ? pattern.length : close + 1;
       }
-      part(quantifier());
+      // `\b`/`\B`: a zero-width boundary, consumed and skipped — not a part,
+      // and nothing to reset a run over.
+      if (escaped !== 'b' && escaped !== 'B') part(quantifier());
     } else if (char === '[') {
       index += 1;
       if (pattern[index] === '^') index += 1;
@@ -209,10 +239,24 @@ export function longestRepeatRun(pattern: string): number {
       index += 1;
       const prefix = /^\?(?::|=|!|<=|<!|<[A-Za-z_][A-Za-z0-9_]*>)/.exec(pattern.slice(index));
       if (prefix !== null) index += prefix[0].length;
+      groups.push({ start: index });
     } else if (char === ')') {
-      if (runs.length > 1) runs.pop();
+      const group = groups.pop();
+      const innerRun = runs.length > 1 ? runs.pop()! : 0;
+      const empty = group !== undefined && index === group.start;
       index += 1;
-      part(quantifier());
+      const groupQuantifier = quantifier();
+      if (empty) {
+        // Matches the empty string either way — `()`, `(?:)`, `(?=)` — so
+        // there is nothing on either side of it to disambiguate: leave the
+        // run exactly as it stood, never a reset, never a part of its own.
+      } else if (groupQuantifier === false && innerRun > 0) {
+        // No quantifier of its own, but it closed on an active repeat: as
+        // exploitable here as that repeat sitting directly at this level.
+        part(true);
+      } else {
+        part(groupQuantifier);
+      }
     } else if (char === '|') {
       runs[runs.length - 1] = 0;
       index += 1;
@@ -342,13 +386,16 @@ export function checkNameAgainstPolicy(
  * `valueType` is the type the secret will hold once the write lands. A
  * template's text is not its value: `postgres://${DB_USER}@${DB_HOST}` carries no
  * credential of its own, and the secrets it names are held to these rules where
- * they are written. So for a template the entropy rule is not asked — a
- * reference is short and predictable by design, and `${DB_PASSWORD}` would fail
- * it every time — and the forbidden-word rule is asked of the literal text only,
- * each piece on its own line, so a reference *named* `DB_PASSWORD` is not taken
- * for the word "password" sitting in the value. A template that does not parse
- * is checked whole: it is about to be refused for its syntax anyway, and checking
- * less of it would be the wrong way to be lenient.
+ * they are written. So for a template that actually holds a reference the entropy
+ * rule is not asked — a reference is short and predictable by design, and
+ * `${DB_PASSWORD}` would fail it every time. A template that parses to **no**
+ * reference at all is a plain value wearing the template type — nothing about it
+ * is a reference to anything else — so it is held to the entropy rule exactly as
+ * a plain value is (review round 2, F3); a template that does not parse is also
+ * checked whole, because it is about to be refused for its syntax anyway. Either
+ * way the forbidden-word rule is asked of the literal text only, each piece on
+ * its own line, so a reference *named* `DB_PASSWORD` is not taken for the word
+ * "password" sitting in the value.
  *
  * Here rather than in each client (review round 1, M5): the dashboard and the
  * CLI disagreed — the CLI held a template's text to the entropy rule — and
@@ -364,10 +411,15 @@ export function checkValueAgainstPolicy(
   if (!policyApplies(policy, isProduction)) return [];
   const violations: PolicyViolation[] = [];
   const template = valueType === TEMPLATE_VALUE_TYPE;
-  const text = template ? literalText(value) : value;
+  const parsed = template ? literalTemplateText(value) : { text: value, referenceFree: false };
+  const text = parsed.text;
 
-  if (!template && policy.minValueEntropyBits !== null && entropyRuleApplies(policy, name)) {
-    if (estimateEntropyBits(value) < policy.minValueEntropyBits) {
+  // Exempt only a template that actually holds a reference — one that parses
+  // to none is a plain value in every way the entropy rule can see.
+  const entropyExempt = template && !parsed.referenceFree;
+
+  if (!entropyExempt && policy.minValueEntropyBits !== null && entropyRuleApplies(policy, name)) {
+    if (estimateEntropyBits(text) < policy.minValueEntropyBits) {
       violations.push({
         rule: 'minValueEntropyBits',
         message:
@@ -393,15 +445,22 @@ const TEMPLATE_VALUE_TYPE = 'template';
 
 /**
  * A template's literal text, each piece on a line of its own — so a word cannot
- * be assembled across a reference — or the whole value when it does not parse.
+ * be assembled across a reference — paired with whether it parsed to no
+ * reference at all (review round 2, F3). A template that does not parse is
+ * reported whole, and never reference-free: it is about to be refused for its
+ * syntax anyway, so it is checked as plainly as possible rather than leniently.
  */
-function literalText(value: string): string {
+function literalTemplateText(value: string): { text: string; referenceFree: boolean } {
   try {
-    return parseTemplate(value)
-      .flatMap((segment) => (segment.kind === 'text' ? [segment.text] : []))
-      .join('\n');
+    const segments = parseTemplate(value);
+    return {
+      text: segments
+        .flatMap((segment) => (segment.kind === 'text' ? [segment.text] : []))
+        .join('\n'),
+      referenceFree: segments.every((segment) => segment.kind === 'text'),
+    };
   } catch {
-    return value;
+    return { text: value, referenceFree: false };
   }
 }
 
