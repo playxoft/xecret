@@ -196,11 +196,26 @@ export type OperatorBillingEdit =
   | 'detach';
 
 /**
+ * Whether Dodo bills the row: a paid plan that follows a subscription — or a
+ * row still on Free {@link awaitingActivation}, whose checkout was paid and
+ * whose subscription is live at Dodo. That one's activation, from the webhook
+ * or the hourly job's ask, is on its way, and lands over whatever was written
+ * meanwhile.
+ */
+export function billedByDodo(
+  row: Pick<SubscriptionRecord, 'plan' | 'dodoSubscriptionId' | 'dodoEventAt'>,
+): boolean {
+  return row.dodoSubscriptionId !== null && (row.plan !== 'free' || awaitingActivation(row));
+}
+
+/**
  * The operator tool's rule for a run that touches the billing fields — plan,
  * interval, seats, status. Pure, so the rule is tested where it is stated.
  *
- *  - A subscription Dodo bills (a paid plan with a subscription id) is Dodo's
- *    to change: refused, unless the operator passes `--over-dodo`.
+ *  - A subscription Dodo bills ({@link billedByDodo}: a paid plan with a
+ *    subscription id, or a Free row waiting for the subscription a paid
+ *    checkout linked) is Dodo's to change: refused, unless the operator passes
+ *    `--over-dodo`.
  *  - **Any** row that still carries provider ids is taken off them before the
  *    change is written — **whatever its plan**. A row on Free keeps the id of
  *    the subscription it ended on; a grant written over that id would leave
@@ -215,8 +230,7 @@ export function operatorBillingEdit(
   run: { touchesBilling: boolean; overDodo: boolean },
 ): OperatorBillingEdit {
   if (!run.touchesBilling) return 'write';
-  const billedByDodo = row.dodoSubscriptionId !== null && row.plan !== 'free';
-  if (billedByDodo && !run.overDodo) return 'refuse';
+  if (billedByDodo(row) && !run.overDodo) return 'refuse';
   return carriesProviderIds(row) ? 'detach' : 'write';
 }
 
@@ -440,8 +454,10 @@ export async function listLapsedTrials(
  * snapshot of it has been applied yet (`dodo_event_at` null). The customer
  * has paid and Dodo bills the subscription; the plan arrives with its
  * snapshot — the webhook's, or the hourly job's ask. One statement of the
- * shape, for the sweep that asks, the checkout it refuses, and the operator
- * tool that must not write over it.
+ * shape, for the sweep that asks, the second checkout it refuses, and the
+ * operator tool that must not write over it. (A row on Free that *ended* a
+ * subscription keeps its id too, but an applied snapshot left `dodo_event_at`
+ * behind.)
  */
 export function awaitingActivation(
   row: Pick<SubscriptionRecord, 'plan' | 'dodoSubscriptionId' | 'dodoEventAt'>,

@@ -12,6 +12,7 @@ import {
 import type { BillingInterval } from '@xecret/core/entitlements';
 import { toBase64Url } from '@xecret/core/crypto';
 import {
+  awaitingActivation,
   billingCounts,
   claimBillingRequest,
   completeBillingRequest,
@@ -138,16 +139,6 @@ function hasLiveSubscription(row: SubscriptionRecord): boolean {
  */
 function managedBySupport(row: SubscriptionRecord): boolean {
   return row.plan !== 'free' && (row.dodoSubscriptionId === null || row.dodoProductId === null);
-}
-
-/**
- * A checkout that has been paid — its payment linked the subscription to the
- * row — whose subscription has not been applied yet. A second checkout now
- * would be a second subscription. (A row on Free that *ended* a subscription
- * keeps its id too, but an applied snapshot left `dodo_event_at` behind.)
- */
-function awaitingActivation(row: SubscriptionRecord): boolean {
-  return row.plan === 'free' && row.dodoSubscriptionId !== null && row.dodoEventAt === null;
 }
 
 /** Whether the row's Dodo ids belong to the mode this deployment talks to. */

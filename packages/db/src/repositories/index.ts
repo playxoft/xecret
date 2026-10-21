@@ -456,6 +456,7 @@ export type {
 export {
   addFetchCounts,
   awaitingActivation,
+  billedByDodo,
   billingCounts,
   carriesProviderIds,
   claimBillingAlert,

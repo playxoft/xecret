@@ -1274,6 +1274,22 @@ describe('operatorBillingEdit (plan:set’s rule)', () => {
     expect(operatorBillingEdit(billed, { ...billing, overDodo: true })).toBe('detach');
   });
 
+  it('refuses a Free row waiting for the subscription a paid checkout linked, unless told --over-dodo', () => {
+    // The checkout's payment linked it; no snapshot of it applied yet. The
+    // customer has paid, and its activation would land over the grant.
+    const waiting = {
+      ...none,
+      plan: 'free' as const,
+      dodoSubscriptionId: 'sub_1',
+      dodoCustomerId: 'cus_1',
+      dodoMode: 'live_mode' as const,
+    };
+    expect(operatorBillingEdit(waiting, billing)).toBe('refuse');
+    expect(operatorBillingEdit(waiting, { ...billing, overDodo: true })).toBe('detach');
+    // An add-on or an override is still never Dodo's.
+    expect(operatorBillingEdit(waiting, { touchesBilling: false, overDodo: false })).toBe('write');
+  });
+
   it('detaches a Free row that kept an ended subscription’s ids, whatever plan is granted', () => {
     const endedHere = {
       ...none,
