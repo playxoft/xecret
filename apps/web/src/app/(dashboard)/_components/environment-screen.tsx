@@ -5,7 +5,20 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { api } from '@/lib/api';
 import { PageHeader } from '@/components/layout';
-import { Button, SettingsIcon } from '@/components/ui';
+import {
+  Badge,
+  Button,
+  ChevronDownIcon,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  HistoryIcon,
+  LayersIcon,
+  SettingsIcon,
+} from '@/components/ui';
+import { PromoteDialog } from '@/components/changes/promote-dialog';
+import { RestorePointDialog } from '@/components/changes/restore-point-dialog';
 import {
   EnvKeyUnavailableState,
   NeedsRotationBanner,
@@ -13,6 +26,9 @@ import {
   RotationDialog,
   useEnvironmentKeys,
 } from '@/components/envkeys';
+import { OverridesCard } from '@/components/overrides/overrides-card';
+import { secretPolicyFrom } from '@/components/policies/policy-checks';
+import { SecretPolicyProvider, useOrgPolicies } from '@/components/policies/secret-policy-context';
 import { EnvironmentBadge } from '@/components/projects/environment-badge';
 import { EnvironmentSwitcher } from '@/components/projects/environment-switcher';
 import type { ProjectResponse } from '@/components/projects/types';
@@ -133,149 +149,295 @@ export function EnvironmentScreen({
 
   const isProduction = environment?.isProduction ?? false;
 
-  return (
-    <div className="flex flex-col gap-6">
-      <PageHeader
-        title={environment?.name ?? envSlug}
-        // The slug and the display name differ by more than case for most
-        // environments, so the heading waits for the project rather than
-        // rewriting itself a beat later. The badge waits with it: `isProduction`
-        // is false until the same request lands.
-        titleLoading={project.data === null && project.error === null}
-        badge={<EnvironmentBadge isProduction={isProduction} />}
-        description={
-          isProduction
-            ? 'Production is deny-by-default: only admins and members with an explicit grant can read these values.'
-            : 'Values are masked until you reveal them, and every reveal is recorded in the audit log.'
-        }
-        actions={
-          <>
-            {project.data !== null && project.data.environments.length > 1 ? (
-              // Capsules rather than a dropdown. Comparing a value across
-              // environments is the most repeated act on this screen, and a
-              // dropdown costs two clicks and hides its options until the first.
-              <EnvironmentSwitcher
-                environments={project.data.environments}
-                currentSlug={envSlug}
-                href={(slug) => appPath.environment(orgSlug, projectSlug, slug)}
-                onCompare={toggleCompared}
-                comparing={comparedSet}
-              />
-            ) : null}
+  /**
+   * The organisation's secret policy (P19 §8), read once for the whole screen.
+   *
+   * Every editor below — a stored row, a new row, a compared cell, the import
+   * — asks it before it encrypts, so it is read here and handed down rather
+   * than fetched per row. Until it lands, or when it cannot be read, a write
+   * that carries a value is refused saying so (review round 1, M5): the value
+   * rules live only in the clients, and saving without them is skipping them.
+   * A rename or a note still saves — the server asks the name rule itself.
+   */
+  const policies = useOrgPolicies(orgSlug);
+  const secretPolicy = secretPolicyFrom(policies);
 
-            {/* Import and export moved into the table's own toolbar, beside the
+  /**
+   * What this environment inherits from (P19 §1), by name where the listing has
+   * it. The table below shows this environment's *own* values — an inherited
+   * one belongs to the parent and is edited there — so the heading is where a
+   * reader learns that `xecret run` will hand their process more than the rows
+   * on this page.
+   */
+  const parentSlug = environment?.parent ?? null;
+  const parentEnvironment =
+    parentSlug === null
+      ? undefined
+      : project.data?.environments.find((entry) => entry.slug === parentSlug);
+
+  const [promoting, setPromoting] = useState(false);
+  const [restoringPoint, setRestoringPoint] = useState(false);
+  /** The key state's own facts, in every state that has them — an unavailable one included. */
+  const keyFacts =
+    keys.state.status === 'open' ||
+    keys.state.status === 'server' ||
+    keys.state.status === 'unavailable'
+      ? keys.state.keys
+      : null;
+  /**
+   * Promotion and point-in-time restore are re-encryptions performed here, in
+   * this browser, under this environment's key — so they are offered exactly
+   * when that key is open. Who may *apply* them is the server's to decide.
+   */
+  const canChangeInBulk = material !== null && organization !== null;
+
+  /** A write this table did not make — see `externalWrites`. */
+  function wroteElsewhere() {
+    setExternalWrites((current) => current + 1);
+    secrets.reload();
+  }
+
+  return (
+    <SecretPolicyProvider policy={secretPolicy}>
+      <div className="flex flex-col gap-6">
+        <PageHeader
+          title={environment?.name ?? envSlug}
+          // The slug and the display name differ by more than case for most
+          // environments, so the heading waits for the project rather than
+          // rewriting itself a beat later. The badge waits with it: `isProduction`
+          // is false until the same request lands.
+          titleLoading={project.data === null && project.error === null}
+          badge={
+            <>
+              <EnvironmentBadge isProduction={isProduction} />
+              {parentSlug !== null ? (
+                <Link
+                  href={appPath.environment(orgSlug, projectSlug, parentSlug)}
+                  title={`${environment?.name ?? envSlug} inherits every value it does not set itself from ${parentEnvironment?.name ?? parentSlug}. xecret run resolves the chain; this page lists only this environment's own values.`}
+                  className="rounded-full"
+                >
+                  <Badge tone="accent">
+                    <LayersIcon aria-hidden="true" className="size-3.5" />
+                    Inherits from {parentEnvironment?.name ?? parentSlug}
+                  </Badge>
+                </Link>
+              ) : null}
+            </>
+          }
+          description={
+            <>
+              {isProduction
+                ? 'Production is deny-by-default: only admins and members with an explicit grant can read these values.'
+                : 'Values are masked until you reveal them, and every reveal is recorded in the audit log.'}
+              {parentSlug !== null
+                ? ` It inherits from ${parentEnvironment?.name ?? parentSlug}: the rows below are its own values, and anything it does not set comes from there when it is read.`
+                : ''}
+            </>
+          }
+          actions={
+            <>
+              {canChangeInBulk ? (
+                // Two acts on the whole environment, behind one control: both
+                // rewrite many secrets at once, both preview before they write,
+                // and neither is something a person reaches for every day.
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="secondary" size="sm">
+                      <HistoryIcon className="size-4" />
+                      Changes
+                      <ChevronDownIcon aria-hidden="true" className="size-3.5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent>
+                    <DropdownMenuItem onSelect={() => setPromoting(true)}>
+                      <LayersIcon className="size-4" />
+                      Promote from another environment…
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => setRestoringPoint(true)}>
+                      <HistoryIcon className="size-4" />
+                      Restore to a point in time…
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : null}
+
+              {project.data !== null && project.data.environments.length > 1 ? (
+                // Capsules rather than a dropdown. Comparing a value across
+                // environments is the most repeated act on this screen, and a
+                // dropdown costs two clicks and hides its options until the first.
+                <EnvironmentSwitcher
+                  environments={project.data.environments}
+                  currentSlug={envSlug}
+                  href={(slug) => appPath.environment(orgSlug, projectSlug, slug)}
+                  onCompare={toggleCompared}
+                  comparing={comparedSet}
+                />
+              ) : null}
+
+              {/* Import and export moved into the table's own toolbar, beside the
                 controls that also act on this environment's secrets. What is
                 left here acts on the *environment*, which is what the page
                 heading is about. */}
-            <Button variant="ghost" size="icon" asChild>
-              <Link
-                href={appPath.environmentSettings(orgSlug, projectSlug, envSlug)}
-                aria-label={`Settings for ${environment?.name ?? envSlug}`}
-              >
-                <SettingsIcon className="size-4" />
-              </Link>
-            </Button>
-          </>
-        }
-      />
+              <Button variant="ghost" size="icon" asChild>
+                <Link
+                  href={appPath.environmentSettings(orgSlug, projectSlug, envSlug)}
+                  aria-label={`Settings for ${environment?.name ?? envSlug}`}
+                >
+                  <SettingsIcon className="size-4" />
+                </Link>
+              </Button>
+            </>
+          }
+        />
 
-      {/* The key banners sit above the table rather than replacing it: the
+        {/* The key banners sit above the table rather than replacing it: the
           names are plaintext in both modes, so a person waiting for a key share
           should still see what they are waiting for. */}
-      {keyState?.needsRotation === true ? (
-        <NeedsRotationBanner canRotate={canRotate} onRotate={() => setRotating(true)} />
-      ) : null}
+        {keyState?.needsRotation === true ? (
+          <NeedsRotationBanner canRotate={canRotate} onRotate={() => setRotating(true)} />
+        ) : null}
 
-      {material !== null && pendingCount > 0 ? (
-        <PendingSharesBanner
-          target={{ orgSlug, projectSlug, envSlug }}
-          material={material}
-          pendingCount={pendingCount}
-          onShared={keys.reload}
-        />
-      ) : null}
+        {material !== null && pendingCount > 0 ? (
+          <PendingSharesBanner
+            target={{ orgSlug, projectSlug, envSlug }}
+            material={material}
+            pendingCount={pendingCount}
+            onShared={keys.reload}
+          />
+        ) : null}
 
-      {keys.state.status === 'unavailable' ? (
-        <EnvKeyUnavailableState
-          reason={keys.state.reason}
-          onRetry={keys.reload}
-          target={{ orgSlug, environmentId: keys.state.keys.environmentId }}
-        />
-      ) : null}
+        {keys.state.status === 'unavailable' ? (
+          <EnvKeyUnavailableState
+            reason={keys.state.reason}
+            onRetry={keys.reload}
+            target={{ orgSlug, environmentId: keys.state.keys.environmentId }}
+          />
+        ) : null}
 
-      {project.error !== null ? (
-        <ErrorState subject="this project" error={project.error} onRetry={project.reload} />
-      ) : secrets.error !== null ? (
-        <ErrorState subject="this environment" error={secrets.error} onRetry={secrets.reload} />
-      ) : secrets.data === null ? (
-        <SecretTableSkeleton />
-      ) : (
-        <SecretTable
+        {project.error !== null ? (
+          <ErrorState subject="this project" error={project.error} onRetry={project.reload} />
+        ) : secrets.error !== null ? (
+          <ErrorState subject="this environment" error={secrets.error} onRetry={secrets.reload} />
+        ) : secrets.data === null ? (
+          <SecretTableSkeleton />
+        ) : (
+          <SecretTable
+            orgSlug={orgSlug}
+            orgId={organization?.id ?? ''}
+            projectSlug={projectSlug}
+            envSlug={envSlug}
+            isProduction={isProduction}
+            io={io}
+            // Empty until the project resolves. The table reads these only for
+            // `isProduction` — which decides what gets confirmed — so an empty list
+            // is the safe premise to start from.
+            environments={project.data?.environments ?? []}
+            comparedEnvironments={comparedEnvironments}
+            onStopComparing={() => setCompared([])}
+            externalWrites={externalWrites}
+            secrets={secrets.data}
+            onLoadMore={secrets.loadMore}
+            loadingMore={secrets.loadingMore}
+            loadMoreError={secrets.loadMoreError}
+            onChanged={secrets.reload}
+            onImport={() => setImporting(true)}
+            onExport={() => setExporting(true)}
+          />
+        )}
+
+        <ImportDialog
           orgSlug={orgSlug}
-          orgId={organization?.id ?? ''}
           projectSlug={projectSlug}
           envSlug={envSlug}
           isProduction={isProduction}
           io={io}
-          // Empty until the project resolves. The table reads these only for
-          // `isProduction` — which decides what gets confirmed — so an empty list
-          // is the safe premise to start from.
-          environments={project.data?.environments ?? []}
-          comparedEnvironments={comparedEnvironments}
-          onStopComparing={() => setCompared([])}
-          externalWrites={externalWrites}
-          secrets={secrets.data}
-          onLoadMore={secrets.loadMore}
-          loadingMore={secrets.loadingMore}
-          loadMoreError={secrets.loadMoreError}
-          onChanged={secrets.reload}
-          onImport={() => setImporting(true)}
-          onExport={() => setExporting(true)}
-        />
-      )}
-
-      <ImportDialog
-        orgSlug={orgSlug}
-        projectSlug={projectSlug}
-        envSlug={envSlug}
-        isProduction={isProduction}
-        io={io}
-        open={importing}
-        onOpenChange={setImporting}
-        onImported={() => {
-          setExternalWrites((current) => current + 1);
-          secrets.reload();
-        }}
-      />
-
-      <ExportDialog
-        orgSlug={orgSlug}
-        projectSlug={projectSlug}
-        envSlug={envSlug}
-        isProduction={isProduction}
-        io={io}
-        open={exporting}
-        onOpenChange={setExporting}
-      />
-
-      {material !== null ? (
-        <RotationDialog
-          target={{ orgSlug, projectSlug, envSlug }}
-          material={material}
-          environmentName={environment?.name ?? envSlug}
-          isProduction={isProduction}
-          open={rotating}
-          onOpenChange={setRotating}
-          // Re-reads the key state, which opens the new grant through the
-          // ordinary path. The table's decrypted snapshot goes with it: every
-          // value it holds was opened under the key that has just been retired.
-          onRotated={() => {
-            keys.reload();
+          open={importing}
+          onOpenChange={setImporting}
+          onImported={() => {
             setExternalWrites((current) => current + 1);
+            secrets.reload();
           }}
         />
-      ) : null}
-    </div>
+
+        <ExportDialog
+          orgSlug={orgSlug}
+          projectSlug={projectSlug}
+          envSlug={envSlug}
+          isProduction={isProduction}
+          io={io}
+          // P19 §9: refused before anything is pulled where the policy says so,
+          // and told what a download from here leaves out (P19 §1).
+          plaintextExport={environment?.plaintextExport ?? 'allowed'}
+          inheritsFrom={parentSlug}
+          templateCount={
+            secrets.data?.filter((secret) => secret.valueType === 'template').length ?? 0
+          }
+          open={exporting}
+          onOpenChange={setExporting}
+        />
+
+        {/* The person's own values for this environment (P19 §2), below the
+          shared ones: they change what one machine runs and nothing anybody
+          else reads, so they come after the table everybody shares. */}
+        <OverridesCard
+          orgSlug={orgSlug}
+          orgId={organization?.id ?? null}
+          projectSlug={projectSlug}
+          envSlug={envSlug}
+          environmentId={keyFacts?.environmentId ?? null}
+          encryptionMode={keyFacts?.encryptionMode ?? null}
+        />
+
+        {material !== null &&
+        organization !== null &&
+        environment !== undefined &&
+        project.data !== null ? (
+          <PromoteDialog
+            orgSlug={orgSlug}
+            orgId={organization.id}
+            projectSlug={projectSlug}
+            target={environment}
+            environments={project.data.environments}
+            open={promoting}
+            onOpenChange={setPromoting}
+            onPromoted={wroteElsewhere}
+          />
+        ) : null}
+
+        {material !== null && organization !== null ? (
+          <RestorePointDialog
+            orgSlug={orgSlug}
+            orgId={organization.id}
+            projectSlug={projectSlug}
+            envSlug={envSlug}
+            environmentName={environment?.name ?? envSlug}
+            isProduction={isProduction}
+            material={material}
+            open={restoringPoint}
+            onOpenChange={setRestoringPoint}
+            onRestored={wroteElsewhere}
+          />
+        ) : null}
+
+        {material !== null ? (
+          <RotationDialog
+            target={{ orgSlug, projectSlug, envSlug }}
+            material={material}
+            environmentName={environment?.name ?? envSlug}
+            isProduction={isProduction}
+            open={rotating}
+            onOpenChange={setRotating}
+            // Re-reads the key state, which opens the new grant through the
+            // ordinary path. The table's decrypted snapshot goes with it: every
+            // value it holds was opened under the key that has just been retired.
+            onRotated={() => {
+              keys.reload();
+              setExternalWrites((current) => current + 1);
+            }}
+          />
+        ) : null}
+      </div>
+    </SecretPolicyProvider>
   );
 }
 

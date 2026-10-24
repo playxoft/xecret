@@ -1,11 +1,24 @@
-import { loadEnvironmentSecrets } from '@xecret/db/repositories';
+import type { DeclaredReference } from '@xecret/core/references';
+import {
+  findActiveGrantsForPrincipal,
+  loadEnvironmentSecrets,
+  loadSecretsForEnvironments,
+  toBytes,
+} from '@xecret/db/repositories';
+import type { SecretMaterial } from '@xecret/db/repositories';
 import type { Principal } from './actor';
 import type { ServiceContext } from './context';
-import { environmentKeyState } from './env-keys-service';
+import { environmentKeyState, grantRecipient } from './env-keys-service';
 import { errors } from './errors';
+import { plaintextExportOf } from './export-policy';
+import type { PlaintextExport } from './export-policy';
+import { mayActOn, planPull } from './references-service';
+import type { ReferencedRead } from './references-service';
+import { encodePublicKey } from './schemas/env-keys';
 import { toClientSecret } from './schemas/secrets';
 import type { ClientSecretPayload } from './schemas/secrets';
 import type { EnvironmentKeysPayload } from './schemas/env-keys';
+import { decodeBlob } from './schemas/vault';
 import type { EnvironmentScope } from './tenancy';
 
 /**
@@ -75,13 +88,172 @@ export interface ClientEnvironmentBundle {
   /** The caller's own key material, so one request answers the whole operation. */
   keys: EnvironmentKeysPayload;
   secrets: ClientSecretPayload[];
+  /**
+   * The environment's policies that a client enforces (P19 §9): whether this
+   * bundle may be written to a file. Carried here because the client does the
+   * formatting, so only the client can refuse it — see `export-policy.ts`.
+   * Absent from bundles served before P19, which a client reads as "allowed".
+   *
+   * In a version 2 bundle this is the **effective** policy: `disabled` when the
+   * environment being read, or any layer that contributes a value to it, has
+   * export disabled. Every client that reads only this field — every CLI that
+   * shipped before the per-layer policies did — therefore refuses an export of
+   * production's values through a staging template, which is the bypass the
+   * effective policy exists to close. The per-environment answers ride beside
+   * it, on `environment.policy` and each layer's `policy`, so a client can say
+   * *which* environment's policy refused.
+   */
+  policy: BundlePolicy;
+}
+
+/** What a bundle says about leaving xecret's control. */
+export interface BundlePolicy {
+  plaintextExport: PlaintextExport;
+}
+
+/**
+ * A bundle that carries more than its own environment (P19 §1) — version 2.
+ *
+ * Everything version 1 carries, unchanged, for the environment being read:
+ * `keys` opens `secrets`. Beside them, `layers`: every ancestor (with all of its
+ * secrets) and every environment a template reaches into (with only the secrets
+ * it reaches), each with the caller's own grant for that environment and the
+ * parent it inherits from. A layer that contributes no secret — an ancestor of a
+ * referenced environment that sets nothing the reference needs — carries no keys,
+ * and is there only so a client can walk the same chain the server walked.
+ *
+ * Every ciphertext is still bound by its AAD to the row and the environment that
+ * hold it, and opens only under that environment's key. Nothing is re-encrypted
+ * and nothing moves: a layer is ciphertext the caller could have pulled directly,
+ * delivered together so the resolution happens on one consistent read.
+ *
+ * Secrets that are templates say so (`template`) and carry the references their
+ * writer declared, which a client checks the decrypted text against before it
+ * resolves anything.
+ */
+export interface ResolvedEnvironmentBundle extends Omit<
+  ClientEnvironmentBundle,
+  'bundleVersion' | 'secrets'
+> {
+  bundleVersion: 2;
+  environment: {
+    id: string;
+    projectSlug: string;
+    slug: string;
+    parentEnvironmentId: string | null;
+    /** This environment's own setting, before any layer's is taken into account. */
+    policy: BundlePolicy;
+  };
+  secrets: ResolvableSecretPayload[];
+  layers: BundleLayer[];
+}
+
+export interface BundleLayer {
+  environmentId: string;
+  projectSlug: string;
+  environmentSlug: string;
+  parentEnvironmentId: string | null;
+  /** `null` for a layer that contributes no secret and needs no key. */
+  keys: LayerKeys | null;
+  secrets: ResolvableSecretPayload[];
+  /**
+   * The layer's own export setting. It counts towards the bundle's effective
+   * `policy` only when the layer contributes a secret (`keys` is not `null`): a
+   * layer carried only so the chain can be walked hands the client no value to
+   * write out.
+   */
+  policy: BundlePolicy;
+}
+
+/** The part of `GET …/keys` that opens a layer: the active key and the caller's grant. */
+export interface LayerKeys {
+  encryptionMode: 'e2ee';
+  environmentId: string;
+  activeEdk: { id: string; version: number };
+  myGrant: EnvironmentKeysPayload['myGrant'];
+}
+
+export interface ResolvableSecretPayload extends ClientSecretPayload {
+  template?: true;
+  references?: DeclaredReference[];
+}
+
+/**
+ * What a resolved pull read beyond the environment itself — for the audit
+ * trail, and for the new-address alerts of each environment read (P19 §7),
+ * which is why it carries the two facts that decide whether those apply.
+ */
+export interface LayerRead {
+  environmentId: string;
+  projectId: string;
+  projectSlug: string;
+  environmentSlug: string;
+  secretCount: number;
+  kind: 'inherited' | 'referenced';
+  isProduction: boolean;
+  readAlerts: boolean | null;
+}
+
+export interface BundleResult {
+  bundle: ClientEnvironmentBundle | ResolvedEnvironmentBundle;
+  /** Empty for a version 1 bundle. */
+  layerReads: LayerRead[];
+  referencedReads: ReferencedRead[];
+}
+
+function sortByName<T extends { name: string }>(items: T[]): T[] {
+  return items.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+function toResolvable(material: SecretMaterial): ResolvableSecretPayload {
+  const payload: ResolvableSecretPayload = toClientSecret(material);
+  if (material.valueType === 'template') {
+    payload.template = true;
+    payload.references = material.declaredReferences ?? [];
+  }
+  return payload;
+}
+
+/**
+ * Whether reading this environment involves more than its own ciphertext — a
+ * parent, or a template. Decided from rows the pull has already read, so an
+ * environment that uses neither feature pays nothing for either.
+ */
+export function needsResolution(
+  scope: EnvironmentScope,
+  materials: readonly SecretMaterial[],
+): boolean {
+  return (
+    scope.environment.parentEnvironmentId !== null ||
+    materials.some((material) => material.valueType === 'template')
+  );
+}
+
+/**
+ * How much a pull asks for beyond the environment itself.
+ *
+ *  - `resolved: false` — a version 1 client. Refused for an environment that
+ *    needs resolution, because it would inject a template's literal text.
+ *  - `resolved: true` — a client that resolves (`?bundle=2`): every layer the
+ *    resolution needs, each authorised and audited where it was read.
+ *  - `ownOnly: true` — a client that reads this environment's own values and
+ *    resolves nothing (`?bundle=2&layers=none`, the dashboard). The version 2
+ *    shape with `layers: []`. Nothing beyond the environment is read, so nothing
+ *    beyond it is authorised or audited: a reader who may see staging but not
+ *    the environment a staging template reaches into can still see staging's own
+ *    values, which is exactly what a direct read of staging has always allowed.
+ */
+export interface BundleOptions {
+  resolved: boolean;
+  ownOnly?: boolean;
 }
 
 export async function clientEnvironmentBundle(
   scope: EnvironmentScope,
   services: ServiceContext,
   principal: Principal,
-): Promise<ClientEnvironmentBundle> {
+  options: BundleOptions = { resolved: false },
+): Promise<BundleResult> {
   const keys = await environmentKeyState(scope, services, principal);
 
   if (keys.myGrant === null) {
@@ -107,17 +279,176 @@ export async function clientEnvironmentBundle(
     scope.environment.id,
   );
 
-  return {
+  if (!needsResolution(scope, materials)) {
+    return {
+      bundle: {
+        bundle: true,
+        bundleVersion: 1,
+        encryptionMode: 'e2ee',
+        keys,
+        // Sorted by name, matching the order the dashboard renders and the order
+        // the server-mode path returns — by code unit, not `localeCompare`, so the
+        // output does not depend on a server locale. It also makes an exported
+        // file produce a one-line diff when a secret is added rather than a
+        // reshuffle.
+        secrets: sortByName(materials.map(toClientSecret)),
+        policy: { plaintextExport: plaintextExportOf(scope.environment) },
+      },
+      layerReads: [],
+      referencedReads: [],
+    };
+  }
+
+  // ── A client that cannot resolve is refused, never handed a partial view ──
+  // A version 1 client reads `keys` and `secrets` and ignores anything else, so
+  // it would inject a template's literal `${…}` text, and none of the inherited
+  // values, into a process — which then starts and fails somewhere far from the
+  // cause. A client that can resolve says so (`?bundle=2`); one that does not is
+  // told what to upgrade, before anything else is read.
+  if (!options.resolved && options.ownOnly !== true) {
+    throw errors.conflict(
+      'resolution_unsupported: this environment inherits from another or holds a template, and ' +
+        'this client cannot resolve them. Upgrade the xecret CLI, then run the command again.',
+    );
+  }
+
+  const ownPolicy: BundlePolicy = { plaintextExport: plaintextExportOf(scope.environment) };
+  const ownBundle = (layers: BundleLayer[]): ResolvedEnvironmentBundle => ({
     bundle: true,
-    bundleVersion: 1,
+    bundleVersion: 2,
     encryptionMode: 'e2ee',
     keys,
-    // Sorted by name, matching the order the dashboard renders and the order the
-    // server-mode path returns — by code unit, not `localeCompare`, so the output
-    // does not depend on a server locale. It also makes an exported file produce
-    // a one-line diff when a secret is added rather than a reshuffle.
-    secrets: materials
-      .map(toClientSecret)
-      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
-  };
+    environment: {
+      id: scope.environment.id,
+      projectSlug: scope.project.slug,
+      slug: scope.environment.slug,
+      parentEnvironmentId: scope.environment.parentEnvironmentId,
+      policy: ownPolicy,
+    },
+    secrets: sortByName(materials.map(toResolvable)),
+    layers,
+    policy: effectivePolicy(ownPolicy, layers),
+  });
+
+  // ── Own values only: the graph is not walked ──
+  // No plan, no layer, no other environment's grant — so none of the statements
+  // below, and no `secret.read` filed anywhere but here.
+  if (options.ownOnly === true) {
+    return { bundle: ownBundle([]), layerReads: [], referencedReads: [] };
+  }
+
+  const { plan, environments, referencedReads } = await planPull(scope, services);
+
+  // ── Every environment that contributes a secret is one the caller may read ──
+  // Asked of the caller's own membership, through the same `can()` as a direct
+  // pull of that environment. A service token is pinned to one environment, and
+  // `can()` refuses it every other one — the write-time rule exists so a CI
+  // credential never meets this refusal.
+  const contributing = [...plan.chain, ...plan.referenced.keys()];
+  for (const id of new Set(contributing)) {
+    const record = environments.get(id);
+    if (record === undefined || !mayActOn(scope, principal, record, 'secret.read')) {
+      throw errors.forbidden(
+        principal.kind === 'serviceToken'
+          ? 'This environment resolves values from another environment, and a service token can read only its own.'
+          : 'This environment inherits from, or refers to, an environment you cannot read.',
+      );
+    }
+  }
+
+  const extra = await loadSecretsForEnvironments(services.db, scope.organization.id, contributing);
+  const recipient = grantRecipient(principal);
+  const grants = await findActiveGrantsForPrincipal(services.db, {
+    orgId: scope.organization.id,
+    environmentIds: contributing,
+    recipientKind: recipient.kind,
+    recipientId: recipient.id,
+  });
+
+  const inChain = new Set(plan.chain);
+  const layerIds = [...new Set([...plan.chain, ...plan.referenced.keys(), ...plan.contexts])];
+  const layers: BundleLayer[] = [];
+  const layerReads: LayerRead[] = [];
+
+  for (const id of layerIds) {
+    const record = environments.get(id)!;
+    const wanted = inChain.has(id) ? null : (plan.referenced.get(id) ?? new Set<string>());
+    const secrets = sortByName(
+      extra
+        .filter((material) => material.environmentId === id)
+        .filter((material) => wanted === null || wanted.has(material.name))
+        .map(toResolvable),
+    );
+
+    let layerKeys: LayerKeys | null = null;
+    if (secrets.length > 0) {
+      const held = grants.get(id);
+      if (held === undefined || held.grant === null) {
+        throw errors.conflict(
+          `no_key_grant: you have access to ${record.projectSlug}/${record.slug}, which this ` +
+            'environment reads from, but nobody has shared its key with you yet.',
+        );
+      }
+      layerKeys = {
+        encryptionMode: 'e2ee',
+        environmentId: id,
+        activeEdk: held.activeKey,
+        myGrant: {
+          recipientPublicKey: encodePublicKey(toBytes(held.grant.recipientPublicKey)),
+          edkSealed: decodeBlob(toBytes(held.grant.edkSealed)),
+          ehkSealed: decodeBlob(toBytes(held.grant.ehkSealed)),
+          signature: decodeBlob(toBytes(held.grant.signature)),
+          signedByUserId: held.grant.signedByUserId,
+        },
+      };
+      layerReads.push({
+        environmentId: id,
+        projectId: record.projectId,
+        projectSlug: record.projectSlug,
+        environmentSlug: record.slug,
+        secretCount: secrets.length,
+        kind: inChain.has(id) ? 'inherited' : 'referenced',
+        isProduction: record.isProduction,
+        readAlerts: record.readAlerts,
+      });
+    }
+
+    layers.push({
+      environmentId: id,
+      projectSlug: record.projectSlug,
+      environmentSlug: record.slug,
+      parentEnvironmentId: record.parentEnvironmentId,
+      keys: layerKeys,
+      secrets,
+      policy: { plaintextExport: plaintextExportOf(record) },
+    });
+  }
+
+  return { bundle: ownBundle(layers), layerReads, referencedReads };
+}
+
+/**
+ * The export policy a resolved bundle carries: `disabled` if the environment
+ * being read, or **any layer that contributes a value**, has plaintext export
+ * disabled.
+ *
+ * ── Why the strictest, not the environment's own ──
+ * The first version reported the pulled environment's setting alone, on the
+ * reasoning that a parent's policy governs exports *of the parent*. It does —
+ * and a resolved pull is one. A `pull --format env` of staging whose template
+ * reaches `${production.DB_PASSWORD}`, or whose parent is production, writes
+ * production's values to a file; reporting staging's "allowed" made disabling
+ * export on production a setting anybody with a staging template could step
+ * round. The values decide, wherever they were stored.
+ *
+ * A layer that contributes nothing — carried only so a client can walk the
+ * chain to a referenced environment — puts no value in the output and does not
+ * count. Nor does any of this reach the own-values pull (`layers=none`), which
+ * carries no layer at all.
+ */
+export function effectivePolicy(own: BundlePolicy, layers: readonly BundleLayer[]): BundlePolicy {
+  const refused =
+    own.plaintextExport === 'disabled' ||
+    layers.some((layer) => layer.keys !== null && layer.policy.plaintextExport === 'disabled');
+  return { plaintextExport: refused ? 'disabled' : 'allowed' };
 }

@@ -14,6 +14,7 @@ import type { Principal } from '@/server/actor';
 import type { ServiceContext } from '@/server/context';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
+import { enforceSecretPolicy, secretPolicyRefusal } from '@/server/policies-service';
 import { authenticatedRoute } from '@/server/route';
 import { duplicateEntryName, importBody, importClientBody } from '@/server/schemas/secrets';
 import {
@@ -25,6 +26,7 @@ import {
   secretWriter,
 } from '@/server/secrets-service';
 import type { ClientSecretWrite, SecretWrite } from '@/server/secrets-service';
+import { batchChanges, emitSecretChanges } from '@/server/change-events';
 import { resolveEnvironmentPath } from '@/server/tenancy';
 import type { EnvironmentScope } from '@/server/tenancy';
 
@@ -176,6 +178,19 @@ export const POST = authenticatedRoute<Params>(
       );
     }
 
+    // P19 §8, on the preview as well as the import, so the preview says what the
+    // import would refuse. The server holds these values, so both rules apply.
+    await enforceSecretPolicy(
+      scope,
+      services,
+      writes.map((write) => ({
+        name: write.name,
+        newName: write.existing === undefined,
+        value: write.value,
+      })),
+      body.dryRun ? undefined : importPolicyRefusal(scope, audit, record),
+    );
+
     const results = await applySecretWrites(scope, services, {
       writer,
       writes,
@@ -234,6 +249,7 @@ export const POST = authenticatedRoute<Params>(
           },
         ),
       );
+      emitSecretChanges(services, scope, principal, batchChanges(results, []));
     }
 
     return json({
@@ -246,6 +262,26 @@ export const POST = authenticatedRoute<Params>(
     });
   },
 );
+
+/** The audit record of an import the secret policy refused. Not written for a dry run. */
+function importPolicyRefusal(
+  scope: EnvironmentScope,
+  audit: (orgId: string) => AuditBuilder,
+  record: (...events: AuditRecord[]) => void,
+): (names: readonly string[]) => void {
+  return secretPolicyRefusal(
+    record,
+    audit(scope.organization.id),
+    'secret.imported',
+    {
+      type: 'environment',
+      id: scope.environment.id,
+      projectId: scope.project.id,
+      environmentId: scope.environment.id,
+    },
+    { projectSlug: scope.project.slug, environmentSlug: scope.environment.slug },
+  );
+}
 
 /**
  * The client-encrypted import.
@@ -298,6 +334,27 @@ async function importClientEntries(context: {
     scope.environment.id,
   );
   const current = new Map(existing.map((secret) => [secret.name, secret]));
+
+  // P19 §1: an import carries values and no declarations, so it cannot rewrite a
+  // template — the entry would store a template with no references declared, or
+  // silently turn one into text. Refused by name, so the person can set it on its
+  // own.
+  const template = body.entries.find((entry) => current.get(entry.name)?.valueType === 'template');
+  if (template !== undefined) {
+    throw errors.conflict(
+      `"${template.name}" is a template. An import cannot rewrite one; set it on its own so its ` +
+        'references are declared, or leave it out of the file.',
+    );
+  }
+
+  // P19 §8: the name rule for every name this import introduces. The value rules
+  // ran in the client that encrypted the file.
+  await enforceSecretPolicy(
+    scope,
+    services,
+    body.entries.map((entry) => ({ name: entry.name, newName: !current.has(entry.name) })),
+    body.dryRun ? undefined : importPolicyRefusal(scope, audit, record),
+  );
 
   const writes: ClientSecretWrite[] = body.entries.map((entry) => {
     const target = current.get(entry.name);
@@ -363,6 +420,7 @@ async function importClientEntries(context: {
         },
       ),
     );
+    emitSecretChanges(services, scope, principal, batchChanges(results, []));
   }
 
   return json({

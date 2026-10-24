@@ -150,7 +150,7 @@ same as committing `WORKOS_CLIENT_ID`.
 7. `npm run phase:check-env:production`.
 8. **Apply migrations 0024 to 0027** to the production database before deploying (see §5).
 9. `npm run phase:check-deploy` — the `billing (group)` line must say every member is in place.
-10. Deploy. Confirm both Cron Triggers (`17 * * * *`, `41 3 * * *`) are listed on the Worker,
+10. Deploy. Confirm all three Cron Triggers (`17 * * * *`, `*/5 * * * *`, `41 3 * * *`) are listed on the Worker,
     and that `/api/internal/scheduled/billing-hourly` and `…/billing-daily` answer 404 from
     outside. Then one real purchase in each currency, refunded.
 

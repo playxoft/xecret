@@ -3,6 +3,7 @@ import type { AuditRecord } from '@xecret/core/audit';
 import type { Action, CustomRole } from '@xecret/core/authz';
 import { ROLE_CAPABILITIES } from '@xecret/core/authz';
 import { uuidv7 } from '@xecret/core/ids';
+import { DEFAULT_SECRET_POLICY, DEFAULT_TOKEN_POLICY } from '@xecret/core/policy';
 import { createLogger } from './logging';
 import type { RequestLog } from './logging';
 
@@ -75,6 +76,21 @@ const repositories = vi.hoisted(() => ({
   createServiceToken: vi.fn(),
   listServiceTokens: vi.fn(),
   removeAccessGrant: vi.fn(),
+  // P19 §1: the reference graph, consulted before a project is deleted and when
+  // an environment payload names its parent. Nothing here inherits or refers.
+  loadEnvironmentsOfProjects: vi.fn(),
+  loadEnvironmentsByIds: vi.fn(),
+  findProjectsReferencingEnvironments: vi.fn(),
+  lockReferenceGraph: vi.fn(),
+  // Review round 2, F1: asked whenever `is_production` itself flips, to catch
+  // a crossing a link's own creation would have asked about. Nothing here
+  // inherits, holds a template or is depended on, so every test that reaches
+  // one defaults to "nothing crosses" unless it says otherwise.
+  loadSecretGraphMetadata: vi.fn(),
+  listProductionChildEnvironments: vi.fn(),
+  listProductionEnvironmentsReferencing: vi.fn(),
+  // P19 §6: the token policy, read at minting and by the listing. None set.
+  loadOrgPolicies: vi.fn(),
 }));
 
 vi.mock('./context', () => context);
@@ -345,7 +361,10 @@ beforeEach(() => {
       startedAt: number,
     ) => ({
       env: { XECRET_PUBLIC_URL: 'https://xecret.playxoft.com', XECRET_ENV: 'production' },
-      db: {},
+      // A project's deletion is checked and written in one transaction (P19,
+      // review round 1); the repositories are mocked, so the transaction is the
+      // callback run with nothing in particular.
+      db: { transaction: (run: (tx: unknown) => Promise<unknown>) => run({}) },
       envelope: {},
       meta: {
         requestId,
@@ -412,6 +431,11 @@ beforeEach(() => {
     { ...production, project: { id: PROJECT_ID, name: 'API', slug: 'api' } },
   ]);
   repositories.listGrantsForMember.mockResolvedValue([]);
+  // Review round 2, F1: no template anywhere and nothing depends on anything,
+  // by default — a test that wants a crossing sets its own mock.
+  repositories.loadSecretGraphMetadata.mockResolvedValue([]);
+  repositories.listProductionChildEnvironments.mockResolvedValue([]);
+  repositories.listProductionEnvironmentsReferencing.mockResolvedValue([]);
   lockedAs = {};
   repositories.removeAccessGrant.mockImplementation(
     async (_db: unknown, params: MemberWriteParams, guard: Guard) => {
@@ -476,6 +500,14 @@ beforeEach(() => {
     }),
   );
   repositories.softDeleteProject.mockResolvedValue(project);
+  repositories.loadEnvironmentsOfProjects.mockResolvedValue([]);
+  repositories.loadEnvironmentsByIds.mockResolvedValue([]);
+  repositories.findProjectsReferencingEnvironments.mockResolvedValue([]);
+  repositories.loadOrgPolicies.mockResolvedValue({
+    tokens: DEFAULT_TOKEN_POLICY,
+    secrets: DEFAULT_SECRET_POLICY,
+    updatedAt: null,
+  });
   repositories.createInvitation.mockImplementation(
     async (_db: unknown, params: { email: string; role: Role }) => ({
       token: 'invitation-token',

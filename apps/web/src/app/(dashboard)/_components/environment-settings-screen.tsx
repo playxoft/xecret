@@ -4,6 +4,8 @@ import { PageHeader } from '@/components/layout';
 import { EnvironmentBadge } from '@/components/projects/environment-badge';
 import { EnvironmentSettingsForm } from '@/components/projects/environment-settings-form';
 import { EnvironmentKeyCard } from '@/components/envkeys';
+import { EnvironmentPolicyCard } from '@/components/environments/environment-policy-card';
+import { InheritanceCard } from '@/components/environments/inheritance-card';
 import type { EnvironmentResponse } from '@/components/projects/types';
 import { apiPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
@@ -40,7 +42,7 @@ export function EnvironmentSettingsScreen({
         badge={
           <EnvironmentBadge isProduction={environment.data?.environment.isProduction ?? false} />
         }
-        description="How this environment is named, ordered and classified — and the key its values are encrypted under."
+        description="How this environment is named, ordered and classified, the key its values are encrypted under, what it inherits, and how its values may leave it."
       />
 
       {environment.loading && environment.data === null ? (
@@ -72,6 +74,27 @@ export function EnvironmentSettingsScreen({
             environmentName={environment.data.environment.name}
             isProduction={environment.data.environment.isProduction}
             canManage={canManage}
+          />
+
+          {/* Below the key, because both are about what *reaches* readers of
+              this environment rather than what it is called: first where its
+              values come from, then where they may go. Each reads its own
+              state and reloads the environment when it changes it, so the
+              header badge and the form above stay in step. */}
+          <InheritanceCard
+            orgSlug={orgSlug}
+            projectSlug={projectSlug}
+            environment={environment.data.environment}
+            canManage={canManage}
+            onChanged={() => void environment.reload()}
+          />
+
+          <EnvironmentPolicyCard
+            orgSlug={orgSlug}
+            projectSlug={projectSlug}
+            environment={environment.data.environment}
+            canManage={canManage}
+            onChanged={() => void environment.reload()}
           />
         </>
       ) : null}

@@ -189,6 +189,39 @@ export const apiPath = {
     `${apiPath.environment(org, project, env)}/export`,
   pull: (org: string, project: string, env: string): string =>
     `${apiPath.environment(org, project, env)}/pull`,
+
+  // ── P19: the paid secret features ──
+  /** `PUT {parent: slug|null}` — what this environment inherits from. */
+  environmentParent: (org: string, project: string, env: string): string =>
+    `${apiPath.environment(org, project, env)}/parent`,
+  /** `PATCH {plaintextExport?, readAlerts?}` — the environment's two switches. */
+  environmentPolicy: (org: string, project: string, env: string): string =>
+    `${apiPath.environment(org, project, env)}/policy`,
+  /** The new addresses this environment has been read from. Takes `?limit=`. */
+  readSightings: (org: string, project: string, env: string): string =>
+    `${apiPath.environment(org, project, env)}/read-sightings`,
+  /** The caller's own personal overrides in one environment. */
+  overrides: (org: string, project: string, env: string): string =>
+    `${apiPath.environment(org, project, env)}/overrides`,
+  override: (org: string, project: string, env: string, name: string): string =>
+    `${apiPath.overrides(org, project, env)}/${segment(name)}`,
+  /** `POST` into `env` — the *target* — from the source named in the body. */
+  promote: (org: string, project: string, env: string): string =>
+    `${apiPath.environment(org, project, env)}/promote`,
+  /** `GET ?at=` previews a point-in-time restore; `POST` applies it. */
+  restorePoint: (org: string, project: string, env: string): string =>
+    `${apiPath.environment(org, project, env)}/restore-point`,
+  /** The organisation's token and secret policies. */
+  policies: (org: string): string => `${apiPath.org(org)}/policies`,
+  webhooks: (org: string): string => `${apiPath.org(org)}/webhooks`,
+  webhook: (org: string, webhookId: string): string =>
+    `${apiPath.webhooks(org)}/${segment(webhookId)}`,
+  webhookRotateSecret: (org: string, webhookId: string): string =>
+    `${apiPath.webhook(org, webhookId)}/rotate-secret`,
+  webhookTest: (org: string, webhookId: string): string =>
+    `${apiPath.webhook(org, webhookId)}/test`,
+  webhookDeliveries: (org: string, webhookId: string): string =>
+    `${apiPath.webhook(org, webhookId)}/deliveries`,
 } as const;
 
 /**

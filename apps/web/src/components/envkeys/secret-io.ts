@@ -17,8 +17,12 @@ import type {
 } from '@xecret/core/importer';
 import { formatSecrets } from '@xecret/core/format';
 import type { ExportFormat } from '@xecret/core/format';
+import { templateReferences } from '@xecret/core/references';
+import type { SecretReference } from '@xecret/core/references';
 import { api } from '@/lib/api';
+import type { FieldProblem } from '@/lib/api';
 import { apiPath, withQuery } from '@/app/(dashboard)/_lib/paths';
+import { policyRefusal } from '@/components/policies/policy-checks';
 import type {
   ImportPlanItem,
   ImportPlanResponse,
@@ -30,7 +34,7 @@ import { withEnvKey } from './env-key-store';
 import type { EnvKeyMaterial } from './env-key-store';
 import { decryptValue, encodeNote, encryptValue } from './secret-crypto';
 import type { SecretTarget } from './secret-crypto';
-import type { ClientEnvironmentBundle } from './types';
+import type { ClientEnvironmentBundle, DeclaredReferencePayload } from './types';
 
 /**
  * Every read and write of a secret, in whichever mode the environment is in.
@@ -69,6 +73,17 @@ const LISTING_PAGE_SIZE = 200;
 /** See `listAllSecrets`: the loop's exit condition is the server's to supply. */
 const MAX_LISTING_PAGES = 100;
 
+/**
+ * What every dashboard pull asks for (P19 §1): the version 2 shape — templates
+ * marked, inheritance named — and **no layers**. The dashboard shows, compares,
+ * promotes and exports what an environment holds, never what a process would
+ * see, so it asks the server not to walk the graph at all: no other environment
+ * is read, authorised or audited on its behalf. A reader who may see staging but
+ * not the environment a staging template reaches into still sees staging. The
+ * server answers version 1 wherever there is nothing to resolve. See `pullOwn`.
+ */
+export const OWN_VALUES_QUERY = { bundle: 2, layers: 'none' } as const;
+
 /** Which row a value belongs to, as the table already knows it. */
 export interface SecretRef {
   /** The `secrets` row id — an AAD component in `e2ee` mode. */
@@ -76,6 +91,90 @@ export interface SecretRef {
   name: string;
   /** The version currently stored. A write appends `version + 1`. */
   version: number;
+  /**
+   * The type the row declares today, when the caller knows it.
+   *
+   * Read for one question: is this a template (P19 §1)? A template's every
+   * value write must declare the references its text holds, *including* a write
+   * that sends no type of its own — the server reads "the type after this
+   * write" as the requested one, else the stored one, and refuses a template
+   * written without its declaration. A caller that omits this is treated as
+   * writing a non-template, which is right for every row that is not one and
+   * is answered by the server's refusal, never silently, for every row that is.
+   */
+  valueType?: string | undefined;
+}
+
+/**
+ * Everything `pull` reads, for the one caller that needs more than the values:
+ * the export dialog, which has to refuse an environment whose policy disables
+ * plaintext export, and say plainly when the file would hold less than
+ * `xecret run` resolves.
+ */
+export interface PulledEnvironment {
+  /** This environment's *own* values, decrypted — never an inherited one. */
+  plaintexts: Record<string, string>;
+  /**
+   * The environment's export policy as the bundle states it (P19 §9).
+   *
+   * `allowed` for a `server`-mode pull, whose JSON document carries the policy
+   * in a header this client's JSON reader does not expose — the dialog reads
+   * the environment payload's own `plaintextExport` for that mode, and the
+   * server refuses every document format there itself.
+   */
+  plaintextExport: 'allowed' | 'disabled';
+  /** Whether the environment inherits from another (P19 §1). */
+  inherits: boolean;
+  /** The names of this environment's own secrets that are templates, sorted. */
+  templates: readonly string[];
+}
+
+/**
+ * The references a template write declares, or nothing for any other type.
+ *
+ * Parsed from the plaintext about to be encrypted, here, because nowhere else
+ * can: the server never sees the text and checks the graph only from what the
+ * writer declares. `templateReferences` throws `TemplateSyntaxError` for text
+ * that is not a template — whose message names the rule and the offset and
+ * never the value — and that refusal is the right one: a template that cannot
+ * be parsed is not one this client will encrypt and store.
+ */
+export function referencesFor(
+  valueType: string | undefined,
+  plaintext: string,
+): { references?: DeclaredReferencePayload[] } {
+  if (valueType !== 'template') return {};
+  return { references: templateReferences(plaintext).map(declaredReference) };
+}
+
+/**
+ * `confirmCrossesProtection: true` on a write body, only when the person has
+ * confirmed the server's warning that a production template would read from an
+ * environment that is not production — never on a first attempt, so the server
+ * is always the one to say whether a write crosses (`protection-crossing.ts`).
+ */
+function crossingConfirmation(input: { confirmCrossesProtection?: boolean | undefined }): {
+  confirmCrossesProtection?: true;
+} {
+  return input.confirmCrossesProtection === true ? { confirmCrossesProtection: true } : {};
+}
+
+/**
+ * A reference as the wire carries it: the parts that are present and none of
+ * the ones that are not.
+ *
+ * `templateReferences` returns objects whose absent parts are simply missing,
+ * and `JSON.stringify` would drop an `undefined` anyway — so this is not
+ * correctness today, it is a promise that the body the server's
+ * `strictObject` sees will keep matching what the test suite validates if the
+ * parser ever starts filling the absent parts with `undefined` explicitly.
+ */
+function declaredReference(reference: SecretReference): DeclaredReferencePayload {
+  return {
+    ...(reference.project === undefined ? {} : { project: reference.project }),
+    ...(reference.environment === undefined ? {} : { environment: reference.environment }),
+    name: reference.name,
+  };
 }
 
 export interface MetadataPatch {
@@ -100,15 +199,27 @@ export interface SecretIo {
    * only thing a caller could cancel was the fetch.
    */
   pull: (options?: { signal?: AbortSignal }) => Promise<Record<string, string>>;
+  /**
+   * The same read as `pull`, with what the bundle says about the environment
+   * beside the values — its export policy, and whether it resolves values from
+   * elsewhere. One request, one audited `secret.read`, exactly as `pull`.
+   */
+  pullEnvironment: (options?: { signal?: AbortSignal }) => Promise<PulledEnvironment>;
   create: (input: {
     name: string;
     value: string;
     note?: string | undefined;
     valueType: string;
+    /** See `protection-crossing.ts`: sent only after the server's warning was shown. */
+    confirmCrossesProtection?: boolean | undefined;
   }) => Promise<SecretWriteResponse>;
   update: (
     secret: SecretRef,
-    input: { value: string; valueType?: string | undefined },
+    input: {
+      value: string;
+      valueType?: string | undefined;
+      confirmCrossesProtection?: boolean | undefined;
+    },
   ) => Promise<SecretWriteResponse>;
   /** Metadata only. Appends no version, and needs no key in `server` mode. */
   patchMetadata: (secret: SecretRef, patch: MetadataPatch) => Promise<void>;
@@ -120,8 +231,24 @@ export interface SecretIo {
     format: ImportFormat | 'auto';
     strategy: ConflictStrategy;
     dryRun: boolean;
+    /**
+     * The organisation's value rules (P19 §8), asked of every entry before it
+     * is encrypted — see `policy-checks.ts`. Only an `e2ee` import has the
+     * values in this browser to ask about; a `server`-mode import uploads the
+     * file and the server, which then holds the plaintext, applies the same
+     * rules itself.
+     */
+    checkPolicy?: ImportPolicyCheck | undefined;
   }) => Promise<ImportPlanResponse>;
 }
+
+/** One import entry, as the policy is asked about it. Answers why it is refused, or `null`. */
+export type ImportPolicyCheck = (entry: {
+  name: string;
+  value: string;
+  /** Whether the import introduces the name — a create, or a rename to a free name. */
+  newName: boolean;
+}) => string | null;
 
 /** Where the environment is, and who is asking. */
 export interface SecretIoContext {
@@ -158,6 +285,21 @@ export function serverSecretIo(context: SecretIoContext): SecretIo {
         options,
       );
       return plaintextsOf(document);
+    },
+
+    pullEnvironment: async (options) => {
+      const document = await api.get<Record<string, unknown>>(
+        withQuery(apiPath.pull(orgSlug, projectSlug, envSlug), { format: 'json' }),
+        options,
+      );
+      // A `server`-mode environment cannot inherit or hold a template — both
+      // need end-to-end encryption — so the flat document is the whole story.
+      return {
+        plaintexts: plaintextsOf(document),
+        plaintextExport: 'allowed',
+        inherits: false,
+        templates: [],
+      };
     },
 
     create: (input) =>
@@ -287,6 +429,62 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
     throw new Error('This environment has more secrets than an import can plan against.');
   }
 
+  /**
+   * The environment's own values, decrypted, and what the bundle says about it.
+   *
+   * ── Why `bundle=2&layers=none` is asked for on every pull ──
+   * An environment that inherits from another, or holds a template (P19 §1), is
+   * *refused* to a version 1 client — `409 resolution_unsupported` — rather
+   * than handed a view that silently lacks the inherited values. The
+   * dashboard's reveal-all, its comparison columns and its export all pull, so
+   * all of them broke on the first such environment until this said `2`. A bare
+   * `2` asks for every layer the resolution needs, and is refused to anyone who
+   * cannot read all of them; `layers=none` asks for this environment alone,
+   * which is all the dashboard reads. Both cost nothing on an environment that
+   * uses neither feature: the server answers version 1 there, exactly as
+   * before, and both versions carry `keys` and `secrets` unchanged.
+   *
+   * ── What is read, and what is deliberately not ──
+   * `secrets` — this environment's own rows — and no layers at all. The
+   * table shows what *this* environment holds, and writes go to this
+   * environment; showing a parent's value under this environment's name would
+   * invite an edit that lands here and shadows the parent for ever. A template
+   * is returned as its text, `${…}` and all, for the same reason: it is what is
+   * stored here and what an edit would change. Resolution is `xecret run`'s, and
+   * the export dialog says so when it matters.
+   *
+   * The bundle carries the caller's grant *with* the values, so a rotation
+   * cannot land between reading the key and reading the ciphertext. This IO was
+   * built around one key, and each row's `envDataKeyId` is checked by `open` — a
+   * mismatch means the rotation happened first, and the caller re-reads.
+   */
+  async function pullOwn(options?: { signal?: AbortSignal }): Promise<PulledEnvironment> {
+    const bundle = await api.get<ClientEnvironmentBundle>(
+      withQuery(apiPath.pull(orgSlug, projectSlug, envSlug), OWN_VALUES_QUERY),
+      options,
+    );
+
+    const plaintexts: Record<string, string> = {};
+    const templates: string[] = [];
+    for (const secret of bundle.secrets) {
+      // Checked between rows, not only before the request. A reveal-all over a
+      // large environment is hundreds of decryptions, and an abort that only
+      // cancelled the fetch would keep opening ciphertexts into a screen the
+      // person has already navigated away from.
+      if (options?.signal?.aborted === true) throw abortedError();
+      plaintexts[secret.name] = await open(secret);
+      if (secret.template === true) templates.push(secret.name);
+    }
+
+    return {
+      plaintexts,
+      // Absent from bundles served before P19, which a client reads as allowed.
+      plaintextExport: bundle.policy?.plaintextExport === 'disabled' ? 'disabled' : 'allowed',
+      inherits: (bundle.environment?.parentEnvironmentId ?? null) !== null,
+      templates: templates.sort(),
+    };
+  }
+
   return {
     mode: 'e2ee',
 
@@ -306,29 +504,9 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
         return open(response.secret);
       }),
 
-    pull: (options) =>
-      withEnvKey(material, async () => {
-        // The bundle carries the caller's grant *with* the values, so a rotation
-        // cannot land between reading the key and reading the ciphertext. This IO
-        // was built around one key, and the bundle's own `activeEdk` is checked
-        // per row by `open` — a mismatch means the rotation happened first, and
-        // the caller re-reads.
-        const bundle = await api.get<ClientEnvironmentBundle>(
-          apiPath.pull(orgSlug, projectSlug, envSlug),
-          options,
-        );
+    pull: (options) => withEnvKey(material, async () => (await pullOwn(options)).plaintexts),
 
-        const plaintexts: Record<string, string> = {};
-        for (const secret of bundle.secrets) {
-          // Checked between rows, not only before the request. A reveal-all over
-          // a large environment is hundreds of decryptions, and an abort that
-          // only cancelled the fetch would keep opening ciphertexts into a screen
-          // the person has already navigated away from.
-          if (options?.signal?.aborted === true) throw abortedError();
-          plaintexts[secret.name] = await open(secret);
-        }
-        return plaintexts;
-      }),
+    pullEnvironment: (options) => withEnvKey(material, () => pullOwn(options)),
 
     create: async (input) =>
       withEnvKey(material, async () => {
@@ -336,6 +514,9 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
         // encrypted before any request exists. See `id` on `createClientSecretBody`.
         const id = uuidv7();
         const target = targetFor(id);
+        // Parsed before anything is encrypted, so a template that does not
+        // parse is refused without a ciphertext ever existing for it.
+        const declared = referencesFor(input.valueType, input.value);
         const value = await encryptValue({ material, target, version: 1, plaintext: input.value });
         const encNote = await encodeNote({ material, target, note: input.note });
 
@@ -344,7 +525,9 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
           name: input.name,
           value,
           valueType: input.valueType,
+          ...declared,
           ...(encNote === undefined ? {} : { encNote }),
+          ...crossingConfirmation(input),
         });
       }),
 
@@ -353,6 +536,11 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
         // The version this ciphertext will be *stored* as, computed from the
         // snapshot this screen is holding.
         const version = secret.version + 1;
+        // The type after this write — the requested one, else the stored one —
+        // is what decides whether it declares references, exactly as the server
+        // decides it. A template rewritten without a type of its own is still a
+        // template, and refused by the server if it says nothing about its text.
+        const declared = referencesFor(input.valueType ?? secret.valueType, input.value);
         const value = await encryptValue({
           material,
           target: targetFor(secret.id),
@@ -371,6 +559,8 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
             // ciphertext bound to ours: unopenable for ever, behind a 200.
             expectedVersion: version,
             ...(input.valueType === undefined ? {} : { valueType: input.valueType }),
+            ...declared,
+            ...crossingConfirmation(input),
           },
         );
       }),
@@ -407,6 +597,12 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
         const plaintext = await open(previous.secret);
 
         const version = secret.version + 1;
+        // P19 §1: a template's restored text declares its references again,
+        // re-parsed here from the version just decrypted. The server takes the
+        // row's *current* type as the type after a restore, so that is the one
+        // asked — and it checks the declaration against the graph as it stands
+        // today, which may not be the graph that version was written into.
+        const declared = referencesFor(secret.valueType, plaintext);
         const value = await encryptValue({
           material,
           target: targetFor(secret.id),
@@ -421,7 +617,7 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
           // one these bytes are bound to. A drawer that restored once and kept its
           // snapshot sends the same `expectedVersion` twice, and the second one is
           // refused rather than stored under a number its AAD does not name.
-          { version: fromVersion, expectedVersion: version, value },
+          { version: fromVersion, expectedVersion: version, value, ...declared },
         );
       }),
 
@@ -459,6 +655,26 @@ export function clientSecretIo(context: SecretIoContext, material: EnvKeyMateria
           (item) =>
             item.status === 'create' || item.status === 'overwrite' || item.status === 'rename',
         );
+
+        // P19 §8: the value rules, asked of every entry before any of them is
+        // encrypted — the dry run included, so the preview is where somebody
+        // finds out, not the apply. All of them at once, each named, so a file
+        // with three weak values is one round of fixing rather than three. The
+        // messages name the rule and the key, never the value.
+        if (input.checkPolicy !== undefined) {
+          const problems: FieldProblem[] = [];
+          for (const item of writable) {
+            const problem = input.checkPolicy({
+              name: item.targetName,
+              value: item.value,
+              newName: !byName.has(item.targetName),
+            });
+            if (problem !== null) {
+              problems.push({ field: item.targetName, message: `${item.targetName}: ${problem}` });
+            }
+          }
+          if (problems.length > 0) throw policyRefusal(problems);
+        }
 
         const entries = [];
         for (const item of writable) {

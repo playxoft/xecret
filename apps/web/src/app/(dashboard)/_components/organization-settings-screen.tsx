@@ -8,7 +8,9 @@ import { api, errorMessage, isApiError } from '@/lib/api';
 import { formatAbsoluteTime } from '@/lib/format';
 import { PageHeader } from '@/components/layout';
 import { DeleteOrganizationCard, SingleSignOnCard } from '@/components/organizations';
+import { PolicyCards } from '@/components/policies/policy-cards';
 import { RolesCard } from '@/components/roles/roles-card';
+import { WebhooksCard } from '@/components/webhooks/webhooks-card';
 import {
   Alert,
   Button,
@@ -61,7 +63,7 @@ export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
       <PageHeader
         title="Organisation settings"
-        description="Who this organisation is, and the identifier every consumer of it depends on."
+        description="Who this organisation is, the identifier every consumer of it depends on, and the rules and notifications that apply across it."
         actions={
           <Button variant="secondary" onClick={createOrganization}>
             <PlusIcon className="size-4" />
@@ -137,6 +139,16 @@ export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
           <RolesCard orgSlug={orgSlug} organization={membership} />
 
           <SingleSignOnCard orgSlug={orgSlug} organization={membership} />
+
+          {/* The organisation's rulebook (P19 §6, §8): which service tokens may
+              be minted, and which secret names and values may be written. Read
+              by every member, because every client that writes enforces it;
+              changed by owners and admins. */}
+          <PolicyCards orgSlug={orgSlug} organization={membership} />
+
+          {/* Where changes are announced (P19 §5). After the policies, because
+              it is the one card here that sends anything out of xecret. */}
+          <WebhooksCard orgSlug={orgSlug} organization={membership} />
 
           {canDelete ? <DeleteOrganizationCard organization={loaded} onDeleted={refresh} /> : null}
         </div>

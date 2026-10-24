@@ -2,8 +2,10 @@ import { timingSafeEqual, toBase64Url } from '@xecret/core/crypto';
 
 /**
  * Scheduled work, run by the Worker's Cron Triggers through the application
- * itself: hourly, the retained-vault purge (P23) and the billing job (P12);
- * nightly, the billing reconciler (P12).
+ * itself: hourly, the retained-vault purge (P23), the pruning of old webhook
+ * deliveries and read sightings (P19 §5, §7) and the billing job (P12); every
+ * five minutes, webhook retries and read-alert digests (P19 §5, §7); nightly,
+ * the billing reconciler (P12). `jobsForCron` is which runs when.
  *
  * ── Why through the app rather than beside it ──
  * The scheduled handler lives in `worker.ts`, outside Next. It could open its
@@ -21,33 +23,80 @@ import { timingSafeEqual, toBase64Url } from '@xecret/core/crypto';
  * no log, no header on the wire, and no other isolate. A request from the
  * internet cannot know it, and outside a scheduled run there is none to know.
  *
- * And even a caller who got through would achieve nothing it should not: the
- * purge deletes retained vaults whose seven days are over, which is what is
- * due anyway, and migration 0020's triggers refuse anything earlier; the
- * billing jobs do only what is due — report units with deterministic ids Dodo
- * deduplicates, send reminders deduplicated by their own table, compare rows
- * without correcting them.
+ * And even a caller who got through would achieve nothing it should not: every
+ * job does only what is due anyway — deletes retained vaults whose seven days
+ * are over (migration 0020's triggers refuse anything earlier), prunes rows
+ * past their age, sends deliveries and digests that are owed; the billing jobs
+ * report units with deterministic ids Dodo deduplicates, send reminders
+ * deduplicated by their own table, and compare rows without correcting them.
  */
 
 export const SCHEDULED_HEADER = 'x-xecret-scheduled';
 export const VAULT_PURGE_PATH = '/api/internal/scheduled/vault-purge';
-/** P12: ended cancellations, seat-sync retries, the overage report, the dated reminders. */
+/** Hourly: old webhook deliveries and old read sightings. */
+export const PRUNE_PATH = '/api/internal/scheduled/prune';
+/** P12, hourly: ended cancellations, seat-sync retries, the overage report, the dated reminders. */
 export const BILLING_HOURLY_PATH = '/api/internal/scheduled/billing-hourly';
-/** P12: the nightly comparison with Dodo, alert-only. */
+/** Every five minutes: webhook retries, then read-alert digests. */
+export const NOTIFICATIONS_PATH = '/api/internal/scheduled/notifications';
+/** P12, nightly: the comparison with Dodo, alert-only. */
 export const BILLING_DAILY_PATH = '/api/internal/scheduled/billing-daily';
 
 /**
- * The two Cron Triggers in `wrangler.toml` (`[env.production.triggers]`), and
- * the jobs each runs. Kept beside the paths so the schedule and what it runs
- * are read in one place; `worker.ts` dispatches on `controller.cron`, which is
- * exactly one of these strings.
+ * The three expressions in `wrangler.toml`'s `[env.production.triggers]`,
+ * exactly. Kept beside the paths so the schedule and what it runs are read in
+ * one place; `worker.ts` dispatches on `controller.cron`, which is exactly one
+ * of these strings.
  */
 export const HOURLY_CRON = '17 * * * *';
+export const FIVE_MINUTE_CRON = '*/5 * * * *';
 export const DAILY_CRON = '41 3 * * *';
 
-/** The jobs a Cron Trigger runs, in order. An unknown schedule runs the hourly set. */
-export function jobsFor(cron: string): readonly string[] {
-  return cron === DAILY_CRON ? [BILLING_DAILY_PATH] : [VAULT_PURGE_PATH, BILLING_HOURLY_PATH];
+/**
+ * Which jobs a Cron Trigger runs, in order, by the expression that fired it.
+ *
+ * Hourly, the jobs that touch only the database run before the one that calls
+ * Dodo, so a slow or failing billing provider never delays the seven-day purge
+ * or the pruning (each job runs in isolation regardless — `runScheduledJobs`).
+ *
+ * Anything that is neither the five-minute nor the nightly expression runs the
+ * hourly jobs. That is the safe default in the direction that matters: the
+ * hourly jobs are idempotent — they do only what is already due — so an
+ * expression edited in `wrangler.toml` and not here runs them more often than
+ * it needs to, which costs a few queries, rather than not at all, which would
+ * leave retained vaults past their window undeleted.
+ */
+export function jobsForCron(cron: string): readonly string[] {
+  if (cron === FIVE_MINUTE_CRON) return [NOTIFICATIONS_PATH];
+  if (cron === DAILY_CRON) return [BILLING_DAILY_PATH];
+  return [VAULT_PURGE_PATH, PRUNE_PATH, BILLING_HOURLY_PATH];
+}
+
+/**
+ * Runs several jobs, one after another, each in isolation: one that fails is
+ * reported and the next still runs. Throws once all have run if any failed, so
+ * the invocation is marked failed in the platform's own cron history.
+ *
+ * In sequence rather than at once: each job is a request with its own database
+ * connection, and a scheduled invocation shares the same six-connection budget
+ * as any other.
+ */
+export async function runScheduledJobs(
+  fetchApp: (request: Request) => Promise<Response>,
+  origin: string,
+  paths: readonly string[],
+): Promise<void> {
+  const failed: string[] = [];
+  for (const path of paths) {
+    try {
+      await runScheduledJob(fetchApp, origin, path);
+    } catch (cause) {
+      // `runScheduledJob`'s own sentence — a path and a status — or the name of
+      // whatever the in-process call threw. Never a response body.
+      failed.push(cause instanceof Error ? cause.message : path);
+    }
+  }
+  if (failed.length > 0) throw new Error(`Scheduled jobs failed: ${failed.join('; ')}`);
 }
 
 const NONCES = Symbol.for('xecret.scheduled-nonces');

@@ -5,6 +5,7 @@ import { BufferedAuditRecorder, createAuditBuilder, InMemoryAuditSink, REDACTED 
 import type {
   AuditContext,
   AuditDenial,
+  AuditMetadata,
   AuditRecord,
   AuditResource,
   AuditSink,
@@ -222,6 +223,13 @@ describe('credential detection — values that must never reach a log', () => {
   it('recognises Stripe keys', () => {
     expect(looksLikeCredential('sk_live_4eC39HqLyjWDarjtT1zdp7dc')).toBe(true);
     expect(looksLikeCredential('rk_live_4eC39HqLyjWDarjtT1zdp7dc')).toBe(true);
+  });
+
+  it('recognises a Standard Webhooks signing secret — ours, and any provider’s', () => {
+    // The shape `generateWebhookSecret` mints (P19 §5): `whsec_` and 32 bytes,
+    // base64 — with `+`, `/` and `=`, which the base64url rules do not cover.
+    expect(looksLikeCredential('whsec_C2FVsBQIhrscChlQIMV+b5sSYspob7oD/LmVfNhPmwI=')).toBe(true);
+    expect(looksLikeCredential('rotated the whsec_ secret')).toBe(false);
   });
 
   it('recognises Google API keys', () => {
@@ -587,7 +595,12 @@ describe('every declared metadata field survives sanitisation', () => {
   // carried neither. This test makes the omission a failure instead, which is
   // the only reason it stops recurring.
   it('copies each field through, sanitised', () => {
-    const record = builderWith().success('member.role_changed', null, {
+    // `satisfies Required<…>`, so a field added to `AuditMetadata` and not to
+    // this sweep is a compile error rather than a field the test quietly skips.
+    // Five fields — `wrapKind`, `method`, `recoveryCodeCount`, `signInMethod`,
+    // `confirmation` — had been added to the contract without joining this list;
+    // P19 made the list exhaustive by type when it added its own.
+    const everyField = {
       secretName: 'DATABASE_URL',
       previousSecretName: 'DB_URL',
       secretCount: 3,
@@ -627,6 +640,24 @@ describe('every declared metadata field survives sanitisation', () => {
       operator: 'ops-alice',
       source: 'dashboard',
       enabled: false,
+      wrapKind: 'recovery',
+      method: 'passkey',
+      recoveryCodeCount: 5,
+      signInMethod: 'sso',
+      confirmation: 'reused-session',
+      parentEnvironmentSlug: 'base',
+      previousParentEnvironmentSlug: null,
+      contextEnvironmentSlug: 'staging',
+      referringSecretName: 'DATABASE_URL',
+      sourceEnvironmentSlug: 'development',
+      sourceProjectSlug: 'shared',
+      createdCount: 2,
+      updatedCount: 3,
+      deletedCount: 1,
+      restoredTo: '2026-10-19T14:30:00Z',
+      endpointHost: 'hooks.example.com',
+      eventTypes: ['secret.updated', 'environment.promoted'],
+      policyName: 'secrets',
       previousSeatCount: 11,
       billingInterval: 'yearly',
       previousBillingInterval: 'monthly',
@@ -636,7 +667,9 @@ describe('every declared metadata field survives sanitisation', () => {
       billingEvent: 'subscription.renewed',
       driftFields: ['seats', 'periodEnd'],
       unitCount: 42,
-    });
+    } satisfies Required<AuditMetadata>;
+
+    const record = builderWith().success('member.role_changed', null, everyField);
 
     expect(record.metadata).toEqual({
       secretName: 'DATABASE_URL',
@@ -684,6 +717,26 @@ describe('every declared metadata field survives sanitisation', () => {
       // `false` is a value, not an absence: switching a policy off is the
       // change most worth finding later.
       enabled: false,
+      wrapKind: 'recovery',
+      method: 'passkey',
+      recoveryCodeCount: 5,
+      signInMethod: 'sso',
+      confirmation: 'reused-session',
+      parentEnvironmentSlug: 'base',
+      // `null` is a statement — "inherited from nothing" — and survives as one.
+      previousParentEnvironmentSlug: null,
+      contextEnvironmentSlug: 'staging',
+      referringSecretName: 'DATABASE_URL',
+      sourceEnvironmentSlug: 'development',
+      sourceProjectSlug: 'shared',
+      createdCount: 2,
+      updatedCount: 3,
+      deletedCount: 1,
+      // Re-rendered from what it parses as, never copied as a free string.
+      restoredTo: '2026-10-19T14:30:00.000Z',
+      endpointHost: 'hooks.example.com',
+      eventTypes: ['secret.updated', 'environment.promoted'],
+      policyName: 'secrets',
       previousSeatCount: 11,
       billingInterval: 'yearly',
       previousBillingInterval: 'monthly',
@@ -694,6 +747,24 @@ describe('every declared metadata field survives sanitisation', () => {
       driftFields: ['seats', 'periodEnd'],
       unitCount: 42,
     });
+  });
+
+  it('keeps P19 fields to their vocabularies, and never a webhook URL', () => {
+    const record = builderWith().success('webhook.created', null, {
+      // Reached past the types with casts.
+      eventTypes: ['secret.updated', 'secret.read', 'secret.updated', 'x\ny'] as never,
+      policyName: 'everything' as never,
+      restoredTo: 'last tuesday',
+      // A host that carries a credential is still caught by the detector.
+      endpointHost: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789.example.com',
+      createdCount: Number.NaN,
+    });
+
+    expect(record.metadata.eventTypes).toEqual(['secret.updated']);
+    expect('policyName' in record.metadata).toBe(false);
+    expect('restoredTo' in record.metadata).toBe(false);
+    expect('createdCount' in record.metadata).toBe(false);
+    expect(record.metadata.endpointHost).toContain(REDACTED);
   });
 
   it('keeps the payment fields only when they are the shapes they claim to be (P12)', () => {

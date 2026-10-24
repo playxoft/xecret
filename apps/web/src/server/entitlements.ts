@@ -23,15 +23,19 @@ import { errors } from './errors';
  * viewer a writer, and an owner on Free still cannot read an environment they
  * hold no grant on.
  *
- * ── ⚠ ONE CALL SITE, AND ONLY ONE. THAT IS DELIBERATE. ──
- * `requireFeature` gates exactly one feature today: `customRoles`, on defining,
- * editing and assigning a custom role (the role routes and the member route).
- * Everything else below is written, tested and unused. Do not read the presence of `requireCapacity` as evidence that
- * project, seat, service-token, environment, secret or webhook ceilings are
- * enforced anywhere: they are not. The only *limit* enforced in the product
- * today is the organisations-per-account ceiling, which lives in
- * `provisionOrganization` because it needs a row lock rather than a route-layer
- * check.
+ * ── ⚠ WHERE THESE ARE CALLED, AND WHERE THEY ARE NOT ──
+ * `requireFeature` gates `customRoles` (defining, editing and assigning a
+ * custom role) and the P19 features, each on the control-plane act that turns
+ * it on — never on the read that uses it: `secretReferencing` (a parent, a
+ * template), `personalOverrides` (setting one), `environmentPromotion`,
+ * `pointInTimeRestore` (whose window is `limits.pitrDays`), `tokenIpAllowlist`
+ * and `secretPolicy` (tightening or enabling a policy), `disableEnvExport` and
+ * `newIpReadAlerts` (switching one on). `requireCapacity` is called for exactly
+ * one ceiling, `webhooks`. Do not read its presence as evidence that project,
+ * seat, service-token, environment or secret ceilings are enforced anywhere:
+ * they are not. The only other *limit* enforced in the product today is the
+ * organisations-per-account ceiling, which lives in `provisionOrganization`
+ * because it needs a row lock rather than a route-layer check.
  *
  * Why staged rather than wired: payments are the *eleventh* of twelve phases in
  * `.local/plans/v2/01-billing.md`, and this is the first. Every organisation is
@@ -42,11 +46,14 @@ import { errors } from './errors';
  * between here and there have something to call rather than each growing its own
  * temporary way to ask the same question.
  *
- * Custom roles are the exception because they are a *new* capability rather
- * than a ceiling on an existing one: gating one takes nothing away from anybody
- * who has it today, and the Enterprise contracts that buy it are set by hand
- * through the operator tool (`npm run plan:set`), which is the manual bridge
- * the billing plan provides for exactly this.
+ * Custom roles and the P19 features are the exception because each is a *new*
+ * capability rather than a ceiling on an existing one: gating one takes nothing
+ * away from anybody who has it today, and until checkout ships the plans that
+ * buy them are set by hand through the operator tool (`npm run plan:set`),
+ * which is the manual bridge the billing plan provides for exactly this. The
+ * P19 gates also never take a feature back on a downgrade: what was set keeps
+ * working — a parent still inherits, an override still applies, a policy is
+ * still enforced — and only turning something *on* asks the plan again.
  *
  * The seats ceiling is the one to know about, because it is enforced by a
  * *different* mechanism and the two numbers disagree: `FREE_LIMITS.seats` is 3,

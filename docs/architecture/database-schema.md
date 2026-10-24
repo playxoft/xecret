@@ -989,6 +989,20 @@ audit_logs — no FKs by design; references are soft
       alerts (alert_unknown_product, alert_activation_waiting, alert_operator_managed) —
       the reminders' primary key deduplicates an error line the hourly job would
       otherwise repeat every run; never an email — constraint only, no backfill
+0028  secret references (P19 §1): environments.parent_environment_id (same-project
+      composite FK, never itself), secret_versions.declared_references (jsonb array,
+      GIN-indexed for "who points here"), and 'template' in secrets_value_type_check
+      — additive; no new grant
+0029  personal_overrides (P19 §2): one per (environment, user, name), an xk2.gcm.
+      blob under the owner's override key; cascades with the environment, the user
+      and the organisation — additive; grants
+0030  webhooks and webhook_deliveries (P19 §5): endpoints with their sealed signing
+      secret and failure run, and the delivery log/queue, due deliveries indexed per
+      organisation for the sweep's turns — additive; grants
+0031  org_policies (P19 §6, §8: token policy columns, secret_policy jsonb) and
+      environments.plaintext_export_disabled / .read_alerts (P19 §9, §7) — additive;
+      grants for the new table
+0032  environment_read_sightings and read_alert_digests (P19 §7) — additive; grants
 ```
 
 Migration 0024 (P12) is additive and **must be applied before the code that reads it**: from that
@@ -1002,6 +1016,20 @@ that build `addMember` and `removeMember` write the seat-sync debt in their own 
 naming `billing_seat_syncs.generation`. Migration 0026 too: from that build the usage flush
 writes `org_usage_counters.included_fetches` and the meter reads it. And 0027: from that build
 the hourly billing job and the reconciler write the once-only alert kinds to `billing_reminders`.
+
+Migrations 0028–0032 (P19) are additive and follow the same rule as 0018–0023: **apply them
+before the code that names their columns**, because from that build on every `select()` on
+`environments` and `secret_versions` names them. Nothing older reads the five new tables, and
+every row older code writes satisfies the new CHECKs.
+
+**P12 merged first.** P12's billing migrations hold 0024–0027, and P19 was renumbered to
+0028–0032 to sit after them (review round 1), journal timestamps included: Drizzle's migrator
+applies an entry only when its `when` is later than the last one the database recorded, so
+P19's entries (`when` 1788500000000–1788900000000) are dated strictly after P12's four
+(1788100000000–1788400000000); an equal stamp would have been skipped just the same. Had P19
+been applied first, a database would have recorded P19's later timestamps and then silently
+skipped P12's — so the order was P12, then P19, and a database that ran P19 from its branch
+before P12 was merged is rebuilt, not patched.
 
 Migration 0022 (WS-5, review round 1) is additive, and — like 0021 — **must be applied before
 the code that names its columns**: from that build on every `select()` on `sessions`,
@@ -1076,7 +1104,7 @@ anywhere. Migrations run as a separate, more privileged role.
 
 ## 11. Deferred to later phases
 
-`webhooks` · `secret_references` for
-cross-environment inheritance · `billing_*` (the `seat_limit` column is the only hook needed
-now) · `oidc_trust_policies` for GitHub Actions federation (Phase 8 designs the token table
-for it; the feature is v2).
+`billing_*` (the `seat_limit` column is the only hook needed now) · `oidc_trust_policies` for
+GitHub Actions federation (Phase 8 designs the token table for it; the feature is v2).
+Webhooks and cross-environment references, once listed here, arrived in 0028–0030 — the
+references not as a table of their own but as a declaration on the version that holds them.

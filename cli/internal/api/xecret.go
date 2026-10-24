@@ -517,6 +517,39 @@ func (c *Client) UpdateMetadata(
 	return &response.Secret, nil
 }
 
+// SecretPolicy is the `secrets` half of GET /api/orgs/{org}/policies — the
+// organisation's naming and strength rules (P19 §8). The name rule is the
+// server's to enforce and is carried here only because the response has it;
+// the value rules are this client's, because nothing else that holds the
+// plaintext is in the path of a CLI write. See internal/policy.
+type SecretPolicy struct {
+	Enabled             bool     `json:"enabled"`
+	Scope               string   `json:"scope"`
+	NamePattern         *string  `json:"namePattern"`
+	MinValueEntropyBits *int     `json:"minValueEntropyBits"`
+	EntropyAppliesTo    []string `json:"entropyAppliesTo"`
+	ForbiddenSubstrings []string `json:"forbiddenSubstrings"`
+}
+
+// OrganizationPolicies is GET /api/orgs/{org}/policies, read for the one half
+// this client acts on. The token rules and anything added beside them are left
+// undecoded, deliberately: nothing here enforces them, and a field this build
+// parses is a field it can be made to fail on.
+type OrganizationPolicies struct {
+	Secrets SecretPolicy `json:"secrets"`
+}
+
+// Policies reads the organisation's policies. Readable by members and by
+// service tokens, because both write secrets. A deployment that predates the
+// endpoint answers 404, which the caller treats as "no policy".
+func (c *Client) Policies(ctx context.Context, org string) (*OrganizationPolicies, error) {
+	var policies OrganizationPolicies
+	if err := c.Get(ctx, orgPath(org)+"/policies", &policies); err != nil {
+		return nil, err
+	}
+	return &policies, nil
+}
+
 // Organizations lists the memberships behind this credential. Refused for a
 // service token, which is pinned to one organisation and does not get to ask.
 func (c *Client) Organizations(ctx context.Context) ([]Organization, error) {

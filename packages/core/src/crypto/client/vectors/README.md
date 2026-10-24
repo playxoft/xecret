@@ -142,7 +142,7 @@ the public API would have traded the property it exists to protect for the abili
 
 ## Vector kinds
 
-Nine kinds, covering every construction in the spec. All are required to be present; a file
+Ten kinds, covering every construction in the spec. All are required to be present; a file
 with no vectors of some kind fails schema validation.
 
 | `kind` | Covers | Spec section |
@@ -156,6 +156,7 @@ with no vectors of some kind fails schema validation.
 | `value-hmac` | EHK → HMAC key → `valueHmac` | §9 |
 | `recovery-code` | Code generation, display grouping, check character, `codeBytes`, lookup hash, RCK | §7 |
 | `blob-parse` | **Negative** cases: unknown version, unknown algo tag, truncated payload, bad base64url, AAD mismatch | §2 |
+| `override-value` | A personal override sealed to its owner's own public key, ASCII and NFC | §2.2 type 13, §4.2 |
 
 `grant-signature` vectors carry the canonical `signingPayloadHex` as well as the signature.
 This is not redundant. Ed25519 is deterministic, so a signature mismatch tells you only that

@@ -1,6 +1,6 @@
 # xecret E2EE Crypto Format Specification
 
-**Version:** 2.1 · **Date:** 2026-10-12 · **Status:** normative
+**Version:** 2.2 · **Date:** 2026-10-20 · **Status:** normative
 **Implements:** [ADR 0009](../adr/0009-zero-knowledge-encryption.md)
 
 This document defines every cryptographic artifact xecret stores or transmits under the
@@ -127,6 +127,7 @@ in §4; `HKDF` info strings in §3.
 | 10 | Secret note ciphertext | `secrets.encNote` | `xk2.gcm.` | `EDK` | `secret-note` |
 | 11 | CLI hand-off UK wrap | **nowhere** — loopback URL only (§13.2) | `xk2.x25519.` | sealed box to the CLI's ephemeral X25519 public key | `cli-handoff` |
 | 12 | Device PIN UK wrap | **one browser's `localStorage`** only (§13.3) — never this server | `xk2.gcm.` | `HKDF(pinKey ‖ pepper, "xecret.v2.pin-wrap", 32)` | `pin-wrap` |
+| 13 | Personal override value | `personal_overrides.ciphertext` | `xk2.gcm.` | `HKDF(ownerX25519PrivateKey, "xecret.v2.override-key", 32)` — the **owner's own** override key | `override-value` |
 
 Types 6 and 7 are the same construction to the same public key with different AAD and
 different plaintext. They are stored in separate columns rather than as one sealed pair
@@ -138,7 +139,30 @@ form). Type 6 encrypts the 32-byte EDK, type 7 the 32-byte EHK. Types 9–10 enc
 NFC-normalised UTF-8 bytes of the value or note. Type 11 encrypts the 32-byte UK, like types
 1–3, but asymmetrically and to a key that exists for one login and is then discarded. Type 12
 encrypts the 32-byte UK as well, and is the only blob in this table that is never transmitted to
-or stored by the server at all.
+or stored by the server at all. Type 13 encrypts the NFC-normalised UTF-8 bytes of a value, like
+type 9, and is subject to the same UTF-8 rule below.
+
+**Type 13 is made by the person it belongs to, for them, and for nobody else** (P19 §2). A
+personal override replaces one value on one person's machine, and it is deliberately *not* under
+the environment's EDK: every reader of the environment holds the EDK, and an override must not be
+readable by another member — as a property of the ciphertext, not only of the route that refuses
+to serve it. It is AES-256-GCM under the owner's **override key**, HKDF-SHA256 of their own X25519
+private scalar with info `xecret.v2.override-key` (§3.3) and an empty salt.
+
+The key is symmetric on purpose. The first draft of this type was a §5 sealed box to the owner's
+public key, which hides the value and proves nothing about who made it: the public key is
+published, so the server could have sealed a box the owner's own CLI would open and inject into a
+process — `NODE_OPTIONS`, a different `DATABASE_URL`. A key only the owner can derive makes GCM's
+tag a proof of authorship as well as integrity, and the only party that ever needs to *write* an
+override is the one that reads it. A client MUST derive the key from its own private key and MUST
+NOT open an override under any other construction.
+
+An EDK rotation never touches a type 13 blob. A vault reset does: the account gets a new keypair,
+and every override made under the old one stops opening. A client MUST report such an override as
+one it cannot open and MUST NOT fall back silently to the shared value, because the person set the
+override precisely so as not to get that value. The server bounds the blob as
+`MAX_OVERRIDE_BLOB_LENGTH = MAX_SECRET_BLOB_LENGTH` (below): the same construction over the same
+plaintext bound.
 
 **A plaintext that authenticates and is not valid UTF-8 is a format error.** Types 9–10 are
 defined as UTF-8, so a decryptor MUST validate the recovered bytes and MUST NOT substitute
@@ -256,6 +280,7 @@ appear here**, and every string is written exactly as shown, ASCII, no trailing 
 | `xecret.v2.pin-wrap` | `pinKey ‖ pepper` (64B, §13.3) | empty | 32 | The AES-256-GCM key wrapping the UK in a **device PIN** wrap (blob type 12) |
 | `xecret.v2.value-hmac` | `EHK` (32B) | empty | 32 | HMAC-SHA256 key for `valueHmac` (§9) |
 | `xecret.v2.invite-key` | invite fragment seed (16B, §10) | empty | 32 | The invite keypair's X25519 private scalar |
+| `xecret.v2.override-key` | the member's own X25519 private scalar (32B) | empty | 32 | The AES-256-GCM key of that member's **personal overrides** (blob type 13) |
 | *(the blob's full AAD string)* | X25519 shared secret (32B) | `ephemeralPub ‖ recipientPub` (64B) | 32 | AES-256-GCM key for one sealed box (§5) |
 
 Two branches from `SK` — the wrap key and the verifier — is the reason `SK` is HKDF input
@@ -346,6 +371,7 @@ no separators, and MUST be non-negative.
 | `privkey-sign` | `xecret.aad.v2.privkey-sign\|<userId>` | 5 |
 | `cli-handoff` | `xecret.aad.v2.cli-handoff\|<codeChallengeB64Url>\|<handoffPublicKeyB64Url>` | 11 |
 | `pin-wrap` | `xecret.aad.v2.pin-wrap\|<userId>\|<deviceId>` | 12 |
+| `override-value` | `xecret.aad.v2.override-value\|<orgId>\|<environmentId>\|<userId>\|<name>` | 13 |
 
 Notes on the less obvious choices:
 
@@ -369,6 +395,11 @@ Notes on the less obvious choices:
   is included anyway to match `xecret.aad.v1.secret` exactly. The v1 AAD binds the org, and
   dropping it in v2 would make the migration's before/after comparison harder to reason about
   for no gain.
+- **`override-value` binds the row's whole unique key** — organisation, environment, owner and
+  name — and no version, because an override is replaced in place rather than versioned. `name`
+  is a secret name (`[A-Za-z_][A-Za-z0-9_]*`), which the component pattern admits. It is the
+  first purpose whose last component is not an identifier minted by this system, and that is
+  deliberate: the name is what the override *means*, so a box moved to another name must fail.
 
 
 ### 4.3 The client-write contract
@@ -1602,3 +1633,4 @@ validator, and cheap enough that the suite does not get skipped.
 | 2026-09-11 | Phase 3 of the unlock-convenience work (device PIN). Adds §13.3, blob type 12 to §2.2, two branches to §3.3 and the `pin-wrap` purpose to §4.2. The one construction here that is new in kind is a wrap key whose input keying material is split between two parties — `HKDF(pinKey ‖ pepper)`, with the pepper held only by the server and released only under a five-attempt counter — which is what makes it defensible to wrap a User Key under six digits. §13.3 states the concession this makes and the exact adversary it makes it to: a server colluding with whoever holds the device, and nobody else. No existing format, derivation, or byte layout changed; the additions are additive, and blob type 12 is the first in §2.2 that is never stored by or transmitted to this server. |
 | 2026-09-10 | Review fixes. Adds §4.3, the client-write contract: every client-encrypted write states the `secretId` and version its ciphertext is bound to, and the server refuses rather than substitutes — closing a class of silent, unrepairable data loss reachable from an ordinary double-restore or an import planned against a truncated listing. §6.1 now requires `recipientPublicKey` to be stored on the grant row, because every other source for it is mutable and a deferred verifier reading one would report honest grants as forged. §13.1 states where a service token is split, after a client was found sending both halves in the `Authorization` header. No format, no derivation, and no byte layout changed; the additions are request fields and one column. |
 | 2026-10-12 | P23 (vault escape archive). Adds §14, written before the code that implements it: the archive's ZIP container byte for byte, the `archive.json` document field by field, the opening procedure with its three per-value outcomes (`ok`, `no-key`, `damaged`), split archives, and the security considerations — above all that an archive is a permanent offline target, which the product owner accepted when deciding to email it, and that it is confidential but not authenticated. No new blob type, AAD purpose or HKDF branch: an archive is a container of existing blobs, opened by existing constructions. The review log moves to §15. |
+| 2026-10-20 | P19 (paid secret features). Adds blob type 13 to §2.2, the `override-value` purpose to §4.2 and one branch to §3.3's registry, `xecret.v2.override-key`: a personal override is AES-256-GCM under a key HKDF-derived from its owner's *own* X25519 private scalar, so no teammate holding the EDK can open it, no rotation has to touch it, and — the reason it is not a sealed box to the owner's public key, which an earlier draft of this entry specified — nobody but the owner, the server included, can *make* one the owner's client will accept. Two `override-value` vectors join §12, carrying the derived key so a second implementation can tell a derivation fault from an encryption fault. Secret references and environment inheritance add **no** construction: a reference is plaintext metadata the writer declares beside an ordinary type 9 ciphertext, and resolution happens after each value is opened under its own environment's key, so every ciphertext stays bound to the row that holds it. No existing format, derivation, or byte layout changed. |

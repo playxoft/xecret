@@ -9,6 +9,7 @@ import { errorMessage } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { formatAbsoluteTime, formatRelativeTime, toIsoString } from '@/lib/format';
 import {
+  AlertTriangleIcon,
   Button,
   CheckIcon,
   CopyIcon,
@@ -25,7 +26,10 @@ import {
   Tooltip,
   TrashIcon,
 } from '@/components/ui';
+import { policyProblem, valueWarning } from '@/components/policies/policy-checks';
+import { useSecretPolicy } from '@/components/policies/secret-policy-context';
 import { Actor } from './actor';
+import { TemplateReferenceList } from './template-reference-list';
 import type { SecretSummary } from './types';
 
 /**
@@ -101,6 +105,15 @@ export interface ValueFieldProps {
    * nothing to disambiguate, and a label repeating the page heading is noise.
    */
   environment?: { name: string; isProduction: boolean } | undefined;
+  /**
+   * Whether the environment this field writes to is production.
+   *
+   * Separate from `environment`, which is only set while comparing: the secret
+   * policy (P19 §8) can be scoped to production, and the field has to know
+   * which side of that line it is on whether or not a label is drawn. Falls
+   * back to `environment.isProduction`, then to `false`.
+   */
+  isProduction?: boolean | undefined;
   /**
    * What to say where there is no such secret. The default states a fact the
    * caller may not be able to support — see `ComparedValue`, which cannot say
@@ -186,6 +199,7 @@ export function ValueField({
   secretName,
   valueType,
   environment,
+  isProduction: isProductionProp,
   missingLabel,
   creatable = false,
   disabled,
@@ -460,9 +474,45 @@ export function ValueField({
   // screen and fixable; the server's copy is the one that is load-bearing.
   const shape = checkSecretValue(draft, valueType);
   const shapeProblem = editing && !shape.valid ? (shape.message ?? null) : null;
-  // The live shape check first: it describes what is in the box now, while
-  // `error` describes the last attempt and may already be stale.
-  const problem = shapeProblem ?? error;
+
+  // ── The organisation's value rules (P19 §8) ──
+  // Asked of what is in the box, live, once the person has typed: the value is
+  // about to be encrypted, and the dashboard is one of the clients the rules
+  // depend on — the server never sees the value it would test. Only once
+  // `dirty`: an editor opened on the stored value is a read, and a read is
+  // never refused for what it reveals (the warning below covers that case).
+  // A key that does not exist here yet is a new name, so the name rule is
+  // asked too.
+  const policy = useSecretPolicy();
+  const isProduction = isProductionProp ?? environment?.isProduction ?? false;
+  const policyIssue =
+    editing && dirty && draft.length > 0 && shapeProblem === null
+      ? policyProblem(policy, {
+          name: secretName,
+          newName: secret === null,
+          value: draft,
+          valueType,
+          isProduction,
+        })
+      : null;
+  // The live checks first: they describe what is in the box now, while `error`
+  // describes the last attempt and may already be stale.
+  const problem = shapeProblem ?? policyIssue ?? error;
+  /** Whether the box holds something a save must not send. */
+  const blocked = shapeProblem !== null || policyIssue !== null;
+
+  /**
+   * A revealed value the rules would refuse today — a warning, never a block.
+   *
+   * A policy switched on this morning does not make last month's secrets
+   * unreadable; it makes their next write answerable to it. So this marks the
+   * value, on the field's trailing edge where it costs the row no height, and
+   * says what the rule is — never which part of the value broke it.
+   */
+  const revealedWarning =
+    !editing && displayed !== null
+      ? valueWarning(policy, { name: secretName, value: displayed, valueType, isProduction })
+      : null;
 
   function cancel() {
     restoreFocus.current = true;
@@ -487,7 +537,7 @@ export function ValueField({
       // keyboard route wrote values the live shape check had already rejected —
       // and could fire before the seed had landed, saving the empty box over the
       // value it was still loading.
-      if (disabled || prefilling || shapeProblem !== null) return;
+      if (disabled || prefilling || blocked) return;
       // And what the button is *rendered* on. It appears only once the editor is
       // dirty, so without this Enter committed from a box that showed no Save at
       // all — an editor opened to read a value, Enter pressed to dismiss it, and
@@ -747,7 +797,7 @@ export function ValueField({
                         className="h-8"
                         onClick={onCommit}
                         loading={saving}
-                        disabled={disabled || prefilling || shapeProblem !== null}
+                        disabled={disabled || prefilling || blocked}
                       >
                         {saveLabel}
                       </Button>
@@ -922,6 +972,18 @@ export function ValueField({
                   <code className="text-fg line-clamp-3 min-w-0 flex-1 font-mono text-sm leading-5 break-all whitespace-pre-wrap">
                     {displayed}
                   </code>
+                  {revealedWarning !== null ? (
+                    // A `title` rather than a tooltip: this sits inside the
+                    // button that opens the editor, and a second interactive
+                    // trigger nested in it would be a control inside a control.
+                    <span
+                      className="text-warning-text ml-2 flex shrink-0 items-center self-start"
+                      title={revealedWarning}
+                    >
+                      <AlertTriangleIcon aria-hidden="true" className="size-4" />
+                      <span className="sr-only">{revealedWarning}</span>
+                    </span>
+                  ) : null}
                 </>
               ) : (
                 <>
@@ -948,6 +1010,11 @@ export function ValueField({
         <p id={messageId} className="text-danger-text text-sm leading-5">
           {problem}
         </p>
+      ) : editing ? (
+        // What the write will declare, while it can still be corrected. Only
+        // while editing — the one state allowed to make a row taller — and only
+        // with nothing wrong, since a syntax error is already said above.
+        <TemplateReferenceList value={draft} valueType={valueType} />
       ) : null}
 
       {/* Announced, not printed: a line of text appearing under one row pushes

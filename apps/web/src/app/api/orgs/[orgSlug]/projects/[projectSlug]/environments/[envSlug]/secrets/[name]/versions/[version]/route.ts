@@ -2,6 +2,7 @@ import { countSecretFetch } from '@/server/billing/usage';
 import { findSecretByName, getSecretVersion } from '@xecret/db/repositories';
 import { errors } from '@/server/errors';
 import { json } from '@/server/http';
+import { noteEnvironmentRead } from '@/server/read-alerts';
 import { authenticatedRoute } from '@/server/route';
 import { secretNameFromPath, toClientSecret } from '@/server/schemas/secrets';
 import {
@@ -111,6 +112,7 @@ export const GET = authenticatedRoute<Params>(
         },
       ),
     );
+    noteEnvironmentRead(scope, services, principal);
 
     return json({
       secret: {

@@ -677,6 +677,8 @@ and an owner's password stays a way in past it (the break-glass, T3). A compromi
 identity provider can sign in as any of that organisation's non-owner members, inside its
 verified domains — that is what attaching one means, and it is bounded to that organisation.
 
+---
+
 ### T14 — Payments: forged, replayed or misplaced billing events, and wrong charges (P12)
 
 | | |
@@ -811,6 +813,92 @@ creation until a payment — a staging check (docs/operations/billing.md §3).
 
 ---
 
+### T15 — The paid secret features as attack surface (P19)
+
+Six new ways for data to move — references, inheritance, overrides, promotion, restore and
+webhooks — and three policies. What each could have become, and what stops it:
+
+- **A reference as a permission bypass** (T3). A developer with write access to staging writes
+  `${production.DB_PASSWORD}` and pulls staging. Refused at write: every reference must name an
+  environment the writer may read (`can()`, the same call a direct pull makes), and refused
+  again at read — every contributing environment is authorised for the reader, and a referenced
+  secret travels only as the one secret named, never its environment. A service token, pinned
+  to one environment, is kept out of the situation entirely (no parent or outward reference on
+  a pinned environment, and no token minted on one).
+- **A link as a write path onto production** (T3, review round 1). Reading is held to `can()`;
+  *writing* through a link is not a read at all. A production environment that inherits from
+  staging, or holds a template reading `${staging.DB_HOST}`, takes its values from wherever
+  staging's writers put them — so a developer who may change staging but not production changes
+  what production runs, without production's grants or deny-by-default being asked. Not refused
+  (a shared base of non-secret defaults is a real design), but never silent: a production
+  environment newly linked to one that is not production needs `confirmCrossesProtection`, the
+  refusal that asks names the source's writers (people and write tokens), and a confirmed link
+  files `environment.link_crosses_protection` against production. Only the link being made, or a
+  flag change that newly crosses a link already there, is asked about — the direct parent or a
+  reference the write adds, or (review round 2, F1) `is_production` turned on while such a link
+  already exists, or turned off while a still-production environment, in this project or another,
+  still depends on it.
+- **A server that rewrites a reference** (T7). The declaration is plaintext the server could
+  edit, so the client compares the decrypted template text against it and refuses a mismatch,
+  and every value is bound by its AAD to its own row and environment. Stated precisely (review
+  round 1): that stops a server *fabricating* a value or serving one from an environment whose
+  key the reader does not hold. It does not stop a server *redirecting* a reference among values
+  the reader can already decrypt — which environment a slug names and which row a name names are
+  both answers the client takes from the server, and `secret-value`'s AAD binds ids, not names.
+  See the residual risk below.
+- **A forged override** (T7, T9). The first draft sealed overrides to the owner's public key,
+  which anybody holding it — the server included — could do: a compromised Worker could have
+  set `NODE_OPTIONS` on a developer's machine. Overrides are now GCM under a key HKDF-derived
+  from the owner's own private key (spec §2.2 type 13), so only the owner can make one the CLI
+  accepts. A service token is refused every override route and no bundle carries one, so an
+  override can never reach a CI run.
+- **Promotion and restore as laundering** (T3). Both are ordinary writes held to ordinary
+  grants on both sides, by a person, in one transaction, audited per secret. A restore is held to
+  the instant's value tags, so a client cannot "restore" a value that was never there.
+- **Webhooks as exfiltration or SSRF** (T1, T7). Payloads are an allowlist with no field a value
+  could go in; endpoints are `https` only, never a private, loopback, link-local, site-local or
+  reserved literal — nor a v6 transition form that carries or reaches a v4 address (mapped,
+  SIIT, NAT64, 6to4, Teredo; added in review round 1) — re-checked at every attempt, and
+  redirects are never followed. A DNS name pointing at a private address, or re-pointed at one
+  later (rebinding), is not stopped by the literal check — the egress does that, not the
+  validator. A Worker has no route into a private network; a self-hoster running the code
+  elsewhere does, and `docs/self-hosting.md` says what to put in front of it. Signing secrets are
+  sealed under the organisation's master key and redacted from logs by shape.
+- **One tenant's webhook volume as another's outage** (T2, review round 1). Delivery is shared
+  infrastructure, and one sweep claimed the oldest twenty-five deliveries in the whole table: a
+  single large import into an organisation with several endpoints held every other
+  organisation's deliveries behind it for days. A batch write now emits one event per kind of
+  change rather than per secret, the sweep takes organisations in turns and keeps claiming under
+  a time budget, so one organisation's backlog delays only its own deliveries.
+- **Client-enforced policies** (T3). Disabling plaintext export and the secret policy's value
+  rules run in the clients that hold the plaintext; a modified client skips them. They are
+  documented as guard rails, not boundaries. The name rule, the token policy and every plan gate
+  are server-side. An *unmodified* client never skips them by accident (review round 1): both
+  read a template the same way from one implementation pinned by shared fixtures, both apply
+  them to every value-carrying write including the CLI's import, and both refuse a write when the
+  policy cannot be read rather than treating it as absent.
+- **Read alerts as a mail bomb** (T1). One email an hour per organisation at most, whatever the
+  number of new addresses; sightings are written after the response and never slow or refuse a
+  read.
+
+**Residual risk:** Low. The new surface reuses the existing authorisation call at every
+crossing, and no feature here gives the server a plaintext it did not already have. Two
+residuals are a server that misbehaves (T7, T9), and are accepted as such:
+
+- **Redirection among readable values.** A server can answer a reference — or an inherited
+  name — with a different value the reader can already decrypt: another secret of the same
+  environment, or one from any environment whose key the reader holds. It cannot fabricate a
+  value or reach an environment the reader holds no key for. Closing it would mean binding the
+  name into `secret-value`'s AAD and having clients pin slug-to-environment mappings, a format
+  change deferred rather than made here.
+- **Replay of an override its owner replaced or removed.** `override-value`'s AAD binds the
+  organisation, environment, owner and name, and no version or counter, because an override is
+  replaced in place. A server can therefore go on serving the owner's *previous* override, or
+  one the owner deleted, and the owner's client will open it. It cannot forge a new one, or one
+  for another person or name. A per-override counter the client checks would close it.
+
+---
+
 ## 4. Risk summary
 
 | ID | Threat | Impact | Likelihood | Residual |
@@ -829,6 +917,7 @@ creation until a payment — a staging check (docs/operations/billing.md §3).
 | T12 | The emailed escape archive, attacked offline | High | Low–Med | **Medium (accepted)**; Low with a strong passphrase |
 | T13 | A customer's identity provider, or whoever can rewire it | Critical (one org) | Low–Med | Low–Medium |
 | T14 | Forged, replayed or misplaced billing events; wrong charges | High | Medium | Low–Medium |
+| T15 | The paid secret features (references, overrides, promotion, restore, webhooks, policies) | High | Low–Med | Low |
 
 **Where to spend effort, in order:** T2 (test matrix as a CI gate) · T10 (escrow drills) ·
 T7 (dependency discipline, anomaly detection) · T5 (blast-radius limits, OIDC in v2).
@@ -857,4 +946,6 @@ customer's own systems after legitimate secret delivery.
 | 2026-10-20 | — | P12 (payments through Dodo): T14 added — the webhook's signature, replay window and primary-key claim; snapshots applied in order rather than deltas; placement from our own records; nothing priced, counted or currency-chosen by the client, with the region lock and the card-country check raised for a human; no second subscription and no webhook over an operator's grant; owners-only billing; seat sync after the commit with a debt, a re-count and an alert-only reconciler; a meter that can only under-count; D19 unchanged; redaction of customer ids and webhook secrets |
 | 2026-10-20 | — | P12, review round 1: T14 restated as it now stands — subscriptions attach only through a nonce of an open checkout of that organisation (a signed purchase with our org id typed into metadata attaches nothing), spent on attachment; a customer per organisation and a portal only for one's own; no checkout payment links over an operator's grant; the seat debt written in the membership transaction, one push per organisation by lease and generation, pushes waiting for a scheduled plan change, a dead-letter cap, and a reconciler that compares Dodo with the membership; usage flushed by a timer and attributed to the period it was counted in, metering only paid periods (the "under-count only" claim made true); fourteen days on hold ends the plan; the Dodo mode recorded and never crossed; idempotency keys on checkout and plan change |
 | 2026-10-20 | — | P12, review round 2: T14 — usage counted a month at a time (a yearly plan's months from its anniversary) and billed against the allowance each month opened with (migration 0026), so no move re-bills the past; a grant over an ended subscription's id detached by `plan:set` and never written by a webhook; a trial ended by the payment an upgrade takes; stranded paid checkouts swept from Dodo, our own expired checkout retried rather than called foreign, a waiting link never replaced; no checkout across Dodo modes, and `check:env` pairing the key with the mode (the webhook secret's pairing stated as unverifiable); a timed-out checkout or change says it may have gone through and keeps its key; seat pushes confirm a scheduled change with Dodo, treat "no change" as paid, and an activation's debt commits with it |
+| 2026-10-20 | — | P19 (paid secret features): T15 added (written as T14, renumbered in review round 1 because P12 holds T14) — references held to `can()` at write and read, the declaration checked against the decrypted text, overrides made unforgeable by the server (symmetric under the owner's own key, replacing a sealed box), promotion and restore as ordinary audited writes, webhook payload allowlist and endpoint rules, client-enforced policies stated as guard rails, the read-alert throttle |
 | 2026-10-21 | — | P12, review round 3: T14 — an operator's grant over an old subscription's id (a paid row with no product) is left out of the hourly sweeps, which had ended a cancelling or held one to Free, and reported by the reconciler once; `plan:set` refuses, without `--over-dodo`, a Free row waiting on a paid checkout's subscription instead of detaching it as ended; the stranded-checkout sweep ends a wait by the snapshot decision's own reading of ended (a cancellation past its period included) and filters the Dodo mode in its query; alerts the hourly job would repeat are raised once (migration 0027). The trial's early end by payment rests on a staging check that is now a hard gate before live mode |
+| 2026-10-21 | — | P19, review round 2 (F1): T15 restated — `is_production` flipped on an environment that already holds a crossing link bypassed M3 entirely; turning it on now asks about an existing parent or template reference into one that is not production, and turning it off now asks about every still-production environment, in this project or another, that depends on it; a confirmed flip files `environment.link_crosses_protection` the same as a confirmed new link |

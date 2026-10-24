@@ -183,15 +183,22 @@ export async function openEnvironmentKeys(
  *
  * A secret version written before a rotation is still sealed under the key that
  * was active then, and `GET …/versions/{version}` says so by naming a
- * `envDataKeyId` that is not the active one. There is no way to recover that
- * key: only the active grant is served, and the retired EDK was never stored
- * anywhere but in the browsers that held it.
+ * `envDataKeyId` that is not the active one. The ordinary key-state read serves
+ * only the active grant, so on that path the retired key is whatever this
+ * browser still holds.
  *
  * So this returns what is in the store and nothing else, and the caller renders
  * "this version was written under a key that has since been rotated away" rather
  * than an unexplained decryption failure. A session that was open across the
  * rotation still has the old key cached and can read it, which is exactly the
  * behaviour the pair-keyed cache exists to preserve.
+ *
+ * Retired grants are not unrecoverable, though, and an earlier version of this
+ * comment said they were: a rotation leaves the grants on the key it retires
+ * where they are (see the rotate route), and the point-in-time restore preview (P19 §4,
+ * `findGrantsForPrincipalOnKeys`) serves the caller's own grants on exactly the
+ * retired keys its history was written under, so a restore opens them without
+ * this cache. It is only the single-version reveal that does not ask for them.
  */
 export function readRetiredKey(environmentId: string, envDataKeyId: string): EnvKeyMaterial | null {
   return readEnvKey(environmentId, envDataKeyId);

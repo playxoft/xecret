@@ -9,6 +9,7 @@ import {
   environmentCreateSchema,
   resolveEnvironmentSlug,
   toEnvironment,
+  toEnvironments,
 } from '@/server/schemas/resources';
 import { assertSelfGrant, callerHasVault, requireSealingUser } from '@/server/env-keys-service';
 import { toGrantSeed } from '@/server/schemas/env-keys';
@@ -32,9 +33,9 @@ export const GET = authenticatedRoute<Params>(async ({ params, principal, servic
   // Ordered by `sort_order` in SQL, so every client — dashboard, CLI, CI — shows
   // the same sequence without each re-implementing it.
   return json({
-    environments: (
-      await listEnvironments(services.db, scope.organization.id, scope.project.id)
-    ).map(toEnvironment),
+    environments: toEnvironments(
+      await listEnvironments(services.db, scope.organization.id, scope.project.id),
+    ),
   });
 });
 
@@ -195,6 +196,6 @@ export const POST = authenticatedRoute<Params>(
       ),
     );
 
-    return json({ environment: toEnvironment(environment) }, { status: 201 });
+    return json({ environment: toEnvironment(environment, null) }, { status: 201 });
   },
 );

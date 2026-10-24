@@ -24,6 +24,17 @@ import {
   secretWriter,
 } from '@/server/secrets-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
+import { emitSecretChanges } from '@/server/change-events';
+import { enforceSecretPolicy, secretPolicyRefusal } from '@/server/policies-service';
+import { noteEnvironmentRead } from '@/server/read-alerts';
+import { graphWriteGuard } from '@/server/references-service';
+import type { ProtectionCrossing } from '@/server/references-service';
+import {
+  crossingRecords,
+  planRefusal,
+  prepareTemplateDeclaration,
+  templateGuard,
+} from '@/server/template-writes';
 
 /**
  * One secret: reveal, new version, delete.
@@ -113,6 +124,8 @@ export const GET = authenticatedRoute<Params>(
         },
       ),
     );
+    // P19 §7: a reveal is a read of the environment, from wherever it came.
+    noteEnvironmentRead(scope, services, principal);
 
     return json({
       secret: {
@@ -190,12 +203,48 @@ export const PATCH = authenticatedRoute<Params>(
       version: current.version,
       valueHmac: current.valueHmac,
       valueType: current.valueType,
+      declaredReferences: current.declaredReferences,
     };
 
     const written = e2ee
       ? await (async () => {
           const body = await parseJsonBody(request, updateClientSecretBody);
+          // P19 §1. The type after this write is the requested one, else the
+          // stored one — so a template rewritten by a client that sends no type
+          // is still a template, and still has to declare its references.
+          const crossings: ProtectionCrossing[] = [];
+          const declaredReferences = await prepareTemplateDeclaration(scope, services, principal, {
+            name: current.name,
+            secretId: current.secretId,
+            effectiveType: body.valueType ?? current.valueType,
+            requested: body.references,
+            // Only a reference this write adds is asked about again.
+            previous: current.declaredReferences,
+            confirmCrossesProtection: body.confirmCrossesProtection,
+            onCrossing: (found) => crossings.push(...found),
+            refused: planRefusal(
+              record,
+              audit(scope.organization.id),
+              'secret.updated',
+              {
+                type: 'secret',
+                id: current.secretId,
+                projectId: scope.project.id,
+                environmentId: scope.environment.id,
+              },
+              'secretReferencing',
+              scope.entitlements.plan,
+              { secretName: current.name },
+            ),
+          });
           const result = await writeClientSecretValue(scope, services, {
+            declaredReferences,
+            // The graph check, inside the write's transaction (review round 1, L8).
+            guard: templateGuard(scope, principal, {
+              name: current.name,
+              secretId: current.secretId,
+              declaredReferences,
+            }),
             writer,
             name: current.name,
             // An append, so the stored id is the one the ciphertext names —
@@ -212,10 +261,23 @@ export const PATCH = authenticatedRoute<Params>(
             ...(body.valueType === undefined ? {} : { valueType: body.valueType }),
             existing,
           });
-          return { result, valueType: body.valueType };
+          return { result, valueType: body.valueType, crossings };
         })()
       : await (async () => {
           const body = await parseJsonBody(request, updateSecretBody);
+          // P19 §8: the server holds this plaintext, so it holds the value
+          // rules too. The name is not new, so the name rule is not asked.
+          await enforceSecretPolicy(
+            scope,
+            services,
+            [{ name: current.name, newName: false, value: body.value }],
+            secretPolicyRefusal(record, audit(scope.organization.id), 'secret.updated', {
+              type: 'secret',
+              id: current.secretId,
+              projectId: scope.project.id,
+              environmentId: scope.environment.id,
+            }),
+          );
           const result = await writeSecretValue(scope, services, {
             writer,
             name: current.name,
@@ -227,7 +289,7 @@ export const PATCH = authenticatedRoute<Params>(
             ...(body.valueType === undefined ? {} : { valueType: body.valueType }),
             existing,
           });
-          return { result, valueType: body.valueType };
+          return { result, valueType: body.valueType, crossings: [] as ProtectionCrossing[] };
         })();
 
     const result = written.result;
@@ -254,7 +316,18 @@ export const PATCH = authenticatedRoute<Params>(
           ...(result.status === 'unchanged' ? { reason: 'unchanged' } : {}),
         },
       ),
+      ...crossingRecords(
+        audit(scope.organization.id),
+        scope,
+        written.crossings.map((crossing) => ({ secretName: result.name, crossing })),
+      ),
     );
+
+    if (result.status !== 'unchanged') {
+      emitSecretChanges(services, scope, principal, [
+        { type: 'secret.updated', name: result.name, version: result.version },
+      ]);
+    }
 
     return json({
       secret: { name: result.name, version: result.version, status: result.status },
@@ -311,7 +384,50 @@ export const PUT = authenticatedRoute<Params>(
       );
     }
 
-    const updated = await updateSecretMetadata(services.db, {
+    // ── Templates (P19 §1) ──
+    // Becoming a template, or stopping being one, changes what the stored value
+    // *means* — its `${…}` turn into references, or back into text — and the
+    // declaration that goes with a template lives on a version. So it is a value
+    // change, made by writing the value, never by a label on this route.
+    const stored = await findSecretByName(
+      services.db,
+      scope.organization.id,
+      scope.environment.id,
+      name,
+    );
+    if (!stored) throw errors.notFound('no live secret with that name in environment');
+    const wasTemplate = stored.valueType === 'template';
+    if (body.valueType !== undefined && (body.valueType === 'template') !== wasTemplate) {
+      throw errors.conflict(
+        wasTemplate
+          ? `${name} is a template. To make it plain text, write its value again with the new type.`
+          : `To make ${name} a template, write its value again with the type template, so its references are declared.`,
+      );
+    }
+    if (renamed) {
+      if (wasTemplate) {
+        throw errors.conflict(
+          'A template cannot be renamed, because what its unqualified references resolve to depends on ' +
+            'where it sits. Create it under the new name and delete this one.',
+        );
+      }
+      // Renaming takes the old name out of every view that saw it — checked
+      // below, inside the rename's own transaction.
+      // P19 §8: a rename introduces a name, so the name rule applies to it.
+      await enforceSecretPolicy(
+        scope,
+        services,
+        [{ name: body.name ?? name, newName: true }],
+        secretPolicyRefusal(record, audit(scope.organization.id), 'secret.updated', {
+          type: 'secret',
+          id: stored.secretId,
+          projectId: scope.project.id,
+          environmentId: scope.environment.id,
+        }),
+      );
+    }
+
+    const patch = {
       orgId: scope.organization.id,
       environmentId: scope.environment.id,
       name,
@@ -321,9 +437,23 @@ export const PUT = authenticatedRoute<Params>(
         ? {}
         : { encNote: body.encNote === null ? null : encodeBlob(body.encNote) }),
       ...(body.valueType === undefined ? {} : { valueType: body.valueType }),
+    };
+    // A rename changes the reference graph — the old name leaves every view —
+    // so it is checked and written in one transaction, under the graph lock,
+    // where a template written concurrently against the old name cannot slip
+    // between the two (review round 1, L8). A note or a type is not, and stays
+    // one statement.
+    const updated = await (
+      renamed
+        ? services.db.transaction(async (tx) => {
+            await graphWriteGuard(scope, principal, { kind: 'removal', name })(tx);
+            return updateSecretMetadata(tx, patch);
+          })
+        : updateSecretMetadata(services.db, patch)
+    )
       // A rename that collides with a live secret comes back from the unique
       // index as `conflict`, and leaves here as a 409 rather than a 500.
-    }).catch(rethrowRepositoryFailure);
+      .catch(rethrowRepositoryFailure);
 
     record(
       audit(scope.organization.id).success(
@@ -350,6 +480,14 @@ export const PUT = authenticatedRoute<Params>(
         },
       ),
     );
+
+    // A rename changes what every reader of the environment finds, so it is an
+    // update to a subscriber; a note or a type is not, and is not announced.
+    if (renamed) {
+      emitSecretChanges(services, scope, principal, [
+        { type: 'secret.updated', name: updated.name, version: stored.version },
+      ]);
+    }
 
     return json({
       secret: {
@@ -388,7 +526,15 @@ export const DELETE = authenticatedRoute<Params>(
     );
     if (!current) throw errors.notFound('no live secret with that name in environment');
 
-    await softDeleteSecret(services.db, scope.organization.id, current.secretId);
+    // P19 §1: a deletion that would leave a template somewhere referring to
+    // nothing is refused here, rather than discovered by the next `xecret run` —
+    // checked inside the deletion's own transaction, under the graph lock, so a
+    // template written against this name at the same moment cannot pass a check
+    // that could not see the deletion, or the other way round (review round 1, L8).
+    await services.db.transaction(async (tx) => {
+      await graphWriteGuard(scope, principal, { kind: 'removal', name: current.name })(tx);
+      await softDeleteSecret(tx, scope.organization.id, current.secretId);
+    });
 
     record(
       audit(scope.organization.id).success(
@@ -407,6 +553,10 @@ export const DELETE = authenticatedRoute<Params>(
         },
       ),
     );
+
+    emitSecretChanges(services, scope, principal, [
+      { type: 'secret.deleted', name: current.name, version: current.version },
+    ]);
 
     return json({ secret: { name: current.name, deleted: true } });
   },

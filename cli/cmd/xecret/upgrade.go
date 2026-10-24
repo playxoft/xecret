@@ -31,9 +31,11 @@ import (
 //     header, and `api/advertised.go` reads it off a reply that had already
 //     arrived. Nobody is asked anything, and a machine that never contacts a
 //     deployment is never nudged. `upgrade_notice.go` holds the rest.
+//
 //  2. **The request goes to GitHub, not to the xecret server.** Releases live
 //     there. Routing it through the deployment would tell a self-hoster's
 //     server about every developer's binary for no benefit.
+//
 //  3. **It does not replace the binary.** Every published archive is
 //     checksummed and cosign-signed, and `scripts/install-cli.sh` verifies the
 //     checksum before unpacking. A self-updater that downloaded over itself

@@ -272,6 +272,87 @@ export type AuditAction =
   | 'environment.created'
   | 'environment.updated'
   | 'environment.deleted'
+  /**
+   * An environment's parent was set, changed or cleared (P19 §1): what its
+   * view inherits from now differs. `parentEnvironmentSlug` names the new
+   * parent — `null` when it was cleared — and `previousParentEnvironmentSlug`
+   * the old one. Its own event rather than an `environment.updated`, because
+   * this one changes which values every reader of the environment receives, and
+   * a reviewer asking "since when did staging read base's secrets?" should not
+   * have to read every rename to find out.
+   */
+  | 'environment.parent_changed'
+  /**
+   * A production environment was linked to one that is not production — made
+   * to inherit from it, or given a template that reads from it — and the person
+   * confirmed it (P19 §1, review round 1). Filed beside the parent change or the
+   * secret write that made the link, against the production environment, with
+   * `sourceProjectSlug` / `sourceEnvironmentSlug` naming the other one and
+   * `reason` saying `inherited` or `referenced`.
+   *
+   * Its own event because such a link is a write path onto production for
+   * everybody who can write the source, and "since when could staging's writers
+   * change what production reads?" should be one filter, not a reading of every
+   * parent change and template write for the classes of both ends.
+   */
+  | 'environment.link_crosses_protection'
+  /**
+   * Values were promoted from one environment into another (P19 §3), as one
+   * atomic write. `sourceEnvironmentSlug` names where they came from;
+   * `createdCount`, `updatedCount` and `deletedCount` say how much moved. Every
+   * secret written also carries its own version row — the history of each value
+   * is unchanged by having arrived in a batch.
+   */
+  | 'environment.promoted'
+  /**
+   * An environment was restored to how it stood at a moment (P19 §4).
+   * `restoredTo` is that moment; the counts say how many secrets were rewritten,
+   * recreated and deleted. Restore writes forward — every rewritten value is a
+   * new version — so this record and the version rows together are the whole
+   * story, and the restore itself can be undone by restoring again.
+   */
+  | 'environment.restored'
+  /**
+   * An environment's own policy changed: plaintext export allowed or refused
+   * (P19 §9), new-location read alerts switched on, off, or back to the default
+   * (P19 §7). `policyName` says which, `enabled` its new state.
+   */
+  | 'environment.policy_changed'
+  /**
+   * An organisation-wide policy changed: the token policy (P19 §6) or the secret
+   * naming and strength policy (P19 §8). `policyName` says which. Recorded
+   * whether it was tightened or loosened — loosening a control is the change a
+   * security review most wants to be able to find.
+   */
+  | 'org.policy_changed'
+  /**
+   * Somebody set or replaced a personal override (P19 §2). The record names
+   * whose and for which secret — never the value, which this server cannot read
+   * — because "this developer's machine is running with a different
+   * DATABASE_URL" is a fact an administrator is entitled to.
+   */
+  | 'override.set'
+  | 'override.removed'
+  /**
+   * A webhook endpoint was configured (P19 §5). `endpointHost` is the host it
+   * delivers to — never the full URL, because a webhook URL routinely carries a
+   * credential in its path or query (a chat integration's incoming-webhook URL
+   * *is* its secret).
+   */
+  | 'webhook.created'
+  | 'webhook.updated'
+  | 'webhook.deleted'
+  /**
+   * A webhook's signing secret was replaced. The secret is never recorded; the
+   * event is what tells a receiver's operator when theirs stopped verifying.
+   */
+  | 'webhook.secret_rotated'
+  /**
+   * A webhook was switched off by the system after sustained delivery failure,
+   * with a `system` actor. The owners and admins are emailed when a mailer
+   * exists; this record is the fact either way.
+   */
+  | 'webhook.disabled'
   | 'secret.created'
   | 'secret.updated'
   | 'secret.deleted'
@@ -823,6 +904,48 @@ export interface AuditMetadata {
    * A closed set, checked against itself by the sanitiser.
    */
   confirmation?: SignInConfirmationKind;
+  /**
+   * An environment's parent after and before a change (P19 §1), by slug. `null`
+   * is a statement — "inherits from nothing" — not an omission, like a cleared
+   * ceiling.
+   */
+  parentEnvironmentSlug?: string | null;
+  previousParentEnvironmentSlug?: string | null;
+  /**
+   * On a `secret.read` of a secret reached through a reference or an inherited
+   * layer (P19 §1): the environment that was actually being read, and — for a
+   * reference — the secret whose template pointed here. "Audit records the
+   * referenced secret as read, with the referring secret as context": without
+   * these, a pull of staging that resolved a reference into production would
+   * leave production's log silent about the read.
+   */
+  contextEnvironmentSlug?: string;
+  referringSecretName?: string;
+  /**
+   * Where a promotion's values came from (P19 §3), or the non-production end of
+   * an `environment.link_crosses_protection`.
+   */
+  sourceEnvironmentSlug?: string;
+  /** The project of `sourceEnvironmentSlug`, where it can be another one (a reference). */
+  sourceProjectSlug?: string;
+  /** How many secrets a promotion or a restore created, rewrote and deleted. Counts, never names. */
+  createdCount?: number;
+  updatedCount?: number;
+  deletedCount?: number;
+  /** The moment a restore returned an environment to, ISO 8601 (P19 §4). */
+  restoredTo?: string;
+  /**
+   * The host a webhook delivers to — never the URL. Paths and query strings of
+   * webhook URLs routinely carry credentials.
+   */
+  endpointHost?: string;
+  /**
+   * Which events a webhook is subscribed to. Event type names from a closed
+   * set, checked against it by the sanitiser.
+   */
+  eventTypes?: readonly string[];
+  /** Which policy an `org.policy_changed` or `environment.policy_changed` was about. */
+  policyName?: 'tokens' | 'secrets' | 'plaintextExport' | 'readAlerts';
 }
 
 /** See `AuditMetadata.signInMethod`. */

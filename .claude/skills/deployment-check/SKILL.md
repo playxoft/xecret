@@ -91,27 +91,33 @@ Production's.
    Then sign in for real, through the deployed site. `check:env` proved the pair
    Phase holds; only a real sign-in proves the key the *Worker* holds as a
    secret, and the redirect URI, belong with the client id.
-9. Confirm the scheduled jobs (P23, P12). They run from the Worker's own Cron
-   Triggers, declared in `apps/web/wrangler.toml` (`[env.production.triggers]`,
-   `crons = ["17 * * * *", "41 3 * * *"]`): hourly the retained-vault purge and
-   then the billing job; nightly the billing reconciler.
+9. Confirm the scheduled jobs (P23, P12, P19). They run from the Worker's own
+   Cron Triggers, declared in `apps/web/wrangler.toml`
+   (`[env.production.triggers]`,
+   `crons = ["17 * * * *", "*/5 * * * *", "41 3 * * *"]`): hourly the
+   retained-vault purge, the sign-in-confirmation prune and then the billing
+   job; every five minutes the webhook delivery sweep; nightly the billing
+   reconciler.
    - Cloudflare dashboard → Workers & Pages → `xecret-production` → Settings →
-     Triggers lists **both** Cron Triggers. The deploy output also prints the
-     schedules it set. No hourly trigger means retained vaults are never
+     Triggers lists **all three** Cron Triggers. The deploy output also prints
+     the schedules it set. No hourly trigger means retained vaults are never
      purged — the seven-day promise breaks silently — and seat-sync retries,
-     overage reports and dated reminders never run.
+     overage reports and dated reminders never run; no five-minute trigger
+     means queued webhook deliveries beyond the inline first attempts never
+     go out.
    - The internal routes must **not** answer the internet:
      ```sh
-     for job in vault-purge billing-hourly billing-daily; do
+     for job in vault-purge prune billing-hourly notifications billing-daily; do
        curl -s -o /dev/null -w "$job %{http_code}\n" -X POST "https://xecret.playxoft.com/api/internal/scheduled/$job"
      done
      ```
      prints `404` for each. Anything else — a `200` above all — is a deployment
      that lets anybody run them, and is rolled back.
    - After the next `:17` past the hour, the Worker's logs show the scheduled
-     run: `POST /api/internal/scheduled/vault-purge` and then
+     run: `POST /api/internal/scheduled/vault-purge`, then `…/prune`, then
      `…/billing-hourly`, each answered `200`, made in-process by the Cron
-     Trigger rather than from outside.
+     Trigger rather than from outside. Any five-minute mark shows
+     `…/notifications` the same way.
 10. If payments are on (P12): the Dodo webhook endpoint
     `https://xecret.playxoft.com/api/billing/webhook` is registered in the Dodo
     mode `DODO_ENVIRONMENT` names, and its delivery log shows recent attempts

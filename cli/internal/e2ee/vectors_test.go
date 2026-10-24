@@ -332,6 +332,125 @@ func TestSealedBoxVectors(t *testing.T) {
 	}
 }
 
+// ── §2.2 type 13 personal overrides ────────────────────────────────────────
+
+func TestOverrideValueVectors(t *testing.T) {
+	for _, v := range byKind(t, "override-value") {
+		var input struct {
+			OrgID           string `json:"orgId"`
+			EnvironmentID   string `json:"environmentId"`
+			UserID          string `json:"userId"`
+			Name            string `json:"name"`
+			OwnerPrivateKey string `json:"ownerPrivateKeyHex"`
+			IvHex           string `json:"ivHex"`
+			Plaintext       string `json:"plaintext"`
+		}
+		var expected struct {
+			Aad            string `json:"aad"`
+			OverrideKeyHex string `json:"overrideKeyHex"`
+			PlaintextHex   string `json:"plaintextHex"`
+			Blob           string `json:"blob"`
+		}
+		unmarshal(t, v.Input, &input, v.ID)
+		unmarshal(t, v.Expected, &expected, v.ID)
+
+		context := OverrideContext{
+			OrgID: input.OrgID, EnvironmentID: input.EnvironmentID,
+			UserID: input.UserID, Name: input.Name,
+		}
+		aad, err := context.aad()
+		if err != nil {
+			t.Fatalf("%s: %v", v.ID, err)
+		}
+		if aad != expected.Aad {
+			t.Errorf("%s: aad\n got %s\nwant %s", v.ID, aad, expected.Aad)
+		}
+
+		ownerPrivateKey := decodeHex(t, input.OwnerPrivateKey, "ownerPrivateKeyHex")
+		key, err := DeriveOverrideKey(ownerPrivateKey)
+		if err != nil {
+			t.Fatalf("%s: %v", v.ID, err)
+		}
+		equalHex(t, key, expected.OverrideKeyHex, v.ID, "override key")
+
+		plaintext := normalizedUTF8(input.Plaintext)
+		equalHex(t, plaintext, expected.PlaintextHex, v.ID, "NFC plaintext")
+
+		sealed, err := encryptGCMWithIV(key, decodeHex(t, input.IvHex, "ivHex"), plaintext, aad)
+		if err != nil {
+			t.Fatalf("%s: %v", v.ID, err)
+		}
+		blob, err := formatGCMBlob(decodeHex(t, input.IvHex, "ivHex"), sealed)
+		if err != nil {
+			t.Fatalf("%s: %v", v.ID, err)
+		}
+		if blob != expected.Blob {
+			t.Errorf("%s: override blob\n got %s\nwant %s", v.ID, blob, expected.Blob)
+		}
+
+		opened, err := OpenOverrideValue(ownerPrivateKey, context, expected.Blob)
+		if err != nil {
+			t.Fatalf("%s: opening the vector blob: %v", v.ID, err)
+		}
+		if opened != string(plaintext) {
+			t.Errorf("%s: opened override does not match", v.ID)
+		}
+
+		moved := context
+		moved.Name = "OTHER"
+		if _, err := OpenOverrideValue(ownerPrivateKey, moved, expected.Blob); err == nil {
+			t.Errorf("%s: an override moved to another name opened", v.ID)
+		}
+	}
+}
+
+// TestOverrideMadeByAnybodyElseIsRefused: the property the construction exists
+// for. The server holds the owner's public key, so a sealed box to it is
+// something the server could make — and it must not open as an override.
+func TestOverrideMadeByAnybodyElseIsRefused(t *testing.T) {
+	owner, err := GenerateEncryptionKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	context := OverrideContext{
+		OrgID:         "018f3b2c-9c1a-7c3d-8e4f-0a1b2c3d4e5f",
+		EnvironmentID: "018f3b2c-9c1a-7c3d-8e4f-1a1b2c3d4e5f",
+		UserID:        "018f3b2c-9c1a-7c3d-8e4f-4a1b2c3d4e5f",
+		Name:          "NODE_OPTIONS",
+	}
+	aad, err := context.aad()
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged, err := SealToPublicKey(owner.PublicKey, []byte("--require /tmp/evil.js"), aad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenOverrideValue(owner.PrivateKey, context, forged); err == nil {
+		t.Fatal("a sealed box to the owner's public key opened as their override")
+	}
+
+	other, err := GenerateEncryptionKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	underAnotherKey, err := SealOverrideValue(other.PrivateKey, context, "--require /tmp/evil.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenOverrideValue(owner.PrivateKey, context, underAnotherKey); err == nil {
+		t.Fatal("an override made under another member's key opened")
+	}
+
+	mine, err := SealOverrideValue(owner.PrivateKey, context, "--max-old-space-size=4096")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened, err := OpenOverrideValue(owner.PrivateKey, context, mine); err != nil || opened != "--max-old-space-size=4096" {
+		t.Fatalf("the owner's own override did not round-trip: %v", err)
+	}
+}
+
 // ── §6 grant signatures ────────────────────────────────────────────────────
 
 func TestGrantSignatureVectors(t *testing.T) {
@@ -660,7 +779,7 @@ func TestEveryVectorKindIsCovered(t *testing.T) {
 	covered := map[string]bool{
 		"argon2id": true, "hkdf": true, "uk-wrap": true, "sealed-box": true,
 		"grant-signature": true, "secret-value": true, "value-hmac": true,
-		"recovery-code": true, "blob-parse": true,
+		"recovery-code": true, "blob-parse": true, "override-value": true,
 	}
 
 	counts := map[string]int{}

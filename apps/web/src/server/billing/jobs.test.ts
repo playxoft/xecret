@@ -44,9 +44,10 @@ const { reconcileSubscriptions, driftBetween } = await import('./reconcile');
 const { DodoApiError } = await import('./client');
 const { billingSetup } = await import('./config');
 const {
-  jobsFor,
+  jobsForCron,
   BILLING_DAILY_PATH,
   BILLING_HOURLY_PATH,
+  PRUNE_PATH,
   VAULT_PURGE_PATH,
   DAILY_CRON,
   HOURLY_CRON,
@@ -171,9 +172,9 @@ async function seedOrg(subscription: Record<string, unknown>, members = 3): Prom
 const subjects = () => mail.sent.map((message) => message.subject);
 
 describe('the schedule', () => {
-  it('runs the reconciler nightly, and the purge then billing hourly', () => {
-    expect(jobsFor(DAILY_CRON)).toEqual([BILLING_DAILY_PATH]);
-    expect(jobsFor(HOURLY_CRON)).toEqual([VAULT_PURGE_PATH, BILLING_HOURLY_PATH]);
+  it('runs the reconciler nightly, and the purge, the pruning, then billing hourly', () => {
+    expect(jobsForCron(DAILY_CRON)).toEqual([BILLING_DAILY_PATH]);
+    expect(jobsForCron(HOURLY_CRON)).toEqual([VAULT_PURGE_PATH, PRUNE_PATH, BILLING_HOURLY_PATH]);
   });
 
   it('answers the internet 404 on both billing job routes, before building anything', async () => {

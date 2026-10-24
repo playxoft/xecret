@@ -8,6 +8,7 @@ import { users } from '../schema/identity';
 import { environments, projects } from '../schema/resources';
 import { invitations, orgMemberRemovals, orgMembers, organizations } from '../schema/tenancy';
 import { queueBilledSeatSync } from './billing';
+import { deleteOverridesForMember } from './overrides';
 import { RepositoryError, clampPageSize } from './shared';
 import type { Executor } from './shared';
 
@@ -787,6 +788,12 @@ export async function removeMember(
     // than they held. Withdrawn here, under the organisation lock
     // `lockForChange` took; the way back is a fresh invitation.
     await revokeOpenInvitationsFor(tx, { orgId: params.orgId, userId: member.userId });
+
+    // Their personal overrides here (P19 §2) go with their access. Nobody else
+    // could ever read them, but rows a removed member can no longer reach are
+    // not rows worth keeping, and a re-invited member starts from the shared
+    // environment rather than from a local value they set a year ago.
+    await deleteOverridesForMember(tx, params.orgId, member.userId);
 
     // A seat was freed: the seat-sync debt commits with the removal, as
     // `addMember` explains.

@@ -3,7 +3,7 @@ title: The audit log
 navTitle: Audit log
 description: Every event xecret records, what each one means, how to filter the log, and how to use it during an incident when a credential has leaked.
 keywords: [secret audit log, who read secret, security audit trail, incident response, compliance logging]
-updated: 2026-10-12
+updated: 2026-10-20
 ---
 
 Every mutation, every decryption, and **every denial** is recorded. A system
@@ -98,11 +98,33 @@ becomes a denial-of-service surface against itself.
 `secret.revealed` is the one to watch. It means a person or token asked for one
 specific value, which is what curiosity and exfiltration both look like.
 
+A pull that reads beyond its own environment — values it [inherits, or a
+template refers to](../features/references.md) — writes a `secret.read` against
+**each** environment it read, naming the environment being pulled as context and,
+for a referenced secret, the secret that referred to it. Production's own log
+therefore shows a read of production that a template in staging caused.
+
 ### Organisations, projects, environments
 
 `org.created` · `org.updated` · `org.deleted` · `project.created` ·
 `project.updated` · `project.deleted` · `environment.created` ·
 `environment.updated` · `environment.deleted`
+
+| Action | Recorded when |
+|---|---|
+| `environment.parent_changed` | An environment started or stopped inheriting from another, naming both parents |
+| `environment.link_crosses_protection` | A person confirmed a [production environment reading from one that is not](../features/references.md#production-reading-from-elsewhere) — by inheriting from it (reason `inherited`) or through a template (reason `referenced`, naming the secret). Filed against production, naming the source; the inheritance change or the secret write is recorded beside it |
+| `environment.promoted` | A [promotion](../features/promotion-and-restore.md#promotion) landed, with counts and the source; each secret it wrote has its own `secret.created`, `secret.updated` or `secret.deleted`, with reason `promoted` |
+| `environment.restored` | A [point-in-time restore](../features/promotion-and-restore.md#point-in-time-restore) landed, with the instant and counts, and per-secret records with reason `restored`. Its preview is a `secret.read` with reason `restore-preview` |
+| `environment.policy_changed` | An environment's plaintext-export or read-alert switch changed |
+| `org.policy_changed` | The token policy or the secret policy changed |
+| `override.set` `override.removed` | A member set or removed one of their own [personal overrides](../features/overrides.md) — the name, never the value |
+| `webhook.created` `webhook.updated` `webhook.deleted` `webhook.secret_rotated` | A [webhook](../features/webhooks.md) endpoint changed, with its host and events — never its full URL, whose path may hold a credential |
+| `webhook.disabled` | An endpoint was switched off by the system after sustained failure |
+
+A refusal by one of your own policies is an `error` with reason `policyRefused`
+and the policy's name; a refusal by the plan is `quotaExceeded` with the feature
+or limit that refused it.
 
 ### Single sign-on
 

@@ -136,6 +136,9 @@ export {
 export type { DevicePinContext } from './pin-wrap';
 
 export { computeValueHmac, decryptSecret, encryptSecret, MAX_SECRET_BLOB_LENGTH } from './secret';
+
+export { MAX_OVERRIDE_BLOB_LENGTH, openOverrideValue, sealOverrideValue } from './override';
+export type { OverrideContext } from './override';
 export type { SecretContext, SecretField } from './secret';
 
 /**
@@ -170,6 +173,7 @@ export {
   edkGrantAad,
   ehkGrantAad,
   isAadV2,
+  overrideValueAad,
   privateKeyEncAad,
   privateKeySignAad,
   secretNoteAad,

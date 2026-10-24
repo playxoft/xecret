@@ -1,0 +1,310 @@
+{
+  "description": "Cross-implementation fixtures for the P19 secret-policy value rules. Read by packages/core/src/policy/fixtures/fixtures.test.ts and by the Go CLI. The value rules run in every client that holds a plaintext. A value case's optional valueType is the type the secret will hold; 'template' reads only the literal text, and skips the entropy rule unless it parses to no reference at all (review round 2, F3). namePatterns is different: the name rule itself stays the server's alone (TypeScript only); these fixtures are read by cli/internal/policy's own LongestRepeatRun/NamePatternIsSafe port purely for cross-language parity (review round 2, F2) — Go's RE2 is immune to the backtracking this guards against, but a pattern the server refuses as unsafe should be one this package's own tests agree is unsafe too.",
+  "namePatterns": [
+    {
+      "name": "a group with no quantifier of its own, whose content repeats, three times in a row",
+      "pattern": "(?:[A-Z_]*)(?:[A-Z_]*)(?:[A-Z_]*)",
+      "safe": false
+    },
+    {
+      "name": "a zero-width escape between three repeated parts",
+      "pattern": "[A-Z_]*\\B[A-Z_]*\\B[A-Z_]*",
+      "safe": false
+    },
+    {
+      "name": "an empty group between three repeated parts",
+      "pattern": "A*()A*()A*",
+      "safe": false
+    },
+    {
+      "name": "an empty lookaround between three repeated parts",
+      "pattern": "A*(?=)A*(?=)A*",
+      "safe": false
+    },
+    {
+      "name": "two of the same bypass is still only two",
+      "pattern": "A*()A*",
+      "safe": true
+    },
+    {
+      "name": "an ordinary pattern with no repeated group",
+      "pattern": "[A-Z][A-Z0-9_]*",
+      "safe": true
+    }
+  ],
+  "entropy": [
+    { "value": "", "bits": 0 },
+    { "value": "aaaaaaaaaaaaaaaa", "bits": 0 },
+    { "value": "ab", "bits": 2 },
+    { "value": "password1", "bits": 27 },
+    { "value": "q8Z2xL0vR9sT4bW7nY1cK6mP3dF5gH0j", "bits": 158 },
+    { "value": "🔑🔑", "bits": 0 },
+    { "value": "café", "bits": 8 }
+  ],
+  "values": [
+    {
+      "name": "disabled policy asks nothing",
+      "policy": {
+        "enabled": false,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["changeme"]
+      },
+      "secretName": "API_KEY",
+      "value": "changeme",
+      "isProduction": true,
+      "violations": []
+    },
+    {
+      "name": "production scope skips other environments",
+      "policy": {
+        "enabled": true,
+        "scope": "production",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["changeme"]
+      },
+      "secretName": "API_KEY",
+      "value": "changeme",
+      "isProduction": false,
+      "violations": []
+    },
+    {
+      "name": "entropy applies only to matching names, case-insensitively",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": ["token"],
+        "forbiddenSubstrings": []
+      },
+      "secretName": "PORT",
+      "value": "5432",
+      "isProduction": false,
+      "violations": []
+    },
+    {
+      "name": "a short credential fails entropy",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": ["TOKEN"],
+        "forbiddenSubstrings": []
+      },
+      "secretName": "github_token",
+      "value": "short",
+      "isProduction": false,
+      "violations": ["minValueEntropyBits"]
+    },
+    {
+      "name": "an empty list applies entropy to every name",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": []
+      },
+      "secretName": "PORT",
+      "value": "5432",
+      "isProduction": false,
+      "violations": ["minValueEntropyBits"]
+    },
+    {
+      "name": "a forbidden substring in any case",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": null,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["ChangeMe"]
+      },
+      "secretName": "NOTE",
+      "value": "please CHANGEME soon",
+      "isProduction": false,
+      "violations": ["forbiddenSubstrings"]
+    },
+    {
+      "name": "both rules at once, entropy first",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": ["PASSWORD"],
+        "forbiddenSubstrings": ["password"]
+      },
+      "secretName": "DB_PASSWORD",
+      "value": "password",
+      "isProduction": true,
+      "violations": ["minValueEntropyBits", "forbiddenSubstrings"]
+    },
+    {
+      "name": "a long random value passes",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["changeme"]
+      },
+      "secretName": "API_TOKEN",
+      "value": "q8Z2xL0vR9sT4bW7nY1cK6mP3dF5gH0j",
+      "isProduction": true,
+      "violations": []
+    },
+    {
+      "name": "a template is not held to the entropy rule",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 512,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": []
+      },
+      "secretName": "DB_PASSWORD_URL",
+      "value": "postgres://${DB_USER}:${DB_PASSWORD}@db",
+      "valueType": "template",
+      "isProduction": true,
+      "violations": []
+    },
+    {
+      "name": "the same text as a plain value is",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 512,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": []
+      },
+      "secretName": "DB_PASSWORD_URL",
+      "value": "postgres://${DB_USER}:${DB_PASSWORD}@db",
+      "valueType": "string",
+      "isProduction": true,
+      "violations": ["minValueEntropyBits"]
+    },
+    {
+      "name": "a forbidden word in a reference's name is not in a template's text",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": null,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["password"]
+      },
+      "secretName": "DB_URL",
+      "value": "postgres://app:${DB_PASSWORD}@db",
+      "valueType": "template",
+      "isProduction": false,
+      "violations": []
+    },
+    {
+      "name": "a forbidden word in a template's literal text is",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": null,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["changeme"]
+      },
+      "secretName": "DB_URL",
+      "value": "postgres://app:ChangeMe@${DB_HOST}",
+      "valueType": "template",
+      "isProduction": false,
+      "violations": ["forbiddenSubstrings"]
+    },
+    {
+      "name": "a word is not assembled across a reference",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": null,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["password"]
+      },
+      "secretName": "GREETING",
+      "value": "pass${MIDDLE}word",
+      "valueType": "template",
+      "isProduction": false,
+      "violations": []
+    },
+    {
+      "name": "an escaped reference is literal text",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": null,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["${password}"]
+      },
+      "secretName": "DOC",
+      "value": "write $${password} for a literal",
+      "valueType": "template",
+      "isProduction": false,
+      "violations": ["forbiddenSubstrings"]
+    },
+    {
+      "name": "a template that does not parse is checked whole",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": ["password"]
+      },
+      "secretName": "BROKEN",
+      "value": "${DB_PASSWORD",
+      "valueType": "template",
+      "isProduction": false,
+      "violations": ["forbiddenSubstrings"]
+    },
+    {
+      "name": "a template that parses to no reference at all is held to the entropy rule (review round 2, F3)",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": []
+      },
+      "secretName": "PLAIN_TEXT",
+      "value": "short",
+      "valueType": "template",
+      "isProduction": true,
+      "violations": ["minValueEntropyBits"]
+    },
+    {
+      "name": "a reference-free template that is long and random enough passes",
+      "policy": {
+        "enabled": true,
+        "scope": "all",
+        "namePattern": null,
+        "minValueEntropyBits": 64,
+        "entropyAppliesTo": [],
+        "forbiddenSubstrings": []
+      },
+      "secretName": "PLAIN_TEXT",
+      "value": "q8Z2xL0vR9sT4bW7nY1cK6mP3dF5gH0j",
+      "valueType": "template",
+      "isProduction": true,
+      "violations": []
+    }
+  ]
+}

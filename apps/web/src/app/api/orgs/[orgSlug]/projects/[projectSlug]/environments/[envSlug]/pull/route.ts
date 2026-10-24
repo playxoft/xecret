@@ -1,8 +1,14 @@
 import { countSecretFetch } from '@/server/billing/usage';
 import { json, parseQuery } from '@/server/http';
+import { noteEnvironmentRead } from '@/server/read-alerts';
 import { authenticatedRoute } from '@/server/route';
 import { clientEnvironmentBundle } from '@/server/env-bundle';
-import { documentQuery } from '@/server/schemas/secrets';
+import {
+  assertPlaintextExportAllowed,
+  PLAINTEXT_EXPORT_HEADER,
+  plaintextExportOf,
+} from '@/server/export-policy';
+import { documentQuery, pullQuery } from '@/server/schemas/secrets';
 import {
   auditSource,
   authorizeSecretAction,
@@ -86,10 +92,17 @@ export const GET = authenticatedRoute<Params>(
     // told their request succeeded when it did not. Formatting moves to the
     // client with the decryption, because they are the same act.
     if (scope.environment.encryptionMode === 'e2ee') {
-      const bundle = await clientEnvironmentBundle(scope, services, principal);
+      const { bundle: requested, layers } = parseQuery(request, pullQuery);
+      const { bundle, layerReads, referencedReads } = await clientEnvironmentBundle(
+        scope,
+        services,
+        principal,
+        { resolved: requested === '2', ownOnly: layers === 'none' },
+      );
 
+      const builder = audit(scope.organization.id);
       record(
-        audit(scope.organization.id).success(
+        builder.success(
           'secret.read',
           {
             type: 'environment',
@@ -104,6 +117,62 @@ export const GET = authenticatedRoute<Params>(
             source: auditSource(principal),
           },
         ),
+        // ── The reads a resolved pull made beyond this environment (P19 §1) ──
+        // Filed against the environment that was read, with the one being pulled
+        // as context — so production's own log shows a read that a template in
+        // staging caused, rather than staging's log alone recording it.
+        ...layerReads.map((layer) =>
+          builder.success(
+            'secret.read',
+            {
+              type: 'environment',
+              id: layer.environmentId,
+              projectId: layer.projectId,
+              environmentId: layer.environmentId,
+            },
+            {
+              secretCount: layer.secretCount,
+              projectSlug: layer.projectSlug,
+              environmentSlug: layer.environmentSlug,
+              contextEnvironmentSlug: scope.environment.slug,
+              reason: layer.kind,
+              source: auditSource(principal),
+            },
+          ),
+        ),
+        ...referencedReads.map((read) =>
+          builder.success(
+            'secret.read',
+            {
+              type: 'secret',
+              id: read.secretId,
+              projectId: read.projectId,
+              environmentId: read.environmentId,
+            },
+            {
+              secretName: read.name,
+              referringSecretName: read.referringSecretName,
+              contextEnvironmentSlug: scope.environment.slug,
+              reason: 'referenced',
+              source: auditSource(principal),
+            },
+          ),
+        ),
+      );
+
+      // P19 §7, after the response: a read is never slower for being noted.
+      // Every environment the pull delivered values from is noted under its own
+      // alert setting — production's values read through a staging template are
+      // a read of production.
+      noteEnvironmentRead(
+        scope,
+        services,
+        principal,
+        layerReads.map((layer) => ({
+          id: layer.environmentId,
+          isProduction: layer.isProduction,
+          readAlerts: layer.readAlerts,
+        })),
       );
 
       // One fetch towards the plan's allowance (P12) — a map increment; the
@@ -113,6 +182,33 @@ export const GET = authenticatedRoute<Params>(
     }
 
     const { format } = parseQuery(request, documentQuery);
+
+    // ── Plaintext export disabled by policy (P19 §9) ──
+    // A document format exists to be written to a file, so it is refused here,
+    // before a value is decrypted. JSON is not: it is what `xecret run` reads,
+    // and the server cannot tell that from `xecret pull --format json` — so it
+    // is served, marked with the policy, and the CLI refuses the pull itself.
+    if (format !== 'json' && scope.environment.plaintextExportDisabled) {
+      record(
+        audit(scope.organization.id).error(
+          'secret.read',
+          {
+            type: 'environment',
+            id: scope.environment.id,
+            projectId: scope.project.id,
+            environmentId: scope.environment.id,
+          },
+          'policyRefused',
+          {
+            policyName: 'plaintextExport',
+            projectSlug: scope.project.slug,
+            environmentSlug: scope.environment.slug,
+            source: auditSource(principal),
+          },
+        ),
+      );
+      assertPlaintextExportAllowed(scope);
+    }
 
     const secrets = await decryptEnvironment(scope, services);
 
@@ -140,6 +236,8 @@ export const GET = authenticatedRoute<Params>(
       ),
     );
 
+    noteEnvironmentRead(scope, services, principal);
+
     // One fetch towards the plan's allowance (P12) — a map increment; the
     // write happens later, from `waitUntil`, and can never fail this read.
     countSecretFetch(services, scope.organization.id);
@@ -157,6 +255,7 @@ export const GET = authenticatedRoute<Params>(
         // The body is entirely user-supplied content served from our own origin.
         // Without this, a browser that content-sniffs it as HTML would run it.
         'x-content-type-options': 'nosniff',
+        [PLAINTEXT_EXPORT_HEADER]: plaintextExportOf(scope.environment),
       },
     });
   },

@@ -116,23 +116,30 @@ ZEPTOMAIL_API_URL = "https://api.zeptomail.com/v1.1/email"
 #   DODO_METER_SECRET_FETCH = "secret_fetch_kilo"
 #   DODO_ADDON_SAML = "adn_…"            (optional)
 
-# The scheduled jobs (`apps/web/worker.ts`, `src/server/scheduled.ts`):
+# The scheduled jobs (`apps/web/worker.ts`, `src/server/scheduled.ts`, which
+# dispatches on the expression):
 #
 #   17 * * * *   hourly — deletes reset vaults whose seven-day retention has
-#                ended (P23, migration 0020), then the billing job (P12):
-#                ended cancellations, seat-sync retries, the overage report to
-#                Dodo, the dated reminder emails. The billing job does nothing
-#                on a deployment without the DODO_* variables.
+#                ended (P23, migration 0020); prunes finished webhook
+#                deliveries past thirty days and read sightings unseen for 180
+#                (P19 §5, §7); then the billing job (P12): ended cancellations,
+#                seat-sync retries, the overage report to Dodo, the dated
+#                reminder emails. The billing job does nothing on a deployment
+#                without the DODO_* variables.
+#   */5 * * * *  every five minutes — webhook retries that are due, and the
+#                read-alert digests whose hour has passed (P19 §5, §7). A retry
+#                delay of "a minute" therefore means "on the next run".
 #   41 3 * * *   nightly — the billing reconciler (P12): every subscription
 #                compared with Dodo, drift reported, nothing corrected.
 #
 # Declared here, under the environment, rather than at the top level, so that
 # local development and the staging stub — which has no database — never run
 # them. Correctness does not hang on their timing: every read of a retained
-# vault already ignores one past its window, and no secret fetch ever waits on
-# billing. Both strings are matched exactly by `worker.ts`; change them there too.
+# vault already ignores one past its window, a late retry or digest is late,
+# never lost, and no secret fetch ever waits on billing. All three strings are
+# matched exactly by `src/server/scheduled.ts`; change them there too.
 [env.production.triggers]
-crons = ["17 * * * *", "41 3 * * *"]
+crons = ["17 * * * *", "*/5 * * * *", "41 3 * * *"]
 
 # ADR 0002 — the Root KEK map. Sourced from Phase.dev, pushed to the
 # account's default Secrets Store by scripts/deploy-bootstrap.sh.

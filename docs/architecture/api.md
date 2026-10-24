@@ -1238,6 +1238,54 @@ holds every value — it decrypted them to show them — so the download is one 
 with `@xecret/core/format` compiled for the browser. The `client_side_only` marker is stable so
 a client can branch on it rather than on prose.
 
+### Paid secret features (P19)
+
+Every one of these is end-to-end-encrypted-only (`409 e2ee_required:` otherwise), and every plan
+gate is on the act that turns something **on** — never on a read, and never on undoing it. A plan
+refusal is `403 plan_limit` with `upgradeTo`, audited as `error` / `quotaExceeded` with the
+feature's name in `limitName`; a refusal by the organisation's **own** policy is audited as
+`error` / `policyRefused` with `policyName`.
+
+| Method | Path | Notes |
+|---|---|---|
+| `PUT` | `…/environments/{envSlug}/parent` | `{ parent: slug \| null }`. `environment.update` here and `secret.read` on the parent. Under `lockReferenceGraph` (a per-organisation transaction-scoped advisory lock) and then `lockProjectEnvironments`, so two re-parentings — or a re-parenting and a template written in another project — cannot together form a loop. Every graph check (template writes, a deletion or rename of a secret, a promotion, a point-in-time restore, an environment or project deletion) runs the same way: inside the write's own transaction, after that lock. Refused when an active service token is pinned here (it could not read the parent). A production environment given a parent that is not production needs `confirmCrossesProtection: true`; without it, `409 link_crosses_protection:` naming the source and who can write it; with it, `environment.link_crosses_protection` is filed beside `environment.parent_changed`. The same flag, refusal and record apply to a template write (create, update, restore, promotion, point-in-time restore) whose new references reach from production into an environment that is not. |
+| `GET` | `…/pull?bundle=2` | Version 2 bundle: `environment`, `layers` (every ancestor whole; referenced environments only the referenced secrets; context-only links with `keys: null`), per-layer keys, `template` + `references` on template secrets, and `policy.plaintextExport` — the **effective** policy, `disabled` when the environment or any layer that contributes a value disables export (a parent, or an environment a template reaches), with each environment's own answer on `environment.policy` and every layer's `policy` so a client can name the one that refused. An environment needing resolution answers a client that omits `bundle=2` with `409 resolution_unsupported:`. Each extra layer read is a `secret.read` filed against **that** environment, with `contextEnvironmentSlug`; each referenced secret is its own `secret.read` naming `referringSecretName`. `&layers=none` (the dashboard) is the same shape with `layers: []`: no plan, no other environment authorised, read or audited — a reader of staging sees staging's own values even when a staging template reaches somewhere they cannot. |
+| `GET` `PUT` `DELETE` | `…/overrides[/{name}]` | Owner-scoped; a service token is refused every route. `xk2.gcm.` blobs under the owner's override key (spec §2.2 type 13), bounded at `MAX_SECRET_BLOB_LENGTH`. `PUT` needs `personalOverrides`; at most 100 per person per environment. `override.set` / `override.removed`. Removing a member deletes theirs in the same transaction. |
+| `POST` | `…/environments/{target}/promote` | `{ source, writes, removals, dryRun }`. A person only. `secret.read` on the source; `secret.create` + `secret.update` (+ `secret.delete` with removals) on the target. Writes are held to the source's names and types; removals to names the target holds and the source does not; the target's secret policy applies to new names; the batch's templates are checked together (`assertEnvironmentChanges`). One transaction. `environment.promoted` with counts, plus per-secret records `reason: promoted`. |
+| `GET` `POST` | `…/environments/{envSlug}/restore-point` | Preview `?at=`, apply `{ at, writes, dryRun }`. `loadEnvironmentSecretsAt` decides the instant; the apply re-plans from the database and holds each entry to its item — row, version, and the instant's `value_hmac`. Writes forward: new versions, soft deletes, and a re-creation (new row) for a secret deleted since, never an undelete. Grants on retired EDKs are served so old versions open; versions under keys the caller lacks are skipped and listed. Window `limits.pitrDays`, refused with `cheapestPlanWithLimit('pitrDays', age)`. The preview is a `secret.read` (`reason: restore-preview`); the apply is `environment.restored`. |
+| `PATCH` | `…/environments/{envSlug}/policy` | `{ plaintextExport?, readAlerts? }`, `environment.update`. Disabling export needs `disableEnvExport`; turning alerts on where they default off needs `newIpReadAlerts`. `environment.policy_changed`. |
+| `GET` | `…/environments/{envSlug}/read-sightings` | `environment.update`. Not plan-gated. |
+| `GET` `PATCH` | `/api/orgs/{orgSlug}/policies` | Read: any member and any service token (clients need the value rules). Write: `org.update` from a session; tightening tokens needs `tokenIpAllowlist`, any change leaving the secret policy on needs `secretPolicy`. `org.policy_changed`. |
+| `GET` `POST` `PATCH` `DELETE` | `/api/orgs/{orgSlug}/webhooks[/{id}[/rotate-secret\|/test\|/deliveries]]` | `org.update`, a person only. Creation behind `requireCapacity('webhooks', count)`. The `whsec_` secret is sealed under the org master key (`sealOrgValue`, AAD `xecret.aad.v1.org-value\|webhook-secret\|…`) and returned once. |
+
+**Token policy** is enforced at minting (`POST …/tokens/service` refuses with field errors
+`ipAllowlist` / `expiresAt`) and at the CLI exchange (`POST /api/cli/token` issues the token with
+the capped expiry), never at use; the service-token listing carries `meetsPolicy`. **Secret
+policy**: the name rule is enforced on every write that introduces a name; the value rules in
+`server` mode only, because only there does the server hold the plaintext — the clients apply
+them for `e2ee`. **Plaintext export disabled**: `server`-mode `…/export` and document-format
+`…/pull` are refused with `403 export_disabled:` before anything is decrypted; the JSON pull is
+served with `x-xecret-plaintext-export`, since it is what `xecret run` reads.
+
+**Webhook emission** (`change-events.ts` → `emitWebhookEvents`) and **read sightings**
+(`noteEnvironmentRead`) both run after the response, never throw into the write or read that
+caused them, and cost nothing — not one query — on a plan without the feature. A plain pull is
+unchanged at 15 statements; a production pull on a plan with alerts adds one, after the response;
+a pull that resolves a parent or a cross-environment reference costs six more, constant in the
+number of secrets — and notes a sighting, after the response, for each environment it delivered
+values from whose own alert setting is on (production's values read through a staging template
+are a read of production).
+
+A batch write (import, promotion, point-in-time restore) emits **one event per kind of change**
+— `secret.created`, `secret.updated`, `secret.deleted` — listing its secrets in `data.secrets`
+with `data.counts`, so its delivery count is bounded by the number of endpoints, not by the
+number of secrets. The five-minute sweep (`sweepWebhookDeliveries`) claims in batches of 25,
+taken **in turns across organisations** (`claimDueDeliveries`: each organisation's oldest due
+delivery before any organisation's second, over a `(org_id, next_attempt_at)` partial index), and
+keeps claiming for up to 20 seconds; what a claim still holds when the time is up is handed back
+due (`releaseDeliveries`), and a claim a dead sender left is taken back first
+(`releaseStaleClaims`).
+
 ### Tokens
 
 | Method | Path | Notes |

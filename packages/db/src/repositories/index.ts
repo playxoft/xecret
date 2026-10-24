@@ -274,6 +274,8 @@ export {
   addEnvKeyGrants,
   deleteGrantsForUser,
   canClaimInvitationGrants,
+  findActiveGrantsForPrincipal,
+  findGrantsForPrincipalOnKeys,
   findGrantForPrincipal,
   findPendingInvitationForGrant,
   initializeEnvironmentKeys,
@@ -339,6 +341,8 @@ export {
   listSecretVersions,
   listSecrets,
   loadEnvironmentSecrets,
+  loadEnvironmentSecretsAt,
+  loadSecretsForEnvironments,
   restoreSecret,
   softDeleteSecret,
   updateSecretMetadata,
@@ -518,3 +522,86 @@ export type {
   ProviderSubscriptionPatch,
   SeatSyncRecord,
 } from './billing';
+
+export {
+  countUsableServiceTokens,
+  findEnvironmentsBySlugs,
+  findProjectsReferencingEnvironments,
+  listChildEnvironments,
+  listProductionChildEnvironments,
+  listProductionEnvironmentsReferencing,
+  loadEnvironmentsByIds,
+  loadEnvironmentsOfProjects,
+  listUserEmails,
+  loadSecretGraphMetadata,
+  lockProjectEnvironments,
+  lockReferenceGraph,
+  setEnvironmentParent,
+} from './references';
+export type { GraphEnvironmentRecord, GraphSecretRecord } from './references';
+
+export {
+  deleteOverride,
+  deleteOverridesForMember,
+  listOverrides,
+  MAX_OVERRIDES_PER_ENVIRONMENT,
+  upsertOverride,
+} from './overrides';
+export type { OverrideOwner, OverrideRecord } from './overrides';
+
+export {
+  abandonDelivery,
+  claimDeliveries,
+  claimDueDeliveries,
+  countWebhooks,
+  createWebhook,
+  deleteWebhook,
+  disableWebhookForFailures,
+  ENQUEUE_CHUNK,
+  enqueueDeliveries,
+  findWebhook,
+  findWebhookWithSecret,
+  listDeliveries,
+  listEnabledWebhooksForEvent,
+  listEnabledWebhooksForEvents,
+  listWebhooks,
+  loadOrgKeyForSealing,
+  loadOrgKeyVersion,
+  pruneWebhookDeliveries,
+  recordDeliveryAttempt,
+  releaseDeliveries,
+  releaseStaleClaims,
+  STALE_CLAIM_MS,
+  updateWebhook,
+} from './webhooks';
+export type {
+  ClaimedDelivery,
+  CreateWebhookParams,
+  DeliveryOutcome,
+  DeliveryRecord,
+  WebhookPatch,
+  WebhookRecord,
+  WebhookSecretMaterial,
+  WebhookWithSecret,
+} from './webhooks';
+
+export {
+  claimReadAlertDigest,
+  listAdministratorAddresses,
+  listOrgsOwedReadAlerts,
+  listReadSightings,
+  loadOrgPolicies,
+  pruneReadSightings,
+  recordReadSighting,
+  saveSecretPolicy,
+  saveTokenPolicy,
+  takeOwedSightings,
+  updateEnvironmentPolicy,
+} from './policies';
+export type {
+  EnvironmentPolicyPatch,
+  OrgPolicies,
+  OwedSighting,
+  SightingParams,
+  SightingRecord,
+} from './policies';

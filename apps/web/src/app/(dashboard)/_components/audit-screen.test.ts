@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AuditEvent } from '@/components/tokens/types';
-import { describeEvent } from './audit-screen';
+import { AUDIT_FILTER_ACTIONS, describeEvent } from './audit-screen';
 
 /**
  * The one line of context an audit row carries. Only the custom-role cases:
@@ -26,7 +26,83 @@ function event(action: string, metadata: Record<string, unknown>): AuditEvent {
   };
 }
 
+describe('the action filter (review round 1, L11)', () => {
+  it('offers every action the P19 features write, and secret.rotated', () => {
+    const filterable = new Set<string>(AUDIT_FILTER_ACTIONS);
+    for (const action of [
+      'secret.rotated',
+      'environment.parent_changed',
+      'environment.link_crosses_protection',
+      'environment.promoted',
+      'environment.restored',
+      'environment.policy_changed',
+      'org.policy_changed',
+      'override.set',
+      'override.removed',
+      'webhook.created',
+      'webhook.updated',
+      'webhook.deleted',
+      'webhook.secret_rotated',
+      'webhook.disabled',
+    ]) {
+      expect(filterable.has(action), action).toBe(true);
+    }
+    expect(filterable.size).toBe(AUDIT_FILTER_ACTIONS.length);
+  });
+});
+
 describe('describeEvent', () => {
+  it('reads the P19 records (review round 1, L11)', () => {
+    expect(
+      describeEvent(
+        event('environment.parent_changed', {
+          projectSlug: 'api',
+          environmentSlug: 'staging',
+          parentEnvironmentSlug: 'base',
+          previousParentEnvironmentSlug: null,
+        }),
+      ),
+    ).toBe('api/staging · inherits from nothing → base');
+    expect(
+      describeEvent(
+        event('environment.link_crosses_protection', {
+          projectSlug: 'api',
+          environmentSlug: 'production',
+          sourceProjectSlug: 'api',
+          sourceEnvironmentSlug: 'staging',
+          secretName: 'DB_URL',
+          reason: 'referenced',
+        }),
+      ),
+    ).toBe('DB_URL · api/production · a template reads from api/staging, which is not production');
+    expect(
+      describeEvent(
+        event('environment.promoted', {
+          projectSlug: 'api',
+          environmentSlug: 'production',
+          sourceEnvironmentSlug: 'staging',
+          createdCount: 2,
+          updatedCount: 3,
+          deletedCount: 0,
+        }),
+      ),
+    ).toBe('api/production · from staging · 2 created, 3 updated, 0 deleted');
+    expect(
+      describeEvent(event('environment.restored', { restoredTo: '2026-10-19T14:30:00.000Z' })),
+    ).toBe('to 2026-10-19T14:30:00.000Z');
+    expect(describeEvent(event('org.policy_changed', { policyName: 'secrets' }))).toBe(
+      'secret naming and strength policy',
+    );
+    expect(
+      describeEvent(
+        event('webhook.created', {
+          endpointHost: 'hooks.example.com',
+          eventTypes: ['secret.updated', 'environment.promoted'],
+        }),
+      ),
+    ).toBe('hooks.example.com · secret.updated, environment.promoted');
+  });
+
   it('says how an owner got past their organisation’s single sign-on (review C3)', () => {
     expect(describeEvent(event('auth.sso_exemption_used', { signInMethod: 'password' }))).toBe(
       'signed in by password',
