@@ -218,6 +218,7 @@ beforeEach(() => {
   envKeys.environmentKeyState.mockResolvedValue({
     encryptionMode: 'e2ee',
     environmentId: ENVIRONMENT_ID,
+    isProduction: false,
     activeEdk: null,
     myGrant: null,
     ehkExists: false,

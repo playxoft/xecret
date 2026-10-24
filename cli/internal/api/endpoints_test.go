@@ -282,7 +282,7 @@ func TestClientUpdateSendsTheVersionItSealedFor(t *testing.T) {
 
 	_, err := New(server.URL, "xct_live_abc", "test-agent").UpdateClientSecret(
 		context.Background(), "acme", "web", "production", "API_KEY",
-		ClientValue{Ciphertext: "xk2.gcm.AAAA", ClientAlgorithm: "xk2.gcm"}, 5, "")
+		ClientValue{Ciphertext: "xk2.gcm.AAAA", ClientAlgorithm: "xk2.gcm"}, 5, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestClientRestoreSendsBothVersions(t *testing.T) {
 
 	_, err := New(server.URL, "xct_live_abc", "test-agent").RestoreClientSecret(
 		context.Background(), "acme", "web", "production", "API_KEY", 3,
-		ClientValue{Ciphertext: "xk2.gcm.AAAA", ClientAlgorithm: "xk2.gcm"}, 8)
+		ClientValue{Ciphertext: "xk2.gcm.AAAA", ClientAlgorithm: "xk2.gcm"}, 8, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -49,6 +49,7 @@ function sessionPrincipal(
     vaultUnlockedAt: null,
     lastSeenAt: new Date(),
     vaultAutoLockMinutes: 15,
+    signIn: { method: 'password', ssoWorkosOrgId: null },
     ...overrides,
   };
 }
@@ -114,7 +115,14 @@ describe('latching a refused lock', () => {
     const { services, deferred } = fakeServices();
 
     latchVaultLock(
-      { kind: 'cliToken', tokenId: uuidv7(), tokenName: 'ci', userId: uuidv7(), orgId: uuidv7() },
+      {
+        kind: 'cliToken',
+        tokenId: uuidv7(),
+        tokenName: 'ci',
+        userId: uuidv7(),
+        orgId: uuidv7(),
+        signIn: { method: null, ssoWorkosOrgId: null },
+      },
       services,
     );
     latchVaultLock(

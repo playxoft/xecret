@@ -11,7 +11,7 @@ import {
   readModePins,
   recordModePin,
 } from '@/components/envkeys';
-import type { SecretIo } from '@/components/envkeys';
+import type { ImportPolicyCheck, SecretIo } from '@/components/envkeys';
 import { readVaultKeys } from '@/components/vault/key-store';
 import { errorMessage } from '@/lib/api';
 import type { ImportPlanResponse } from '@/components/secrets/types';
@@ -53,6 +53,8 @@ export interface ProjectEnvironment {
   slug: string;
   name: string;
   encryptionMode: string;
+  /** For a secret policy scoped to production (P19 §8). Absent is read as not production. */
+  isProduction?: boolean;
 }
 
 /** Why a target environment cannot take an import. */
@@ -235,6 +237,12 @@ export function importValues(params: {
   values: Record<string, string>;
   strategy: 'skip' | 'overwrite';
   dryRun: boolean;
+  /**
+   * The organisation's value rules (P19 §8), asked of every entry before it is
+   * encrypted. An archive restores values this account once held, but the
+   * import writes them anew, and a write is what the rules govern.
+   */
+  checkPolicy?: ImportPolicyCheck | undefined;
 }): Promise<ImportPlanResponse> {
   return params.io.runImport({
     content: JSON.stringify(params.values),
@@ -242,5 +250,6 @@ export function importValues(params: {
     format: 'json',
     strategy: params.strategy,
     dryRun: params.dryRun,
+    ...(params.checkPolicy === undefined ? {} : { checkPolicy: params.checkPolicy }),
   });
 }

@@ -5,6 +5,7 @@ import { BufferedAuditRecorder, createAuditBuilder, InMemoryAuditSink, REDACTED 
 import type {
   AuditContext,
   AuditDenial,
+  AuditMetadata,
   AuditRecord,
   AuditResource,
   AuditSink,
@@ -222,6 +223,13 @@ describe('credential detection — values that must never reach a log', () => {
   it('recognises Stripe keys', () => {
     expect(looksLikeCredential('sk_live_4eC39HqLyjWDarjtT1zdp7dc')).toBe(true);
     expect(looksLikeCredential('rk_live_4eC39HqLyjWDarjtT1zdp7dc')).toBe(true);
+  });
+
+  it('recognises a Standard Webhooks signing secret — ours, and any provider’s', () => {
+    // The shape `generateWebhookSecret` mints (P19 §5): `whsec_` and 32 bytes,
+    // base64 — with `+`, `/` and `=`, which the base64url rules do not cover.
+    expect(looksLikeCredential('whsec_C2FVsBQIhrscChlQIMV+b5sSYspob7oD/LmVfNhPmwI=')).toBe(true);
+    expect(looksLikeCredential('rotated the whsec_ secret')).toBe(false);
   });
 
   it('recognises Google API keys', () => {
@@ -587,7 +595,12 @@ describe('every declared metadata field survives sanitisation', () => {
   // carried neither. This test makes the omission a failure instead, which is
   // the only reason it stops recurring.
   it('copies each field through, sanitised', () => {
-    const record = builderWith().success('member.role_changed', null, {
+    // `satisfies Required<…>`, so a field added to `AuditMetadata` and not to
+    // this sweep is a compile error rather than a field the test quietly skips.
+    // Five fields — `wrapKind`, `method`, `recoveryCodeCount`, `signInMethod`,
+    // `confirmation` — had been added to the contract without joining this list;
+    // P19 made the list exhaustive by type when it added its own.
+    const everyField = {
       secretName: 'DATABASE_URL',
       previousSecretName: 'DB_URL',
       secretCount: 3,
@@ -626,7 +639,37 @@ describe('every declared metadata field survives sanitisation', () => {
       environmentCount: 6,
       operator: 'ops-alice',
       source: 'dashboard',
-    });
+      enabled: false,
+      wrapKind: 'recovery',
+      method: 'passkey',
+      recoveryCodeCount: 5,
+      signInMethod: 'sso',
+      confirmation: 'reused-session',
+      parentEnvironmentSlug: 'base',
+      previousParentEnvironmentSlug: null,
+      contextEnvironmentSlug: 'staging',
+      referringSecretName: 'DATABASE_URL',
+      sourceEnvironmentSlug: 'development',
+      sourceProjectSlug: 'shared',
+      createdCount: 2,
+      updatedCount: 3,
+      deletedCount: 1,
+      restoredTo: '2026-10-19T14:30:00Z',
+      endpointHost: 'hooks.example.com',
+      eventTypes: ['secret.updated', 'environment.promoted'],
+      policyName: 'secrets',
+      previousSeatCount: 11,
+      billingInterval: 'yearly',
+      previousBillingInterval: 'monthly',
+      subscriptionStatus: 'on_hold',
+      previousSubscriptionStatus: 'active',
+      currency: 'INR',
+      billingEvent: 'subscription.renewed',
+      driftFields: ['seats', 'periodEnd'],
+      unitCount: 42,
+    } satisfies Required<AuditMetadata>;
+
+    const record = builderWith().success('member.role_changed', null, everyField);
 
     expect(record.metadata).toEqual({
       secretName: 'DATABASE_URL',
@@ -671,7 +714,132 @@ describe('every declared metadata field survives sanitisation', () => {
       environmentCount: 6,
       operator: 'ops-alice',
       source: 'dashboard',
+      // `false` is a value, not an absence: switching a policy off is the
+      // change most worth finding later.
+      enabled: false,
+      wrapKind: 'recovery',
+      method: 'passkey',
+      recoveryCodeCount: 5,
+      signInMethod: 'sso',
+      confirmation: 'reused-session',
+      parentEnvironmentSlug: 'base',
+      // `null` is a statement — "inherited from nothing" — and survives as one.
+      previousParentEnvironmentSlug: null,
+      contextEnvironmentSlug: 'staging',
+      referringSecretName: 'DATABASE_URL',
+      sourceEnvironmentSlug: 'development',
+      sourceProjectSlug: 'shared',
+      createdCount: 2,
+      updatedCount: 3,
+      deletedCount: 1,
+      // Re-rendered from what it parses as, never copied as a free string.
+      restoredTo: '2026-10-19T14:30:00.000Z',
+      endpointHost: 'hooks.example.com',
+      eventTypes: ['secret.updated', 'environment.promoted'],
+      policyName: 'secrets',
+      previousSeatCount: 11,
+      billingInterval: 'yearly',
+      previousBillingInterval: 'monthly',
+      subscriptionStatus: 'on_hold',
+      previousSubscriptionStatus: 'active',
+      currency: 'INR',
+      billingEvent: 'subscription.renewed',
+      driftFields: ['seats', 'periodEnd'],
+      unitCount: 42,
     });
+  });
+
+  it('keeps P19 fields to their vocabularies, and never a webhook URL', () => {
+    const record = builderWith().success('webhook.created', null, {
+      // Reached past the types with casts.
+      eventTypes: ['secret.updated', 'secret.read', 'secret.updated', 'x\ny'] as never,
+      policyName: 'everything' as never,
+      restoredTo: 'last tuesday',
+      // A host that carries a credential is still caught by the detector.
+      endpointHost: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789.example.com',
+      createdCount: Number.NaN,
+    });
+
+    expect(record.metadata.eventTypes).toEqual(['secret.updated']);
+    expect('policyName' in record.metadata).toBe(false);
+    expect('restoredTo' in record.metadata).toBe(false);
+    expect('createdCount' in record.metadata).toBe(false);
+    expect(record.metadata.endpointHost).toContain(REDACTED);
+  });
+
+  it('keeps the payment fields only when they are the shapes they claim to be (P12)', () => {
+    // Each reached past the type with a cast, the way a careless spread of a
+    // provider payload would: an amount, a customer id, a status nobody
+    // defined, a field list carrying an identifier. All dropped, none cleaned.
+    const record = builderWith().success('plan.changed', null, {
+      currency: '4499',
+      billingEvent: 'subscription.renewed cus_TV52uJWWXt2yIoBBxpjaa',
+      billingInterval: 'weekly' as never,
+      subscriptionStatus: 'paused' as never,
+      previousSubscriptionStatus: 'canceled' as never,
+      driftFields: ['seats', 'cus_TV52uJWWXt2yIoBBxpjaa', 'seats'] as never,
+      unitCount: Number.POSITIVE_INFINITY,
+    });
+
+    expect(record.metadata).toEqual({ driftFields: ['seats'] });
+
+    // A lower-case currency is not normalised into a valid one: dropped.
+    expect(builderWith().success('plan.changed', null, { currency: 'inr' }).metadata).toEqual({});
+    // Not an array at all: dropped rather than thrown on.
+    expect(
+      builderWith().success('billing.drift_detected', null, { driftFields: 'seats' as never })
+        .metadata,
+    ).toEqual({});
+  });
+
+  it('redacts a webhook signing secret and a customer id from the free-text fields', () => {
+    const record = builderWith().success('billing.refunded', null, {
+      reason: 'whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw leaked with cus_TV52uJWWXt2yIoBBxpjaa',
+      operator: 'cus_0NWiIY7Hp6dGcJnZjKvSf',
+    });
+
+    expect(record.metadata.reason).toBe(`${REDACTED} leaked with ${REDACTED}`);
+    expect(record.metadata.operator).toBe(REDACTED);
+    expect(looksLikeCredential('whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw')).toBe(true);
+    expect(looksLikeCredential('cus_TV52uJWWXt2yIoBBxpjaa')).toBe(true);
+    // A bare prefix in a sentence is not a finding.
+    expect(looksLikeCredential('the cus_ prefix')).toBe(false);
+  });
+
+  it('keeps why a sign-in was held back only when it is one of the known reasons', () => {
+    for (const confirmation of ['organization', 'not-member', 'reused-session'] as const) {
+      const record = builderWith().success('auth.login', null, {
+        signInMethod: 'sso',
+        confirmation,
+      });
+      expect(record.metadata).toEqual({ signInMethod: 'sso', confirmation });
+    }
+    const declined = builderWith().success('auth.sign_in_declined', null, {
+      confirmation: 'organization',
+    });
+    expect(declined.metadata).toEqual({ confirmation: 'organization' });
+
+    // A provider- or attacker-chosen string reached past the type: dropped.
+    for (const smuggled of ['because', 'organization\n', 1]) {
+      const record = builderWith().success('auth.login', null, {
+        confirmation: smuggled as never,
+      });
+      expect(record.metadata).toEqual({});
+    }
+  });
+
+  it('keeps a setting’s new value only when it is a boolean', () => {
+    const on = builderWith().success('org.sso.required_toggled', null, { enabled: true });
+    expect(on.metadata).toEqual({ enabled: true });
+
+    // Reached past the type with a cast: a truthy string is dropped, never
+    // read as "switched on".
+    for (const smuggled of ['true', 1, null]) {
+      const record = builderWith().success('org.sso.jit_toggled', null, {
+        enabled: smuggled as never,
+      });
+      expect(record.metadata).toEqual({});
+    }
   });
 
   it('sanitises the attacker-influenced additions like every other string', () => {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/playxoft/xecret/cli/internal/api"
@@ -77,18 +78,19 @@ func cmdImport(args []string) error {
 	// always preferred. An `e2ee` one cannot: uploading a file full of plaintext
 	// to an endpoint that must never see one is the whole thing the model
 	// forbids, so the parse, the plan and the encryption all happen here.
-	material, err := a.openKeys(ctx, client, credentials, resolved)
+	keys, material, err := a.openKeyState(ctx, client, credentials, resolved)
 	if err != nil {
 		return withE2eeHint(err)
 	}
 	if material != nil {
 		defer material.Close()
 		return importClientSide(ctx, a, client, material, resolved, importInput{
-			content:  string(content),
-			filename: filepath.Base(filePath),
-			format:   *format,
-			strategy: *strategy,
-			dryRun:   *dryRun,
+			content:      string(content),
+			filename:     filepath.Base(filePath),
+			format:       *format,
+			strategy:     *strategy,
+			dryRun:       *dryRun,
+			isProduction: keys.IsProduction,
 		})
 	}
 
@@ -139,6 +141,8 @@ type importInput struct {
 	format   string
 	strategy string
 	dryRun   bool
+	// isProduction answers a `production`-scoped secret policy.
+	isProduction bool
 }
 
 // importClientSide parses, plans and encrypts an import for an end-to-end
@@ -185,6 +189,36 @@ func importClientSide(
 	}
 
 	plan := importer.BuildPlan(parsed, names, importer.Strategy(input.strategy))
+
+	// The organisation's value rules (review round 1, M5), asked of every value
+	// this import would write, before any of them is encrypted — the dashboard's
+	// import asks them, and `secrets set` does, and this path skipped them. Read
+	// once for the batch; one that cannot be read refuses the import, naming why.
+	// Every refusal is listed, not the first, so one run tells the person
+	// everything the file needs, and none of them names a value.
+	rules, err := loadSecretPolicy(ctx, client, resolved)
+	if err != nil {
+		return fmt.Errorf("%w, so nothing was imported", err)
+	}
+	var refusals []string
+	for _, item := range plan.Items {
+		if item.Status == importer.StatusInvalid || item.Status == importer.StatusSkip {
+			continue
+		}
+		// An overwrite keeps the stored type — an import declares none — so an
+		// existing template is read as one.
+		valueType := ""
+		if target, exists := current[item.TargetName]; exists {
+			valueType = target.ValueType
+		}
+		if refusal := refuseByPolicy(rules, input.isProduction, item.TargetName, item.Value, valueType); refusal != nil {
+			refusals = append(refusals, refusal.Error())
+		}
+	}
+	if len(refusals) > 0 {
+		return fmt.Errorf("nothing was imported — this organisation's secret policy refuses %d value(s):\n%s",
+			len(refusals), strings.Join(refusals, "\n"))
+	}
 
 	entries := make([]api.ClientImportEntry, 0, len(plan.Items))
 	localCounts := map[string]int{}
@@ -285,6 +319,10 @@ func importClientSide(
 // are separate endpoints server-side, and the request path is what tells
 // "a build read its configuration" apart from "somebody took a copy" in the
 // audit record. `pull` is the stdout path; `export` always produces a file.
+//
+// An environment whose policy disables a plaintext export is refused here, in
+// either mode, before anything is written — see exportDisabledError. `run` is
+// the path that policy leaves open, and it is the one this CLI recommends.
 func cmdExport(args []string) error {
 	flags := flag.NewFlagSet("export", flag.ContinueOnError)
 	format := flags.String("format", "env", "env | json | yaml | shell | docker")
@@ -332,6 +370,7 @@ func cmdExport(args []string) error {
 		return err
 	}
 
+	a.noteUnappliedOverrides(ctx, client, resolved)
 	a.printer.Successf("Wrote %s/%s to %s (mode 0600).", resolved.Project, resolved.Environment, path)
 	a.printer.Warnf("those secrets are now outside xecret's control: the file is not encrypted, it outlives")
 	a.printer.Warnf("this session, backup and sync tools will copy it, and no grant can be revoked after the")
@@ -417,6 +456,14 @@ func knownFormat(format string) bool {
 // cmdPull prints every current secret in the chosen format. This is the other
 // sanctioned place plaintext reaches stdout, and it says so on stderr, where
 // the warning survives `> .env`.
+//
+// An environment's policy may disable a plaintext export, and `pull` is an
+// export by another name — stdout is a file the moment it is redirected — so
+// that refusal is checked before the first byte, exactly as `export`'s is.
+//
+// Personal overrides are never applied here. They are one person's values for
+// one person's machine, and a document is something that gets committed,
+// shared and pasted; if the person pulling has any, they are told so.
 func cmdPull(args []string) error {
 	flags := flag.NewFlagSet("pull", flag.ContinueOnError)
 	format := flags.String("format", "env", "env | json | yaml | shell | docker")
@@ -448,6 +495,14 @@ func cmdPull(args []string) error {
 		return err
 	}
 
+	// Before anything is decrypted, and before a byte reaches stdout or a file.
+	// The pull itself cannot be refused — it is the endpoint `run` reads through
+	// — so the server says what the policy is and this is where it is applied.
+	// See exportDisabledError.
+	if pulled.ExportDisabled() {
+		return exportDisabledError(resolved, pulled.ExportRefusedBy())
+	}
+
 	document := pulled.Document
 	if pulled.Bundle != nil {
 		// The server rendered nothing, because it could not read anything. The
@@ -460,6 +515,8 @@ func cmdPull(args []string) error {
 			return err
 		}
 	}
+
+	a.noteUnappliedOverrides(ctx, client, resolved)
 
 	if *outPath != "" {
 		if err := writeSecretDocument(*outPath, document); err != nil {

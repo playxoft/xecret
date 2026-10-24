@@ -104,8 +104,22 @@ export {
 } from './secret-crypto';
 export type { SecretTarget } from './secret-crypto';
 
-export { clientSecretIo, renderExport, RotatedAwayError, serverSecretIo } from './secret-io';
-export type { MetadataPatch, SecretIo, SecretIoContext, SecretRef } from './secret-io';
+export {
+  clientSecretIo,
+  referencesFor,
+  renderExport,
+  OWN_VALUES_QUERY,
+  RotatedAwayError,
+  serverSecretIo,
+} from './secret-io';
+export type {
+  ImportPolicyCheck,
+  MetadataPatch,
+  PulledEnvironment,
+  SecretIo,
+  SecretIoContext,
+  SecretRef,
+} from './secret-io';
 
 export { ioOf, useEnvironmentKeys } from './use-environment-keys';
 export type { EnvironmentKeyHandle, EnvironmentKeyState } from './use-environment-keys';
@@ -115,6 +129,7 @@ export type {
   ClientEnvironmentBundle,
   ClientSecretCiphertext,
   ClientValueBody,
+  DeclaredReferencePayload,
   EnvironmentKeys,
   GrantBody,
   InviteKeyGrant,

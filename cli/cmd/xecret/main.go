@@ -41,6 +41,7 @@ Project setup:
 
 Working with secrets:
   secrets      list | get | set | annotate | versions | restore | delete
+  overrides    list | set | unset — your own values, applied only by 'run'
   import       Send a .env, JSON, YAML or shell file to the server
   pull         Print every secret in a chosen format   (env|json|yaml|shell|docker)
   export       Write every secret to a file            (same formats)
@@ -144,6 +145,8 @@ func dispatch(args []string) int {
 		err = cmdEnvironments(rest)
 	case "secrets":
 		err = cmdSecrets(rest)
+	case "overrides":
+		err = cmdOverrides(rest)
 	case "import":
 		err = cmdImport(rest)
 	case "pull":

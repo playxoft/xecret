@@ -6,6 +6,7 @@ import { useState } from 'react';
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { pluralize } from '@/lib/format';
 import { apiPath, appPath } from '@/app/(dashboard)/_lib/paths';
+import { protectionCrossingWarning } from '@/components/environments/protection-crossing';
 import {
   Alert,
   Button,
@@ -66,6 +67,14 @@ export function EnvironmentSettingsForm({
   const [error, setError] = useState<unknown>(null);
   const [reclassifying, setReclassifying] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  /**
+   * The flag change about to cross production's protection the way creating a
+   * link does (review round 2, F1): turning it on would expose an existing
+   * parent or reference that is not production, or turning it off would leave
+   * a still-production environment elsewhere depending on one every developer
+   * can now write. The server's warning, and which direction was asked for.
+   */
+  const [crossing, setCrossing] = useState<{ next: boolean; warning: string } | null>(null);
 
   const path = apiPath.environment(orgSlug, projectSlug, environment.slug);
 
@@ -98,19 +107,34 @@ export function EnvironmentSettingsForm({
     }
   }
 
-  async function setProduction(next: boolean) {
-    await api.patch(path, { isProduction: next });
-    setReclassifying(false);
-    toast({
-      variant: 'success',
-      title: next
-        ? `${environment.name} is now production`
-        : `${environment.name} is no longer production`,
-      description: next
-        ? 'Only admins and members with an explicit grant can read it.'
-        : 'Every developer in this organisation can now read and write it.',
-    });
-    onChanged();
+  async function setProduction(next: boolean, confirmCrossesProtection = false) {
+    try {
+      await api.patch(path, {
+        isProduction: next,
+        ...(confirmCrossesProtection ? { confirmCrossesProtection: true } : {}),
+      });
+      setCrossing(null);
+      toast({
+        variant: 'success',
+        title: next
+          ? `${environment.name} is now production`
+          : `${environment.name} is no longer production`,
+        description: next
+          ? 'Only admins and members with an explicit grant can read it.'
+          : 'Every developer in this organisation can now read and write it.',
+      });
+      onChanged();
+    } catch (cause) {
+      // The same second question the inheritance card asks, here because the
+      // flag changed rather than a new link was made: asked again, in the
+      // server's own words, before anything is changed.
+      const warning = protectionCrossingWarning(cause);
+      if (warning !== null && !confirmCrossesProtection) {
+        setCrossing({ next, warning });
+        return;
+      }
+      throw cause;
+    }
   }
 
   async function deleteEnvironment() {
@@ -262,6 +286,23 @@ export function EnvironmentSettingsForm({
           did it?” stays answerable.
         </Alert>
       </ConfirmDialog>
+
+      {/* The second question, asked only when the server says the flag change
+          crosses production's protection — with its sentence, which names who
+          would then be able to change, or start reading, production's values. */}
+      <ConfirmDialog
+        open={crossing !== null}
+        onOpenChange={(open) => (open ? undefined : setCrossing(null))}
+        title={
+          crossing?.next
+            ? `${environment.name} would inherit from, or read through a template from, an environment that is not production`
+            : `Production environments depend on ${environment.name}`
+        }
+        description={crossing?.warning ?? ''}
+        confirmLabel={crossing?.next ? 'Mark as production anyway' : 'Remove the mark anyway'}
+        confirmVariant="danger"
+        onConfirm={() => (crossing === null ? undefined : setProduction(crossing.next, true))}
+      />
 
       {environment.isProduction ? (
         <ConfirmDialog

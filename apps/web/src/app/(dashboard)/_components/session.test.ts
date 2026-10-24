@@ -56,6 +56,10 @@ const GATES: readonly [Action, (role: OrgRole) => boolean][] = [
   ['audit.read', isOrgAdmin],
   ['org.update', isOrgAdmin],
   ['org.delete', (role) => role === 'owner'],
+  // Review S2: the SSO card draws its switch-on, enable and portal for owners only.
+  ['sso.manage', (role) => role === 'owner'],
+  // P12: the billing screen and the settings card are for owners only.
+  ['billing.manage', (role) => role === 'owner'],
 ];
 
 describe('gates for a member without a custom role', () => {

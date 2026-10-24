@@ -6,7 +6,9 @@ import { accessGrants } from '../schema/access';
 import { customRoles } from '../schema/roles';
 import { users } from '../schema/identity';
 import { environments, projects } from '../schema/resources';
-import { orgMembers, organizations } from '../schema/tenancy';
+import { invitations, orgMemberRemovals, orgMembers, organizations } from '../schema/tenancy';
+import { queueBilledSeatSync } from './billing';
+import { deleteOverridesForMember } from './overrides';
 import { RepositoryError, clampPageSize } from './shared';
 import type { Executor } from './shared';
 
@@ -608,6 +610,12 @@ export async function addMember(
     throw new RepositoryError('conflict', 'That user is already a member of this organisation.');
   }
 
+  // A seat was taken. On a subscription the payment provider bills, the new
+  // count is owed to it — recorded here, in the caller's transaction, so the
+  // debt commits with the membership whether or not the push after the commit
+  // ever runs (P12 seat sync). Nothing is written for any other organisation.
+  await queueBilledSeatSync(exec, params.orgId);
+
   return row;
 }
 
@@ -740,12 +748,21 @@ export interface MemberRef {
  * Their access grants go with them: `access_grants.org_member_id` is
  * `ON DELETE CASCADE`, so no grant can outlive the membership it qualified.
  *
+ * And a removal record stays behind (`org_member_removals`, migration 0022),
+ * in the same transaction: the just-in-time join reads it before admitting
+ * anybody, so a person removed here who is still in the organisation's
+ * identity provider is not silently re-admitted by their next single sign-on.
+ * Only accepting an invitation sent after the removal clears it — and every
+ * invitation still open for their address is withdrawn here, so none sent
+ * before can (review round 2). `removedBy` names who removed them; `null` when
+ * nobody else did (an account deleting itself).
+ *
  * `guard` as `updateMemberRole` describes; `null` when an account is
  * removing itself.
  */
 export async function removeMember(
   exec: Executor,
-  params: MemberRef,
+  params: MemberRef & { removedBy?: string | null | undefined },
   guard: MemberChangeGuard,
 ): Promise<void> {
   await exec.transaction(async (tx) => {
@@ -755,7 +772,87 @@ export async function removeMember(
     await tx
       .delete(orgMembers)
       .where(and(eq(orgMembers.id, params.memberId), eq(orgMembers.orgId, params.orgId)));
+
+    const removedAt = new Date();
+    const removedBy = params.removedBy ?? null;
+    await tx
+      .insert(orgMemberRemovals)
+      .values({ orgId: params.orgId, userId: member.userId, removedBy, removedAt })
+      .onConflictDoUpdate({
+        target: [orgMemberRemovals.orgId, orgMemberRemovals.userId],
+        set: { removedBy, removedAt },
+      });
+
+    // Any invitation still open for them is from before this decision, and
+    // accepting it would undo it (review round 2) — possibly at a higher role
+    // than they held. Withdrawn here, under the organisation lock
+    // `lockForChange` took; the way back is a fresh invitation.
+    await revokeOpenInvitationsFor(tx, { orgId: params.orgId, userId: member.userId });
+
+    // Their personal overrides here (P19 §2) go with their access. Nobody else
+    // could ever read them, but rows a removed member can no longer reach are
+    // not rows worth keeping, and a re-invited member starts from the shared
+    // environment rather than from a local value they set a year ago.
+    await deleteOverridesForMember(tx, params.orgId, member.userId);
+
+    // A seat was freed: the seat-sync debt commits with the removal, as
+    // `addMember` explains.
+    await queueBilledSeatSync(tx, params.orgId);
   });
+}
+
+/**
+ * Withdraws every open invitation into `orgId` addressed to `userId`'s account,
+ * answering how many. For a person who has just become a member some other way
+ * (a just-in-time join) or has just stopped being one (a removal): either way,
+ * an invitation sent before is not a decision about who they are now. Call it
+ * inside the transaction that changed the membership, under the organisation
+ * lock — the lock `createInvitation` takes, so no invitation is issued between
+ * the change and this.
+ *
+ * By the account's address, compared as the `citext` column compares — the
+ * rule acceptance itself applies.
+ *
+ * @internal Exported for `joinOrganizationJustInTime`.
+ */
+export async function revokeOpenInvitationsFor(
+  tx: Executor,
+  params: { orgId: string; userId: string },
+): Promise<number> {
+  const rows = await tx
+    .update(invitations)
+    .set({ revokedAt: new Date() })
+    .where(
+      and(
+        eq(invitations.orgId, params.orgId),
+        isNull(invitations.acceptedAt),
+        isNull(invitations.revokedAt),
+        inArray(
+          invitations.email,
+          tx.select({ email: users.email }).from(users).where(eq(users.id, params.userId)),
+        ),
+      ),
+    )
+    .returning({ id: invitations.id });
+  return rows.length;
+}
+
+/**
+ * Whether `userId` was removed from `orgId` and has not been invited back
+ * since — the question the just-in-time join asks before it admits anybody.
+ */
+export async function wasRemovedFrom(
+  exec: Executor,
+  params: { orgId: string; userId: string },
+): Promise<boolean> {
+  const [row] = await exec
+    .select({ userId: orgMemberRemovals.userId })
+    .from(orgMemberRemovals)
+    .where(
+      and(eq(orgMemberRemovals.orgId, params.orgId), eq(orgMemberRemovals.userId, params.userId)),
+    )
+    .limit(1);
+  return row !== undefined;
 }
 
 /**

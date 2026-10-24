@@ -18,7 +18,7 @@ import {
   pageQuerySchema,
   projectCreateSchema,
   resolveProjectSlug,
-  toEnvironment,
+  toEnvironments,
   toProject,
   toProjectListItem,
 } from '@/server/schemas/resources';
@@ -319,7 +319,7 @@ export const POST = authenticatedRoute<Params>(
     return json(
       {
         project: toProject(created.project),
-        environments: created.environments.map(toEnvironment),
+        environments: toEnvironments(created.environments),
       },
       { status: 201 },
     );

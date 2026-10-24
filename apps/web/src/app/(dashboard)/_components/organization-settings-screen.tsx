@@ -1,13 +1,16 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 
 import { ORGANIZATION_NAME_MAX_LENGTH } from '@xecret/core/validation';
 import { api, errorMessage, isApiError } from '@/lib/api';
 import { formatAbsoluteTime } from '@/lib/format';
 import { PageHeader } from '@/components/layout';
-import { DeleteOrganizationCard } from '@/components/organizations';
+import { DeleteOrganizationCard, SingleSignOnCard } from '@/components/organizations';
+import { PolicyCards } from '@/components/policies/policy-cards';
 import { RolesCard } from '@/components/roles/roles-card';
+import { WebhooksCard } from '@/components/webhooks/webhooks-card';
 import {
   Alert,
   Button,
@@ -22,7 +25,7 @@ import {
   useToast,
 } from '@/components/ui';
 import type { Organization, OrganizationResponse } from '@/components/projects/types';
-import { apiPath } from '../_lib/paths';
+import { apiPath, appPath } from '../_lib/paths';
 import { useApiResource } from '../_lib/use-api-resource';
 import { ErrorState, FormSkeleton } from './resource-states';
 import { canAdminister, useOrganization, useSession } from './session';
@@ -60,7 +63,7 @@ export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
       <PageHeader
         title="Organisation settings"
-        description="Who this organisation is, and the identifier every consumer of it depends on."
+        description="Who this organisation is, the identifier every consumer of it depends on, and the rules and notifications that apply across it."
         actions={
           <Button variant="secondary" onClick={createOrganization}>
             <PlusIcon className="size-4" />
@@ -116,7 +119,36 @@ export function OrganizationSettingsScreen({ orgSlug }: { orgSlug: string }) {
             </CardContent>
           </Card>
 
+          {canAdminister(membership, 'billing.manage') ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Billing</CardTitle>
+                <CardDescription>
+                  The plan, the seats it is billed for, this period’s usage, and the card that pays
+                  for it.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button variant="secondary" asChild>
+                  <Link href={appPath.orgBilling(orgSlug)}>Open billing</Link>
+                </Button>
+              </CardContent>
+            </Card>
+          ) : null}
+
           <RolesCard orgSlug={orgSlug} organization={membership} />
+
+          <SingleSignOnCard orgSlug={orgSlug} organization={membership} />
+
+          {/* The organisation's rulebook (P19 §6, §8): which service tokens may
+              be minted, and which secret names and values may be written. Read
+              by every member, because every client that writes enforces it;
+              changed by owners and admins. */}
+          <PolicyCards orgSlug={orgSlug} organization={membership} />
+
+          {/* Where changes are announced (P19 §5). After the policies, because
+              it is the one card here that sends anything out of xecret. */}
+          <WebhooksCard orgSlug={orgSlug} organization={membership} />
 
           {canDelete ? <DeleteOrganizationCard organization={loaded} onDeleted={refresh} /> : null}
         </div>

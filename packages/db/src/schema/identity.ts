@@ -1,5 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { boolean, check, index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
+import type { SignInMethod } from '@xecret/core/audit';
 import { bytea, citext, inet } from './columns';
 
 /**
@@ -109,6 +111,34 @@ export const sessions = pgTable(
      * everywhere still revokes, and locking merely clears this.
      */
     vaultUnlockedAt: timestamp('vault_unlocked_at', { withTimezone: true }),
+    /**
+     * How the sign-in that issued this session authenticated — the audit log's
+     * closed set. `NULL` on every session issued before migration 0022, which
+     * the organisation resolution reads as "not single sign-on".
+     */
+    signInMethod: text('sign_in_method').$type<SignInMethod>(),
+    /**
+     * The WorkOS organisation whose single sign-on issued this session, or
+     * `NULL`. What `sso_required` is checked against on every request
+     * (`resolveOrg`): a non-owner member of an organisation that requires SSO
+     * reaches it only through a session whose value here is that
+     * organisation's `workos_org_id`. Set only beside `sso`.
+     */
+    ssoWorkosOrgId: text('sso_workos_org_id'),
+    /**
+     * The AuthKit session the issuing sign-in came from — the `sid` claim of
+     * the code exchange's access token — or `NULL` (migration 0023). Sign-out
+     * answers with WorkOS's logout URL for it, so leaving xecret ends the
+     * AuthKit session too and the next sign-in is asked for, not reused.
+     */
+    workosSessionId: text('workos_session_id'),
+    /**
+     * When the person actively authenticated for the re-authentication that
+     * issued this session (WorkOS's `auth_time`, during the flow), by any
+     * method that re-proves who they are; `NULL` for every other session
+     * (migration 0023). What the SSO setup portal's step-up reads.
+     */
+    freshAuthAt: timestamp('fresh_auth_at', { withTimezone: true }),
   },
   (t) => [
     // Hot path: every authenticated request resolves the actor through this.
@@ -117,5 +147,44 @@ export const sessions = pgTable(
       .where(sql`${t.revokedAt} is null`),
     // Powers the "active devices" list and "sign out everywhere".
     index('sessions_user_idx').on(t.userId, t.createdAt.desc()),
+    check('sessions_sign_in_method_check', signInMethodCheck(t.signInMethod)),
+    check(
+      'sessions_sso_org_needs_sso_check',
+      sql`${t.ssoWorkosOrgId} is null or ${t.signInMethod} = 'sso'`,
+    ),
+    check(
+      'sessions_workos_session_id_check',
+      sql`${t.workosSessionId} is null or ${t.workosSessionId} ~ '^session_[0-9A-Za-z]{1,64}$'`,
+    ),
+  ],
+);
+
+/**
+ * The closed set a `sign_in_method` column may hold — restated from
+ * `SignInMethod` because a CHECK cannot import a type. Migration 0022 writes
+ * the same list; a method added to the audit vocabulary needs a migration here.
+ */
+export function signInMethodCheck(column: AnyPgColumn) {
+  return sql`${column} is null or ${column} in ('password', 'oauth', 'sso', 'magic_auth', 'passkey', 'other')`;
+}
+
+/**
+ * A sign-in confirmation that has been spent — continued or cancelled — by
+ * the SHA-256 of the nonce its sealed cookie carried (migration 0022). The
+ * primary key is the single-use guarantee: a second use of the same cookie
+ * collides with it.
+ */
+export const signInConfirmations = pgTable(
+  'sign_in_confirmations',
+  {
+    nonceHash: bytea('nonce_hash').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    spentAt: timestamp('spent_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('sign_in_confirmations_nonce_hash_length_check', sql`octet_length(${t.nonceHash}) = 32`),
   ],
 );

@@ -1,4 +1,5 @@
-export { envKeyAad, orgKeyAad, secretAad } from './aad';
+export { envKeyAad, orgKeyAad, orgValueAad, secretAad } from './aad';
+export type { OrgValuePurpose } from './aad';
 export { importAesKey, IV_LENGTH, KEY_LENGTH, open, seal } from './aead';
 export {
   concatBytes,
@@ -10,7 +11,7 @@ export {
   utf8Encode,
   zeroize,
 } from './encoding';
-export { EnvelopeService } from './envelope-service';
+export { EnvelopeService, MAX_ORG_VALUE_BYTES } from './envelope-service';
 export {
   decodeShare,
   encodeShare,
@@ -55,6 +56,7 @@ export type {
   EncryptionContext,
   KeyProvider,
   SealedBytes,
+  SealedOrgValue,
   WrappedKey,
   WrappedOrgKey,
 } from './types';

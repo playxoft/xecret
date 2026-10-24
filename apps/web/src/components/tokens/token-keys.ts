@@ -80,6 +80,18 @@ export interface MintServiceTokenParams {
   environmentSlug: string;
   name: string;
   accessLevel: 'read' | 'write';
+  /**
+   * The addresses or CIDR ranges the token may be used from. Absent or empty
+   * means any address — unless the organisation's token policy requires one,
+   * in which case the server refuses the mint with a field error on
+   * `ipAllowlist` (P19 §6).
+   */
+  ipAllowlist?: readonly string[] | undefined;
+  /**
+   * ISO 8601. Absent means the token does not expire — which a lifetime cap in
+   * the token policy refuses, with a field error on `expiresAt`.
+   */
+  expiresAt?: string | undefined;
   /** The unlocked vault, or null. Required for an `e2ee` environment. */
   vault: VaultKeyMaterial | null;
 }
@@ -102,6 +114,14 @@ export async function mintServiceToken(
     projectSlug: params.projectSlug,
     environmentSlug: params.environmentSlug,
     accessLevel: params.accessLevel,
+    // Omitted rather than sent empty: an empty list is stored as an allowlist
+    // that names nothing, which the policy reads as no allowlist at all and
+    // which no request could ever satisfy if the server ever read it the other
+    // way. Absent is the one spelling that cannot be misread.
+    ...(params.ipAllowlist === undefined || params.ipAllowlist.length === 0
+      ? {}
+      : { ipAllowlist: [...params.ipAllowlist] }),
+    ...(params.expiresAt === undefined ? {} : { expiresAt: params.expiresAt }),
   };
 
   const target = {

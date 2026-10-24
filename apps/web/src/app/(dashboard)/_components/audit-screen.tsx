@@ -55,14 +55,31 @@ const OUTCOME_TONE = { success: undefined, denied: 'warning', error: 'danger' } 
 
 /** Actions offered as filters. A plain list, not an import: the filter is a
  *  convenience over the stored strings, and an old row's action must remain
- *  filterable even if a later release renames the constant that wrote it. */
-const ACTIONS = [
+ *  filterable even if a later release renames the constant that wrote it.
+ *  Exported so a test can hold it to the actions the product writes. */
+export const AUDIT_FILTER_ACTIONS = [
   'secret.read',
   'secret.revealed',
   'secret.created',
   'secret.updated',
+  'secret.rotated',
   'secret.deleted',
   'secret.imported',
+  // P19 (review round 1, L11): references, promotion, restore, policies,
+  // overrides and webhooks.
+  'environment.parent_changed',
+  'environment.link_crosses_protection',
+  'environment.promoted',
+  'environment.restored',
+  'environment.policy_changed',
+  'org.policy_changed',
+  'override.set',
+  'override.removed',
+  'webhook.created',
+  'webhook.updated',
+  'webhook.deleted',
+  'webhook.secret_rotated',
+  'webhook.disabled',
   'member.invited',
   'member.joined',
   'member.jit_joined',
@@ -85,10 +102,28 @@ const ACTIONS = [
   'auth.login',
   'auth.signup',
   'auth.identity_linked',
+  'auth.sso_exemption_used',
+  'auth.sign_in_declined',
   'auth.login_failed',
   'auth.reauthenticated',
   'auth.logout',
   'auth.autolock_changed',
+  'org.sso.enabled',
+  'org.sso.portal_link_created',
+  'org.sso.required_toggled',
+  'org.sso.jit_toggled',
+  'plan.changed',
+  'billing.checkout_started',
+  'billing.plan_change_requested',
+  'billing.portal_opened',
+  'billing.seats_synced',
+  'billing.payment_failed',
+  'billing.refunded',
+  'billing.dispute_opened',
+  'billing.region_mismatch',
+  'billing.duplicate_subscription',
+  'billing.drift_detected',
+  'billing.usage_reported',
 ] as const;
 
 interface Filters {
@@ -305,7 +340,7 @@ export function AuditScreen({ orgSlug }: { orgSlug: string }) {
               onChange={(action) => setFilters((f) => ({ ...f, action }))}
               options={[
                 { value: NO_FILTER, label: 'All actions' },
-                ...ACTIONS.map((action) => ({ value: action, label: action })),
+                ...AUDIT_FILTER_ACTIONS.map((action) => ({ value: action, label: action })),
               ]}
             />
             <FilterSelect
@@ -719,7 +754,153 @@ export function describeEvent(event: AuditEvent): string {
     );
   }
   if (typeof m['deviceName'] === 'string') parts.push(m['deviceName']);
-  if (typeof m['reason'] === 'string' && event.outcome !== 'success') parts.push(m['reason']);
+  describeP19(event, parts);
+  // A setting's new value — `sso_required`, the just-in-time opt-in.
+  if (typeof m['enabled'] === 'boolean') parts.push(m['enabled'] ? 'switched on' : 'switched off');
+  // The owner exemption: how the owner signed in instead of the organisation's
+  // identity provider — the one fact the row exists to show.
+  if (event.action === 'auth.sso_exemption_used' && typeof m['signInMethod'] === 'string') {
+    parts.push(`signed in by ${SIGN_IN_METHOD_WORDS[m['signInMethod']] ?? 'another method'}`);
+  }
+  // A sign-in held back for the person to confirm: why it was asked, on the
+  // `auth.login` of one they confirmed and the `auth.sign_in_declined` of one
+  // they did not.
+  if (typeof m['confirmation'] === 'string') {
+    const why = CONFIRMATION_WORDS[m['confirmation']];
+    if (why !== undefined) {
+      parts.push(
+        event.action === 'auth.sign_in_declined' ? `declined — ${why}` : `confirmed — ${why}`,
+      );
+    }
+  }
+  // Payments (P12): what moved, by how much, and what said so.
+  const billing = event.action === 'plan.changed' || event.action.startsWith('billing.');
+  if (billing) parts.push(...describeBilling(m));
+  if (typeof m['reason'] === 'string' && (event.outcome !== 'success' || billing)) {
+    parts.push(m['reason'] === 'removed' ? 'removed from the organisation' : m['reason']);
+  }
 
   return parts.join(' · ');
 }
+
+/**
+ * The context the P19 records carry (review round 1, L11): an inheritance
+ * change, the other end of a link into production, a promotion's source and
+ * counts, a restore's instant, which policy changed, a webhook's host and
+ * events. Only fields of the shape the builder writes are read; anything else
+ * says nothing rather than something wrong.
+ */
+function describeP19(event: AuditEvent, parts: string[]): void {
+  const m = event.metadata;
+  const text = (key: string) => (typeof m[key] === 'string' ? (m[key] as string) : null);
+
+  if (event.action === 'environment.parent_changed') {
+    const from =
+      'previousParentEnvironmentSlug' in m ? text('previousParentEnvironmentSlug') : null;
+    const to = 'parentEnvironmentSlug' in m ? text('parentEnvironmentSlug') : null;
+    parts.push(`inherits from ${from ?? 'nothing'} → ${to ?? 'nothing'}`);
+  }
+
+  const source = text('sourceEnvironmentSlug');
+  if (source !== null) {
+    const where =
+      text('sourceProjectSlug') === null ? source : `${text('sourceProjectSlug')}/${source}`;
+    if (event.action === 'environment.link_crosses_protection') {
+      parts.push(
+        m['reason'] === 'inherited'
+          ? `inherits from ${where}, which is not production`
+          : `a template reads from ${where}, which is not production`,
+      );
+    } else {
+      parts.push(`from ${where}`);
+    }
+  }
+
+  const counts = (['created', 'updated', 'deleted'] as const).flatMap((kind) => {
+    const value = m[`${kind}Count`];
+    return typeof value === 'number' ? [`${value} ${kind}`] : [];
+  });
+  if (counts.length > 0) parts.push(counts.join(', '));
+
+  const restoredTo = text('restoredTo');
+  if (restoredTo !== null) parts.push(`to ${restoredTo}`);
+
+  const policy = text('policyName');
+  if (policy !== null) parts.push(POLICY_WORDS[policy] ?? policy);
+
+  const host = text('endpointHost');
+  if (host !== null) parts.push(host);
+  if (Array.isArray(m['eventTypes']) && m['eventTypes'].length > 0) {
+    parts.push(m['eventTypes'].filter((type) => typeof type === 'string').join(', '));
+  }
+}
+
+/** Which policy an `org.policy_changed` or `environment.policy_changed` was about. */
+const POLICY_WORDS: Readonly<Record<string, string>> = {
+  tokens: 'token policy',
+  secrets: 'secret naming and strength policy',
+  plaintextExport: 'plaintext export',
+  readAlerts: 'new-address read alerts',
+};
+
+/**
+ * The billing records' metadata as phrases: the plan and interval moved
+ * between, the status, the seats, the metered units, the drifted fields, and
+ * the provider event or operator behind the change. Provider identifiers are
+ * never in this metadata to begin with.
+ */
+function describeBilling(m: AuditEvent['metadata']): string[] {
+  const parts: string[] = [];
+  const text = (key: string) => (typeof m[key] === 'string' ? (m[key] as string) : null);
+  const number = (key: string) => (typeof m[key] === 'number' ? (m[key] as number) : null);
+  const moved = (before: string | number | null, after: string | number) =>
+    before !== null && before !== after ? `${before} → ${after}` : String(after);
+
+  const plan = text('plan');
+  if (plan !== null) {
+    const interval = text('billingInterval');
+    const previousInterval = text('previousBillingInterval');
+    const label = (name: string, period: string | null) => (period ? `${name} (${period})` : name);
+    const before = text('previousPlan');
+    parts.push(
+      before !== null && (before !== plan || previousInterval !== interval)
+        ? `${label(before, previousInterval)} → ${label(plan, interval)}`
+        : label(plan, interval),
+    );
+  }
+  const status = text('subscriptionStatus');
+  if (status !== null) {
+    const before = text('previousSubscriptionStatus');
+    if (before !== null && before !== status) parts.push(`${before} → ${status}`);
+  }
+  const seats = number('seatCount');
+  if (seats !== null) parts.push(`${moved(number('previousSeatCount'), seats)} seats`);
+  const units = number('unitCount');
+  if (units !== null) parts.push(`${units} metered unit${units === 1 ? '' : 's'}`);
+  if (Array.isArray(m['driftFields']) && m['driftFields'].length > 0) {
+    parts.push(`drift in ${(m['driftFields'] as unknown[]).map(String).join(', ')}`);
+  }
+  if (text('addonName') !== null) parts.push(`add-on: ${text('addonName')}`);
+  const operator = text('operator');
+  if (operator !== null) parts.push(`by ${operator}`);
+  const from = text('billingEvent');
+  if (from !== null) parts.push(`from ${from}`);
+  return parts;
+}
+
+/** Why a sign-in was held back for confirmation, as a phrase. */
+const CONFIRMATION_WORDS: Readonly<Record<string, string>> = {
+  organization: 'it came back through an organisation the sign-in did not ask for',
+  'not-member': 'single sign-on of an organisation the account was not in',
+  'reused-session': 'a sign-in session reused without asking',
+};
+
+/** How the audit log's sign-in methods read in a sentence. */
+const SIGN_IN_METHOD_WORDS: Readonly<Record<string, string>> = {
+  password: 'password',
+  oauth: 'Google',
+  sso: 'another organisation’s single sign-on',
+  magic_auth: 'emailed code',
+  passkey: 'passkey',
+  other: 'another method',
+};

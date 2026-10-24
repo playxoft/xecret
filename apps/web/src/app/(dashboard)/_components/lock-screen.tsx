@@ -197,14 +197,17 @@ function Footer() {
 
   async function signOut() {
     setBusy(true);
+    // WorkOS's logout URL when the server answers one, so the AuthKit session
+    // ends too; the sign-in page otherwise.
+    let destination = SIGN_IN_PATH;
     try {
-      await endSession();
+      destination = await endSession();
     } finally {
       // Before the navigation and regardless of the outcome. A failed revoke
       // still leaves a browser that should stop presenting the cookie — and one
       // that must not be carrying a User Key into whatever it renders next.
       releaseVaultKeys();
-      window.location.assign(SIGN_IN_PATH);
+      window.location.assign(destination);
     }
   }
 

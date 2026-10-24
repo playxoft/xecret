@@ -158,7 +158,9 @@ export function VersionHistoryDialog({
     let result;
     try {
       result = await io.restore(
-        { id: secret.id, name: secretName, version: currentVersion },
+        // The row's type rides along: restoring a template declares the
+        // references in the restored text again (P19 §1).
+        { id: secret.id, name: secretName, version: currentVersion, valueType: secret.valueType },
         version.version,
       );
     } catch (cause) {

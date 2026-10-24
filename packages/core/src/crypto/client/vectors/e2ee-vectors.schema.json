@@ -110,6 +110,14 @@
             "properties": { "kind": { "const": "blob-parse" } }
           },
           "minContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": { "kind": { "const": "override-value" } }
+          },
+          "minContains": 2
         }
       ]
     }
@@ -230,7 +238,8 @@
             "secret-value",
             "value-hmac",
             "recovery-code",
-            "blob-parse"
+            "blob-parse",
+            "override-value"
           ]
         },
         "description": { "type": "string", "minLength": 1 },
@@ -246,7 +255,8 @@
         { "$ref": "#/$defs/vectors/secretValue" },
         { "$ref": "#/$defs/vectors/valueHmac" },
         { "$ref": "#/$defs/vectors/recoveryCode" },
-        { "$ref": "#/$defs/vectors/blobParse" }
+        { "$ref": "#/$defs/vectors/blobParse" },
+        { "$ref": "#/$defs/vectors/overrideValue" }
       ]
     },
 
@@ -550,6 +560,46 @@
         }
       },
 
+      "overrideValue": {
+        "description": "Spec section 2.2 type 13. A personal override: AES-256-GCM under the owner's override key (HKDF-SHA256 of their X25519 private key, info xecret.v2.override-key), under the override-value AAD.",
+        "type": "object",
+        "properties": {
+          "kind": { "const": "override-value" },
+          "input": {
+            "type": "object",
+            "required": [
+              "orgId",
+              "environmentId",
+              "userId",
+              "name",
+              "ownerPrivateKeyHex",
+              "ivHex",
+              "plaintext"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "orgId": { "$ref": "#/$defs/uuid" },
+              "environmentId": { "$ref": "#/$defs/uuid" },
+              "userId": { "$ref": "#/$defs/uuid" },
+              "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+              "ownerPrivateKeyHex": { "$ref": "#/$defs/hex32" },
+              "ivHex": { "$ref": "#/$defs/hex12" },
+              "plaintext": { "type": "string" }
+            }
+          },
+          "expected": {
+            "type": "object",
+            "required": ["aad", "overrideKeyHex", "plaintextHex", "blob"],
+            "additionalProperties": false,
+            "properties": {
+              "aad": { "$ref": "#/$defs/aadString" },
+              "overrideKeyHex": { "$ref": "#/$defs/hex32" },
+              "plaintextHex": { "$ref": "#/$defs/hex" },
+              "blob": { "$ref": "#/$defs/gcmBlob" }
+            }
+          }
+        }
+      },
       "valueHmac": {
         "description": "Spec section 9. EHK to HMAC key to valueHmac.",
         "type": "object",

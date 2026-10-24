@@ -6,6 +6,8 @@ import { errorMessage, isApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { pluralize } from '@/lib/format';
 import type { SecretIo } from '@/components/envkeys';
+import { policyProblem } from '@/components/policies/policy-checks';
+import { useSecretPolicy } from '@/components/policies/secret-policy-context';
 import {
   Alert,
   Badge,
@@ -214,6 +216,8 @@ function ImportBody({
     onApplyingChange(busy);
   }
 
+  const policy = useSecretPolicy();
+
   const run = useCallback(
     (dryRun: boolean): Promise<ImportPlanResponse> => {
       if (io === null) {
@@ -223,9 +227,27 @@ function ImportBody({
       // the first 200 names; a plan built from it would classify the 201st as a
       // create and seal a ciphertext against a uuid the server will not use. The
       // IO reads the complete listing itself — see `runImport`.
-      return io.runImport({ content, filename, format, strategy, dryRun });
+      return io.runImport({
+        content,
+        filename,
+        format,
+        strategy,
+        dryRun,
+        // P19 §8: every entry against the organisation's rules before it is
+        // encrypted — the preview included, so the refusal arrives with the
+        // plan rather than after Import is pressed. An imported value is
+        // declared `string`, which is all an import can declare.
+        checkPolicy: (entry) =>
+          policyProblem(policy, {
+            name: entry.name,
+            newName: entry.newName,
+            value: entry.value,
+            valueType: 'string',
+            isProduction,
+          }),
+      });
     },
-    [io, content, format, filename, strategy],
+    [io, content, format, filename, strategy, policy, isProduction],
   );
 
   // The dry run is re-requested whenever the file, the format or the strategy

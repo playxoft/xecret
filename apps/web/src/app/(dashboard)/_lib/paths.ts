@@ -60,6 +60,8 @@ export const appPath = {
   root: (): string => '/app',
   org: (org: string): string => `/app/${segment(org)}`,
   orgSettings: (org: string): string => `/app/${segment(org)}/settings`,
+  /** The billing screen (P12). Owners only; Dodo's checkout and portal return here. */
+  orgBilling: (org: string): string => `/app/${segment(org)}/settings/billing`,
   members: (org: string): string => `/app/${segment(org)}/members`,
   tokens: (org: string): string => `/app/${segment(org)}/tokens`,
   audit: (org: string): string => `/app/${segment(org)}/audit`,
@@ -141,6 +143,18 @@ export const apiPath = {
   /** The organisation's custom roles. */
   roles: (org: string): string => `${apiPath.org(org)}/roles`,
   role: (org: string, roleId: string): string => `${apiPath.roles(org)}/${segment(roleId)}`,
+  /** The organisation's single sign-on: status, turning it on, and its two policies. */
+  sso: (org: string): string => `${apiPath.org(org)}/sso`,
+  /** `POST` mints a WorkOS Admin Portal link for setting up the identity provider. */
+  ssoPortal: (org: string): string => `${apiPath.sso(org)}/portal`,
+  /** The billing screen's status (P12). */
+  billing: (org: string): string => `${apiPath.org(org)}/billing`,
+  /** `POST` a plan and period: a Dodo checkout URL to send the browser to. */
+  billingCheckout: (org: string): string => `${apiPath.billing(org)}/checkout`,
+  /** `GET` previews and `POST` requests a move to another plan or period. */
+  billingChange: (org: string): string => `${apiPath.billing(org)}/change`,
+  /** `POST` mints a link into Dodo's customer portal. */
+  billingPortal: (org: string): string => `${apiPath.billing(org)}/portal`,
   serviceTokens: (org: string): string => `${apiPath.org(org)}/tokens/service`,
   cliTokens: (org: string): string => `${apiPath.org(org)}/tokens/cli`,
   token: (org: string, kind: 'cli' | 'service', tokenId: string): string =>
@@ -175,6 +189,39 @@ export const apiPath = {
     `${apiPath.environment(org, project, env)}/export`,
   pull: (org: string, project: string, env: string): string =>
     `${apiPath.environment(org, project, env)}/pull`,
+
+  // ── P19: the paid secret features ──
+  /** `PUT {parent: slug|null}` — what this environment inherits from. */
+  environmentParent: (org: string, project: string, env: string): string =>
+    `${apiPath.environment(org, project, env)}/parent`,
+  /** `PATCH {plaintextExport?, readAlerts?}` — the environment's two switches. */
+  environmentPolicy: (org: string, project: string, env: string): string =>
+    `${apiPath.environment(org, project, env)}/policy`,
+  /** The new addresses this environment has been read from. Takes `?limit=`. */
+  readSightings: (org: string, project: string, env: string): string =>
+    `${apiPath.environment(org, project, env)}/read-sightings`,
+  /** The caller's own personal overrides in one environment. */
+  overrides: (org: string, project: string, env: string): string =>
+    `${apiPath.environment(org, project, env)}/overrides`,
+  override: (org: string, project: string, env: string, name: string): string =>
+    `${apiPath.overrides(org, project, env)}/${segment(name)}`,
+  /** `POST` into `env` — the *target* — from the source named in the body. */
+  promote: (org: string, project: string, env: string): string =>
+    `${apiPath.environment(org, project, env)}/promote`,
+  /** `GET ?at=` previews a point-in-time restore; `POST` applies it. */
+  restorePoint: (org: string, project: string, env: string): string =>
+    `${apiPath.environment(org, project, env)}/restore-point`,
+  /** The organisation's token and secret policies. */
+  policies: (org: string): string => `${apiPath.org(org)}/policies`,
+  webhooks: (org: string): string => `${apiPath.org(org)}/webhooks`,
+  webhook: (org: string, webhookId: string): string =>
+    `${apiPath.webhooks(org)}/${segment(webhookId)}`,
+  webhookRotateSecret: (org: string, webhookId: string): string =>
+    `${apiPath.webhook(org, webhookId)}/rotate-secret`,
+  webhookTest: (org: string, webhookId: string): string =>
+    `${apiPath.webhook(org, webhookId)}/test`,
+  webhookDeliveries: (org: string, webhookId: string): string =>
+    `${apiPath.webhook(org, webhookId)}/deliveries`,
 } as const;
 
 /**

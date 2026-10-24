@@ -172,10 +172,11 @@ export function isWorkosIdentity(value: unknown): value is WorkosIdentity {
 /**
  * What one authorization-code exchange establishes.
  *
- * The identity, and the four facts about *this* sign-in that the callback
- * decides on and that the identity alone cannot carry: which organisation's
- * connection it came through (if any), how the person authenticated, when they
- * last actually did, and whether somebody else is acting as them.
+ * The identity, and the facts about *this* sign-in that the callback decides
+ * on and that the identity alone cannot carry: which organisation's connection
+ * it came through (if any), how the person authenticated, when they last
+ * actually did, which provider session it came from, and whether somebody else
+ * is acting as them.
  */
 export interface AuthorizationCodeExchange<Identity extends VerifiedIdentity = VerifiedIdentity> {
   identity: Identity;
@@ -201,6 +202,13 @@ export interface AuthorizationCodeExchange<Identity extends VerifiedIdentity = V
    * first lock checks (`server/sign-in.ts`); nothing else reads it.
    */
   authenticatedAt: number | null;
+  /**
+   * The provider's own session this sign-in came from — WorkOS's `sid` — or
+   * `null` when it did not say. Kept on the session it issues so that signing
+   * out of xecret can end the provider's session too; it names a session, it
+   * does not authenticate as one.
+   */
+  providerSessionId: string | null;
   /**
    * Set when a provider administrator is signing in *as* this user. Refused by
    * the callback; carried so that the refusal can name who tried.

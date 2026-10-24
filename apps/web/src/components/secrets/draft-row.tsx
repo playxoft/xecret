@@ -23,6 +23,9 @@ import {
   Tooltip,
   useToast,
 } from '@/components/ui';
+import { policyProblem } from '@/components/policies/policy-checks';
+import { useSecretPolicy } from '@/components/policies/secret-policy-context';
+import { TemplateReferenceList } from './template-reference-list';
 import { EnvironmentLabel } from './value-field';
 import { ValueTypeMenu } from './value-type-menu';
 import { looksLikeAssignments, parsePastedSecrets } from './paste-secrets';
@@ -65,6 +68,12 @@ export interface DraftRowProps {
   }[];
   /** This environment, for the label beside its own box once there is more than one. */
   environment?: { name: string; isProduction: boolean } | undefined;
+  /**
+   * Whether this environment is production, for a secret policy scoped to it
+   * (P19 §8). From the page, because `environment` is undefined until the
+   * project listing lands.
+   */
+  isProduction?: boolean | undefined;
   onPatch: (patch: DraftSeed) => void;
   /** Sets the value for one of `otherEnvironments`. */
   onPatchValueIn?: ((slug: string, value: string) => void) | undefined;
@@ -119,6 +128,7 @@ export function DraftRow({
   disabled,
   otherEnvironments = [],
   environment,
+  isProduction = environment?.isProduction ?? false,
   onPatch,
   onPatchValueIn,
   onExpand,
@@ -151,24 +161,46 @@ export function DraftRow({
   /** Whether this cell holds a box for more than one environment. */
   const multiple = otherEnvironments.length > 0;
 
-  const liveNameProblem = draftNameProblem(draft, drafts, existingNames);
+  const policy = useSecretPolicy();
+
+  // The name rule (P19 §8) is asked once the name is otherwise good. A new row
+  // is always a new name; the environment it is asked against is this one,
+  // because a production-scoped rule is about where a key lands — and a row
+  // writing only to the other boxes is checked against each of those on save.
+  const liveNameProblem =
+    draftNameProblem(draft, drafts, existingNames) ??
+    (draft.name.trim().length === 0
+      ? null
+      : policyProblem(policy, { name: draft.name.trim(), newName: true, isProduction }));
   const nameError = draft.error?.field === 'name' ? draft.error.message : liveNameProblem;
 
   // The live shape check takes precedence over the last save attempt's message,
   // which may already describe a value the user has since changed. It runs
   // against the same module the server checks against on write — this copy is
-  // for the person, that one is the rule.
+  // for the person, that one is the rule. Then the organisation's value rules,
+  // which only a client holding the plaintext can ask.
   const valueType = toSecretValueType(draft.valueType);
   const shape = checkSecretValue(draft.value, valueType);
+  const valuePolicyProblem =
+    shape.valid && draft.value.length > 0
+      ? policyProblem(policy, {
+          name: draft.name.trim(),
+          newName: false,
+          value: draft.value,
+          valueType,
+          isProduction,
+        })
+      : null;
   const valueError = !shape.valid
     ? (shape.message ?? null)
-    : // `slug === undefined` is "the box for the environment this page is
+    : (valuePolicyProblem ??
+      // `slug === undefined` is "the box for the environment this page is
       // about". A message about production's value has its own box to sit
       // under and must not also appear here, where it would name a value the
       // reader can see is fine.
-      draft.error?.field === 'value' && draft.error.slug === undefined
-      ? draft.error.message
-      : null;
+      (draft.error?.field === 'value' && draft.error.slug === undefined
+        ? draft.error.message
+        : null));
 
   /**
    * The same three questions, for one of the other environments' boxes.
@@ -179,9 +211,26 @@ export function DraftRow({
    * "Not written to Production — a secret with this name already exists in
    * Production" belongs under production's value, not under the one that saved.
    */
-  function extraValueError(slug: string, name: string, value: string): string | null {
+  function extraValueError(
+    slug: string,
+    name: string,
+    value: string,
+    targetIsProduction: boolean,
+  ): string | null {
     const extraShape = checkSecretValue(value, valueType);
     if (!extraShape.valid) return extraShape.message ?? 'That value does not match its type.';
+
+    // That environment's side of the policy line, not this one's.
+    if (value.length > 0) {
+      const problem = policyProblem(policy, {
+        name: draft.name.trim(),
+        newName: true,
+        value,
+        valueType,
+        isProduction: targetIsProduction,
+      });
+      if (problem !== null) return problem;
+    }
 
     if (draft.error?.field === 'value' && draft.error.slug === slug) return draft.error.message;
 
@@ -460,7 +509,7 @@ export function DraftRow({
                 is a row with production left blank, not a row to save twice. */}
             {otherEnvironments.map((other) => {
               const value = draft.extraValues[other.slug] ?? '';
-              const problem = extraValueError(other.slug, other.name, value);
+              const problem = extraValueError(other.slug, other.name, value, other.isProduction);
               return (
                 <div key={other.slug} className="flex min-w-0 flex-col gap-1">
                   <div className="flex min-w-0 items-center gap-2">
@@ -528,7 +577,12 @@ export function DraftRow({
 
         {valueError !== null ? (
           <p className="text-danger-text mt-1 text-sm leading-5">{valueError}</p>
-        ) : null}
+        ) : (
+          // What the write will declare, for a template — see the component.
+          <div className="mt-1">
+            <TemplateReferenceList value={draft.value} valueType={valueType} />
+          </div>
+        )}
       </TableCell>
     </TableRow>
   );

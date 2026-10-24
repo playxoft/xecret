@@ -29,6 +29,30 @@ export interface FaqItem {
   readonly answer: string;
 }
 
+/**
+ * An answer that reads differently once the deployment takes real payments
+ * (P12) — "no card is collected" stops being true, and the page must stop
+ * saying it. Carried on the entry rather than in a table keyed by the question,
+ * which would stop applying the first time somebody reworded the question.
+ */
+export interface ConditionalFaqItem extends FaqItem {
+  readonly whenPaymentsLive?: FaqItem | undefined;
+}
+
+/**
+ * The answers as this deployment gives them — for the page and its structured
+ * data alike (`takesPayments` in `server/billing/payments-live.ts` decides).
+ */
+export function faqForPayments(
+  items: readonly ConditionalFaqItem[],
+  paymentsLive: boolean,
+): FaqItem[] {
+  return items.map((item) => {
+    const chosen = paymentsLive && item.whenPaymentsLive ? item.whenPaymentsLive : item;
+    return { question: chosen.question, answer: chosen.answer };
+  });
+}
+
 export function Faq({ items, className }: { items: readonly FaqItem[]; className?: string }) {
   return (
     <div

@@ -2,12 +2,14 @@ import * as z from 'zod/mini';
 import { isWellFormedToken, PKCE_VERIFIER_PATTERN, verifyPkce } from '@xecret/core/auth';
 import { createAuditBuilder } from '@xecret/core/audit';
 import type { AuditRecord } from '@xecret/core/audit';
+import { capTokenExpiry } from '@xecret/core/policy';
 import {
   consumeCliAuthCodeByValue,
   createCliToken,
   findOrganizationById,
   findUserById,
   loadAuthorizationContext,
+  loadOrgPolicies,
   revokeCliToken,
 } from '@xecret/db/repositories';
 import { DatabaseAuditSink } from '@/server/audit-sink';
@@ -79,10 +81,23 @@ export const POST = publicRoute(async ({ request, services }) => {
   });
   if (!membership) throw errors.unauthenticated('membership no longer active');
 
+  // P19 §6: an organisation that caps token lifetimes caps this one too. A
+  // person running `xecret login` has no expiry to fill in, so the login is not
+  // refused for lacking one — it is issued with the cap, and `xecret` asks them
+  // to log in again when it runs out. Read whatever the plan: a downgrade does
+  // not lift a policy.
+  const { tokens: tokenPolicy } = await loadOrgPolicies(services.db, grant.orgId);
+  const expiresAt = capTokenExpiry(tokenPolicy, null, new Date());
+
+  // Minted with how the approving browser session signed in: the token acts as
+  // its user, and an organisation's `sso_required` judges it by that session.
   const issued = await createCliToken(services.db, {
     orgId: grant.orgId,
     userId: grant.userId,
     name: grant.deviceName,
+    signInMethod: grant.signInMethod,
+    ssoWorkosOrgId: grant.ssoWorkosOrgId,
+    ...(expiresAt === null ? {} : { expiresAt }),
   });
 
   // Written directly rather than through the request recorder: `publicRoute`
@@ -114,6 +129,8 @@ export const POST = publicRoute(async ({ request, services }) => {
       // Shown once. The CLI puts it in the OS keychain and never prints it.
       token: issued.token,
       tokenPrefix: issued.record.tokenPrefix,
+      // `null` unless the organisation's token policy caps lifetimes.
+      expiresAt: issued.record.expiresAt?.toISOString() ?? null,
       user: { email: user.email, displayName: user.displayName },
       organization: { slug: organization.slug, name: organization.name },
     },

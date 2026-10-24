@@ -151,3 +151,22 @@ describe('a plan_limit refusal reaching the browser', () => {
     expect(error.plan).toBeNull();
   });
 });
+
+describe('the single sign-on refusals reaching the browser', () => {
+  // The same silent failure `plan_limit` once had: a code missing from
+  // `ERROR_CODES` arrives as `internal_error`, and the SSO card's "sign in
+  // again" for the setup portal — keyed on `reauth_required` — never appears.
+  it.each([
+    ['sso_required', 403],
+    ['reauth_required', 403],
+    ['upstream_refused', 502],
+  ])('keeps %s instead of arriving as internal_error', async (code, status) => {
+    respond({ error: { code, message: 'A sentence.', requestId: 'req-1' } }, status);
+
+    const error = await api.post('/orgs/acme/sso/portal').catch((cause: unknown) => cause);
+
+    expect(isApiError(error)).toBe(true);
+    if (!isApiError(error)) return;
+    expect(error.code).toBe(code);
+  });
+});

@@ -80,8 +80,12 @@ export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps
 
   async function handleSignOut() {
     setSigningOut(true);
+    // The sign-in page, unless the server answers WorkOS's logout URL for the
+    // AuthKit session this one came from — which ends that too, and comes back
+    // to the sign-in page itself.
+    let destination = SIGN_IN_PATH;
     try {
-      await endSession();
+      destination = await endSession();
     } finally {
       // The keys first, and unconditionally. The navigation below throws the
       // document away, which disposes of them too — but only once it happens,
@@ -96,7 +100,7 @@ export function UserMenu({ user, accountHref, onLock, className }: UserMenuProps
       // away. This runs even if sign-out threw: the cookie is already gone in
       // the common failure modes, and staying on a dashboard the user believes
       // they have left is the worse outcome.
-      window.location.assign(SIGN_IN_PATH);
+      window.location.assign(destination);
     }
   }
 

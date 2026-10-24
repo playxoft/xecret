@@ -3,6 +3,7 @@ title: Stop committing .env files: how to get secrets out of your repository wit
 description: The .env file is a default, not a discipline problem. Why copies escape .gitignore, the four ways it actually goes wrong, and a migration you can do today.
 keywords: [.env file, secrets in git, environment variables, gitignore env, remove env from git, dotenv alternative]
 published: 2026-08-12
+updated: 2026-10-20
 author: The xecret team
 role: Playxoft
 category: Practices
@@ -221,7 +222,7 @@ is open-source secret management built around one command: you store
 environment variables once, per environment, and `xecret run` injects them into
 whatever you were going to run anyway — locally, in CI, in production. The
 server is AGPL-3.0 and self-hosting holds nothing back; the CLI is MIT. It is
-pre-alpha, which we say plainly, and while it is, every paid feature is on for
-everybody with no card collected — the [pricing page](/pricing) sets out what
-changes at 1.0. If it turns out not to be for you, the `.gitignore` block
+pre-alpha, which we say plainly, and the [pricing page](/pricing) sets out what
+each plan includes and what, if anything, it costs on the day you read this. If
+it turns out not to be for you, the `.gitignore` block
 above is still worth ten minutes of your afternoon.

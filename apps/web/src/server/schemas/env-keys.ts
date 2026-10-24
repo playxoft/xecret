@@ -355,6 +355,15 @@ export interface EnvironmentKeysPayload {
    * endpoint that exists to hand a client its key material.
    */
   environmentId: string;
+  /**
+   * Whether the environment is marked production (P19 §8).
+   *
+   * Here because this is the read every client-encrypted write already makes
+   * before it encrypts, and the secret policy can be scoped to production: the
+   * value rules run in the client — the server never sees the value — so the
+   * client has to know which rules apply without a second request.
+   */
+  isProduction: boolean;
   activeEdk: ActiveKeyPayload | null;
   myGrant: Omit<GrantPayload, 'id' | 'recipientKind' | 'recipientId'> | null;
   ehkExists: boolean;

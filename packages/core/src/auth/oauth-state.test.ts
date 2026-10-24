@@ -29,7 +29,15 @@ const NOW_SECONDS = Math.floor(NOW.getTime() / 1000);
 
 function flow(over: Partial<OAuthState> = {}): OAuthState {
   const { state, verifier } = generateOAuthSecrets();
-  return { state, verifier, next: '/app', purpose: 'sign-in', issuedAt: NOW_SECONDS, ...over };
+  return {
+    state,
+    verifier,
+    next: '/app',
+    purpose: 'sign-in',
+    issuedAt: NOW_SECONDS,
+    organizationId: null,
+    ...over,
+  };
 }
 
 async function sealed(value: OAuthState, secret = SECRET): Promise<string> {
@@ -189,12 +197,52 @@ describe('a validly signed payload the callback could not act on', () => {
     ['a short verifier', { v: 'abc' }],
     ['a non-integer time', { t: 1.5 }],
     ['a state of the wrong shape', { s: 'not-a-state' }],
+    ['an organisation that is not a WorkOS id', { o: 'acme' }],
+    ['an organisation of the wrong type', { o: 42 }],
   ])('refuses %s', async (_label, over) => {
     const cookie = await resealed({ ...base, ...over });
     expect(await open(cookie, (over as { s?: string }).s ?? base.s)).toEqual({
       ok: false,
       reason: 'malformed',
     });
+  });
+});
+
+describe('the organisation the flow asked for', () => {
+  it('travels sealed, so the callback can compare it with the one that came back (review S1)', async () => {
+    const value = flow({ organizationId: 'org_01HATTACKERSORG' });
+
+    const result = await open(await sealed(value), value.state);
+
+    expect(result).toEqual({ ok: true, value });
+  });
+
+  it('cannot be swapped for another without breaking the MAC', async () => {
+    const value = flow({ organizationId: 'org_01HVICTIMSORG' });
+    const cookie = await sealed(value);
+    const [version, payload, mac] = cookie.split('.');
+    const fields = JSON.parse(utf8Decode(fromBase64Url(payload!))) as Record<string, unknown>;
+    const swapped = toBase64Url(utf8Encode(JSON.stringify({ ...fields, o: 'org_01HOTHER' })));
+
+    expect(await open(`${version}.${swapped}.${mac}`, value.state)).toEqual({
+      ok: false,
+      reason: 'signature',
+    });
+  });
+
+  it('reads a cookie sealed before the field existed as asking for none — the strict answer', async () => {
+    const { state, verifier } = generateOAuthSecrets();
+    const cookie = await resealed({
+      s: state,
+      v: verifier,
+      n: '/app',
+      p: 'sign-in',
+      t: NOW_SECONDS,
+    });
+
+    const result = await open(cookie, state);
+
+    expect(result.ok && result.value.organizationId).toBeNull();
   });
 });
 

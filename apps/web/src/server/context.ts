@@ -68,11 +68,13 @@ async function keyProvider(env: Bindings): Promise<KeyProvider> {
  * `async: true` is required: Next.js may run a route handler outside the
  * synchronous request scope, where the synchronous form throws.
  *
- * This is the only call into the OpenNext adapter in the codebase, and the only
- * place in the server layer that reads `process.env` — so "where does runtime
- * configuration enter the system?" has exactly one answer, and the precedence
- * between a binding and an environment variable is decided once rather than at
- * each call site.
+ * This is the server layer's call into the OpenNext adapter, and where it reads
+ * `process.env` — so "where does runtime configuration enter the system?" has
+ * one answer, and the precedence between a binding and an environment variable
+ * is decided once, by `withProcessFallbacks`, rather than at each call site.
+ * The one other caller, `billing/payments-live.ts`, makes the same two calls
+ * itself so that the marketing pages it serves do not import this module's
+ * database driver (see its header).
  */
 export async function workerContext(): Promise<WorkerContext> {
   const { env, ctx } = await getCloudflareContext({ async: true });

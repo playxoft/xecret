@@ -1,4 +1,7 @@
+import { countSecretFetch } from '@/server/billing/usage';
+import { assertPlaintextExportAllowed } from '@/server/export-policy';
 import { parseQuery } from '@/server/http';
+import { noteEnvironmentRead } from '@/server/read-alerts';
 import { authenticatedRoute } from '@/server/route';
 import { documentQuery } from '@/server/schemas/secrets';
 import {
@@ -48,6 +51,32 @@ export const GET = authenticatedRoute<Params>(
     authorizeSecretAction(scope, principal, 'secret.read');
     await enforceSecretRateLimit(services, principal, 'read');
 
+    // ── Plaintext export disabled by policy (P19 §9) ──
+    // Before the mode check, so an end-to-end encrypted environment that has
+    // disabled export says so, rather than telling the caller to build the file
+    // in the browser — where the same policy refuses it again.
+    if (scope.environment.plaintextExportDisabled) {
+      record(
+        audit(scope.organization.id).error(
+          'secret.read',
+          {
+            type: 'environment',
+            id: scope.environment.id,
+            projectId: scope.project.id,
+            environmentId: scope.environment.id,
+          },
+          'policyRefused',
+          {
+            policyName: 'plaintextExport',
+            projectSlug: scope.project.slug,
+            environmentSlug: scope.environment.slug,
+            source: auditSource(principal),
+          },
+        ),
+      );
+      assertPlaintextExportAllowed(scope);
+    }
+
     // An `e2ee` environment cannot be exported by the server, because exporting
     // is formatting and formatting takes plaintext. The refusal is deliberate
     // rather than a gap: the client already holds every value it would put in the
@@ -82,6 +111,12 @@ export const GET = authenticatedRoute<Params>(
         },
       ),
     );
+
+    noteEnvironmentRead(scope, services, principal);
+
+    // One fetch towards the plan's allowance (P12) — a map increment; the
+    // write happens later, from `waitUntil`, and can never fail this read.
+    countSecretFetch(services, scope.organization.id);
 
     const document = renderSecretDocument(secrets, format);
 

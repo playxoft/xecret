@@ -410,3 +410,18 @@ describe('uuid', () => {
     rejects('00000000-0000-0000-0000-000000000000', 'uuidv4');
   });
 });
+
+describe('template', () => {
+  it('accepts every reference form, escapes, and plain text', () => {
+    accepts('postgres://${DB_USER}@${shared.DB_HOST}/${core.prod.DB_NAME}', 'template');
+    accepts('literal $${HOME} and a lone $', 'template');
+    accepts('no references at all', 'template');
+  });
+
+  it('refuses a broken reference, and never quotes the value', () => {
+    rejects('a ${KEY', 'template');
+    rejects('${ spaced }', 'template');
+    const result = checkSecretValue('hunter2 ${not valid}', 'template');
+    expect(result.message).not.toContain('hunter2');
+  });
+});

@@ -141,7 +141,29 @@ export async function readJsonBody(request: Request): Promise<unknown> {
   }
 }
 
-async function readBoundedText(request: Request): Promise<string> {
+/**
+ * The body as the exact text that arrived, bounded — for a route that must
+ * verify a signature over the raw bytes before anything parses them (the
+ * payment webhook). Malformed UTF-8 is refused rather than replaced: a
+ * replacement character would change the bytes the signature covers.
+ */
+export async function readRawBody(request: Request, maxBytes: number): Promise<string> {
+  const declared = request.headers.get('content-length');
+  if (declared !== null && Number(declared) > maxBytes) {
+    throw errors.tooLarge('Request body is too large.');
+  }
+  try {
+    return await readBoundedText(request, maxBytes);
+  } catch (cause) {
+    if (cause instanceof ApiError) throw cause;
+    throw errors.badRequest('Request body is not valid UTF-8.');
+  }
+}
+
+async function readBoundedText(
+  request: Request,
+  maxBytes: number = MAX_REQUEST_BODY_BYTES,
+): Promise<string> {
   const body = request.body;
   if (body === null) return '';
 
@@ -153,7 +175,7 @@ async function readBoundedText(request: Request): Promise<string> {
     const { done, value } = await reader.read();
     if (done) break;
     total += value.byteLength;
-    if (total > MAX_REQUEST_BODY_BYTES) {
+    if (total > maxBytes) {
       await reader.cancel();
       throw errors.tooLarge('Request body is too large.');
     }
@@ -250,6 +272,45 @@ export function isSameOrigin(request: Request, expectedOrigin: string): boolean 
   const origin = request.headers.get('origin');
   if (origin === null) return true;
   return origin === expectedOrigin;
+}
+
+/**
+ * Whether a top-level `GET` navigation came from a page on this origin — the
+ * question `isSameOrigin` cannot answer, because a browser sends no `Origin`
+ * on a GET navigation. Fails *closed*, the opposite of `isSameOrigin`: it
+ * guards a link that must not work when followed from elsewhere (the SSO deep
+ * link on `GET /api/auth/login`), not an API a CLI must be able to call.
+ *
+ * `Sec-Fetch-Site` when the browser sends it, which every current one does,
+ * and which a page on another site cannot forge — it is a forbidden header,
+ * set by the browser alone. `same-site` is not enough: a sibling subdomain is
+ * not this application. `none` (typed, bookmarked, opened from another app) is
+ * not either: it is exactly how a link in an email arrives.
+ *
+ * Without the header, a `Referer` on this origin: the site-wide
+ * `strict-origin-when-cross-origin` policy sends the full one on every
+ * same-origin navigation. A request with neither is treated as cross-site.
+ *
+ * And it must be a **navigation** to a **document**: `Sec-Fetch-Mode: navigate`
+ * and `Sec-Fetch-Dest: document`, whenever the browser sends them. A
+ * same-origin `fetch()`, an `<img>`, an `<iframe>` or a form posted into one is
+ * not somebody following the sign-in page's link — and a same-origin page that
+ * could be made to issue one (a stored-markup bug, a compromised dependency)
+ * must not be able to start an organisation's SSO behind the person's back.
+ * Checked only when present, so a browser that sends `Sec-Fetch-Site` but not
+ * the other two is judged on the first alone.
+ */
+export function isSameOriginNavigation(request: Request, expectedOrigin: string): boolean {
+  const mode = request.headers.get('sec-fetch-mode');
+  if (mode !== null && mode !== 'navigate') return false;
+  const dest = request.headers.get('sec-fetch-dest');
+  if (dest !== null && dest !== 'document') return false;
+
+  const site = request.headers.get('sec-fetch-site');
+  if (site !== null) return site === 'same-origin';
+  const referer = request.headers.get('referer');
+  if (referer === null || !URL.canParse(referer)) return false;
+  return new URL(referer).origin === expectedOrigin;
 }
 
 export function toApiError(cause: unknown): ApiError {

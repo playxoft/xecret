@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/playxoft/xecret/cli/internal/api"
 	"github.com/playxoft/xecret/cli/internal/cache"
@@ -220,21 +221,42 @@ func (a *app) openKeys(
 	credentials *cred.Credentials,
 	resolved scope,
 ) (*envkeys.Material, error) {
+	_, material, err := a.openKeyState(ctx, client, credentials, resolved)
+	return material, err
+}
+
+// openKeyState is [app.openKeys] that also hands back the key state it opened,
+// for the one write that needs something else the state says: `secrets set`
+// asks whether the environment is production, because the organisation's
+// secret policy may govern production only. Reading it from the same response
+// costs nothing, and reading it from a second one would be a second answer.
+//
+// material is nil for a server-mode environment, as it always has been.
+func (a *app) openKeyState(
+	ctx context.Context,
+	client *api.Client,
+	credentials *cred.Credentials,
+	resolved scope,
+) (*api.EnvironmentKeys, *envkeys.Material, error) {
 	keys, err := a.keyState(ctx, client, credentials, resolved)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if keys.EncryptionMode != "e2ee" {
-		return nil, nil
+		return keys, nil, nil
 	}
 
 	principal, err := a.principal(ctx, client, credentials)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer principal.Close()
 
-	return envkeys.Open(*keys, principal)
+	material, err := envkeys.Open(*keys, principal)
+	if err != nil {
+		return nil, nil, err
+	}
+	return keys, material, nil
 }
 
 // e2eeHint turns the errors a user can act on into instructions.
@@ -302,6 +324,9 @@ func (a *app) exportDocument(
 	}
 
 	apiErr, ok := api.AsError(err)
+	if ok && apiErr.Status == 403 && strings.HasPrefix(apiErr.Message, "export_disabled:") {
+		return nil, exportDisabledError(resolved, nil)
+	}
 	if !ok || apiErr.Status != 409 {
 		return nil, err
 	}
@@ -309,6 +334,12 @@ func (a *app) exportDocument(
 	pulled, pullErr := client.Pull(ctx, resolved.Org, resolved.Project, resolved.Environment, format)
 	if pullErr != nil {
 		return nil, pullErr
+	}
+	// Before anything is decrypted. The server cannot refuse this half — the
+	// pull is the same endpoint `run` reads through — so it says what the policy
+	// is, and the refusal is this process's to make.
+	if pulled.ExportDisabled() {
+		return nil, exportDisabledError(resolved, pulled.ExportRefusedBy())
 	}
 	if pulled.Bundle == nil {
 		// The export refused for a reason that was not the encryption mode, and
@@ -321,4 +352,73 @@ func (a *app) exportDocument(
 		return nil, withE2eeHint(openErr)
 	}
 	return formatSecrets(secrets, format)
+}
+
+// exportDisabledError is the refusal `pull` and `export` give when the
+// environment's policy disables a plaintext copy (P19 §3), in either mode.
+//
+// ── Why the client enforces a rule about the client ──
+//
+// For an end-to-end encrypted environment there is nobody else who can. The
+// server serves the same ciphertext to `run` as to `pull`, because the bundle
+// is the bundle, and only this process ever holds the plaintext that would be
+// written out. So the policy travels with the bundle and this is where it is
+// honoured. A modified client can ignore it, and nothing here pretends
+// otherwise: the policy removes the sanctioned path to a `.env` file, which is
+// what stops the accidental copy, and it cannot stop somebody determined who
+// can already run a process with the values in its environment.
+//
+// A fresh error rather than the server's 403 wrapped: the hint that error would
+// collect — "ask an admin to review your access" — sends somebody to ask for
+// access they already have.
+//
+// ── Naming the environment that refused ──
+//
+// A resolved pull is refused when any environment it draws values from
+// disables export — a parent, or one a template reaches into — and a message
+// naming only the environment pulled would send its admins to a setting that
+// is already "allowed". refusedBy is what the bundle says about each one; when
+// it names environments other than the one pulled, so does the message. Empty
+// (an older server, or a server-mode pull) falls back to the environment
+// pulled, which is then the one that refused.
+func exportDisabledError(resolved scope, refusedBy []string) error {
+	pulled := resolved.Project + "/" + resolved.Environment
+	var others []string
+	for _, name := range refusedBy {
+		if name != pulled {
+			others = append(others, name)
+		}
+	}
+	if len(others) == 0 {
+		return fmt.Errorf(
+			"plaintext export is disabled for %s by its environment policy; an owner or admin of the "+
+				"organisation can change it in the environment's settings. 'xecret run' is unaffected.",
+			pulled)
+	}
+	return fmt.Errorf(
+		"plaintext export is disabled for %s: it reads values from %s, whose environment policy "+
+			"disables plaintext export; an owner or admin of the organisation can change it in that "+
+			"environment's settings. 'xecret run' is unaffected.",
+		pulled, strings.Join(others, ", "))
+}
+
+// noteUnappliedOverrides says, on stderr, when the person running `pull` or
+// `export` has personal overrides in this environment — because neither command
+// applies them, and a `.env` file that quietly holds the shared value where its
+// author expected their own is a surprise discovered at the worst moment.
+//
+// Best effort, and only for a login: a service token has no overrides and must
+// never call the endpoint, and a failure of any kind — an older server, a
+// network blip — costs the user nothing but this line.
+func (a *app) noteUnappliedOverrides(ctx context.Context, client *api.Client, resolved scope) {
+	if a.usingServiceToken() {
+		return
+	}
+	overrides, err := client.Overrides(ctx, resolved.Org, resolved.Project, resolved.Environment)
+	if err != nil || len(overrides) == 0 {
+		return
+	}
+	a.printer.Warnf(
+		"%d personal override(s) are set for this environment and are not in this output; 'xecret run' applies them.",
+		len(overrides))
 }
