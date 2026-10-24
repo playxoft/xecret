@@ -48,6 +48,7 @@ const COMBINING_ACUTE = cp(0x0301);
 const E_ACUTE = cp(0x00e9);
 const EM_DASH = cp(0x2014);
 const HYPHEN = cp(0x2010);
+const COMBINING_KEYCAP = cp(0x20e3);
 
 /** "Admin" in the full-width forms East Asian keyboards type. */
 const FULLWIDTH_ADMIN = cp(0xff21, 0xff44, 0xff4d, 0xff49, 0xff4e);
@@ -80,6 +81,12 @@ describe('custom role names', () => {
       DEVANAGARI_DEV,
       // An emoji, with or without the selector that asks for colour.
       `${HEART}${VS16} Support`,
+      // Full of the letters and digits the lookalike folds touch, and like no
+      // built-in role.
+      'Billing',
+      'Reading',
+      'Tier 1 support',
+      'Ops 2020',
     ];
     for (const name of names) expect(check(name), JSON.stringify(name)).toBeNull();
   });
@@ -152,6 +159,28 @@ describe('custom role names', () => {
     }
   });
 
+  it('refuses a built-in name spelled in lookalikes any keyboard types', () => {
+    // No other script, no other width: a capital I or a 1 for an l, a 0 for
+    // an o, "rn" for an m, "vv" for a w — each drawn, in a roster's
+    // sans-serif, as the name it imitates.
+    const names = [
+      'DeveIoper',
+      'Deve1oper',
+      'Deve|oper',
+      'DEVEIOPER',
+      '0wner',
+      'OVVNER',
+      'Adrnin',
+      'AdmIn',
+      'Adm1n',
+      'Vievver',
+      'VIEVVER',
+    ];
+    for (const name of names) {
+      expect(check(name), JSON.stringify(name)).toMatch(/built-in role/);
+    }
+  });
+
   it('refuses a name mixing Latin letters with Cyrillic or Greek ones', () => {
     expect(check(`D${CYRILLIC_SMALL_IE}ployer`)).toMatch(/cannot mix Latin/);
     expect(check(`Rel${cp(0x03b5)}ase`)).toMatch(/cannot mix Latin/);
@@ -189,6 +218,15 @@ describe('customRoleNameSkeleton — what makes two names one', () => {
       [`D${E_ACUTE}veloppeur`, 'Developpeur'],
       [`D${E_ACUTE}veloppeur`, `De${COMBINING_ACUTE}veloppeur`],
       ['on-call', `on${HYPHEN}call`],
+      // Lookalikes within Latin and ASCII.
+      ['Deployer', 'DepIoyer'],
+      ['Deployer', 'Dep1oyer'],
+      ['Deployer', 'Dep|oyer'],
+      ['Deployer', 'Depl0yer'],
+      ['Release manager', 'Release rnanager'],
+      ['Swap', 'Svvap'],
+      // A mark drawn around a digit is a decoration: a keycap 1 is a 1.
+      [`1${VS16}${COMBINING_KEYCAP}`, '1'],
     ];
     for (const [a, b] of pairs)
       expect(same(a, b), `${JSON.stringify(a)} ~ ${JSON.stringify(b)}`).toBe(true);
@@ -200,15 +238,34 @@ describe('customRoleNameSkeleton — what makes two names one', () => {
       ['Release manager', 'Releasemanager'],
       // A vowel sign is part of a Devanagari letter, not an accent on it.
       [DEVANAGARI_DEV, DEVANAGARI_DV],
+      // Folded where they share a lookalike, and different everywhere else.
+      ['Billing', 'Reading'],
+      ['Billing', 'Bidding'],
+      ['Tier 1', 'Tier 2'],
+      ['Ops', 'Ups'],
+      ['Admin', 'Admins'],
     ];
     for (const [a, b] of pairs)
       expect(same(a, b), `${JSON.stringify(a)} ~ ${JSON.stringify(b)}`).toBe(false);
   });
 
   it('reduces every built-in imitation above to the built-in name', () => {
-    expect(customRoleNameSkeleton(`${CYRILLIC_CAPITAL_O}wner`)).toBe('owner');
-    expect(customRoleNameSkeleton(MATH_BOLD_ADMIN)).toBe('admin');
-    expect(customRoleNameSkeleton(FULLWIDTH_ADMIN)).toBe('admin');
-    expect(customRoleNameSkeleton(`ADM${TURKISH_DOTTED_CAPITAL_I}N`)).toBe('admin');
+    // To the built-in name's own skeleton, which the folds reach too: the
+    // reserved names are compared as skeletons, not as they are spelled.
+    const imitations: [string, string][] = [
+      [`${CYRILLIC_CAPITAL_O}wner`, 'owner'],
+      [MATH_BOLD_ADMIN, 'admin'],
+      [FULLWIDTH_ADMIN, 'admin'],
+      [`ADM${TURKISH_DOTTED_CAPITAL_I}N`, 'admin'],
+      ['DeveIoper', 'developer'],
+      ['Deve1oper', 'developer'],
+      ['0wner', 'owner'],
+      ['Adrnin', 'admin'],
+    ];
+    for (const [imitation, builtIn] of imitations) {
+      expect(customRoleNameSkeleton(imitation), JSON.stringify(imitation)).toBe(
+        customRoleNameSkeleton(builtIn),
+      );
+    }
   });
 });

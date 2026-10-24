@@ -738,7 +738,8 @@ between a check and a write. An organisation may define at most 100 roles.
 **Names are unique as a reader sees them, not as `custom_roles_org_name_unique` does.** The
 constraint compares bytes; the application refuses a second name with the same *skeleton*
 (`customRoleNameSkeleton` in `@xecret/core/validation`: case, letter width, lookalike Cyrillic
-and Greek letters and Latin accents folded), which no index can express. So the repository reads
+and Greek letters, Latin accents, and the lookalikes within Latin — I, l, 1 and `|` as one stroke,
+0 as o, rn as m, vv as w — folded), which no index can express. So the repository reads
 every name in the organisation under the organisation lock and compares them in JavaScript —
 race-free because every role write takes that lock — and the constraint stays behind it for
 exact duplicates. Stored names are normalised first: variation selectors dropped, spaces

@@ -371,9 +371,12 @@ export const DELETE = authenticatedRoute<Params>(
  * The checks run inside `setMemberCustomRole`'s transaction, on the member,
  * the role and the member's grant rows as read under the organisation lock —
  * so the "before" the widening test compares with is the role the write
- * replaces, not whatever an earlier read saw. The plan is asked there too, so
- * asking for the role the member already holds — which the repository answers
- * without asking the guard — is a 200 that writes, records and gates nothing.
+ * replaces, not whatever an earlier read saw. The plan is asked there too,
+ * but only of a real change. Asking for the role the member already holds is
+ * still put to the guard and measured like the change it would be, so a
+ * caller who could not make that change gets the same 403 and `denied`
+ * record for the no-op; one who could gets a 200 that writes, records and
+ * gates nothing.
  */
 async function changeCustomRole(params: {
   scope: OrgScope;

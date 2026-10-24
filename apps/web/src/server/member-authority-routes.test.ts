@@ -1038,6 +1038,45 @@ describe('/members/{id}/grants on yourself — owners only', () => {
 
     expect(response.status).toBe(200);
   });
+
+  it.each([
+    [
+      'writing',
+      () => putOwn({ projectSlug: 'api', environmentSlug: 'production', accessLevel: 'admin' }),
+      'upsertAccessGrant',
+      'access.granted',
+    ],
+    [
+      'deleting',
+      () => removeOwn({ projectSlug: 'api', environmentSlug: 'production' }),
+      'removeAccessGrant',
+      'access.revoked',
+    ],
+  ] as const)(
+    'refuses an owner %s their own grant once the lock finds them demoted',
+    async (_how, act, write, action) => {
+      // The request found an owner holding a production `none` on
+      // themselves; by the lock a concurrent change has made them an admin.
+      // Measured as the owner they were, they would lift the restriction an
+      // owner placed on the admin they now are.
+      callerIs({
+        role: 'owner',
+        grants: [{ projectId: PROJECT_ID, environmentId: PRODUCTION_ID, accessLevel: 'none' }],
+      });
+      repositories.findMemberWithUser.mockResolvedValue(self('owner'));
+      lockedAs = { member: self('admin'), grants: [grantRow(PRODUCTION_ID, 'none')] };
+
+      const response = await act();
+
+      expect(response.status).toBe(403);
+      expect(await errorOf(response)).toMatchObject({
+        code: 'forbidden',
+        message: 'You cannot change your own access grants.',
+      });
+      expect(written).not.toHaveBeenCalledWith(write);
+      expect((await denials()).map((record) => record.action)).toEqual([action]);
+    },
+  );
 });
 
 /* ── Service tokens ───────────────────────────────────────────────────────── */
