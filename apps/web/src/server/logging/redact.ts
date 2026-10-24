@@ -113,8 +113,19 @@ const SENSITIVE_WORDS = [
  */
 const ALWAYS_SAFE = new Set(['keyversion', 'rootkeyversion', 'requestedversion', 'algorithm']);
 
+/**
+ * Names that are hidden even though they end in an identifier suffix.
+ *
+ * The payment provider's customer id is the one identifier P12 rules may not
+ * reach a log at all — it is the key every invoice, card and address at the
+ * provider hangs off — and `customerId` would otherwise be waved through by the
+ * `id` suffix exactly as `tokenId` is. Checked before both rules above.
+ */
+const ALWAYS_SENSITIVE = new Set(['customerid', 'dodocustomerid', 'cardnumber', 'cardlastfour']);
+
 export function isSensitiveKey(key: string): boolean {
   const lower = key.toLowerCase();
+  if (ALWAYS_SENSITIVE.has(lower)) return true;
   if (ALWAYS_SAFE.has(lower)) return false;
   if (IDENTIFIER_SUFFIXES.some((suffix) => lower.endsWith(suffix))) return false;
   return SENSITIVE_WORDS.some((word) => lower.includes(word));
@@ -153,6 +164,12 @@ const TEXT_SCRUBBERS: readonly {
       /\b(password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key)"?\s*[:=]\s*"?[^\s",}]+"?/gi,
     replacement: '$1=[redacted]',
   },
+  // The payment provider's webhook signing secret, wherever it turns up — a
+  // misconfiguration echoed into an error, a header dumped by a failing call.
+  { pattern: /\bwhsec_[A-Za-z0-9+/=]{16,}/g, replacement: '[redacted]' },
+  // A payment-provider customer id (`cus_…`): P12's rule is that none reaches
+  // a log, and a provider error that quotes the request back would carry one.
+  { pattern: /\bcus_[A-Za-z0-9]{8,}/g, replacement: '[redacted-customer]' },
   // An email address is personal data, and a provider that rejects a send
   // echoes the recipient back in the rejection. Removing it here is what lets
   // the rest of that rejection — the part that says *why* — be logged at all:

@@ -1,3 +1,4 @@
+import { countSecretFetch } from '@/server/billing/usage';
 import { json, parseQuery } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
 import { clientEnvironmentBundle } from '@/server/env-bundle';
@@ -105,6 +106,9 @@ export const GET = authenticatedRoute<Params>(
         ),
       );
 
+      // One fetch towards the plan's allowance (P12) — a map increment; the
+      // write happens later, from `waitUntil`, and can never fail this read.
+      countSecretFetch(services, scope.organization.id);
       return json(bundle);
     }
 
@@ -135,6 +139,10 @@ export const GET = authenticatedRoute<Params>(
         },
       ),
     );
+
+    // One fetch towards the plan's allowance (P12) — a map increment; the
+    // write happens later, from `waitUntil`, and can never fail this read.
+    countSecretFetch(services, scope.organization.id);
 
     const document = renderSecretDocument(secrets, format);
 

@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 
-import type { FaqItem } from '@/components/marketing';
+import type { ConditionalFaqItem, FaqItem } from '@/components/marketing';
 import {
   CtaBand,
   Faq,
@@ -14,11 +14,13 @@ import {
   RevealGroup,
   Section,
   SectionHeading,
+  faqForPayments,
   faqSchema,
   graph,
 } from '@/components/marketing';
 import { AlertCircleIcon, BookIcon, GitHubIcon } from '@/components/ui/icons';
 import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } from '@/lib/site';
+import { takesPayments } from '@/server/billing/payments-live';
 
 /**
  * The marketing FAQ — the questions somebody asks *before* they sign up.
@@ -41,7 +43,7 @@ import { absoluteUrl, breadcrumbSchema, REPO_URL, SITE_KEYWORDS, SITE_NAME } fro
  * are more findable anyway — nobody clicks a link inside a collapsed `details`.
  *
  * ── Why one `FAQPage` node for six sections ──
- * Google's guidance is one `FAQPage` per page. `ALL_QUESTIONS` is derived from
+ * Google's guidance is one `FAQPage` per page. `allQuestions` is derived from
  * `CATEGORIES` by the same traversal the render uses, so the schema order and
  * the visible order cannot drift apart: adding a question to a category is the
  * only edit needed, and there is no second list to forget.
@@ -81,7 +83,9 @@ interface FaqCategory {
   readonly title: string;
   /** Carries the links the answers cannot. */
   readonly lede: ReactNode;
-  readonly items: readonly FaqItem[];
+  /** The lede once this deployment takes real payments, where it differs (P12). */
+  readonly ledeWhenPaymentsLive?: ReactNode;
+  readonly items: readonly ConditionalFaqItem[];
 }
 
 const CATEGORIES: readonly FaqCategory[] = [
@@ -230,6 +234,15 @@ const CATEGORIES: readonly FaqCategory[] = [
         pre-alpha.
       </>
     ),
+    ledeWhenPaymentsLive: (
+      <>
+        The numbers below are the ones on{' '}
+        <Link href="/pricing" className={INLINE_LINK}>
+          the pricing page
+        </Link>
+        , which shows every currency. Paid plans are bought from an organisation’s billing page.
+      </>
+    ),
     items: [
       {
         question: 'What does xecret cost?',
@@ -240,6 +253,12 @@ const CATEGORIES: readonly FaqCategory[] = [
         question: 'Do I need a card to try it?',
         answer:
           'No. While xecret is in pre-alpha every paid feature is switched on for everybody and no card is collected at all. The prices are published now anyway, so that nobody is surprised at 1.0.',
+        // Pre-alpha copy until this deployment takes real payments (P12).
+        whenPaymentsLive: {
+          question: 'Do I need a card to try it?',
+          answer:
+            'Not to try it: Free is $0 forever and never asks for a card. A card is asked for only when an owner chooses a paid plan, at the checkout of Dodo Payments, our merchant of record — we never see the card number.',
+        },
       },
       {
         question: 'Is the free tier really free?',
@@ -426,31 +445,47 @@ const CATEGORIES: readonly FaqCategory[] = [
   },
 ];
 
-/** The `FAQPage` payload, in render order by construction. See the note above. */
-const ALL_QUESTIONS: readonly FaqItem[] = CATEGORIES.flatMap((category) => category.items);
+/**
+ * The categories as this deployment answers them: the pricing answers and lede
+ * that say nothing is charged give way to their live counterparts once it takes
+ * real payments (`takesPayments`). Page and structured data read the same list.
+ */
+function categoriesFor(paymentsLive: boolean) {
+  return CATEGORIES.map((category) => ({
+    ...category,
+    lede:
+      paymentsLive && category.ledeWhenPaymentsLive !== undefined
+        ? category.ledeWhenPaymentsLive
+        : category.lede,
+    items: faqForPayments(category.items, paymentsLive),
+  }));
+}
 
 const HELP_CARD =
   'border-line bg-surface hover:border-line-strong hover:bg-surface-hover block rounded-xl ' +
   'border p-5 transition-colors';
 
-export default function FaqPage() {
+export default async function FaqPage() {
+  const categories = categoriesFor(await takesPayments());
+  /** The `FAQPage` payload, in render order by construction. See the note above. */
+  const allQuestions: readonly FaqItem[] = categories.flatMap((category) => category.items);
   return (
     <PublicPage>
       <JsonLd
-        data={graph(faqSchema(ALL_QUESTIONS), breadcrumbSchema([{ name: 'FAQ', path: '/faq' }]))}
+        data={graph(faqSchema(allQuestions), breadcrumbSchema([{ name: 'FAQ', path: '/faq' }]))}
       />
 
       <PageHero
         eyebrow="Frequently asked"
         title="The questions you ask before you trust a secrets manager."
-        description={`${ALL_QUESTIONS.length} answers about how xecret works, what it costs, what it can see and what happens when you leave — including the several where the honest answer is no.`}
+        description={`${allQuestions.length} answers about how xecret works, what it costs, what it can see and what happens when you leave — including the several where the honest answer is no.`}
       >
         {/* Plain `#` anchors rather than a scroll-spy component. Six categories
             is exactly the length at which a reader wants to jump, and an anchor
             works with no JavaScript, survives being copied out of the address
             bar, and is what the browser's own back button already understands. */}
         <nav aria-label="Question categories" className="flex flex-wrap justify-center gap-2">
-          {CATEGORIES.map((category) => (
+          {categories.map((category) => (
             <a
               key={category.id}
               href={`#${category.id}`}
@@ -462,7 +497,7 @@ export default function FaqPage() {
         </nav>
       </PageHero>
 
-      {CATEGORIES.map((category, index) => (
+      {categories.map((category, index) => (
         <Section
           key={category.id}
           id={category.id}

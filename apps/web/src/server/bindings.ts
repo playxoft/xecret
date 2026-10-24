@@ -141,6 +141,56 @@ declare global {
      */
     XECRET_LOG_LEVEL?: string | undefined;
 
+    /*
+     * ── Payments: Dodo (P12, `server/billing/config.ts`) ──
+     *
+     * All or nothing. A deployment with none of these has billing switched
+     * off — a self-hoster, or this one before Dodo is set up — and every
+     * organisation's plan is whatever the operator tool set. A deployment with
+     * some but not all is misconfigured, and says so: every billing route and
+     * the webhook answer 503 naming the missing variables, and `check:env` and
+     * `check:deploy` fail before a deploy gets that far.
+     */
+
+    /**
+     * The Dodo API key (`Authorization: Bearer …`), with write permission. A
+     * credential: it can create subscriptions and change what a customer is
+     * charged. Phase.dev → Worker secret; never in `wrangler.toml`.
+     */
+    DODO_API_KEY?: string | undefined;
+
+    /**
+     * The webhook endpoint's signing secret (`whsec_…`). A credential: whoever
+     * holds it can forge a payment event — "this organisation paid for Team".
+     * Phase.dev → Worker secret.
+     */
+    DODO_WEBHOOK_SECRET?: string | undefined;
+
+    /**
+     * `test_mode` or `live_mode` — which Dodo the key, the products and the
+     * webhook belong to. The two share nothing. Not a credential.
+     */
+    DODO_ENVIRONMENT?: string | undefined;
+
+    /** The four subscription products, `pdt_…`. Not credentials; per Dodo mode. */
+    DODO_PRODUCT_PRO_MONTHLY?: string | undefined;
+    DODO_PRODUCT_PRO_YEARLY?: string | undefined;
+    DODO_PRODUCT_TEAM_MONTHLY?: string | undefined;
+    DODO_PRODUCT_TEAM_YEARLY?: string | undefined;
+
+    /**
+     * The usage meter's **event name** (e.g. `secret_fetch_kilo`) — what the
+     * code sends one event of per thousand fetches past the allowance. Not the
+     * meter's `mtr_…` id; `check:env` refuses one of those here.
+     */
+    DODO_METER_SECRET_FETCH?: string | undefined;
+
+    /**
+     * Optional: the SAML add-on's id. When set, a subscription that carries it
+     * switches `addon_saml` on. Never switches it off — see `snapshot.ts`.
+     */
+    DODO_ADDON_SAML?: string | undefined;
+
     RL_LOGIN?: RateLimit;
     RL_CLI_TOKEN?: RateLimit;
     RL_INVITE?: RateLimit;
@@ -226,6 +276,15 @@ const PROCESS_SUPPLIED = [
   'BETTERSTACK_SOURCE_TOKEN',
   'BETTERSTACK_INGEST_URL',
   'XECRET_LOG_LEVEL',
+  'DODO_API_KEY',
+  'DODO_WEBHOOK_SECRET',
+  'DODO_ENVIRONMENT',
+  'DODO_PRODUCT_PRO_MONTHLY',
+  'DODO_PRODUCT_PRO_YEARLY',
+  'DODO_PRODUCT_TEAM_MONTHLY',
+  'DODO_PRODUCT_TEAM_YEARLY',
+  'DODO_METER_SECRET_FETCH',
+  'DODO_ADDON_SAML',
 ] as const;
 
 /**

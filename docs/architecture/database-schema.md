@@ -962,7 +962,46 @@ audit_logs — no FKs by design; references are soft
       organisations and VALIDATE of organizations_workos_link_client_check;
       sessions.workos_session_id (the AuthKit session, ended at sign-out) and
       sessions.fresh_auth_at (the setup portal's step-up) — additive
+0024  payments through Dodo (P12): org_subscriptions.current_period_start, .dodo_product_id,
+      .dodo_event_at (the ordering guard for webhook snapshots), .renewal_amount_minor;
+      billing_checkouts and billing_license_keys (insert-only grants — a checkout that
+      happened, a licence issued, never the key), billing_seat_syncs (seat counts owed to
+      Dodo), billing_reminders (the email deduplication, by primary key) — additive
+0025  P12, review round 1: org_subscriptions.metered_from (usage is billed only from the
+      activation or the trial's end), .dodo_mode (test and live never cross), .dodo_event_id
+      (the tie-break for snapshots stamped alike), .on_hold_since (fourteen days ends the
+      plan), .dodo_scheduled_change_at (seat pushes wait for it), .dodo_currency and
+      .dodo_billing_country (what Dodo last reported); billing_checkouts.nonce (unique),
+      .subscription_id and .consumed_at (column-level UPDATE grant only — a checkout attaches
+      one subscription); billing_seat_syncs.generation, .claimed_until, .not_before,
+      .dead_lettered_at (one push per organisation, cleared only under the generation it
+      counted, retried only when due); the plan_ended_unpaid reminder; billing_requests
+      (idempotency keys for checkout and plan change) — additive, one backfill of
+      metered_from
+0026  P12, review round 2: org_usage_counters.included_fetches — the allowance a usage
+      month opened with (the plan's includedFetchesPerMonth with any support raise),
+      raised and never lowered while the month is current; the overage meter bills a
+      month against it alone, so a later downgrade or a cleared override never
+      re-bills it, and a month without one is never billed. (A yearly plan's counter
+      rows are months of its year, from the billing anniversary — no schema change.)
+      — additive, one backfill from each organisation's current plan
+0027  P12, review round 3: billing_reminders_kind_check widened with three once-only
+      alerts (alert_unknown_product, alert_activation_waiting, alert_operator_managed) —
+      the reminders' primary key deduplicates an error line the hourly job would
+      otherwise repeat every run; never an email — constraint only, no backfill
 ```
+
+Migration 0024 (P12) is additive and **must be applied before the code that reads it**: from that
+build on every whole-row `select()` on `org_subscriptions` names the four new columns — the
+billing screen and its routes, the webhook, the billing jobs, and the check that refuses to
+delete an organisation (or an account's last organisation) Dodo still bills. Resolving an
+organisation on a request reads only `entitlementColumns` and is unaffected. Applying it first is
+harmless; older code never reads or writes any of it. `docs/operations/billing.md` §5.
+Migration 0025 follows the same rule, and adds the membership changes to what needs it: from
+that build `addMember` and `removeMember` write the seat-sync debt in their own transaction,
+naming `billing_seat_syncs.generation`. Migration 0026 too: from that build the usage flush
+writes `org_usage_counters.included_fetches` and the meter reads it. And 0027: from that build
+the hourly billing job and the reconciler write the once-only alert kinds to `billing_reminders`.
 
 Migration 0022 (WS-5, review round 1) is additive, and — like 0021 — **must be applied before
 the code that names its columns**: from that build on every `select()` on `sessions`,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { MINIMUM_SEATS } from './plans';
-import { resolveBilledSeats } from './seats';
+import { MINIMUM_SEATS, PLANS } from './plans';
+import { FREE_SEAT_LIMIT, providerSeats, resolveBilledSeats, UNCAPPED_SEAT_LIMIT } from './seats';
 
 /**
  * The seat rule: what a change bills, and what it enforces.
@@ -184,5 +184,54 @@ describe('resolveBilledSeats', () => {
       const decision = resolveBilledSeats({ plan: 'team', requested, billed: 5, enforced: 5 });
       expect(decision.billed).toBe(decision.enforced);
     }
+  });
+});
+
+/**
+ * P12: the seats a subscription the payment provider manages is billed for.
+ *
+ * The rule the pricing page publishes, as code: every seated member is billed
+ * whatever their status, a pending invitation is not, the plan's minimum is a
+ * floor, and an organisation on a per-seat plan is never refused an invitation
+ * for want of a seat — the seat is bought when the invitation is accepted.
+ */
+describe('providerSeats', () => {
+  it('bills every seated member, floored at the plan minimum', () => {
+    expect(providerSeats('pro', 4).billed).toBe(4);
+    expect(providerSeats('team', 1).billed).toBe(MINIMUM_SEATS.team);
+    expect(providerSeats('team', 7).billed).toBe(7);
+    // Never zero, whatever arrives: a subscription bills at least one seat.
+    expect(providerSeats('pro', 0).billed).toBe(1);
+    expect(providerSeats('pro', Number.NaN).billed).toBe(1);
+    expect(providerSeats('pro', -3).billed).toBe(1);
+  });
+
+  it('never refuses an invitation on an uncapped plan', () => {
+    expect(PLANS.pro.limits.seats).toBeNull();
+    expect(PLANS.team.limits.seats).toBeNull();
+    expect(providerSeats('pro', 3).enforced).toBe(UNCAPPED_SEAT_LIMIT);
+    expect(providerSeats('team', 3).enforced).toBe(UNCAPPED_SEAT_LIMIT);
+  });
+
+  it('keeps the enforced ceiling at or above what is billed', () => {
+    for (const plan of ['pro', 'team', 'enterprise'] as const) {
+      for (const seated of [0, 1, 9, 10, 500]) {
+        const { billed, enforced } = providerSeats(plan, seated);
+        expect(enforced, `${plan} ${seated}`).toBeGreaterThanOrEqual(billed);
+      }
+    }
+  });
+
+  it('answers Free with the ceiling every Free organisation already has', () => {
+    expect(providerSeats('free', 12)).toEqual({ billed: 1, enforced: FREE_SEAT_LIMIT });
+  });
+
+  it('reads a retired plan as the plan that replaced it', () => {
+    expect(providerSeats('scale', 2)).toEqual(providerSeats('team', 2));
+  });
+
+  it('keeps the uncapped ceiling inside an integer column', () => {
+    expect(Number.isSafeInteger(UNCAPPED_SEAT_LIMIT)).toBe(true);
+    expect(UNCAPPED_SEAT_LIMIT).toBeLessThan(2 ** 31);
   });
 });

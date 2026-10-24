@@ -169,6 +169,34 @@
       "when": 1788000000000,
       "tag": "0023_sso_workos_home",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1788100000000,
+      "tag": "0024_dodo_billing",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1788200000000,
+      "tag": "0025_dodo_billing_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1788300000000,
+      "tag": "0026_usage_month_allowance",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1788400000000,
+      "tag": "0027_billing_alerts_once",
+      "breakpoints": true
     }
   ]
 }

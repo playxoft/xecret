@@ -188,6 +188,14 @@ export class ApiError extends Error {
 }
 
 /**
+ * A payment-provider call whose outcome is not known — it may have gone
+ * through. Answered like any `unavailable`; the billing service keeps the
+ * request's idempotency key claimed rather than letting it go, so a retry
+ * with the same key is told it is in flight instead of reaching Dodo again.
+ */
+export class OutcomeUnknownError extends ApiError {}
+
+/**
  * Constructors for the errors routes actually raise.
  *
  * Fixed messages, defined in one place. A handler that composes its own message
@@ -486,6 +494,152 @@ export const errors = {
         'environment recorded. An operator records it once (the “WorkOS environment” step in ' +
         'docs/self-hosting.md), and then it can.',
       { logDetail: 'workos_home is empty' },
+    ),
+
+  /*
+   * ── Payments (P12) ──
+   * Every sentence says whether anything was charged or changed, because the
+   * person reading it is deciding whether to try again with a card in hand.
+   */
+
+  /** This deployment takes no payments — a self-hoster, or Dodo not set up yet. */
+  billingDisabled: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This installation does not take payments, so plans are set by its operator. Nothing ' +
+        'was charged.',
+      { logDetail: 'billing is not configured' },
+    ),
+
+  /** A checkout for an organisation already subscribed: the plan is changed, not bought again. */
+  billingAlreadySubscribed: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation already has a subscription. Change its plan instead — starting a second ' +
+        'one would charge twice. Nothing was charged.',
+      { logDetail: 'checkout with a live subscription' },
+    ),
+
+  /** The plan was set by xecret support (an Enterprise contract, a grant) and is not self-serve. */
+  billingManagedBySupport: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation’s plan is managed by xecret support, so it cannot be changed here. ' +
+        'Contact us and we will change it for you. Nothing was charged.',
+      { logDetail: 'plan set by an operator' },
+    ),
+
+  /** A plan change or a portal link for an organisation with no subscription to act on. */
+  billingNoSubscription: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation has no subscription to change yet. Choose a plan to subscribe.',
+      { logDetail: 'no live subscription' },
+    ),
+
+  /** The organisation is already on exactly what was asked for. */
+  billingSamePlan: (): ApiError =>
+    new ApiError('bad_request', 'This organisation is already on that plan and billing period.'),
+
+  /**
+   * A checkout was paid and its subscription is still being applied: a second
+   * checkout now would be a second subscription.
+   */
+  billingCheckoutPending: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'A payment for this organisation went through and its plan is still being applied. Give ' +
+        'it a minute and reload — starting another checkout now would charge twice. Nothing was ' +
+        'charged.',
+      { logDetail: 'linked subscription not yet active' },
+    ),
+
+  /**
+   * The organisation's subscription belongs to the other Dodo mode (a test
+   * subscription on a live deployment, or the reverse), so this deployment
+   * cannot act on it.
+   */
+  billingOtherMode: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation’s billing record was made in a different payment environment from the ' +
+        'one this installation uses, so nothing can be bought or changed for it from here. ' +
+        'Contact support with the request id. Nothing was changed or charged.',
+      { logDetail: 'billing record from the other dodo mode' },
+    ),
+
+  /** The organisation's payment customer is held by another organisation too. */
+  billingSharedCustomer: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation’s billing account is shared with another organisation, so its payment ' +
+        'portal cannot be opened from here without showing the other one’s invoices. Contact ' +
+        'support with the request id and we will separate them.',
+      { logDetail: 'dodo customer held by more than one organisation' },
+    ),
+
+  /** The same idempotency key, still being answered. */
+  billingRequestInFlight: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'That request is already being handled. Wait a moment and reload the billing page — ' +
+        'nothing will be charged twice.',
+      { logDetail: 'idempotency key in flight' },
+    ),
+
+  /** An idempotency key reused for a different request. */
+  billingIdempotencyMismatch: (): ApiError =>
+    new ApiError(
+      'bad_request',
+      'This request reuses the idempotency key of a different request. Nothing was changed or ' +
+        'charged.',
+      { logDetail: 'idempotency key reused for another request' },
+    ),
+
+  /** Dodo refused because an earlier change is still waiting to take effect. */
+  billingChangePending: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'A plan change is already waiting to take effect at the end of this billing period. ' +
+        'Nothing new was changed.',
+      { logDetail: 'dodo pending plan change' },
+    ),
+
+  /**
+   * Dodo did not answer a checkout or a plan change in time, or the
+   * connection broke: the request may have reached it and gone through, so
+   * this answer claims nothing about what was charged. The request's
+   * idempotency key is kept, so asking again with it cannot reach Dodo twice.
+   */
+  billingOutcomeUnknown: (what: 'checkout' | 'change', logDetail: string): ApiError =>
+    new OutcomeUnknownError(
+      'unavailable',
+      what === 'checkout'
+        ? 'Our payment provider did not answer in time, so this checkout may or may not have ' +
+            'been created. A checkout charges only once it is completed — reload the billing ' +
+            'page in a minute and choose the plan again.'
+        : 'Our payment provider did not answer in time, so this plan change may have gone ' +
+            'through — and, for a move up, been charged. Reload the billing page in a few ' +
+            'minutes before asking again: a change that went through shows there.',
+      { logDetail },
+    ),
+
+  /** Dodo could not be reached, or answered with an outage. Nothing was changed or charged. */
+  billingProviderUnavailable: (logDetail: string): ApiError =>
+    new ApiError(
+      'unavailable',
+      'Our payment provider could not be reached, so nothing was changed or charged. Try again ' +
+        'in a minute.',
+      { logDetail },
+    ),
+
+  /** Dodo answered and refused the request this server built. */
+  billingProviderRefused: (logDetail: string): ApiError =>
+    new ApiError(
+      'upstream_refused',
+      'Our payment provider refused the request, so nothing was changed or charged. Contact ' +
+        'support with the request id.',
+      { logDetail },
     ),
 
   /** See the `sso_required` code above. */

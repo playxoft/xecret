@@ -156,6 +156,14 @@ export interface ApiRequestOptions {
    * bouncing to the sign-in screen would be wrong or would loop.
    */
   redirectOnUnauthenticated?: boolean;
+  /**
+   * Sent as `Idempotency-Key`, for a request that must happen at most once
+   * however often it is sent — a checkout, a plan change. Mint one per
+   * deliberate action (`crypto.randomUUID()`), and send the same one again for
+   * a retry of that action: the server answers the repeat with the first
+   * answer.
+   */
+  idempotencyKey?: string;
 }
 
 // Re-exported so the callers that have always imported it from here keep
@@ -328,6 +336,7 @@ async function request<T>(
     // produce a second, less accurate error message.
     if (csrf !== null) headers.set(CSRF_HEADER_NAME, csrf);
   }
+  if (options.idempotencyKey !== undefined) headers.set('idempotency-key', options.idempotencyKey);
 
   const init: RequestInit = {
     method,
