@@ -222,6 +222,9 @@ XECRET_PUBLIC_URL = "https://xecret-staging.playxoft.com"
 # `scripts/deploy-web.sh` now refuses to build any environment that does not
 # name one.
 WORKOS_CLIENT_ID = "client_01M36CECEQ1FY9TA1F952FY958"
+# Same key map as production: staging shares the database, so it must wrap
+# with a version the shared XECRET_ROOT_KEYS can open.
+XECRET_ROOT_KEY_VERSION = "1"
 
 # ────────────────────────────────────────────────────────────────────────────
 # NOT IN THIS FILE — credentials, and the two ways to hold them
