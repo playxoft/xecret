@@ -50,7 +50,33 @@ export type ApiErrorCode =
    * `isDataPlaneActive` in `@xecret/core/entitlements`.
    */
   | 'plan_limit'
+  /**
+   * The organisation requires its single sign-on, and this credential — a
+   * session, or a CLI token approved from one — did not come through it.
+   *
+   * Its own code for the reason `session_locked` has one: the caller is a
+   * member, is permitted, and can fix it without anybody granting them
+   * anything — by signing in through the organisation's identity provider. The
+   * dashboard offers that sign-in; the CLI says to run `xecret login` again
+   * from a single-sign-on session. Only ever answered to a member: the
+   * organisation and the membership are resolved first, so it confirms
+   * nothing a stranger could not already see.
+   */
+  | 'sso_required'
+  /**
+   * The action needs a fresh sign-in of this session first — a step-up. The
+   * dashboard sends the person through `GET /api/auth/login?reauth=1` and back.
+   */
+  | 'reauth_required'
   | 'internal_error'
+  /**
+   * An upstream provider (WorkOS) answered, and refused the request this
+   * server built — a configuration problem rather than an outage, so "try
+   * again in a minute" would be the wrong advice. The message names the
+   * provider's own error category, which is bounded and stripped to a
+   * log-safe token before it gets here.
+   */
+  | 'upstream_refused'
   | 'unavailable';
 
 const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
@@ -59,6 +85,8 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   unauthenticated: 401,
   forbidden: 403,
   plan_limit: 403,
+  sso_required: 403,
+  reauth_required: 403,
   not_found: 404,
   conflict: 409,
   payload_too_large: 413,
@@ -66,6 +94,7 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   csrf_failed: 403,
   session_locked: 403,
   internal_error: 500,
+  upstream_refused: 502,
   unavailable: 503,
 };
 
@@ -157,6 +186,14 @@ export class ApiError extends Error {
     return { error };
   }
 }
+
+/**
+ * A payment-provider call whose outcome is not known — it may have gone
+ * through. Answered like any `unavailable`; the billing service keeps the
+ * request's idempotency key claimed rather than letting it go, so a retry
+ * with the same key is told it is in flight instead of reaching Dodo again.
+ */
+export class OutcomeUnknownError extends ApiError {}
 
 /**
  * Constructors for the errors routes actually raise.
@@ -366,6 +403,256 @@ export const errors = {
         'need to sign in again and get a new code.',
       { logDetail: 'vault changed between archive and reset' },
     ),
+
+  /**
+   * An organisation SSO settings call that needed WorkOS and could not get an
+   * answer from it — unreachable, rate-limited, or refusing this deployment's
+   * key. Nothing was changed. Its own sentence because "temporarily
+   * unavailable" on a settings page reads as the whole product being down,
+   * when what is down is one provider's API.
+   */
+  ssoProviderUnavailable: (logDetail: string): ApiError =>
+    new ApiError(
+      'unavailable',
+      'WorkOS, which runs single sign-on for xecret, could not be reached, so nothing was changed. ' +
+        'Try again in a minute.',
+      { logDetail },
+    ),
+
+  /**
+   * WorkOS answered an SSO settings call, and refused it: a 4xx about the
+   * request this server built — the WorkOS organisation deleted in the WorkOS
+   * dashboard, a parameter WorkOS stopped accepting. Not an outage, so the
+   * sentence does not say "try again"; it names WorkOS's own category so that
+   * whoever reads it to support has something to quote.
+   *
+   * `category` is never request data: it comes from `providerFailure` in
+   * `workos.ts`, which strips WorkOS's error code to `[a-z0-9_-]` and 64
+   * characters before it exists — the one value in this file not written here,
+   * and bounded so it can be nothing else.
+   */
+  ssoProviderRefused: (category: string, logDetail: string): ApiError =>
+    new ApiError(
+      'upstream_refused',
+      `WorkOS refused the request (${category.replace(/[^a-z0-9_-]/gi, '').slice(0, 64) || 'rejected'}), ` +
+        'so nothing was changed. This usually means the organisation’s setup at WorkOS needs ' +
+        'attention; contact support with the request id.',
+      { logDetail },
+    ),
+
+  /**
+   * This organisation's single sign-on link was made in a different WorkOS
+   * environment from this deployment's (review S9) — typically an "enable"
+   * clicked in local development, which runs against WorkOS Staging over the
+   * production database. Refused rather than acted on: every WorkOS call made
+   * with it would be about an organisation this environment does not have.
+   */
+  ssoEnvironmentMismatch: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation’s single sign-on was set up in a different WorkOS environment from the ' +
+        'one this deployment uses, so it cannot be managed from here. Contact support to have the ' +
+        'link checked.',
+      { logDetail: 'workos client id mismatch' },
+    ),
+
+  /**
+   * Turning SSO on, or switching a policy on, from a deployment whose WorkOS
+   * environment is not the one this database belongs to (`workos_home`,
+   * migration 0023) — local development against WorkOS Staging over the
+   * production database, most likely. Refused before WorkOS is asked anything:
+   * a link written from here would be one no sign-in in the database's own
+   * environment could ever come through.
+   *
+   * The other way to arrive here is a self-hosted database that still holds the
+   * client id 0023 seeded — Playxoft's — because its operator has not recorded
+   * their own yet (review round 3). "Make this change from that deployment"
+   * was a dead end for them, there being no such deployment, so the message
+   * names the step, and where it is written down, for both cases.
+   */
+  ssoNotHomeEnvironment: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'Single sign-on can only be changed from a deployment in the WorkOS environment this ' +
+        'database records (workos_home), and this deployment uses a different WorkOS ' +
+        'environment — so nothing was changed. On a self-hosted deployment, an operator records ' +
+        'its own WORKOS_CLIENT_ID there once, as the database owner: ' +
+        "UPDATE workos_home SET client_id = '<WORKOS_CLIENT_ID>' (the “WorkOS environment” " +
+        'step in docs/self-hosting.md). Otherwise, make this change from the deployment that ' +
+        'database belongs to.',
+      { logDetail: 'workos client id is not workos_home' },
+    ),
+
+  /**
+   * The same, for a database with no WorkOS environment recorded at all — a
+   * self-hosted deployment that has not done the one-time operator step.
+   */
+  ssoHomeUnrecorded: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'Single sign-on cannot be turned on yet: this deployment’s database has no WorkOS ' +
+        'environment recorded. An operator records it once (the “WorkOS environment” step in ' +
+        'docs/self-hosting.md), and then it can.',
+      { logDetail: 'workos_home is empty' },
+    ),
+
+  /*
+   * ── Payments (P12) ──
+   * Every sentence says whether anything was charged or changed, because the
+   * person reading it is deciding whether to try again with a card in hand.
+   */
+
+  /** This deployment takes no payments — a self-hoster, or Dodo not set up yet. */
+  billingDisabled: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This installation does not take payments, so plans are set by its operator. Nothing ' +
+        'was charged.',
+      { logDetail: 'billing is not configured' },
+    ),
+
+  /** A checkout for an organisation already subscribed: the plan is changed, not bought again. */
+  billingAlreadySubscribed: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation already has a subscription. Change its plan instead — starting a second ' +
+        'one would charge twice. Nothing was charged.',
+      { logDetail: 'checkout with a live subscription' },
+    ),
+
+  /** The plan was set by xecret support (an Enterprise contract, a grant) and is not self-serve. */
+  billingManagedBySupport: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation’s plan is managed by xecret support, so it cannot be changed here. ' +
+        'Contact us and we will change it for you. Nothing was charged.',
+      { logDetail: 'plan set by an operator' },
+    ),
+
+  /** A plan change or a portal link for an organisation with no subscription to act on. */
+  billingNoSubscription: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation has no subscription to change yet. Choose a plan to subscribe.',
+      { logDetail: 'no live subscription' },
+    ),
+
+  /** The organisation is already on exactly what was asked for. */
+  billingSamePlan: (): ApiError =>
+    new ApiError('bad_request', 'This organisation is already on that plan and billing period.'),
+
+  /**
+   * A checkout was paid and its subscription is still being applied: a second
+   * checkout now would be a second subscription.
+   */
+  billingCheckoutPending: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'A payment for this organisation went through and its plan is still being applied. Give ' +
+        'it a minute and reload — starting another checkout now would charge twice. Nothing was ' +
+        'charged.',
+      { logDetail: 'linked subscription not yet active' },
+    ),
+
+  /**
+   * The organisation's subscription belongs to the other Dodo mode (a test
+   * subscription on a live deployment, or the reverse), so this deployment
+   * cannot act on it.
+   */
+  billingOtherMode: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation’s billing record was made in a different payment environment from the ' +
+        'one this installation uses, so nothing can be bought or changed for it from here. ' +
+        'Contact support with the request id. Nothing was changed or charged.',
+      { logDetail: 'billing record from the other dodo mode' },
+    ),
+
+  /** The organisation's payment customer is held by another organisation too. */
+  billingSharedCustomer: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'This organisation’s billing account is shared with another organisation, so its payment ' +
+        'portal cannot be opened from here without showing the other one’s invoices. Contact ' +
+        'support with the request id and we will separate them.',
+      { logDetail: 'dodo customer held by more than one organisation' },
+    ),
+
+  /** The same idempotency key, still being answered. */
+  billingRequestInFlight: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'That request is already being handled. Wait a moment and reload the billing page — ' +
+        'nothing will be charged twice.',
+      { logDetail: 'idempotency key in flight' },
+    ),
+
+  /** An idempotency key reused for a different request. */
+  billingIdempotencyMismatch: (): ApiError =>
+    new ApiError(
+      'bad_request',
+      'This request reuses the idempotency key of a different request. Nothing was changed or ' +
+        'charged.',
+      { logDetail: 'idempotency key reused for another request' },
+    ),
+
+  /** Dodo refused because an earlier change is still waiting to take effect. */
+  billingChangePending: (): ApiError =>
+    new ApiError(
+      'conflict',
+      'A plan change is already waiting to take effect at the end of this billing period. ' +
+        'Nothing new was changed.',
+      { logDetail: 'dodo pending plan change' },
+    ),
+
+  /**
+   * Dodo did not answer a checkout or a plan change in time, or the
+   * connection broke: the request may have reached it and gone through, so
+   * this answer claims nothing about what was charged. The request's
+   * idempotency key is kept, so asking again with it cannot reach Dodo twice.
+   */
+  billingOutcomeUnknown: (what: 'checkout' | 'change', logDetail: string): ApiError =>
+    new OutcomeUnknownError(
+      'unavailable',
+      what === 'checkout'
+        ? 'Our payment provider did not answer in time, so this checkout may or may not have ' +
+            'been created. A checkout charges only once it is completed — reload the billing ' +
+            'page in a minute and choose the plan again.'
+        : 'Our payment provider did not answer in time, so this plan change may have gone ' +
+            'through — and, for a move up, been charged. Reload the billing page in a few ' +
+            'minutes before asking again: a change that went through shows there.',
+      { logDetail },
+    ),
+
+  /** Dodo could not be reached, or answered with an outage. Nothing was changed or charged. */
+  billingProviderUnavailable: (logDetail: string): ApiError =>
+    new ApiError(
+      'unavailable',
+      'Our payment provider could not be reached, so nothing was changed or charged. Try again ' +
+        'in a minute.',
+      { logDetail },
+    ),
+
+  /** Dodo answered and refused the request this server built. */
+  billingProviderRefused: (logDetail: string): ApiError =>
+    new ApiError(
+      'upstream_refused',
+      'Our payment provider refused the request, so nothing was changed or charged. Contact ' +
+        'support with the request id.',
+      { logDetail },
+    ),
+
+  /** See the `sso_required` code above. */
+  ssoRequired: (logDetail?: string): ApiError =>
+    new ApiError(
+      'sso_required',
+      'This organisation requires its single sign-on. Sign in through your company’s identity ' +
+        'provider to use it.',
+      logDetail === undefined ? {} : { logDetail },
+    ),
+
+  /** See the `reauth_required` code above. */
+  reauthRequired: (message: string): ApiError => new ApiError('reauth_required', message),
 
   internal: (logDetail: string): ApiError =>
     new ApiError('internal_error', 'Something went wrong.', { logDetail }),

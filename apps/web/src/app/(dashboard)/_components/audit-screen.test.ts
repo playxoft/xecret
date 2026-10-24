@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AuditEvent } from '@/components/tokens/types';
-import { describeEvent } from './audit-screen';
+import { AUDIT_FILTER_ACTIONS, describeEvent } from './audit-screen';
 
 /**
  * The one line of context an audit row carries. Only the custom-role cases:
@@ -26,7 +26,159 @@ function event(action: string, metadata: Record<string, unknown>): AuditEvent {
   };
 }
 
+describe('the action filter (review round 1, L11)', () => {
+  it('offers every action the P19 features write, and secret.rotated', () => {
+    const filterable = new Set<string>(AUDIT_FILTER_ACTIONS);
+    for (const action of [
+      'secret.rotated',
+      'environment.parent_changed',
+      'environment.link_crosses_protection',
+      'environment.promoted',
+      'environment.restored',
+      'environment.policy_changed',
+      'org.policy_changed',
+      'override.set',
+      'override.removed',
+      'webhook.created',
+      'webhook.updated',
+      'webhook.deleted',
+      'webhook.secret_rotated',
+      'webhook.disabled',
+    ]) {
+      expect(filterable.has(action), action).toBe(true);
+    }
+    expect(filterable.size).toBe(AUDIT_FILTER_ACTIONS.length);
+  });
+});
+
 describe('describeEvent', () => {
+  it('reads the P19 records (review round 1, L11)', () => {
+    expect(
+      describeEvent(
+        event('environment.parent_changed', {
+          projectSlug: 'api',
+          environmentSlug: 'staging',
+          parentEnvironmentSlug: 'base',
+          previousParentEnvironmentSlug: null,
+        }),
+      ),
+    ).toBe('api/staging · inherits from nothing → base');
+    expect(
+      describeEvent(
+        event('environment.link_crosses_protection', {
+          projectSlug: 'api',
+          environmentSlug: 'production',
+          sourceProjectSlug: 'api',
+          sourceEnvironmentSlug: 'staging',
+          secretName: 'DB_URL',
+          reason: 'referenced',
+        }),
+      ),
+    ).toBe('DB_URL · api/production · a template reads from api/staging, which is not production');
+    expect(
+      describeEvent(
+        event('environment.promoted', {
+          projectSlug: 'api',
+          environmentSlug: 'production',
+          sourceEnvironmentSlug: 'staging',
+          createdCount: 2,
+          updatedCount: 3,
+          deletedCount: 0,
+        }),
+      ),
+    ).toBe('api/production · from staging · 2 created, 3 updated, 0 deleted');
+    expect(
+      describeEvent(event('environment.restored', { restoredTo: '2026-10-19T14:30:00.000Z' })),
+    ).toBe('to 2026-10-19T14:30:00.000Z');
+    expect(describeEvent(event('org.policy_changed', { policyName: 'secrets' }))).toBe(
+      'secret naming and strength policy',
+    );
+    expect(
+      describeEvent(
+        event('webhook.created', {
+          endpointHost: 'hooks.example.com',
+          eventTypes: ['secret.updated', 'environment.promoted'],
+        }),
+      ),
+    ).toBe('hooks.example.com · secret.updated, environment.promoted');
+  });
+
+  it('says how an owner got past their organisation’s single sign-on (review C3)', () => {
+    expect(describeEvent(event('auth.sso_exemption_used', { signInMethod: 'password' }))).toBe(
+      'signed in by password',
+    );
+    expect(describeEvent(event('auth.sso_exemption_used', { signInMethod: 'sso' }))).toBe(
+      'signed in by another organisation’s single sign-on',
+    );
+  });
+
+  it('says a just-in-time join was turned away because the person was removed (review S4)', () => {
+    const turnedAway = {
+      ...event('member.jit_denied', { targetEmail: 'gone@acme.example', reason: 'removed' }),
+      outcome: 'error' as const,
+    };
+    expect(describeEvent(turnedAway)).toBe('gone@acme.example · removed from the organisation');
+  });
+
+  it('says why a held-back sign-in was asked, and whether it was confirmed or declined (review round 2)', () => {
+    expect(describeEvent(event('auth.sign_in_declined', { confirmation: 'organization' }))).toBe(
+      'declined — it came back through an organisation the sign-in did not ask for',
+    );
+    expect(describeEvent(event('auth.login', { confirmation: 'not-member' }))).toBe(
+      'confirmed — single sign-on of an organisation the account was not in',
+    );
+    expect(describeEvent(event('auth.login', { confirmation: 'reused-session' }))).toBe(
+      'confirmed — a sign-in session reused without asking',
+    );
+    // An unknown value says nothing rather than something made up.
+    expect(describeEvent(event('auth.login', { confirmation: 'because' }))).toBe('');
+  });
+
+  it('reads a billing record: the plan, the seats and what said so', () => {
+    expect(
+      describeEvent(
+        event('plan.changed', {
+          plan: 'team',
+          previousPlan: 'free',
+          billingInterval: 'monthly',
+          subscriptionStatus: 'active',
+          previousSubscriptionStatus: 'active',
+          seatCount: 4,
+          previousSeatCount: 1,
+          billingEvent: 'subscription.active',
+        }),
+      ),
+    ).toBe('free → team (monthly) · 1 → 4 seats · from subscription.active');
+    expect(
+      describeEvent(
+        event('plan.changed', {
+          plan: 'free',
+          previousPlan: 'team',
+          reason: 'subscription on hold for 14 days without a payment',
+        }),
+      ),
+    ).toBe('team → free · subscription on hold for 14 days without a payment');
+    expect(describeEvent(event('billing.usage_reported', { unitCount: 12 }))).toBe(
+      '12 metered units',
+    );
+    expect(
+      describeEvent({
+        ...event('billing.drift_detected', { driftFields: ['seats', 'periodEnd'], plan: 'team' }),
+        outcome: 'error' as const,
+      }),
+    ).toBe('team · drift in seats, periodEnd');
+    expect(describeEvent(event('plan.changed', { plan: 'enterprise', operator: 'ops' }))).toBe(
+      'enterprise · by ops',
+    );
+  });
+
+  it('says which way an SSO policy switch moved', () => {
+    expect(describeEvent(event('org.sso.required_toggled', { enabled: true }))).toBe('switched on');
+    expect(describeEvent(event('org.sso.jit_toggled', { enabled: false }))).toBe('switched off');
+    // Anything but a boolean says nothing rather than something wrong.
+    expect(describeEvent(event('org.sso.jit_toggled', { enabled: 'true' }))).toBe('');
+  });
+
   it('names the custom role a promotion to owner cleared', () => {
     const line = describeEvent(
       event('member.role_changed', {

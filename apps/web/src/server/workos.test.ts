@@ -5,7 +5,10 @@ import type { Bindings } from './bindings';
 import { MissingBindingError } from './bindings';
 import {
   AuthenticationStepRequired,
+  authKitSessionId,
   callbackUrl,
+  CONNECTION_PAGE_LIMIT,
+  CONNECTION_PAGE_SIZE,
   IdentityProviderUnavailableError,
   lastActiveAuthentication,
   MAX_CODE_LENGTH,
@@ -372,6 +375,65 @@ describe('reading auth_time', () => {
   });
 });
 
+describe('reading the AuthKit session (sid) — review round 2', () => {
+  it.each([
+    ['no token', undefined],
+    ['an opaque token', 'at'],
+    ['no sid', accessToken({ sub: 'user_01' })],
+    ['a sid that is not a string', accessToken({ sid: 42 })],
+    ['a sid of the wrong shape', accessToken({ sid: 'sess_01' })],
+    ['a sid with a path in it', accessToken({ sid: 'session_01/../logout' })],
+    ['a sid with a query in it', accessToken({ sid: 'session_01?return_to=evil' })],
+    ['an over-long sid', accessToken({ sid: `session_${'A'.repeat(65)}` })],
+  ])('reads %s as no session', (_name, token) => {
+    expect(authKitSessionId(token)).toBeNull();
+  });
+
+  it('reads a well-formed sid, and carries it on the exchange', async () => {
+    const sid = 'session_01H93ZY4F80QPBEZ1R5B2SHQG8';
+    expect(authKitSessionId(accessToken({ sid }))).toBe(sid);
+
+    const { provider } = stubApi({
+      authenticateWithCode: vi.fn(async () => ({
+        user: user(),
+        accessToken: accessToken({ sid, auth_time: 1_790_000_000 }),
+        refreshToken: 'rt',
+      })),
+    });
+    const exchange = await provider.exchangeCode('code_01', CONTEXT);
+    expect(exchange.providerSessionId).toBe(sid);
+  });
+});
+
+describe('the logout URL — review round 2', () => {
+  function withLogout() {
+    const { api } = stubApi();
+    (api.userManagement as Record<string, unknown>)['getLogoutUrl'] = (
+      options: Parameters<WorkOS['userManagement']['getLogoutUrl']>[0],
+    ) => realSdk.userManagement.getLogoutUrl(options);
+    return new WorkosIdentityProvider(api, CONFIG);
+  }
+
+  it('is WorkOS’s, for the session, returning where it is told', () => {
+    const url = new URL(
+      withLogout().logoutUrl({
+        sessionId: 'session_01H93ZY4F80QPBEZ1R5B2SHQG8',
+        returnTo: 'https://xecret.playxoft.com/sign-in',
+      }),
+    );
+    expect(url.origin).toBe('https://api.workos.com');
+    expect(url.pathname).toBe('/user_management/sessions/logout');
+    expect(url.searchParams.get('session_id')).toBe('session_01H93ZY4F80QPBEZ1R5B2SHQG8');
+    expect(url.searchParams.get('return_to')).toBe('https://xecret.playxoft.com/sign-in');
+  });
+
+  it('is never built for something that is not a session id', () => {
+    expect(() =>
+      withLogout().logoutUrl({ sessionId: 'nope', returnTo: 'https://xecret.playxoft.com/' }),
+    ).toThrow(IdentityVerificationError);
+  });
+});
+
 describe('failure categories', () => {
   it.each([
     [
@@ -602,6 +664,214 @@ describe('verified domains', () => {
 
     expect([...domains]).toEqual(['bigcorp.example']);
     expect(calls.getOrganization).toHaveBeenCalledWith('org_01BIGCORP');
+  });
+
+  it('reports every domain with its state for the settings, reading an unknown state as pending', async () => {
+    const { provider } = stubApi({
+      getOrganization: vi.fn(async () => ({
+        id: 'org_01BIGCORP',
+        domains: [
+          { domain: 'BigCorp.example', state: 'verified' },
+          { domain: 'failed.example', state: 'failed' },
+          { domain: 'later.example', state: 'legacy_verified' },
+        ],
+      })),
+    });
+
+    expect(await provider.domains('org_01BIGCORP')).toEqual([
+      { domain: 'bigcorp.example', state: 'verified' },
+      { domain: 'failed.example', state: 'failed' },
+      // Not `verified`, so it never counts as one — for the callback either.
+      { domain: 'later.example', state: 'pending' },
+    ]);
+  });
+});
+
+describe('the organisation SSO calls (WS-5)', () => {
+  function ssoStub() {
+    const stub = stubApi();
+    const organizations = (stub.api as unknown as { organizations: Record<string, unknown> })
+      .organizations;
+    const createOrganization = vi.fn(async () => ({ id: 'org_01NEW' }));
+    const getOrganizationByExternalId = vi.fn();
+    const deleteOrganization = vi.fn(async () => undefined);
+    Object.assign(organizations, {
+      createOrganization,
+      getOrganizationByExternalId,
+      deleteOrganization,
+    });
+    const generateLink = vi.fn();
+    const listConnections = vi.fn();
+    Object.assign(stub.api.adminPortal, { generateLink });
+    Object.assign(stub.api.sso, { listConnections });
+    return {
+      provider: stub.provider,
+      createOrganization,
+      getOrganizationByExternalId,
+      deleteOrganization,
+      generateLink,
+      listConnections,
+    };
+  }
+
+  it('creates a WorkOS organisation from a name and the xecret id alone — never domainData', async () => {
+    const { provider, createOrganization } = ssoStub();
+
+    // A caller that reached past the type with extra fields, verified domains
+    // among them, must not get any of them forwarded (PR #114).
+    const id = await provider.createOrganization({
+      name: 'Acme',
+      externalId: 'org-uuid',
+      domainData: [{ domain: 'acme.example', state: 'verified' }],
+    } as never);
+
+    expect(id).toBe('org_01NEW');
+    expect(createOrganization).toHaveBeenCalledWith(
+      { name: 'Acme', externalId: 'org-uuid' },
+      { idempotencyKey: 'xecret-sso-enable-org-uuid' },
+    );
+  });
+
+  it('adopts the organisation holding its externalId on a 409, and only that one', async () => {
+    const { provider, createOrganization, getOrganizationByExternalId } = ssoStub();
+    createOrganization.mockRejectedValue(failure(409));
+    getOrganizationByExternalId.mockResolvedValueOnce({ id: 'org_01EARLIER', externalId: 'mine' });
+
+    expect(await provider.createOrganization({ name: 'Acme', externalId: 'mine' })).toBe(
+      'org_01EARLIER',
+    );
+
+    getOrganizationByExternalId.mockResolvedValueOnce({ id: 'org_01OTHER', externalId: 'theirs' });
+    await expect(
+      provider.createOrganization({ name: 'Acme', externalId: 'mine' }),
+    ).rejects.toBeInstanceOf(IdentityVerificationError);
+  });
+
+  it('sorts a failed creation like any other WorkOS failure, without looking anything up', async () => {
+    const { provider, createOrganization, getOrganizationByExternalId } = ssoStub();
+    createOrganization.mockRejectedValue(failure(503));
+
+    await expect(
+      provider.createOrganization({ name: 'Acme', externalId: 'mine' }),
+    ).rejects.toBeInstanceOf(IdentityProviderUnavailableError);
+    expect(getOrganizationByExternalId).not.toHaveBeenCalled();
+  });
+
+  it('asks for an SSO-intent Admin Portal link and refuses anything that is not https', async () => {
+    const { provider, generateLink } = ssoStub();
+    generateLink.mockResolvedValueOnce({ link: 'https://setup.workos.com/portal/launch?x=1' });
+
+    expect(
+      await provider.generatePortalLink({
+        workosOrgId: 'org_01BIGCORP',
+        returnUrl: 'https://xecret.playxoft.com/app/acme/settings',
+      }),
+    ).toBe('https://setup.workos.com/portal/launch?x=1');
+    expect(generateLink).toHaveBeenCalledWith({
+      organization: 'org_01BIGCORP',
+      intent: 'sso',
+      returnUrl: 'https://xecret.playxoft.com/app/acme/settings',
+    });
+
+    for (const link of ['javascript:alert(1)', 'http://setup.workos.com/', '/portal', '']) {
+      generateLink.mockResolvedValueOnce({ link });
+      await expect(
+        provider.generatePortalLink({ workosOrgId: 'org_01BIGCORP', returnUrl: 'https://x/' }),
+      ).rejects.toBeInstanceOf(IdentityVerificationError);
+    }
+  });
+
+  it('lists connections for the organisation, copying only id, state and type', async () => {
+    const { provider, listConnections } = ssoStub();
+    listConnections.mockResolvedValue({
+      data: [
+        {
+          id: 'conn_01',
+          state: 'active',
+          type: 'OktaSAML',
+          name: 'BigCorp',
+          domains: [{ domain: 'bigcorp.example' }],
+          organizationId: 'org_01BIGCORP',
+        },
+      ],
+    });
+
+    expect(await provider.listConnections('org_01BIGCORP')).toEqual([
+      { id: 'conn_01', state: 'active', type: 'OktaSAML' },
+    ]);
+    expect(listConnections).toHaveBeenCalledWith({
+      organizationId: 'org_01BIGCORP',
+      limit: CONNECTION_PAGE_SIZE,
+    });
+  });
+
+  it('follows every page, so a connection past the first ten is not missed (review C7)', async () => {
+    const { provider, listConnections } = ssoStub();
+    listConnections
+      .mockResolvedValueOnce({
+        data: [{ id: 'conn_01', state: 'draft', type: 'OktaSAML' }],
+        listMetadata: { after: 'cursor_1' },
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: 'conn_02', state: 'active', type: 'GenericOIDC' }],
+        listMetadata: { after: null },
+      });
+
+    expect(await provider.listConnections('org_01BIGCORP')).toEqual([
+      { id: 'conn_01', state: 'draft', type: 'OktaSAML' },
+      { id: 'conn_02', state: 'active', type: 'GenericOIDC' },
+    ]);
+    expect(listConnections).toHaveBeenNthCalledWith(2, {
+      organizationId: 'org_01BIGCORP',
+      limit: CONNECTION_PAGE_SIZE,
+      after: 'cursor_1',
+    });
+  });
+
+  it('stops at the page cap, and on a cursor that does not move', async () => {
+    const { provider, listConnections } = ssoStub();
+    listConnections.mockImplementation(async ({ after }: { after?: string }) => ({
+      data: [{ id: `conn_${after ?? 'first'}`, state: 'draft', type: 'OktaSAML' }],
+      listMetadata: { after: `${after ?? ''}x` },
+    }));
+
+    expect(await provider.listConnections('org_01BIGCORP')).toHaveLength(CONNECTION_PAGE_LIMIT);
+    expect(listConnections).toHaveBeenCalledTimes(CONNECTION_PAGE_LIMIT);
+
+    listConnections.mockReset();
+    listConnections.mockResolvedValue({
+      data: [{ id: 'conn_01', state: 'draft', type: 'OktaSAML' }],
+      listMetadata: { after: 'same' },
+    });
+    await provider.listConnections('org_01BIGCORP');
+    expect(listConnections).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads a connection state it does not know as inactive, never as active (review C6)', async () => {
+    const { provider, listConnections } = ssoStub();
+    listConnections.mockResolvedValue({
+      data: [
+        { id: 'conn_01', state: 'suspended', type: 'OktaSAML' },
+        { id: 'conn_02', state: undefined, type: 'OktaSAML' },
+      ],
+    });
+
+    expect((await provider.listConnections('org_01BIGCORP')).map((c) => c.state)).toEqual([
+      'inactive',
+      'inactive',
+    ]);
+  });
+
+  it('says which WorkOS environment it talks to, for the link to record (review S9)', () => {
+    expect(ssoStub().provider.clientId).toBe('client_01TESTCLIENT');
+  });
+
+  it('deletes an orphaned WorkOS organisation by id', async () => {
+    const { provider, deleteOrganization } = ssoStub();
+
+    await provider.deleteOrganization('org_01ORPHAN');
+
+    expect(deleteOrganization).toHaveBeenCalledWith('org_01ORPHAN');
   });
 });
 

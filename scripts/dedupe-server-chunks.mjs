@@ -56,14 +56,16 @@ const RUNTIME = '[turbopack]_runtime.js';
 
 /**
  * How every Turbopack server chunk starts — a CommonJS array of module
- * factories.
+ * factories. Next ≤16.3 emitted it bare; 16.4 wraps the same array in an
+ * IIFE with a "use strict" prologue, so both spellings count.
  *
  * The `[` is what makes a second run a no-op. A stub this script wrote starts
  * `module.exports=require(`, so it is never taken for a chunk; matching on
  * `module.exports=` alone re-pointed stubs at other stubs when the step ran
  * twice over one build.
  */
-const CHUNK_PREFIX = 'module.exports=[';
+const CHUNK_PREFIXES = ['module.exports=[', '(()=>{"use strict";module.exports=['];
+const isChunk = (source) => CHUNK_PREFIXES.some((prefix) => source.startsWith(prefix));
 
 /** The trailing `//# sourceMappingURL=<own name>.map`, which differs between copies. */
 const SOURCE_MAP_COMMENT = /\n?\/\/# sourceMappingURL=[^\n]*\s*$/;
@@ -94,7 +96,7 @@ for (const dir of directoriesUnder(CHUNKS_DIR)) {
   for (const name of names) {
     const path = join(dir, name);
     const source = readFileSync(path, 'utf8');
-    if (!source.startsWith(CHUNK_PREFIX)) continue;
+    if (!isChunk(source)) continue;
     scanned += 1;
 
     const digest = createHash('sha256')

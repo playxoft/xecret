@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 
 import type { OrgRole } from '@xecret/core/authz';
-import { api, endSession, errorMessage } from '@/lib/api';
+import { api, endSession, errorMessage, SIGN_IN_PATH } from '@/lib/api';
 import { Alert, Button, Card, CardContent, Spinner } from '@/components/ui';
 import { InviteKeyStep } from '@/components/envkeys';
 import type { InviteKeyGrant } from '@/components/envkeys';
@@ -266,7 +266,13 @@ export function InviteScreen({ token }: { token: string }) {
             <Button
               variant="secondary"
               onClick={() => {
-                void endSession().then(() => window.location.reload());
+                // Through WorkOS's logout when the server answers one: AuthKit
+                // would otherwise sign this browser straight back in as the
+                // same, wrong account. Without one, this page again.
+                void endSession().then((destination) => {
+                  if (destination === SIGN_IN_PATH) window.location.reload();
+                  else window.location.assign(destination);
+                });
               }}
             >
               Sign out

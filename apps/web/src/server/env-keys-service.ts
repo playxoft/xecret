@@ -223,6 +223,7 @@ export async function environmentKeyState(
   return {
     encryptionMode: scope.environment.encryptionMode === 'e2ee' ? 'e2ee' : 'server',
     environmentId: scope.environment.id,
+    isProduction: scope.environment.isProduction,
     activeEdk: state.activeKey === null ? null : toActiveKey(state.activeKey),
     myGrant: grant === null ? null : stripRecipient(toGrant(grant)),
     ehkExists: state.ehkExists,

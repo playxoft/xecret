@@ -1,6 +1,7 @@
 import { uuidv7 } from '../ids';
 import { ACTION_REQUIREMENTS } from '../authz/roles';
 import type { AccessLevel, Action, Decision } from '../authz/types';
+import { WEBHOOK_EVENT_TYPES } from '../webhooks/events';
 import { sanitizeMetadataString } from './redaction';
 import type {
   ActorType,
@@ -9,6 +10,9 @@ import type {
   AuditEvent,
   AuditMetadata,
   AuditOutcome,
+  AuditSubscriptionStatus,
+  BillingDriftField,
+  SignInConfirmationKind,
   SignInMethod,
 } from './types';
 
@@ -77,7 +81,13 @@ export type AuditResourceType =
   | 'token'
   | 'session'
   | 'key'
-  | 'user';
+  | 'user'
+  /** A webhook endpoint (P19 §5). */
+  | 'webhook'
+  /** A personal override (P19 §2). Its id is the override row's. */
+  | 'override'
+  /** An organisation's subscription with the payment provider (P12). */
+  | 'subscription';
 
 /**
  * What an event is about.
@@ -152,7 +162,21 @@ export type AuditErrorReason =
   | 'keyUnavailable'
   | 'upstreamUnavailable'
   | 'quotaExceeded'
-  | 'timeout';
+  /**
+   * An organisation or environment policy refused it (P19 §6, §8, §9) — a token
+   * without the allowlist the token policy requires, a secret name the secret
+   * policy forbids, a plaintext export of an environment that disabled them.
+   * `policyName` says which. Distinct from `quotaExceeded`, which is the *plan*
+   * refusing: one is the customer's own rule, the other is ours.
+   */
+  | 'policyRefused'
+  | 'timeout'
+  /**
+   * The person was removed from the organisation and has not been invited
+   * back, so a way in that would otherwise admit them — a just-in-time join —
+   * does not (`member.jit_denied`).
+   */
+  | 'removed';
 
 /**
  * `reason` is set from the outcome, never by the caller, so a denial always
@@ -217,6 +241,9 @@ const LIMITS = {
   addonName: 64,
   limitName: 64,
   operator: 128,
+  restoredTo: 40,
+  endpointHost: 253,
+  billingEvent: 64,
   actorLabel: 320,
   userAgent: 512,
   requestId: 128,
@@ -472,18 +499,181 @@ function sanitizeMetadata(metadata: AuditMetadata): AuditMetadata {
   // and regeneration records were written to carry and never did.
   if (metadata.wrapKind !== undefined) clean.wrapKind = metadata.wrapKind;
   if (metadata.method !== undefined) clean.method = metadata.method;
+  // A boolean or nothing: a value that reached past the type with a cast is
+  // dropped, never coerced, so "on" cannot be read from a truthy string.
+  if (typeof metadata.enabled === 'boolean') clean.enabled = metadata.enabled;
   // Checked against the vocabulary rather than copied: the value is derived
   // from a provider's answer, and a free string here would be a provider-chosen
   // field in the one table this product promises is truthful.
   if (metadata.signInMethod !== undefined && SIGN_IN_METHODS.has(metadata.signInMethod)) {
     clean.signInMethod = metadata.signInMethod;
   }
+  // The same: a closed set, checked rather than copied.
+  if (
+    metadata.confirmation !== undefined &&
+    SIGN_IN_CONFIRMATION_KINDS.has(metadata.confirmation)
+  ) {
+    clean.confirmation = metadata.confirmation;
+  }
   if (metadata.recoveryCodeCount !== undefined && Number.isFinite(metadata.recoveryCodeCount)) {
     clean.recoveryCodeCount = metadata.recoveryCodeCount;
   }
 
+  // P19. Slugs and names are as attacker-influenced as any other; `null` on a
+  // parent is a statement ("inherits from nothing") and is kept as one.
+  if (metadata.parentEnvironmentSlug !== undefined) {
+    clean.parentEnvironmentSlug =
+      metadata.parentEnvironmentSlug === null
+        ? null
+        : sanitizeMetadataString(metadata.parentEnvironmentSlug, LIMITS.slug);
+  }
+  if (metadata.previousParentEnvironmentSlug !== undefined) {
+    clean.previousParentEnvironmentSlug =
+      metadata.previousParentEnvironmentSlug === null
+        ? null
+        : sanitizeMetadataString(metadata.previousParentEnvironmentSlug, LIMITS.slug);
+  }
+  if (metadata.contextEnvironmentSlug !== undefined) {
+    clean.contextEnvironmentSlug = sanitizeMetadataString(
+      metadata.contextEnvironmentSlug,
+      LIMITS.slug,
+    );
+  }
+  if (metadata.referringSecretName !== undefined) {
+    clean.referringSecretName = sanitizeMetadataString(
+      metadata.referringSecretName,
+      LIMITS.secretName,
+    );
+  }
+  if (metadata.sourceEnvironmentSlug !== undefined) {
+    clean.sourceEnvironmentSlug = sanitizeMetadataString(
+      metadata.sourceEnvironmentSlug,
+      LIMITS.slug,
+    );
+  }
+  if (metadata.sourceProjectSlug !== undefined) {
+    clean.sourceProjectSlug = sanitizeMetadataString(metadata.sourceProjectSlug, LIMITS.slug);
+  }
+  for (const field of ['createdCount', 'updatedCount', 'deletedCount'] as const) {
+    const value = metadata[field];
+    if (value !== undefined && Number.isFinite(value)) clean[field] = value;
+  }
+  // A timestamp, re-rendered from what it parses as rather than copied: a free
+  // string here would be a free-text field in disguise.
+  if (metadata.restoredTo !== undefined) {
+    const parsed = Date.parse(metadata.restoredTo);
+    if (!Number.isNaN(parsed)) {
+      clean.restoredTo = sanitizeMetadataString(new Date(parsed).toISOString(), LIMITS.restoredTo);
+    }
+  }
+  if (metadata.endpointHost !== undefined) {
+    clean.endpointHost = sanitizeMetadataString(metadata.endpointHost, LIMITS.endpointHost);
+  }
+  if (metadata.eventTypes !== undefined) {
+    clean.eventTypes = [...new Set(metadata.eventTypes.filter((type) => WEBHOOK_EVENTS.has(type)))];
+  }
+  if (metadata.policyName !== undefined && POLICY_NAMES.has(metadata.policyName)) {
+    clean.policyName = metadata.policyName;
+  }
+
+  // ── Payments (P12) ──
+  // Every one a count or a closed vocabulary. The provider's payloads are full
+  // of identifiers and amounts that must never reach this table, so nothing
+  // here is a free string: a value that is not one of the expected shapes is
+  // dropped, never cleaned into one.
+  if (metadata.previousSeatCount !== undefined && Number.isFinite(metadata.previousSeatCount)) {
+    clean.previousSeatCount = metadata.previousSeatCount;
+  }
+  if (metadata.unitCount !== undefined && Number.isFinite(metadata.unitCount)) {
+    clean.unitCount = metadata.unitCount;
+  }
+  if (metadata.billingInterval !== undefined && BILLING_INTERVALS.has(metadata.billingInterval)) {
+    clean.billingInterval = metadata.billingInterval;
+  }
+  if (
+    metadata.previousBillingInterval !== undefined &&
+    BILLING_INTERVALS.has(metadata.previousBillingInterval)
+  ) {
+    clean.previousBillingInterval = metadata.previousBillingInterval;
+  }
+  if (
+    metadata.subscriptionStatus !== undefined &&
+    SUBSCRIPTION_STATUSES.has(metadata.subscriptionStatus)
+  ) {
+    clean.subscriptionStatus = metadata.subscriptionStatus;
+  }
+  if (
+    metadata.previousSubscriptionStatus !== undefined &&
+    SUBSCRIPTION_STATUSES.has(metadata.previousSubscriptionStatus)
+  ) {
+    clean.previousSubscriptionStatus = metadata.previousSubscriptionStatus;
+  }
+  if (typeof metadata.currency === 'string' && CURRENCY.test(metadata.currency)) {
+    clean.currency = metadata.currency;
+  }
+  if (
+    typeof metadata.billingEvent === 'string' &&
+    metadata.billingEvent.length <= LIMITS.billingEvent &&
+    BILLING_EVENT.test(metadata.billingEvent)
+  ) {
+    clean.billingEvent = metadata.billingEvent;
+  }
+  if (metadata.driftFields !== undefined) {
+    // Typed as unknown on the way in: the type says a list of field names, and
+    // what this defends is a caller that reached past it with a cast.
+    const listed: unknown = metadata.driftFields;
+    if (Array.isArray(listed)) {
+      clean.driftFields = [
+        ...new Set(
+          (listed as readonly unknown[]).filter(
+            (field): field is BillingDriftField =>
+              typeof field === 'string' && DRIFT_FIELDS.has(field),
+          ),
+        ),
+      ];
+    }
+  }
+
   return clean;
 }
+
+const WEBHOOK_EVENTS: ReadonlySet<string> = new Set<string>(WEBHOOK_EVENT_TYPES);
+
+const POLICY_NAMES: ReadonlySet<string> = new Set<NonNullable<AuditMetadata['policyName']>>([
+  'tokens',
+  'secrets',
+  'plaintextExport',
+  'readAlerts',
+]);
+
+const BILLING_INTERVALS: ReadonlySet<string> = new Set(['monthly', 'yearly']);
+
+const SUBSCRIPTION_STATUSES: ReadonlySet<string> = new Set<AuditSubscriptionStatus>([
+  'active',
+  'trialing',
+  'past_due',
+  'on_hold',
+  'cancelled',
+  'expired',
+]);
+
+const DRIFT_FIELDS: ReadonlySet<string> = new Set<BillingDriftField>([
+  'plan',
+  'interval',
+  'status',
+  'seats',
+  'periodEnd',
+  'cancelAtPeriodEnd',
+  'product',
+  'addon',
+  'missing',
+]);
+
+/** ISO-4217: three capital letters, and nothing that could be an amount. */
+const CURRENCY = /^[A-Z]{3}$/;
+
+/** A provider event name: `subscription.renewed`, `payment.failed`. */
+const BILLING_EVENT = /^[a-z_]+\.[a-z_]+$/;
 
 const SIGN_IN_METHODS: ReadonlySet<string> = new Set<SignInMethod>([
   'password',
@@ -492,6 +682,12 @@ const SIGN_IN_METHODS: ReadonlySet<string> = new Set<SignInMethod>([
   'magic_auth',
   'passkey',
   'other',
+]);
+
+const SIGN_IN_CONFIRMATION_KINDS: ReadonlySet<string> = new Set<SignInConfirmationKind>([
+  'organization',
+  'not-member',
+  'reused-session',
 ]);
 
 /** Every action name there is — the only strings an action list may hold. */

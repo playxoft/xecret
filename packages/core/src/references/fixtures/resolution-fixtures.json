@@ -1,0 +1,489 @@
+{
+  "description": "Cross-implementation fixtures for P19 reference and inheritance resolution. Read by packages/core/src/references/fixtures/fixtures.test.ts and by cli/internal/references. Each case is a graph of environments (own secrets only, with parent pointers), the environment being read, and either the resolved values or the kind of error. No cryptography is involved; values are plaintext.",
+  "maxReferenceDepth": 5,
+  "maxInheritanceDepth": 5,
+  "parse": [
+    { "template": "", "segments": [] },
+    { "template": "plain", "segments": [{ "text": "plain" }] },
+    {
+      "template": "a${KEY}b",
+      "segments": [{ "text": "a" }, { "reference": { "name": "KEY" } }, { "text": "b" }]
+    },
+    {
+      "template": "${staging.KEY}${core.eu_west.DB}",
+      "segments": [
+        { "reference": { "environment": "staging", "name": "KEY" } },
+        { "reference": { "project": "core", "environment": "eu_west", "name": "DB" } }
+      ]
+    },
+    { "template": "$${HOME} $$ $", "segments": [{ "text": "${HOME} $$ $" }] },
+    { "template": "$$${A}", "segments": [{ "text": "$${A}" }] },
+    { "template": "${KEY", "error": "syntax" },
+    { "template": "${}", "error": "syntax" },
+    { "template": "${ KEY }", "error": "syntax" },
+    { "template": "${a.b.c.KEY}", "error": "syntax" },
+    { "template": "${1KEY}", "error": "syntax" },
+    { "template": "${Staging.KEY}", "error": "syntax" },
+    { "template": "${my_project.prod.KEY}", "error": "syntax" },
+    { "template": "${staging..KEY}", "error": "syntax" }
+  ],
+  "resolve": [
+    {
+      "name": "inheritance: child overrides, unset names fall through",
+      "context": "review",
+      "environments": [
+        {
+          "id": "base",
+          "parentId": null,
+          "secrets": { "HOST": { "value": "base.example" }, "PORT": { "value": "5432" } }
+        },
+        {
+          "id": "staging",
+          "parentId": "base",
+          "secrets": { "HOST": { "value": "staging.example" } }
+        },
+        { "id": "review", "parentId": "staging", "secrets": { "PORT": { "value": "6543" } } }
+      ],
+      "expected": { "HOST": "staging.example", "PORT": "6543" }
+    },
+    {
+      "name": "an unqualified reference resolves in the environment being read",
+      "context": "staging",
+      "environments": [
+        {
+          "id": "base",
+          "parentId": null,
+          "secrets": {
+            "HOST": { "value": "base.example" },
+            "URL": {
+              "value": "postgres://${HOST}/app",
+              "template": true,
+              "references": [{ "name": "HOST", "environmentId": null }]
+            }
+          }
+        },
+        {
+          "id": "staging",
+          "parentId": "base",
+          "secrets": { "HOST": { "value": "staging.example" } }
+        }
+      ],
+      "expected": { "HOST": "staging.example", "URL": "postgres://staging.example/app" }
+    },
+    {
+      "name": "a qualified reference resolves in the target's own view",
+      "context": "app",
+      "environments": [
+        {
+          "id": "shared-root",
+          "parentId": null,
+          "secrets": { "REGION": { "value": "eu-west-1" } }
+        },
+        {
+          "id": "shared",
+          "parentId": "shared-root",
+          "secrets": {
+            "DB_HOST": {
+              "value": "db.${REGION}.internal",
+              "template": true,
+              "references": [{ "name": "REGION", "environmentId": null }]
+            }
+          }
+        },
+        {
+          "id": "app",
+          "parentId": null,
+          "secrets": {
+            "REGION": { "value": "us-east-1" },
+            "URL": {
+              "value": "${shared.DB_HOST}",
+              "template": true,
+              "references": [
+                { "environment": "shared", "name": "DB_HOST", "environmentId": "shared" }
+              ]
+            }
+          }
+        }
+      ],
+      "expected": { "REGION": "us-east-1", "URL": "db.eu-west-1.internal" }
+    },
+    {
+      "name": "a non-template keeps its text",
+      "context": "e",
+      "environments": [
+        {
+          "id": "e",
+          "parentId": null,
+          "secrets": { "SCRIPT": { "value": "echo ${HOME}" }, "HOME": { "value": "/root" } }
+        }
+      ],
+      "expected": { "HOME": "/root", "SCRIPT": "echo ${HOME}" }
+    },
+    {
+      "name": "an escaped ${ renders literally inside a template",
+      "context": "e",
+      "environments": [
+        {
+          "id": "e",
+          "parentId": null,
+          "secrets": {
+            "A": { "value": "1" },
+            "T": {
+              "value": "${A} and $${A}",
+              "template": true,
+              "references": [{ "name": "A", "environmentId": null }]
+            }
+          }
+        }
+      ],
+      "expected": { "A": "1", "T": "1 and ${A}" }
+    },
+    {
+      "name": "a diamond resolves on both sides",
+      "context": "e",
+      "environments": [
+        {
+          "id": "e",
+          "parentId": null,
+          "secrets": {
+            "LEAF": { "value": "v" },
+            "LEFT": {
+              "value": "${LEAF}-l",
+              "template": true,
+              "references": [{ "name": "LEAF", "environmentId": null }]
+            },
+            "RIGHT": {
+              "value": "${LEAF}-r",
+              "template": true,
+              "references": [{ "name": "LEAF", "environmentId": null }]
+            },
+            "TOP": {
+              "value": "${LEFT}+${RIGHT}",
+              "template": true,
+              "references": [
+                { "name": "LEFT", "environmentId": null },
+                { "name": "RIGHT", "environmentId": null }
+              ]
+            }
+          }
+        }
+      ],
+      "expected": { "LEAF": "v", "LEFT": "v-l", "RIGHT": "v-r", "TOP": "v-l+v-r" }
+    },
+    {
+      "name": "five hops are allowed",
+      "context": "e",
+      "environments": [
+        {
+          "id": "e",
+          "parentId": null,
+          "secrets": {
+            "K0": {
+              "value": "${K1}",
+              "template": true,
+              "references": [{ "name": "K1", "environmentId": null }]
+            },
+            "K1": {
+              "value": "${K2}",
+              "template": true,
+              "references": [{ "name": "K2", "environmentId": null }]
+            },
+            "K2": {
+              "value": "${K3}",
+              "template": true,
+              "references": [{ "name": "K3", "environmentId": null }]
+            },
+            "K3": {
+              "value": "${K4}",
+              "template": true,
+              "references": [{ "name": "K4", "environmentId": null }]
+            },
+            "K4": {
+              "value": "${K5}",
+              "template": true,
+              "references": [{ "name": "K5", "environmentId": null }]
+            },
+            "K5": { "value": "end" }
+          }
+        }
+      ],
+      "expected": { "K0": "end", "K1": "end", "K2": "end", "K3": "end", "K4": "end", "K5": "end" }
+    },
+    {
+      "name": "a sixth hop is refused",
+      "context": "e",
+      "environments": [
+        {
+          "id": "e",
+          "parentId": null,
+          "secrets": {
+            "K0": {
+              "value": "${K1}",
+              "template": true,
+              "references": [{ "name": "K1", "environmentId": null }]
+            },
+            "K1": {
+              "value": "${K2}",
+              "template": true,
+              "references": [{ "name": "K2", "environmentId": null }]
+            },
+            "K2": {
+              "value": "${K3}",
+              "template": true,
+              "references": [{ "name": "K3", "environmentId": null }]
+            },
+            "K3": {
+              "value": "${K4}",
+              "template": true,
+              "references": [{ "name": "K4", "environmentId": null }]
+            },
+            "K4": {
+              "value": "${K5}",
+              "template": true,
+              "references": [{ "name": "K5", "environmentId": null }]
+            },
+            "K5": {
+              "value": "${K6}",
+              "template": true,
+              "references": [{ "name": "K6", "environmentId": null }]
+            },
+            "K6": { "value": "end" }
+          }
+        }
+      ],
+      "error": "tooDeep"
+    },
+    {
+      "name": "depth is measured through a node already finished",
+      "context": "e",
+      "environments": [
+        {
+          "id": "e",
+          "parentId": null,
+          "secrets": {
+            "A_SHORT": {
+              "value": "${K1}",
+              "template": true,
+              "references": [{ "name": "K1", "environmentId": null }]
+            },
+            "B_LONG": {
+              "value": "${L1}",
+              "template": true,
+              "references": [{ "name": "L1", "environmentId": null }]
+            },
+            "L1": {
+              "value": "${L2}",
+              "template": true,
+              "references": [{ "name": "L2", "environmentId": null }]
+            },
+            "L2": {
+              "value": "${K1}",
+              "template": true,
+              "references": [{ "name": "K1", "environmentId": null }]
+            },
+            "K1": {
+              "value": "${K2}",
+              "template": true,
+              "references": [{ "name": "K2", "environmentId": null }]
+            },
+            "K2": {
+              "value": "${K3}",
+              "template": true,
+              "references": [{ "name": "K3", "environmentId": null }]
+            },
+            "K3": {
+              "value": "${K4}",
+              "template": true,
+              "references": [{ "name": "K4", "environmentId": null }]
+            },
+            "K4": {
+              "value": "${K5}",
+              "template": true,
+              "references": [{ "name": "K5", "environmentId": null }]
+            },
+            "K5": { "value": "end" }
+          }
+        }
+      ],
+      "error": "tooDeep"
+    },
+    {
+      "name": "a cycle is refused",
+      "context": "e",
+      "environments": [
+        {
+          "id": "e",
+          "parentId": null,
+          "secrets": {
+            "A": {
+              "value": "${B}",
+              "template": true,
+              "references": [{ "name": "B", "environmentId": null }]
+            },
+            "B": {
+              "value": "${A}",
+              "template": true,
+              "references": [{ "name": "A", "environmentId": null }]
+            }
+          }
+        }
+      ],
+      "error": "cycle"
+    },
+    {
+      "name": "a cycle that exists only through inheritance is refused",
+      "context": "child",
+      "environments": [
+        {
+          "id": "base",
+          "parentId": null,
+          "secrets": {
+            "HOST": { "value": "h" },
+            "URL": {
+              "value": "${HOST}",
+              "template": true,
+              "references": [{ "name": "HOST", "environmentId": null }]
+            }
+          }
+        },
+        {
+          "id": "child",
+          "parentId": "base",
+          "secrets": {
+            "HOST": {
+              "value": "${URL}",
+              "template": true,
+              "references": [{ "name": "URL", "environmentId": null }]
+            }
+          }
+        }
+      ],
+      "error": "cycle"
+    },
+    {
+      "name": "a reference nothing sets is refused",
+      "context": "e",
+      "environments": [
+        {
+          "id": "e",
+          "parentId": null,
+          "secrets": {
+            "A": {
+              "value": "${NOWHERE}",
+              "template": true,
+              "references": [{ "name": "NOWHERE", "environmentId": null }]
+            }
+          }
+        }
+      ],
+      "error": "unresolved"
+    },
+    {
+      "name": "a reference into an absent environment is refused",
+      "context": "e",
+      "environments": [
+        {
+          "id": "e",
+          "parentId": null,
+          "secrets": {
+            "A": {
+              "value": "${gone.K}",
+              "template": true,
+              "references": [{ "environment": "gone", "name": "K", "environmentId": "gone" }]
+            }
+          }
+        }
+      ],
+      "error": "missingEnvironment"
+    },
+    {
+      "name": "an undeclared reference in the text is refused",
+      "context": "e",
+      "environments": [
+        {
+          "id": "e",
+          "parentId": null,
+          "secrets": {
+            "A": { "value": "${B}", "template": true, "references": [] },
+            "B": { "value": "b" }
+          }
+        }
+      ],
+      "error": "undeclared"
+    },
+    {
+      "name": "a declared reference missing from the text is refused",
+      "context": "e",
+      "environments": [
+        {
+          "id": "e",
+          "parentId": null,
+          "secrets": {
+            "A": {
+              "value": "plain",
+              "template": true,
+              "references": [{ "name": "B", "environmentId": null }]
+            },
+            "B": { "value": "b" }
+          }
+        }
+      ],
+      "error": "undeclared"
+    },
+    {
+      "name": "a template that does not parse is a syntax error",
+      "context": "e",
+      "environments": [
+        {
+          "id": "e",
+          "parentId": null,
+          "secrets": {
+            "A": {
+              "value": "x ${B",
+              "template": true,
+              "references": [{ "name": "B", "environmentId": null }]
+            },
+            "B": { "value": "b" }
+          }
+        }
+      ],
+      "error": "syntax"
+    },
+    {
+      "name": "an inheritance loop is refused",
+      "context": "a",
+      "environments": [
+        { "id": "a", "parentId": "b", "secrets": {} },
+        { "id": "b", "parentId": "a", "secrets": {} }
+      ],
+      "error": "inheritanceCycle"
+    },
+    {
+      "name": "six ancestors are refused",
+      "context": "e0",
+      "environments": [
+        { "id": "e0", "parentId": "e1", "secrets": {} },
+        { "id": "e1", "parentId": "e2", "secrets": {} },
+        { "id": "e2", "parentId": "e3", "secrets": {} },
+        { "id": "e3", "parentId": "e4", "secrets": {} },
+        { "id": "e4", "parentId": "e5", "secrets": {} },
+        { "id": "e5", "parentId": "e6", "secrets": {} },
+        { "id": "e6", "parentId": null, "secrets": {} }
+      ],
+      "error": "inheritanceTooDeep"
+    },
+    {
+      "name": "five ancestors are allowed",
+      "context": "e0",
+      "environments": [
+        { "id": "e0", "parentId": "e1", "secrets": {} },
+        { "id": "e1", "parentId": "e2", "secrets": {} },
+        { "id": "e2", "parentId": "e3", "secrets": {} },
+        { "id": "e3", "parentId": "e4", "secrets": {} },
+        { "id": "e4", "parentId": "e5", "secrets": { "DEEP": { "value": "ok" } } },
+        { "id": "e5", "parentId": null, "secrets": {} }
+      ],
+      "expected": { "DEEP": "ok" }
+    }
+  ]
+}

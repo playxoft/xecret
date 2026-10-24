@@ -173,4 +173,12 @@ export type RepositoryErrorCode =
    * migration: a check that only exists in one caller stops being a guarantee
    * the moment there are two.
    */
-  | 'forbidden';
+  | 'forbidden'
+  /**
+   * The organisation requires its single sign-on, and the credential making
+   * this write did not come through it — accepting an invitation from a
+   * password session, say (migration 0022). Its own code because the answer is
+   * specific and actionable ("sign in through your company's identity provider
+   * and try again"), and the route maps it to the API's `sso_required`.
+   */
+  | 'ssoRequired';

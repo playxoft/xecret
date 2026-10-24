@@ -1,7 +1,10 @@
 'use client';
 
+import { useParams, usePathname } from 'next/navigation';
+
 import { errorMessage, isApiError } from '@/lib/api';
 import { AlertTriangleIcon, Button, Card, RefreshIcon, Skeleton } from '@/components/ui';
+import { ssoRequiredRemedy } from './sso-required';
 
 /**
  * What a screen shows when its data has not arrived, or will not.
@@ -35,9 +38,35 @@ export interface ErrorStateProps {
  * value — can reach it.
  */
 export function ErrorState({ subject, error, onRetry }: ErrorStateProps) {
+  const params = useParams<{ orgSlug?: string }>();
+  const pathname = usePathname();
   const requestId = isApiError(error) ? error.requestId : null;
   const forbidden = isApiError(error) && error.code === 'forbidden';
   const missing = isApiError(error) && error.code === 'not_found';
+  // Not a failure at all: the organisation wants its own single sign-on, and
+  // the person can give it that in one step (review round 2, L9).
+  const sso = ssoRequiredRemedy(error, params?.orgSlug, pathname);
+
+  if (sso !== null) {
+    return (
+      <Card className="border-warning-line p-6">
+        <div className="flex gap-3.5">
+          <AlertTriangleIcon className="text-warning-text mt-0.5 size-5 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <h2 className="text-fg text-[0.9375rem] font-semibold">{sso.title}</h2>
+            <p className="text-fg-muted mt-1.5 text-sm leading-6">{sso.body}</p>
+            {sso.href !== null ? (
+              // A plain link: the login route leaves the site for the identity
+              // provider, so there is nothing for the client router to do.
+              <Button variant="primary" size="sm" className="mt-4" asChild>
+                <a href={sso.href}>Sign in with single sign-on</a>
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      </Card>
+    );
+  }
 
   return (
     <Card className="border-danger-line p-6">

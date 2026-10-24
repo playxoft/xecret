@@ -50,6 +50,24 @@ export interface Environment {
    * have to be redeployed to learn a third.
    */
   encryptionMode: string;
+  /**
+   * The slug of the environment this one inherits from (P19 §1), or `null`.
+   *
+   * Always one of the same project's environments. Optional only so the
+   * fixtures written before inheritance existed still type-check; every server
+   * that serves this field serves it on every environment, and an absent one is
+   * read as "inherits from nothing".
+   */
+  parent?: string | null;
+  /** Whether `xecret pull`, `xecret export` and the dashboard's download are refused here (P19 §9). */
+  plaintextExport?: 'allowed' | 'disabled';
+  /**
+   * The read-alert switch as stored (P19 §7): `null` is "the default", which is
+   * on for production and off everywhere else.
+   */
+  readAlerts?: boolean | null;
+  /** What the switch comes to: the stored value, else the production default. */
+  readAlertsActive?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -85,5 +103,10 @@ export interface CreateProjectResponse {
 }
 
 export interface CreateEnvironmentResponse {
+  environment: Environment;
+}
+
+/** What `PUT …/parent` and `PATCH …/policy` answer: the environment as it now stands. */
+export interface EnvironmentChangeResponse {
   environment: Environment;
 }

@@ -33,6 +33,30 @@ export type AuditAction =
    * by finding it.
    */
   | 'auth.identity_linked'
+  /**
+   * An owner of an organisation that requires single sign-on signed in some
+   * other way — a password, Google, another organisation's SSO — and was let
+   * through by the owner exemption, the deliberate break-glass that keeps a
+   * misconfigured identity provider from locking the organisation out of
+   * itself. Filed in **each** organisation whose requirement the sign-in was
+   * exempted from (the `auth.login` beside it lands in only one), with the
+   * method as `signInMethod`, so every such organisation's own log shows each
+   * time its identity provider was bypassed.
+   */
+  | 'auth.sso_exemption_used'
+  /**
+   * A sign-in the callback held back for the person to confirm — it came back
+   * through an organisation the flow did not ask for, or one the account does
+   * not belong to, or from a session WorkOS reused without asking — was
+   * declined on the confirmation page: "This isn't me". Nothing was issued.
+   * `confirmation` says why it was held back, and `signInMethod` how WorkOS
+   * signed the person in. Filed in the organisation whose single sign-on it
+   * came through when that organisation is here, otherwise in the account's
+   * own — a run of these for one account is somebody being worked on. (A sign-in
+   * that was confirmed is the ordinary `auth.login` or `auth.signup`, carrying
+   * `confirmation` too.)
+   */
+  | 'auth.sign_in_declined'
   | 'auth.logout'
   | 'auth.login_failed'
   | 'auth.session_revoked'
@@ -213,12 +237,122 @@ export type AuditAction =
    * this event is written.
    */
   | 'org.deleted'
+  /**
+   * The organisation turned single sign-on on: xecret created the WorkOS
+   * Organization its identity-provider connections will hang off, and linked
+   * it. Once only — the link is never re-pointed — so this is the origin of the
+   * organisation's SSO history. Nothing about who may sign in changes yet: a
+   * connection still has to be set up, and both policies below start off.
+   */
+  | 'org.sso.enabled'
+  /**
+   * Somebody was handed a WorkOS Admin Portal link for this organisation's
+   * SSO: a short-lived URL that lets whoever opens it connect or change the
+   * organisation's identity provider. Recorded every time, because the person
+   * who configures the identity provider decides who can sign in as this
+   * organisation's members. The link itself is never recorded.
+   */
+  | 'org.sso.portal_link_created'
+  /**
+   * `sso_required` was switched on or off — whether members must sign in
+   * through the organisation's own identity provider (owners always exempt).
+   * `enabled` carries the new value.
+   */
+  | 'org.sso.required_toggled'
+  /**
+   * The just-in-time opt-in was switched on or off — whether somebody the
+   * organisation's identity provider signs in may join as a viewer without an
+   * invitation. `enabled` carries the new value. The admission it governs is
+   * `member.jit_joined`.
+   */
+  | 'org.sso.jit_toggled'
   | 'project.created'
   | 'project.updated'
   | 'project.deleted'
   | 'environment.created'
   | 'environment.updated'
   | 'environment.deleted'
+  /**
+   * An environment's parent was set, changed or cleared (P19 §1): what its
+   * view inherits from now differs. `parentEnvironmentSlug` names the new
+   * parent — `null` when it was cleared — and `previousParentEnvironmentSlug`
+   * the old one. Its own event rather than an `environment.updated`, because
+   * this one changes which values every reader of the environment receives, and
+   * a reviewer asking "since when did staging read base's secrets?" should not
+   * have to read every rename to find out.
+   */
+  | 'environment.parent_changed'
+  /**
+   * A production environment was linked to one that is not production — made
+   * to inherit from it, or given a template that reads from it — and the person
+   * confirmed it (P19 §1, review round 1). Filed beside the parent change or the
+   * secret write that made the link, against the production environment, with
+   * `sourceProjectSlug` / `sourceEnvironmentSlug` naming the other one and
+   * `reason` saying `inherited` or `referenced`.
+   *
+   * Its own event because such a link is a write path onto production for
+   * everybody who can write the source, and "since when could staging's writers
+   * change what production reads?" should be one filter, not a reading of every
+   * parent change and template write for the classes of both ends.
+   */
+  | 'environment.link_crosses_protection'
+  /**
+   * Values were promoted from one environment into another (P19 §3), as one
+   * atomic write. `sourceEnvironmentSlug` names where they came from;
+   * `createdCount`, `updatedCount` and `deletedCount` say how much moved. Every
+   * secret written also carries its own version row — the history of each value
+   * is unchanged by having arrived in a batch.
+   */
+  | 'environment.promoted'
+  /**
+   * An environment was restored to how it stood at a moment (P19 §4).
+   * `restoredTo` is that moment; the counts say how many secrets were rewritten,
+   * recreated and deleted. Restore writes forward — every rewritten value is a
+   * new version — so this record and the version rows together are the whole
+   * story, and the restore itself can be undone by restoring again.
+   */
+  | 'environment.restored'
+  /**
+   * An environment's own policy changed: plaintext export allowed or refused
+   * (P19 §9), new-location read alerts switched on, off, or back to the default
+   * (P19 §7). `policyName` says which, `enabled` its new state.
+   */
+  | 'environment.policy_changed'
+  /**
+   * An organisation-wide policy changed: the token policy (P19 §6) or the secret
+   * naming and strength policy (P19 §8). `policyName` says which. Recorded
+   * whether it was tightened or loosened — loosening a control is the change a
+   * security review most wants to be able to find.
+   */
+  | 'org.policy_changed'
+  /**
+   * Somebody set or replaced a personal override (P19 §2). The record names
+   * whose and for which secret — never the value, which this server cannot read
+   * — because "this developer's machine is running with a different
+   * DATABASE_URL" is a fact an administrator is entitled to.
+   */
+  | 'override.set'
+  | 'override.removed'
+  /**
+   * A webhook endpoint was configured (P19 §5). `endpointHost` is the host it
+   * delivers to — never the full URL, because a webhook URL routinely carries a
+   * credential in its path or query (a chat integration's incoming-webhook URL
+   * *is* its secret).
+   */
+  | 'webhook.created'
+  | 'webhook.updated'
+  | 'webhook.deleted'
+  /**
+   * A webhook's signing secret was replaced. The secret is never recorded; the
+   * event is what tells a receiver's operator when theirs stopped verifying.
+   */
+  | 'webhook.secret_rotated'
+  /**
+   * A webhook was switched off by the system after sustained delivery failure,
+   * with a `system` actor. The owners and admins are emailed when a mailer
+   * exists; this record is the fact either way.
+   */
+  | 'webhook.disabled'
   | 'secret.created'
   | 'secret.updated'
   | 'secret.deleted'
@@ -233,13 +367,22 @@ export type AuditAction =
    * member of it on the spot (just-in-time provisioning), at the default role.
    * Distinct from `member.joined`, which records an invitation accepted: here
    * nobody invited them, and what admitted them was the organisation's identity
-   * provider vouching for an address in a domain the organisation verified.
+   * provider vouching for an address in a domain the organisation verified —
+   * and an owner or admin having opted the organisation in to admitting people
+   * that way (`org.sso.jit_toggled`).
    */
   | 'member.jit_joined'
   /**
-   * The same, refused: the organisation had no seat free. The sign-in fails and
-   * the person is told to ask an administrator; this is the record that lets an
-   * administrator see who was turned away.
+   * The same, refused, for one of two reasons, carried as `reason`:
+   *
+   *  - `quotaExceeded` (`limitName: seats`) — the organisation had no seat
+   *    free. The sign-in fails and the person is told to ask an administrator.
+   *  - `removed` — they were removed from this organisation and have not been
+   *    invited back. Their identity provider still vouching for them does not
+   *    undo a removal; the sign-in carries on to whatever else they belong to.
+   *
+   * Either way this is the record that lets an administrator see who was
+   * turned away.
    */
   | 'member.jit_denied'
   | 'member.removed'
@@ -399,7 +542,111 @@ export type AuditAction =
    * There is no matching event for a *fair-use* ceiling, because crossing one
    * refuses nothing; that path warns and continues.
    */
-  | 'limit.exceeded';
+  | 'limit.exceeded'
+  /*
+   * ── Payments (P12) ──
+   *
+   * What the payment provider did, and what an owner asked it to do. The
+   * *effect* of a billing change on what the organisation may do is always
+   * `plan.changed` — written by the webhook with no `operator`, so it stays
+   * one query to answer "when did this organisation gain Team" whichever way
+   * it got there. The events below are the rest of the story: the requests,
+   * the money that moved, and the alerts a human has to read.
+   *
+   * None of them carries an amount, a card detail, a customer id or a
+   * payment-provider identifier of any kind. `AuditMetadata` has no field that
+   * could hold one, and the redaction below recognises the provider's customer
+   * ids and webhook secrets in the free-text fields that remain.
+   */
+  /**
+   * An owner was sent to the payment provider's hosted checkout for a plan.
+   * Records the request, never the outcome: the return from checkout grants
+   * nothing, and only the provider's webhook — `plan.changed` — does.
+   */
+  | 'billing.checkout_started'
+  /**
+   * An owner moved an existing subscription to another plan or interval. Like
+   * the checkout, the record of a request: the change itself lands as
+   * `plan.changed` when the provider confirms it.
+   */
+  | 'billing.plan_change_requested'
+  /**
+   * An owner was handed a link to the payment provider's customer portal —
+   * where the card is changed, invoices are read and the plan is cancelled.
+   * The link itself is never recorded.
+   */
+  | 'billing.portal_opened'
+  /**
+   * The billed seat count was pushed to the payment provider after membership
+   * changed — `seatCount` after, `previousSeatCount` before. Recorded as
+   * `error` (reason `upstreamUnavailable`) when the push failed and was queued
+   * for the hourly retry; the membership change it followed stands either way.
+   */
+  | 'billing.seats_synced'
+  /**
+   * A payment for the organisation's subscription failed. Nothing is removed
+   * from the data path; the owners are emailed and the dashboard says so.
+   */
+  | 'billing.payment_failed'
+  /**
+   * The payment provider refunded a payment. An alert for a human, never a
+   * reason to change access: a refund is somebody's decision, already made.
+   */
+  | 'billing.refunded'
+  /**
+   * A cardholder opened a dispute (a chargeback). An alert for a human, and
+   * deliberately not a signal to lock anybody out — a dispute is often a
+   * misunderstanding, and refusing a team its secrets over one would turn a
+   * $30 fee into a lost customer.
+   */
+  | 'billing.dispute_opened'
+  /**
+   * The purchasing-power guardrail (pricing-plan §4): the billing country the
+   * provider reported is not the country that issued the card that paid. An
+   * alert for a human; nothing is changed automatically, because a traveller
+   * and an arbitrageur look the same to a webhook.
+   */
+  | 'billing.region_mismatch'
+  /**
+   * A second live subscription arrived for an organisation that already has
+   * one — two checkouts completed. Not applied: the existing subscription
+   * stays the one access follows, and a human refunds the other.
+   */
+  | 'billing.duplicate_subscription'
+  /**
+   * The nightly reconciler found this organisation's subscription row
+   * disagreeing with the payment provider. `driftFields` names what differs.
+   * Alert-only: nothing is corrected automatically, because silent correction
+   * hides the bug that caused the drift.
+   */
+  | 'billing.drift_detected'
+  /**
+   * Metered overage units — one per thousand secret fetches past the plan's
+   * allowance — were reported to the payment provider. `unitCount` is how
+   * many this report added. Our own count was written first; it is the
+   * figure an invoice dispute is settled with.
+   */
+  | 'billing.usage_reported';
+
+/**
+ * A subscription status as the audit log records it — the same closed set as
+ * `SubscriptionStatus` in `@xecret/core/entitlements`, restated here so this
+ * module keeps no dependency on that one.
+ */
+export type AuditSubscriptionStatus =
+  'active' | 'trialing' | 'past_due' | 'on_hold' | 'cancelled' | 'expired';
+
+/** Which part of a subscription row the reconciler found disagreeing with the provider. */
+export type BillingDriftField =
+  | 'plan'
+  | 'interval'
+  | 'status'
+  | 'seats'
+  | 'periodEnd'
+  | 'cancelAtPeriodEnd'
+  | 'product'
+  | 'addon'
+  | 'missing';
 
 /**
  * Fields permitted in `metadata`.
@@ -581,6 +828,36 @@ export interface AuditMetadata {
   limitName?: string;
   /** Seats billed after the change. A count, never an amount of money. */
   seatCount?: number;
+  /** Seats billed before a seat change. A count, never an amount of money. */
+  previousSeatCount?: number;
+  /**
+   * The billing interval a subscription moved to, and the one it held before.
+   * A closed set; the sanitiser drops anything else.
+   */
+  billingInterval?: 'monthly' | 'yearly';
+  previousBillingInterval?: 'monthly' | 'yearly';
+  /**
+   * The subscription status after a billing change, and before it — the
+   * fact behind "the card failed on the 3rd", which is a status and not a
+   * plan. A closed set, checked rather than copied.
+   */
+  subscriptionStatus?: AuditSubscriptionStatus;
+  previousSubscriptionStatus?: AuditSubscriptionStatus;
+  /**
+   * The ISO-4217 currency the subscription is billed in, e.g. `INR`. A
+   * currency, never an amount: three capital letters or nothing.
+   */
+  currency?: string;
+  /**
+   * The payment provider's event that caused the record, e.g.
+   * `subscription.renewed`. A dotted lower-case name or nothing, so the
+   * field cannot carry a payload however it is called.
+   */
+  billingEvent?: string;
+  /** What the reconciler found disagreeing (`billing.drift_detected`). A closed list. */
+  driftFields?: readonly BillingDriftField[];
+  /** How many metered units a usage report added (`billing.usage_reported`). */
+  unitCount?: number;
   /**
    * The person who ran an operator script, as they named themselves.
    *
@@ -593,6 +870,16 @@ export interface AuditMetadata {
   operator?: string;
   source?: 'dashboard' | 'cli' | 'ci' | 'api';
   /**
+   * The value an on/off setting holds after the change an event records — an
+   * organisation's `sso_required`, its just-in-time opt-in.
+   *
+   * A boolean and only a boolean: the sanitiser drops anything else rather than
+   * coercing it, so "switched on" can never be read from a string that merely
+   * looks like one. The previous value is the opposite by construction — a
+   * toggle is only recorded when it moved — so it is not stored twice.
+   */
+  enabled?: boolean;
+  /**
    * How a person authenticated to the identity provider for a sign-in.
    *
    * A closed set, coarser than the provider's own vocabulary on purpose: a
@@ -601,10 +888,71 @@ export interface AuditMetadata {
    * named that this list does not know, recorded as such rather than guessed at.
    */
   signInMethod?: SignInMethod;
+  /**
+   * Why a sign-in was held back for the person to confirm before any session
+   * was issued — on the `auth.login` / `auth.signup` of one they confirmed, and
+   * on `auth.sign_in_declined` for one they did not. Absent from a sign-in that
+   * needed no confirmation.
+   *
+   *  - `organization` — it came back through an organisation the flow did not
+   *    ask for (the planted-session login CSRF's own signature).
+   *  - `not-member` — through the organisation's single sign-on, for an account
+   *    that was not yet a member of it.
+   *  - `reused-session` — WorkOS answered from an authentication that predates
+   *    the flow, for an account other than the last one on that browser.
+   *
+   * A closed set, checked against itself by the sanitiser.
+   */
+  confirmation?: SignInConfirmationKind;
+  /**
+   * An environment's parent after and before a change (P19 §1), by slug. `null`
+   * is a statement — "inherits from nothing" — not an omission, like a cleared
+   * ceiling.
+   */
+  parentEnvironmentSlug?: string | null;
+  previousParentEnvironmentSlug?: string | null;
+  /**
+   * On a `secret.read` of a secret reached through a reference or an inherited
+   * layer (P19 §1): the environment that was actually being read, and — for a
+   * reference — the secret whose template pointed here. "Audit records the
+   * referenced secret as read, with the referring secret as context": without
+   * these, a pull of staging that resolved a reference into production would
+   * leave production's log silent about the read.
+   */
+  contextEnvironmentSlug?: string;
+  referringSecretName?: string;
+  /**
+   * Where a promotion's values came from (P19 §3), or the non-production end of
+   * an `environment.link_crosses_protection`.
+   */
+  sourceEnvironmentSlug?: string;
+  /** The project of `sourceEnvironmentSlug`, where it can be another one (a reference). */
+  sourceProjectSlug?: string;
+  /** How many secrets a promotion or a restore created, rewrote and deleted. Counts, never names. */
+  createdCount?: number;
+  updatedCount?: number;
+  deletedCount?: number;
+  /** The moment a restore returned an environment to, ISO 8601 (P19 §4). */
+  restoredTo?: string;
+  /**
+   * The host a webhook delivers to — never the URL. Paths and query strings of
+   * webhook URLs routinely carry credentials.
+   */
+  endpointHost?: string;
+  /**
+   * Which events a webhook is subscribed to. Event type names from a closed
+   * set, checked against it by the sanitiser.
+   */
+  eventTypes?: readonly string[];
+  /** Which policy an `org.policy_changed` or `environment.policy_changed` was about. */
+  policyName?: 'tokens' | 'secrets' | 'plaintextExport' | 'readAlerts';
 }
 
 /** See `AuditMetadata.signInMethod`. */
 export type SignInMethod = 'password' | 'oauth' | 'sso' | 'magic_auth' | 'passkey' | 'other';
+
+/** See `AuditMetadata.confirmation`. */
+export type SignInConfirmationKind = 'organization' | 'not-member' | 'reused-session';
 
 /** A custom role's ceiling as an audit record carries it: two level names. */
 export interface AuditAccessCeiling {

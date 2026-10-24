@@ -91,6 +91,16 @@ export interface EncryptedValue extends SealedBytes {
 }
 
 /**
+ * A value sealed directly under an Org Master Key — today only a webhook's
+ * signing secret (P19 §5). `keyVersion` is the version of the org key that
+ * sealed it, which the row stores so the right key can be loaded to open it
+ * after the organisation's key has moved on.
+ */
+export interface SealedOrgValue extends SealedBytes {
+  keyVersion: number;
+}
+
+/**
  * Raised when decryption fails, for any reason.
  *
  * Carries no detail by design. Wrong key, wrong AAD, truncated input, flipped

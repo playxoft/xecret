@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
+import { DEFAULT_SECRET_POLICY } from '@xecret/core/policy';
 import { ApiError } from '@/lib/api';
 import {
   describeWriteFailure,
   draftNameProblem,
+  draftPolicyProblem,
   draftProblem,
   draftTargets,
   dropSeeds,
@@ -334,6 +336,89 @@ describe('describeWriteFailure', () => {
       field: 'value',
       message: 'Could not save this secret.',
     });
+  });
+
+  it('does not call every 409 a taken name', () => {
+    // P19 gave the status other meanings: a template that would dangle, a
+    // template renamed, an environment that is not end-to-end encrypted. Each
+    // used to read as "already exists", which sent somebody looking for a
+    // duplicate that was never there.
+    const dangling = new ApiError({
+      code: 'conflict',
+      message: 'This change would leave a template unresolvable: DB_HOST is not set.',
+      status: 409,
+      requestId: null,
+    });
+    expect(describeWriteFailure(dangling)).toEqual({
+      field: 'value',
+      message: 'This change would leave a template unresolvable: DB_HOST is not set.',
+    });
+
+    const prefixed = new ApiError({
+      code: 'conflict',
+      message: 'e2ee_required: templates and references need an end-to-end encrypted environment.',
+      status: 409,
+      requestId: null,
+    });
+    expect(describeWriteFailure(prefixed).message).toBe(
+      'Templates and references need an end-to-end encrypted environment.',
+    );
+  });
+
+  it('reports a refused reference declaration under the value', () => {
+    const refused = new ApiError({
+      code: 'validation_failed',
+      message: 'The request could not be processed.',
+      status: 422,
+      requestId: null,
+      fields: [{ field: 'references', message: 'DSN refers to an environment you cannot read.' }],
+    });
+    expect(describeWriteFailure(refused)).toEqual({
+      field: 'value',
+      message: 'DSN refers to an environment you cannot read.',
+    });
+  });
+});
+
+describe('draftPolicyProblem', () => {
+  const policy = { ...DEFAULT_SECRET_POLICY, enabled: true };
+
+  it('asks nothing when no policy is in force', () => {
+    const row = draft({ name: 'lower', value: 'changeme' });
+    expect(draftPolicyProblem(row, 'lower', undefined)).toBeNull();
+    expect(draftPolicyProblem(row, 'lower', { policy: null, isProduction: false })).toBeNull();
+  });
+
+  it('puts a naming refusal under the name and a value refusal under the value', () => {
+    expect(
+      draftPolicyProblem(draft({ name: 'lower', value: 'ok' }), 'lower', {
+        policy,
+        isProduction: false,
+      })?.field,
+    ).toBe('name');
+
+    const weak = draftPolicyProblem(draft({ name: 'API_TOKEN', value: 'changeme' }), 'API_TOKEN', {
+      policy,
+      isProduction: false,
+    });
+    expect(weak?.field).toBe('value');
+    expect(weak?.message).not.toContain('changeme');
+  });
+
+  it('asks each other environment on its own side of a production-scoped rule', () => {
+    const scoped = { ...policy, scope: 'production' as const };
+    const row = draft({
+      name: 'API_TOKEN',
+      value: '',
+      extraValues: { staging: 'changeme', production: 'changeme' },
+    });
+    const extras = [
+      { slug: 'staging', name: 'Staging', io: null, byName: new Map(), isProduction: false },
+      { slug: 'production', name: 'Production', io: null, byName: new Map(), isProduction: true },
+    ];
+    expect(
+      draftPolicyProblem(row, 'API_TOKEN', { policy: scoped, isProduction: false }, extras),
+    ).toEqual(expect.objectContaining({ field: 'value', slug: 'production' }));
   });
 });
 

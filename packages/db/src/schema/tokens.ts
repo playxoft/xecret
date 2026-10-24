@@ -1,10 +1,11 @@
 import { sql } from 'drizzle-orm';
-import { index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { check, index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import type { SignInMethod } from '@xecret/core/audit';
 import { bytea, inet, inetArray } from './columns';
 import { accessLevelEnum } from './enums';
 import { environments, projects } from './resources';
 import { organizations } from './tenancy';
-import { users } from './identity';
+import { signInMethodCheck, users } from './identity';
 
 /**
  * CLI and CI credentials live in two separate tables rather than one table with
@@ -35,11 +36,28 @@ export const cliTokens = pgTable(
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
     lastUsedIp: inet('last_used_ip'),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    /**
+     * How the browser session that approved this device had signed in, copied
+     * through its `cli_auth_codes` row at the exchange (migration 0022). `NULL`
+     * for a token minted before then: not single sign-on.
+     */
+    signInMethod: text('sign_in_method').$type<SignInMethod>(),
+    /**
+     * The WorkOS organisation whose single sign-on that session came through,
+     * or `NULL`. A token acts as its user, and an organisation that requires
+     * SSO holds it to the same rule as a session (`resolveOrg`).
+     */
+    ssoWorkosOrgId: text('sso_workos_org_id'),
   },
   (t) => [
     index('cli_tokens_lookup_idx')
       .on(t.tokenHash)
       .where(sql`${t.revokedAt} is null`),
+    check('cli_tokens_sign_in_method_check', signInMethodCheck(t.signInMethod)),
+    check(
+      'cli_tokens_sso_org_needs_sso_check',
+      sql`${t.ssoWorkosOrgId} is null or ${t.signInMethod} = 'sso'`,
+    ),
   ],
 );
 
@@ -77,8 +95,17 @@ export const cliAuthCodes = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     consumedAt: timestamp('consumed_at', { withTimezone: true }),
+    /** How the approving session signed in — carried onto the token at exchange. */
+    signInMethod: text('sign_in_method').$type<SignInMethod>(),
+    /** The approving session's single-sign-on organisation, likewise. */
+    ssoWorkosOrgId: text('sso_workos_org_id'),
   },
   (t) => [
+    check('cli_auth_codes_sign_in_method_check', signInMethodCheck(t.signInMethod)),
+    check(
+      'cli_auth_codes_sso_org_needs_sso_check',
+      sql`${t.ssoWorkosOrgId} is null or ${t.signInMethod} = 'sso'`,
+    ),
     index('cli_auth_codes_lookup_idx')
       .on(t.tokenHash)
       .where(sql`${t.consumedAt} is null`),

@@ -87,6 +87,7 @@ export {
   oauthStateCookie,
   openOAuthState,
   sealOAuthState,
+  WORKOS_ORGANIZATION_ID_PATTERN,
 } from './oauth-state';
 export type {
   OAuthPurpose,
@@ -94,6 +95,49 @@ export type {
   OAuthStateRejection,
   OAuthStateResult,
 } from './oauth-state';
+
+export {
+  clearedSignInConfirmationCookie,
+  deriveSignInConfirmationKey,
+  generateConfirmationNonce,
+  MAX_SEALED_CONFIRMATION_LENGTH,
+  openSignInConfirmation,
+  sealSignInConfirmation,
+  SIGN_IN_CONFIRMATION_COOKIE_NAME,
+  SIGN_IN_CONFIRMATION_TTL_SECONDS,
+  signInConfirmationCookie,
+  WORKOS_SESSION_ID_PATTERN,
+} from './sign-in-confirmation';
+
+export {
+  clearedSsoContinueCookie,
+  deriveSsoContinueKey,
+  generateSsoContinueBinding,
+  isWellFormedSsoContinueBinding,
+  mintSsoContinueToken,
+  SSO_CONTINUE_BINDING_TTL_SECONDS,
+  SSO_CONTINUE_COOKIE_NAME,
+  SSO_CONTINUE_TOKEN_TTL_SECONDS,
+  ssoContinueCookie,
+  verifySsoContinueToken,
+} from './sso-continue';
+export type { SsoContinueRejection, SsoContinueResult } from './sso-continue';
+
+export {
+  deriveLastAccountKey,
+  LAST_ACCOUNT_COOKIE_NAME,
+  LAST_ACCOUNT_TTL_SECONDS,
+  lastAccountCookie,
+  openLastAccount,
+  sealLastAccount,
+} from './last-account';
+export type {
+  ParkedLockOne,
+  SignInConfirmation,
+  SignInConfirmationReason,
+  SignInConfirmationRejection,
+  SignInConfirmationResult,
+} from './sign-in-confirmation';
 
 export {
   IdentityVerificationError,

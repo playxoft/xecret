@@ -5,12 +5,15 @@ import { toBytes } from '@xecret/db/repositories';
 import type { SecretMaterial } from '@xecret/db/repositories';
 import { uuidField } from './ids';
 import { decodeBlob } from './vault';
+import { MAX_REFERENCES_PER_SECRET } from '@xecret/core/references';
 import {
   DEFAULT_SECRET_VALUE_TYPE,
   SECRET_NAME_MAX_LENGTH,
   SECRET_NAME_PATTERN,
   SECRET_VALUE_TYPES,
+  environmentSlugSchema,
   secretNameSchema,
+  slugReferenceSchema,
 } from '@xecret/core/validation';
 import { MAX_REQUEST_BODY_BYTES } from '@/server/http';
 import { errors } from '@/server/errors';
@@ -216,12 +219,60 @@ const expectedVersionSchema = z
   .int()
   .check(z.gte(1, 'A version is at least 1.'), z.lte(2_147_483_647));
 
+/**
+ * One reference a template declares (P19 §1), exactly as the client parsed it
+ * out of the text: `{ name }` for `${KEY}`, `{ environment, name }` for
+ * `${env.KEY}`, `{ project, environment, name }` for `${project.env.KEY}`.
+ *
+ * Plaintext by necessity and by design: the server cannot read the template, so
+ * this declaration is the only thing it can check for a loop, a dangling target,
+ * or a reach into an environment the writer may not read. Names and slugs are
+ * plaintext already (ADR 0009, trade-off 1).
+ */
+const referenceSchema = z
+  .strictObject({
+    project: z.optional(slugReferenceSchema),
+    environment: z.optional(environmentSlugSchema),
+    name: z.string().check(z.maxLength(SECRET_NAME_MAX_LENGTH), z.regex(SECRET_NAME_PATTERN)),
+  })
+  .check(
+    z.refine(
+      (reference) => reference.project === undefined || reference.environment !== undefined,
+      'A reference that names a project names an environment too.',
+    ),
+  );
+
+/**
+ * The writer saying it knows a production template is being made to read from an
+ * environment that is not production (review round 1, M3) — see
+ * `ProtectionCrossing` in `references-service.ts`. Without it such a write is
+ * answered 409 `link_crosses_protection:`, naming who could then change
+ * production's values; with it the write lands and files
+ * `environment.link_crosses_protection`.
+ */
+const confirmCrossesProtectionSchema = z.optional(z.boolean());
+
+/** A template's declaration: at most the references one template may hold. */
+const referencesSchema = z.optional(
+  z
+    .array(referenceSchema)
+    .check(
+      z.maxLength(
+        MAX_REFERENCES_PER_SECRET,
+        `A template may hold at most ${MAX_REFERENCES_PER_SECRET} references.`,
+      ),
+    ),
+);
+
 export const createClientSecretBody = z.object({
   id: secretIdSchema,
   name: secretNameSchema,
   value: clientValueSchema,
   encNote: encNoteSchema,
   valueType: z._default(valueTypeSchema, DEFAULT_SECRET_VALUE_TYPE),
+  /** Required for a template, refused for anything else. See `prepareTemplateDeclaration`. */
+  references: referencesSchema,
+  confirmCrossesProtection: confirmCrossesProtectionSchema,
 });
 
 /**
@@ -241,6 +292,8 @@ export const updateClientSecretBody = z.object({
   expectedVersion: expectedVersionSchema,
   encNote: encNoteSchema,
   valueType: z.optional(valueTypeSchema),
+  references: referencesSchema,
+  confirmCrossesProtection: confirmCrossesProtectionSchema,
 });
 
 /**
@@ -274,6 +327,9 @@ export const restoreClientSecretBody = z.object({
   expectedVersion: expectedVersionSchema,
   value: clientValueSchema,
   encNote: encNoteSchema,
+  /** For a template: the restored text's references, re-parsed by the client. */
+  references: referencesSchema,
+  confirmCrossesProtection: confirmCrossesProtectionSchema,
 });
 
 /**
@@ -346,6 +402,76 @@ export const importClientBody = z.object({
  * a value that does not match its declared type — reachable through the
  * product's own happy path.
  */
+/**
+ * The most secrets one promotion or one restore may change (P19 §3, §4), for the
+ * reason `MAX_IMPORT_ITEMS` gives: bytes are bounded by the body ceiling, rows
+ * are not, and every row is an INSERT inside one transaction.
+ */
+export const MAX_CHANGE_ITEMS = 1000;
+
+/**
+ * One value a promotion or a restore writes: an import entry's shape, plus the
+ * type and — for a template — the references, because both features carry
+ * templates where an import cannot.
+ */
+const changeEntrySchema = z.object({
+  id: secretIdSchema,
+  name: secretNameSchema,
+  expectedVersion: expectedVersionSchema,
+  value: clientValueSchema,
+  valueType: z.optional(valueTypeSchema),
+  references: referencesSchema,
+});
+
+const changeEntriesSchema = z
+  .array(changeEntrySchema)
+  .check(
+    z.maxLength(MAX_CHANGE_ITEMS, `One change cannot write more than ${MAX_CHANGE_ITEMS} secrets.`),
+  );
+
+/**
+ * Promoting one environment's values into another (P19 §3), as the client built
+ * it: it read both, decided the diff with the values masked, and re-encrypted
+ * each value it promotes under the target's key and for the target's row.
+ *
+ * `removals` names secrets of the target that the source does not hold and the
+ * person chose to remove; nothing is removed that is not named.
+ */
+export const promoteClientBody = z.strictObject({
+  source: environmentSlugSchema,
+  writes: changeEntriesSchema,
+  removals: z._default(
+    z
+      .array(secretNameSchema)
+      .check(
+        z.maxLength(MAX_CHANGE_ITEMS, `One change cannot remove more than ${MAX_CHANGE_ITEMS}.`),
+      ),
+    [],
+  ),
+  dryRun: z.boolean(),
+  confirmCrossesProtection: confirmCrossesProtectionSchema,
+});
+
+export type PromoteClientBody = z.infer<typeof promoteClientBody>;
+
+/** A restore point: an instant, ISO 8601 with an offset. */
+export const restorePointQuery = z.object({ at: z.iso.datetime({ offset: true }) });
+
+/**
+ * Restoring an environment to an instant (P19 §4): every value the plan says to
+ * write, re-encrypted by the client for the row and version it lands on.
+ * Removals and revivals are not in the body — they follow from the instant, and
+ * the server, which can read names and timestamps, decides them itself.
+ */
+export const restorePointBody = z.strictObject({
+  at: z.iso.datetime({ offset: true }),
+  writes: changeEntriesSchema,
+  dryRun: z.boolean(),
+  confirmCrossesProtection: confirmCrossesProtectionSchema,
+});
+
+export type RestorePointBody = z.infer<typeof restorePointBody>;
+
 export const updateSecretBody = z.object({
   value: secretValueSchema,
   valueType: z.optional(valueTypeSchema),
@@ -437,6 +563,27 @@ export const exportFormatSchema = z.enum(['env', 'json', 'yaml', 'shell', 'docke
  */
 export const documentQuery = z.object({
   format: z._default(exportFormatSchema, 'env'),
+});
+
+/**
+ * What an end-to-end encrypted pull may ask for (P19 §1).
+ *
+ * `bundle=2` is a client saying it can resolve inheritance and references. An
+ * environment that uses either is refused to a client that does not say so —
+ * see `clientEnvironmentBundle` — rather than served a view that silently lacks
+ * them. `format` is accepted and ignored here, because the CLI sends it on every
+ * pull and the e2ee bundle is JSON whatever it says.
+ *
+ * `layers=none` is a client saying it reads only this environment's own values
+ * and resolves nothing — the dashboard, which shows, compares and exports the
+ * values an environment holds, never what a process would see. It is served the
+ * version 2 shape with no layers: templates marked, inheritance named, and no
+ * other environment read, authorised or audited.
+ */
+export const pullQuery = z.object({
+  format: z.optional(exportFormatSchema),
+  bundle: z.optional(z.enum(['1', '2'])),
+  layers: z.optional(z.enum(['none'])),
 });
 
 export const importBody = z.object({

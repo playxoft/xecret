@@ -2,6 +2,7 @@ import { auditingDenials } from '@xecret/core/authz';
 import type { Denial } from '@xecret/core/authz';
 import {
   countSecrets,
+  lockReferenceGraph,
   RepositoryError,
   softDeleteEnvironment,
   updateEnvironment,
@@ -18,6 +19,15 @@ import {
   environmentPatchSchema,
   toEnvironment,
 } from '@/server/schemas/resources';
+import {
+  assertEnvironmentRemovable,
+  crossingRefusal,
+  parentSlugOf,
+  productionFlagCrossings,
+  productionFlagDependents,
+  productionFlagDependentsRefusal,
+} from '@/server/references-service';
+import type { ProtectionCrossing, ProtectionDependency } from '@/server/references-service';
 import { authorize, resolveEnvironmentPath } from '@/server/tenancy';
 
 /**
@@ -45,7 +55,8 @@ export const GET = authenticatedRoute<Params>(async ({ params, principal, servic
   // decrypted?" stays answerable by grep.
   const secretCount = await countSecrets(services.db, scope.organization.id, scope.environment.id);
 
-  return json({ environment: { ...toEnvironment(scope.environment), secretCount } });
+  const parentSlug = await parentSlugOf(services, scope.organization.id, scope.environment);
+  return json({ environment: { ...toEnvironment(scope.environment, parentSlug), secretCount } });
 });
 
 export const PATCH = authenticatedRoute<Params>(
@@ -107,11 +118,54 @@ export const PATCH = authenticatedRoute<Params>(
       );
     }
 
-    const environment = await updateEnvironment(services.db, orgId, scope.environment.id, {
+    /**
+     * Flipping `is_production` crosses production's protection exactly as
+     * creating a link does (review round 2, F1) — the M3 defense otherwise
+     * only ran when a link was made, never when one side's classification
+     * changed underneath an unchanged link.
+     *
+     * Turning it *on* asks about this environment's existing parent and
+     * references, same as `parentCrossing`/`referenceCrossings` ask of a
+     * link about to be created — nothing moved, only which side is now
+     * production. Turning it *off* asks about every still-production
+     * environment, here or in another project, that depends on this one:
+     * once every developer can write here, each of those reads values whose
+     * own access rules no longer apply.
+     */
+    let crossings: ProtectionCrossing[] = [];
+    let dependents: ProtectionDependency[] = [];
+    if (patch.isProduction === true && !previouslyProduction) {
+      crossings = await productionFlagCrossings(scope, services);
+      if (crossings.length > 0 && patch.confirmCrossesProtection !== true) {
+        await crossingRefusal(scope, services, crossings);
+      }
+    } else if (patch.isProduction === false && previouslyProduction) {
+      dependents = await productionFlagDependents(scope, services);
+      if (dependents.length > 0 && patch.confirmCrossesProtection !== true) {
+        productionFlagDependentsRefusal(scope, dependents);
+      }
+    }
+
+    const update = {
       name: patch.name,
       isProduction: patch.isProduction,
       sortOrder: patch.sortOrder,
-    }).catch(rethrowVanished);
+    };
+
+    // A confirmed crossing is written under the graph lock, like every other
+    // confirmed link (review round 1, L8) — serialised against a concurrent
+    // reference or parent change that the crossing list above could not see.
+    const environment =
+      crossings.length > 0 || dependents.length > 0
+        ? await services.db
+            .transaction(async (tx) => {
+              await lockReferenceGraph(tx, orgId);
+              return updateEnvironment(tx, orgId, scope.environment.id, update);
+            })
+            .catch(rethrowVanished)
+        : await updateEnvironment(services.db, orgId, scope.environment.id, update).catch(
+            rethrowVanished,
+          );
 
     // Both values, in the record, whenever the classification moved. An audit
     // entry that says only "environment.updated" cannot answer the question this
@@ -128,9 +182,45 @@ export const PATCH = authenticatedRoute<Params>(
           ? { reason: `is_production ${previouslyProduction} -> ${environment.isProduction}` }
           : {}),
       }),
+      // Its own record per crossing, named against whichever side is
+      // production — this environment when the flag just turned on, the
+      // dependent when it just turned off — so "since when may staging's
+      // writers change production?" stays one filter away (review round 1, M3).
+      ...crossings.map(({ source }) =>
+        audit(orgId).success('environment.link_crosses_protection', resource, {
+          projectSlug: scope.project.slug,
+          environmentSlug: scope.environment.slug,
+          sourceProjectSlug: source.projectSlug,
+          sourceEnvironmentSlug: source.slug,
+          reason: 'is_production',
+        }),
+      ),
+      ...dependents.map(({ dependent }) =>
+        audit(orgId).success(
+          'environment.link_crosses_protection',
+          {
+            type: 'environment' as const,
+            id: dependent.id,
+            projectId: dependent.projectId,
+            environmentId: dependent.id,
+          },
+          {
+            projectSlug: dependent.projectSlug,
+            environmentSlug: dependent.slug,
+            sourceProjectSlug: scope.project.slug,
+            sourceEnvironmentSlug: scope.environment.slug,
+            reason: 'is_production',
+          },
+        ),
+      ),
     );
 
-    return json({ environment: toEnvironment(environment) });
+    return json({
+      environment: toEnvironment(
+        environment,
+        await parentSlugOf(services, scope.organization.id, environment),
+      ),
+    });
   },
 );
 
@@ -186,9 +276,17 @@ export const DELETE = authenticatedRoute<Params>(
       );
     }
 
-    const environment = await softDeleteEnvironment(services.db, orgId, scope.environment.id).catch(
-      rethrowVanished,
-    );
+    // P19 §1: an environment another inherits from, or that a template elsewhere
+    // points into, would take somebody else's deploy down with it.
+    // Checked and deleted in one transaction, under the graph lock, so a parent
+    // or a template pointing here cannot land between the two (review round 1, L8).
+    const environment = await services.db
+      .transaction(async (tx) => {
+        await lockReferenceGraph(tx, orgId);
+        await assertEnvironmentRemovable(scope, tx);
+        return softDeleteEnvironment(tx, orgId, scope.environment.id);
+      })
+      .catch(rethrowVanished);
 
     record(
       audit(orgId).success('environment.deleted', resource, {

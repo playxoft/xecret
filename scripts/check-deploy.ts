@@ -76,6 +76,14 @@ interface Contract {
   requiredIn?: readonly string[];
   /** What breaks, in the words an operator would use. */
   matters: string;
+  /**
+   * All-or-nothing sets. A variable in a group is optional on its own, but once
+   * any member of its group is present anywhere — Phase, wrangler.toml or the
+   * live Worker — every member marked `inGroupRequired` must be too: a
+   * half-configured set is a deployment that answers 503 where it should work.
+   */
+  group?: 'billing';
+  inGroupRequired?: boolean;
 }
 
 /**
@@ -179,6 +187,68 @@ const CONTRACT: Contract[] = [
     home: 'secret',
     required: false,
     matters: 'raises log verbosity during an incident without a deploy',
+  },
+  // ── Payments: Dodo (P12, apps/web/src/server/billing/config.ts) ──
+  // Optional — a deployment without them has payments switched off — and all
+  // or nothing: see `group`. Test mode first; live values replace them only
+  // when going live (.local/dodo/dodo-setup.md Part 13).
+  {
+    name: 'DODO_API_KEY',
+    home: 'secret',
+    required: false,
+    group: 'billing',
+    inGroupRequired: true,
+    matters:
+      'authenticates every call to Dodo — checkout, seat changes, the portal, usage; a ' +
+      'credential that can change what a customer is charged',
+  },
+  {
+    name: 'DODO_WEBHOOK_SECRET',
+    home: 'secret',
+    required: false,
+    group: 'billing',
+    inGroupRequired: true,
+    matters:
+      'verifies every payment webhook; absent means every delivery is refused and nothing a ' +
+      'customer pays for is ever granted — and whoever holds it can forge "this organisation paid"',
+  },
+  {
+    name: 'DODO_ENVIRONMENT',
+    home: 'var',
+    required: false,
+    group: 'billing',
+    inGroupRequired: true,
+    matters: 'test_mode or live_mode — which Dodo the key, products and webhook belong to',
+  },
+  ...(
+    [
+      'DODO_PRODUCT_PRO_MONTHLY',
+      'DODO_PRODUCT_PRO_YEARLY',
+      'DODO_PRODUCT_TEAM_MONTHLY',
+      'DODO_PRODUCT_TEAM_YEARLY',
+    ] as const
+  ).map((name): Contract => ({
+    name,
+    home: 'var',
+    required: false,
+    group: 'billing',
+    inGroupRequired: true,
+    matters: 'a product checkout sells; absent means billing answers 503',
+  })),
+  {
+    name: 'DODO_METER_SECRET_FETCH',
+    home: 'var',
+    required: false,
+    group: 'billing',
+    inGroupRequired: true,
+    matters: "the usage meter's event name; overage is reported under it",
+  },
+  {
+    name: 'DODO_ADDON_SAML',
+    home: 'var',
+    required: false,
+    group: 'billing',
+    matters: 'the SAML add-on id; without it the add-on is only ever granted by hand',
   },
   {
     name: 'XECRET_ROOT_KEYS',
@@ -364,6 +434,13 @@ function audit(
     findings.push({ verdict, name, detail });
   };
 
+  const presentAnywhere = (name: string): boolean =>
+    (typeof process.env[name] === 'string' && process.env[name] !== '') ||
+    config.vars.has(name) ||
+    (live !== null && (live.plain.has(name) || live.secrets.has(name) || live.store.has(name)));
+  const groupOn = (group: string): boolean =>
+    CONTRACT.some((entry) => entry.group === group && presentAnywhere(entry.name));
+
   for (const contract of CONTRACT) {
     const entry = {
       ...contract,
@@ -375,6 +452,13 @@ function audit(
       live === null
         ? false
         : live.plain.has(entry.name) || live.secrets.has(entry.name) || live.store.has(entry.name);
+
+    // A member of a group that is switched off entirely is not missing: the
+    // group's own line below says it is off, once, instead of a warning per name.
+    if (entry.group !== undefined && !groupOn(entry.group)) {
+      add('ok', entry.name, `not set — ${entry.group} is switched off on this deployment`);
+      continue;
+    }
 
     switch (entry.home) {
       case 'var': {
@@ -470,6 +554,42 @@ function audit(
         }
         break;
       }
+    }
+  }
+
+  // All-or-nothing groups: once any member is anywhere, every required member
+  // must be somewhere the Worker will have it.
+  const groups = new Set(CONTRACT.flatMap((entry) => (entry.group ? [entry.group] : [])));
+  for (const group of groups) {
+    const members = CONTRACT.filter((entry) => entry.group === group);
+    const where = (name: string) => ({
+      phase: typeof process.env[name] === 'string' && process.env[name] !== '',
+      config: config.vars.has(name),
+      worker:
+        live !== null && (live.plain.has(name) || live.secrets.has(name) || live.store.has(name)),
+    });
+    const anyPresent = members.some((entry) => {
+      const at = where(entry.name);
+      return at.phase || at.config || at.worker;
+    });
+    if (!anyPresent) {
+      add('ok', `${group} (group)`, 'none set — this deployment has it switched off');
+      continue;
+    }
+    const missing = members.filter((entry) => {
+      if (!entry.inGroupRequired) return false;
+      const at = where(entry.name);
+      return entry.home === 'secret' ? !at.worker : !(at.config || at.worker);
+    });
+    if (missing.length > 0) {
+      add(
+        'fail',
+        `${group} (group)`,
+        `half-configured — set but missing from the Worker: ${missing.map((entry) => entry.name).join(', ')}. ` +
+          'Every billing route and the webhook answer 503 until all of them are there',
+      );
+    } else {
+      add('ok', `${group} (group)`, 'every required member is in place');
     }
   }
 

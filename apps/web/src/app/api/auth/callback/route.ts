@@ -1,21 +1,27 @@
 import {
   clearedOAuthStateCookie,
-  IdentityVerificationError,
+  LAST_ACCOUNT_COOKIE_NAME,
   OAUTH_STATE_COOKIE_NAME,
+  openLastAccount,
   openOAuthState,
   SESSION_COOKIE_NAME,
 } from '@xecret/core/auth';
-import { safeRedirectPath } from '@/lib/redirect-path';
-import { POST_SIGN_IN_PATH, SIGN_IN_PATH } from '@/lib/session-hint';
-import type { SignInErrorCode } from '@/lib/sign-in-errors';
-import { MissingBindingError } from '@/server/bindings';
-import type { ServiceContext } from '@/server/context';
+import { safePostSignInPath } from '@/lib/redirect-path';
+import { POST_SIGN_IN_PATH } from '@/lib/session-hint';
 import { parseCookies } from '@/server/http';
-import { describeError } from '@/server/logging';
 import { attemptKey, consume } from '@/server/rate-limit';
 import { publicRoute } from '@/server/route';
-import { completeSignIn, oauthStateKey, SignInRefusal } from '@/server/sign-in';
-import { IdentityProviderUnavailableError, workosProvider } from '@/server/workos';
+import {
+  confirmationReason,
+  issueSignIn,
+  lastAccountKey,
+  oauthStateKey,
+  prepareSignIn,
+  SignInRefusal,
+} from '@/server/sign-in';
+import { parkSignIn, SIGN_IN_CONFIRM_PATH } from '@/server/sign-in-confirmation';
+import { refusedSignIn, seeOther } from '@/server/sign-in-responses';
+import { workosProvider } from '@/server/workos';
 
 /**
  * Where AuthKit sends the browser back to — the only endpoint that turns an
@@ -28,21 +34,39 @@ import { IdentityProviderUnavailableError, workosProvider } from '@/server/worko
  *
  *  1. Rate limit, on the caller's address.
  *  2. The state cookie: its MAC, its age, and its `state` against the one in
- *     the query string. This is the login-CSRF defence — the double-submit CSRF
- *     check cannot apply to a top-level navigation from another site — and a
- *     failure here ends the request before the code is even looked at.
+ *     the query string. This is the login-CSRF defence for a code that was
+ *     never this browser's — the double-submit CSRF check cannot apply to a
+ *     top-level navigation from another site — and a failure here ends the
+ *     request before the code is even looked at.
  *  3. Whatever the provider said went wrong, if it said so.
  *  4. The code exchange: one authenticated call to WorkOS with this
  *     deployment's secret and the flow's PKCE verifier.
- *  5. Everything after that is `completeSignIn` (`server/sign-in.ts`), whose
- *     header lists its steps and why they are in that order.
+ *  5. `prepareSignIn` (`server/sign-in.ts`, steps 1–7), whose header lists its
+ *     steps and why they are in that order.
+ *  6. **Whether the person must confirm first** (`confirmationReason`). `state`
+ *     cannot tell whose authentication came back, and an attacker who planted
+ *     their own AuthKit session in this browser gets a code for *their*
+ *     account against *this* browser's valid state (review S1). A sign-in that
+ *     came back through an organisation the flow did not ask for, by the
+ *     single sign-on of an organisation the account is not a member of (even
+ *     one the flow asked for — review round 2), or from a session WorkOS
+ *     reused without asking for an account other than the last one on this
+ *     browser, is therefore not issued here: it is parked in a sealed,
+ *     five-minute, single-use cookie, and the browser goes to
+ *     `/sign-in/confirm` to answer "Continue as …?". Only that page's POST
+ *     (`/api/auth/confirm`) issues the session — and nothing that changes an
+ *     organisation (a just-in-time join) happens before it.
+ *  7. Otherwise, `issueSignIn` and a 303 to `next` — never an API route, and
+ *     never a sign-in screen (`safePostSignInPath`, checked again here at the
+ *     moment of use).
  *
  * ── How it answers ──
- * Always with a 303 — to `next` on success, to `/sign-in?error=<code>` on any
- * refusal — and always clearing the state cookie, so one state is used at most
- * once per browser. A refusal is still the status it is (403, 409, …) in the
- * log line; it is not the status of the response, because this is a page load,
- * and a JSON body on a blank tab is a dead end for the person reading it.
+ * Always with a 303 — to `next`, to the confirmation, or to
+ * `/sign-in?error=<code>` on any refusal — and always clearing the state
+ * cookie, so one state is used at most once per browser. A refusal is still the
+ * status it is (403, 409, …) in the log line; it is not the status of the
+ * response, because this is a page load, and a JSON body on a blank tab is a
+ * dead end for the person reading it.
  */
 export const GET = publicRoute(async ({ request, services }) => {
   const url = new URL(request.url);
@@ -78,7 +102,7 @@ export const GET = publicRoute(async ({ request, services }) => {
     // the redirect is the moment an unsafe value would do its damage, so it is
     // held to the same rule at that moment rather than trusted on the strength
     // of an earlier check in a different request.
-    next = safeRedirectPath(flow.next, POST_SIGN_IN_PATH);
+    next = safePostSignInPath(flow.next, POST_SIGN_IN_PATH);
 
     const providerError = url.searchParams.get('error');
     if (providerError !== null) {
@@ -98,18 +122,67 @@ export const GET = publicRoute(async ({ request, services }) => {
       userAgent: services.meta.userAgent,
     });
 
-    const result = await completeSignIn(services, {
+    const prepared = await prepareSignIn(services, {
       exchange,
       purpose: flow.purpose,
       provider,
-      presentedSessionToken: cookies.get(SESSION_COOKIE_NAME) ?? null,
       flowIssuedAt: flow.issuedAt,
+    });
+
+    const reason = confirmationReason({
+      flow,
+      exchange,
+      prepared,
+      lastAccountUserId: await openLastAccount(
+        await lastAccountKey(services.env),
+        cookies.get(LAST_ACCOUNT_COOKIE_NAME),
+      ),
+    });
+    if (reason !== null) {
+      // Logged at `info`, with what was asked against what came back: one of
+      // these is a person signing in through their company's identity
+      // provider from the plain button; a burst of them for one address is
+      // the planted-session attack being tried.
+      services.log
+        .at('callback')
+        .info(
+          'Held a sign-in back for the person to confirm: it came back through an organisation ' +
+            'this flow did not ask for, through the single sign-on of one the account is not in, ' +
+            'or from a session WorkOS reused without asking',
+          {
+            reason,
+            askedForOrganization: flow.organizationId !== null,
+            signInMethod: prepared.facts.signInMethod,
+          },
+        );
+      const parked = await parkSignIn(services, {
+        prepared,
+        purpose: flow.purpose,
+        next,
+        flowIssuedAt: flow.issuedAt,
+        reason,
+      });
+      services.bindLog({ signInOutcome: 'confirmation-required', signInPurpose: flow.purpose });
+      return seeOther(SIGN_IN_CONFIRM_PATH, [parked, clearedOAuthStateCookie()]);
+    }
+
+    const result = await issueSignIn(services, {
+      user: prepared.user,
+      outcome: prepared.outcome,
+      facts: prepared.facts,
+      purpose: flow.purpose,
+      lockOne: prepared.lockOne,
+      freshAuthAt: prepared.freshAuthAt,
+      providerSessionId: prepared.providerSessionId,
+      workosClientId: provider.clientId,
+      confirmation: null,
+      presentedSessionToken: cookies.get(SESSION_COOKIE_NAME) ?? null,
     });
 
     services.bindLog({ signInOutcome: result.outcome, signInPurpose: flow.purpose });
     return seeOther(next, [...result.cookies, clearedOAuthStateCookie()]);
   } catch (cause) {
-    return refused(services, cause, next);
+    return refusedSignIn(services, cause, next, [clearedOAuthStateCookie()]);
   }
 });
 
@@ -117,97 +190,4 @@ export const GET = publicRoute(async ({ request, services }) => {
 function single(params: URLSearchParams, name: string): string | null {
   const values = params.getAll(name);
   return values.length === 1 ? (values[0] ?? null) : null;
-}
-
-function seeOther(location: string, cookies: readonly string[]): Response {
-  const headers = new Headers({
-    location,
-    // The URL this response answered carries a one-time code, already spent.
-    // The site-wide `strict-origin-when-cross-origin` (next.config.ts) keeps
-    // the query out of any cross-site referrer, and Next applies it over
-    // anything a route sets, so no header of its own is needed here.
-    'cache-control': 'no-store',
-  });
-  for (const cookie of cookies) headers.append('set-cookie', cookie);
-  return new Response(null, { status: 303, headers });
-}
-
-/**
- * Turns any failure into a redirect to the sign-in page's error surface — and a
- * log line that says what really happened.
- *
- * Three kinds of failure, and the log level follows them:
- *
- *  - **A refusal** (`SignInRefusal`): the system working. Logged at `warn` with
- *    the status it stands for, because a burst of them is the shape of
- *    somebody probing the door.
- *  - **The provider unreachable or misconfigured**, or a binding missing: an
- *    operator's problem. `error`, and the person is told sign-in is
- *    unavailable rather than that they did something wrong.
- *  - **Anything else** — a programming error, the database — `error`, with the
- *    stack, and the person is told only that it failed.
- *
- * A code the provider refused (expired, replayed, a PKCE mismatch) is a
- * refusal, reported as an expired attempt: naming which part was wrong tells an
- * attacker which part of a forged request to fix next.
- */
-/**
- * Which side of the WorkOS call an `IdentityVerificationError` came from, for
- * the log. A code refused by shape never reached WorkOS, and an answer that
- * could not be used did — "WorkOS would not exchange its code" is true of
- * neither, and a person reading the log at 3 a.m. would go looking at WorkOS.
- */
-function verificationFailure(reason: string): string {
-  if (reason === 'malformed-code') {
-    return 'Refused a sign-in before asking WorkOS: the code in the callback URL was malformed.';
-  }
-  if (reason === 'no-email' || reason === 'malformed-subject' || reason === 'malformed-identity') {
-    return `Refused a sign-in because WorkOS's answer could not be used (${reason}).`;
-  }
-  return `Refused a sign-in because WorkOS would not exchange its code (${reason}).`;
-}
-
-function refused(services: ServiceContext, cause: unknown, next: string | null): Response {
-  const log = services.log.at('callback');
-  let code: SignInErrorCode;
-
-  if (cause instanceof SignInRefusal) {
-    code = cause.code;
-    log.warn(`Refused a sign-in: ${cause.logDetail}`, { code, status: cause.status });
-  } else if (cause instanceof IdentityVerificationError) {
-    code = 'expired';
-    log.warn(
-      `${verificationFailure(cause.reason)} The person was told only that the attempt expired.`,
-      { code, status: 400, reason: cause.reason },
-    );
-  } else if (cause instanceof IdentityProviderUnavailableError) {
-    code = cause.reason === 'rate-limited' ? 'rate-limited' : 'unavailable';
-    log.error(
-      `Could not complete a sign-in because WorkOS was ${cause.reason} — every sign-in fails ` +
-        'the same way until this is resolved',
-      { code, status: cause.reason === 'rate-limited' ? 429 : 503, reason: cause.reason },
-    );
-  } else if (cause instanceof MissingBindingError) {
-    code = 'unavailable';
-    log.error(
-      `This deployment is missing ${cause.binding}, so nobody can sign in until it is configured`,
-      { code, status: 503, binding: cause.binding },
-    );
-  } else {
-    code = 'failed';
-    log.error('An unexpected error ended a sign-in — the person was told only that it failed', {
-      code,
-      status: 500,
-      error: describeError(cause),
-    });
-  }
-
-  // The completion line for this request reads as a neutral "completed a
-  // sign-in callback" whatever happened; these fields are what say it was
-  // refused, and why, so that a refused sign-in is never counted as a success.
-  services.bindLog({ signInOutcome: 'refused', signInRefusal: code });
-
-  const target = new URLSearchParams({ error: code });
-  if (next !== null && next !== POST_SIGN_IN_PATH) target.set('next', next);
-  return seeOther(`${SIGN_IN_PATH}?${target.toString()}`, [clearedOAuthStateCookie()]);
 }

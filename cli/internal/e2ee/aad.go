@@ -227,3 +227,25 @@ func PrivateKeySignAad(userID string) (string, error) {
 	}
 	return AADPrefixV2 + ".privkey-sign|" + userID, nil
 }
+
+// OverrideValueAad binds a personal override (P19 §2) to the organisation, the
+// environment, the person it belongs to, and the name it overrides.
+//
+// Sealed to the owner's own public key rather than to the environment's key, so
+// a teammate holding the EDK cannot open it and a rotation never has to touch
+// it. The four components are the row's unique key, so an override moved to
+// another person, environment or name fails to open rather than applying where
+// it was never written. Spec §2.2 type 13, §4.2.
+func OverrideValueAad(orgID, environmentID, userID, name string) (string, error) {
+	for _, field := range []struct{ value, label string }{
+		{orgID, "orgId"}, {environmentID, "environmentId"}, {userID, "userId"},
+	} {
+		if err := assertUUID(field.value, field.label); err != nil {
+			return "", err
+		}
+	}
+	if err := assertComponent(name, "name"); err != nil {
+		return "", err
+	}
+	return AADPrefixV2 + ".override-value|" + orgID + "|" + environmentID + "|" + userID + "|" + name, nil
+}

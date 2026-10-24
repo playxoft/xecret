@@ -3,6 +3,7 @@ import { uuidv7 } from '@xecret/core/ids';
 import { generateToken } from '@xecret/core/auth';
 import type { Bytes } from '@xecret/core/crypto';
 import type { AccessLevel } from '@xecret/core/authz';
+import type { SignInMethod } from '@xecret/core/audit';
 import { cliTokens, serviceTokens } from '../schema/tokens';
 import { MAX_PAGE_SIZE, RepositoryError } from './shared';
 import type { Executor } from './shared';
@@ -31,6 +32,13 @@ export interface CreateCliTokenParams {
   name: string;
   expiresAt?: Date | null | undefined;
   environment?: 'live' | 'test' | undefined;
+  /**
+   * How the browser session that approved the device signed in (migration
+   * 0022). Omitted reads as "not single sign-on", which only ever costs access.
+   */
+  signInMethod?: SignInMethod | null | undefined;
+  /** That session's single-sign-on organisation, or `null`. */
+  ssoWorkosOrgId?: string | null | undefined;
 }
 
 export interface CreateServiceTokenParams {
@@ -100,6 +108,10 @@ export interface CliTokenPrincipal {
   name: string;
   tokenPrefix: string;
   expiresAt: Date | null;
+  /** How the approving session signed in; `null` for a token minted before 0022. */
+  signInMethod: SignInMethod | null;
+  /** The approving session's single-sign-on organisation — what `sso_required` reads. */
+  ssoWorkosOrgId: string | null;
 }
 
 /**
@@ -146,6 +158,8 @@ export async function createCliToken(
       tokenHash: generated.hash,
       tokenPrefix: generated.prefix,
       expiresAt: params.expiresAt ?? null,
+      signInMethod: params.signInMethod ?? null,
+      ssoWorkosOrgId: params.ssoWorkosOrgId ?? null,
     })
     .returning(cliTokenColumns);
 
@@ -178,6 +192,8 @@ export async function findCliTokenByHash(
       name: cliTokens.name,
       tokenPrefix: cliTokens.tokenPrefix,
       expiresAt: cliTokens.expiresAt,
+      signInMethod: cliTokens.signInMethod,
+      ssoWorkosOrgId: cliTokens.ssoWorkosOrgId,
     })
     .from(cliTokens)
     .where(

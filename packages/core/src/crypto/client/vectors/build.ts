@@ -25,7 +25,14 @@
  */
 
 import { x25519 } from '@noble/curves/ed25519.js';
-import { edkGrantAad, ehkGrantAad, secretNoteAad, secretValueAad, userKeyWrapAad } from '../../aad';
+import {
+  edkGrantAad,
+  ehkGrantAad,
+  overrideValueAad,
+  secretNoteAad,
+  secretValueAad,
+  userKeyWrapAad,
+} from '../../aad';
 import { MAX_SECRET_VALUE_BYTES } from '../../secrets';
 import type { Bytes } from '../../types';
 import { toBase64Url } from '../../encoding';
@@ -128,6 +135,14 @@ const CODE_BYTES = {
   padded: '000007d3d6ce2ba14cde1eb44d1a5f59',
   /** Chosen to contain both `0` and `1`, so the I/L/O aliasing is exercised. */
   typed: '070bef76a0da01c38d8bfb877a70a261',
+} as const;
+
+/**
+ * The randomness behind the two personal-override vectors (spec §2.2 type 13).
+ * Separate from `IV` so adding these changed no existing vector.
+ */
+const OVERRIDE_RANDOMNESS = {
+  iv: ['28172a2094a5513230b4e91f', '24568a5750393ca41d33bc4b'],
 } as const;
 
 const INVITE_SEED = '519eeaf678a951999be2bb90f3766ef2';
@@ -886,6 +901,66 @@ async function blobParseVectors(): Promise<Vector[]> {
   ];
 }
 
+/**
+ * Personal overrides: a value encrypted under its owner's override key — HKDF of
+ * their own X25519 private key — and bound to the organisation, the environment,
+ * the owner and the name. One ASCII value, and one whose NFC form differs from
+ * its bytes as typed — the same normalisation rule as a secret value, checked in
+ * both implementations. The derived key is in the vector, so a second
+ * implementation can tell a derivation fault from an encryption fault.
+ */
+async function overrideValueVectors(): Promise<Vector[]> {
+  const ownerPrivateKey = fromHex(KEY.memberPrivate);
+  const overrideKey = await deriveKey({ ikm: ownerPrivateKey, info: HKDF_INFO.overrideKey });
+
+  const cases = [
+    {
+      id: 'override-value/ascii',
+      description: "A developer's local DATABASE_URL, sealed to their own key.",
+      name: 'DATABASE_URL',
+      plaintext: 'postgres://dev:dev@localhost:5432/app',
+    },
+    {
+      id: 'override-value/nfc',
+      description:
+        'A decomposed value: NFC-normalised before it is sealed, exactly as a secret is.',
+      name: 'GREETING',
+      plaintext: DECOMPOSED_VALUE,
+    },
+  ];
+
+  const vectors: Vector[] = [];
+  for (const [index, testCase] of cases.entries()) {
+    const aad = overrideValueAad({
+      orgId: ID.org,
+      environmentId: ID.environment,
+      userId: ID.member,
+      name: testCase.name,
+    });
+    const plaintext = normalizedUtf8(testCase.plaintext);
+    const blob = formatGcmBlob(
+      await encryptGcmWithIv(overrideKey, fromHex(OVERRIDE_RANDOMNESS.iv[index]!), plaintext, aad),
+    );
+
+    vectors.push({
+      id: testCase.id,
+      kind: 'override-value',
+      description: testCase.description,
+      input: {
+        orgId: ID.org,
+        environmentId: ID.environment,
+        userId: ID.member,
+        name: testCase.name,
+        ownerPrivateKeyHex: KEY.memberPrivate,
+        ivHex: OVERRIDE_RANDOMNESS.iv[index]!,
+        plaintext: testCase.plaintext,
+      },
+      expected: { aad, overrideKeyHex: toHex(overrideKey), plaintextHex: toHex(plaintext), blob },
+    });
+  }
+  return vectors;
+}
+
 /* ──────────────────────────────── assembly ──────────────────────────────── */
 
 /** Builds every vector, in file order. Deterministic: the inputs are pinned. */
@@ -915,6 +990,7 @@ export async function buildVectors(): Promise<Vector[]> {
     ...(await valueHmacVectors()),
     ...(await recoveryCodeVectors()),
     ...(await blobParseVectors()),
+    ...(await overrideValueVectors()),
   ];
 }
 

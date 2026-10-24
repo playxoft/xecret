@@ -205,6 +205,7 @@ const ownerPrincipal: Principal = {
   vaultUnlockedAt: new Date(),
   lastSeenAt: new Date(),
   vaultAutoLockMinutes: null,
+  signIn: { method: 'password', ssoWorkosOrgId: null },
 };
 
 const developerPrincipal: Principal = {
@@ -623,6 +624,7 @@ describe('rotation completeness', () => {
           tokenName: 'laptop',
           userId: OWNER_ID,
           orgId: ORG_ID,
+          signIn: { method: null, ssoWorkosOrgId: null },
         },
         { newVersion: 2, grants: [grant()] },
       ),

@@ -20,9 +20,12 @@ import {
   TableRow,
   Tooltip,
 } from '@/components/ui';
+import { nameWarning, policyProblem } from '@/components/policies/policy-checks';
+import { useSecretPolicy } from '@/components/policies/secret-policy-context';
 import { ComparedValue } from './compared-value';
 import type { EnvironmentTarget } from './environment-target';
 import { hasNewValue, isTouched, wantsRename } from './staged-changes';
+import { crossesTemplateBoundary, TEMPLATE_RENAME_REFUSAL } from './template-references';
 import type { PendingEdit } from './staged-changes';
 import type { PlaintextCache } from './use-plaintext-cache';
 import type { SecretIo } from '@/components/envkeys';
@@ -63,6 +66,12 @@ export interface SecretRowProps {
   io: SecretIo | null;
   /** This environment, for the chip a compared row puts beside its value. */
   environment: EnvironmentTarget | undefined;
+  /**
+   * Whether this environment is production — for a secret policy scoped to
+   * production (P19 §8). From the page rather than from `environment`, which
+   * is undefined until the project listing lands.
+   */
+  isProduction: boolean;
   secret: SecretSummary;
   selected: boolean;
   /** Present while this row has something staged, or an editor open. */
@@ -166,6 +175,7 @@ export function SecretRow({
   envSlug,
   io,
   environment,
+  isProduction,
   secret,
   selected,
   edit,
@@ -353,6 +363,25 @@ export function SecretRow({
     onMetaChange({ note: value === (secret.note ?? '') ? null : value });
   }
 
+  /**
+   * A type change — and the one kind that needs the value in hand.
+   *
+   * Turning a value into a template, or a template back into text, changes what
+   * the stored text *means*, so the server takes it only as a value write that
+   * declares (or stops declaring) its references — never as a label on the
+   * metadata route (P19 §1). A value write needs the value. So picking such a
+   * type opens the editor on the current value, through the same audited reveal
+   * a click on the field would make, and the save writes it back with the new
+   * type. Without this the save could only refuse, and ask for the click this
+   * makes on the person's behalf.
+   */
+  function changeType(next: SecretValueType) {
+    onTypeChange(next);
+    if (crossesTemplateBoundary(toSecretValueType(secret.valueType), next) && !editorOpen) {
+      void beginEdit();
+    }
+  }
+
   return (
     <TableRow
       // `onFocus`/`onBlur` alongside the pointer events because React maps them
@@ -395,11 +424,12 @@ export function SecretRow({
           existingNames={existingNames}
           disabled={disabled}
           valueType={valueType}
+          isProduction={isProduction}
           staged={staged}
           note={note}
           onMetaChange={onMetaChange}
           onNoteChange={changeNote}
-          onTypeChange={onTypeChange}
+          onTypeChange={changeType}
           onGoToValue={goToValue}
           onCommit={onCommit}
         />
@@ -411,6 +441,7 @@ export function SecretRow({
             secret={secret}
             secretName={secret.name}
             valueType={valueType}
+            isProduction={isProduction}
             // The chip only earns its place once there is more than one value in
             // the cell; on its own it would repeat the page heading.
             {...(comparing && environment !== undefined
@@ -525,6 +556,7 @@ function NameCell({
   existingNames,
   disabled,
   valueType,
+  isProduction,
   staged,
   note,
   onMetaChange,
@@ -537,7 +569,9 @@ function NameCell({
   edit: PendingEdit | undefined;
   existingNames: ReadonlySet<string>;
   disabled: boolean;
+  /** The type the key will hold after a save: the staged one, else the stored one. */
   valueType: SecretValueType;
+  isProduction: boolean;
   /** Whether this row holds work a save would write. */
   staged: boolean;
   /** The note in effect — the staged one where there is one, the stored one otherwise. */
@@ -573,8 +607,13 @@ function NameCell({
   const [renameTip, setRenameTip] = useState(false);
   const [descriptionTip, setDescriptionTip] = useState(false);
 
+  const policy = useSecretPolicy();
+
   // The same module the server checks against; this copy exists so the failure
-  // arrives while the name is under the cursor.
+  // arrives while the name is under the cursor. Then the two P19 rules a rename
+  // meets: a template cannot be renamed at all (what its unqualified references
+  // resolve to depends on where it sits), and a new name is a name the
+  // organisation's naming rule applies to.
   let nameProblem: string | null = null;
   if (wantsRename) {
     const check = checkSecretName(rename);
@@ -582,11 +621,23 @@ function NameCell({
       ? (check.message ?? 'That name cannot be used.')
       : existingNames.has(rename)
         ? 'This environment already has a secret with that name.'
-        : null;
+        : valueType === 'template'
+          ? TEMPLATE_RENAME_REFUSAL
+          : policyProblem(policy, { name: rename, newName: true, isProduction });
   }
 
+  /**
+   * The name as it stands, against a naming rule that came after it.
+   *
+   * A warning, never a block: the secret works and can be rotated under this
+   * name for as long as anybody likes. Only a rename, or a key created fresh,
+   * is held to the rule.
+   */
+  const legacyName = wantsRename ? null : nameWarning(policy, secret.name, isProduction);
+  const [legacyTip, setLegacyTip] = useState(false);
+
   /** Whether the trailing edge is carrying anything, and how much room it needs. */
-  const warns = wantsRename && nameProblem === null;
+  const warns = (wantsRename && nameProblem === null) || legacyName !== null;
 
   /**
    * Enter moves along the row; Shift+Enter drops down to the note.
@@ -678,7 +729,23 @@ function NameCell({
               `pointer-events-none` slot a decorative glyph would sit in: both of
               these are things you point at. */}
           <span className="absolute right-1 flex items-center gap-0.5">
-            {warns ? (
+            {legacyName !== null ? (
+              // The same place, the same shape, as the rename warning beside
+              // it — and never at the same time: a staged rename replaces this
+              // name, and is checked against the rule itself.
+              <Tooltip content={legacyName} open={legacyTip && !describing}>
+                <span
+                  className="text-warning-text flex size-6 shrink-0 items-center justify-center"
+                  onPointerEnter={() => setLegacyTip(true)}
+                  onPointerLeave={() => setLegacyTip(false)}
+                >
+                  <AlertTriangleIcon aria-hidden="true" className="size-4" />
+                  <span className="sr-only">{legacyName}</span>
+                </span>
+              </Tooltip>
+            ) : null}
+
+            {wantsRename && nameProblem === null ? (
               // Said while the rename is staged, not after: the history follows
               // the secret through a rename, but every reader addressing it by
               // name — `xecret run`, CI — stops finding it the moment this is

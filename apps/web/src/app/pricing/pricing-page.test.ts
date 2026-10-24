@@ -219,11 +219,71 @@ describe('the prices that are written down', () => {
 });
 
 describe('the honesty rules this page is built on', () => {
-  it('still says that nothing is billed yet', () => {
-    // Removed in the phase that connects a payment provider, and in no other.
-    // Until then it is simply true, and it is what lets the page publish real
-    // prices months before it can charge them.
-    expect(SOURCE).toContain('nothing is billed');
+  it('says that nothing is billed wherever nothing is', () => {
+    // The phase that connected a payment provider (P12) made the sentence
+    // conditional rather than deleting it: a self-hosted deployment, and this
+    // one before Dodo is configured, still bill nothing, and still say so. It
+    // is what lets the page publish real prices before it can charge them.
+    const code = withoutComments(SOURCE);
+    expect(code).toContain('nothing is billed');
+    expect(code).toContain('no card is taken in pre-alpha');
+  });
+
+  it('asks the deployment whether it takes payments, and the page and its metadata both ask', () => {
+    const code = withoutComments(SOURCE);
+    // The one shared check, which answers yes only for live mode
+    // (`takesLivePayments`, tested in `server/billing/config.test.ts`).
+    expect(code).toContain("import { takesPayments } from '@/server/billing/payments-live';");
+    const helper = withoutComments(
+      readFileSync(join(import.meta.dirname, '../../server/billing/payments-live.ts'), 'utf8'),
+    );
+    expect(helper).toMatch(
+      /await connection\(\);[\s\S]*takesLivePayments\([\s\S]*env[\s\S]*\)[\s\S]*return false/,
+    );
+    // Nothing that opens a database: `../context` builds the request services
+    // and brings drizzle and postgres into every marketing page's chunk.
+    const imports = [...helper.matchAll(/^import[^;]*from '([^']+)';/gm)].map((match) => match[1]);
+    expect(imports).toEqual(['@opennextjs/cloudflare', 'next/server', '../bindings', './config']);
+    const config = withoutComments(
+      readFileSync(join(import.meta.dirname, '../../server/billing/config.ts'), 'utf8'),
+    );
+    expect(
+      [...config.matchAll(/^import (type )?[^;]*from '([^']+)';/gm)]
+        .filter((match) => match[1] === undefined)
+        .map((match) => match[2]),
+    ).toEqual(['../bindings']);
+    expect(code).toContain('pricingDescription(currency, await takesPayments())');
+    expect(code).toContain('const paymentsLive = await takesPayments();');
+    // The FAQ and its structured data are the same list, so Google is never
+    // told an answer the page no longer gives.
+    expect(code).toContain('faqSchema(faq)');
+    expect(code).toContain('<Faq items={faq}');
+    expect(code).not.toContain('faqSchema(FAQ)');
+  });
+
+  it('gives every answer that mentions pre-alpha billing a live counterpart that does not', () => {
+    const entries = SOURCE.slice(locate('const FAQ: readonly PricingFaqItem[] = ['));
+    const list = entries.slice(0, entries.indexOf('\n];\n'));
+    const blocks = list.split(/\n {2}\{\n/).slice(1);
+    let conditional = 0;
+    for (const block of blocks) {
+      const [before, live] = block.split('whenPaymentsLive:');
+      if (
+        /pre-alpha|no plan is billed|neither is billed|no card|billing system connected/.test(
+          before ?? '',
+        )
+      ) {
+        expect(
+          live,
+          `an answer about pre-alpha billing has no live counterpart:\n${block}`,
+        ).toBeDefined();
+      }
+      if (live !== undefined) {
+        conditional += 1;
+        expect(live).not.toMatch(/pre-alpha|not billed|no plan is billed|nothing is billed/);
+      }
+    }
+    expect(conditional).toBe(4);
   });
 
   it('marks unbuilt capabilities rather than omitting or claiming them', () => {

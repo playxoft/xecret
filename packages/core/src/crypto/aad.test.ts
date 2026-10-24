@@ -7,6 +7,7 @@ import {
   envKeyAad,
   isAadV2,
   orgKeyAad,
+  orgValueAad,
   privateKeyEncAad,
   privateKeySignAad,
   secretAad,
@@ -49,8 +50,48 @@ describe('AAD construction', () => {
       utf8Decode(orgKeyAad(orgId, 1)),
       utf8Decode(envKeyAad(orgId, environmentId, 1)),
       utf8Decode(secretAad(context)),
+      utf8Decode(
+        orgValueAad({
+          orgId,
+          purpose: 'webhook-secret',
+          resourceId: environmentId,
+          orgKeyVersion: 1,
+        }),
+      ),
     ]);
-    expect(all.size).toBe(3);
+    expect(all.size).toBe(4);
+  });
+});
+
+describe('org-value AAD (P19 §5)', () => {
+  const webhookId = uuidv7();
+  const base = {
+    orgId,
+    purpose: 'webhook-secret' as const,
+    resourceId: webhookId,
+    orgKeyVersion: 1,
+  };
+
+  it('renders its own purpose, distinct from every other v1 purpose', () => {
+    expect(utf8Decode(orgValueAad(base))).toBe(
+      `xecret.aad.v1.org-value|webhook-secret|${orgId}|${webhookId}|1`,
+    );
+  });
+
+  it('differs when any single component differs', () => {
+    const baseline = utf8Decode(orgValueAad(base));
+    expect(utf8Decode(orgValueAad({ ...base, orgId: uuidv7() }))).not.toBe(baseline);
+    expect(utf8Decode(orgValueAad({ ...base, resourceId: uuidv7() }))).not.toBe(baseline);
+    expect(utf8Decode(orgValueAad({ ...base, orgKeyVersion: 2 }))).not.toBe(baseline);
+  });
+
+  it('rejects an unknown purpose, a non-UUID and a bad version, without echoing them', () => {
+    expect(() =>
+      orgValueAad({ ...base, purpose: 'anything|else' as unknown as 'webhook-secret' }),
+    ).toThrow(/known org-value purpose/);
+    expect(() => orgValueAad({ ...base, resourceId: 'not|a-uuid' })).toThrow(TypeError);
+    expect(() => orgValueAad({ ...base, resourceId: 'not|a-uuid' })).not.toThrow(/not\|a-uuid/);
+    expect(() => orgValueAad({ ...base, orgKeyVersion: -1 })).toThrow(TypeError);
   });
 });
 

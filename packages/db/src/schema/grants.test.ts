@@ -30,7 +30,14 @@ const ROLE = 'xecret_app_permissions';
  * Append-only by design: the role may read and add rows, never change or
  * remove them. Listed here so that losing the restriction fails too.
  */
-const APPEND_ONLY = new Set(['audit_logs', 'billing_webhook_events']);
+const APPEND_ONLY = new Set([
+  'audit_logs',
+  'billing_webhook_events',
+  // Migration 0024: a checkout that happened, and a licence key the provider
+  // issued, are records — never edited into something else.
+  'billing_checkouts',
+  'billing_license_keys',
+]);
 
 /**
  * Narrower still, by design (migration 0020): a retained vault's wraps and
@@ -40,7 +47,19 @@ const APPEND_ONLY = new Set(['audit_logs', 'billing_webhook_events']);
  * which is a column privilege and therefore not a table-wide UPDATE.
  */
 const INSERT_ONLY = new Set(['retained_vault_wraps', 'retained_vault_grants']);
-const NO_TABLE_UPDATE = new Set(['retained_vaults']);
+const NO_TABLE_UPDATE = new Set([
+  'retained_vaults',
+  // Migration 0024: a sent reminder is inserted, and pruned once its occasion
+  // is long past; rewriting one would re-arm a reminder already sent.
+  'billing_reminders',
+]);
+
+/**
+ * Read-only, by design (migration 0023): which WorkOS environment the database
+ * belongs to is an operator's record, and the application that is checked
+ * against it must not be able to rewrite it.
+ */
+const READ_ONLY = new Set(['workos_home']);
 
 let t: TestDatabase;
 
@@ -99,12 +118,24 @@ describe('the application role', () => {
 
     expect(granted, `${table} is declared in the schema but not in the database`).toBeDefined();
     expect(granted).toEqual(
-      APPEND_ONLY.has(table) || INSERT_ONLY.has(table)
-        ? { s: true, i: true, u: false, d: false }
-        : NO_TABLE_UPDATE.has(table)
-          ? { s: true, i: true, u: false, d: true }
-          : { s: true, i: true, u: true, d: true },
+      READ_ONLY.has(table)
+        ? { s: true, i: false, u: false, d: false }
+        : APPEND_ONLY.has(table) || INSERT_ONLY.has(table)
+          ? { s: true, i: true, u: false, d: false }
+          : NO_TABLE_UPDATE.has(table)
+            ? { s: true, i: true, u: false, d: true }
+            : { s: true, i: true, u: true, d: true },
     );
+  });
+
+  it('may update exactly the consumption columns of a checkout (migration 0025)', async () => {
+    const result = await t.pg.query<{ column_name: string }>(
+      `select column_name from information_schema.column_privileges
+        where grantee = $1 and table_name = 'billing_checkouts' and privilege_type = 'UPDATE'
+        order by column_name`,
+      [ROLE],
+    );
+    expect(result.rows.map((row) => row.column_name)).toEqual(['consumed_at', 'subscription_id']);
   });
 
   it('may update exactly the bookkeeping columns of a retained vault', async () => {
