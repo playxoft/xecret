@@ -68,7 +68,10 @@ import { authorize, resolveOrg } from '@/server/tenancy';
  * member exists, and whether they are the caller. Decided on that read
  * instead, a grant written for a developer lands on somebody promoted to
  * owner a moment later, and a removal measured against the rows the member
- * held then raises them past rows written since.
+ * held then raises them past rows written since. A caller editing their own
+ * grants is refused early on the membership the request found, and asked
+ * again in the guard — where the locked row *is* theirs — so an owner demoted
+ * a moment ago is not measured as the owner they were.
  *
  * What stops a viewer being over-granted is still the capability gate: grants
  * raise what a member may *reach*, never what their role may *do*.
@@ -101,8 +104,10 @@ export const PUT = authenticatedRoute<Params>(
     const target = await findMemberWithUser(services.db, orgId, params.memberId);
     if (!target) throw errors.notFound('no such member in organisation');
 
-    // Who the caller is cannot change under the write, so a caller editing
-    // their own grants is refused here, before the body is read.
+    // Whether the member is the caller cannot change under the write, so a
+    // caller editing their own grants is refused here, before the body is
+    // read — on their membership as this request found it. Whether they are
+    // still an owner can change, and the guard asks again on the row it locks.
     const self = target.userId === actor.user.id;
     if (self) {
       auditingDenials(
@@ -150,12 +155,19 @@ export const PUT = authenticatedRoute<Params>(
           () => {
             // The member within the caller's authority, as they are now.
             assertRoleAuthority(membership, member.role);
-            // You can't hand out what you don't hold. A project-wide row
-            // reaches every environment in the project, so it is measured
-            // against all of them. An owner setting their own grants is
-            // measured by the owner role instead, which every level is
-            // within — see `assertMayChangeOwnGrants`.
-            if (!self) assertGrantWithinAuthority(membership, body.accessLevel, reach);
+            if (self) {
+              // An owner setting their own grants is measured by the owner
+              // role, which every level is within — so they must still be
+              // one, on their own row as the lock finds it. One demoted
+              // since the request read them is refused as any other member
+              // is (`assertMayChangeOwnGrants`).
+              assertMayChangeOwnGrants(member);
+            } else {
+              // You can't hand out what you don't hold. A project-wide row
+              // reaches every environment in the project, so it is measured
+              // against all of them.
+              assertGrantWithinAuthority(membership, body.accessLevel, reach);
+            }
           },
         );
         replaced.grant = grants.find(
@@ -225,6 +237,8 @@ export const DELETE = authenticatedRoute<Params>(
     const target = await findMemberWithUser(services.db, orgId, params.memberId);
     if (!target) throw errors.notFound('no such member in organisation');
 
+    // As on PUT: refused here on the membership this request found, and asked
+    // again by the guard on the caller's row as the lock finds it.
     const self = target.userId === actor.user.id;
     if (self) {
       auditingDenials(
@@ -261,13 +275,18 @@ export const DELETE = authenticatedRoute<Params>(
             ),
           () => {
             assertRoleAuthority(membership, member.role);
-            // A removal can raise the member — they fall back to whatever the
-            // row was overriding — so it is held to the same limit as a grant
-            // written, measured on the role, custom role and rows they hold as
-            // the lock finds them. Not for an owner lifting their own
-            // restriction: what they fall back to is the owner role's own
-            // default.
-            if (!self) assertRemovalWithinAuthority(membership, member, grants, reach);
+            if (self) {
+              // An owner lifting their own restriction falls back to the
+              // owner role's own default — so long as they are still an
+              // owner when the lock finds their row.
+              assertMayChangeOwnGrants(member);
+            } else {
+              // A removal can raise the member — they fall back to whatever
+              // the row was overriding — so it is held to the same limit as
+              // a grant written, measured on the role, custom role and rows
+              // they hold as the lock finds them.
+              assertRemovalWithinAuthority(membership, member, grants, reach);
+            }
           },
         ),
     ).catch(mapMembershipError);

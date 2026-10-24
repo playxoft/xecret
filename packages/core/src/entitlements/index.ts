@@ -30,7 +30,7 @@ export {
   RETIRED_PLANS,
   WARN_AT,
 } from './plans';
-export { resolveBilledSeats } from './seats';
+export { FREE_SEAT_LIMIT, providerSeats, resolveBilledSeats, UNCAPPED_SEAT_LIMIT } from './seats';
 export type { SeatDecision, SeatRequest } from './seats';
 export type {
   BillingInterval,

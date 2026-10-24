@@ -30,8 +30,9 @@
  *    role called "Admin" would make "Admin · Admin" on a roster mean two
  *    different things. They are compared on the name's *skeleton* (below), so
  *    "ADMIN", "Admin" in full-width or mathematical bold letters, "ADMIN" with
- *    a Turkish dotted capital I, and "Owner" with a Cyrillic capital O are all
- *    refused as the built-in names they imitate.
+ *    a Turkish dotted capital I, "Owner" with a Cyrillic capital O, and the
+ *    plain-keyboard imitations "DeveIoper" (a capital I), "Deve1oper", "0wner"
+ *    and "Adrnin" are all refused as the built-in names they imitate.
  *  - **No mixing Latin with Cyrillic or Greek.** Those scripts share letters
  *    that are drawn identically, which is how a name borrows another's look
  *    one letter at a time. A name may be written in any of them, not in two.
@@ -40,12 +41,20 @@
  * `customRoleNameSkeleton` is what two names are compared by: compatibility
  * forms folded (full-width and mathematical letters become plain ones), the
  * Cyrillic and Greek letters drawn like Latin ones folded to them, lowercased,
- * and the accents on Latin, Greek and Cyrillic letters dropped. Two names with
- * one skeleton are one name to a reader, and the repository refuses the
- * second: "Deployer", "deployer" and a full-width "Deployer" are one job
- * title. Accents are dropped only on those three scripts; elsewhere a mark is
- * part of the letter, not a decoration on it — two Devanagari words that
- * differ by a vowel sign are two words.
+ * the marks on Latin, Greek, Cyrillic and Common-script characters dropped,
+ * and then the lookalikes within plain Latin and ASCII folded: i, l, the
+ * digit 1 and the bar `|` are one vertical stroke, the digit 0 is an o, "rn"
+ * is an m and "vv" a w. Two names with one skeleton are one name to a
+ * reader, and the repository refuses the second: "Deployer", "deployer", a
+ * full-width "Deployer" and "DepIoyer" with a capital I are one job title.
+ *
+ * Marks are dropped only after those four scripts. On a Latin, Greek or
+ * Cyrillic letter a mark is an accent; on a Common character — a digit, a
+ * punctuation mark, a symbol — it is a decoration drawn around it (the
+ * keycap that turns "1" into an emoji, a strike-through, an enclosing
+ * circle), and the character is compared as itself. Elsewhere a mark is part
+ * of the letter, not a decoration on it — two Devanagari words that differ by
+ * a vowel sign are two words.
  *
  * Shared by the API, which refuses what this refuses, the repository, which
  * decides uniqueness on the skeleton under the organisation lock, and the
@@ -80,9 +89,6 @@ export const CUSTOM_ROLE_NAME_MAX_LENGTH = 40;
  */
 export const CUSTOM_ROLES_PER_ORGANIZATION = 100;
 
-/** The built-in role names, which no custom role may take or imitate. */
-const RESERVED = new Set(['owner', 'admin', 'developer', 'viewer']);
-
 /** Picks a glyph or emoji style and nothing else. Dropped by normalising. */
 const VARIATION_SELECTORS = /\p{Variation_Selector}/gu;
 /** Spaces of every width: one ordinary space, however many and whichever. */
@@ -100,17 +106,24 @@ const LATIN = /\p{Script=Latin}/u;
 const CYRILLIC_OR_GREEK = /[\p{Script=Cyrillic}\p{Script=Greek}]/u;
 
 const MARK = /\p{M}/u;
-/** The bases whose accents a skeleton drops: see "The skeleton" above. */
+/**
+ * The bases whose marks a skeleton drops: Latin, Greek and Cyrillic letters,
+ * whose marks are accents, and Common-script characters — digits,
+ * punctuation, symbols — whose marks are drawn around them, so a keycap "1"
+ * is compared as the digit 1. See "The skeleton" above.
+ */
 const ACCENT_IS_DECORATION =
   /[\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}\p{Script=Common}]/u;
 
 /**
- * Letters drawn like Latin ones, folded to them — each case to what *it*
- * looks like, since the Greek capital nu is an N and its lowercase a v.
- * A small table, not the Unicode confusables data: enough that no built-in
- * name can be spelled in lookalikes, and that two custom names cannot differ
- * only by one. Mixing scripts is refused outright; this covers a name written
- * wholly in one of them.
+ * Letters drawn like Latin ones, folded to them one character at a time —
+ * each case to what *it* looks like, since the Greek capital nu is an N and
+ * its lowercase a v. A small table, not the Unicode confusables data: enough
+ * that no built-in name can be spelled in lookalikes, and that two custom
+ * names cannot differ only by one. Mixing scripts is refused outright; this
+ * covers a name written wholly in one of them. Lookalikes that are all
+ * Latin, or ASCII — a capital I for an l, "rn" for an m — are
+ * `LATIN_LOOKALIKES`, below.
  */
 const CONFUSABLES = new Map<string, string>(
   (
@@ -200,6 +213,32 @@ const CONFUSABLES = new Map<string, string>(
 const fold = (char: string): string => CONFUSABLES.get(char) ?? char;
 
 /**
+ * Lookalikes within Latin and ASCII, folded on the lowercased skeleton — so a
+ * capital I has already become the i it is folded with. Nothing about a
+ * script to refuse here: "DeveIoper", "Deve1oper", "0wner" and "Adrnin" are
+ * typed on any keyboard, and in the sans-serif a roster is read in each draws
+ * as the name it imitates.
+ *
+ *  - **One vertical stroke** for i, l, the digit 1 and the bar `|`. A capital
+ *    I and a lowercase l are the same stroke in most sans-serif faces, and a
+ *    1 or a bar is one more serif away. A lowercase i is folded with them
+ *    because lowercasing cannot keep it apart from the capital.
+ *  - **The digit 0 as an o.**
+ *  - **"rn" as an m, and "vv" as a w** — two letters set close enough to read
+ *    as one.
+ *
+ * Two names that differ only by these are one name, and a built-in name
+ * spelled with them is that name. Names that differ by anything else stay
+ * apart: "Billing" and "Reading" are two roles.
+ */
+const LATIN_LOOKALIKES: readonly (readonly [RegExp, string])[] = [
+  [/[il1|]/g, 'l'],
+  [/0/g, 'o'],
+  [/rn/g, 'm'],
+  [/vv/g, 'w'],
+];
+
+/**
  * A name as it is compared and stored: variation selectors dropped, spaces
  * collapsed, NFC, trimmed. See "One spelling" above.
  */
@@ -233,8 +272,22 @@ export function customRoleNameSkeleton(name: string): string {
     dropMarks = ACCENT_IS_DECORATION.test(letter);
     skeleton += letter;
   }
-  return skeleton.replace(SPACE_RUNS, ' ').normalize('NFC');
+  // Last, on the composed and lowercased result. The folds read and write
+  // only ASCII, which by now keeps no mark after it, so nothing they change
+  // needs composing again.
+  return LATIN_LOOKALIKES.reduce(
+    (folded, [lookalike, letter]) => folded.replace(lookalike, letter),
+    skeleton.replace(SPACE_RUNS, ' ').normalize('NFC'),
+  );
 }
+
+/**
+ * The built-in role names, which no custom role may take or imitate — as
+ * skeletons, through the same function a name is, so the folds that make
+ * "Adrnin" one name with "admin" are folds both sides of the comparison went
+ * through.
+ */
+const RESERVED = new Set(['owner', 'admin', 'developer', 'viewer'].map(customRoleNameSkeleton));
 
 /**
  * Why `name` — already normalised — cannot name a custom role, or `null` when

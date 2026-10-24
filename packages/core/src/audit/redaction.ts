@@ -93,11 +93,22 @@ const CREDENTIAL_SOURCES: readonly string[] = [
   String.raw`\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{8,}`,
   // Google API key.
   String.raw`\bAIza[0-9A-Za-z_-]{35}`,
+  // A Standard Webhooks signing secret: ours (P19 §5), and every provider's that
+  // uses the scheme. Base64 — with `+`, `/` and `=` — not base64url.
+  String.raw`\bwhsec_[A-Za-z0-9+/]{16,}={0,2}`,
   // Any PEM private key header. The body is caught by the entropy rule below.
   String.raw`-----BEGIN [A-Z ]*PRIVATE KEY-----`,
   // JWT. The header always begins `eyJ` — base64url of `{"`. A trailing empty
   // signature is allowed because `alg: none` tokens are still bearer material.
   String.raw`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*`,
+  // A Standard Webhooks signing secret — the payment provider's webhook key
+  // (`DODO_WEBHOOK_SECRET`). Whoever holds it can forge a payment event.
+  String.raw`\bwhsec_[A-Za-z0-9+/=]{16,}`,
+  // A payment-provider customer id (Dodo's `cus_…`). Not a credential, but
+  // P12's rule is that no customer id reaches a log or an audit row: it is the
+  // key every invoice, card and address at the provider hangs off, and the
+  // audit log is read by far more people than the billing dashboard is.
+  String.raw`\bcus_[A-Za-z0-9]{8,}`,
 ];
 
 const CREDENTIAL_PATTERNS = CREDENTIAL_SOURCES.map((source) => new RegExp(source));

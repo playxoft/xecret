@@ -107,8 +107,30 @@ export function describeRequest(method: string, path: string): RequestAction {
         : action('token.read_self', 'Described', 'describe', 'the calling token itself');
     case 'orgs':
       return describeOrgs(verb, rest);
+    case 'billing':
+      return rest[0] === 'webhook'
+        ? action('billing.webhook', 'Received', 'receive', 'a payment webhook from Dodo')
+        : unknown(verb, path);
     default:
       return unknown(verb, path);
+  }
+}
+
+/** `/api/orgs/{org}/billing/…` (P12). */
+function describeBilling(verb: string, org: string, rest: readonly string[]): RequestAction {
+  switch (rest[0]) {
+    case undefined:
+      return action('billing.read', 'Read', 'read', `the billing of ${org}`);
+    case 'checkout':
+      return action('billing.checkout', 'Started', 'start', `a checkout for ${org}`);
+    case 'change':
+      return verb === 'GET'
+        ? action('billing.change_preview', 'Previewed', 'preview', `a plan change for ${org}`)
+        : action('billing.change', 'Changed', 'change', `the plan of ${org}`);
+    case 'portal':
+      return action('billing.portal', 'Opened', 'open', `the billing portal for ${org}`);
+    default:
+      return unknown(verb, `/api/orgs/${org}/billing/${rest.join('/')}`);
   }
 }
 
@@ -302,6 +324,8 @@ function describeOrgs(verb: string, rest: readonly string[]): RequestAction {
       return describeTokens(verb, org, rest.slice(2));
     case 'projects':
       return describeProjects(verb, org, rest.slice(2));
+    case 'billing':
+      return describeBilling(verb, org, rest.slice(2));
     default:
       return unknown(verb, `/api/orgs/${rest.join('/')}`);
   }

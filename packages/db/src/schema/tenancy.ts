@@ -7,6 +7,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   unique,
@@ -56,23 +57,53 @@ export const organizations = pgTable(
      */
     workosOrgId: text('workos_org_id').unique(),
     /**
-     * When true, a member of this organisation may only sign in through its own
-     * SSO connection.
+     * The WorkOS environment — by its client id — that `workos_org_id` was
+     * created in (migration 0022). A WorkOS organisation id means something only
+     * in its own environment, and local development runs against WorkOS
+     * Staging over the production database; the settings routes refuse a link
+     * whose client id is not this deployment's `WORKOS_CLIENT_ID`. Written with
+     * the link, never without it (`organizations_workos_link_client_check`).
+     */
+    workosClientId: text('workos_client_id'),
+    /**
+     * When true, a non-owner member of this organisation reaches it only
+     * through its own single sign-on.
      *
-     * The column ships ahead of its enforcement, and is inert until then: it is
-     * false on every row and nothing in the codebase can set it. The setter
-     * lands in the same change as the check in the sign-in callback (WS-2), and
-     * must not land before it, because the flag without the check is worse than
-     * neither — it tells an administrator that a bypass is closed when it is
-     * open. (`setOrgWorkosOrgId` says the same beside the setter that *does*
-     * exist.)
+     * Enforced **on every request**, by the organisation resolution
+     * (`resolveOrg` in `server/tenancy.ts`), against how the presenting session
+     * or CLI token signed in (`sessions.sso_workos_org_id`) — so switching it on
+     * takes effect at once for credentials issued before, and other
+     * organisations the member belongs to are unaffected. The sign-in callback
+     * refuses a sign-in only when it would leave the account no organisation it
+     * could use. Set only by `updateOrgSsoSettings`, behind the organisation SSO
+     * settings route (an owner, the SAML add-on, an active connection and a
+     * verified domain to turn it on).
      *
-     * Enforcement always exempts at least one owner. An identity provider that
-     * is misconfigured after this is switched on would otherwise lock an
+     * Enforcement exempts the organisation's **owners** — a deliberate
+     * break-glass, and a trade-off rather than a free one: an identity provider
+     * misconfigured after this is switched on would otherwise lock the
      * organisation out of its own account with no self-service way back, and
-     * "contact support" is not a recovery story for a secrets manager.
+     * "contact support" is not a recovery story for a secrets manager. The cost
+     * is that an owner's password (or Google sign-in) stays a way into the
+     * organisation that its identity provider does not govern; every such
+     * sign-in is audited in the organisation as `auth.sso_exemption_used`.
+     *
+     * Never true without `workos_org_id` (`organizations_sso_flags_need_link_check`).
      */
     ssoRequired: boolean('sso_required').notNull().default(false),
+    /**
+     * When true, somebody signing in through this organisation's SSO connection
+     * — for an address in one of its verified domains — is made a member on the
+     * spot, as a `viewer`, while seats last (just-in-time provisioning).
+     *
+     * An explicit opt-in, off by default (migration 0021). Connecting an
+     * identity provider says who the organisation's people *are*; admitting
+     * all of them is a second decision, and an owner or admin takes it here.
+     * Read under the organisation's row lock by `joinOrganizationJustInTime`.
+     *
+     * Never true without `workos_org_id` (`organizations_sso_flags_need_link_check`).
+     */
+    jitJoinEnabled: boolean('jit_join_enabled').notNull().default(false),
     createdBy: uuid('created_by')
       .notNull()
       .references(() => users.id),
@@ -82,6 +113,20 @@ export const organizations = pgTable(
   },
   (t) => [
     check('organizations_seat_limit_check', sql`${t.seatLimit} >= 0`),
+    // Both SSO flags are about the organisation's connection, and an
+    // organisation with no WorkOS link has none — see migration 0021.
+    check(
+      'organizations_sso_flags_need_link_check',
+      sql`(${t.ssoRequired} = false and ${t.jitJoinEnabled} = false) or ${t.workosOrgId} is not null`,
+    ),
+    // A link is always recorded with the environment it was made in. Added NOT
+    // VALID by 0022 and validated by 0023, after a backfill: Postgres checks a
+    // NOT VALID constraint on every UPDATE, so a violating row could not even
+    // be renamed.
+    check(
+      'organizations_workos_link_client_check',
+      sql`${t.workosOrgId} is null or ${t.workosClientId} is not null`,
+    ),
     // Read on every organisation creation, inside the transaction that creates
     // one: `countOrganizationsHeldBy` asks how many live organisations this
     // account created and is still in. The column order is the query's —
@@ -199,6 +244,57 @@ export const orgMembers = pgTable(
       'org_members_owner_custom_role_check',
       sql`${t.customRoleId} is null or ${t.role} <> 'owner'`,
     ),
+  ],
+);
+
+/**
+ * Somebody removed from an organisation (migration 0022).
+ *
+ * Removal deletes the `org_members` row, and this is what is left: the record
+ * the just-in-time join reads before it admits anybody, so that a person
+ * removed here but still in the organisation's identity provider is not
+ * re-admitted by their next single sign-on. Accepting an invitation sent after
+ * the removal deletes it; one sent before it cannot.
+ */
+export const orgMemberRemovals = pgTable(
+  'org_member_removals',
+  {
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** Who removed them; `null` when nobody else did (an account deleting itself). */
+    removedBy: uuid('removed_by').references(() => users.id, { onDelete: 'set null' }),
+    removedAt: timestamp('removed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ name: 'org_member_removals_pkey', columns: [t.orgId, t.userId] })],
+);
+
+/**
+ * The WorkOS environment this database belongs to: one row, the client id
+ * whose organisation ids `organizations.workos_org_id` may hold (migration
+ * 0023).
+ *
+ * Read, never written, by the application — the role may only SELECT it.
+ * Turning SSO on (the only writer of a link) and switching an SSO policy on
+ * both refuse unless this deployment's `WORKOS_CLIENT_ID` is the one recorded
+ * here, so local development against WorkOS Staging over the production
+ * database cannot write a link no production sign-in can ever come through.
+ * Recording it is an operator's act (docs/self-hosting.md).
+ */
+export const workosHome = pgTable(
+  'workos_home',
+  {
+    /** Always `true`: a primary key with one possible value is a one-row table. */
+    id: boolean('id').primaryKey().default(true),
+    clientId: text('client_id').notNull(),
+    recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('workos_home_single_row_check', sql`${t.id}`),
+    check('workos_home_client_id_check', sql`${t.clientId} ~ '^client_[0-9A-Za-z]+$'`),
   ],
 );
 

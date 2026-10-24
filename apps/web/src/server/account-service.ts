@@ -11,6 +11,7 @@ import {
   updateUserProfile,
 } from '@xecret/db/repositories';
 import type { AccountMembership, User } from '@xecret/db/repositories';
+import { assertNotStillBilled } from './billing/seats';
 import { errors } from './errors';
 import type { ServiceContext } from './context';
 
@@ -114,6 +115,8 @@ export interface AccountDeletionResult {
   deletedOrganizations: string[];
   /** Names of the organisations the account was removed from. */
   leftOrganizations: string[];
+  /** Their ids — each has a seat fewer, for the seat sync to push (P12). */
+  leftOrganizationIds: string[];
   revokedSessions: number;
   revokedCliTokens: number;
   /** The organisation the audit record should be filed against, if any existed. */
@@ -137,6 +140,12 @@ export async function deleteAccount(
       );
     }
 
+    // An organisation Dodo still bills is cancelled before it is deleted with
+    // the account, or it would renew for ever with nobody able to open it.
+    // Checked for every one before any is deleted, so a refusal deletes nothing.
+    for (const membership of plan.deleteOrgs) {
+      await assertNotStillBilled(tx, membership.orgId);
+    }
     for (const membership of plan.deleteOrgs) {
       await softDeleteOrganization(tx, membership.orgId);
     }
@@ -161,6 +170,7 @@ export async function deleteAccount(
     return {
       deletedOrganizations: plan.deleteOrgs.map((membership) => membership.orgName),
       leftOrganizations: plan.leaveOrgs.map((membership) => membership.orgName),
+      leftOrganizationIds: plan.leaveOrgs.map((membership) => membership.orgId),
       revokedSessions,
       revokedCliTokens,
       primaryOrgId: memberships[0]?.orgId ?? null,

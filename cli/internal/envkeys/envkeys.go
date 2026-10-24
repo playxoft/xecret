@@ -555,7 +555,17 @@ func (e *BundleError) AllRotatedAway() bool {
 // costs the user a diagnosis afterwards, because the shape of the answer ("these
 // four, all naming the old key") is what says whether this is a rotation in
 // progress or something else entirely.
+//
+// A version 2 bundle — an environment that inherits, or holds a template — is
+// opened layer by layer and then resolved; see [decryptResolvedBundle]. The map
+// that comes back is the same shape either way, which is the point: `run`,
+// `pull`, `export` and the offline cache all call this and none of them has to
+// know which kind of environment they are reading.
 func DecryptBundle(bundle *api.EnvironmentBundle, principal *Principal) (map[string]string, error) {
+	if bundle.BundleVersion >= 2 {
+		return decryptResolvedBundle(bundle, principal)
+	}
+
 	material, err := Open(bundle.Keys, principal)
 	if err != nil {
 		return nil, err

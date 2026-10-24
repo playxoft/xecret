@@ -16,7 +16,10 @@
     "./auth": "./src/auth/index.ts",
     "./importer": "./src/importer/index.ts",
     "./format": "./src/format/index.ts",
-    "./vault-archive": "./src/vault-archive/index.ts"
+    "./vault-archive": "./src/vault-archive/index.ts",
+    "./references": "./src/references/index.ts",
+    "./policy": "./src/policy/index.ts",
+    "./webhooks": "./src/webhooks/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -37,6 +40,6 @@
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
     "yaml": "^2.9.1",
-    "zod": "^4.6.2"
+    "zod": "^4.6.6"
   }
 }

@@ -2,6 +2,7 @@ import { auditingDenials } from '@xecret/core/authz';
 import type { Denial } from '@xecret/core/authz';
 import {
   listEnvironments,
+  lockReferenceGraph,
   RepositoryError,
   softDeleteProject,
   updateProject,
@@ -16,9 +17,10 @@ import {
   confirmationMatches,
   destructiveRequestSchema,
   projectPatchSchema,
-  toEnvironment,
+  toEnvironments,
   toProject,
 } from '@/server/schemas/resources';
+import { assertProjectRemovable } from '@/server/references-service';
 import { authorize, resolveProjectPath } from '@/server/tenancy';
 
 /**
@@ -45,7 +47,7 @@ export const GET = authenticatedRoute<Params>(async ({ params, principal, servic
     // environment, which production denies by default and which the environment
     // and secret routes enforce. Hiding the row would also contradict the
     // environment count returned by the project listing, which counts them all.
-    environments: environments.map(toEnvironment),
+    environments: toEnvironments(environments),
   });
 });
 
@@ -161,9 +163,16 @@ export const DELETE = authenticatedRoute<Params>(
       }
     }
 
-    const project = await softDeleteProject(services.db, orgId, scope.project.id).catch(
-      rethrowVanished,
-    );
+    // P19 §1: a template in another project pointing into this one would break —
+    // checked and deleted in one transaction, under the graph lock, so such a
+    // template cannot be written between the two (review round 1, L8).
+    const project = await services.db
+      .transaction(async (tx) => {
+        await lockReferenceGraph(tx, orgId);
+        await assertProjectRemovable(tx, orgId, scope.project.id);
+        return softDeleteProject(tx, orgId, scope.project.id);
+      })
+      .catch(rethrowVanished);
 
     record(audit(orgId).success('project.deleted', resource, { projectSlug: project.slug }));
 

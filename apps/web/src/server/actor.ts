@@ -12,6 +12,7 @@ import {
   verifyCsrf,
 } from '@xecret/core/auth';
 import type { VaultUnlockState } from '@xecret/core/auth';
+import type { SignInMethod } from '@xecret/core/audit';
 import type { AccessLevel } from '@xecret/core/authz';
 import {
   findCliTokenByHash,
@@ -79,6 +80,13 @@ export type Principal =
        * stopped being unlocked.
        */
       vaultAutoLockMinutes: number | null;
+      /**
+       * How the sign-in that issued this session authenticated, and through
+       * which organisation's single sign-on — what an organisation's
+       * `sso_required` is checked against on every request (`resolveOrg`).
+       * See {@link CredentialSignIn}.
+       */
+      signIn: CredentialSignIn;
     }
   | {
       kind: 'cliToken';
@@ -94,6 +102,8 @@ export type Principal =
        */
       userId: string;
       orgId: string;
+      /** How the browser session that approved this device had signed in. */
+      signIn: CredentialSignIn;
     }
   | {
       kind: 'serviceToken';
@@ -104,6 +114,22 @@ export type Principal =
       environmentId: string;
       accessLevel: AccessLevel;
     };
+
+/**
+ * How a credential came to exist: the method of the sign-in that issued it, and
+ * the WorkOS organisation whose single sign-on that was, if it was one
+ * (migration 0022). For a CLI token, those of the browser session that approved
+ * the device.
+ *
+ * `method: null` is a credential issued before this was recorded. It is read
+ * exactly like a non-SSO one — `ssoWorkosOrgId` is `null` too — so a credential
+ * that cannot say how it signed in can never satisfy an organisation's
+ * `sso_required`.
+ */
+export interface CredentialSignIn {
+  method: SignInMethod | null;
+  ssoWorkosOrgId: string | null;
+}
 
 /** How the credential arrived. Decides whether CSRF applies. */
 export type CredentialSource = 'cookie' | 'bearer';
@@ -181,6 +207,7 @@ async function principalFromSession(token: string, services: ServiceContext): Pr
     // be written to it.
     lastSeenAt: resolution.session.lastSeenAt,
     vaultAutoLockMinutes: session.vaultAutoLockMinutes,
+    signIn: { method: session.signInMethod, ssoWorkosOrgId: session.ssoWorkosOrgId },
   };
 }
 
@@ -274,6 +301,7 @@ async function principalFromBearer(token: string, services: ServiceContext): Pro
       tokenName: record.name,
       userId: record.userId,
       orgId: record.orgId,
+      signIn: { method: record.signInMethod, ssoWorkosOrgId: record.ssoWorkosOrgId },
     };
   }
 

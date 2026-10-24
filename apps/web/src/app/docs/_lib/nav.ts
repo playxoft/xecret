@@ -49,6 +49,18 @@ export const DOCS_SECTIONS: readonly DocsSection[] = [
     ],
   },
   {
+    title: 'Environments and policies',
+    summary:
+      'References, inheritance, overrides, promotion, restore, webhooks, and the rules an organisation sets.',
+    slugs: [
+      'features/references',
+      'features/overrides',
+      'features/promotion-and-restore',
+      'features/webhooks',
+      'features/policies',
+    ],
+  },
+  {
     title: 'HTTP API',
     summary: 'The contract the dashboard, the CLI and CI all speak.',
     slugs: ['api', 'api/reference', 'api/tokens'],

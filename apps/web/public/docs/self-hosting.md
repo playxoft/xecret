@@ -388,6 +388,19 @@ The URL is stored with the credential. In CI, set `XECRET_API_URL` beside
   single sign-on session — see the warning in step 2.
 - **Key rotation.** Every layer of the hierarchy is versioned so it can be
   rotated independently. Have a runbook before you need one.
+- **Webhook egress.** A [webhook](features/webhooks.md) is a URL an
+  organisation admin types and your deployment then fetches. xecret refuses
+  `http`, credentials in the URL, local names and every private, loopback,
+  link-local, reserved and IPv6 transition-mechanism address *literal*, before
+  every attempt, and never follows a redirect. It does not resolve DNS, so a
+  public name that points at a private address — or is re-pointed at one later
+  (DNS rebinding) — gets through that check. On Cloudflare Workers the
+  platform closes the gap: a Worker cannot reach a private network or a
+  metadata endpoint. **Anywhere else it is open**, and the server would send
+  requests into your own network. Put an egress control in front of it that
+  judges the address after resolution — a forward proxy that refuses private
+  destinations, or a network policy denying private, link-local and metadata
+  egress — and until you have one, do not create webhook endpoints.
 
 ## The trust model you are accepting
 

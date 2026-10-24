@@ -19,6 +19,7 @@ import {
 } from '@xecret/core/validation';
 import type { SecretValueType } from '@xecret/core/validation';
 import type { AuditMetadata } from '@xecret/core/audit';
+import type { DeclaredReference } from '@xecret/core/references';
 import type { Action } from '@xecret/core/authz';
 import {
   RepositoryError,
@@ -27,6 +28,7 @@ import {
   loadEnvironmentKeyChain,
   loadEnvironmentKeyState,
   loadEnvironmentSecrets,
+  softDeleteSecret,
   toBytes,
   updateSecretMetadata,
 } from '@xecret/db/repositories';
@@ -38,6 +40,7 @@ import type { ServiceContext } from './context';
 import { errors } from './errors';
 import { enforce, rateLimitKey } from './rate-limit';
 import type { RateLimitBucket } from './rate-limit';
+import type { GraphGuard } from './references-service';
 import { authorize } from './tenancy';
 import type { EnvironmentScope } from './tenancy';
 
@@ -163,6 +166,12 @@ export interface ExistingSecret {
   valueHmac: Uint8Array | null;
   /** The type currently declared on the row, so a write can inherit it. */
   valueType?: string | undefined;
+  /**
+   * What the current version declared it refers to (P19 §1), when it is a
+   * template. A client write whose declaration differs is a change even when the
+   * value's HMAC is not — see `prepareClientWrite`.
+   */
+  declaredReferences?: DeclaredReference[] | null | undefined;
 }
 
 export interface SecretWrite {
@@ -320,6 +329,15 @@ export async function applySecretWrites(
   // must not touch the key hierarchy at all.
   if (batch.writes.length === 0) return [];
 
+  // Nor for a batch that would write a template, which this mode cannot hold —
+  // refused before the key hierarchy is touched (and again in `prepareWrite`,
+  // which a restore reaches without this function).
+  if (batch.writes.some((write) => resolveValueType(write) === 'template')) {
+    throw errors.conflict(
+      'e2ee_required: templates and references need an end-to-end encrypted environment.',
+    );
+  }
+
   return withEnvironmentKey(scope, services, async (key) => {
     const prepared: PreparedWrite[] = [];
 
@@ -444,6 +462,12 @@ export interface ClientSecretWrite {
   expectedVersion: number;
   value: ClientSecretValue;
   valueType?: string | undefined;
+  /**
+   * A template's declared references, already resolved and checked by
+   * `prepareTemplateDeclaration` (P19 §1); `null` or absent for a value that is
+   * not a template. Stored on the version beside the ciphertext.
+   */
+  declaredReferences?: DeclaredReference[] | null | undefined;
   existing?: ExistingSecret | undefined;
 }
 
@@ -451,6 +475,22 @@ export interface ClientSecretWriteBatch {
   writer: SecretWriterRef;
   writes: readonly ClientSecretWrite[];
   dryRun?: boolean | undefined;
+  /**
+   * Secrets to soft-delete in the same transaction as the writes (P19 §3 and
+   * §4): a promotion that removes what the source no longer has, a restore that
+   * takes out what was created since. By id, already resolved and checked by the
+   * caller. Applied first, so a name a removal frees is free for a create in the
+   * same batch.
+   */
+  removals?: readonly string[] | undefined;
+  /**
+   * The reference-graph check this batch must pass (P19 §1), run as the first
+   * thing inside its transaction — after the graph lock, so no concurrent write
+   * can change the graph between the check and the commit (review round 1, L8).
+   * A dry run, which opens no transaction, runs it on its own; a batch that turns
+   * out to write nothing runs nothing. See `graphWriteGuard`.
+   */
+  guard?: GraphGuard | undefined;
 }
 
 /**
@@ -484,26 +524,33 @@ export async function applyClientSecretWrites(
   services: ServiceContext,
   batch: ClientSecretWriteBatch,
 ): Promise<SecretWriteResult[]> {
-  if (batch.writes.length === 0) return [];
+  const removals = batch.removals ?? [];
+  if (batch.writes.length === 0 && removals.length === 0) return [];
 
-  const activeKeyId = await requireActiveDataKey(scope, services);
+  // The active key is what every write must have been sealed against; a batch
+  // that only removes writes no ciphertext and asks nothing of it.
+  const activeKeyId =
+    batch.writes.length === 0 ? null : await requireActiveDataKey(scope, services);
 
   const prepared: PreparedClientWrite[] = [];
   for (const write of batch.writes) {
-    prepared.push(prepareClientWrite(activeKeyId, write));
+    prepared.push(prepareClientWrite(activeKeyId ?? '', write));
   }
 
   const results = prepared.map(toClientWriteResult);
-  if (batch.dryRun === true) return results;
+  if (batch.dryRun === true) {
+    await batch.guard?.(services.db);
+    return results;
+  }
 
   const pending = prepared.filter((write) => write.kind !== 'unchanged');
   const noteOnly = prepared.filter(
     (write) => write.kind === 'unchanged' && write.encNote !== undefined,
   );
 
-  if (pending.length === 0 && noteOnly.length === 0) return results;
+  if (pending.length === 0 && noteOnly.length === 0 && removals.length === 0) return results;
 
-  await commitClientWrites(services, scope, batch.writer, prepared);
+  await commitClientWrites(services, scope, batch.writer, prepared, removals, batch.guard);
   return results;
 }
 
@@ -511,10 +558,14 @@ export async function applyClientSecretWrites(
 export async function writeClientSecretValue(
   scope: EnvironmentScope,
   services: ServiceContext,
-  params: ClientSecretWrite & { writer: SecretWriterRef },
+  params: ClientSecretWrite & { writer: SecretWriterRef; guard?: GraphGuard | undefined },
 ): Promise<SecretWriteResult> {
-  const { writer, ...write } = params;
-  const [result] = await applyClientSecretWrites(scope, services, { writer, writes: [write] });
+  const { writer, guard, ...write } = params;
+  const [result] = await applyClientSecretWrites(scope, services, {
+    writer,
+    writes: [write],
+    guard,
+  });
 
   if (!result) {
     // Unreachable: one write in, one result out. A throw rather than a non-null
@@ -574,6 +625,7 @@ interface PreparedClientWrite {
   value: ClientSecretValue;
   /** `undefined` leaves the stored note alone; `null` clears it. */
   encNote: Uint8Array | null | undefined;
+  declaredReferences: DeclaredReference[] | null;
 }
 
 /**
@@ -625,8 +677,16 @@ function prepareClientWrite(activeKeyId: string, write: ClientSecretWrite): Prep
 
   const existing = write.existing;
   const valueHmac = fromBase64Url(write.value.valueHmac);
+  const declaredReferences = write.declaredReferences ?? null;
 
-  if (existing && existing.valueHmac !== null) {
+  // A template's declaration lives on the version, so a write that changes it —
+  // the same text now a template, or a reference that resolves somewhere new — is
+  // a new version even when the value's HMAC matches. Short-circuiting would
+  // leave a template whose current version declares nothing, or the wrong thing.
+  const sameDeclaration =
+    JSON.stringify(declaredReferences) === JSON.stringify(existing?.declaredReferences ?? null);
+
+  if (existing && existing.valueHmac !== null && sameDeclaration) {
     // The same comparison the server path makes, on the same column, with the
     // same `timingSafeEqual` — the attacker chooses the plaintext, and a
     // byte-at-a-time timing signal on a stored tag is a real if narrow oracle.
@@ -642,6 +702,7 @@ function prepareClientWrite(activeKeyId: string, write: ClientSecretWrite): Prep
         retypes,
         value: write.value,
         encNote,
+        declaredReferences,
       };
     }
   }
@@ -677,6 +738,7 @@ function prepareClientWrite(activeKeyId: string, write: ClientSecretWrite): Prep
     retypes,
     value: write.value,
     encNote,
+    declaredReferences,
   };
 }
 
@@ -697,9 +759,21 @@ async function commitClientWrites(
   scope: EnvironmentScope,
   writer: SecretWriterRef,
   writes: readonly PreparedClientWrite[],
+  removals: readonly string[] = [],
+  guard?: GraphGuard,
 ): Promise<void> {
   try {
     await services.db.transaction(async (tx) => {
+      // The graph check first, under its lock, so what it read is what this
+      // transaction commits into — see `ClientSecretWriteBatch.guard`.
+      await guard?.(tx);
+
+      // Removals first, so a name a removal frees is free for a create in the
+      // same transaction.
+      for (const secretId of removals) {
+        await softDeleteSecret(tx, scope.organization.id, secretId);
+      }
+
       for (const write of writes) {
         const payload = {
           mode: 'e2ee' as const,
@@ -721,6 +795,7 @@ async function commitClientWrites(
             valueType: write.valueType,
             payload,
             valueHmac: fromBase64Url(write.value.valueHmac),
+            declaredReferences: write.declaredReferences,
             writer,
           });
           continue;
@@ -732,6 +807,7 @@ async function commitClientWrites(
             secretId: write.secretId,
             payload,
             valueHmac: fromBase64Url(write.value.valueHmac),
+            declaredReferences: write.declaredReferences,
             writer,
           });
 
@@ -1026,6 +1102,16 @@ async function prepareWrite(
   // The dashboard checks the same thing as you type, using the same module. That
   // copy is for the person; this one is the rule.
   const valueType = resolveValueType(write);
+
+  // A template's references are resolved by a client holding every key involved
+  // (P19 §1), which a server-envelope environment's readers do not. Refused here,
+  // at the choke point every server-mode write passes, rather than in each route.
+  if (valueType === 'template') {
+    throw errors.conflict(
+      'e2ee_required: templates and references need an end-to-end encrypted environment.',
+    );
+  }
+
   const shape = checkSecretValue(write.value, valueType);
   if (!shape.valid) {
     // The message comes from `checkSecretValue`, which builds it from fixed

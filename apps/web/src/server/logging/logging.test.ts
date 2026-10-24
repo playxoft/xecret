@@ -276,6 +276,29 @@ describe('redaction', () => {
   // `[redacted]` for the whole life of the feature, because it was called
   // `credential` — a word on the deny list — while the operations doc advertised
   // it as `cookie | bearer`. Nothing failed; the column was simply always blank.
+  // P12: no payment-provider customer id, webhook secret or card detail
+  // reaches a log line, whatever the field is called.
+  it('hides a customer id although it ends in an identifier suffix', () => {
+    for (const key of ['customerId', 'dodoCustomerId', 'cardNumber', 'cardLastFour']) {
+      expect(isSensitiveKey(key)).toBe(true);
+    }
+    expect(isSensitiveKey('webhookSecret')).toBe(true);
+    expect(isSensitiveKey('apiKey')).toBe(true);
+    // The subscription and the event are what an investigation is done with.
+    for (const key of ['subscriptionId', 'webhookId', 'eventType']) {
+      expect(isSensitiveKey(key)).toBe(false);
+    }
+  });
+
+  it('strips a webhook signing secret and a customer id out of free text', () => {
+    expect(scrubText('bad key whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw rejected')).toBe(
+      'bad key [redacted] rejected',
+    );
+    expect(scrubText('Dodo said: no subscription for cus_TV52uJWWXt2yIoBBxpjaa')).toBe(
+      'Dodo said: no subscription for [redacted-customer]',
+    );
+  });
+
   it('keeps the credential *kind*, which is a shape rather than a secret', () => {
     expect(isSensitiveKey('credential')).toBe(true);
     expect(isSensitiveKey('credentialKind')).toBe(false);

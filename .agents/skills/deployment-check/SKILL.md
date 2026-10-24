@@ -91,22 +91,37 @@ Production's.
    Then sign in for real, through the deployed site. `check:env` proved the pair
    Phase holds; only a real sign-in proves the key the *Worker* holds as a
    secret, and the redirect URI, belong with the client id.
-9. Confirm the scheduled purge (P23). The retained-vault purge runs from the
-   Worker's own Cron Trigger, declared in `apps/web/wrangler.toml`
-   (`[env.production.triggers]`, `crons = ["17 * * * *"]`):
+9. Confirm the scheduled jobs (P23, P12, P19). They run from the Worker's own
+   Cron Triggers, declared in `apps/web/wrangler.toml`
+   (`[env.production.triggers]`,
+   `crons = ["17 * * * *", "*/5 * * * *", "41 3 * * *"]`): hourly the
+   retained-vault purge, the sign-in-confirmation prune and then the billing
+   job; every five minutes the webhook delivery sweep; nightly the billing
+   reconciler.
    - Cloudflare dashboard → Workers & Pages → `xecret-production` → Settings →
-     Triggers lists the Cron Trigger `17 * * * *`. The deploy output also
-     prints the schedule it set. No trigger means retained vaults are never
-     purged — the seven-day promise breaks silently.
-   - The internal route must **not** answer the internet:
+     Triggers lists **all three** Cron Triggers. The deploy output also prints
+     the schedules it set. No hourly trigger means retained vaults are never
+     purged — the seven-day promise breaks silently — and seat-sync retries,
+     overage reports and dated reminders never run; no five-minute trigger
+     means queued webhook deliveries beyond the inline first attempts never
+     go out.
+   - The internal routes must **not** answer the internet:
      ```sh
-     curl -s -o /dev/null -w '%{http_code}\n' -X POST https://xecret.playxoft.com/api/internal/scheduled/vault-purge
+     for job in vault-purge prune billing-hourly notifications billing-daily; do
+       curl -s -o /dev/null -w "$job %{http_code}\n" -X POST "https://xecret.playxoft.com/api/internal/scheduled/$job"
+     done
      ```
-     prints `404`. Anything else — a `200` above all — is a deployment that
-     lets anybody run the purge, and is rolled back.
+     prints `404` for each. Anything else — a `200` above all — is a deployment
+     that lets anybody run them, and is rolled back.
    - After the next `:17` past the hour, the Worker's logs show the scheduled
-     run: a `POST /api/internal/scheduled/vault-purge` answered `200`, made
-     in-process by the Cron Trigger rather than from outside.
+     run: `POST /api/internal/scheduled/vault-purge`, then `…/prune`, then
+     `…/billing-hourly`, each answered `200`, made in-process by the Cron
+     Trigger rather than from outside. Any five-minute mark shows
+     `…/notifications` the same way.
+10. If payments are on (P12): the Dodo webhook endpoint
+    `https://xecret.playxoft.com/api/billing/webhook` is registered in the Dodo
+    mode `DODO_ENVIRONMENT` names, and its delivery log shows recent attempts
+    answered `200`. See **Payments (Dodo)** below.
 
 ## Identity provider (WorkOS)
 
@@ -268,6 +283,38 @@ Delete this subsection once production has run the WorkOS build for a while.
   removing it after that is a person's decision, not part of a deploy.
 - `NEXT_PUBLIC_FIREBASE_CONFIG` and `FIREBASE_PROJECT_ID` in Phase.dev are read
   by nothing now. Same rule: they go when rollback is off the table.
+
+- **This build needs migration `0024_dodo_billing`** (P12: four nullable
+  columns on `org_subscriptions` and the `billing_checkouts`,
+  `billing_seat_syncs`, `billing_reminders` and `billing_license_keys` tables,
+  with their grants). Apply it **before** deploying, the same way. Deploying the
+  build first breaks the billing screen, the payment webhook (Dodo retries, so
+  nothing is lost once it is applied), the hourly billing job, and deleting an
+  organisation or an account — each reads whole `org_subscriptions` rows. Ordinary
+  requests and secret fetches are unaffected. The same holds for its follow-ups
+  **0025, 0026 and 0027**, applied with it, in order (`docs/operations/billing.md`
+  §5 says what each adds).
+
+### Payments (Dodo)
+
+`docs/operations/billing.md` is the full guide. For a deploy:
+
+- **All or nothing.** With none of the `DODO_*` variables the deployment takes
+  no payments and `check:deploy` reports `billing (group)` as switched off —
+  correct until Dodo is set up. With some of them it **fails**, naming what is
+  missing, because a half-configured deployment answers 503 on every billing
+  route and on the webhook.
+- **Homes.** `DODO_API_KEY` and `DODO_WEBHOOK_SECRET` are credentials:
+  `wrangler secret put … --env production`, from Phase. `DODO_ENVIRONMENT`,
+  the four `DODO_PRODUCT_*` ids, `DODO_METER_SECRET_FETCH` and the optional
+  `DODO_ADDON_SAML` are not: `[env.production.vars]` in `wrangler.toml` (the
+  commented block there lists them).
+- **One Dodo mode.** Test and live share nothing. The key, the webhook secret
+  and every product id must come from the mode `DODO_ENVIRONMENT` names; a live
+  product id in a test-mode deployment fails at checkout. `check:env` prints the
+  mode and the product ids (not credentials) so a mismatch can be seen.
+- **The meter's free threshold is 0** on every product in Dodo; the code
+  subtracts the plan's allowance itself.
 
 ### Mail (ZeptoMail)
 

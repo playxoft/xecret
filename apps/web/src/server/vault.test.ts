@@ -531,7 +531,14 @@ describe('the lock gate', () => {
     // A build agent has nobody present to type a passphrase, and demanding one
     // would break `xecret run` in CI while protecting nothing.
     for (const principal of [
-      { kind: 'cliToken', tokenId: uuidv7(), tokenName: 'ci', userId: USER_ID, orgId: uuidv7() },
+      {
+        kind: 'cliToken',
+        tokenId: uuidv7(),
+        tokenName: 'ci',
+        userId: USER_ID,
+        orgId: uuidv7(),
+        signIn: { method: null, ssoWorkosOrgId: null },
+      },
       {
         kind: 'serviceToken',
         tokenId: uuidv7(),
@@ -564,6 +571,7 @@ describe('the vault service', () => {
         tokenName: 'ci',
         userId: USER_ID,
         orgId: uuidv7(),
+        signIn: { method: null, ssoWorkosOrgId: null },
       }),
     ).toThrow(ApiErrorClass);
   });
@@ -1310,6 +1318,7 @@ describe('the vault service', () => {
         tokenName: 'ci',
         userId: USER_ID,
         orgId: uuidv7(),
+        signIn: { method: null, ssoWorkosOrgId: null },
       });
 
       expect(status).toEqual({
@@ -1597,6 +1606,7 @@ function userPrincipal(
     // the case where the idle window is measured from `vaultUnlockedAt`.
     lastSeenAt: overrides.lastSeenAt ?? unlockedAt ?? new Date(),
     vaultAutoLockMinutes: overrides.vaultAutoLockMinutes ?? null,
+    signIn: { method: 'password' as const, ssoWorkosOrgId: null },
     user: {
       id: USER_ID,
       email: 'nitheesh@playxoft.com',

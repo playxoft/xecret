@@ -995,11 +995,18 @@ describe('import and export, client-side', () => {
       }),
     );
 
-    responses.set('GET /api/orgs/acme/projects/api/environments/production/pull', {
-      encryptionMode: 'e2ee',
-      keys: keyStateWith(null),
-      secrets,
-    });
+    // `?bundle=2&layers=none` on every pull: an environment that inherits or
+    // holds a template is refused to a version 1 client (P19 §1), and the
+    // dashboard reads only an environment's own values — so it asks for those
+    // and nothing beyond. Reveal-all, comparison and export all go through this.
+    responses.set(
+      'GET /api/orgs/acme/projects/api/environments/production/pull?bundle=2&layers=none',
+      {
+        encryptionMode: 'e2ee',
+        keys: keyStateWith(null),
+        secrets,
+      },
+    );
 
     const plaintexts = await io.pull();
     expect(plaintexts).toEqual({ ALPHA: 'one', BRAVO: 'two' });

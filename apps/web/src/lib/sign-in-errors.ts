@@ -37,6 +37,14 @@ export const SIGN_IN_ERROR_MESSAGES = {
     'Your organisation has no free seats. Ask an administrator to make room, then sign in again.',
   /** A provider administrator tried to sign in as somebody. */
   impersonation: 'This kind of sign-in is not accepted here.',
+  /**
+   * "This isn't me", on a held-back sign-in. Not the person's mistake, so it
+   * says what happened and what to look out for, without naming the account.
+   */
+  declined:
+    'Nothing was signed in, and the sign-in you declined was ended. If you did not start it, ' +
+    'somebody may have tried to sign you in to an account of theirs. Sign in again below, and ' +
+    'check the account it shows before you store anything.',
   'rate-limited': 'Too many sign-in attempts. Wait a minute, then try again.',
   unavailable: 'Sign-in is temporarily unavailable. Please try again shortly.',
   failed: 'Sign-in failed. Please try again.',

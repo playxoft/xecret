@@ -1,13 +1,26 @@
+import { orgValueAad } from './aad';
+import type { OrgValuePurpose } from './aad';
+import { importAesKey, open, seal } from './aead';
+import { utf8Decode, utf8Encode } from './encoding';
 import { generateKeyBytes, unwrapEnvKey, unwrapOrgKey, wrapEnvKey, wrapOrgKey } from './keys';
 import { decryptSecretValue, encryptSecretValue } from './secrets';
+import { DecryptionError } from './types';
 import type {
   Bytes,
   EncryptedValue,
   EncryptionContext,
   KeyProvider,
+  SealedOrgValue,
   WrappedKey,
   WrappedOrgKey,
 } from './types';
+
+/**
+ * The largest value `sealOrgValue` accepts. A signing secret is under a hundred
+ * bytes; the ceiling exists so the method cannot quietly become a general-purpose
+ * blob store under the organisation's root of trust.
+ */
+export const MAX_ORG_VALUE_BYTES = 4096;
 
 /**
  * Walks the key hierarchy so callers do not have to.
@@ -115,6 +128,92 @@ export class EnvelopeService {
     encrypted: EncryptedValue,
   ): Promise<string> {
     return decryptSecretValue({ envKeyBytes, context, encrypted });
+  }
+
+  /**
+   * Seals a small value directly under the Org Master Key, bound by its AAD to
+   * the organisation, the purpose and the row that will store it.
+   *
+   * ── Why the org key, and not an environment key ──
+   * A webhook's signing secret belongs to the organisation, not to any one
+   * environment: one endpoint receives events from every project. The server
+   * must be able to read it on every delivery, so it cannot be hashed like a
+   * token; and it must not sit in the database in a form a dump yields, so it
+   * cannot be plaintext. The org key is the level of the hierarchy whose scope
+   * matches, and a Root KEK rotation re-wraps the org key and leaves these
+   * readable without touching a row.
+   *
+   * The `purpose` is a closed list (`OrgValuePurpose`), so a value sealed for
+   * one use cannot be opened as another.
+   */
+  async sealOrgValue(params: {
+    orgId: string;
+    orgKey: WrappedOrgKey;
+    purpose: OrgValuePurpose;
+    resourceId: string;
+    plaintext: string;
+  }): Promise<SealedOrgValue> {
+    const plaintextBytes = utf8Encode(params.plaintext);
+    if (plaintextBytes.length > MAX_ORG_VALUE_BYTES) {
+      plaintextBytes.fill(0);
+      throw new TypeError(`An org-sealed value may be at most ${MAX_ORG_VALUE_BYTES} bytes`);
+    }
+
+    const aad = orgValueAad({
+      orgId: params.orgId,
+      purpose: params.purpose,
+      resourceId: params.resourceId,
+      orgKeyVersion: params.orgKey.version,
+    });
+    const orgKeyBytes = await this.#openOrgKey(params.orgId, params.orgKey);
+
+    try {
+      const key = await importAesKey(orgKeyBytes, ['encrypt']);
+      const sealed = await seal(key, plaintextBytes, aad);
+      return { ...sealed, keyVersion: params.orgKey.version };
+    } finally {
+      orgKeyBytes.fill(0);
+      plaintextBytes.fill(0);
+    }
+  }
+
+  /**
+   * Opens a value sealed by {@link sealOrgValue}.
+   *
+   * `orgKey` must be the version recorded on the sealed value: the caller loads
+   * that row, not the organisation's current key. A mismatch is refused as a
+   * `DecryptionError` before anything is tried — the same detail-free failure as
+   * a wrong AAD, a wrong key or a flipped bit, because a caller learning *which*
+   * of those it was learns something about the rows it was handed.
+   */
+  async openOrgValue(params: {
+    orgId: string;
+    orgKey: WrappedOrgKey;
+    purpose: OrgValuePurpose;
+    resourceId: string;
+    sealed: SealedOrgValue;
+  }): Promise<string> {
+    if (params.sealed.keyVersion !== params.orgKey.version) throw new DecryptionError();
+
+    const aad = orgValueAad({
+      orgId: params.orgId,
+      purpose: params.purpose,
+      resourceId: params.resourceId,
+      orgKeyVersion: params.sealed.keyVersion,
+    });
+    const orgKeyBytes = await this.#openOrgKey(params.orgId, params.orgKey);
+
+    try {
+      const key = await importAesKey(orgKeyBytes, ['decrypt']);
+      const plaintextBytes = await open(key, params.sealed, aad);
+      try {
+        return utf8Decode(plaintextBytes);
+      } finally {
+        plaintextBytes.fill(0);
+      }
+    } finally {
+      orgKeyBytes.fill(0);
+    }
   }
 
   async #openOrgKey(orgId: string, wrapped: WrappedOrgKey): Promise<Bytes> {

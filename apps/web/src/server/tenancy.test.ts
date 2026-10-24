@@ -80,6 +80,7 @@ const userPrincipal = {
   lastSeenAt: new Date(),
   vaultAutoLockMinutes: null,
   sessionId: uuidv7(),
+  signIn: { method: 'password' as const, ssoWorkosOrgId: null },
   user: {
     id: USER_ID,
     email: 'nitheesh@playxoft.com',
@@ -177,7 +178,14 @@ describe('organisation resolution', () => {
   it('gives a CLI token exactly its user’s identity', async () => {
     const tokenId = uuidv7();
     const scope = await resolveOrg(
-      { kind: 'cliToken', tokenId, tokenName: 'laptop', userId: USER_ID, orgId: ORG_ID },
+      {
+        kind: 'cliToken',
+        tokenId,
+        tokenName: 'laptop',
+        userId: USER_ID,
+        orgId: ORG_ID,
+        signIn: { method: null, ssoWorkosOrgId: null },
+      },
       'playxoft',
       services,
     );
@@ -189,6 +197,84 @@ describe('organisation resolution', () => {
       orgId: ORG_ID,
       userId: USER_ID,
     });
+  });
+});
+
+describe('an organisation that requires its single sign-on (review S3)', () => {
+  const requiring = { ...organization, ssoRequired: true, workosOrgId: 'org_01PLAYXOFT' };
+  const signedInBy = (ssoWorkosOrgId: string | null) => ({
+    ...userPrincipal,
+    signIn: {
+      method: ssoWorkosOrgId === null ? ('password' as const) : ('sso' as const),
+      ssoWorkosOrgId,
+    },
+  });
+
+  beforeEach(() => {
+    repositories.findOrganizationBySlugWithEntitlements.mockResolvedValue({
+      organization: requiring,
+      entitlements: null,
+    });
+    repositories.loadAuthorizationContext.mockResolvedValue(membership('admin'));
+  });
+
+  it('refuses a member whose credential did not come through it, with sso_required', async () => {
+    for (const principal of [
+      signedInBy(null),
+      signedInBy('org_01SOMEBODYELSE'),
+      { ...userPrincipal, signIn: { method: null, ssoWorkosOrgId: null } },
+    ]) {
+      const error = (await resolveOrg(principal, 'playxoft', services).catch(
+        (e: unknown) => e,
+      )) as ApiError;
+      expect(error.code).toBe('sso_required');
+      expect(error.status).toBe(403);
+    }
+  });
+
+  it('holds a CLI token to the session that approved it', async () => {
+    const token = {
+      kind: 'cliToken' as const,
+      tokenId: uuidv7(),
+      tokenName: 'laptop',
+      userId: USER_ID,
+      orgId: ORG_ID,
+    };
+    await expect(
+      resolveOrg(
+        { ...token, signIn: { method: 'password', ssoWorkosOrgId: null } },
+        'playxoft',
+        services,
+      ),
+    ).rejects.toMatchObject({ code: 'sso_required' });
+    await expect(
+      resolveOrg(
+        { ...token, signIn: { method: 'sso', ssoWorkosOrgId: 'org_01PLAYXOFT' } },
+        'playxoft',
+        services,
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it('admits its own single sign-on, and any owner', async () => {
+    await expect(
+      resolveOrg(signedInBy('org_01PLAYXOFT'), 'playxoft', services),
+    ).resolves.toBeDefined();
+    repositories.loadAuthorizationContext.mockResolvedValue(membership('owner'));
+    await expect(resolveOrg(signedInBy(null), 'playxoft', services)).resolves.toBeDefined();
+  });
+
+  it('answers a stranger not_found, never sso_required — the requirement is no oracle', async () => {
+    repositories.loadAuthorizationContext.mockResolvedValue(null);
+    await expectNotFound(resolveOrg(signedInBy(null), 'playxoft', services));
+  });
+
+  it('leaves an organisation that does not require it alone', async () => {
+    repositories.findOrganizationBySlugWithEntitlements.mockResolvedValue({
+      organization: { ...requiring, ssoRequired: false },
+      entitlements: null,
+    });
+    await expect(resolveOrg(signedInBy(null), 'playxoft', services)).resolves.toBeDefined();
   });
 });
 

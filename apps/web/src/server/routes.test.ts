@@ -504,7 +504,9 @@ describe('response shapes', () => {
     // No WorkOS organisation and no SSO requirement: the overwhelmingly common
     // shape, and the one every assertion in this file is about.
     workosOrgId: null,
+    workosClientId: null,
     ssoRequired: false,
+    jitJoinEnabled: false,
     createdBy: '0198c0de-0000-7000-8000-00000000000a',
     createdAt: new Date('2026-01-01T10:00:00.000Z'),
     updatedAt: new Date('2026-02-01T10:00:00.000Z'),
@@ -531,6 +533,9 @@ describe('response shapes', () => {
     isProduction: true,
     encryptionMode: 'server',
     sortOrder: 2,
+    parentEnvironmentId: null,
+    plaintextExportDisabled: false,
+    readAlerts: null,
     createdAt: new Date('2026-01-03T10:00:00.000Z'),
     updatedAt: new Date('2026-02-03T10:00:00.000Z'),
     deletedAt: null,
@@ -542,21 +547,21 @@ describe('response shapes', () => {
   it('addresses a project and an environment by slug, never by id', () => {
     expect(Object.hasOwn(toProject(project), 'id')).toBe(false);
     expect(Object.hasOwn(toProject(project), 'orgId')).toBe(false);
-    expect(Object.hasOwn(toEnvironment(environment), 'id')).toBe(false);
-    expect(Object.hasOwn(toEnvironment(environment), 'projectId')).toBe(false);
+    expect(Object.hasOwn(toEnvironment(environment, null), 'id')).toBe(false);
+    expect(Object.hasOwn(toEnvironment(environment, null), 'projectId')).toBe(false);
   });
 
   it('never serialises deleted_at, so a hidden row cannot be rendered as a live one', () => {
     const deleted: ProjectRecord = { ...project, deletedAt: new Date() };
     expect(Object.hasOwn(toProject(deleted), 'deletedAt')).toBe(false);
     expect(
-      Object.hasOwn(toEnvironment({ ...environment, deletedAt: new Date() }), 'deletedAt'),
+      Object.hasOwn(toEnvironment({ ...environment, deletedAt: new Date() }, null), 'deletedAt'),
     ).toBe(false);
   });
 
   it('renders every timestamp as an ISO string, not as a driver Date', () => {
     expect(toProject(project).createdAt).toBe('2026-01-02T10:00:00.000Z');
-    expect(toEnvironment(environment).updatedAt).toBe('2026-02-03T10:00:00.000Z');
+    expect(toEnvironment(environment, null).updatedAt).toBe('2026-02-03T10:00:00.000Z');
     expect(toOrganization(organization, 'owner').createdAt).toBe('2026-01-01T10:00:00.000Z');
   });
 
@@ -573,7 +578,7 @@ describe('response shapes', () => {
   });
 
   it('keeps the production flag and the display order a client sorts by', () => {
-    expect(toEnvironment(environment)).toMatchObject({
+    expect(toEnvironment(environment, null)).toMatchObject({
       slug: 'production',
       isProduction: true,
       sortOrder: 2,

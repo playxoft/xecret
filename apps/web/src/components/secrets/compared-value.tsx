@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { toSecretValueType } from '@xecret/core/validation';
 import { errorMessage } from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { policyProblem, policyRefusal } from '@/components/policies/policy-checks';
+import { useSecretPolicy } from '@/components/policies/secret-policy-context';
 import { Badge, ConfirmDialog } from '@/components/ui';
 import type { SecretSummary } from './types';
 import type { ComparedEnvironment } from './use-compared-secrets';
@@ -78,6 +80,7 @@ export function ComparedValue({
    */
   onDirtyChange?: ((dirty: boolean) => void) | undefined;
 }) {
+  const policy = useSecretPolicy();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const [baseline, setBaseline] = useState('');
@@ -216,6 +219,19 @@ export function ComparedValue({
         throw new Error('This environment’s key is not available.');
       }
 
+      // P19 §8, against *that* environment: a production-scoped policy applies
+      // to the compared production cell and not to the dev one beside it. The
+      // field already says so live and holds its Save; this is the backstop for
+      // the confirmation path, before anything is encrypted.
+      const problem = policyProblem(policy, {
+        name: secretName,
+        newName: secret === null,
+        value: draft,
+        valueType: secret?.valueType ?? 'string',
+        isProduction: environment.isProduction,
+      });
+      if (problem !== null) throw policyRefusal([{ field: secretName, message: problem }]);
+
       if (secret === null) {
         // `string`, the type every new secret starts as: it accepts anything, and
         // the row it joins can be declared something narrower afterwards from the
@@ -224,7 +240,9 @@ export function ComparedValue({
         await environment.io.create({ name: secretName, value: draft, valueType: 'string' });
       } else {
         await environment.io.update(
-          { id: secret.id, name: secretName, version: secret.version },
+          // The stored type travels with the row, so a template written from
+          // here still declares its references.
+          { id: secret.id, name: secretName, version: secret.version, valueType: secret.valueType },
           { value: draft },
         );
       }

@@ -1,4 +1,5 @@
 import { findSecretByName, getSecretVersion } from '@xecret/db/repositories';
+import { emitSecretChanges } from '@/server/change-events';
 import { errors } from '@/server/errors';
 import { json, parseJsonBody } from '@/server/http';
 import { authenticatedRoute } from '@/server/route';
@@ -15,7 +16,14 @@ import {
   secretWriter,
   writeClientSecretValue,
 } from '@/server/secrets-service';
+import type { ProtectionCrossing } from '@/server/references-service';
 import { resolveEnvironmentPath } from '@/server/tenancy';
+import {
+  crossingRecords,
+  planRefusal,
+  prepareTemplateDeclaration,
+  templateGuard,
+} from '@/server/template-writes';
 
 /**
  * Restores an earlier value as a new current version.
@@ -98,10 +106,49 @@ export const POST = authenticatedRoute<Params>(
     // really holds version 3's value. It does not pretend otherwise: the audit
     // record says which version was restored *from*, which is what the client
     // asserted, and the response says the same.
+    // P19 §1: restoring a template restores its text, and the references in that
+    // text are declared again — re-parsed by the client from the version it
+    // decrypted, and checked against the graph as it stands today, which may no
+    // longer be the graph that version was written into.
+    const crossings: ProtectionCrossing[] = [];
+    const declaredReferences =
+      clientBody === null
+        ? null
+        : await prepareTemplateDeclaration(scope, services, principal, {
+            name: current.name,
+            secretId: current.secretId,
+            effectiveType: current.valueType,
+            requested: clientBody.references,
+            previous: current.declaredReferences,
+            confirmCrossesProtection: clientBody.confirmCrossesProtection,
+            onCrossing: (found) => crossings.push(...found),
+            refused: planRefusal(
+              record,
+              audit(scope.organization.id),
+              'secret.rotated',
+              {
+                type: 'secret',
+                id: current.secretId,
+                projectId: scope.project.id,
+                environmentId: scope.environment.id,
+              },
+              'secretReferencing',
+              scope.entitlements.plan,
+              { secretName: current.name },
+            ),
+          });
+
     const result =
       clientBody === null
         ? await restoreSecretVersion(scope, services, { writer, current, previous })
         : await writeClientSecretValue(scope, services, {
+            declaredReferences,
+            // The graph check, inside the write's transaction (review round 1, L8).
+            guard: templateGuard(scope, principal, {
+              name: current.name,
+              secretId: current.secretId,
+              declaredReferences,
+            }),
             writer,
             name: current.name,
             // A restore always appends to a secret that exists, so this is the
@@ -121,6 +168,7 @@ export const POST = authenticatedRoute<Params>(
               version: current.version,
               valueHmac: current.valueHmac,
               valueType: current.valueType,
+              declaredReferences: current.declaredReferences,
             },
           });
 
@@ -149,7 +197,20 @@ export const POST = authenticatedRoute<Params>(
               : `restored-from-v${previous.version}`,
         },
       ),
+      ...crossingRecords(
+        audit(scope.organization.id),
+        scope,
+        crossings.map((crossing) => ({ secretName: result.name, crossing })),
+      ),
     );
+
+    // P19 §5: the audit action and the webhook event share a name on purpose —
+    // from a subscriber's side, an old value made current is a rotation.
+    if (result.status !== 'unchanged') {
+      emitSecretChanges(services, scope, principal, [
+        { type: 'secret.rotated', name: result.name, version: result.version },
+      ]);
+    }
 
     return json({
       secret: {

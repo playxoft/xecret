@@ -259,6 +259,7 @@ function stored(
     envDataKeyId: null,
     clientValue: null,
     valueHmac: null,
+    declaredReferences: null,
     createdBy: USER_ID,
     createdByServiceTokenId: null,
     createdAt: new Date('2026-01-01T00:00:00Z'),

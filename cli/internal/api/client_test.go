@@ -55,6 +55,37 @@ func TestErrorEnvelopeIsDecoded(t *testing.T) {
 	}
 }
 
+// An organisation that requires its single sign-on refuses a token approved
+// from a session that did not come through it. The fix is the person's own —
+// approve the device again from an SSO sign-in — so the hint says that, never
+// "ask an admin" (review round 2, L9).
+func TestSSORequiredHintSaysToLogInThroughSSO(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"code":"sso_required","message":"This organisation requires its single sign-on.","requestId":"req-2"}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "xct_live_abc", "test-agent")
+	_, err := client.Environments(context.Background(), "acme", "web")
+
+	apiErr, ok := AsError(err)
+	if !ok {
+		t.Fatalf("want *Error, got %T: %v", err, err)
+	}
+	if apiErr.Code != "sso_required" || apiErr.Status != http.StatusForbidden {
+		t.Errorf("decoded %+v", apiErr)
+	}
+	hint := apiErr.Hint()
+	if !strings.Contains(hint, "xecret login") || !strings.Contains(hint, "single sign-on") {
+		t.Errorf("hint %q should say to run xecret login through single sign-on", hint)
+	}
+	if strings.Contains(hint, "admin") {
+		t.Errorf("hint %q should not send the person to an admin", hint)
+	}
+}
+
 func TestGetRetriesOn503(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

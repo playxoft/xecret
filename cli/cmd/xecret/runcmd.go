@@ -6,12 +6,16 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/playxoft/xecret/cli/internal/api"
 	"github.com/playxoft/xecret/cli/internal/cache"
 	"github.com/playxoft/xecret/cli/internal/cred"
+	"github.com/playxoft/xecret/cli/internal/e2ee"
 	"github.com/playxoft/xecret/cli/internal/envkeys"
+	"github.com/playxoft/xecret/cli/internal/importer"
 	"github.com/playxoft/xecret/cli/internal/run"
 )
 
@@ -143,7 +147,17 @@ func fetchSecrets(
 		if err := a.checkMode(credentials, resolved, "e2ee"); err != nil {
 			return nil, err
 		}
-		return openBundle(ctx, a, client, credentials, scopeKey, pulled, policy)
+		secrets, err := openBundle(ctx, a, client, credentials, scopeKey, pulled, policy)
+		if err != nil {
+			return nil, err
+		}
+		// A service token has no overrides and never asks for any: the endpoint
+		// is a person's, and a CI run's environment is the shared one by
+		// definition.
+		if a.usingServiceToken() {
+			return secrets, nil
+		}
+		return a.applyPersonalOverrides(ctx, client, credentials, resolved, pulled.Bundle.Keys.EnvironmentID, secrets)
 	}
 
 	// A plaintext document means the server says this environment is
@@ -322,6 +336,125 @@ func openCachedBundle(
 		"using the offline copy from %s (%d secrets), decrypted locally.",
 		entry.FetchedAt.Local().Format("2006-01-02 15:04"), len(secrets),
 	)
+	// Said every time, because nothing offline can know whether there is
+	// anything to say: overrides are fetched live, never cached — a copy of a
+	// person's own values sitting in a file beside the shared ones is one more
+	// thing to forget on logout — so an offline run gets the shared values for
+	// every name.
+	a.printer.Warnf("personal overrides are not applied to an offline copy; this run uses the shared values.")
+	return secrets, nil
+}
+
+// applyPersonalOverrides lays the caller's own overrides over a resolved
+// environment, on the online path of a login's `run` and nowhere else.
+//
+// ── The rules, and the one that matters most ──
+//
+//   - **An override that will not open is a hard error.** A vault reset gives the
+//     account a new keypair, and every override made under the old one stops
+//     opening (spec §2.2 type 13). Falling back to the shared value would hand the
+//     process exactly the value its owner set an override to *not* get — a
+//     staging database where they meant their local one — with nothing on screen.
+//     The error names each one and the command that removes it.
+//   - **A server that predates overrides answers 404**, and that is "none", said
+//     once. The pull that just succeeded proves the environment exists, so a 404
+//     here is the route, not the environment.
+//   - **Any other failure stops the run.** The caller may have overrides this
+//     process could not read, and running with the shared values in their place
+//     is the same silent fallback as above by another road.
+//   - **The names are announced, the values never are.** One stderr line.
+//
+// No principal is derived unless there is something to open, so a person with
+// no overrides pays one listing request and nothing else.
+//
+// ── What opening one proves ──
+//
+// An override is encrypted under a key derived from its owner's own private key
+// (spec §2.2 type 13), so GCM's tag proves the owner made it, and the AAD — which
+// binds organisation, environment, owner and name — proves it was made for this
+// row. The server can neither read one nor make one this function will accept.
+// The name is still held to the rules a secret's name is held to before it is
+// put into a child process's environment — an override setting LD_PRELOAD or
+// PATH is refused rather than applied — as defence in depth, because those are
+// the names through which an injected value becomes injected code.
+func (a *app) applyPersonalOverrides(
+	ctx context.Context,
+	client *api.Client,
+	credentials *cred.Credentials,
+	resolved scope,
+	environmentID string,
+	secrets map[string]string,
+) (map[string]string, error) {
+	overrides, err := client.Overrides(ctx, resolved.Org, resolved.Project, resolved.Environment)
+	if err != nil {
+		if apiErr, ok := api.AsError(err); ok {
+			switch {
+			case apiErr.Status == 404:
+				a.printer.Warnf("this server does not support personal overrides; none were applied.")
+				return secrets, nil
+			case apiErr.Status == 403 && apiErr.Code == "plan_limit":
+				a.printer.Warnf("personal overrides are not part of this organisation's plan; none were applied.")
+				return secrets, nil
+			}
+		}
+		return nil, fmt.Errorf(
+			"could not read your personal overrides for %s/%s, so nothing was run: %w",
+			resolved.Project, resolved.Environment, err)
+	}
+	if len(overrides) == 0 {
+		return secrets, nil
+	}
+
+	principal, err := a.principal(ctx, client, credentials)
+	if err != nil {
+		return nil, err
+	}
+	defer principal.Close()
+
+	opened := make(map[string]string, len(overrides))
+	var unopenable []string
+	for _, override := range overrides {
+		if !secretNamePattern.MatchString(override.Name) || len(override.Name) > importer.SecretNameMaxLength ||
+			importer.IsReservedSecretName(override.Name) {
+			return nil, fmt.Errorf(
+				"the server returned a personal override named %q, which no secret may be called; nothing was run",
+				override.Name)
+		}
+
+		value, openErr := e2ee.OpenOverrideValue(principal.PrivateKey, e2ee.OverrideContext{
+			OrgID:         principal.OrgID,
+			EnvironmentID: environmentID,
+			UserID:        principal.ID,
+			Name:          override.Name,
+		}, override.Ciphertext)
+		if openErr != nil {
+			unopenable = append(unopenable, override.Name)
+			continue
+		}
+		opened[override.Name] = value
+	}
+
+	if len(unopenable) > 0 {
+		sort.Strings(unopenable)
+		var remedy strings.Builder
+		for _, name := range unopenable {
+			fmt.Fprintf(&remedy, "\n  xecret overrides unset %s", name)
+		}
+		return nil, fmt.Errorf(
+			"your personal override(s) for %s in %s/%s could not be opened, so nothing was run. "+
+				"They were made under a key this account no longer holds — a vault reset does this — and "+
+				"running with the shared values in their place is what an override exists to prevent. "+
+				"Remove each one, then set it again if you still want it:%s",
+			strings.Join(unopenable, ", "), resolved.Project, resolved.Environment, remedy.String())
+	}
+
+	names := make([]string, 0, len(opened))
+	for name, value := range opened {
+		secrets[name] = value
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	a.printer.Warnf("applied %d personal override(s): %s", len(names), strings.Join(names, ", "))
 	return secrets, nil
 }
 

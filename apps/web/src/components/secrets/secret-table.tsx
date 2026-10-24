@@ -46,6 +46,7 @@ import {
   useToast,
 } from '@/components/ui';
 import type { SecretIo } from '@/components/envkeys';
+import { useSecretPolicy } from '@/components/policies/secret-policy-context';
 import type { EnvironmentTarget } from './environment-target';
 import { AbsentRow } from './absent-row';
 import { useComparedSecrets } from './use-compared-secrets';
@@ -250,6 +251,7 @@ export function SecretTable({
 
   const staged = useStagedChanges(io);
   const compared = useComparedSecrets(orgSlug, orgId, projectSlug, comparedEnvironments);
+  const secretPolicy = useSecretPolicy();
 
   // Compared during render rather than in an effect: an effect runs after paint,
   // so the superseded value would be on screen for a frame — and could be
@@ -796,7 +798,13 @@ export function SecretTable({
     // held in the hook: an environment removed from the view between typing and
     // saving must not be written to, and this list is the one that says which are
     // still on screen.
-    const outcome = await staged.save(storedByName, compared.environments);
+    // And the organisation's secret policy (P19 §8), as it stands at the moment
+    // Save is pressed, with this environment's side of a production-scoped
+    // rule; each compared environment answers for its own side.
+    const outcome = await staged.save(storedByName, compared.environments, {
+      policy: secretPolicy,
+      isProduction,
+    });
     // Always, even on a total failure: a partial batch has already changed the
     // environment, and leaving the table showing the old versions would make the
     // next save operate on stale version numbers.
@@ -1114,6 +1122,7 @@ export function SecretTable({
                     draft={draft}
                     drafts={staged.drafts}
                     existingNames={existingNames}
+                    isProduction={isProduction}
                     disabled={staged.saving}
                     otherEnvironments={draftEnvironments}
                     {...(currentEnvironment === undefined
@@ -1167,6 +1176,7 @@ export function SecretTable({
                       envSlug={envSlug}
                       io={io}
                       environment={currentEnvironment}
+                      isProduction={isProduction}
                       secret={secret}
                       selected={selected.has(secret.name)}
                       edit={staged.edits.get(secret.name)}
@@ -1237,6 +1247,7 @@ export function SecretTable({
                     draft={draft}
                     drafts={staged.drafts}
                     existingNames={existingNames}
+                    isProduction={isProduction}
                     disabled={staged.saving}
                     otherEnvironments={draftEnvironments}
                     {...(currentEnvironment === undefined

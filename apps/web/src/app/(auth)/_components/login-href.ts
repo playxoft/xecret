@@ -1,3 +1,4 @@
+import { SLUG_MAX_LENGTH, SLUG_PATTERN } from '@xecret/core/validation';
 import { safeRedirectPath } from '@/lib/redirect-path';
 import { POST_SIGN_IN_PATH } from '@/lib/session-hint';
 
@@ -52,17 +53,58 @@ export interface LoginHrefOptions {
    * company's identity provider re-prompt (ADR 0010).
    */
   reauth?: boolean;
+  /**
+   * Start this organisation's single sign-on directly — the SSO deep link.
+   * The login route honours it only with {@link continueToken} (review round
+   * 2); without one — or followed from anywhere else — it lands on the sign-in
+   * page's warning first. Ignored with `reauth` and with `signUp`, as the login
+   * route ignores it on a re-authentication.
+   */
+  org?: string | null | undefined;
+  /**
+   * The warning page's "Continue" token for `org` (`@xecret/core/auth`,
+   * `sso-continue.ts`), minted on the server for this browser. Sent only
+   * beside `org`; a link that is shared or bookmarked should leave it out and
+   * let the login route send the person to the warning page.
+   */
+  continueToken?: string | null | undefined;
 }
 
 /** The `/api/auth/login` link for one way into AuthKit. */
-export function loginHref({ next, signUp = false, reauth = false }: LoginHrefOptions = {}): string {
+export function loginHref({
+  next,
+  signUp = false,
+  reauth = false,
+  org = null,
+  continueToken = null,
+}: LoginHrefOptions = {}): string {
   const query = new URLSearchParams();
   // The login route ignores `hint` on a re-authentication — re-authenticating
   // is a sign-in, never a sign-up — so it is not sent alongside one either.
   if (reauth) query.set('reauth', '1');
   else if (signUp) query.set('hint', 'sign-up');
+  else if (org !== null && isOrgSlug(org)) {
+    query.set('org', org);
+    if (continueToken !== null && continueToken !== '') query.set('continue', continueToken);
+  }
   appendNext(query, next);
   return withQuery(LOGIN_ROUTE, query);
+}
+
+/**
+ * An organisation slug as the sign-in page may name it — the shape the login
+ * route accepts — or `null` for anything else, which the page then ignores.
+ *
+ * The parameter is in a URL anybody can write, and it is printed on the page,
+ * so it is held to the slug pattern before it is shown: lower-case letters,
+ * digits and single hyphens, nothing that could read as a sentence.
+ */
+export function ssoOrgParam(value: string | null): string | null {
+  return value !== null && isOrgSlug(value) ? value : null;
+}
+
+function isOrgSlug(value: string): boolean {
+  return value.length <= SLUG_MAX_LENGTH && SLUG_PATTERN.test(value);
 }
 
 /** The two screens that start a sign-in, for the cross-link each shows the other. */

@@ -6,6 +6,7 @@ import { errorMessage } from '@/lib/api';
 import { apiPath, withQuery } from '@/app/(dashboard)/_lib/paths';
 import { renderExport } from '@/components/envkeys';
 import type { SecretIo } from '@/components/envkeys';
+import { withoutReasonPrefix } from '@/components/plans/plan-copy';
 import {
   Alert,
   Badge,
@@ -40,8 +41,33 @@ export interface ExportDialogProps {
    * and the server has none.
    */
   io: SecretIo | null;
+  /**
+   * The environment's export policy as its payload states it (P19 §9).
+   *
+   * Read before anything is pulled, so an environment whose policy disables
+   * export is refused without decrypting a single value. The bundle states the
+   * policy too, and an `e2ee` export checks that answer as well — it is the
+   * fresher of the two if the switch was flipped since this page loaded.
+   */
+  plaintextExport?: 'allowed' | 'disabled' | undefined;
+  /** The slug this environment inherits from, or `null` — for the resolution caveat below. */
+  inheritsFrom?: string | null | undefined;
+  /** How many of the secrets on screen are templates, for the same caveat. */
+  templateCount?: number | undefined;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+}
+
+/**
+ * The refusal, worded as the server and the CLI word it, so the three agree.
+ *
+ * Exported for the screens that refuse before the dialog is even opened.
+ */
+export function exportDisabledSentence(projectSlug: string, envSlug: string): string {
+  return (
+    `Plaintext export is disabled for ${projectSlug}/${envSlug} by its environment policy; ` +
+    'an owner or admin of the organisation can change it in the environment’s settings.'
+  );
 }
 
 /** The file extension each format gets, matching what the server names its download. */
@@ -114,16 +140,63 @@ function ExportBody({
   envSlug,
   isProduction,
   io,
+  plaintextExport = 'allowed',
+  inheritsFrom = null,
+  templateCount = 0,
   onOpenChange,
 }: Omit<ExportDialogProps, 'open'>) {
   const [format, setFormat] = useState<ExportFormat>('env');
   const [acknowledged, setAcknowledged] = useState(false);
   const [building, setBuilding] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  /**
+   * Set when the bundle itself said export is disabled — the switch was flipped
+   * after this page loaded. Overrides the payload's older answer.
+   */
+  const [refusedByBundle, setRefusedByBundle] = useState(false);
 
   const clientSide = io?.mode === 'e2ee';
   const href = withQuery(apiPath.export(orgSlug, projectSlug, envSlug), { format });
   const selected = FORMATS.find((entry) => entry.value === format);
+  const disabled = plaintextExport === 'disabled' || refusedByBundle;
+  /**
+   * Whether the file would hold less than `xecret run` resolves (P19 §1).
+   *
+   * The dashboard reads and writes an environment's *own* values; resolving a
+   * chain of parents and the references in templates is the CLI's, which opens
+   * every layer's key on the machine that runs the process. So a download from
+   * here is this environment's rows exactly as stored — templates as their
+   * text, nothing inherited — and an environment that relies on either is told
+   * so before the file exists, with the command that writes the resolved one.
+   */
+  const partial = inheritsFrom !== null || templateCount > 0;
+
+  if (disabled) {
+    return (
+      <>
+        <DialogHeader>
+          <DialogTitle>Export is disabled here</DialogTitle>
+          <DialogDescription>
+            This environment’s policy keeps its values out of files.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogBody className="flex flex-col gap-4">
+          <Alert tone="info" title="Plaintext export is disabled">
+            <p>{exportDisabledSentence(projectSlug, envSlug)}</p>
+            <p className="mt-2">
+              <code className="text-fg font-mono">xecret run</code> is unaffected: it injects these
+              values into a process without writing them anywhere.
+            </p>
+          </Alert>
+        </DialogBody>
+        <DialogFooter>
+          <Button variant="primary" onClick={() => onOpenChange(false)}>
+            Close
+          </Button>
+        </DialogFooter>
+      </>
+    );
+  }
 
   /**
    * Builds the file here and hands it to the browser's downloader.
@@ -142,8 +215,15 @@ function ExportBody({
 
     let url: string | null = null;
     try {
-      const plaintexts = await io.pull();
-      const body = renderExport(plaintexts, format);
+      const pulled = await io.pullEnvironment();
+      // The bundle's answer, which is the server's word at this moment: a
+      // switch flipped since the page loaded is honoured here, before a single
+      // byte of the file exists.
+      if (pulled.plaintextExport === 'disabled') {
+        setRefusedByBundle(true);
+        return;
+      }
+      const body = renderExport(pulled.plaintexts, format);
 
       url = URL.createObjectURL(new Blob([body], { type: 'text/plain' }));
       const anchor = document.createElement('a');
@@ -153,7 +233,9 @@ function ExportBody({
 
       onOpenChange(false);
     } catch (cause) {
-      setProblem(errorMessage(cause));
+      // `export_disabled:` and its siblings carry a machine-readable prefix for
+      // the clients that branch on it; a person reads the sentence after it.
+      setProblem(withoutReasonPrefix(errorMessage(cause)));
     } finally {
       if (url !== null) URL.revokeObjectURL(url);
       setBuilding(false);
@@ -197,6 +279,23 @@ function ExportBody({
             Same values, nothing on disk, and the read is attributed to you in the audit log.
           </p>
         </Alert>
+
+        {partial ? (
+          <Alert tone="warning" title="The file holds this environment’s own values only">
+            <p>
+              {inheritsFrom !== null
+                ? `${envSlug} inherits from ${inheritsFrom}, and nothing it inherits is in a download from here. `
+                : ''}
+              {templateCount > 0
+                ? `${templateCount === 1 ? 'One secret is a template' : `${templateCount} secrets are templates`}, written out as the template text with its references unresolved. `
+                : ''}
+              The CLI resolves both:
+            </p>
+            <pre className="text-fg bg-canvas-inset border-line mt-2 overflow-x-auto rounded-md border px-3 py-2 font-mono text-sm">
+              <code>{`xecret export --env ${envSlug}`}</code>
+            </pre>
+          </Alert>
+        ) : null}
 
         <Field label="Format" hint={selected?.hint}>
           <Select value={format} onValueChange={(next) => setFormat(next as ExportFormat)}>

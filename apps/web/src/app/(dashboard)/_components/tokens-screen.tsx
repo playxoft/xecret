@@ -3,7 +3,8 @@
 import { useState } from 'react';
 
 import { api, errorMessage } from '@/lib/api';
-import { formatAbsoluteTime, formatRelativeTime, toIsoString } from '@/lib/format';
+import { formatAbsoluteTime, formatRelativeTime, pluralize, toIsoString } from '@/lib/format';
+import { outsidePolicySentence, tokenPolicyGaps } from '@/components/policies/policy-form';
 import { PageHeader } from '@/components/layout';
 import {
   Alert,
@@ -77,6 +78,13 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
   const [revokingCli, setRevokingCli] = useState<CliToken | null>(null);
   const [error, setError] = useState<unknown>(null);
 
+  /** The token policy the listing judged each token against, once it has loaded. */
+  const tokenPolicy = serviceTokens.data?.policy ?? null;
+  /** Live tokens minted before the token policy that fall outside it (P19 §6). */
+  const outsidePolicy =
+    serviceTokens.data?.data.filter((token) => token.revokedAt === null && !token.meetsPolicy)
+      .length ?? 0;
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
@@ -126,32 +134,42 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
               }
             />
           ) : (
-            <TableContainer aria-label="Service tokens">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Token</TableHead>
-                    <TableHead className="w-44">Scope</TableHead>
-                    <TableHead className="w-52">Access</TableHead>
-                    <TableHead className="w-32">Last used</TableHead>
-                    <TableHead className="w-28">Status</TableHead>
-                    <TableHead className="w-24">
-                      <span className="sr-only">Actions</span>
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {serviceTokens.data.data.map((token) => (
-                    <TableRow key={token.id}>
-                      <TableCell>
-                        <p className="text-fg text-sm font-medium">{token.name}</p>
-                        <p className="text-fg-subtle font-mono text-sm">{token.tokenPrefix}…</p>
-                      </TableCell>
-                      <TableCell className="text-fg-muted text-sm">
-                        {token.projectSlug}/{token.environmentSlug}
-                      </TableCell>
-                      <TableCell>
-                        {/* The same capsule the member screens grant with, so
+            <>
+              {outsidePolicy > 0 ? (
+                // Said once above the table as well as on each row: "three of
+                // these predate the policy" is the fact somebody planning the
+                // replacements needs, and counting badges down a long list is
+                // how one gets missed.
+                <Alert tone="warning" title="Some tokens predate the token policy">
+                  {outsidePolicySummary(outsidePolicy)}
+                </Alert>
+              ) : null}
+              <TableContainer aria-label="Service tokens">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Token</TableHead>
+                      <TableHead className="w-44">Scope</TableHead>
+                      <TableHead className="w-52">Access</TableHead>
+                      <TableHead className="w-32">Last used</TableHead>
+                      <TableHead className="w-28">Status</TableHead>
+                      <TableHead className="w-24">
+                        <span className="sr-only">Actions</span>
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {serviceTokens.data.data.map((token) => (
+                      <TableRow key={token.id}>
+                        <TableCell>
+                          <p className="text-fg text-sm font-medium">{token.name}</p>
+                          <p className="text-fg-subtle font-mono text-sm">{token.tokenPrefix}…</p>
+                        </TableCell>
+                        <TableCell className="text-fg-muted text-sm">
+                          {token.projectSlug}/{token.environmentSlug}
+                        </TableCell>
+                        <TableCell>
+                          {/* The same capsule the member screens grant with, so
                             one vocabulary covers every level in the product.
                             Static, not a setter: a token's scope is fixed at
                             mint time and cannot be widened afterwards — that
@@ -159,44 +177,56 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
                             knowable — so changing one means minting another.
                             `admin` is absent because a service token cannot
                             hold it; see `serviceAccessSchema`. */}
-                        <LevelPills
-                          level={token.accessLevel}
-                          label={`Access for ${token.name}`}
-                          levels={SERVICE_TOKEN_LEVELS}
-                        />
-                      </TableCell>
-                      <TableCell className="text-fg-muted text-sm whitespace-nowrap">
-                        {token.lastUsedAt === null ? (
-                          'never'
-                        ) : (
-                          <time
-                            dateTime={toIsoString(token.lastUsedAt)}
-                            title={formatAbsoluteTime(token.lastUsedAt)}
-                          >
-                            {formatRelativeTime(token.lastUsedAt)}
-                          </time>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <TokenStatus expiresAt={token.expiresAt} revokedAt={token.revokedAt} />
-                      </TableCell>
-                      <TableCell>
-                        {token.revokedAt === null && canRevoke ? (
-                          <Button
-                            size="sm"
-                            variant="danger-outline"
-                            aria-label={`Revoke ${token.name}`}
-                            onClick={() => setRevokingService(token)}
-                          >
-                            Revoke
-                          </Button>
-                        ) : null}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
+                          <LevelPills
+                            level={token.accessLevel}
+                            label={`Access for ${token.name}`}
+                            levels={SERVICE_TOKEN_LEVELS}
+                          />
+                        </TableCell>
+                        <TableCell className="text-fg-muted text-sm whitespace-nowrap">
+                          {token.lastUsedAt === null ? (
+                            'never'
+                          ) : (
+                            <time
+                              dateTime={toIsoString(token.lastUsedAt)}
+                              title={formatAbsoluteTime(token.lastUsedAt)}
+                            >
+                              {formatRelativeTime(token.lastUsedAt)}
+                            </time>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <span className="inline-flex flex-col items-start gap-1">
+                            <TokenStatus expiresAt={token.expiresAt} revokedAt={token.revokedAt} />
+                            {/* A revoked token is outside nothing any more: it
+                              cannot be spent, so there is nothing to replace. */}
+                            {token.revokedAt === null && token.meetsPolicy === false ? (
+                              <OutsidePolicyBadge
+                                sentence={outsidePolicySentence(
+                                  tokenPolicy === null ? [] : tokenPolicyGaps(tokenPolicy, token),
+                                )}
+                              />
+                            ) : null}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          {token.revokedAt === null && canRevoke ? (
+                            <Button
+                              size="sm"
+                              variant="danger-outline"
+                              aria-label={`Revoke ${token.name}`}
+                              onClick={() => setRevokingService(token)}
+                            >
+                              Revoke
+                            </Button>
+                          ) : null}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </>
           )}
         </section>
       ) : null}
@@ -270,6 +300,10 @@ export function TokensScreen({ orgSlug }: { orgSlug: string }) {
         open={creating}
         onOpenChange={setCreating}
         onCreated={serviceTokens.reload}
+        // The policy the listing was judged against, so the form asks what the
+        // server will. `null` until the listing lands; the server still
+        // refuses, under the right field, if the dialog was opened before then.
+        tokenPolicy={tokenPolicy}
       />
 
       <ConfirmDialog
@@ -361,6 +395,33 @@ function TokenStatus({
         </span>
       ) : null}
     </span>
+  );
+}
+
+/**
+ * The marker on a token minted before the token policy that falls outside it.
+ *
+ * A badge with the reason in its `title` rather than a tooltip: the table is
+ * rendered on the server too, and the reason has to reach a screen reader,
+ * which is what the visually hidden copy is for.
+ */
+function OutsidePolicyBadge({ sentence }: { sentence: string }) {
+  return (
+    <Badge tone="warning" title={sentence}>
+      Outside policy
+      <span className="sr-only"> — {sentence}</span>
+    </Badge>
+  );
+}
+
+/** The sentence above the table, for `count` live tokens outside the policy. */
+function outsidePolicySummary(count: number): string {
+  const one = count === 1;
+  return (
+    `${pluralize(count, 'active token')} ${one ? 'falls' : 'fall'} outside the organisation’s ` +
+    'token policy. The policy is checked when a token is minted, never when it is used, so ' +
+    `${one ? 'it keeps' : 'they keep'} working — replace ${one ? 'it' : 'them'} with a new ` +
+    `${one ? 'token' : 'token each'}, then revoke the old.`
   );
 }
 

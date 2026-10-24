@@ -1,8 +1,10 @@
 import { sql } from 'drizzle-orm';
+import type { DeclaredReference } from '@xecret/core/references';
 import {
   check,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -93,7 +95,7 @@ export const secrets = pgTable(
     // if the two lists diverge, so the pairing is enforced rather than hoped for.
     check(
       'secrets_value_type_check',
-      sql`${t.valueType} in ('string','boolean','int','decimal','email','url','date','datetime','json','yaml','xml','ulid','uuidv4','uuidv7')`,
+      sql`${t.valueType} in ('string','boolean','int','decimal','email','url','date','datetime','json','yaml','xml','ulid','uuidv4','uuidv7','template')`,
     ),
     uniqueIndex('secrets_env_name_idx')
       .on(t.environmentId, t.name)
@@ -184,6 +186,19 @@ export const secretVersions = pgTable(
      * value is useless without the key hierarchy.
      */
     valueHmac: bytea('value_hmac'),
+    /**
+     * What a template version's writer declared it refers to (P19 §1, migration
+     * 0028): the references as written, each with the environment its slugs
+     * resolved to at write time — `null` for an unqualified `${KEY}`, which means
+     * "the environment being read". NULL for every version that is not a
+     * template.
+     *
+     * The server never reads the template itself — it is ciphertext — so this
+     * declaration is what it checks for cycles before storing, what it walks to
+     * decide which ciphertexts a pull carries, and what a client compares the
+     * decrypted text against before resolving anything.
+     */
+    declaredReferences: jsonb('declared_references').$type<DeclaredReference[]>(),
     /** Same exactly-one pairing as `secrets` — see the comment there. */
     createdBy: uuid('created_by').references(() => users.id),
     createdByServiceTokenId: uuid('created_by_service_token_id').references(() => serviceTokens.id),
@@ -226,5 +241,12 @@ export const secretVersions = pgTable(
     unique('secret_versions_secret_version_unique').on(t.secretId, t.version),
     // Resolves "current value" and drives the bulk read path used by `xecret run`.
     index('secret_versions_current_idx').on(t.secretId, t.version.desc()),
+    check(
+      'secret_versions_declared_references_array_check',
+      sql`${t.declaredReferences} is null or jsonb_typeof(${t.declaredReferences}) = 'array'`,
+    ),
+    index('secret_versions_declared_references_idx')
+      .using('gin', sql`${t.declaredReferences} jsonb_path_ops`)
+      .where(sql`${t.declaredReferences} is not null`),
   ],
 );

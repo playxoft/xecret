@@ -402,6 +402,10 @@ export function mapMembershipError(cause: unknown): never {
         throw errors.badRequest(cause.message);
       case 'immutable':
         throw errors.badRequest(cause.message);
+      case 'ssoRequired':
+        // The API's own sentence and code, so the dashboard can offer the
+        // organisation's sign-in rather than a generic refusal.
+        throw errors.ssoRequired(cause.message);
     }
   }
   throw cause;
@@ -421,6 +425,9 @@ const REFUSAL_REASON: Readonly<Record<RepositoryErrorCode, AuditErrorReason>> = 
   // membership or custom-role write raises it; it is here because the map is
   // exhaustive, so a new code has to be decided rather than filed as nothing.
   forbidden: 'invalidCredentials',
+  // A credential that did not come through the organisation's single sign-on:
+  // one that proves too little for this organisation, like the case above.
+  ssoRequired: 'invalidCredentials',
 };
 
 /**

@@ -25,5 +25,8 @@ export type {
   AuditEvent,
   AuditMetadata,
   AuditOutcome,
+  AuditSubscriptionStatus,
+  BillingDriftField,
+  SignInConfirmationKind,
   SignInMethod,
 } from './types';
